@@ -62,14 +62,22 @@ per account (§Server-side storage below).
 
 ## No key-sharing dedup
 
-> **A `blob_key` MUST NOT seal two different byte sequences.** The chunk nonce is
-> derived from `blob_key ‖ u32_be(chunk_idx)` and carries no randomness
+> **A `blob_key` MUST NOT seal two different byte sequences at one chunking.**
+> The chunk nonce is derived from `blob_key ‖ chunk_aad` and carries no
+> randomness
 > ([`../03-crypto/data-encryption-format.md`](../03-crypto/data-encryption-format.md)
 > §Blob chunks), so reusing a key across two distinct plaintexts at the same
-> `chunk_idx` reuses an XChaCha20-Poly1305 nonce — which forfeits confidentiality
-> of both messages and leaks the Poly1305 authentication key. Every sealed byte
-> sequence — every attachment, every thumbnail, every re-attach of the same
-> file — gets a fresh 32-byte random `blob_key`.
+> `(blob_id, chunk_idx, chunk_count)` reuses an XChaCha20-Poly1305 nonce — which
+> forfeits confidentiality of both messages and leaks the Poly1305
+> authentication key. Every sealed byte sequence — every attachment, every
+> thumbnail, every re-attach of the same file — gets a fresh 32-byte random
+> `blob_key`.
+>
+> The chunking is part of the nonce and not only of the AAD, which is what stops
+> a *re*-chunking of one blob under one key from being a second sealing at the
+> same nonce. That was a real hole until `CRYPTO_SUITE_V = 3`: the nonce named
+> only `chunk_idx`, so re-splitting the same attachment produced two ciphertexts
+> over one keystream.
 
 Consequently there is **no dedup by key sharing**, at any scope. Two attachments
 of the same file are two blobs with two keys and two `blob_id`s. Earlier

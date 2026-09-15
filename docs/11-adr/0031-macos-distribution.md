@@ -292,6 +292,17 @@ encrypted.
    second thing that has to be signed and a second thing a user trusts. It does
    not reverse this decision, but the appcast's signing key and its hosting are
    decisions of the same kind and belong beside this record.
+
+   > **Fired, and answered beside this record as instructed:**
+   > [ADR-0038](./0038-macos-update-feed.md). Sparkle, an EdDSA-signed
+   > `appcast.xml` on the same GitHub Release, and `stable` / `beta` channels
+   > read off the `prerelease` value `verify` already computes. It does not
+   > reverse anything here — it adds a seventh release secret
+   > (`SPARKLE_ED_PRIVATE_KEY`) to the six below, and it records that the
+   > appcast key is **subordinate** to the Developer ID certificate rather than
+   > a co-equal second trust root, because Sparkle authorises a change of EdDSA
+   > key with the app's Apple code signature. The consequence above that says
+   > "There is still no update mechanism" describes the file as it was.
 5. **An iOS release being cut.** Not because it changes anything here, but
    because it is the moment somebody will be tempted to fold both platforms
    into one App Store answer. The consequence above says why that does not

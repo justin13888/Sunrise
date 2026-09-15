@@ -317,9 +317,9 @@ run = "cargo \"+${SUNRISE_FUZZ_TOOLCHAIN:-nightly}\" fuzz build --fuzz-dir fuzz"
 # changes its behaviour.
 #
 # `SUNRISE_FUZZ_SECONDS` raises the budget. Note it is a different name from
-# `SUNRISE_FUZZ_SEED`, which `docs/10-cross-cutting/testing.md` §5 documents as
-# the chaos harness's variable and says is the only consumer in the workspace;
-# that sentence stays true.
+# `SUNRISE_FUZZ_SEED`, which seeds the chaos harness and every property test
+# (`crates/sunrise-test-seed`) and is read by nothing in `fuzz/`: libFuzzer
+# takes `-seed=` and keeps its own corpus.
 [tasks.fuzz-smoke]
 description = "Run every fuzz target briefly against its committed seeds. Proves they execute"
 shell = "bash -c"
@@ -919,6 +919,16 @@ description = "Assert the file size gate's exit-code contract (fast, no cargo)"
 # overrides the gate's two tables, so it never reads the repository's own crates.
 # The gate shipped with three failure modes and no fixtures for any of them.
 run = "python3 .github/scripts/test_file_size_gate.py"
+
+[tasks.appcast-gate-test]
+description = "Assert the Sparkle appcast generator's rules (fast, no network)"
+# Runs in under a second: it synthesises a Releases API body and the per-release
+# signature sidecars in a temp directory, so it never touches GitHub. What it
+# asserts has no other check -- which release lands on which Sparkle channel,
+# and whether the signature in hand describes the bytes being advertised -- and
+# the only other way to find out is to publish a release and watch every
+# installed copy either update or stop updating. See ADR-0038.
+run = "python3 .github/scripts/test_appcast.py"
 
 [tasks.orphan-crate-gate-test]
 description = "Assert the orphan crate gate's exit-code contract (fast, synthesised workspaces)"

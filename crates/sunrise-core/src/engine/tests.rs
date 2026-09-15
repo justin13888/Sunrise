@@ -23,6 +23,7 @@ use super::attachment::*;
 use super::block::*;
 use super::context::*;
 use super::focus::*;
+use super::identity::{MAX_ROSTER_ENTRIES, MAX_SIBLINGS_PER_PREDECESSOR};
 use super::ids::*;
 use super::lww::*;
 use super::oplog::*;
@@ -49,11 +50,12 @@ use sunrise_domain::time::SunriseTime;
 use sunrise_domain::Unknowns;
 use sunrise_domain::{
     imported_block_id, inbox_stream_ref, occurrence_key_at, occurrence_task_id, ActivityEvent,
-    Attachment, AttachmentDraft, BlockDraft, BlockPatch, Chunk, ContextDraft, ContextPatch, Energy,
-    ExportDataset, ExportFormat, FocusEnd, FocusKind, FocusStart, InterruptionReason, NoteBody,
-    ReminderSettings, RoutinePatch, ScheduleConstraint, SessionLength, StreamColor, StreamDraft,
-    StreamPatch, StreamReviewCadence, Task, TaskDraft, TaskPatch, TaskState, Trends,
-    ValidationError, WeeklyReview, INBOX_STREAM_BYTES, POMODORO_MS,
+    Attachment, AttachmentDraft, BlockDraft, BlockPatch, Chunk, Context, ContextDraft,
+    ContextPatch, Energy, ExportDataset, ExportFormat, FocusEnd, FocusKind, FocusStart,
+    InterruptionReason, NoteBody, ReminderSettings, ReviewSnapshotDraft, ReviewTotals,
+    RoutinePatch, ScheduleConstraint, SessionLength, Stream, StreamColor, StreamDraft, StreamPatch,
+    StreamReviewCadence, Task, TaskDraft, TaskPatch, TaskState, Trends, ValidationError,
+    WeeklyReview, INBOX_STREAM_BYTES, POMODORO_MS,
 };
 use sunrise_id::{EntityKind, EntityRef};
 use sunrise_storage::{OpLog, Outbox};
@@ -640,6 +642,141 @@ mod testutil {
                 _ => None,
             })
             .collect()
+    }
+
+    /// Every `seq` `device` has written to the vault-meta stream, ascending.
+    ///
+    /// Reads the `ops` columns rather than the sealed envelopes because the
+    /// point is what the UNIQUE constraint sees.
+    pub(super) fn meta_seqs_of(db: &Db, device: &[u8; 16]) -> Vec<u64> {
+        let mut stmt = db
+            .conn()
+            .prepare(
+                "SELECT seq FROM ops
+                     WHERE stream_id = ? AND device_id = ?
+                     ORDER BY seq ASC",
+            )
+            .unwrap();
+        stmt.query_map(params![&META_STREAM[..], &device[..]], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<u64>>>()
+            .unwrap()
+    }
+
+    /// A stamp for a row seeded straight into the DB with no op behind it.
+    ///
+    /// Zeroed device and `seq` 0: it loses every LWW comparison, which is the
+    /// right answer for a row no device ever claimed to have written.
+    pub(super) fn seeded_stamp() -> LwwStamp {
+        LwwStamp {
+            hlc: Hlc {
+                physical_ms: T0,
+                logical: 0,
+            },
+            device: [0u8; 16],
+            seq: 0,
+        }
+    }
+
+    /// Materialize a Stream row with **no op**, so a later command against it
+    /// can still be the vault-meta stream's first writer.
+    ///
+    /// Every command emits an op, and the first op of any kind mints the
+    /// vault-meta key — including a Task's, because minting the Inbox key
+    /// emits `key_envelope` control ops into vault-meta, which mints that too.
+    /// So an `UpdateStream` test that created its Stream with `CreateStream`
+    /// would be testing a vault that already had the key, which is precisely
+    /// the case the bug cannot reach. Seeding the row directly is what keeps
+    /// each case's own command the one that mints.
+    pub(super) fn seed_stream(db: &mut Db, name: &str) -> EntityRef {
+        let id = EntityRef::new(EntityKind::Stream, [0x11; 16]);
+        let stream = Stream {
+            id,
+            created_at: ms_to_ts(T0 as i64),
+            updated_at: ms_to_ts(T0 as i64),
+            name: name.to_string(),
+            description: None,
+            color: StreamColor::Slate,
+            icon: None,
+            parent_id: None,
+            sort_order: sort_order::append_after(None),
+            archived: false,
+            paused: false,
+            paused_until: None,
+            review_cadence: StreamReviewCadence::Weekly,
+            default_context: None,
+            reminder_lead_s: None,
+            deleted: false,
+            unknown: Unknowns::new(),
+        };
+        db.with_tx(|tx| insert_stream_row(tx, &stream, &seeded_stamp()))
+            .unwrap();
+        id
+    }
+
+    /// A Context row with no op behind it. See [`seed_stream`].
+    pub(super) fn seed_context(db: &mut Db, name: &str) -> EntityRef {
+        let id = EntityRef::new(EntityKind::Context, [0x22; 16]);
+        let ctx = Context {
+            id,
+            created_at: ms_to_ts(T0 as i64),
+            updated_at: ms_to_ts(T0 as i64),
+            name: name.to_string(),
+            description: None,
+            archived: false,
+            deleted: false,
+            unknown: Unknowns::new(),
+        };
+        db.with_tx(|tx| insert_context_row(tx, &ctx, &seeded_stamp()))
+            .unwrap();
+        id
+    }
+
+    /// A Routine row with no op behind it. See [`seed_stream`].
+    pub(super) fn seed_bare_routine(db: &mut Db) -> EntityRef {
+        let id = EntityRef::new(EntityKind::Routine, [0x33; 16]);
+        let d = routine_draft(
+            inbox_stream_ref(),
+            "FREQ=DAILY",
+            T0 as i64,
+            RoutineCatchupPolicy::Skip,
+            Vec::new(),
+        );
+        let routine = Routine {
+            id,
+            created_at: ms_to_ts(T0 as i64),
+            updated_at: ms_to_ts(T0 as i64),
+            template: d.template,
+            rrule: d.rrule,
+            timezone: d.timezone,
+            starts_at: d.starts_at,
+            ends_at: None,
+            scheduling_constraints: Vec::new(),
+            skip_dates: Vec::new(),
+            skipped_keys: Vec::new(),
+            catchup_policy: d.catchup_policy,
+            streak_counter: 0,
+            last_completed_at: None,
+            grace_window_s: None,
+            forgiveness_enabled: true,
+            streak_started_at: None,
+            forgivenesses_in_window: 0,
+            streak_keys: Vec::new(),
+            paused: false,
+            paused_until: None,
+            archived: false,
+            deleted: false,
+            unknown: Unknowns::new(),
+        };
+        db.with_tx(|tx| {
+            // The routine's template Stream has to exist for the foreign key,
+            // and `ensure_stream_row` materializes one without emitting an op
+            // — which is exactly the property this helper needs.
+            ensure_stream_row(tx, &routine.template.stream_id, T0)?;
+            insert_routine_row(tx, &routine, T0, &seeded_stamp())
+        })
+        .unwrap();
+        id
     }
 
     pub(super) const ROOT: [u8; 32] = [0x5a; 32];
@@ -1604,6 +1741,430 @@ fn create_stream_round_trips() {
     // used to come back as "" / Slate).
     assert_eq!(st.name, "Work");
     assert_eq!(st.color, StreamColor::Sky);
+}
+
+/// #214: **every** command that writes into the vault-meta log must read its
+/// sequence number inside the transaction that may mint that stream's key.
+///
+/// The mechanism, once, because it is the same for all of them. `ops_insert`
+/// resolves the routing stream's epoch, and resolving it can mint the stream's
+/// first key; minting emits a `key_envelope` op per recipient, and
+/// `emit_control_op` puts every one of those into **vault-meta**, whatever
+/// stream was being minted for. So a command whose own op is *also* routed to
+/// vault-meta hands out a sequence number the mint then spends.
+/// `UNIQUE(stream_id, device_id, seq)` and `INSERT OR IGNORE` do the rest: the
+/// losing op disappears and its outbox row fails its foreign key.
+///
+/// That is why this covers exactly the commands routed to vault-meta and not
+/// the ones routed to a Task's own Stream. A `CreateTask` into the Inbox reads
+/// the *Inbox's* `seq`, and the envelopes its mint emits land in vault-meta —
+/// a different stream, a different counter, no collision. Those paths read
+/// `next_seq` outside their transaction too and are correct in doing so.
+///
+/// `60ee61d` fixed this for `emit_control_op` and `#214` for `create_stream`;
+/// the other ten are fixed together with them, and `Engine::meta_slot` is now
+/// the only way to obtain a vault-meta sequence number, so the order cannot be
+/// got wrong again.
+///
+/// Every case runs on its own engine that has never seen `ensure_base_epochs`,
+/// because the *first* op of any kind mints vault-meta and there is therefore
+/// only one command per vault that can hit this.
+#[test]
+fn every_vault_meta_command_sequences_after_the_key_it_mints() {
+    type Build = fn(&mut Db) -> Command;
+    let cases: &[(&str, Build)] = &[
+        ("stream.create", |_db| {
+            Command::CreateStream(StreamDraft {
+                name: "Work".into(),
+                ..Default::default()
+            })
+        }),
+        ("stream.update", |db| Command::UpdateStream {
+            id: seed_stream(db, "Work"),
+            patch: StreamPatch {
+                name: Some("Renamed".into()),
+                ..Default::default()
+            },
+        }),
+        ("stream.delete", |db| {
+            Command::DeleteStream(seed_stream(db, "Work"))
+        }),
+        ("context.create", |_db| {
+            Command::CreateContext(ContextDraft {
+                name: "errands".into(),
+                ..Default::default()
+            })
+        }),
+        ("context.update", |db| Command::UpdateContext {
+            id: seed_context(db, "errands"),
+            patch: ContextPatch {
+                name: Some("renamed".into()),
+                ..Default::default()
+            },
+        }),
+        ("context.delete", |db| {
+            Command::DeleteContext(seed_context(db, "errands"))
+        }),
+        ("routine.create", |_db| {
+            Command::CreateRoutine(routine_draft(
+                inbox_stream_ref(),
+                "FREQ=DAILY",
+                T0 as i64,
+                RoutineCatchupPolicy::Skip,
+                Vec::new(),
+            ))
+        }),
+        ("routine.update", |db| Command::UpdateRoutine {
+            id: seed_bare_routine(db),
+            patch: RoutinePatch {
+                timezone: Some("UTC".into()),
+                ..Default::default()
+            },
+        }),
+        ("routine.delete", |db| {
+            Command::DeleteRoutine(seed_bare_routine(db))
+        }),
+        ("routine.skip", |db| Command::SkipRoutineOccurrence {
+            id: seed_bare_routine(db),
+            occurrence_key: occurrence_key_at("UTC", ms_to_ts(T0 as i64)).unwrap(),
+        }),
+        ("review.snapshot", |_db| {
+            Command::SaveReviewSnapshot(ReviewSnapshotDraft {
+                window_start_ms: T0 - 7 * 86_400_000,
+                window_end_ms: T0,
+                totals: ReviewTotals::default(),
+                streams: Vec::new(),
+                streaks: Vec::new(),
+                note: None,
+            })
+        }),
+    ];
+
+    // Failures are collected rather than asserted in place. A table that
+    // panics on its first bad row says nothing about the other ten, and the
+    // whole point of the table is that this is a *class*: reverting two of the
+    // fixes has to name two cases, not one.
+    let mut failures: Vec<String> = Vec::new();
+    for (name, build) in cases {
+        let e = engine_random_keys(ROOT, [7u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let mut db = db();
+        // Deliberately no `ensure_base_epochs`. `Core::open` runs it, which is
+        // why none of this is reachable in production; an engine built
+        // directly is not so lucky, and that is every test that skips `Core`.
+        let cmd = build(&mut db);
+        let res = match e.apply(&mut db, cmd) {
+            Ok(res) => res,
+            Err(err) => {
+                failures.push(format!("{name}: collided with the key it mints: {err:?}"));
+                continue;
+            }
+        };
+
+        let seqs = meta_seqs_of(&db, &e.keychain.device_id());
+        // Without this the density check below could hold vacuously on a
+        // transaction that never minted and so never raced anything.
+        if seqs.len() <= 1 {
+            failures.push(format!(
+                "{name}: emitted only its own op, so nothing was raced: {seqs:?}"
+            ));
+            continue;
+        }
+        let dense: Vec<u64> = (1..=seqs.len() as u64).collect();
+        if seqs != dense {
+            failures.push(format!(
+                "{name}: vault-meta seqs must be dense and unique, got {seqs:?}"
+            ));
+        }
+        // Sequence 1 belongs to the first `key_envelope` the mint emitted. A
+        // command that took it is a command that read its number before the
+        // mint spent it — the bug in the form it would take if the UNIQUE
+        // constraint ever stopped catching it.
+        if res.seq <= 1 {
+            failures.push(format!(
+                "{name}: took seq {}, so it sequenced before the envelopes it caused",
+                res.seq
+            ));
+        }
+        // And the op is genuinely in the log rather than `OR IGNORE`d away.
+        let logged: u32 = db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM ops WHERE op_id = ?",
+                params![&res.op_id[..]],
+                |r| r.get(0),
+            )
+            .unwrap();
+        if logged != 1 {
+            failures.push(format!("{name}: {logged} rows in the log for its op id"));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} of {} vault-meta commands race the key they mint:\n  {}",
+        failures.len(),
+        cases.len(),
+        failures.join("\n  ")
+    );
+}
+
+/// No command lets a caller name the vault-meta stream as an ordinary Stream.
+///
+/// `EntityRef::new` does not police the bytes, and every draft and patch below
+/// crosses the UniFFI seam — so "you would have to construct it by hand" means
+/// "any app, any CLI path, any future binding". `require_kind` checked the
+/// *kind* and not the id, which was the whole of the gap: a `Stream` ref of
+/// sixteen zero bytes is a well-formed Stream reference to the vault-meta log.
+///
+/// What it would have bought a caller: a Task routed into vault-meta reads the
+/// sequence number the control ops are themselves counting, which is `#214`
+/// from the other end — the half `Engine::meta_slot` cannot close, because the
+/// op is not a vault-meta *command* and has no business being there at all.
+///
+/// One command is deliberately **absent** from this table and must stay
+/// absent: `Command::RotateStreamKey`. Rotating the vault-meta key is a real
+/// operation — a device revocation does exactly that — and
+/// `reserved_stream_is_still_rotatable` below pins it.
+#[test]
+fn no_command_accepts_the_vault_meta_stream_as_an_ordinary_target() {
+    /// A well-formed `Stream` reference to the vault-meta log. Exactly what a
+    /// binding could build, and what nothing rejected before.
+    fn meta_ref() -> EntityRef {
+        EntityRef::new(EntityKind::Stream, META_STREAM)
+    }
+
+    type Build = fn(&Engine, &mut Db) -> Command;
+    let cases: &[(&str, Build)] = &[
+        ("CreateTask.stream_id", |_e, _db| {
+            Command::CreateTask(TaskDraft {
+                title: "t".into(),
+                stream_id: Some(meta_ref()),
+                ..Default::default()
+            })
+        }),
+        ("UpdateTask.patch.stream_id", |e, db| Command::UpdateTask {
+            id: new_task(e, db, "t"),
+            patch: TaskPatch {
+                stream_id: Some(meta_ref()),
+                ..Default::default()
+            },
+        }),
+        ("PromoteToStream.stream", |e, db| Command::PromoteToStream {
+            id: new_task(e, db, "t"),
+            stream: meta_ref(),
+        }),
+        ("CreateStream.parent_id", |_e, _db| {
+            Command::CreateStream(StreamDraft {
+                name: "child".into(),
+                parent_id: Some(meta_ref()),
+                ..Default::default()
+            })
+        }),
+        ("UpdateStream.id", |_e, _db| Command::UpdateStream {
+            id: meta_ref(),
+            patch: StreamPatch {
+                name: Some("renamed".into()),
+                ..Default::default()
+            },
+        }),
+        ("UpdateStream.patch.parent_id", |e, db| {
+            let id = e
+                .apply(
+                    db,
+                    Command::CreateStream(StreamDraft {
+                        name: "child".into(),
+                        ..Default::default()
+                    }),
+                )
+                .unwrap()
+                .entity;
+            Command::UpdateStream {
+                id,
+                patch: StreamPatch {
+                    parent_id: Some(Some(meta_ref())),
+                    ..Default::default()
+                },
+            }
+        }),
+        ("DeleteStream.id", |_e, _db| {
+            Command::DeleteStream(meta_ref())
+        }),
+        ("CreateRoutine.template.stream_id", |_e, _db| {
+            Command::CreateRoutine(routine_draft(
+                meta_ref(),
+                "FREQ=DAILY",
+                T0 as i64,
+                RoutineCatchupPolicy::Skip,
+                Vec::new(),
+            ))
+        }),
+        ("UpdateRoutine.patch.template", |e, db| {
+            let d = routine_draft(
+                inbox_stream_ref(),
+                "FREQ=DAILY",
+                T0 as i64,
+                RoutineCatchupPolicy::Skip,
+                Vec::new(),
+            );
+            let mut template = d.template.clone();
+            let id = e.apply(db, Command::CreateRoutine(d)).unwrap().entity;
+            template.stream_id = meta_ref();
+            Command::UpdateRoutine {
+                id,
+                patch: RoutinePatch {
+                    template: Some(template),
+                    ..Default::default()
+                },
+            }
+        }),
+        ("CreateBlock.stream_id", |_e, _db| {
+            let mut d = block_draft(9, 1, Some("b"));
+            d.stream_id = meta_ref();
+            Command::CreateBlock(d)
+        }),
+        ("ImportBlock.draft.stream_id", |_e, _db| {
+            let mut draft = block_draft(9, 1, Some("b"));
+            draft.stream_id = meta_ref();
+            Command::ImportBlock {
+                source: "ics".into(),
+                uid: "uid-1".into(),
+                draft,
+            }
+        }),
+        ("UpdateBlock.patch.stream_id", |e, db| {
+            let id = e
+                .apply(db, Command::CreateBlock(block_draft(9, 1, Some("b"))))
+                .unwrap()
+                .entity;
+            Command::UpdateBlock {
+                id,
+                patch: BlockPatch {
+                    stream_id: Some(meta_ref()),
+                    ..Default::default()
+                },
+            }
+        }),
+    ];
+
+    let mut failures: Vec<String> = Vec::new();
+    for (name, build) in cases {
+        let mut db = db();
+        let e = engine();
+        e.ensure_base_epochs(&mut db).unwrap();
+        let cmd = build(&e, &mut db);
+        match e.apply(&mut db, cmd) {
+            Err(EngineError::ReservedStream) => {}
+            Err(other) => failures.push(format!("{name}: refused, but not by name: {other:?}")),
+            Ok(res) => failures.push(format!(
+                "{name}: accepted, and wrote {:?} at seq {}",
+                res.entity, res.seq
+            )),
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} of {} caller-supplied stream ids reach the vault-meta log:\n  {}",
+        failures.len(),
+        cases.len(),
+        failures.join("\n  ")
+    );
+}
+
+/// The one command that may name the vault-meta stream, and the reason the
+/// guard is a per-command decision rather than a blanket ban.
+///
+/// `RotateStreamKey` mints a new epoch and seals it to every current device.
+/// On the vault-meta stream that is half of what a device revocation does, and
+/// a user who believes the control log's key is exposed has to be able to ask
+/// for it by name. It routes no entity op and reads its own sequence number
+/// inside the transaction, so it competes with nothing.
+#[test]
+fn the_vault_meta_stream_is_still_rotatable_by_name() {
+    let mut db = db();
+    // A random-key engine, not the derived-key one: the derived-key test
+    // keychain reports every key as already held and so writes no
+    // `stream_epochs` row, which is the thing this test reads.
+    let e = engine_random_keys(ROOT, [7u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    e.ensure_base_epochs(&mut db).unwrap();
+    let before = db
+        .with_tx(|tx| e.keychain.current_epoch_tx(tx, &META_STREAM))
+        .unwrap()
+        .expect("base epochs exist");
+    e.apply(
+        &mut db,
+        Command::RotateStreamKey {
+            stream: EntityRef::new(EntityKind::Stream, META_STREAM),
+        },
+    )
+    .expect("rotating the control log's own key is a supported operation");
+    let after = db
+        .with_tx(|tx| e.keychain.current_epoch_tx(tx, &META_STREAM))
+        .unwrap()
+        .expect("still there");
+    assert!(after > before, "the rotation minted a new epoch");
+}
+
+/// The `key_envelope` ops a mint emits now stamp **before** the op they
+/// enable, and that reversal is the one observable consequence of taking the
+/// LWW stamp inside the transaction rather than before it.
+///
+/// It is the causally correct order — the envelope carries the key the op is
+/// sealed under — and it changes no merge outcome, because a control op
+/// materializes no entity row and so is never the other side of an LWW
+/// comparison. What it does mean is that HLC order and `seq` order now agree
+/// within one transaction, where before they disagreed.
+///
+/// In production this never differs: `Core::open` runs `ensure_base_epochs`,
+/// so the mint is a no-op and the transaction makes exactly one `hlc.send`
+/// either way.
+#[test]
+fn a_mints_envelopes_stamp_before_the_op_that_caused_them() {
+    let mut db = db();
+    let e = engine_random_keys(ROOT, [7u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let res = e
+        .apply(
+            &mut db,
+            Command::CreateStream(StreamDraft {
+                name: "Work".into(),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+
+    let mut stmt = db
+        .conn()
+        .prepare(
+            "SELECT seq, envelope FROM ops
+                 WHERE stream_id = ? AND device_id = ?
+                 ORDER BY seq ASC",
+        )
+        .unwrap();
+    let rows: Vec<(u64, Vec<u8>)> = stmt
+        .query_map(
+            params![&META_STREAM[..], &e.keychain.device_id()[..]],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert!(rows.len() > 1, "the mint emitted envelopes");
+
+    let hlcs: Vec<Hlc> = rows
+        .iter()
+        .map(|(_, env)| sunrise_crypto::decode_envelope(env).unwrap().hlc)
+        .collect();
+    for w in hlcs.windows(2) {
+        assert!(
+            w[0] < w[1],
+            "HLC order must follow seq order within one transaction: {:?} then {:?}",
+            w[0],
+            w[1]
+        );
+    }
+    assert_eq!(
+        rows.last().unwrap().0,
+        res.seq,
+        "the create holds the last seq, so it also holds the last HLC"
+    );
 }
 
 // ---- contexts ----
@@ -7448,6 +8009,522 @@ fn a_device_offline_across_a_rotation_catches_up_without_re_pairing() {
     }
 }
 
+/// A complete, valid transition whose roster and share list name `devices`
+/// synthetic survivors.
+///
+/// [`build_transition`] can only name engines that exist, and the point of the
+/// size cap is a payload far larger than any real account. This mints the
+/// successor the same way `rotate_identity` does and issues one genuine cert
+/// and one genuine HPKE share per synthetic device, so the only thing wrong
+/// with the result is how many there are of them.
+fn build_transition_naming(emitter: &Engine, devices: usize, now_ms: u64) -> InnerOp {
+    use rand_core::SeedableRng;
+    use sunrise_crypto::keys::{DeviceDhKeyPair, DeviceSigningKeyPair};
+
+    let successor = emitter.keychain.mint_successor_identity(&SystemRng);
+    // The device keys are throwaway: nothing verifies a signature by them here,
+    // only that the HPKE seals target distinct real X25519 points and the certs
+    // carry distinct real Ed25519 ones.
+    let mut rng = rand::rngs::StdRng::seed_from_u64(0xD06F);
+    let mut entries: Vec<RosterEntry> = Vec::with_capacity(devices);
+    let mut shares: Vec<KeyShare> = Vec::with_capacity(devices);
+    for i in 0..devices {
+        let d_s = DeviceSigningKeyPair::generate(&mut rng);
+        let d_d = DeviceDhKeyPair::generate(&mut rng);
+        let mut device_id = [0u8; 16];
+        device_id[..8].copy_from_slice(&(i as u64).to_be_bytes());
+        entries.push(RosterEntry {
+            cert: Keychain::issue_roster_cert(
+                &successor,
+                device_id,
+                d_s.public_bytes(),
+                d_d.public_bytes(),
+                "device",
+                "test",
+                now_ms,
+            )
+            .expect("roster cert"),
+        });
+        shares.push(KeyShare {
+            device_id,
+            hpke_ciphertext: emitter
+                .keychain
+                .seal_successor_device_share(
+                    &successor,
+                    &d_d.public_bytes(),
+                    &device_id,
+                    &SystemRng,
+                )
+                .expect("device share"),
+        });
+    }
+    let certs: Vec<&[u8]> = entries.iter().map(|e| e.cert.as_slice()).collect();
+    let share_refs: Vec<([u8; 16], &[u8])> = shares
+        .iter()
+        .map(|s| (s.device_id, s.hpke_ciphertext.as_slice()))
+        .collect();
+    let body = sunrise_crypto::IdentityTransitionBody {
+        from_identity_id: emitter.keychain.identity_id(),
+        to_identity_id: successor.identity_id(),
+        to_id_s_pub: successor.id_s_pub(),
+        to_id_d_pub: successor.id_d_pub(),
+        roster_digest: sunrise_crypto::roster_digest(&certs).expect("roster digest"),
+        shares_digest: sunrise_crypto::shares_digest(&share_refs, None).expect("shares digest"),
+    };
+    let sigs = emitter
+        .keychain
+        .sign_transition(&body, &successor)
+        .expect("sign");
+    InnerOp::IdentityTransition(Box::new(IdentityTransitionPayload {
+        from_identity_id: body.from_identity_id,
+        to_identity_id: body.to_identity_id,
+        to_id_s_pub: body.to_id_s_pub,
+        to_id_d_pub: body.to_id_d_pub,
+        roster: entries,
+        device_shares: shares,
+        identity_share: None,
+        prev_sig: sigs.prev_sig,
+        next_sig: sigs.next_sig,
+    }))
+}
+
+/// The state `MAX_TRANSITION_CHAIN = 64` could put an account into and never
+/// let it out of.
+///
+/// The fold walked at most 64 links. Any holder of `ID_S_priv` -- which is
+/// every paired device, and every device that ever was one -- could reach that
+/// by rotating, and past it the head was pinned forever: every later transition
+/// was a row the walk never reached, so no rotation took effect, so no
+/// *revocation* took effect either, because a revocation is a rotation. Nothing
+/// recovered from it and nothing reported it; the head was a real identity with
+/// a real set of current devices under it.
+///
+/// Seventy links, which is past the old cap by six. Each one is a genuine
+/// transition -- a minted successor, a roster signed by it, real HPKE shares,
+/// both signatures taken by the keychain -- applied through the same
+/// `apply_control_op` arm a peer's delivery reaches, so what is being folded is
+/// what production writes.
+///
+/// The assertion that matters is the last one: after seventy rotations the
+/// account can still rotate again, and the new head is the one it just moved
+/// to. That is "cannot reach a state it cannot leave", stated as the thing a
+/// frozen account would fail.
+#[test]
+fn a_chain_past_the_old_cap_still_folds_and_can_still_be_extended() {
+    const LINKS: usize = 70;
+
+    let ea = engine_random_keys(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eb = engine_random_keys(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut dba = db_root(ROOT);
+    trust(&ea, &mut dba, &eb);
+    let a_id = ea.keychain.device_id();
+    let genesis = ea.current_identity(dba.conn()).unwrap().identity_id;
+
+    let mut last = genesis;
+    for i in 0..LINKS {
+        let (inner, to) = build_transition(&ea, &[&eb], true, T0);
+        apply_control_at(
+            &ea,
+            &mut dba,
+            &inner,
+            &a_id,
+            Hlc::at(T0 + i as u64 + 1),
+            u32::try_from(i).unwrap() + 1,
+        );
+        assert_eq!(
+            ea.current_identity(dba.conn()).unwrap().identity_id,
+            to,
+            "rotation {i} did not move the head; the fold stopped short of it"
+        );
+        last = to;
+    }
+
+    let chain = ea.chain_identities(dba.conn()).unwrap();
+    assert_eq!(
+        chain.len(),
+        LINKS + 1,
+        "the fold walked {} of {} links",
+        chain.len(),
+        LINKS + 1
+    );
+    assert_eq!(chain.first().unwrap().0, genesis);
+    assert_eq!(chain.last().unwrap().0, last);
+
+    // The point of the whole test: the account is not frozen. One more
+    // rotation, and it takes effect like the seventy before it.
+    let (inner, to) = build_transition(&ea, &[&eb], true, T0);
+    apply_control_at(
+        &ea,
+        &mut dba,
+        &inner,
+        &a_id,
+        Hlc::at(T0 + LINKS as u64 + 1),
+        u32::try_from(LINKS).unwrap() + 1,
+    );
+    assert_eq!(
+        ea.current_identity(dba.conn()).unwrap().identity_id,
+        to,
+        "an account past the old cap can no longer rotate: it is in a state it \
+         cannot leave, which is the defect this test exists for"
+    );
+}
+
+/// An oversized roster is refused, and refused *before* the verification it
+/// would have paid for.
+///
+/// `roster` and `device_shares` are `Vec`s in a payload, so their length is
+/// chosen by whoever wrote the op, and each roster entry costs a `DeviceCert`
+/// decode plus an Ed25519 verification. Nothing bounded either, so one op could
+/// buy arbitrary verification work on every peer in the account.
+///
+/// The oversized transition is **completely valid** apart from its size:
+/// [`build_transition_naming`] mints the successor itself, so every roster
+/// entry is a distinct cert signed by it, every share is a real HPKE seal to a
+/// distinct key, both digests are recomputed over the real contents and both
+/// signatures are genuine. Nothing but the length check can refuse it — which
+/// is the only way to tell "refused for its size" apart from "refused because a
+/// padded payload is malformed", and the only construction under which removing
+/// the check turns this test red.
+#[test]
+fn a_transition_naming_more_devices_than_the_cap_is_refused() {
+    let ea = engine_random_keys(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eb = engine_random_keys(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut dba = db_root(ROOT);
+    trust(&ea, &mut dba, &eb);
+    let a_id = ea.keychain.device_id();
+    let head = ea.current_identity(dba.conn()).unwrap().identity_id;
+
+    let oversized = build_transition_naming(&ea, MAX_ROSTER_ENTRIES + 1, T0);
+    apply_control_at(&ea, &mut dba, &oversized, &a_id, Hlc::at(T0 + 1), 1);
+    assert_eq!(
+        ea.current_identity(dba.conn()).unwrap().identity_id,
+        head,
+        "the oversized transition moved the head"
+    );
+    let rows: i64 = dba
+        .conn()
+        .query_row("SELECT count(*) FROM identity_transitions", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(rows, 0, "the oversized transition was stored");
+
+    // And the cap is a cap rather than a refusal of everything: the same
+    // transition at the cap is accepted. Without this the test above would pass
+    // against a build that refused every transition.
+    let (ok, to) = build_transition(&ea, &[&eb], true, T0);
+    apply_control_at(&ea, &mut dba, &ok, &a_id, Hlc::at(T0 + 2), 1);
+    assert_eq!(ea.current_identity(dba.conn()).unwrap().identity_id, to);
+}
+
+/// One predecessor may accumulate only so many successors, and a re-delivery
+/// of a row already held is never what the cap turns away.
+///
+/// The fold verifies at most `MAX_SIBLING_CANDIDATES` rows per link, so a
+/// seventeenth row under one predecessor would be one the walk could never
+/// reach -- the same shape the chain cap had, one level down. Ingest holds the
+/// two numbers equal so that cannot arise.
+#[test]
+fn a_predecessor_accumulates_only_as_many_successors_as_the_fold_will_verify() {
+    let ea = engine_random_keys(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eb = engine_random_keys(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut dba = db_root(ROOT);
+    trust(&ea, &mut dba, &eb);
+    let a_id = ea.keychain.device_id();
+
+    // Every one of these succeeds the *same* predecessor: `build_transition`
+    // reads `emitter.keychain.identity_id()`, and the emitter only adopts the
+    // transition that wins the fold, so each call forks from the identity it
+    // currently signs under.
+    let mut built = Vec::new();
+    for i in 0..MAX_SIBLINGS_PER_PREDECESSOR + 4 {
+        let (inner, to) = build_transition(&ea, &[&eb], true, T0);
+        built.push((inner, to, i));
+    }
+    // A fresh replica, so the emitter's own adoption does not move the
+    // predecessor between deliveries.
+    let ec = engine_random_keys(ROOT, [3u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut dbc = db_root(ROOT);
+    trust(&ec, &mut dbc, &ea);
+    trust(&ec, &mut dbc, &eb);
+    for (inner, _, i) in &built {
+        apply_control_at(
+            &ec,
+            &mut dbc,
+            inner,
+            &a_id,
+            Hlc::at(T0 + u64::try_from(*i).unwrap() + 1),
+            1,
+        );
+    }
+
+    let rows: i64 = dbc
+        .conn()
+        .query_row("SELECT count(*) FROM identity_transitions", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(
+        rows, MAX_SIBLINGS_PER_PREDECESSOR,
+        "a predecessor accumulated {rows} successors; the fold verifies at most {MAX_SIBLINGS_PER_PREDECESSOR}"
+    );
+
+    // Re-delivering a row already held is not a new sibling and must not be
+    // turned away by a full register -- the insert is OR IGNORE and the row
+    // occupies no fresh place.
+    let (first, _, _) = &built[0];
+    apply_control_at(&ec, &mut dbc, first, &a_id, Hlc::at(T0 + 1), 1);
+    let after: i64 = dbc
+        .conn()
+        .query_row("SELECT count(*) FROM identity_transitions", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(after, rows, "a re-delivery changed the row count");
+}
+
+/// A transition carrying another transition's signature pair occupies no row.
+///
+/// The fifth structural refusal, alongside the four in
+/// `a_malformed_transition_is_dropped_and_moves_nothing`: `next_sig` covers
+/// `body_hash || prev_sig`, so a pair lifted whole from a different transition
+/// is internally consistent and still fits no other body. Without the check the
+/// row is occupiable by anyone — `INSERT OR IGNORE` is keyed on
+/// `to_identity_id`, so a forged copy published first would discard the honest
+/// one for good — and with the sibling cap it would also consume one of the
+/// predecessor's sixteen places.
+#[test]
+fn a_transition_carrying_another_transitions_signatures_is_not_stored() {
+    let ea = engine_random_keys(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eb = engine_random_keys(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut dba = db_root(ROOT);
+    trust(&ea, &mut dba, &eb);
+    let a_id = ea.keychain.device_id();
+    let head = ea.current_identity(dba.conn()).unwrap().identity_id;
+
+    let (inner, _) = build_transition(&ea, &[&eb], true, T0);
+    let InnerOp::IdentityTransition(mut p) = inner else {
+        unreachable!()
+    };
+    // Both signatures from a *different* transition of the same shape: the pair
+    // is internally consistent and belongs to another body, which is the shape
+    // a substitution attack takes.
+    let (other, _) = build_transition(&ea, &[&eb], true, T0);
+    let InnerOp::IdentityTransition(other) = other else {
+        unreachable!()
+    };
+    p.prev_sig = other.prev_sig;
+    p.next_sig = other.next_sig;
+    let forged = InnerOp::IdentityTransition(p);
+
+    apply_control_at(&ea, &mut dba, &forged, &a_id, Hlc::at(T0 + 1), 1);
+    assert_eq!(
+        ea.current_identity(dba.conn()).unwrap().identity_id,
+        head,
+        "the forged transition moved the head"
+    );
+    let rows: i64 = dba
+        .conn()
+        .query_row("SELECT count(*) FROM identity_transitions", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(
+        rows, 0,
+        "a transition signed for another body was stored anyway"
+    );
+}
+
+/// A revocation that cannot rotate every stream succeeds **and says which it
+/// could not**.
+///
+/// `rotation_set` drops a `stream_id` column that is not 16 bytes, because
+/// there is genuinely no stream to mint an epoch for and padding one out would
+/// file a stranger's key against the vault-meta stream. What was wrong is that
+/// it dropped it *silently*: the revoked device goes on holding whatever key it
+/// was last given for that row, and `revoke_device` returned a plain success.
+///
+/// Raising is not the alternative — the device being revoked is often the one
+/// that is gone, so failing the whole operation is the worse answer. The third
+/// option is the one issue #160 already took one level up for the relay half:
+/// succeed partially and disclose it.
+///
+/// So this asserts both halves, and the first is what stops it from passing
+/// against a build that simply refuses the revocation.
+#[test]
+fn a_revocation_that_cannot_rotate_every_stream_says_which_it_could_not() {
+    let ea = engine_random_keys(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eb = engine_random_keys(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut dba = db_root(ROOT);
+    trust(&ea, &mut dba, &eb);
+    let b_id = eb.keychain.device_id();
+
+    // A real stream with a real key, then its id truncated in place. The row
+    // survives, names nothing, and is what the rotation cannot reach.
+    let doomed = [0x4du8; 16];
+    dba.with_tx(|tx| {
+        ea.keychain.mint_epoch(tx, &doomed, &SystemRng, T0)?;
+        Ok(())
+    })
+    .expect("mint the stream that is about to be corrupted");
+    dba.conn()
+        .execute(
+            "UPDATE stream_keys SET stream_id = X'00aabb' WHERE stream_id = ?",
+            params![&doomed[..]],
+        )
+        .unwrap();
+
+    let before = meta_epoch_now(&dba);
+    let out = ea
+        .apply(
+            &mut dba,
+            Command::RevokeDevice {
+                device_id: EntityRef::new(EntityKind::Device, b_id),
+                reason: RevokeReason::Stolen,
+            },
+        )
+        .expect("the revocation must still succeed: the device that is gone is the scenario");
+
+    // Half one: the rest of the revocation really happened.
+    assert!(
+        meta_epoch_now(&dba) > before,
+        "the vault-meta stream was not rotated, so this is not a partial success \
+         but a failure wearing one"
+    );
+
+    // Half two: and it is not quiet about the row it could not reach.
+    assert_eq!(
+        out.unrotated_streams,
+        vec!["00aabb".to_string()],
+        "the revocation reported success without naming the stream it could not \
+         rotate, which the revoked device can still read"
+    );
+}
+
+/// The vault-meta stream's live epoch, as a revocation moves it.
+fn meta_epoch_now(db: &Db) -> i64 {
+    db.conn()
+        .query_row(
+            "SELECT COALESCE(MAX(epoch), 0) FROM stream_keys WHERE stream_id = ?",
+            params![&META_STREAM[..]],
+            |r| r.get(0),
+        )
+        .unwrap()
+}
+
+/// A revocation with nothing wrong reports nothing, so the field above is a
+/// signal rather than noise every caller learns to ignore.
+#[test]
+fn an_ordinary_revocation_reports_no_unrotated_streams() {
+    let ea = engine_random_keys(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eb = engine_random_keys(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut dba = db_root(ROOT);
+    trust(&ea, &mut dba, &eb);
+    let out = ea
+        .apply(
+            &mut dba,
+            Command::RevokeDevice {
+                device_id: EntityRef::new(EntityKind::Device, eb.keychain.device_id()),
+                reason: RevokeReason::Lost,
+            },
+        )
+        .expect("revoke");
+    assert!(out.unrotated_streams.is_empty());
+}
+
+/// The epoch separation the ordering argument rests on, asserted against the
+/// **production** path rather than against hand-chosen epochs.
+///
+/// `a_higher_meta_epoch_beats_any_hlc` below applies one transition at epoch 1
+/// and the other at epoch 2 and shows the fold prefers the higher. That pins
+/// the comparison and nothing else: it says what happens *if* the honest
+/// rotation outranks the revoked device's, and takes the "if" as given. The
+/// "if" is the security claim.
+///
+/// Nothing in this engine's types produces it. It is an emergent property of
+/// two transactions in `revoke_device`: the register is written, every stream
+/// in `rotation_set` — the vault-meta stream among them — is minted forward and
+/// sealed to the unrevoked devices only, that transaction commits, and *then*
+/// `rotate_identity` runs and seals the transition under whatever epoch is live,
+/// which is now E+1. Reorder those two and the argument collapses silently: the
+/// transition ties the revoked device's own possible rows on `meta_epoch`, and
+/// `hlc_physical_ms` decides — a value that device chooses freely inside
+/// `MAX_DRIFT_MS`.
+///
+/// The comment in `rotate_identity` asserted the collapsed version ("sealed
+/// under the epoch the departing device still shares") until this test was
+/// written, which is exactly how much a comment is worth here.
+#[test]
+fn a_revocations_transition_is_sealed_above_the_epoch_the_cut_device_holds() {
+    let ea = engine_random_keys(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eb = engine_random_keys(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut dba = db_root(ROOT);
+    trust(&ea, &mut dba, &eb);
+    let b_id = eb.keychain.device_id();
+
+    ea.apply(
+        &mut dba,
+        Command::RevokeDevice {
+            device_id: EntityRef::new(EntityKind::Device, b_id),
+            reason: RevokeReason::Lost,
+        },
+    )
+    .expect("the revocation runs");
+
+    // Read the epoch each op was sealed under off its own envelope, which is
+    // what a peer reads.
+    let sealed_at = |kind: &str| -> u32 {
+        let env: Vec<u8> = dba
+            .conn()
+            .query_row(
+                "SELECT envelope FROM ops WHERE inner_kind = ?1 AND stream_id = ?2",
+                params![kind, &META_STREAM[..]],
+                |r| r.get(0),
+            )
+            .unwrap_or_else(|e| panic!("one {kind} op in the vault-meta stream: {e}"));
+        sunrise_crypto::decode_envelope(&env)
+            .expect("the op this engine just wrote decodes")
+            .epoch
+    };
+
+    // The revocation itself is deliberately sealed at the epoch the departing
+    // device still holds -- it has to be readable by every peer that has not
+    // yet received the new one. That is the ceiling on what the cut device can
+    // ever seal under.
+    let cut_epoch = sealed_at("device.revoke");
+    let transition_epoch = sealed_at("identity.transition");
+    assert!(
+        transition_epoch > cut_epoch,
+        "the rotation that makes the revocation stick was sealed at meta epoch \
+         {transition_epoch}, which does not outrank the epoch {cut_epoch} the cut device \
+         still holds; ADR-0037 §4's ordering argument needs it strictly above"
+    );
+
+    // And the ceiling is real: the revoked device was sealed no key at or above
+    // the epoch the transition sits at, so it cannot produce a competing row
+    // there however it dates its HLC.
+    let served_at_or_above: Vec<u32> = key_envelope_envs(&dba)
+        .into_iter()
+        .filter_map(|env| ea.keychain.open_op(&env).ok())
+        .filter_map(|cbor| decode_inner_op(&cbor).ok())
+        .filter_map(|inner| match inner {
+            InnerOp::KeyEnvelope(p)
+                if p.stream_id == META_STREAM
+                    && p.recipient == Recipient::Device(b_id)
+                    && p.epoch >= transition_epoch =>
+            {
+                Some(p.epoch)
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(
+        served_at_or_above.is_empty(),
+        "the revoked device was handed vault-meta keys at {served_at_or_above:?}, at or \
+         above the epoch its own revocation's rotation was sealed under"
+    );
+}
+
 /// **`meta_epoch` sorts first, and that is the security component.**
 ///
 /// Two transitions succeed the same identity. The attacker's carries an
@@ -8733,7 +9810,10 @@ proptest::proptest! {
 proptest::proptest! {
     // Each case builds two engines and two databases and delivers up to 18
     // envelopes, so the case count is deliberately low.
-    #![proptest_config(proptest::prelude::ProptestConfig::with_cases(24))]
+    #![proptest_config(proptest::prelude::ProptestConfig {
+        rng_seed: sunrise_test_seed::proptest_rng_seed(),
+        ..proptest::prelude::ProptestConfig::with_cases(24)
+    })]
 
     /// `docs/05-sync/wire-protocol.md:447-453` calls the contiguous-prefix
     /// cursor "a correctness invariant": a `MAX(seq)` cursor "converts an
@@ -9850,7 +10930,10 @@ fn deterministic_routine_task_converges() {
 }
 
 proptest::proptest! {
-    #![proptest_config(proptest::prelude::ProptestConfig::with_cases(32))]
+    #![proptest_config(proptest::prelude::ProptestConfig {
+        rng_seed: sunrise_test_seed::proptest_rng_seed(),
+        ..proptest::prelude::ProptestConfig::with_cases(32)
+    })]
 
     /// Two mutually-trusting engines run random interleaved command streams
     /// on their own DBs; exchanging ALL envelopes both ways (with reordering

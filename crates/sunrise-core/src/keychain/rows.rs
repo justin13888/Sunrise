@@ -156,11 +156,21 @@ pub(super) fn insert_stream_key_row(
     now_ms: u64,
 ) -> rusqlite::Result<bool> {
     let mut adapter = RngAdapter(rng);
-    // `wrap_stream_key` can only fail on an AEAD size error, impossible for a
-    // 32-byte key.
-    let Ok(wrapped) = wrap_stream_key(vault_root, key, stream_id, epoch, &mut adapter) else {
-        return Ok(false);
-    };
+    // A failed wrap is an error, not `Ok(false)`.
+    //
+    // `wrap_stream_key` can only fail on an AEAD size error, which a 32-byte
+    // key cannot produce — but `false` is this function's way of saying **"the
+    // row was not new"**, i.e. "we already had this key", and it is returned on
+    // the ordinary idempotent-reinsert path too, so no caller could tell the
+    // two apart. Each of the three read it the wrong way:
+    // `absorb_stream_key` skipped the cache update *and* told its caller not to
+    // drain `deferred_ops`, dropping a key that had just arrived in a
+    // `key_envelope` and expiring every op it would have opened;
+    // `mint_epoch` discarded the value entirely and returned a key that was
+    // never persisted, sealing ops under something that vanishes at next open;
+    // `create` and `adopt_legacy_vault` silently failed to import.
+    let wrapped = wrap_stream_key(vault_root, key, stream_id, epoch, &mut adapter)
+        .map_err(|_| super::sqlite_from(KeychainError::WrapFailed("a stream key")))?;
     let key_id = stream_key_id(key);
     tx.execute(
         "INSERT OR IGNORE INTO stream_keys
@@ -264,6 +274,12 @@ pub(super) fn load_account_identity_row(
             // loader is a `CorruptRow`, because every other one names something
             // the vault cannot work without.
             minted_by_device_id: mb.as_deref().and_then(to16),
+            // **A documented fail-open.** A negative `created_at_ms` reads as
+            // `0`, and that value is carried into field 6 of the recovery blob
+            // and into every successor identity across a rotation. It stays a
+            // clamp because the field is descriptive — nothing keys, sorts or
+            // verifies on it — and `0` is visibly wrong where a refusal would be
+            // a vault that will not open.
             created_at_ms: u64::try_from(created_at_ms).unwrap_or(0),
         })
     })

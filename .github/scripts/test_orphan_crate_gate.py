@@ -5,7 +5,7 @@ Why this file exists
 --------------------
 
 The gate walks a dependency graph and prints a number —
-"20/23 crates reachable from a shipping artifact" — which
+"20/24 crates reachable from a shipping artifact" — which
 `docs/implementation/overview.md` cites. Nothing checked the walk. If an
 edge stopped being followed, or a root stopped being a root, the number
 would come out smaller and the gate would still print OK, because the only

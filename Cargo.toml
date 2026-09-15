@@ -194,6 +194,7 @@ sunrise-auth = { path = "crates/sunrise-auth", version = "0.1.0" }
 sunrise-cbor = { path = "crates/sunrise-cbor", version = "0.1.0" }
 sunrise-crypto = { path = "crates/sunrise-crypto", version = "0.1.0" }
 sunrise-crypto-test-vectors = { path = "crates/sunrise-crypto-test-vectors", version = "0.1.0" }
+sunrise-test-seed = { path = "crates/sunrise-test-seed", version = "0.1.0" }
 sunrise-domain = { path = "crates/sunrise-domain", version = "0.1.0" }
 sunrise-storage = { path = "crates/sunrise-storage", version = "0.1.0" }
 sunrise-wire-protocol = { path = "crates/sunrise-wire-protocol", version = "0.1.0" }

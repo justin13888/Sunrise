@@ -9,6 +9,11 @@
 //! cannot be opened as its DH blob and neither can be opened against another
 //! device's id. Stream keys are wrapped by `sunrise_crypto::wrap_stream_key`
 //! instead and so live in [`super::rows`] with the row that stores them.
+//!
+//! The rule has one secret per domain, and that is checked rather than assumed:
+//! `each_wrapped_secret_has_its_own_domain` below asserts every prefix in this
+//! file is distinct, so adding a fifth wrapped secret that reuses a fourth's
+//! AAD fails the build's tests rather than shipping.
 
 use super::rows::AccountIdentityRow;
 use super::{Identity, IdentitySigningKey, KeychainError};
@@ -24,8 +29,25 @@ use zeroize::Zeroize;
 const LOCAL_IDENTITY_AAD_PREFIX: &[u8] = b"sunrise.local_identity.v1";
 /// AAD prefix binding the wrapped device DH secret to its device id.
 const LOCAL_DH_AAD_PREFIX: &[u8] = b"sunrise.local_identity.dh.v1";
-/// AAD prefix binding the wrapped identity secrets to the identity id.
-const IDENTITY_AAD_PREFIX: &[u8] = b"sunrise.local_identity.identity.v1";
+/// AAD prefix binding the wrapped identity **signing** secret (`ID_S_priv`) to
+/// the identity id.
+///
+/// `sign.v2`, not `v1`. One prefix covered both halves of the identity until
+/// this constant existed, which is the rule at the top of this module broken in
+/// the one place it matters most: `ID_S_priv` signs for the account and
+/// `ID_D_priv` unwraps for it, they are different capabilities, and a single
+/// AAD made the two blobs interchangeable to the AEAD. A storage bug, a swapped
+/// `UPDATE`, or a hostile write that exchanged the two columns produced two
+/// blobs that both opened. The `v2` suffix moves with the split so a blob
+/// written under the shared domain cannot be opened by this build at all.
+const IDENTITY_SIGNING_AAD_PREFIX: &[u8] = b"sunrise.local_identity.identity.sign.v2";
+/// AAD prefix binding the wrapped identity **DH** secret (`ID_D_priv`) to the
+/// identity id.
+///
+/// Distinct from [`LOCAL_DH_AAD_PREFIX`], which binds a *device*'s DH seed:
+/// these are two different keys with two different owners and neither blob may
+/// open under the other's domain.
+const IDENTITY_DH_AAD_PREFIX: &[u8] = b"sunrise.local_identity.identity.dh.v2";
 /// Length of a wrapped 32-byte secret: nonce (24) + ciphertext (32) + tag (16).
 const WRAPPED_SECRET_LEN: usize = AEAD_NONCE_LEN + 32 + 16;
 
@@ -37,8 +59,12 @@ pub(super) fn device_dh_aad(device_id: &[u8; 16]) -> Vec<u8> {
     prefixed_aad(LOCAL_DH_AAD_PREFIX, device_id)
 }
 
-fn identity_aad(identity_id: &[u8; 16]) -> Vec<u8> {
-    prefixed_aad(IDENTITY_AAD_PREFIX, identity_id)
+fn identity_signing_aad(identity_id: &[u8; 16]) -> Vec<u8> {
+    prefixed_aad(IDENTITY_SIGNING_AAD_PREFIX, identity_id)
+}
+
+fn identity_dh_aad(identity_id: &[u8; 16]) -> Vec<u8> {
+    prefixed_aad(IDENTITY_DH_AAD_PREFIX, identity_id)
 }
 
 fn prefixed_aad(prefix: &[u8], id: &[u8; 16]) -> Vec<u8> {
@@ -99,12 +125,17 @@ pub(super) fn wrap_device_secrets(
     (wrapped_signing, wrapped_dh)
 }
 
+/// Wrap the account identity's two secret halves, **each under its own AAD**.
+///
+/// `(id_s_priv_wrapped, id_d_priv_wrapped)`, the two columns of the `identity`
+/// row. The AADs differ because the secrets differ: see
+/// [`IDENTITY_SIGNING_AAD_PREFIX`].
 pub(super) fn wrap_identity(
     vault_root: &VaultRootKey,
     identity: &Identity,
     rng: &dyn Rng,
 ) -> (Vec<u8>, Vec<u8>) {
-    let aad = identity_aad(&identity.identity_id);
+    let id = identity.identity_id;
     // An empty blob when the secret is not here, on the same rule and for the
     // same reason as `ID_D_priv` below. Since `#105` a device admitted by
     // pairing holds `ID_S_pub` and nothing else, so its `identity` row has to
@@ -113,7 +144,7 @@ pub(super) fn wrap_identity(
     let wrapped_s = match identity.signing {
         IdentitySigningKey::Held(ref kp) => {
             let mut s = kp.secret_bytes();
-            let w = wrap_secret(vault_root, &s, &aad, rng);
+            let w = wrap_secret(vault_root, &s, &identity_signing_aad(&id), rng);
             s.zeroize();
             w
         }
@@ -126,7 +157,7 @@ pub(super) fn wrap_identity(
     let wrapped_d = match identity.dh_secret.as_ref() {
         Some(dh) => {
             let mut d = dh.secret_bytes();
-            let w = wrap_secret(vault_root, &d, &aad, rng);
+            let w = wrap_secret(vault_root, &d, &identity_dh_aad(&id), rng);
             d.zeroize();
             w
         }
@@ -151,7 +182,6 @@ pub(super) fn unwrap_identity(
     row: &AccountIdentityRow,
     this_device: Option<&[u8; 16]>,
 ) -> Result<Identity, KeychainError> {
-    let aad = identity_aad(&row.identity_id);
     // An empty `id_s_priv_wrapped` is a device admitted by pairing: it holds
     // `ID_S_pub` and cannot issue a `DeviceCert` for anything (`#105`). The
     // column is the at-rest half of what `IdentitySigningKey` is at runtime,
@@ -160,7 +190,11 @@ pub(super) fn unwrap_identity(
     let signing = if row.id_s_priv_wrapped.is_empty() {
         IdentitySigningKey::PublicOnly(row.id_s_pub)
     } else {
-        let mut s = unwrap_secret(vault_root, &row.id_s_priv_wrapped, &aad)?;
+        let mut s = unwrap_secret(
+            vault_root,
+            &row.id_s_priv_wrapped,
+            &identity_signing_aad(&row.identity_id),
+        )?;
         let kp = IdentitySigningKeyPair::from_secret_bytes(&s);
         s.zeroize();
         IdentitySigningKey::Held(kp)
@@ -172,7 +206,11 @@ pub(super) fn unwrap_identity(
     let dh_secret = if row.id_d_priv_wrapped.is_empty() || !minted_here {
         None
     } else {
-        let mut d = unwrap_secret(vault_root, &row.id_d_priv_wrapped, &aad)?;
+        let mut d = unwrap_secret(
+            vault_root,
+            &row.id_d_priv_wrapped,
+            &identity_dh_aad(&row.identity_id),
+        )?;
         let dh = IdentityDhKeyPair::from_secret_bytes(d);
         d.zeroize();
         // Only checkable when the secret is here. On a paired device the
@@ -200,4 +238,126 @@ pub(super) fn unwrap_identity(
         dh_secret,
         created_at_ms: row.created_at_ms,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sunrise_crypto::VaultRootKey;
+
+    /// A deterministic stand-in for the injected RNG. The nonce's *value* is
+    /// irrelevant to every assertion here — what is under test is the AAD — and
+    /// a fixed one keeps the failure message stable.
+    #[derive(Debug)]
+    struct FixedRng(u8);
+
+    impl Rng for FixedRng {
+        fn fill_bytes(&self, dest: &mut [u8]) {
+            dest.fill(self.0);
+        }
+    }
+
+    fn root() -> VaultRootKey {
+        VaultRootKey::from_bytes([0x5au8; 32])
+    }
+
+    const ID: [u8; 16] = [0x11; 16];
+    const DEVICE: [u8; 16] = [0x11; 16];
+
+    /// The rule this module's header states, asserted rather than described.
+    ///
+    /// `device_id` and `identity_id` are both 16 bytes, so the id half of the
+    /// AAD cannot separate a device secret from an identity secret — only the
+    /// prefix can. Deliberately compares the *whole* AAD at one shared id to
+    /// make that concrete.
+    #[test]
+    fn each_wrapped_secret_has_its_own_domain() {
+        let aads = [
+            device_aad(&DEVICE),
+            device_dh_aad(&DEVICE),
+            identity_signing_aad(&ID),
+            identity_dh_aad(&ID),
+        ];
+        for (i, a) in aads.iter().enumerate() {
+            for (j, b) in aads.iter().enumerate() {
+                if i != j {
+                    assert_ne!(a, b, "AAD {i} and AAD {j} share a domain");
+                }
+            }
+        }
+    }
+
+    /// `ID_S_priv` and `ID_D_priv` were wrapped under one AAD, so either blob
+    /// opened under the other's domain. This is the finding, stated as the
+    /// property that must hold: a blob wrapped for one role does not open as
+    /// the other.
+    ///
+    /// Checked at the wrap layer rather than through `unwrap_identity`, because
+    /// `unwrap_identity` has a second guard — it re-derives `identity_id` from
+    /// the signing key it recovered — which would refuse a swap for a reason
+    /// that has nothing to do with the AAD and would go on passing with this
+    /// fix reverted.
+    #[test]
+    fn an_identity_blob_does_not_open_under_the_other_half_s_domain() {
+        let vault_root = root();
+        let rng = FixedRng(7);
+        let signing = IdentitySigningKeyPair::from_secret_bytes(&[0x31u8; 32]);
+        let dh = IdentityDhKeyPair::from_secret_bytes([0x32u8; 32]);
+        let identity = Identity {
+            identity_id: ID,
+            dh_pub: dh.public_bytes(),
+            dh_secret: Some(dh),
+            // `Held`, because this asserts on the wrapped blob and a
+            // `PublicOnly` identity wraps nothing to assert on. The optional
+            // arm arrived with `#105`; the domain split it is threaded through
+            // is the finding this test pins.
+            signing: IdentitySigningKey::Held(signing),
+            created_at_ms: 0,
+        };
+        let (wrapped_s, wrapped_d) = wrap_identity(&vault_root, &identity, &rng);
+
+        // Each opens under its own domain.
+        assert_eq!(
+            unwrap_secret(&vault_root, &wrapped_s, &identity_signing_aad(&ID)).expect("sign opens"),
+            [0x31u8; 32]
+        );
+        assert_eq!(
+            unwrap_secret(&vault_root, &wrapped_d, &identity_dh_aad(&ID)).expect("dh opens"),
+            [0x32u8; 32]
+        );
+
+        // Neither opens under the other's.
+        assert!(
+            matches!(
+                unwrap_secret(&vault_root, &wrapped_s, &identity_dh_aad(&ID)),
+                Err(KeychainError::VaultRootMismatch)
+            ),
+            "ID_S_priv opened as ID_D_priv: the two share an AAD"
+        );
+        assert!(
+            matches!(
+                unwrap_secret(&vault_root, &wrapped_d, &identity_signing_aad(&ID)),
+                Err(KeychainError::VaultRootMismatch)
+            ),
+            "ID_D_priv opened as ID_S_priv: the two share an AAD"
+        );
+    }
+
+    /// The same separation across the device/identity line: an identity secret
+    /// must not open under a device's domain even when the two ids collide,
+    /// which they can, because both are 16 opaque bytes from different KDFs.
+    #[test]
+    fn an_identity_blob_does_not_open_under_a_device_domain() {
+        let vault_root = root();
+        let rng = FixedRng(9);
+        let wrapped = wrap_secret(&vault_root, &[0x41u8; 32], &identity_signing_aad(&ID), &rng);
+        assert!(matches!(
+            unwrap_secret(&vault_root, &wrapped, &device_aad(&DEVICE)),
+            Err(KeychainError::VaultRootMismatch)
+        ));
+        assert!(matches!(
+            unwrap_secret(&vault_root, &wrapped, &device_dh_aad(&DEVICE)),
+            Err(KeychainError::VaultRootMismatch)
+        ));
+    }
 }

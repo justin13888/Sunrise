@@ -96,11 +96,27 @@ DeviceCertBody = {
 }
 
 DeviceCert = {
-    body: DeviceCertBody,
-    sig:  bstr .size 64,         ; Ed25519_sign(ID_S_priv,
-                                  ;   "sunrise.device_cert.v1" || BLAKE3(canonical_cbor(body), 32))
+    1: bstr,                     ; body_bytes = the encoded DeviceCertBody
+    2: bstr .size 64,            ; Ed25519_sign(ID_S_priv,
+                                  ;   "sunrise.device_cert.v1" || BLAKE3(body_bytes, 32))
 }
 ```
+
+**The body travels as a byte string, not as a nested map, and the signature
+covers those bytes.** A verifier MUST hash the `body_bytes` it received. It MUST
+NOT parse the body and re-encode it to reconstruct the signature input: any
+asymmetry between a decoder and an encoder — key order, non-minimal integers, an
+unknown field dropped on parse — is otherwise a verification gap, because two
+different byte strings then satisfy one signature while `roster_digest` and the
+`devices.cert_blob` column continue to treat them as different certs. This is
+the same construction COSE uses for its protected header.
+
+A reader MUST refuse trailing bytes both after the outer map and inside
+`body_bytes`, so that "these bytes" and "this cert" name the same thing.
+
+Canonicity of the body's interior is deliberately **not** enforced, here or
+anywhere else in the format. It no longer needs to be: a non-canonical body is
+simply a different byte string, signed on its own merits or not at all.
 
 Verification of a device's authority to act as part of an identity requires:
 

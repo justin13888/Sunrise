@@ -20,10 +20,14 @@
 //! ## Determinism
 //!
 //! All random decisions are drawn from a seeded `rand_chacha` `ChaCha20` RNG.
-//! The seed comes from the `SUNRISE_FUZZ_SEED` environment variable (see
-//! [`seed_from_env`]) or an explicit constructor argument
-//! ([`Toxic::with_seed`]). No `thread_rng` is used (it is banned by
-//! `clippy.toml`), so a run is exactly reproducible from its seed.
+//! The seed comes from the `SUNRISE_FUZZ_SEED` environment variable or an
+//! explicit constructor argument ([`Toxic::with_seed`]). No `thread_rng` is
+//! used (it is banned by `clippy.toml`), so a run is exactly reproducible from
+//! its seed.
+//!
+//! [`seed_from_env`] and [`DEFAULT_FUZZ_SEED`] are re-exports from
+//! [`sunrise_test_seed`], which is the workspace's single reader of that
+//! variable — the property tests draw from the same one.
 
 use std::fmt;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -36,27 +40,12 @@ use rand_chacha::ChaCha20Rng;
 use rand_core::SeedableRng;
 use sunrise_sync::transport::{Transport, TransportError};
 
-/// Default RNG seed used when `SUNRISE_FUZZ_SEED` is unset and no explicit seed
-/// is supplied. Fixed so the harness is reproducible out of the box.
-pub const DEFAULT_FUZZ_SEED: u64 = 0x5352_5f43_4841_4f53; // "SR_CHAOS"
-
-/// Resolve the RNG seed from the `SUNRISE_FUZZ_SEED` environment variable.
-///
-/// Per `docs/10-cross-cutting/testing.md`, the seed convention is hex, but a
-/// plain decimal integer is also accepted. A leading `0x`/`0X` forces hex.
-/// Returns `None` when the variable is unset or unparseable.
-#[must_use]
-pub fn seed_from_env() -> Option<u64> {
-    let raw = std::env::var("SUNRISE_FUZZ_SEED").ok()?;
-    let t = raw.trim();
-    if let Some(hex) = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
-        u64::from_str_radix(hex, 16).ok()
-    } else {
-        t.parse::<u64>()
-            .ok()
-            .or_else(|| u64::from_str_radix(t, 16).ok())
-    }
-}
+// The seed convention itself lives in `sunrise-test-seed`, which is the one
+// reader in the workspace: the property tests plumb the same resolved value
+// into `ProptestConfig::rng_seed` (#119). Re-exported rather than moved out of
+// sight, because `chaos.rs` and `docs/10-cross-cutting/testing.md` both name
+// these two symbols on this path.
+pub use sunrise_test_seed::{seed_from_env, DEFAULT_FUZZ_SEED};
 
 /// Static configuration for a [`Toxic`] wrapper.
 ///
@@ -214,6 +203,9 @@ impl<T: Transport> Toxic<T> {
     #[must_use]
     pub fn new(inner: T, config: ToxicConfig) -> (Self, FaultHandle) {
         let seed = seed_from_env().unwrap_or(DEFAULT_FUZZ_SEED);
+        // The same line the property tests print, so one grep over a CI log
+        // finds the reproduction for either half of the suite.
+        sunrise_test_seed::announce("chaos", seed);
         Self::with_seed(inner, config, seed)
     }
 
@@ -353,19 +345,6 @@ impl<T: Transport> Transport for Toxic<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn seed_from_env_parses_decimal_and_hex() {
-        // These run in-process; guard against parallel env races by scoping.
-        std::env::set_var("SUNRISE_FUZZ_SEED", "42");
-        assert_eq!(seed_from_env(), Some(42));
-        std::env::set_var("SUNRISE_FUZZ_SEED", "0xff");
-        assert_eq!(seed_from_env(), Some(255));
-        std::env::set_var("SUNRISE_FUZZ_SEED", "deadbeef");
-        assert_eq!(seed_from_env(), Some(0xdead_beef));
-        std::env::remove_var("SUNRISE_FUZZ_SEED");
-        assert_eq!(seed_from_env(), None);
-    }
 
     #[test]
     fn probabilities_clamp() {

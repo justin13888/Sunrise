@@ -4,20 +4,51 @@
 //!
 //! ```cddl
 //! DeviceCert = {
-//!     body: {
-//!         1: uint,                     ; v (= 1)
-//!         2: bstr .size 16,            ; device_id
-//!         3: bstr .size 32,            ; D_S_pub
-//!         4: bstr .size 32,            ; D_D_pub
-//!         5: bstr .size 16,            ; identity_id_bytes
-//!         6: uint,                     ; created_at (ms since epoch)
-//!         7: tstr .size (1..64),       ; nickname (utf-8)
-//!         8: tstr,                     ; platform
-//!     },
-//!     sig: bstr .size 64               ; Ed25519_sign(ID_S_priv,
-//!                                      ;   "sunrise.device_cert.v1" || BLAKE3(canonical_cbor(body), 32))
+//!     1: bstr,                         ; body_bytes: the encoded DeviceCertBody
+//!     2: bstr .size 64                 ; sig = Ed25519_sign(ID_S_priv,
+//!                                      ;   "sunrise.device_cert.v1" || BLAKE3(body_bytes, 32))
+//! }
+//!
+//! DeviceCertBody = {
+//!     1: uint,                         ; v (= 1)
+//!     2: bstr .size 16,                ; device_id
+//!     3: bstr .size 32,                ; D_S_pub
+//!     4: bstr .size 32,                ; D_D_pub
+//!     5: bstr .size 16,                ; identity_id_bytes
+//!     6: uint,                         ; created_at (ms since epoch)
+//!     7: tstr .size (1..64),           ; nickname (utf-8)
+//!     8: tstr,                         ; platform
 //! }
 //! ```
+//!
+//! # The body travels as a byte string, and the signature covers those bytes
+//!
+//! `body_bytes` is an opaque `bstr` in the outer map rather than a nested CBOR
+//! map, and that is the whole of what makes verification sound here.
+//!
+//! The body used to be a nested map, so [`DeviceCert::from_cbor`] parsed it
+//! into [`DeviceCertInner`] and the parsed struct was all that survived.
+//! [`DeviceCert::verify`] then re-encoded that struct and checked the signature
+//! over **the re-encoding**, not over the bytes that arrived. Any asymmetry
+//! between parse and re-encode was therefore a verification gap: a body whose
+//! keys arrived in a different order, or with a non-minimal integer, decoded
+//! identically and re-encoded canonically, so it verified under a signature
+//! taken over different bytes. Two distinct blobs, one signature, both
+//! "valid" — and `roster_digest` hashes the *blob*, so the two were not
+//! interchangeable downstream even though verification said they were.
+//!
+//! Refusing trailing bytes closed one route into that. It did not close the
+//! class, because the class is "the verifier never saw the input". Carrying the
+//! body as a `bstr` removes the re-encoding entirely: there is exactly one byte
+//! sequence, it is what was signed, it is what is hashed, and it is what
+//! `to_cbor` writes back out. The same construction COSE uses for its protected
+//! header, for the same reason.
+//!
+//! Canonicity of the body's *interior* is still not enforced — the workspace
+//! does not enforce it anywhere (see the note in
+//! `docs/03-crypto/data-encryption-format.md`) — and no longer needs to be. A
+//! non-canonical body is simply a different byte string, signed or not signed
+//! on its own merits.
 
 use crate::identity::identity_id_from_pub;
 use crate::keys::{verify_ed25519, IdentitySigningKeyPair};
@@ -82,14 +113,25 @@ pub struct DeviceCertInner {
     pub platform: String,
 }
 
-/// Outer device cert: inner body + Ed25519 signature.
+/// Outer device cert: the encoded body, its parse, and the Ed25519 signature.
+///
+/// Constructed only by [`DeviceCert::issue`] and [`DeviceCert::from_cbor`],
+/// which is what `body_bytes` being private enforces: the field is the one the
+/// signature covers, and a caller able to set `body` and `body_bytes`
+/// independently could build a cert whose parse says one thing and whose signed
+/// bytes say another.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceCert {
-    /// The inner body fields.
+    /// The body fields, as parsed from [`Self::body_bytes`].
+    ///
+    /// A convenience view. It is **not** what the signature covers, and it is
+    /// not re-encoded to check one: see this module's header.
     pub body: DeviceCertInner,
-    /// 64-byte Ed25519 signature over the domain prefix + BLAKE3 hash of the
-    /// canonical-CBOR-encoded body.
+    /// 64-byte Ed25519 signature over `DEVICE_CERT_DOMAIN || BLAKE3(body_bytes)`.
     pub sig: [u8; 64],
+    /// The exact bytes of the encoded body: what was signed, and — for a cert
+    /// that arrived from somewhere — what arrived.
+    body_bytes: Vec<u8>,
 }
 
 /// Errors produced by [`DeviceCert`] operations.
@@ -158,8 +200,20 @@ fn body_to_cbor(body: &DeviceCertInner) -> Result<Vec<u8>, DeviceCertError> {
 }
 
 fn body_from_cbor(bytes: &[u8]) -> Result<DeviceCertInner, DeviceCertError> {
+    // Same rule the outer map follows, and now it matters one level deeper:
+    // `body_bytes` is a `bstr` of caller-chosen length, so a body with junk
+    // appended is signed junk rather than ignored junk. Refusing it keeps
+    // "these bytes" and "this body" the same thing on both sides of the
+    // signature.
+    let mut cursor = bytes;
     let value: Value =
-        ciborium::de::from_reader(bytes).map_err(|e| DeviceCertError::Cbor(e.to_string()))?;
+        ciborium::de::from_reader(&mut cursor).map_err(|e| DeviceCertError::Cbor(e.to_string()))?;
+    if !cursor.is_empty() {
+        return Err(DeviceCertError::Cbor(format!(
+            "{} trailing byte(s) after the device cert body",
+            cursor.len()
+        )));
+    }
     let map = match value {
         Value::Map(m) => m,
         _ => return Err(DeviceCertError::Cbor("body must be a map".into())),
@@ -231,13 +285,18 @@ fn body_from_cbor(bytes: &[u8]) -> Result<DeviceCertInner, DeviceCertError> {
     Ok(inner)
 }
 
-fn sig_input_bytes(body: &DeviceCertInner) -> Result<Vec<u8>, DeviceCertError> {
-    let body_cbor = body_to_cbor(body)?;
-    let body_hash = blake3::hash(&body_cbor);
+/// `DEVICE_CERT_DOMAIN || BLAKE3(body_bytes)`.
+///
+/// Takes the encoded body rather than the parsed one, and is infallible for
+/// that reason: there is nothing left to encode and so nothing left to fail.
+/// The old signature took `&DeviceCertInner` and encoded it here, which is
+/// precisely where the re-encoding entered verification.
+fn sig_input_bytes(body_bytes: &[u8]) -> Vec<u8> {
+    let body_hash = blake3::hash(body_bytes);
     let mut out = Vec::with_capacity(DEVICE_CERT_DOMAIN.len() + body_hash.as_bytes().len());
     out.extend_from_slice(DEVICE_CERT_DOMAIN);
     out.extend_from_slice(body_hash.as_bytes());
-    Ok(out)
+    out
 }
 
 impl DeviceCert {
@@ -249,9 +308,22 @@ impl DeviceCert {
         body: DeviceCertInner,
         identity_signing: &IdentitySigningKeyPair,
     ) -> Result<Self, DeviceCertError> {
-        let input = sig_input_bytes(&body)?;
-        let sig = identity_signing.sign(&input);
-        Ok(Self { body, sig })
+        let body_bytes = body_to_cbor(&body)?;
+        let sig = identity_signing.sign(&sig_input_bytes(&body_bytes));
+        Ok(Self {
+            body,
+            sig,
+            body_bytes,
+        })
+    }
+
+    /// The exact bytes the signature covers.
+    ///
+    /// For a cert from [`Self::from_cbor`] these are the bytes that arrived,
+    /// byte for byte, and not a re-encoding of the parse.
+    #[must_use]
+    pub fn body_bytes(&self) -> &[u8] {
+        &self.body_bytes
     }
 
     /// Verify the cert against the identity's `ID_S_pub`.
@@ -259,7 +331,7 @@ impl DeviceCert {
     /// # Errors
     /// Returns [`DeviceCertError::SigVerify`] on signature mismatch.
     pub fn verify(&self, id_s_pub: &[u8; 32]) -> Result<(), DeviceCertError> {
-        let input = sig_input_bytes(&self.body)?;
+        let input = sig_input_bytes(&self.body_bytes);
         if !verify_ed25519(id_s_pub, &input, &self.sig) {
             return Err(DeviceCertError::SigVerify);
         }
@@ -300,18 +372,21 @@ impl DeviceCert {
         Ok(())
     }
 
-    /// Encode to canonical CBOR `{ "body": ..., "sig": ... }` outer map.
+    /// Encode to canonical CBOR `{1: body_bytes, 2: sig}`.
     ///
-    /// Map keys are integer ids 1 (body), 2 (sig).
+    /// `body_bytes` is written **verbatim**, never re-encoded from
+    /// [`Self::body`]. That is what makes `from_cbor(to_cbor(c)) == c` byte-for-
+    /// byte for a cert that arrived from elsewhere, and it is why a relayed
+    /// cert still verifies after this crate has round-tripped it.
     ///
     /// # Errors
     /// CBOR encode failure.
     pub fn to_cbor(&self) -> Result<Vec<u8>, DeviceCertError> {
-        let body_cbor = body_to_cbor(&self.body)?;
-        let body_value: Value = ciborium::de::from_reader(body_cbor.as_slice())
-            .map_err(|e| DeviceCertError::Cbor(e.to_string()))?;
         let map = vec![
-            (Value::Integer(Integer::from(1)), body_value),
+            (
+                Value::Integer(Integer::from(1)),
+                Value::Bytes(self.body_bytes.clone()),
+            ),
             (
                 Value::Integer(Integer::from(2)),
                 Value::Bytes(self.sig.to_vec()),
@@ -348,7 +423,7 @@ impl DeviceCert {
             Value::Map(m) => m,
             _ => return Err(DeviceCertError::Cbor("device cert must be a map".into())),
         };
-        let mut body: Option<DeviceCertInner> = None;
+        let mut body_bytes: Option<Vec<u8>> = None;
         let mut sig: Option<[u8; 64]> = None;
         for (k, v) in map {
             let id = match k {
@@ -356,23 +431,10 @@ impl DeviceCert {
                 _ => return Err(DeviceCertError::Cbor("non-int key".into())),
             };
             match (id, v) {
-                (1, val) => {
-                    // Re-encoded only so `body_from_cbor` can read it: the
-                    // outer map has already been consumed into `Value`s, and
-                    // the body decoder takes bytes. This is **not** a
-                    // canonicity check — nothing here compares the re-encoding
-                    // against the bytes that arrived, so a body with unsorted
-                    // or non-minimal keys decodes exactly as a canonical one
-                    // does. The comment used to claim otherwise. Canonical CBOR
-                    // is unenforced across the whole inner-op surface (see the
-                    // note in `docs/03-crypto/data-encryption-format.md`), and
-                    // enforcing it here alone would reject certs this build's
-                    // own encoder emits.
-                    let mut buf = Vec::new();
-                    ciborium::ser::into_writer(&val, &mut buf)
-                        .map_err(|e| DeviceCertError::Cbor(e.to_string()))?;
-                    body = Some(body_from_cbor(&buf)?);
-                }
+                // The body arrives as a byte string and is kept as one. No
+                // re-encoding happens anywhere on this path, which is the point
+                // of the shape: `verify` hashes exactly what is captured here.
+                (1, Value::Bytes(b)) => body_bytes = Some(b),
                 (2, Value::Bytes(b)) if b.len() == 64 => {
                     let mut a = [0u8; 64];
                     a.copy_from_slice(&b);
@@ -384,9 +446,16 @@ impl DeviceCert {
                 _ => {}
             }
         }
+        let body_bytes = body_bytes.ok_or(DeviceCertError::BadField("body"))?;
+        // Parsed for the caller's convenience, and parsed *after* the bytes are
+        // captured. A parse failure is still a refusal: a cert whose body this
+        // build cannot read is not one it can act on, whatever its signature
+        // says.
+        let body = body_from_cbor(&body_bytes)?;
         Ok(Self {
-            body: body.ok_or(DeviceCertError::BadField("body"))?,
+            body,
             sig: sig.ok_or(DeviceCertError::BadField("sig"))?,
+            body_bytes,
         })
     }
 }
@@ -435,6 +504,138 @@ mod tests {
         let bytes = cert.to_cbor().unwrap();
         let back = DeviceCert::from_cbor(&bytes).unwrap();
         assert_eq!(back, cert);
+    }
+
+    /// The body map of [`fixture`] with its eight keys in **descending** id
+    /// order.
+    ///
+    /// Built from `Value::Map` directly rather than through `body_to_cbor`,
+    /// because the whole question is what happens to bytes this crate's encoder
+    /// would never emit. ciborium writes a `Value::Map`'s pairs in the order
+    /// given, so this is a well-formed, decodable, *non-canonical* encoding of
+    /// exactly the same eight fields.
+    fn body_cbor_with_keys_reversed() -> Vec<u8> {
+        let mut fields = body_fields();
+        fields.reverse();
+        encode_fields(fields)
+    }
+
+    /// The finding: a signature must cover the bytes that arrived, not a
+    /// re-encoding of what they parsed to.
+    ///
+    /// Two byte strings, same eight fields, different key order. They parse to
+    /// the same [`DeviceCertInner`] — asserted, because that is what made the
+    /// old code accept both — and only one of them is signed. Under the old
+    /// shape `verify` re-encoded the parse, so the re-ordered blob produced the
+    /// canonical body again and verified under a signature never taken over
+    /// it: one signature, two accepted blobs, and `roster_digest` hashes the
+    /// blob.
+    #[test]
+    fn a_body_that_was_not_the_one_signed_does_not_verify() {
+        let mut rng = ChaCha20Rng::seed_from_u64(7);
+        let identity = IdentitySigningKeyPair::generate(&mut rng);
+        let id_s_pub = identity.public_bytes();
+
+        let signed = DeviceCert::issue(fixture([1u8; 32]), &identity).expect("issue");
+        let reordered = body_cbor_with_keys_reversed();
+
+        // The premise: the two encodings are different bytes and the same
+        // eight fields. Without this the test below would prove nothing.
+        assert_ne!(
+            signed.body_bytes(),
+            reordered.as_slice(),
+            "the reordered body must be different bytes"
+        );
+        assert_eq!(
+            body_from_cbor(&reordered).expect("the reordered body decodes"),
+            signed.body,
+            "the reordered body must parse to the same fields"
+        );
+
+        // Splice the unsigned bytes in under the genuine signature.
+        let mut forged = outer_cbor(reordered, 64);
+        forged = replace_sig(&forged, &signed.sig);
+        let parsed = DeviceCert::from_cbor(&forged).expect("it is still a well-formed cert");
+        assert_eq!(parsed.body, signed.body, "and still the same fields");
+        assert!(
+            matches!(parsed.verify(&id_s_pub), Err(DeviceCertError::SigVerify)),
+            "a body the identity never signed must not verify"
+        );
+    }
+
+    /// `{1: body_bytes, 2: sig}` with the signature replaced.
+    fn replace_sig(outer: &[u8], sig: &[u8; 64]) -> Vec<u8> {
+        let value: Value = ciborium::de::from_reader(outer).expect("outer decodes");
+        let Value::Map(map) = value else {
+            panic!("the outer cert is a map")
+        };
+        let rebuilt: Vec<(Value, Value)> = map
+            .into_iter()
+            .map(|(k, v)| {
+                if k == Value::Integer(Integer::from(2)) {
+                    (k, Value::Bytes(sig.to_vec()))
+                } else {
+                    (k, v)
+                }
+            })
+            .collect();
+        let mut out = Vec::new();
+        ciborium::ser::into_writer(&Value::Map(rebuilt), &mut out).expect("outer re-encodes");
+        out
+    }
+
+    /// `to_cbor` writes the body verbatim, so a cert that arrived from
+    /// elsewhere survives a round trip through this crate byte for byte and
+    /// still verifies. Without this, relaying a cert would re-canonicalize it
+    /// and break a signature the relayer had just checked.
+    #[test]
+    fn a_round_trip_preserves_the_body_bytes_exactly() {
+        let mut rng = ChaCha20Rng::seed_from_u64(11);
+        let identity = IdentitySigningKeyPair::generate(&mut rng);
+        let cert = DeviceCert::issue(fixture([1u8; 32]), &identity).expect("issue");
+        let once = DeviceCert::from_cbor(&cert.to_cbor().unwrap()).unwrap();
+        let twice = DeviceCert::from_cbor(&once.to_cbor().unwrap()).unwrap();
+        assert_eq!(once.body_bytes(), cert.body_bytes());
+        assert_eq!(twice.body_bytes(), cert.body_bytes());
+        twice
+            .verify(&identity.public_bytes())
+            .expect("it still verifies after two round trips");
+    }
+
+    /// A tail inside the body byte string is signed junk, not ignored junk:
+    /// the outer `bstr` fixes its length, so `ciborium` would read the map and
+    /// stop. Refused, for the same reason the outer map refuses a tail.
+    #[test]
+    fn a_body_with_trailing_bytes_is_refused() {
+        let mut body = body_to_cbor(&fixture([1u8; 32])).expect("the fixture encodes");
+        body.extend_from_slice(b"\x00tail");
+        assert!(matches!(
+            DeviceCert::from_cbor(&outer_cbor(body, 64)),
+            Err(DeviceCertError::Cbor(_))
+        ));
+    }
+
+    /// The body must be a byte string. A nested map is the *old* shape, and a
+    /// build that silently accepted it would have re-introduced the
+    /// re-encoding path.
+    #[test]
+    fn a_body_that_is_not_a_byte_string_is_refused() {
+        let encoded = body_to_cbor(&fixture([1u8; 32])).expect("the fixture encodes");
+        let nested: Value =
+            ciborium::de::from_reader(encoded.as_slice()).expect("its own output decodes");
+        let map = vec![
+            (Value::Integer(Integer::from(1)), nested),
+            (
+                Value::Integer(Integer::from(2)),
+                Value::Bytes(vec![0xab; 64]),
+            ),
+        ];
+        let mut out = Vec::new();
+        ciborium::ser::into_writer(&Value::Map(map), &mut out).expect("outer map encodes");
+        assert!(matches!(
+            DeviceCert::from_cbor(&out),
+            Err(DeviceCertError::BadField("device cert outer"))
+        ));
     }
 
     /// A cert can verify and still be a lie about which identity it belongs
@@ -643,22 +844,26 @@ mod tests {
         ));
     }
 
-    /// The outer `{1: body, 2: sig}` map [`DeviceCert::to_cbor`] emits, with
-    /// the signature at `width` bytes instead of 64.
-    fn outer_cbor_with_sig_of(width: usize) -> Vec<u8> {
-        let encoded = body_to_cbor(&fixture([1u8; 32])).expect("the fixture encodes");
-        let body: Value =
-            ciborium::de::from_reader(encoded.as_slice()).expect("its own output decodes");
+    /// The outer `{1: body_bytes, 2: sig}` map [`DeviceCert::to_cbor`] emits,
+    /// with `body` as the body byte string and the signature at `width` bytes.
+    fn outer_cbor(body: Vec<u8>, sig_width: usize) -> Vec<u8> {
         let map = vec![
-            (Value::Integer(Integer::from(1)), body),
+            (Value::Integer(Integer::from(1)), Value::Bytes(body)),
             (
                 Value::Integer(Integer::from(2)),
-                Value::Bytes(vec![0xab; width]),
+                Value::Bytes(vec![0xab; sig_width]),
             ),
         ];
         let mut out = Vec::new();
         ciborium::ser::into_writer(&Value::Map(map), &mut out).expect("outer map encodes");
         out
+    }
+
+    fn outer_cbor_with_sig_of(width: usize) -> Vec<u8> {
+        outer_cbor(
+            body_to_cbor(&fixture([1u8; 32])).expect("the fixture encodes"),
+            width,
+        )
     }
 
     /// The fifth length guard, and the only one on a **public** entry point.

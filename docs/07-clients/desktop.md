@@ -423,16 +423,39 @@ none, because it is the SAS.
 
 ## Update channel
 
-**Specified, not built.** Sparkle-style signed updates over the direct channel,
-applied on next launch — a running session is never interrupted by an update.
-Channels: `stable`, `beta`. There is no Sparkle dependency in the project today
-and no update path of any kind.
+**Built, with one step left to the owner.** Sparkle, over the direct channel,
+applied on next launch — a running
+session is never interrupted by an update. Channels: `stable` and `beta`, with
+the beta channel behind a menu item the user turns on
+(*Sunrise ▸ Include Beta Updates*). The decision, and the trust argument that
+is the substance of it, is
+[ADR-0038](../11-adr/0038-macos-update-feed.md); the operator's half is
+[`releasing.md`](./releasing.md) §The update feed.
 
-What changed with [ADR-0031](../11-adr/0031-macos-distribution.md) is that this
-became *buildable*: Sparkle needs a stable download URL, a Developer ID
-signature and an appcast, and the first two now exist. It was not built as part
-of it. An installed copy still learns about a new version the way it did
-before, which is that it does not.
+How it fits together:
+
+- The app links Sparkle (`apps/apple/project.yml`, macOS target only) and reads
+  a signed `appcast.xml` published as an asset of the GitHub Release.
+- `release.yml` generates that feed from every published release and signs it,
+  and signs each `.dmg`, with an EdDSA key held as the
+  `SPARKLE_ED_PRIVATE_KEY` repository secret. A release is a prerelease — and
+  so lands on `beta` — exactly when `verify` says it is; there is no second
+  place that reads a version string.
+- **The EdDSA key is subordinate to the Developer ID certificate, not a second
+  co-equal trust root** — in *lifecycle*, which is the part that decides how it
+  is held. Sparkle authorises a change of EdDSA key with the app's Apple code
+  signature, so a Developer-ID-signed release rotates the key in-band with no
+  user action, while the certificate has no such in-band recovery. It is **not**
+  a claim that a stolen feed key is harmless: Sparkle accepts an update on
+  *either* credential, so whoever holds the key can ship code until a rotation
+  reaches a user. ADR-0038 has the mechanism, the source it is read from, and
+  the rotation procedure.
+
+**One thing is not done and only the repository owner can do it.** The key pair
+does not exist yet, so `SUPublicEDKey` is empty in the committed project file.
+Until it is filled in, the app starts no updater at all and both menu items are
+disabled with the reason attached — fail-closed, because an updater that cannot
+verify what it downloads is worse than none.
 
 ## Telemetry
 
