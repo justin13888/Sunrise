@@ -6,27 +6,40 @@ status: living
 
 Operator runbook for the `.dmg` half of a Sunrise release: the secrets it
 needs, how to produce each one, what the pipeline does with them, and how to
-check by hand that what came out is what a stranger's Mac will accept.
+check by hand that what came out is what a stranger's Mac will accept. The
+update feed every *installed* copy reads is here too, under
+[§The update feed](#the-update-feed), because it is signed by the same release
+and operated by the same person.
 
 Everything else about a release — the tag, the CLI tarballs, the container
 image, the notes — is `.github/workflows/release.yml` and needs nothing from
 you beyond pushing the tag.
+
+**iOS is a different runbook and does not exist yet.** The `ios-release` job
+uploads to App Store Connect and no-ops, visibly, until six further secrets and
+an App Store Connect app record exist.
+[ADR-0038](../11-adr/0039-ios-distribution.md) §Decision 5 is that list.
 
 **Why this shape:** [ADR-0031](../11-adr/0031-macos-distribution.md). The short
 version is that the app is not sandboxed
 ([`desktop.md`](./desktop.md) §Sandboxing), the Mac App Store requires the
 sandbox, and a self-hosted relay should not be somebody else's review decision.
 
-## The six secrets
+## The seven secrets
 
-All six are **repository secrets** (Settings → Secrets and variables → Actions
-→ Repository secrets). Only the repository owner can create them. Until all six
-exist, **every tag push fails** — in the `verify` job, with a message naming
-the ones that are missing, before anything is built and before the container
-image is pushed. That placement is deliberate twice over: the alternative to
-failing is an unsigned `.dmg` on the Releases page that nobody notices until a
-user tries to open it, and the alternative to failing *early* is a tag whose
-image reached GHCR and whose Release never appeared.
+All seven are **repository secrets** (Settings → Secrets and variables →
+Actions → Repository secrets). Only the repository owner can create them. Until
+all seven exist, **every tag push fails** — in the `verify` job, with a message
+naming the ones that are missing, before anything is built and before the
+container image is pushed. That placement is deliberate twice over: the
+alternative to failing is an unsigned `.dmg` on the Releases page that nobody
+notices until a user tries to open it, and the alternative to failing *early*
+is a tag whose image reached GHCR and whose Release never appeared.
+
+Two error messages, not one, and the split is on purpose: the first six are
+about the file a stranger downloads, and the seventh is about the feed every
+already-installed copy reads. Both are printed before the job exits, so one
+failed run tells you everything that is missing.
 
 | Secret | What it is | Used by |
 |---|---|---|
@@ -36,6 +49,7 @@ image reached GHCR and whose Release never appeared.
 | `APPLE_API_KEY_P8` | Base64 of the App Store Connect API key file, `AuthKey_<KEYID>.p8` | `xcrun notarytool --key` |
 | `APPLE_API_KEY_ID` | That key's id — the `<KEYID>` in the filename | `xcrun notarytool --key-id` |
 | `APPLE_API_ISSUER_ID` | The issuer UUID for the App Store Connect account | `xcrun notarytool --issuer` |
+| `SPARKLE_ED_PRIVATE_KEY` | The base64 EdDSA private key `generate_keys -x` exports — the key that signs the update feed and every `.dmg` in it | `sign_update --ed-key-file` in the `macos-app` and `appcast` jobs |
 
 `MACOS_TEAM_ID` is not confidential — a team id is embedded in every signature
 this pipeline produces and is readable from any released build. It is a secret
@@ -123,6 +137,81 @@ xcrun notarytool history --key AuthKey_<KEYID>.p8 --key-id <KEYID> --issuer <ISS
 An empty history is a pass. An authentication error means one of the three is
 wrong, and the message does not say which.
 
+### `SPARKLE_ED_PRIVATE_KEY`
+
+This is the key that signs the update feed and every disk image listed in it.
+[ADR-0038](../11-adr/0038-macos-update-feed.md) is what it is for and why it is
+*subordinate* to the Developer ID certificate in lifecycle rather than a second,
+co-equal trust root. Read it before treating this as just another secret, and
+read the paragraph in its Context headed "what this does not buy" before
+treating subordinate as meaning harmless: Sparkle accepts an update on **either**
+credential, so whoever holds this key can ship code to every installed Mac.
+
+It is created once, and creating it has **two halves that must land together**:
+the private key becomes the secret, and the public key is committed. A release
+with one and not the other fails — deliberately, in both directions.
+
+1. Get Sparkle's tools. The release workflow pins the version and its SHA-256
+   in `.github/scripts/sparkle-tools.sh`; use the same one, and check the pin
+   in `apps/apple/project.yml` agrees:
+
+   ```
+   .github/scripts/sparkle-tools.sh /tmp/sparkle
+   ```
+
+2. Generate the pair. The private key goes into your login keychain and the
+   public key is printed:
+
+   ```
+   /tmp/sparkle/bin/generate_keys
+   ```
+
+   If a key already exists in your keychain this prints that one rather than
+   replacing it, which is what you want: one key serves every app.
+
+3. Put the printed public key into `apps/apple/project.yml`, as the macOS
+   target's `SUPublicEDKey`. It is not confidential — it is in every shipped
+   bundle — and it belongs in the tree so that what a build trusts is
+   reviewable from a checkout rather than injected by CI. Commit it.
+
+4. Export the private key and put it in `SPARKLE_ED_PRIVATE_KEY`:
+
+   ```
+   /tmp/sparkle/bin/generate_keys -x sparkle-private.key
+   cat sparkle-private.key | pbcopy
+   ```
+
+   The file holds one base64 line. Delete it afterwards; the copy in your
+   keychain is the one you keep.
+
+**Do not lose it, and do not put it on the machine that hosts the downloads.**
+Sparkle's own guidance is the second half of that sentence, and here the
+"machine that hosts the downloads" is GitHub — which is why the key lives in a
+repository secret read by two jobs and nowhere else, and why it is written to a
+`umask 077` file for the width of one `sign_update` call and deleted
+immediately.
+
+#### Rotating it
+
+Rotation is a release, not an incident procedure, and it works because the
+Developer ID certificate vouches for the change:
+
+1. `generate_keys` a new pair on a clean keychain (or another Mac).
+2. Put the new public key in `project.yml`'s `SUPublicEDKey` and commit.
+3. Replace `SPARKLE_ED_PRIVATE_KEY` with the new private key.
+4. Tag a release.
+
+Installed copies accept the new key because the `.dmg` carrying it is Developer
+ID signed with the **unchanged** certificate. **Never change the certificate
+and the key in the same release** — Sparkle allows changing one or the other,
+not both, and a release that changes both is a release no installed copy can
+verify. A certificate renewal and a key rotation are two tags.
+
+Rotation does not un-sign anything the old key already signed. Someone who took
+a copy can still present an old, genuinely signed feed to a client that has not
+seen the rotation; what they cannot do is get code installed, because the app's
+code-signature check is a separate gate they do not hold.
+
 ## What the pipeline does with them
 
 `.github/workflows/release.yml`, job `macos-app`, on `macos-26`:
@@ -183,9 +272,15 @@ wrong, and the message does not say which.
    the first is the one that makes an offline first launch work — see ADR-0031.
 6. **Verify**, with the same commands listed below, so a signature that does
    not satisfy Gatekeeper fails the release rather than the user.
-7. **Checksum and upload.** `sunrise-<version>-aarch64-apple-darwin.dmg` plus a
-   `.sha256`, attached to the Release by the `release` job and listed in its
-   notes.
+7. **Checksum and update-feed signature.**
+   `sunrise-<version>-aarch64-apple-darwin.dmg`, a `.sha256`, and an
+   `appcast-item.json` holding the `.dmg`'s EdDSA signature and the bundle's
+   own version numbers. All three are computed on the machine that produced the
+   file and **after stapling**, because stapling rewrites the `.dmg` and a
+   signature taken before it would describe something nobody downloads. The
+   `release` job attaches them.
+8. **The update feed**, in the `appcast` job, after the Release exists. See
+   below.
 
 ### One setting that is overridden rather than committed
 
@@ -203,6 +298,53 @@ restricted and the DYLD environment variables are ignored — so a difference
 there was one nobody could see until the notary service or a user's crash
 report reported it. It is unrelated to the App Sandbox, which stays off; see
 [`desktop.md`](./desktop.md) §Sandboxing.
+
+## The update feed
+
+[ADR-0038](../11-adr/0038-macos-update-feed.md) is the decision. Operationally
+there are four things to know.
+
+**Where it lives.** `appcast.xml` is an asset of the GitHub Release. The app
+fetches it through
+`https://github.com/justin13888/Sunrise/releases/latest/download/appcast.xml`,
+which is the `SUFeedURL` in `project.yml`.
+
+**Why it is uploaded twice on a prerelease.** GitHub's `latest` alias skips
+prereleases. A stable tag becomes `latest` and carries the fresh feed; a
+prerelease does not move the alias, so the `appcast` job also writes the
+regenerated feed onto the current stable release. Without that second upload a
+beta subscriber would never be offered the beta, because the file their Mac
+fetches would predate it.
+
+**Before the first stable release there is no feed.** The alias resolves to
+nothing, and the workflow says so with a warning rather than passing silently.
+Nothing is lost — there are no installed copies yet — and cutting a stable
+release closes it.
+
+**How to check one by hand.** Download the feed and verify its embedded
+signature and one enclosure:
+
+```
+curl -fL -o appcast.xml \
+  https://github.com/justin13888/Sunrise/releases/latest/download/appcast.xml
+/tmp/sparkle/bin/sign_update --verify appcast.xml
+```
+
+`sign_update --verify` on a feed reads the signature embedded at the end of the
+file and needs no second argument. For an individual download, take the
+`sparkle:edSignature` out of the item's `<enclosure>` and check it against the
+file:
+
+```
+/tmp/sparkle/bin/sign_update --verify \
+  sunrise-<version>-aarch64-apple-darwin.dmg '<the edSignature value>'
+```
+
+Both use the private key in your keychain to derive the public key, so they are
+checking the feed against *your* key — which is the question an operator has,
+and not the same as the question the app asks, which is whether it matches the
+`SUPublicEDKey` in the bundle. Those agree when step 3 of
+[`SPARKLE_ED_PRIVATE_KEY`](#sparkle_ed_private_key) was done.
 
 ## Verifying a release by hand
 
@@ -280,8 +422,16 @@ and `release` jobs skip.
 What it does **not** exercise, and cannot: the keychain import, `xcodebuild
 -exportArchive` (there is no export method that produces an unsigned Developer
 ID export, so the dry run lifts the `.app` straight out of the archive
-instead), both notarization submissions, and the stapling. Those four steps are
-the ones the secrets exist for.
+instead), both notarization submissions, the stapling, and the update feed —
+the `.dmg`'s EdDSA signature, and the whole `appcast` job, which needs a
+Release to describe and so never runs on a dispatch. Those are the steps the
+secrets exist for.
+
+The appcast *generator* is exercised on every pull request instead, by
+`ci.yml`'s `appcast-contract` job over `.github/scripts/test_appcast.py`. What
+that asserts is the part a dry run could not reach anyway: which release lands
+on which channel, and whether a signature in hand describes the bytes being
+advertised.
 
 The artifact it produces will not open on a Mac after a download. That is the
 correct behaviour and it is why the file name says `UNSIGNED`.
@@ -300,11 +450,22 @@ correct behaviour and it is why the file name says `UNSIGNED`.
 | `stapler` fails with `Error 65` | The submission is notarized but Apple's ticket has not propagated yet. It is a retry, not a rebuild. |
 | A tag pushed an image to GHCR but created no Release | `macos-app` (or `binaries`) failed after `image` had already pushed. `release` needs all three, so it did not run — which is the intended failure mode: no Release is better than one advertising an artifact that does not exist. Fix the cause and re-run the failed jobs; `release` runs on the same tag. The preflight on `verify` exists so that the commonest reason for this — no signing secrets — cannot reach that state at all. |
 | A published Release has the tarballs but no `.dmg` | Not reachable: `release` needs `macos-app` and uploads `dist/*.dmg`. A Release like that predates this pipeline. |
+| `The app cannot verify the update feed it ships with` | `SUPublicEDKey` is empty in `apps/apple/project.yml` while `SPARKLE_ED_PRIVATE_KEY` exists. The pair is created in one sitting; do step 3 of [`SPARKLE_ED_PRIVATE_KEY`](#sparkle_ed_private_key) and re-push the tag. |
+| `Sparkle pin mismatch` | `apps/apple/project.yml`'s `exactVersion` and `.github/scripts/sparkle-tools.sh`'s `SPARKLE_VERSION` disagree. Bumping Sparkle means moving both, plus the tools tarball's SHA-256. |
+| `Sparkle tools checksum mismatch` | The pinned tarball hashed differently from `SPARKLE_SHA256`. Nothing was extracted and nothing was signed. Either the pin was bumped without its hash, or the asset changed under a released tag — which is worth looking into before updating the number. |
+| `v… is the release being published and it produced no feed item` | The `appcast` job could not find this tag's `appcast-item.json` on its Release. The `macos-app` job writes it and the `release` job uploads it; one of those did not. Re-run them, then re-run `appcast`. |
+| `… is N bytes on the Release and M bytes in appcast-item.json` | The `.dmg` attached to that Release is not the file that was signed — a manual re-upload, most likely. The signature is over specific bytes, so the feed refuses to advertise them. Re-run that tag's `macos-app` and `release`. |
+| `No stable release is serving the update feed yet` | A warning, not a failure: only prereleases exist, and GitHub's `latest` alias skips those. Cut a stable release. |
+| An old release has no feed item and is not in the appcast | Expected. Releases predating this pipeline carry no sidecar and cannot grow one; the generator skips them with a note. |
 
 ## Related
 
 - [ADR-0031](../11-adr/0031-macos-distribution.md) — why direct download, why
   not the App Store, and what that forced.
+- [ADR-0038](../11-adr/0038-macos-update-feed.md) — the update feed, and why
+  its EdDSA key is subordinate to the Developer ID certificate.
+- [ADR-0038](../11-adr/0039-ios-distribution.md) — iOS, which this runbook does
+  not cover, and the six secrets it will need.
 - [ADR-0027](../11-adr/0027-v1-self-host-first.md) — self-host-first, which is
   half of the argument.
 - [`desktop.md`](./desktop.md) — §Sandboxing and §Update channel.
