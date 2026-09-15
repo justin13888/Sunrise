@@ -29,13 +29,30 @@
 //! op ([`content_hash`]). Per-chunk hashes would duplicate what the AEAD tag
 //! already does.
 
-use crate::aead::{aead_open_xchacha, aead_seal_xchacha, AeadError, AEAD_KEY_LEN, AEAD_NONCE_LEN};
+use crate::aead::{
+    aead_open_xchacha, aead_seal_xchacha, AeadError, AEAD_KEY_LEN, AEAD_NONCE_LEN, AEAD_TAG_LEN,
+};
 use crate::blake3_kdf::derive_key;
 use thiserror::Error;
 
 /// Plaintext bytes per chunk: 256 KiB. The last chunk of a blob may be
 /// shorter; every other chunk is exactly this long.
 pub const CHUNK_PLAINTEXT_LEN: usize = 256 * 1024;
+
+/// Ciphertext bytes a *full* chunk occupies: the plaintext plus the AEAD tag.
+///
+/// The envelope carries no nonce — [`chunk_nonce`] derives it — so a sealed
+/// chunk is exactly its plaintext with sixteen bytes appended, and every chunk
+/// of a blob but the last is exactly this long.
+///
+/// That is what makes a concatenated blob splittable again. `GET /blobs/{id}`
+/// streams the committed chunks back as one body with no framing between them,
+/// and the reader has to hand [`open_chunk`] the same boundaries the sealer
+/// used: the AAD binds `chunk_idx` and `chunk_count`, so a split at the wrong
+/// offset does not decrypt. Fixed-width chunks mean the boundaries are
+/// arithmetic rather than a length prefix the relay would have to be trusted
+/// not to rewrite.
+pub const SEALED_CHUNK_LEN: usize = CHUNK_PLAINTEXT_LEN + AEAD_TAG_LEN;
 
 /// KDF context for the per-chunk nonce. Unique to this purpose, per
 /// `docs/03-crypto/primitives.md`.
@@ -200,6 +217,61 @@ pub fn verify_content(plaintext: &[u8], claimed: &[u8; 32]) -> Result<(), BlobCh
     }
 }
 
+/// BLAKE3 over the concatenated **ciphertext** — the name the relay stores a
+/// blob under.
+///
+/// Distinct from [`content_hash`], which covers the plaintext, and the two are
+/// not interchangeable. `POST /blobs/finalize` re-hashes what it has on disk
+/// and content-addresses the committed blob at the first sixteen bytes of this
+/// value, so it is the only thing that names the blob in
+/// `GET /blobs/{blob_id}`. A replica holding the metadata and not the bytes
+/// cannot compute it — it would need the ciphertext it is trying to fetch — so
+/// it travels on the attachment op instead.
+///
+/// Takes the sealed chunks in order rather than one slice, because the caller
+/// that has them has them chunked and concatenating first would double the
+/// peak memory of a 100 MB attachment for nothing.
+#[must_use]
+pub fn ciphertext_hash<'a, I>(sealed_chunks: I) -> [u8; 32]
+where
+    I: IntoIterator<Item = &'a [u8]>,
+{
+    let mut hasher = blake3::Hasher::new();
+    for chunk in sealed_chunks {
+        hasher.update(chunk);
+    }
+    *hasher.finalize().as_bytes()
+}
+
+/// Split a concatenated blob body back into the chunks it was sealed as.
+///
+/// `chunk_count - 1` chunks of exactly [`SEALED_CHUNK_LEN`], then whatever
+/// remains. `None` when `body` cannot be that: too short for the full chunks
+/// that must precede the last, a last chunk that is empty or longer than one,
+/// or a zero `chunk_count`.
+///
+/// Rejecting rather than truncating matters because the body arrives from the
+/// relay. A short read that this accepted would reach [`open_chunk`], fail its
+/// tag, and be reported as corrupt ciphertext — which is true but useless,
+/// since the fault is the transfer and not the bytes.
+#[must_use]
+pub fn split_sealed(body: &[u8], chunk_count: u32) -> Option<Vec<&[u8]>> {
+    if chunk_count == 0 {
+        return None;
+    }
+    let full = (chunk_count as usize).checked_sub(1)?;
+    let head_len = full.checked_mul(SEALED_CHUNK_LEN)?;
+    if body.len() <= head_len || body.len() > head_len + SEALED_CHUNK_LEN {
+        return None;
+    }
+    let mut out = Vec::with_capacity(chunk_count as usize);
+    for i in 0..full {
+        out.push(&body[i * SEALED_CHUNK_LEN..(i + 1) * SEALED_CHUNK_LEN]);
+    }
+    out.push(&body[head_len..]);
+    Some(out)
+}
+
 fn check_range(chunk_idx: u32, chunk_count: u32) -> Result<(), BlobChunkError> {
     if chunk_count == 0 {
         return Err(BlobChunkError::EmptyBlob);
@@ -339,6 +411,74 @@ mod tests {
         expected.extend_from_slice(&[0xab; 16]);
         expected.extend_from_slice(&[0x02, 0x01, 0x03, 0x02]);
         assert_eq!(aad, expected);
+    }
+
+    /// A full chunk is its plaintext plus the tag, and nothing else.
+    /// [`split_sealed`]'s arithmetic is that constant, so a change to the
+    /// envelope that broke it would otherwise surface as an undecryptable
+    /// download rather than as a failing test here.
+    #[test]
+    fn a_full_sealed_chunk_is_exactly_sealed_chunk_len() {
+        let sealed = seal_chunk(&key(), &blob(), 0, 2, &vec![0u8; CHUNK_PLAINTEXT_LEN])
+            .expect("seal a full chunk");
+        assert_eq!(sealed.len(), SEALED_CHUNK_LEN);
+    }
+
+    /// Seal, concatenate the way the relay stores and streams them, split, and
+    /// open: the round trip the download path walks.
+    #[test]
+    fn a_concatenated_blob_splits_back_into_the_chunks_it_was_sealed_as() {
+        let plaintext: Vec<u8> = (0..CHUNK_PLAINTEXT_LEN * 2 + 13)
+            .map(|i| (i % 251) as u8)
+            .collect();
+        let count = chunk_count_for(plaintext.len() as u64);
+        assert_eq!(count, 3);
+
+        let sealed: Vec<Vec<u8>> = plaintext
+            .chunks(CHUNK_PLAINTEXT_LEN)
+            .enumerate()
+            .map(|(i, piece)| seal_chunk(&key(), &blob(), i as u32, count, piece).expect("seal"))
+            .collect();
+        let body: Vec<u8> = sealed.concat();
+
+        let split = split_sealed(&body, count).expect("a well-formed body splits");
+        assert_eq!(split.len(), 3);
+        let opened: Vec<u8> = split
+            .iter()
+            .enumerate()
+            .flat_map(|(i, piece)| {
+                open_chunk(&key(), &blob(), i as u32, count, piece).expect("open")
+            })
+            .collect();
+        assert_eq!(opened, plaintext);
+    }
+
+    /// The bodies a relay could hand back that are not this blob. Each is
+    /// refused before any decrypt is attempted, so the caller learns the
+    /// transfer was short or long rather than that the ciphertext is bad.
+    #[test]
+    fn a_body_that_is_not_the_right_length_does_not_split() {
+        // Two chunks claimed, exactly one full chunk of body: the last chunk
+        // would be empty, and no sealed chunk is.
+        assert!(split_sealed(&vec![0u8; SEALED_CHUNK_LEN], 2).is_none());
+        // One chunk claimed, more than one chunk of body.
+        assert!(split_sealed(&vec![0u8; SEALED_CHUNK_LEN + 1], 1).is_none());
+        // No chunks at all is not a blob.
+        assert!(split_sealed(b"anything", 0).is_none());
+        // An empty body is never a blob: every chunk carries at least a tag.
+        assert!(split_sealed(b"", 1).is_none());
+    }
+
+    /// The hash the relay content-addresses by is over the sealed bytes, and a
+    /// chunked walk of them must equal a single pass over their concatenation
+    /// — which is what the relay's own `finalize` computes.
+    #[test]
+    fn the_ciphertext_hash_does_not_depend_on_how_the_bytes_are_handed_over() {
+        let chunks: [&[u8]; 3] = [b"aaa", b"bbbb", b"cc"];
+        assert_eq!(
+            ciphertext_hash(chunks),
+            *blake3::hash(b"aaabbbbcc").as_bytes()
+        );
     }
 
     /// A whole multi-chunk attachment, sealed and reassembled the way the
