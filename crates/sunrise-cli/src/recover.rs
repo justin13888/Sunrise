@@ -389,12 +389,11 @@ pub fn aftercare(identity_id: &str) -> String {
          \n\
          Two things are worth doing now, and neither is automatic:\n\
          \n\
-           * Revoke the devices you lost. Until you do, anything still holding\n\
-            them can read what this account writes.\n\
-         \n\
-         * Rotate your Stream keys. A recovery means an unknown-state\n\
-            environment; rotation is what bounds what a lost device keeps\n\
-            reading. See docs/03-crypto/key-rotation.md.\n\
+           * Revoke the devices you lost. Until you do, anything still\n\
+             holding them can read what this account writes.\n\
+           * Rotate your Stream keys. A recovery means an unknown-state\n\
+             environment, and rotation is what bounds what a lost device\n\
+             keeps reading. See docs/03-crypto/key-rotation.md.\n\
          \n\
          Your recovery code still works and has not changed. This device now\n\
          holds ID_D_priv, so it can seal a new one if you ever rotate it."
