@@ -9,7 +9,9 @@ explicitly unsupported by the parser — it raises a notice like any other
 unmodelled property — and nothing in the workspace fetches an `.ics` over the
 network. Google Calendar is deferred and unreachable
 ([`google-calendar.md`](./google-calendar.md)), and CalDAV is an explicit
-non-goal, so this is the only calendar path a v1 user can actually take.
+non-goal ([`../00-product/non-goals.md`](../00-product/non-goals.md)
+§"Not a calendar protocol server, not a CalDAV client"), so this is the only
+calendar path a v1 user can actually take.
 
 > **Status: partly implemented. This document is the target; the list below is
 > what ships.** `crates/sunrise-integrations` implements the syntax layer
@@ -31,8 +33,10 @@ non-goal, so this is the only calendar path a v1 user can actually take.
 >   has no field to hold it, so it is reported per event and **a recurring
 >   event imports as a single occurrence**. `DESCRIPTION` and `LOCATION` are
 >   dropped the same way, for the same reason. Nothing is silently lost — every
->   one raises an `ICalNotice` — but the round-trip fidelity §Mapping rules
->   promises does not exist yet.
+>   one raises an `ICalNotice` — but this is why §Mapping rules promises
+>   fidelity over the `Block` schema rather than over the file: import →
+>   export cannot be the identity while three properties have nowhere to
+>   live.
 > - **Export is windowed, not scoped by Stream.** `ExportWindow` is `Day` or
 >   `Week`, because `Query::DayBlocks` / `WeekBlocks` are the only Block windows
 >   the core has — which is why the macOS menu offers exactly Today and This
@@ -78,11 +82,88 @@ non-goal, so this is the only calendar path a v1 user can actually take.
 
 ## Mapping rules
 
-Same as CalDAV mapping table. We attempt to preserve fidelity round-trip when possible.
+**There is no CalDAV mapping table.** This section used to say "same as CalDAV
+mapping table"; CalDAV is an explicit v1 non-goal
+([`../00-product/non-goals.md`](../00-product/non-goals.md)), the document that
+would have held that table was never written, and the sentence had therefore
+never pointed at anything. The mapping is below, and it is read off
+`crates/sunrise-integrations/src/ical_map.rs` — `event_to_block` (line 65) and
+`block_to_event` (line 146) — which is the only place it exists.
+
+### `VEVENT` → `Block`
+
+A `VEVENT` becomes a **Block**, never a Task. An event is "this happens between
+these two times", which is what a Block is; a `VTODO` really is a Task and is
+reported rather than mapped at all (§What the subset REPORTS below).
+
+| iCalendar | Sunrise | What happens on import |
+|---|---|---|
+| `UID` | the Block's **id**, via `sunrise_domain::imported_block_id(source, uid)` | The dedup key, and not a column: `(source, uid)` is hashed into the id's 16 bytes. Same source + same UID updates the Block already there; one UID under two sources is two Blocks. A UID Sunrise itself exported (`<block-id>@sunrise.invalid`) is recognised and returns that Block id unhashed, so export → re-import is the identity. |
+| `SUMMARY` | `Block::title`, with `title_track_task = false` | Absent, empty or whitespace becomes `(untitled event)` rather than an unlabelled bar on the calendar. The title is the calendar's, so it does not track a Task's title even if one is later bound. |
+| `DTSTART` | `Block::starts_at` (`SunriseTime`) | Required. An event without one raises a `Skipped` notice and the import continues with the next event. |
+| `DTEND` / `DURATION` | `Block::ends_at` (`SunriseTime`) | `DTEND` wins when a file carries both, and the ignored `DURATION` is reported. With neither, RFC 5545 §3.6.1 gives a whole-date event one day and every other event zero length — and a zero-length or backwards event is `Skipped`, because a Block is a range. |
+| `DESCRIPTION` | — | `UnmappedProperty`: "a Block has no notes field in this schema". |
+| `LOCATION` | — | `UnmappedProperty`: same reason. |
+| `RRULE` | — | `UnmappedProperty`: only the first occurrence is imported. |
+| everything in §What the subset REPORTS | — | one `ICalNotice` each, shown by the caller. |
+
+### Time forms
+
+RFC 5545 writes a time four ways and `SunriseTime` models the same four
+distinctions, so this row of the mapping is total in both directions and loses
+nothing:
+
+| iCalendar | Sunrise |
+|---|---|
+| `20260301T140000Z` | `SunriseTime::Instant` |
+| `TZID=Europe/Berlin:20260301T090000` | `SunriseTime::Zoned` |
+| `20260301T090000` (no zone) | `SunriseTime::Floating` |
+| `VALUE=DATE:20260301` | `SunriseTime::AllDay` |
+
+A `TZID` the bundled IANA tzdb does not know falls back to UTC and is reported;
+see §Edge cases.
+
+### `Block` → `VEVENT`
+
+Export writes exactly four properties and deliberately no others — `UID`
+(`block_uid`, the Block's own id under the RFC 2606 `.invalid` host),
+`SUMMARY` (the *resolved* title, so a Block that tracks its Task exports what a
+reader would see), `DTSTART` and `DTEND`. `DURATION`, `DESCRIPTION`, `LOCATION`
+and `RRULE` are written as absent, because nothing in the `Block` schema backs
+them and emitting an empty property would be inventing content. No `DTSTAMP` is
+written, which some strict readers require.
+
+### The round-trip fidelity rule
+
+The honest rule, replacing "we attempt to preserve fidelity round-trip when
+possible":
+
+- **Export → import is the identity**, and is tested as one. Every property the
+  exporter writes is one the importer reads back onto the same Block, and the
+  `UID` recognition above is what makes the re-import an update rather than a
+  second copy.
+- **Import → export is not the identity**, and is not claimed to be. It
+  preserves what a `Block` can hold — identity, title, start, end, and which of
+  the four time forms each of those was written in — and nothing else. Every
+  property outside that set is reported on the way in as an `ICalNotice` and is
+  simply absent from anything exported later.
+
+So fidelity is promised over the **Block schema**, not over the file. The
+guarantee that does hold over the whole file is the reporting one below: what
+is not preserved is said out loud rather than dropped in silence.
 
 ### RRULE subset
 
-Identical to the engine subset documented in [`../08-features/recurrence-engine.md`](../08-features/recurrence-engine.md). Lossy imports/exports are detected and surfaced; everything outside the subset is rejected with a clear diagnostic.
+The recurrence vocabulary this codebase understands is the engine subset
+documented in
+[`../08-features/recurrence-engine.md`](../08-features/recurrence-engine.md).
+**It is not applied to `.ics` input**, and the two layers behave differently:
+the syntax layer (`ical`) reads an `RRULE` and writes it back verbatim without
+validating it against that subset, so a file round-tripping through `ical`
+alone keeps its rule whatever it says; the domain mapping (`ical_map`) has
+nowhere to put it and reports it. Nothing is rejected for being outside the
+subset, because nothing is checked against the subset — see the banner at the
+top of this file for the schema change that would make it matter.
 
 ### What the subset REPORTS rather than silently drops
 

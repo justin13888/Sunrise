@@ -38,6 +38,7 @@ zeroize = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
+sunrise-test-seed = { workspace = true }
 # `test-util` gives paused-clock tests (`start_paused`, `time::advance`) so the
 # routine timer can be driven deterministically instead of slept through.
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }

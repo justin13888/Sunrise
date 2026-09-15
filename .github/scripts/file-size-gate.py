@@ -118,8 +118,10 @@ BASELINE: dict[str, str] = {
         "One async state machine plus its transport harness. Deliberately not "
         "split: `session` is the sole constructor of five of the types it "
         "uses, and separating a state machine from types only it builds "
-        "produces two files that must be read together. See issue #207 for the "
-        "testability work this file actually needs."
+        "produces two files that must be read together. #207's testability "
+        "work landed in place for the same reason -- a `sync_driver/` "
+        "directory would move a path ten documents cite by name, to buy "
+        "nothing the `scheduling` test module does not already have."
     ),
     "crates/sunrise-core/src/keychain/mod.rs": (
         "What remains of keychain.rs after its free-function tail was "

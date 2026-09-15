@@ -47,7 +47,7 @@ The 192-bit random nonce gives a comfortable safety margin without needing per-k
 ### When to use which KDF
 
 - **HPKE Base mode** for any single-recipient public-key encryption (key envelopes for sibling devices, share grants for peers, recovery blob upload, pairing transport). The spec layer never composes raw X25519 + KDF + AEAD.
-- **BLAKE3 KDF mode** for all internal symmetric derivations. Every `derive_key` call MUST pass a unique, descriptive context string of the form `"sunrise.<purpose>.v<version>"` (e.g. `"sunrise.vault_root.v1"`, `"sunrise.blob_chunk_nonce.v1"`).
+- **BLAKE3 KDF mode** for all internal symmetric derivations. Every `derive_key` call MUST pass a unique, descriptive context string of the form `"sunrise.<purpose>.v<version>"` (e.g. `"sunrise.vault_root.v1"`, `"sunrise.blob_chunk_nonce.v2"`).
 - **Argon2id** for stretching low-entropy human secrets (passphrase, recovery code) into 32-byte keys. Algorithm version is **0x13 (RFC 9106)**; parameters are `m = 65536` KiB (64 MiB), `t = 3`, `p = 1`, fixed and platform-uniform. Phones budget ~1 s, desktops ~250 ms (parameters chosen for the slower bound). There is no time-out at the call site; UI shows a progress modal on mobile.
 
 ### When to sign

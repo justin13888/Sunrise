@@ -202,6 +202,28 @@ const DEFERRED_PER_EPOCH_CAP: i64 = 256;
 /// member could otherwise park bytes of its choosing on every peer in the
 /// account, at any `(stream, epoch)` it liked, with no ceiling.
 ///
+/// # "Attacker-chosen" is about this `epoch` and not the one the fold sorts by
+///
+/// The `epoch` above is the number in an envelope header, read on the deferral
+/// path — which is reached precisely because no key at that `(stream, epoch)`
+/// is held, so nothing has been opened and nothing has been checked. Any `u32`
+/// at all can appear there.
+///
+/// `identity_transitions.meta_epoch`, which ADR-0037 §4 calls the security
+/// component of the fold's ordering, is a different value with a different
+/// provenance despite coming off the same field. A row is written only by
+/// `apply_control_op`, which is reached only after the envelope **opened**
+/// under a key this replica holds at that exact `(stream, epoch)`. A sender
+/// that writes an epoch it has no key for produces ciphertext that fails the
+/// tag, so the op is refused and no row exists; one that writes an epoch
+/// nobody holds parks here instead and expires.
+///
+/// So the two statements are both true and are not in tension: an *unopened*
+/// op's epoch is a free claim, and an *applied* op's epoch is a key the sender
+/// demonstrably held. The audit that raised this read the two as contradictory
+/// because the word is the same in both places; it is the same field and not
+/// the same fact.
+///
 /// Overflow evicts the **oldest** rows. Both directions lose something, and it
 /// is worth being plain about which:
 ///
@@ -277,6 +299,22 @@ pub enum EngineError {
     /// Keychain failure while resolving or absorbing a Stream key.
     #[error("keychain: {0}")]
     Keychain(String),
+    /// A command named the vault-meta stream where an ordinary Stream belongs.
+    ///
+    /// The vault-meta stream is the control log — device certs, key envelopes,
+    /// Stream and Context lifecycle. It is addressable as an [`EntityRef`] of
+    /// kind `Stream` because [`EntityRef::new`] does not police the bytes, and
+    /// every draft and patch that carries a `stream_id` crosses the UniFFI
+    /// seam, so any binding can name it. Nothing good happens if one does: a
+    /// Task routed there would take a sequence number the control ops
+    /// themselves are counting, and a Stream parented there would be a child
+    /// of a row that is not a Stream.
+    ///
+    /// Its own variant rather than an [`Self::Invalid`] string, because a
+    /// caller that can build this ref can build it again and deserves to
+    /// switch on the refusal rather than parse it.
+    #[error("the vault-meta stream is not an ordinary Stream")]
+    ReservedStream,
 }
 
 /// One command-application pipeline.

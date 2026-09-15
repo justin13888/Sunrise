@@ -77,8 +77,9 @@ sponsor as itself and the register catches it — and it is convergent, because
 register (an LWW register). It is rejected on two counts. It restructures
 pairing: the sponsoring device would have to receive the joining device's public
 keys and return a countersigned cert, which is a second Noise frame, a payload
-format change and a change at the Swift seam. And it **over-blocks
-permanently**: revoking the laptop you paired your phone from would silently
+format change and a change at the Swift seam. (That half was later built and is
+not what makes this alternative wrong — see §Consequences. The countersignature
+is.) And it **over-blocks permanently**: revoking the laptop you paired your phone from would silently
 lock the phone out, because a revocation cannot be made non-retroactive without
 an unforgeable timestamp, and this system has none — `Hlc::receive` bounds a
 stamp from the future by `MAX_DRIFT_MS` and a stamp from the *past* not at all
@@ -130,15 +131,39 @@ device that was offline across the rotation.
   ever revoked a device. That is not noise to be filtered: the two are
   indistinguishable inside the vault, and an event that fired only on the
   hostile case would be the enforcement this ADR says cannot be built.
-- **`ID_S_priv` on every device is now a recorded cost of pairing**, not an
-  incidental. Any future change that would let a device admit another without
-  holding it — alternative 2's shape, most likely — removes the precondition
-  this whole ADR rests on, and should reopen it.
+- **`ID_S_priv` on every device was a recorded cost of pairing**, not an
+  incidental — and it has since been paid off. Pairing stopped carrying it:
+  the sponsoring device issues the joining device's cert, so no device admitted
+  by pairing can produce one at all
+  ([`../03-crypto/pairing-and-onboarding.md`](../03-crypto/pairing-and-onboarding.md)
+  §Flow). That removes the precondition this ADR rests on, exactly as this line
+  said it would, and it is what closed #105.
+
+  **It is not alternative 2, and the difference is the whole reason it could
+  ship.** Alternative 2's defect was the *countersignature* — a second signature
+  on the cert, checked by every verifier, which makes a device's membership
+  depend forever on its sponsor's standing and over-blocks permanently.
+  Sponsor-**issued** certs carry no second signature and no sponsor binding:
+  the cert is signed by `ID_S_priv` and by nothing else, byte for byte the same
+  `DeviceCert` shape, with no issuer field to check. A verifier cannot tell
+  which device held the key when the signature was made. So revoking the laptop
+  you paired your phone from locks the phone out of **nothing** — which is the
+  failure that rejected alternative 2 and which this shape simply does not have.
+
+  What it *does* restructure is the other half of alternative 2's cost, and
+  that half was real: the sponsor receives the joining device's public keys and
+  returns a cert, which is a second frame, a payload format change and a change
+  at the Swift seam. All three were built. See
+  [ADR-0037](./0037-identity-transition.md) §Consequences for what it left
+  behind — only the account's creator can rotate the identity.
 
 ## What would force revisiting this
 
-1. **Identity rotation shipping.** It closes #105 and supersedes this ADR's
-   decision, not its analysis.
+1. ~~**Identity rotation shipping.**~~ **Done** ([ADR-0037](./0037-identity-transition.md)),
+   and then superseded again by `ID_S_priv` leaving the pairing payload. This
+   ADR's *analysis* still holds — a `DeviceCert` names no issuer, so there is
+   still no narrower check keyed on who signed one — but its premise is gone:
+   the capability it concluded could not be bounded is no longer distributed.
 2. **A relay-side write bound** ([#80](https://github.com/justin13888/Sunrise/issues/80)).
    A revoked device that cannot upload cannot publish a cert either, which
    bounds the bypass without any vault-side check — but only for the relay's

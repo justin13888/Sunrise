@@ -57,11 +57,12 @@ impl Engine {
         let op_id = self.fresh_op_id(now_ms);
         // A review spans the whole vault, so it routes to the meta log the way
         // Stream and Routine lifecycle ops do.
-        let seq = self.next_seq(db, &META_STREAM)?;
-        let lww = self.lww_stamp(seq);
-        db.with_tx(|tx| -> rusqlite::Result<()> {
+        let seq = db.with_tx(|tx| -> rusqlite::Result<u64> {
+            let slot = self.meta_slot(tx, now_ms)?;
+            let seq = slot.seq;
+            let lww = slot.lww;
             insert_review_snapshot_row(tx, &snapshot, &lww)?;
-            self.ops_insert(
+            self.ops_insert_at(
                 tx,
                 &op_id,
                 &META_STREAM,
@@ -75,8 +76,10 @@ impl Engine {
                 None,
                 now_ms,
                 &[],
+                slot.epoch,
+                &slot.key,
             )?;
-            Ok(())
+            Ok(seq)
         })?;
         Ok(CommandResult::new(id, None, op_id, seq))
     }

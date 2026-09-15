@@ -271,7 +271,7 @@ A receiver recomputes both digests from the payload; there is nothing to compare
 **Neither digest is over a bare concatenation**, because a digest over concatenated variable-length records is ambiguous (`a||bc` and `ab||c` collide) and this one is inside a signature. The two solve it differently, because their records differ:
 
 * `shares_digest`'s records are fixed-width by construction, so it **rejects** a record of the wrong width rather than hashing it, and the trailing present-flag does the same job for the optional carry share.
-* A cert is variable-length and cannot be — `nickname` is 1..=64 bytes and `platform` has no bound — so `roster_digest` **length-prefixes and counts** instead. Both are load-bearing. Without them, `certA || certB || certC` presented as one roster entry decoded as `certA` (`DeviceCert::from_cbor` read one CBOR item and ignored the rest), passed every check, and hashed to the digest the three separate certs hash to. Since entries sort by device id, that let the holder of a signed transition drop any devices from the signed membership while keeping both signatures valid — and `apply_roster` leaves the dropped devices on the retired identity, where nothing seals them a key again. `DeviceCert::from_cbor` now also refuses trailing bytes, so the two defences are independent.
+* A cert is variable-length and cannot be — `nickname` is 1..=64 bytes and `platform` has no bound — so `roster_digest` **length-prefixes and counts** instead. Both are load-bearing. Without them, `certA || certB || certC` presented as one roster entry decoded as `certA` (`DeviceCert::from_cbor` read one CBOR item and ignored the rest), passed every check, and hashed to the digest the three separate certs hash to. Since entries sort by device id, that let the holder of a signed transition drop any devices from the signed membership while keeping both signatures valid — and `apply_roster` leaves the dropped devices on the retired identity, where nothing seals them a key again. `DeviceCert::from_cbor` now also refuses trailing bytes — after the outer map *and* inside the body byte string — so the two defences are independent.
 
 Both digests carry a domain tag for the same reason every other hash in `sunrise-crypto` does: `body_hash`, the envelope hash and the stream-root chain would otherwise share one unkeyed BLAKE3 space with them.
 
@@ -316,9 +316,11 @@ BlobChunkEnvelope = {
 ```
 
 ```
+chunk_aad = canonical_cbor({1: blob_id, 2: chunk_idx, 3: chunk_count})
+
 blob_chunk_nonce = BLAKE3.derive_key(
-    context      = "sunrise.blob_chunk_nonce.v1",
-    key_material = blob_key || u32_be(chunk_idx),
+    context      = "sunrise.blob_chunk_nonce.v2",
+    key_material = blob_key || chunk_aad,
     out_len      = 24
 )
 
@@ -326,17 +328,29 @@ ciphertext = XChaCha20-Poly1305_seal(
     key       = blob_key,
     nonce     = blob_chunk_nonce,
     plaintext = chunk_plaintext,
-    aad       = canonical_cbor({1: blob_id, 2: chunk_idx, 3: chunk_count})
+    aad       = chunk_aad
 )
 ```
 
-> **A `blob_key` MUST NOT seal two different byte sequences.** The nonce above is
-> derived from `blob_key ‖ u32_be(chunk_idx)` and carries no randomness, so
-> reusing a key across two distinct plaintexts at the same `chunk_idx` reuses an
+**The nonce derivation takes the AAD bytes, and implementations MUST NOT
+substitute an equivalent hand-built concatenation of the same three fields.**
+The `v1` derivation was `blob_key ‖ u32_be(chunk_idx)`, with `chunk_count`
+bound in the AAD alone. AAD does not enter the keystream: XChaCha20-Poly1305
+derives its stream from `(key, nonce)` only. Two different *chunkings* of the
+same plaintext under one `blob_key` — the same bytes sealed once as `0 of 1` and
+once as `0 of 2` — therefore shared a keystream, and the XOR of the two
+ciphertexts was the XOR of the two plaintexts. Deriving from the AAD bytes makes
+the two definitionally equal: a field added to `chunk_aad` changes the nonce
+without a second edit.
+
+> **A `blob_key` MUST NOT seal two different byte sequences at one chunking.**
+> The nonce carries no randomness, so reusing a key across two distinct
+> plaintexts at the same `(blob_id, chunk_idx, chunk_count)` reuses an
 > XChaCha20-Poly1305 nonce — which forfeits confidentiality of both messages and
 > leaks the Poly1305 authentication key. Every sealed byte sequence — every
 > attachment, every thumbnail, every re-attach of the same file — gets a fresh
-> 32-byte random `blob_key`.
+> 32-byte random `blob_key`, so the rule holds by construction rather than by
+> the caller remembering it.
 >
 > Consequently there is no dedup by key sharing, at any scope, and
 > content-addressing over ciphertext never collides across attachments. See

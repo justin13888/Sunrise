@@ -109,8 +109,6 @@ async fn found_account(dir: &std::path::Path, base_url: &str) -> (String, String
             sunrise_core::SyncConfig::new(base_url.to_owned())
                 .with_credential(sunrise_core::TokenSource::new(Some(BEARER.to_owned()))),
         ),
-        export_pairing: None,
-        adopt_pairing: None,
         device_id: Some(outcome.device_id.clone()),
     };
     let _ = sunrise_cli::livesync::apply_plan(&core, &plan);

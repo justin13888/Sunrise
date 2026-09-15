@@ -9,13 +9,13 @@
 //!
 //! # What crosses, and why it is base64 text
 //!
-//! The three handshake messages and the sealed root cross as base64url
-//! strings. That is not a serialization convenience: the *transport* for them
-//! is currently the user. The relay's pairing rendezvous — the WebSocket that
-//! routes by `pair_id` and buffers three messages per role, spec §Relay
-//! framing for Noise — is not built, so there is nowhere for the two devices
-//! to exchange these on their own. Text is what a user can move between two
-//! machines, and the crypto is entirely unaffected by how the ciphertext
+//! The three handshake messages and the three pairing messages cross as
+//! base64url strings. That is not a serialization convenience: the *transport*
+//! for them is currently the user. The relay's pairing rendezvous — the
+//! WebSocket that routes by `pair_id` and buffers three messages per role, spec
+//! §Relay framing for Noise — is not built, so there is nowhere for the two
+//! devices to exchange these on their own. Text is what a user can move between
+//! two machines, and the crypto is entirely unaffected by how the ciphertext
 //! travelled: the SAS binds the transcript either way, and a MITM still has to
 //! match six digits in one interactive attempt.
 //!
@@ -24,26 +24,33 @@
 //!
 //! # What crosses
 //!
-//! The spec's [`PairingPayload`](sunrise_pairing::PairingPayload): `ID_S_priv`
-//! and `ID_D_pub` — the identity's signing secret and the *public* half of its
-//! X25519 pair — every Stream key the sending device holds, the vault root, and
-//! the sender's nickname and platform.
+//! Three messages after the SAS, not one, and the direction alternates:
 //!
-//! **`ID_D_priv` does not cross.** That module's own doc
-//! ([`sunrise_pairing::payload`]) is the authority on why, and it supersedes
-//! what was written here: the X25519 secret that opens the identity-sealed copy
-//! of every `key_envelope` used to travel in field 2, and while it did, a
-//! revoked device dropped from an epoch's recipient list simply opened the
-//! identity copy instead. Every device holding it meant no device could be
-//! excluded from anything. Field 2 is burned; sealing needs only the public
-//! half, so field 4 still travels and a paired device can still address the
-//! identity without being able to read what it addresses.
+//! 1. [`DevicePairing::seal_pairing_offer`] — the sponsor's account identity,
+//!    `ID_S_pub` and `ID_D_pub` and the genesis anchor. **No secret.**
+//! 2. [`DevicePairing::request_device_cert`] — the joiner mints `D_S`/`D_D`
+//!    here and sends the public halves. The secrets stay in this object until
+//!    step 3.
+//! 3. [`DevicePairing::seal_pairing_grant`] / [`DevicePairing::open_pairing_grant`]
+//!    — the `DeviceCert` the sponsor issued, the vault root, and every Stream
+//!    key.
 //!
-//! `ID_S_priv` does cross, and it is what lets this device admit the *next*
-//! one. Withholding it would produce a device that can never admit another,
-//! which is a limitation rather than a property worth keeping — and it is why a
-//! revoked device can still mint itself a cert under a fresh device id, which
-//! nothing bounds today (`docs/03-crypto/key-rotation.md` §Revocation).
+//! **Neither identity private key crosses.** `ID_D_priv` stopped travelling in
+//! #86, which closed #76: the X25519 secret that opens the identity-sealed copy
+//! of every `key_envelope` used to travel, and while it did, a revoked device
+//! dropped from an epoch's recipient list simply opened the identity copy
+//! instead. `ID_S_priv` stopped travelling in #105: a `DeviceCert` names only
+//! its subject and carries only the identity's signature, so a device holding
+//! the key minted a valid cert for any device id it invented and rejoined after
+//! being revoked.
+//!
+//! Withholding `ID_S_priv` is what costs a round trip — the sponsor cannot sign
+//! a cert for keys the joiner has not minted yet — and it is why the seam grew a
+//! step rather than shrinking the payload. Its consequence is real and is the
+//! point: a device added this way can never sponsor another one, and
+//! [`SunriseCore::can_sponsor_pairing`](crate::SunriseCore::can_sponsor_pairing)
+//! is how a client asks before offering the button. `sunrise_pairing::protocol`
+//! is the authority on all of it.
 //!
 //! The channel is unchanged: Noise XX confirmed by a SAS both users read
 //! aloud, which is the same channel the vault root already travelled over, and
@@ -54,8 +61,9 @@ use std::sync::{Mutex, PoisonError};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
 use sunrise_pairing::{
-    account_email_hash, decode_pairing_payload, decode_qr_payload, encode_qr_payload,
-    PairedChannel, PairingSession, QrPayload, Role, MAGIC_V1_HEX,
+    account_email_hash, decode_pairing_grant, decode_pairing_offer, decode_pairing_request,
+    decode_qr_payload, encode_pairing_payload, encode_qr_payload, PairedChannel, PairingJoiner,
+    PairingSession, QrPayload, Role, MAGIC_V1_HEX,
 };
 
 use zeroize::Zeroize;
@@ -125,7 +133,17 @@ pub struct DevicePairing {
     /// [`DevicePairing::receive_message`] is where it is spent.
     expected_peer_static: Option<Vec<u8>>,
     channel: Mutex<Option<PairedChannel>>,
-    /// Set once the channel has carried the root, so a UI can stop.
+    /// The joiner's minted device keys, between message 2 and message 3.
+    ///
+    /// The state a one-shot pairing did not need. `D_S_priv` and `D_D_priv` are
+    /// minted in [`DevicePairing::request_device_cert`] and consumed in
+    /// [`DevicePairing::open_pairing_grant`], and they never leave this object:
+    /// only the public halves went into the request, and a sponsor that minted
+    /// them instead would hold permanent impersonation of this device.
+    ///
+    /// `None` on the sponsoring device, which mints nothing.
+    joiner: Mutex<Option<PairingJoiner>>,
+    /// Set once the channel has carried the grant, so a UI can stop.
     finished: Mutex<bool>,
 }
 
@@ -348,81 +366,176 @@ impl DevicePairing {
         }
     }
 
-    /// Seal the pairing payload for the peer, on the existing device.
+    /// Seal message 1 — the offer — for the joiner, on the sponsoring device.
     ///
-    /// The result is base64url ciphertext. It is readable only by the device
-    /// on the other end of the confirmed handshake — the relay, or the user's
-    /// clipboard, sees an opaque blob.
+    /// The result is base64url ciphertext, readable only by the device on the
+    /// other end of the confirmed handshake. It carries no secret at all, and
+    /// is still sealed: what the channel protects here is the *binding*, not
+    /// the contents. A joiner that accepted an offer from somebody else would
+    /// mint keys for a stranger's account and wait forever for a grant.
     ///
     /// # Errors
     ///
     /// [`BindingError::Pairing`] when the SAS has not been confirmed, or when
     /// this device is the one being added.
-    pub fn seal_pairing_payload(&self, payload: Vec<u8>) -> Result<String, BindingError> {
-        // Taken by value and wiped here rather than left to the caller.
-        // `PairingPayload` zeroizes itself on drop; its *encoding* is the same
-        // secret in serialized form and has no such courtesy, so the one place
-        // that is guaranteed to see the end of its life is the place that
-        // consumes it.
-        let mut payload = payload;
-        let out = self.seal_encoded(&payload);
-        payload.zeroize();
-        out
+    pub fn seal_pairing_offer(&self, offer: Vec<u8>) -> Result<String, BindingError> {
+        self.send_as(
+            PairingRole::ExistingDevice,
+            &offer,
+            "the pairing offer",
+            false,
+        )
     }
 
-    fn seal_encoded(&self, payload: &[u8]) -> Result<String, BindingError> {
-        if self.role != PairingRole::ExistingDevice {
-            return Err(BindingError::Pairing(
-                "only the existing device sends the pairing payload".into(),
-            ));
-        }
-        let mut guard = self.channel.lock().unwrap_or_else(PoisonError::into_inner);
-        let channel = guard
-            .as_mut()
-            .ok_or_else(|| BindingError::Pairing("confirm the SAS first".into()))?;
-        let sealed = channel.send(payload)?;
-        *self.finished.lock().unwrap_or_else(PoisonError::into_inner) = true;
-        Ok(URL_SAFE_NO_PAD.encode(sealed))
-    }
-
-    /// Open the sealed pairing payload, on the new device.
+    /// Mint this device's keys and seal message 2 — the cert request — on the
+    /// joiner.
     ///
-    /// Returns both halves the caller needs and nothing more: the vault root,
-    /// which `SunriseCore::open` takes as its key, and the payload bytes to
-    /// hand back as `paired_bundle`. The identity private keys are inside the
-    /// bundle and are deliberately **not** broken out — a client has no use for
-    /// them, and a field on a Swift record is a field in whatever the app logs.
+    /// `sealed_offer` is what the sponsor's [`Self::seal_pairing_offer`]
+    /// produced. `nickname` and `platform` are what this device wants to be
+    /// called; the sponsor writes them into the cert, so they are what every
+    /// peer will show for it.
+    ///
+    /// `seed_s` and `seed_d` are 32 bytes each, and **must be unpredictable**:
+    /// `D_S_priv` is derived from the first and every op this device ever
+    /// writes is signed under it. A Swift caller draws them from
+    /// `SecRandomCopyBytes`. They are a parameter rather than drawn here so
+    /// that the one source of randomness a client uses is the platform's and
+    /// not a second one buried in a seam.
+    ///
+    /// The secrets stay inside this object until [`Self::open_pairing_grant`].
+    /// They do not cross back to Swift, and the request does not carry them:
+    /// only the public halves are sent, which is what separates this from a
+    /// sponsor-mints-the-keys design where the sponsor would keep the ability
+    /// to impersonate this device forever.
     ///
     /// # Errors
     ///
-    /// [`BindingError::Pairing`] when the SAS has not been confirmed, the
-    /// ciphertext does not open — which is what a tampered or replayed frame
-    /// looks like — or the payload does not decode, and
-    /// [`BindingError::BadVaultRoot`] if the root inside is not 32 bytes.
-    pub fn open_pairing_payload(&self, sealed: String) -> Result<PairedBundle, BindingError> {
+    /// [`BindingError::Pairing`] when the SAS has not been confirmed, when this
+    /// device is the one holding the vault, when the offer does not open or
+    /// does not decode, and [`BindingError::BadVaultRoot`] — reused for its
+    /// length field — if either seed is not 32 bytes.
+    pub fn request_device_cert(
+        &self,
+        sealed_offer: String,
+        nickname: String,
+        platform: String,
+        seed_s: Vec<u8>,
+        seed_d: Vec<u8>,
+    ) -> Result<String, BindingError> {
         if self.role != PairingRole::NewDevice {
             return Err(BindingError::Pairing(
-                "only the new device receives the pairing payload".into(),
+                "only the device being added asks for a cert".into(),
             ));
         }
-        let raw = decode_b64(&sealed, "sealed pairing payload")?;
-        let mut guard = self.channel.lock().unwrap_or_else(PoisonError::into_inner);
-        let channel = guard
-            .as_mut()
-            .ok_or_else(|| BindingError::Pairing("confirm the SAS first".into()))?;
-        let bundle = channel.receive(&raw)?;
-        let payload =
-            decode_pairing_payload(&bundle).map_err(|e| BindingError::Pairing(e.to_string()))?;
+        let seed_s = seed32(seed_s)?;
+        let seed_d = seed32(seed_d)?;
+        let plain =
+            self.receive_from(PairingRole::NewDevice, &sealed_offer, "the pairing offer")?;
+        let offer =
+            decode_pairing_offer(&plain).map_err(|e| BindingError::Pairing(e.to_string()))?;
+        let joiner = PairingJoiner::new(offer, nickname, platform, seed_s, seed_d);
+        let request = joiner
+            .request()
+            .encode()
+            .map_err(|e| BindingError::Pairing(e.to_string()))?;
+        *self.joiner.lock().unwrap_or_else(PoisonError::into_inner) = Some(joiner);
+        self.send_as(PairingRole::NewDevice, &request, "the cert request", false)
+    }
+
+    /// Open message 2 on the sponsor, returning the request for the core to
+    /// answer.
+    ///
+    /// The bytes come back rather than the parsed struct, and go straight into
+    /// [`SunriseCore::send_pairing_grant`](crate::SunriseCore::send_pairing_grant),
+    /// which is the seam's name for the core's `issue_pairing_grant`.
+    /// The seam does not hold an open vault and the vault does not hold a Noise
+    /// channel, so one of them has to hand the other an opaque blob; making it
+    /// the *request* — which carries no secret — rather than the grant is the
+    /// side of that trade with nothing to spill.
+    ///
+    /// # Errors
+    ///
+    /// [`BindingError::Pairing`] when the SAS has not been confirmed, when this
+    /// device is the one being added, or when the ciphertext does not open —
+    /// which is what a tampered or replayed frame looks like.
+    pub fn open_cert_request(&self, sealed: String) -> Result<Vec<u8>, BindingError> {
+        let plain = self.receive_from(PairingRole::ExistingDevice, &sealed, "the cert request")?;
+        // Decoded and thrown away: the point is to refuse a malformed or
+        // self-named request here, where the error reaches the sponsor's screen,
+        // rather than inside the core where it would surface as a failed grant.
+        decode_pairing_request(&plain).map_err(|e| BindingError::Pairing(e.to_string()))?;
+        Ok(plain)
+    }
+
+    /// Seal message 3 — the grant — for the joiner, on the sponsor.
+    ///
+    /// This is the one message in the exchange that carries the account: the
+    /// issued `DeviceCert`, the vault root and every Stream key. It ends the
+    /// pairing on this side.
+    ///
+    /// # Errors
+    ///
+    /// [`BindingError::Pairing`] when the SAS has not been confirmed, or when
+    /// this device is the one being added.
+    pub fn seal_pairing_grant(&self, grant: Vec<u8>) -> Result<String, BindingError> {
+        self.send_as(
+            PairingRole::ExistingDevice,
+            &grant,
+            "the pairing grant",
+            true,
+        )
+    }
+
+    /// Open message 3 on the joiner and assemble what `SunriseCore::open`
+    /// takes.
+    ///
+    /// Returns both halves the caller needs and nothing more: the vault root,
+    /// which `SunriseCore::open` takes as its key, and the payload bytes to
+    /// hand back as `paired_bundle`. This device's own `D_S_priv`/`D_D_priv`
+    /// are inside the bundle and are deliberately **not** broken out — a client
+    /// has no use for them, and a field on a Swift record is a field in
+    /// whatever the app logs.
+    ///
+    /// The cert is checked here, against the offer this object has been holding
+    /// since [`Self::request_device_cert`]: it must verify under the `ID_S_pub`
+    /// that offer named, and must name the keys this device minted. A grant
+    /// that fails either is refused now rather than becoming a vault whose
+    /// every op its peers reject.
+    ///
+    /// # Errors
+    ///
+    /// [`BindingError::Pairing`] when the SAS has not been confirmed, when
+    /// [`Self::request_device_cert`] has not run, when the ciphertext does not
+    /// open, or when the grant does not decode or its cert is not one this
+    /// device can use, and [`BindingError::BadVaultRoot`] if the root inside is
+    /// not 32 bytes.
+    pub fn open_pairing_grant(&self, sealed: String) -> Result<PairedBundle, BindingError> {
+        let plain = self.receive_from(PairingRole::NewDevice, &sealed, "the pairing grant")?;
+        let grant =
+            decode_pairing_grant(&plain).map_err(|e| BindingError::Pairing(e.to_string()))?;
+        let joiner = self
+            .joiner
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+            .ok_or_else(|| {
+                BindingError::Pairing("ask for a cert before trying to accept one".into())
+            })?;
+        let payload = joiner
+            .accept(grant)
+            .map_err(|e| BindingError::Pairing(e.to_string()))?;
         if payload.vault_root.len() != VAULT_ROOT_LEN {
             return Err(BindingError::BadVaultRoot {
                 len: u32::try_from(payload.vault_root.len()).unwrap_or(u32::MAX),
             });
         }
         let vault_root = payload.vault_root.to_vec();
+        let payload_bytes =
+            encode_pairing_payload(&payload).map_err(|e| BindingError::Pairing(e.to_string()))?;
         *self.finished.lock().unwrap_or_else(PoisonError::into_inner) = true;
         Ok(PairedBundle {
             vault_root,
-            payload_bytes: bundle,
+            payload_bytes,
         })
     }
 }
@@ -467,9 +580,86 @@ impl DevicePairing {
             session: Mutex::new(Some(session)),
             expected_peer_static,
             channel: Mutex::new(None),
+            joiner: Mutex::new(None),
             finished: Mutex::new(false),
         }
     }
+
+    /// Seal one pairing message, checking this device is the side that sends
+    /// it.
+    ///
+    /// Six public methods would otherwise each repeat the role check, the lock,
+    /// the "confirm the SAS first" error and the base64 — and the role check is
+    /// the one that must not be forgotten: a UI that called a sponsor method on
+    /// a joiner would produce a message the peer cannot make sense of, several
+    /// legs after the mistake.
+    ///
+    /// `plaintext` is wiped after sealing. `PairingPayload` and `PairingGrant`
+    /// zeroize themselves on drop; their *encodings* are the same secrets in
+    /// serialized form and have no such courtesy, so the place that consumes
+    /// one is the place that has to end its life.
+    fn send_as(
+        &self,
+        sender: PairingRole,
+        plaintext: &[u8],
+        what: &str,
+        finishes: bool,
+    ) -> Result<String, BindingError> {
+        if self.role != sender {
+            return Err(BindingError::Pairing(format!(
+                "this device is not the one that sends {what}"
+            )));
+        }
+        let mut plain = plaintext.to_vec();
+        let mut guard = self.channel.lock().unwrap_or_else(PoisonError::into_inner);
+        let sealed = guard
+            .as_mut()
+            .ok_or_else(|| BindingError::Pairing("confirm the SAS first".into()))
+            .and_then(|channel| Ok(channel.send(&plain)?));
+        plain.zeroize();
+        let sealed = sealed?;
+        if finishes {
+            *self.finished.lock().unwrap_or_else(PoisonError::into_inner) = true;
+        }
+        Ok(URL_SAFE_NO_PAD.encode(sealed))
+    }
+
+    /// Open one pairing message, checking this device is the side that receives
+    /// it.
+    fn receive_from(
+        &self,
+        receiver: PairingRole,
+        sealed: &str,
+        what: &str,
+    ) -> Result<Vec<u8>, BindingError> {
+        if self.role != receiver {
+            return Err(BindingError::Pairing(format!(
+                "this device is not the one that receives {what}"
+            )));
+        }
+        let raw = decode_b64(sealed, what)?;
+        let mut guard = self.channel.lock().unwrap_or_else(PoisonError::into_inner);
+        let channel = guard
+            .as_mut()
+            .ok_or_else(|| BindingError::Pairing("confirm the SAS first".into()))?;
+        Ok(channel.receive(&raw)?)
+    }
+}
+
+/// Read a 32-byte seed off the seam.
+///
+/// [`BindingError::BadVaultRoot`] is reused rather than a new variant: it is
+/// already "a 32-byte key came across at the wrong length", it carries the
+/// length, and a second error case meaning the same thing is a second string
+/// for a Swift `switch` to miss.
+fn seed32(bytes: Vec<u8>) -> Result<[u8; 32], BindingError> {
+    let len = bytes.len();
+    let mut bytes = bytes;
+    let out = <[u8; 32]>::try_from(bytes.as_slice()).map_err(|_| BindingError::BadVaultRoot {
+        len: u32::try_from(len).unwrap_or(u32::MAX),
+    });
+    bytes.zeroize();
+    out
 }
 
 /// Read the account-scoping hash a pairing QR carries.

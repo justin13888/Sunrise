@@ -124,8 +124,8 @@ first difference; the other two are set out below.
 
 **Calendar block → Task is No in both columns, and what is missing is the two
 modifiers, not a layout that could hold them.** A Block is not a drag
-source: `BlockChip` (`CalendarView.swift:358-457`) carries a tap
-(`:407`), a move gesture (`:408`) and a context menu (`:410`), and no
+source: `BlockChip` (`CalendarView.swift:417-516`) carries a tap
+(`:466`), a move gesture (`:467`) and a context menu (`:469`), and no
 `.draggable` — the only `.draggable` in the whole tree is the task row's
 (`TaskRowView.swift:74`). A task row is not a drop target for one either:
 `TaskListView.swift:192` is a `dropDestination` that reorders and does nothing
@@ -197,10 +197,10 @@ Sunrise window would put a list beside the grid, but this app cannot vend one:
 windows on iPadOS are gated on `UIApplicationSupportsMultipleScenes` inside
 `UIApplicationSceneManifest`, which nothing here sets. The `SunriseiOS` target
 has no checked-in plist at all — its Info.plist is generated
-(`project.yml:192-203`, `GENERATE_INFOPLIST_FILE: YES` at `:181`) from three
+(`project.yml:359-368`, `GENERATE_INFOPLIST_FILE: YES` at `:346`) from three
 `properties` (`CFBundleURLTypes` and the two version keys) and three
 `INFOPLIST_KEY_` settings (`UILaunchScreen_Generation`, and the two
-`UISupportedInterfaceOrientations`, `:182-190`). Neither key appears in any of
+`UISupportedInterfaceOrientations`, `:347-355`). Neither key appears in any of
 them, or anywhere in `apps/apple`; absent, `UIApplicationSupportsMultipleScenes`
 takes its default of `NO`, so iPadOS grants the app one scene and there is no
 second window to drag into. *File → Task* is qualified to the iPad for the
@@ -248,7 +248,8 @@ These run via local OS APIs (deep links into the app for desktop; native action 
 **macOS and iOS are both implemented today**, and not as two implementations:
 the categories, the task category's three buttons and the response delegate
 are one shared file
-(`apps/apple/Sunrise/Notifications/NotificationCenterClient.swift:60-105`)
+(`apps/apple/Sunrise/Notifications/NotificationCenterClient.swift:88-113`
+for the category and its buttons, `:235-264` for the delegate)
 compiled into both products. The iOS column carries SHOULDs rather than MUSTs
 ([ADR-0028](../11-adr/0028-ios-is-a-v1-client.md)). Android and Web remain
 [deferred clients](./parity-matrix.md) and carry no MUSTs at all.
