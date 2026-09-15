@@ -447,19 +447,66 @@ fn param<'a>(params: &'a str, want: &str) -> Option<&'a str> {
     None
 }
 
+/// RFC 5545 §3.3.4 `date`: `date-fullyear date-month date-mday`, which is
+/// eight ASCII digits and nothing else.
+///
+/// This is checked before `strptime` rather than left to it, because `jiff`'s
+/// `%Y` implements a *superset* of `date-fullyear`: it takes an optional sign
+/// and as few as one digit, and the numeric directives after it skip leading
+/// whitespace. So `-202 0302` parses, as the year −202. Nothing in iCalendar
+/// can express a year outside `0000`–`9999`, which means [`write_time`] cannot
+/// render one back — `strftime`'s `%Y` pads to four *columns* including the
+/// sign, so year −202 comes out as `-202` and reads back as `-2020`. Refusing
+/// the value here is what keeps `write` a fixed point over `parse`: the
+/// parser's output range becomes exactly what the writer can spell.
+fn is_ical_date(value: &str) -> bool {
+    value.len() == 8 && value.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// RFC 5545 §3.3.5 `date-time` with its UTC designator already removed: an
+/// [`is_ical_date`] `date`, the literal `T`, and `time-hour time-minute
+/// time-second` as six more ASCII digits.
+fn is_ical_date_time(value: &str) -> bool {
+    let Some((date, time)) = value.split_once('T') else {
+        return false;
+    };
+    is_ical_date(date) && time.len() == 6 && time.bytes().all(|b| b.is_ascii_digit())
+}
+
 /// Read a `DTSTART` / `DTEND` value in the light of its parameters.
 ///
 /// Returns the value, plus the zone name when a `TZID` had to be abandoned —
 /// which the caller reports as `int.import.tz_unknown`
 /// (`docs/09-integrations/icalendar.md` §Time zones).
+///
+/// The value is held to RFC 5545's grammar exactly (see [`is_ical_date`]);
+/// anything else is an `Err`, which the caller turns into a
+/// [`NoticeCode::BadValue`] rather than dropping in silence.
 fn parse_time(params: &str, value: &str) -> Result<(ICalTime, Option<String>), String> {
     let value = value.trim();
-    if param(params, "VALUE").is_some_and(|v| v.eq_ignore_ascii_case("DATE")) || value.len() == 8 {
+    if param(params, "VALUE").is_some_and(|v| v.eq_ignore_ascii_case("DATE")) || is_ical_date(value)
+    {
+        // Reached with a non-DATE value only when `VALUE=DATE` claimed one.
+        // That parameter states what the value *is*, so a value that is not
+        // one is an error rather than a reason to try the DATE-TIME reading.
+        if !is_ical_date(value) {
+            return Err("not a DATE; RFC 5545 §3.3.4 wants YYYYMMDD".into());
+        }
         let date = civil::Date::strptime("%Y%m%d", value).map_err(|e| e.to_string())?;
         return Ok((ICalTime::Date(date), None));
     }
-    let utc = value.ends_with('Z') || value.ends_with('z');
-    let naked = value.trim_end_matches(['Z', 'z']);
+    // RFC 5545 §3.3.5 form 2: one trailing `Z` states UTC. The spec spells it
+    // upper case; lower case is accepted because feeds emit it, and `write`
+    // normalises it back to `Z` on the first pass.
+    let (naked, utc) = match value.strip_suffix(['Z', 'z']) {
+        Some(rest) => (rest, true),
+        None => (value, false),
+    };
+    if !is_ical_date_time(naked) {
+        return Err(
+            "not a DATE-TIME; RFC 5545 §3.3.5 wants YYYYMMDDTHHMMSS with an optional Z".into(),
+        );
+    }
     let dt = civil::DateTime::strptime("%Y%m%dT%H%M%S", naked).map_err(|e| e.to_string())?;
     if utc {
         // A `Z` value is UTC by definition, so this conversion cannot be
@@ -496,6 +543,12 @@ fn parse_time(params: &str, value: &str) -> Result<(ICalTime, Option<String>), S
 }
 
 /// The parameters and value to write for one time.
+///
+/// `%Y` renders four digits for every year iCalendar can express, which is the
+/// `0000`–`9999` that [`is_ical_date`] is there to hold [`parse`] to. Outside
+/// that range there is no conforming spelling to emit and `%Y` falls back to a
+/// signed, shorter field, so a [`ICalTime`] built by hand from a proleptic year
+/// renders something this module's own parser will not read back.
 fn write_time(t: &ICalTime) -> (String, String) {
     match t {
         ICalTime::Utc(at) => (String::new(), at.strftime("%Y%m%dT%H%M%SZ").to_string()),
@@ -653,6 +706,63 @@ DTEND:20260301T150000Z\r\n");
             cal.events[0].dtstart,
             Some(ICalTime::Date(civil::date(2026, 3, 1)))
         );
+    }
+
+    /// Issue #190, found by the `ical` fuzz target. `jiff`'s `%Y` accepts a
+    /// signed year of fewer than four digits and its `%m` then skips the
+    /// whitespace in front of it, so `-202 0302T100000` used to parse as the
+    /// year −202 — a year `write` renders as `-2020302T100000`, which reads
+    /// back as year −2020 and month 30 and is therefore dropped. That is
+    /// `write(parse(write(x))) != write(x)`, the property the fuzz target
+    /// asserts. RFC 5545 §3.3.4 has four digits and no sign, so the value is
+    /// not iCalendar and is refused.
+    #[test]
+    fn a_year_outside_the_four_digits_rfc_5545_allows_is_refused() {
+        let cal = one("DTSTART:-202 0302T100000\r\n");
+        assert_eq!(cal.events[0].dtstart, None);
+        assert_eq!(cal.notices.len(), 1);
+        assert_eq!(cal.notices[0].code, NoticeCode::BadValue);
+
+        // The four-digit negative year the same input class also reaches.
+        let signed = one("DTSTART:-20260301T100000\r\n");
+        assert_eq!(signed.events[0].dtstart, None);
+        assert_eq!(signed.notices[0].code, NoticeCode::BadValue);
+    }
+
+    /// The fuzz target's property, stated as a test over the input that broke
+    /// it: one `parse` may normalise, the `write` after it may not move again.
+    #[test]
+    fn writing_is_a_fixed_point_over_parsing() {
+        let doc = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:ev1\r\n\
+DTSTART:-202 0302T100000\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        let rendered = write(&parse(doc).unwrap().events);
+        let reparsed = parse(&rendered).unwrap();
+        assert_eq!(rendered, write(&reparsed.events));
+        assert!(reparsed.notices.is_empty(), "{:?}", reparsed.notices);
+    }
+
+    /// Whitespace and separators inside a value are the parser's own business,
+    /// not `strptime`'s: every one of these reads as a date under `jiff`'s
+    /// looser directives and none of them is an iCalendar value.
+    #[test]
+    fn a_time_value_must_match_the_grammar_exactly() {
+        for bad in [
+            "+20260301T100000",
+            "2026 0301T100000",
+            "20260301T10 0000",
+            "20260301T100000ZZ",
+            "20260301T1000",
+            "2026030T100000",
+        ] {
+            let cal = one(&format!("DTSTART:{bad}\r\n"));
+            assert_eq!(cal.events[0].dtstart, None, "{bad} should not parse");
+            assert_eq!(cal.notices[0].code, NoticeCode::BadValue, "{bad}");
+        }
+        for bad in ["-2020302", "2026 301", "202603011"] {
+            let cal = one(&format!("DTSTART;VALUE=DATE:{bad}\r\n"));
+            assert_eq!(cal.events[0].dtstart, None, "{bad} should not parse");
+            assert_eq!(cal.notices[0].code, NoticeCode::BadValue, "{bad}");
+        }
     }
 
     #[test]
