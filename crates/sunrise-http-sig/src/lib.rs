@@ -195,6 +195,31 @@ pub fn sign_with<T: serde::Serialize>(
     Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(sign_bytes(canonical.as_bytes())))
 }
 
+/// [`sign_with`], for a body that is not JSON.
+///
+/// A chunk `PUT` carries raw ciphertext. There is no value to canonicalize, so
+/// the bytes are handed to [`canonical_string`] as they stand — which is the
+/// generalisation this module's header describes rather than a second scheme,
+/// and it is the exact form `SignedBinary` verifies on the relay.
+///
+/// Separate from [`sign_with`] rather than a `body: &[u8]` parameter on it,
+/// because the two differ in what the caller is promising. `sign_with` takes a
+/// *value* and owns the encoding, so a client cannot sign one serialisation and
+/// send another. This takes bytes and promises nothing about them, which is
+/// only sound when the bytes are the message — and naming it separately is what
+/// keeps a JSON body from reaching the path that skips canonicalization.
+#[must_use]
+pub fn sign_binary_with(
+    sign_bytes: impl FnOnce(&[u8]) -> [u8; 64],
+    method: &str,
+    path_and_query: &str,
+    date: &str,
+    body: &[u8],
+) -> String {
+    let canonical = canonical_string(method, path_and_query, date, body);
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(sign_bytes(canonical.as_bytes()))
+}
+
 /// Encode an Ed25519 public key the way `device_pub_s` is registered and read.
 ///
 /// The inverse of `parse_verifying_key`, and it sits beside it deliberately.
@@ -354,6 +379,62 @@ mod tests {
             zeta: "z".into(),
             alpha: 1,
         }
+    }
+
+    /// The chunk-`PUT` half of the scheme, both directions.
+    ///
+    /// The relay verifies a binary body with [`verify_canonical`] over the raw
+    /// bytes; until `sign_binary_with` existed nothing in the workspace produced
+    /// that signature, so the one route whose body is not JSON was signed by
+    /// nobody and asserted by nothing.
+    #[test]
+    fn a_binary_body_signs_and_verifies_over_its_own_bytes() {
+        let k = key();
+        let bytes = b"\x00\x01\x02 opaque ciphertext \xff";
+        let sig = sign_binary_with(
+            |msg| k.sign(msg).to_bytes(),
+            "PUT",
+            "/api/v1/blobs/up_00112233445566778899aabbccddeeff/0",
+            DATE,
+            bytes,
+        );
+        verify_canonical(
+            &pub_b64(&k),
+            &sig,
+            "PUT",
+            "/api/v1/blobs/up_00112233445566778899aabbccddeeff/0",
+            DATE,
+            bytes,
+            NOW_MS,
+        )
+        .expect("the relay's verifier accepts what this produced");
+    }
+
+    /// One flipped ciphertext byte is a different message, which is the whole
+    /// point of signing the body rather than the target alone: a relay that
+    /// swapped chunks between two uploads would produce exactly this.
+    #[test]
+    fn a_binary_signature_does_not_cover_a_different_body() {
+        let k = key();
+        let sig = sign_binary_with(
+            |msg| k.sign(msg).to_bytes(),
+            "PUT",
+            "/api/v1/blobs/up_00112233445566778899aabbccddeeff/0",
+            DATE,
+            b"chunk-zero",
+        );
+        assert!(matches!(
+            verify_canonical(
+                &pub_b64(&k),
+                &sig,
+                "PUT",
+                "/api/v1/blobs/up_00112233445566778899aabbccddeeff/0",
+                DATE,
+                b"chunk-one!",
+                NOW_MS,
+            ),
+            Err(SigError::BadSignature)
+        ));
     }
 
     /// The registration bug, pinned from both directions.

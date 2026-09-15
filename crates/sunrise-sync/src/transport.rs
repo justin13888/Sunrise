@@ -61,10 +61,41 @@ pub enum RevokeOutcome {
     Unknown,
 }
 
+/// What the relay committed a finalized blob as.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BlobCommit {
+    /// The relay's content address for the blob: the first sixteen bytes of
+    /// BLAKE3 over its ciphertext. A client that already computed that hash
+    /// knows this value before it asks, which is what lets another device fetch
+    /// the blob without ever seeing a `finalize` response.
+    pub blob_id: [u8; 16],
+    /// Committed size in bytes.
+    pub size_bytes: u64,
+    /// Committed chunk count.
+    pub chunk_count: u32,
+}
+
 /// Async wire transport. Both client and server sides implement this.
 ///
 /// Each call sends or receives a complete *frame* — the framing layer in
 /// `sunrise-wire-protocol::frame` is the unit of work.
+///
+/// # The four blob operations
+///
+/// They are on this trait and not on a client of their own for the reason
+/// [`Transport::revoke_device`] is: the driver already holds exactly one
+/// transport, already holds the device binding that signs every one of these
+/// routes, and is already the only thing in the client that knows whether the
+/// relay is reachable. A second HTTP client beside it would need its own copy
+/// of the base URL, the bearer, the signer and the reachability state, and
+/// would be a second thing to keep in step with all four.
+///
+/// They are *four* operations rather than one `upload_blob`, because the
+/// sequencing is where the idempotency lives and that is a policy decision the
+/// core takes and tests — see `sunrise_core::blob_sync`. A transport that ran
+/// the whole two-phase commit itself would own the decision about what to do
+/// with a half-finished upload, and would own it four times over once there is
+/// a second transport.
 #[async_trait]
 pub trait Transport: Send + Sync {
     /// Send one already-encoded frame.
@@ -97,6 +128,68 @@ pub trait Transport: Send + Sync {
         &mut self,
         _device_id: [u8; 16],
     ) -> Result<RevokeOutcome, TransportError> {
+        Err(TransportError::Unsupported)
+    }
+
+    /// `POST /api/v1/blobs/init`: reserve an upload id for `chunk_count` chunks
+    /// totalling `size_bytes` of ciphertext, under `stream_id`.
+    ///
+    /// The returned id is the **only** thing that keeps a retry from costing
+    /// the relay a second pending directory, so a caller that stores it is
+    /// expected to keep it and re-use it rather than calling this again.
+    ///
+    /// `size_bytes` is advisory — the relay checks the real total at finalize —
+    /// but it is checked against the per-attachment ceiling here, so an
+    /// oversized attachment is refused before a byte is uploaded.
+    async fn blob_init(
+        &mut self,
+        _stream_id: &[u8; 16],
+        _chunk_count: u32,
+        _size_bytes: u64,
+    ) -> Result<String, TransportError> {
+        Err(TransportError::Unsupported)
+    }
+
+    /// `PUT /api/v1/blobs/{upload_id}/{chunk_idx}`: store one chunk of opaque
+    /// ciphertext under a reserved upload.
+    ///
+    /// Idempotent at the relay: the chunk is written at a path derived from
+    /// the upload id and the index, so re-sending one overwrites it in place.
+    async fn blob_put_chunk(
+        &mut self,
+        _upload_id: &str,
+        _chunk_idx: u32,
+        _bytes: &[u8],
+    ) -> Result<(), TransportError> {
+        Err(TransportError::Unsupported)
+    }
+
+    /// `POST /api/v1/blobs/finalize`: check every stored chunk and commit.
+    ///
+    /// `chunk_hashes` are BLAKE3 over each sealed chunk, in order;
+    /// `ciphertext_hash` is BLAKE3 over their concatenation. The relay re-hashes
+    /// what it actually holds and refuses the commit on any disagreement, so
+    /// these are a claim being checked rather than a claim being trusted.
+    async fn blob_finalize(
+        &mut self,
+        _upload_id: &str,
+        _ciphertext_hash: &[u8; 32],
+        _chunk_hashes: &[[u8; 32]],
+    ) -> Result<BlobCommit, TransportError> {
+        Err(TransportError::Unsupported)
+    }
+
+    /// `GET /api/v1/blobs/{blob_id}`: the committed chunks, concatenated.
+    ///
+    /// `Ok(None)` for a blob the relay does not hold — which covers "never
+    /// uploaded", "uploaded by a device that has not finished yet" and "not
+    /// this account's blob" alike, because the relay answers all three with one
+    /// 404 so that the route cannot be used to probe for another account's
+    /// ciphertext.
+    ///
+    /// The body carries no framing between chunks;
+    /// `sunrise_crypto::split_sealed` recovers the boundaries.
+    async fn blob_fetch(&mut self, _blob_id: &[u8; 16]) -> Result<Option<Vec<u8>>, TransportError> {
         Err(TransportError::Unsupported)
     }
 }

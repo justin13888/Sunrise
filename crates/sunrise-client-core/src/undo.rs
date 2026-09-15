@@ -799,6 +799,7 @@ mod tests {
                     blob_id: [0; 16],
                     chunk_count: 1,
                     content_hash: [0; 32],
+                    ciphertext_hash: [0; 32],
                 }),
                 EntityRef::new(EntityKind::Attachment, [7; 16]),
             ),

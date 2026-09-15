@@ -18,11 +18,17 @@
 //!
 //! # What this does not do
 //!
-//! Chunks land in **this vault's** blob store. Uploading them to the relay so a
-//! paired device can fetch them is `POST /blobs/init` → `PUT` → `finalize`,
-//! which is mounted and tested server-side and has no client here yet. Until it
-//! does, an attachment is readable on the device that made it and its metadata
-//! — filename, size, type — syncs everywhere. `Core::attachment_bytes` reports
+//! Chunks land in **this vault's** blob store, and this module stops there.
+//! Getting them to the relay so a paired device can fetch them —
+//! `POST /blobs/init` → `PUT` → `finalize` — is `crate::blob_sync`, driven by
+//! [`crate::sync_driver`]; all `attach_file` does about it is write the queue
+//! row. That split is the point: attaching a file is a synchronous local call
+//! the user is waiting on, and it has to finish on a device with no network.
+//!
+//! So an attachment is readable on the device that made it from the moment
+//! `attach_file` returns, and readable elsewhere once the upload and the fetch
+//! have both run. In between, and for an attachment whose bytes this device has
+//! chosen not to fetch, [`Core::attachment_bytes`] reports
 //! [`AttachError::BytesNotHere`] rather than pretending, so a client can say so.
 
 use crate::commands::Command;
@@ -30,7 +36,7 @@ use crate::core::{Core, CoreError};
 use crate::queries::{Query, QueryResult};
 use sunrise_crypto::blob_chunk::{
     chunk_count_for, content_hash, open_chunk, seal_chunk, verify_content, BlobChunkError,
-    CHUNK_PLAINTEXT_LEN,
+    CiphertextHasher, CHUNK_PLAINTEXT_LEN,
 };
 use sunrise_domain::validation::MAX_ATTACHMENT_BYTES;
 use sunrise_domain::{Attachment, AttachmentDraft};
@@ -119,11 +125,19 @@ impl Core {
 
         let chunk_count = chunk_count_for(size_bytes);
         let store = BlobStore::new(self.vault_dir())?;
+        // The ciphertext hash accumulates here and nowhere else. It is the only
+        // name the relay knows this blob by, and this loop is the one moment
+        // every sealed chunk exists: recomputing it later would mean reading
+        // the whole attachment back off disk to learn something that was free
+        // while it was being written.
+        let mut ciphertext = CiphertextHasher::new();
         for (idx, piece) in bytes.chunks(CHUNK_PLAINTEXT_LEN).enumerate() {
             let idx = u32::try_from(idx).unwrap_or(u32::MAX);
             let sealed = seal_chunk(&blob_key, &blob_id, idx, chunk_count, piece)?;
+            ciphertext.update(&sealed);
             store.put_chunk(&blob_id, idx, &sealed)?;
         }
+        let ciphertext_hash = ciphertext.finish();
 
         let draft = AttachmentDraft {
             parent,
@@ -134,9 +148,17 @@ impl Core {
             blob_id,
             chunk_count,
             content_hash: content_hash(bytes),
+            ciphertext_hash,
         };
         let result = self.submit(Command::AttachFile(draft)).await?;
-        self.attachment_row(result.entity).await
+        let att = self.attachment_row(result.entity).await?;
+        // The op is durable before the upload is queued, and that order is the
+        // one that is recoverable. A queued upload whose op never landed would
+        // push bytes nothing references; an op whose upload was never queued is
+        // an attachment that stays local, which is precisely the state this
+        // vault was already in and which the user can resolve by re-attaching.
+        self.enqueue_blob_upload(&att)?;
+        Ok(att)
     }
 
     /// Reassemble one attachment's plaintext from this vault's blob store.

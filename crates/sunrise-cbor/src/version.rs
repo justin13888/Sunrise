@@ -142,4 +142,13 @@ pub const CRYPTO_SUITE_V: u16 = 2;
 /// one-way derivation of it. It also needs the two digests the signatures are
 /// taken over, which were inside the payload blob, so the fold would have had
 /// to CBOR-decode a roster on every link at every open.
-pub const STORAGE_V: u16 = 23;
+///
+/// `24` is migration `0024_attachment_upload.sql`, which makes an attachment's
+/// bytes reachable from a second device (issue #176). It adds
+/// `attachments.ciphertext_hash` — the only thing that names a blob on the
+/// relay, since `finalize` content-addresses by the ciphertext and
+/// `content_hash` covers the plaintext — and `blob_uploads`, the durable queue
+/// of blobs whose chunks are sealed locally and not yet committed upstream.
+/// The queue is a table rather than a direct call for the reason 0020's is:
+/// attaching a file has to work offline.
+pub const STORAGE_V: u16 = 24;
