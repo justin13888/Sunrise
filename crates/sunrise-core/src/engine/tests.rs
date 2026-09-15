@@ -1906,6 +1906,202 @@ fn every_vault_meta_command_sequences_after_the_key_it_mints() {
     );
 }
 
+/// No command lets a caller name the vault-meta stream as an ordinary Stream.
+///
+/// `EntityRef::new` does not police the bytes, and every draft and patch below
+/// crosses the UniFFI seam — so "you would have to construct it by hand" means
+/// "any app, any CLI path, any future binding". `require_kind` checked the
+/// *kind* and not the id, which was the whole of the gap: a `Stream` ref of
+/// sixteen zero bytes is a well-formed Stream reference to the vault-meta log.
+///
+/// What it would have bought a caller: a Task routed into vault-meta reads the
+/// sequence number the control ops are themselves counting, which is `#214`
+/// from the other end — the half `Engine::meta_slot` cannot close, because the
+/// op is not a vault-meta *command* and has no business being there at all.
+///
+/// One command is deliberately **absent** from this table and must stay
+/// absent: `Command::RotateStreamKey`. Rotating the vault-meta key is a real
+/// operation — a device revocation does exactly that — and
+/// `reserved_stream_is_still_rotatable` below pins it.
+#[test]
+fn no_command_accepts_the_vault_meta_stream_as_an_ordinary_target() {
+    /// A well-formed `Stream` reference to the vault-meta log. Exactly what a
+    /// binding could build, and what nothing rejected before.
+    fn meta_ref() -> EntityRef {
+        EntityRef::new(EntityKind::Stream, META_STREAM)
+    }
+
+    type Build = fn(&Engine, &mut Db) -> Command;
+    let cases: &[(&str, Build)] = &[
+        ("CreateTask.stream_id", |_e, _db| {
+            Command::CreateTask(TaskDraft {
+                title: "t".into(),
+                stream_id: Some(meta_ref()),
+                ..Default::default()
+            })
+        }),
+        ("UpdateTask.patch.stream_id", |e, db| Command::UpdateTask {
+            id: new_task(e, db, "t"),
+            patch: TaskPatch {
+                stream_id: Some(meta_ref()),
+                ..Default::default()
+            },
+        }),
+        ("PromoteToStream.stream", |e, db| Command::PromoteToStream {
+            id: new_task(e, db, "t"),
+            stream: meta_ref(),
+        }),
+        ("CreateStream.parent_id", |_e, _db| {
+            Command::CreateStream(StreamDraft {
+                name: "child".into(),
+                parent_id: Some(meta_ref()),
+                ..Default::default()
+            })
+        }),
+        ("UpdateStream.id", |_e, _db| Command::UpdateStream {
+            id: meta_ref(),
+            patch: StreamPatch {
+                name: Some("renamed".into()),
+                ..Default::default()
+            },
+        }),
+        ("UpdateStream.patch.parent_id", |e, db| {
+            let id = e
+                .apply(
+                    db,
+                    Command::CreateStream(StreamDraft {
+                        name: "child".into(),
+                        ..Default::default()
+                    }),
+                )
+                .unwrap()
+                .entity;
+            Command::UpdateStream {
+                id,
+                patch: StreamPatch {
+                    parent_id: Some(Some(meta_ref())),
+                    ..Default::default()
+                },
+            }
+        }),
+        ("DeleteStream.id", |_e, _db| {
+            Command::DeleteStream(meta_ref())
+        }),
+        ("CreateRoutine.template.stream_id", |_e, _db| {
+            Command::CreateRoutine(routine_draft(
+                meta_ref(),
+                "FREQ=DAILY",
+                T0 as i64,
+                RoutineCatchupPolicy::Skip,
+                Vec::new(),
+            ))
+        }),
+        ("UpdateRoutine.patch.template", |e, db| {
+            let d = routine_draft(
+                inbox_stream_ref(),
+                "FREQ=DAILY",
+                T0 as i64,
+                RoutineCatchupPolicy::Skip,
+                Vec::new(),
+            );
+            let mut template = d.template.clone();
+            let id = e.apply(db, Command::CreateRoutine(d)).unwrap().entity;
+            template.stream_id = meta_ref();
+            Command::UpdateRoutine {
+                id,
+                patch: RoutinePatch {
+                    template: Some(template),
+                    ..Default::default()
+                },
+            }
+        }),
+        ("CreateBlock.stream_id", |_e, _db| {
+            let mut d = block_draft(9, 1, Some("b"));
+            d.stream_id = meta_ref();
+            Command::CreateBlock(d)
+        }),
+        ("ImportBlock.draft.stream_id", |_e, _db| {
+            let mut draft = block_draft(9, 1, Some("b"));
+            draft.stream_id = meta_ref();
+            Command::ImportBlock {
+                source: "ics".into(),
+                uid: "uid-1".into(),
+                draft,
+            }
+        }),
+        ("UpdateBlock.patch.stream_id", |e, db| {
+            let id = e
+                .apply(db, Command::CreateBlock(block_draft(9, 1, Some("b"))))
+                .unwrap()
+                .entity;
+            Command::UpdateBlock {
+                id,
+                patch: BlockPatch {
+                    stream_id: Some(meta_ref()),
+                    ..Default::default()
+                },
+            }
+        }),
+    ];
+
+    let mut failures: Vec<String> = Vec::new();
+    for (name, build) in cases {
+        let mut db = db();
+        let e = engine();
+        e.ensure_base_epochs(&mut db).unwrap();
+        let cmd = build(&e, &mut db);
+        match e.apply(&mut db, cmd) {
+            Err(EngineError::ReservedStream) => {}
+            Err(other) => failures.push(format!("{name}: refused, but not by name: {other:?}")),
+            Ok(res) => failures.push(format!(
+                "{name}: accepted, and wrote {:?} at seq {}",
+                res.entity, res.seq
+            )),
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} of {} caller-supplied stream ids reach the vault-meta log:\n  {}",
+        failures.len(),
+        cases.len(),
+        failures.join("\n  ")
+    );
+}
+
+/// The one command that may name the vault-meta stream, and the reason the
+/// guard is a per-command decision rather than a blanket ban.
+///
+/// `RotateStreamKey` mints a new epoch and seals it to every current device.
+/// On the vault-meta stream that is half of what a device revocation does, and
+/// a user who believes the control log's key is exposed has to be able to ask
+/// for it by name. It routes no entity op and reads its own sequence number
+/// inside the transaction, so it competes with nothing.
+#[test]
+fn the_vault_meta_stream_is_still_rotatable_by_name() {
+    let mut db = db();
+    // A random-key engine, not the derived-key one: the derived-key test
+    // keychain reports every key as already held and so writes no
+    // `stream_epochs` row, which is the thing this test reads.
+    let e = engine_random_keys(ROOT, [7u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    e.ensure_base_epochs(&mut db).unwrap();
+    let before = db
+        .with_tx(|tx| e.keychain.current_epoch_tx(tx, &META_STREAM))
+        .unwrap()
+        .expect("base epochs exist");
+    e.apply(
+        &mut db,
+        Command::RotateStreamKey {
+            stream: EntityRef::new(EntityKind::Stream, META_STREAM),
+        },
+    )
+    .expect("rotating the control log's own key is a supported operation");
+    let after = db
+        .with_tx(|tx| e.keychain.current_epoch_tx(tx, &META_STREAM))
+        .unwrap()
+        .expect("still there");
+    assert!(after > before, "the rotation minted a new epoch");
+}
+
 /// The `key_envelope` ops a mint emits now stamp **before** the op they
 /// enable, and that reversal is the one observable consequence of taking the
 /// LWW stamp inside the transaction rather than before it.

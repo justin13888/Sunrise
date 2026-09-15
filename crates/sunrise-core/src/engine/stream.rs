@@ -8,7 +8,7 @@
 //! materializes a remote entity into a Stream has to know the Stream row is
 //! there first — which is why it is `pub(super)` here rather than duplicated.
 
-use super::ids::{blob16, decode_unknowns, encode_unknowns, ms_to_ts, require_kind};
+use super::ids::{blob16, decode_unknowns, encode_unknowns, ms_to_ts, require_writable_stream};
 use super::lww::LwwStamp;
 use super::task::read_task;
 use super::{Engine, EngineError, META_STREAM};
@@ -33,6 +33,9 @@ impl Engine {
         d: StreamDraft,
     ) -> Result<CommandResult, EngineError> {
         d.validate()?;
+        if let Some(parent) = d.parent_id {
+            require_writable_stream(parent)?;
+        }
         let now_ms = self.clock.now_ms();
         let stream_id = self.fresh_id(EntityKind::Stream, now_ms);
         let last_key = last_stream_sort_order(db.conn())?;
@@ -98,7 +101,10 @@ impl Engine {
         id: EntityRef,
         patch: StreamPatch,
     ) -> Result<CommandResult, EngineError> {
-        require_kind(id, EntityKind::Stream)?;
+        require_writable_stream(id)?;
+        if let Some(Some(parent)) = patch.parent_id {
+            require_writable_stream(parent)?;
+        }
         patch.validate()?;
         let now_ms = self.clock.now_ms();
         let mut stream = read_stream(db.conn(), id.bytes())?
@@ -183,13 +189,14 @@ impl Engine {
         db: &mut Db,
         id: EntityRef,
     ) -> Result<CommandResult, EngineError> {
-        require_kind(id, EntityKind::Stream)?;
-        // Compared against the Inbox's own id, not against sixteen zero bytes:
-        // those are the vault-meta stream now, and a guard that names the wrong
-        // constant is a guard that protects the wrong thing.
-        if id.bytes() == &INBOX_STREAM_BYTES || id.bytes() == &META_STREAM {
+        // The vault-meta half of this guard is now the shared one — naming
+        // that stream at all is refused, deletion included. What stays here is
+        // the Inbox, which is a perfectly ordinary Stream in every other
+        // respect and reserved against deletion alone.
+        require_writable_stream(id)?;
+        if id.bytes() == &INBOX_STREAM_BYTES {
             return Err(EngineError::Invalid(
-                "cannot delete the inbox or vault-meta stream".into(),
+                "cannot delete the inbox stream".into(),
             ));
         }
         let now_ms = self.clock.now_ms();

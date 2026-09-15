@@ -14,8 +14,8 @@
 //! that already exists is not an error.
 
 use super::ids::{
-    decode_unknowns, encode_unknowns, energy_str, ms_to_ts, require_kind, task_state_str,
-    time_to_parts,
+    decode_unknowns, encode_unknowns, energy_str, ms_to_ts, require_kind, require_writable_stream,
+    task_state_str, time_to_parts,
 };
 use super::lww::LwwStamp;
 use super::stream::ensure_stream_row;
@@ -76,6 +76,7 @@ impl Engine {
         d: RoutineDraft,
     ) -> Result<CommandResult, EngineError> {
         d.validate()?;
+        require_writable_stream(d.template.stream_id)?;
         let now_ms = self.clock.now_ms();
         let routine_id = self.fresh_id(EntityKind::Routine, now_ms);
         let routine = Routine {
@@ -150,6 +151,9 @@ impl Engine {
         patch: RoutinePatch,
     ) -> Result<CommandResult, EngineError> {
         require_kind(id, EntityKind::Routine)?;
+        if let Some(t) = patch.template.as_ref() {
+            require_writable_stream(t.stream_id)?;
+        }
         patch.validate()?;
         let now_ms = self.clock.now_ms();
         let mut routine = read_routine(db.conn(), id.bytes())?

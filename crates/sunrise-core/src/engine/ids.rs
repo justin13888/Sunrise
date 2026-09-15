@@ -6,7 +6,7 @@
 //! rather than duplicated, and they are the only items in `engine` that know
 //! nothing about a table.
 
-use super::{Engine, EngineError};
+use super::{Engine, EngineError, META_STREAM};
 use sunrise_domain::time::SunriseTime;
 use sunrise_domain::TaskState;
 use sunrise_id::{EntityKind, EntityRef, Ulid};
@@ -87,6 +87,36 @@ pub(super) fn time_from_parts(
     ms.map(|ms| {
         SunriseTime::from_parts(ms, kind.unwrap_or(sunrise_domain::time::kind::INSTANT), tz)
     })
+}
+
+/// Reject a caller-supplied Stream reference that names the vault-meta stream.
+///
+/// Every command that takes a `stream_id` from outside runs this, and it is
+/// one function rather than a check per command for the same reason
+/// `Engine::meta_slot` is one function: the second hand-written copy of a rule
+/// is where the rule starts drifting. `delete_stream` established the shape —
+/// it refused the vault-meta id before anything else did — and this
+/// generalises it from "you may not delete it" to "you may not name it".
+///
+/// **The Inbox is not on this list.** It is a real Stream with a real key that
+/// Tasks legitimately live in, and it is reserved against *deletion* only;
+/// `delete_stream` keeps that check of its own.
+///
+/// **`Command::RotateStreamKey` deliberately does not call this.** Rotating the
+/// vault-meta key is a real operation — it is half of what a device revocation
+/// does — and a caller with reason to believe that key is exposed must be able
+/// to ask for it by name. It mints an epoch rather than routing an entity op,
+/// so nothing about it competes for a sequence number it did not read.
+///
+/// # Errors
+/// [`EngineError::Invalid`] if `r` is not a Stream at all;
+/// [`EngineError::ReservedStream`] if it is the vault-meta stream.
+pub(super) fn require_writable_stream(r: EntityRef) -> Result<(), EngineError> {
+    require_kind(r, EntityKind::Stream)?;
+    if r.bytes() == &META_STREAM {
+        return Err(EngineError::ReservedStream);
+    }
+    Ok(())
 }
 
 pub(super) fn require_kind(r: EntityRef, k: EntityKind) -> Result<(), EngineError> {

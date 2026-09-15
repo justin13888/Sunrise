@@ -74,6 +74,25 @@ fixed twice as a one-off (`60ee61d`, then `create_stream`) before being made
 unstatable. `Core::open` runs `ensure_base_epochs`, so no released build could
 reach it; an engine constructed directly can.
 
+### Naming the vault-meta stream
+
+The other end of the same rule: a caller may not route an *ordinary* entity
+into the control log at all. `EntityRef::new` does not police the bytes, so a
+`Stream` reference to sixteen zero bytes is a well-formed reference to
+vault-meta, and every draft and patch carrying a `stream_id` crosses the UniFFI
+seam — `TaskDraft`, `TaskPatch`, `StreamDraft.parent_id`, `StreamPatch`,
+`TaskTemplate` (so both Routine commands), `BlockDraft` and `BlockPatch`. Each
+of those runs `require_writable_stream`, which refuses with a named
+`EngineError::ReservedStream` rather than a validation string.
+
+The Inbox is **not** reserved by that check. It is an ordinary Stream with an
+ordinary key that Tasks live in; it is reserved against *deletion* only, which
+`delete_stream` still checks for itself.
+
+`Command::RotateStreamKey` deliberately may name vault-meta. Minting a fresh
+epoch for the control log is half of what a device revocation does, and a user
+who believes that key is exposed has to be able to ask for it by name.
+
 ## `ts_ms` vs ULID embedded timestamp
 
 `op_id` is a ULID; its embedded timestamp is the device's `ts_ms` at emit time. They are equal by construction at emit. `ts_ms` is what gets serialized in the envelope; the ULID's embedded ts is for sortability only. Clock-skew handling is per [`../03-crypto/audit-and-tamper-evidence.md`](../03-crypto/audit-and-tamper-evidence.md).
