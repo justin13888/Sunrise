@@ -238,10 +238,29 @@ final class SessionModel {
             // sealed, losing this device destroys that key permanently. That is
             // the state every Apple-created vault used to stay in for ever
             // (#181), and this is the one moment it can be left.
-            if phase == .unlocked { recoveryCeremony = makeRecoveryCeremony() }
+            if phase == .unlocked, Self.presentsRecoveryCeremony {
+                recoveryCeremony = makeRecoveryCeremony()
+            }
         } catch {
             phase = .failed(error.localizedDescription)
         }
+    }
+
+    /// Whether this process presents the ceremony at all.
+    ///
+    /// `true` everywhere except a UI test that did not ask for it. The
+    /// ceremony is a sheet over the whole window and every UI test in both
+    /// suites begins by creating a vault, so leaving it on covered the app
+    /// before the first assertion and failed twelve tests across five suites
+    /// at once — the whole iOS suite, since macOS runs no `XCUITest` in CI and
+    /// could not see it. `SunriseiOSUITests/RecoveryCeremonyUITests` is the one
+    /// that opts back in, so the ceremony is covered rather than hidden.
+    static var presentsRecoveryCeremony: Bool {
+        #if DEBUG
+        return UITestHarness.presentsRecoveryCeremony()
+        #else
+        return true
+        #endif
     }
 
     /// The recovery ceremony a freshly created vault owes its user, or `nil`
