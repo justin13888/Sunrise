@@ -642,6 +642,25 @@ mod testutil {
             .collect()
     }
 
+    /// Every `seq` `device` has written to the vault-meta stream, ascending.
+    ///
+    /// Reads the `ops` columns rather than the sealed envelopes because the
+    /// point is what the UNIQUE constraint sees.
+    pub(super) fn meta_seqs_of(db: &Db, device: &[u8; 16]) -> Vec<u64> {
+        let mut stmt = db
+            .conn()
+            .prepare(
+                "SELECT seq FROM ops
+                     WHERE stream_id = ? AND device_id = ?
+                     ORDER BY seq ASC",
+            )
+            .unwrap();
+        stmt.query_map(params![&META_STREAM[..], &device[..]], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<u64>>>()
+            .unwrap()
+    }
+
     pub(super) const ROOT: [u8; 32] = [0x5a; 32];
 
     pub(super) const T0: u64 = 1_700_000_000_000;
@@ -1604,6 +1623,65 @@ fn create_stream_round_trips() {
     // used to come back as "" / Slate).
     assert_eq!(st.name, "Work");
     assert_eq!(st.color, StreamColor::Sky);
+}
+
+/// #214: `create_stream` must read its sequence number inside the transaction
+/// whose `ops_insert` can mint the vault-meta stream's first key.
+///
+/// A random-key engine that has never run `ensure_base_epochs` holds no
+/// vault-meta key, so the `ops_insert` below mints one and emits the
+/// `key_envelope` ops that distribute it — into the very stream whose `seq`
+/// the command had already read. A read taken before the transaction hands
+/// out a number the mint then consumes, `ops` has a
+/// `UNIQUE(stream_id, device_id, seq)`, and the losing insert is silently
+/// ignored by `INSERT OR IGNORE` before its outbox row fails the foreign key.
+/// This is the same defect `60ee61d` fixed for `emit_control_op`.
+#[test]
+fn create_stream_reads_its_sequence_after_the_key_it_mints() {
+    let mut db = db();
+    let e = engine_random_keys(ROOT, [7u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    // Deliberately no `ensure_base_epochs`. `Core::open` runs it, which is why
+    // this is not reachable in production; an engine built directly is not so
+    // lucky, and it is the path every test that skips `Core` takes.
+    let res = e
+        .apply(
+            &mut db,
+            Command::CreateStream(StreamDraft {
+                name: "Work".into(),
+                ..Default::default()
+            }),
+        )
+        .expect("the create must not collide with the key it mints");
+
+    // The mint really did emit ops into this stream inside the transaction —
+    // without that, the assertion below would hold vacuously.
+    let seqs = meta_seqs_of(&db, &e.keychain.device_id());
+    assert!(
+        seqs.len() > 1,
+        "the transaction emitted only the create op, so nothing was raced: {seqs:?}"
+    );
+    // One `seq` per op, dense from 1: the create took a number after, not
+    // alongside, the envelopes.
+    assert_eq!(
+        seqs,
+        (1..=seqs.len() as u64).collect::<Vec<u64>>(),
+        "vault-meta sequence numbers must be dense and unique"
+    );
+    assert_eq!(
+        res.seq,
+        *seqs.last().expect("at least one op"),
+        "the create op holds the last sequence number, not the first"
+    );
+    // And the create op is genuinely in the log rather than `OR IGNORE`d away.
+    let logged: u32 = db
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM ops WHERE op_id = ?",
+            params![&res.op_id[..]],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(logged, 1, "the stream.create op reached the log");
 }
 
 // ---- contexts ----
