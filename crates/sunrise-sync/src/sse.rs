@@ -47,7 +47,7 @@
 //! written for.
 
 use crate::signer::DeviceSigner;
-use crate::transport::{RevokeOutcome, Transport, TransportError};
+use crate::transport::{BlobCommit, RevokeOutcome, Transport, TransportError};
 use async_trait::async_trait;
 use base64::Engine as _;
 use http_body_util::{BodyExt as _, Full};
@@ -178,6 +178,79 @@ impl SseTransport {
             (sunrise_http_sig::DEVICE_SIG_HEADER, signature),
             ("date", date),
         ])
+    }
+
+    /// The three `header_sig_v2` headers for a request whose body is **not**
+    /// JSON, or none if this transport carries no binding.
+    ///
+    /// Separate from [`Self::binding`] rather than a second parameter on it,
+    /// because the two sign different things: that one canonicalizes a value,
+    /// and here the bytes already are the canonical form. `sign_binary_with` is
+    /// the encoder both sides of that split share with the relay's verifier.
+    fn binding_bytes(&self, method: &str, path: &str, body: &[u8]) -> Vec<(&'static str, String)> {
+        let Some(signer) = &self.signer else {
+            return Vec::new();
+        };
+        let date = sunrise_http_sig::date_header(signer.now_ms());
+        let signature =
+            sunrise_http_sig::sign_binary_with(|msg| signer.sign(msg), method, path, &date, body);
+        vec![
+            (sunrise_http_sig::DEVICE_HEADER, signer.device_id()),
+            (sunrise_http_sig::DEVICE_SIG_HEADER, signature),
+            ("date", date),
+        ]
+    }
+
+    /// Issue one request with a raw byte body (possibly empty) and read the
+    /// whole reply.
+    ///
+    /// The blob surface is the only place this is needed: a chunk `PUT` sends
+    /// opaque ciphertext and a blob `GET` receives it, and neither is
+    /// describable as a JSON value. `content_type` is `None` for a request
+    /// with no body, which is what keeps a bodiless `GET` from advertising a
+    /// media type it is not sending.
+    async fn call_bytes(
+        &self,
+        method: &str,
+        path: &str,
+        content_type: Option<&str>,
+        body: &[u8],
+    ) -> Result<Reply, TransportError> {
+        let mut request = hyper::Request::builder()
+            .method(method)
+            .uri(format!("{}{path}", self.base));
+        if let Some(bearer) = &self.bearer {
+            request = request.header(hyper::header::AUTHORIZATION, format!("Bearer {bearer}"));
+        }
+        for (name, value) in self.binding_bytes(method, path, body) {
+            request = request.header(name, value);
+        }
+        if let Some(ct) = content_type {
+            request = request.header(hyper::header::CONTENT_TYPE, ct);
+        }
+        let request = request
+            .body(Full::new(Bytes::copy_from_slice(body)))
+            .map_err(|e| protocol(&e))?;
+
+        let response = self
+            .client
+            .request(request)
+            .await
+            .map_err(|e| TransportError::Unavailable(e.to_string()))?;
+        let status = response.status();
+        let date = server_date(response.headers());
+        let bytes = response
+            .into_body()
+            .collect()
+            .await
+            .map_err(|e| TransportError::Unavailable(e.to_string()))?
+            .to_bytes()
+            .to_vec();
+        Ok(Reply {
+            status,
+            date,
+            bytes,
+        })
     }
 
     /// Issue one JSON request and read the whole reply.
@@ -698,6 +771,127 @@ impl Transport for SseTransport {
                 )
             ),
         })
+    }
+
+    async fn blob_init(
+        &mut self,
+        stream_id: &[u8; 16],
+        chunk_count: u32,
+        size_bytes: u64,
+    ) -> Result<String, TransportError> {
+        let reply = self
+            .call(
+                "POST",
+                "/api/v1/blobs/init",
+                Some(serde_json::json!({
+                    "stream_id": hex::encode(stream_id),
+                    "chunk_count": chunk_count,
+                    "size_bytes": size_bytes,
+                })),
+            )
+            .await?;
+        if !reply.status.is_success() {
+            return Err(self.refuse(&reply));
+        }
+        serde_json::from_slice::<serde_json::Value>(&reply.bytes)
+            .ok()
+            .and_then(|v| {
+                v.get("upload_id")
+                    .and_then(|u| u.as_str())
+                    .map(ToOwned::to_owned)
+            })
+            .ok_or_else(|| TransportError::Protocol("blobs/init returned no upload_id".to_owned()))
+    }
+
+    async fn blob_put_chunk(
+        &mut self,
+        upload_id: &str,
+        chunk_idx: u32,
+        bytes: &[u8],
+    ) -> Result<(), TransportError> {
+        let reply = self
+            .call_bytes(
+                "PUT",
+                &format!("/api/v1/blobs/{upload_id}/{chunk_idx}"),
+                Some("application/octet-stream"),
+                bytes,
+            )
+            .await?;
+        if reply.status.is_success() {
+            return Ok(());
+        }
+        Err(self.refuse(&reply))
+    }
+
+    async fn blob_finalize(
+        &mut self,
+        upload_id: &str,
+        ciphertext_hash: &[u8; 32],
+        chunk_hashes: &[[u8; 32]],
+    ) -> Result<BlobCommit, TransportError> {
+        let hashes: Vec<String> = chunk_hashes.iter().map(hex::encode).collect();
+        let reply = self
+            .call(
+                "POST",
+                "/api/v1/blobs/finalize",
+                Some(serde_json::json!({
+                    "upload_id": upload_id,
+                    "content_hash": hex::encode(ciphertext_hash),
+                    "chunk_hashes": hashes,
+                })),
+            )
+            .await?;
+        if !reply.status.is_success() {
+            return Err(self.refuse(&reply));
+        }
+        let body: serde_json::Value =
+            serde_json::from_slice(&reply.bytes).map_err(|e| protocol(&e))?;
+        let blob_id = body
+            .get("blob_id")
+            .and_then(|b| b.as_str())
+            .and_then(|s| s.strip_prefix("blb_"))
+            .and_then(|hexpart| {
+                let mut out = [0u8; 16];
+                hex::decode_to_slice(hexpart, &mut out).ok().map(|()| out)
+            })
+            .ok_or_else(|| {
+                TransportError::Protocol("blobs/finalize returned no blob id".to_owned())
+            })?;
+        Ok(BlobCommit {
+            blob_id,
+            size_bytes: body
+                .get("size_bytes")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0),
+            chunk_count: body
+                .get("chunk_count")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|n| u32::try_from(n).ok())
+                .unwrap_or(0),
+        })
+    }
+
+    async fn blob_fetch(&mut self, blob_id: &[u8; 16]) -> Result<Option<Vec<u8>>, TransportError> {
+        let reply = self
+            .call_bytes(
+                "GET",
+                &format!("/api/v1/blobs/blb_{}", hex::encode(blob_id)),
+                None,
+                &[],
+            )
+            .await?;
+        if reply.status.is_success() {
+            return Ok(Some(reply.bytes));
+        }
+        // The relay answers "no such blob", "not yours" and "not finished yet"
+        // with one 404, deliberately — a distinguishable response would make
+        // this route an oracle for whether another account holds a given
+        // ciphertext. All three mean the same thing to a fetching device: the
+        // bytes are not here, try later.
+        if reply.status.as_u16() == 404 {
+            return Ok(None);
+        }
+        Err(self.refuse(&reply))
     }
 }
 

@@ -177,6 +177,7 @@ async fn create_and_delete_commands_publish_the_right_change_event() {
             blob_id: [9u8; 16],
             chunk_count: 1,
             content_hash: [11u8; 32],
+            ciphertext_hash: [13u8; 32],
         }))
         .await
         .unwrap()

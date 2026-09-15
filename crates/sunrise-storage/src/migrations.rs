@@ -87,6 +87,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "identity_chain_verification",
         sql: include_str!("../migrations/0023_identity_chain_verification.sql"),
     },
+    Migration {
+        id: 24,
+        name: "attachment_upload",
+        sql: include_str!("../migrations/0024_attachment_upload.sql"),
+    },
 ];
 
 /// Current storage version (= last migration id).

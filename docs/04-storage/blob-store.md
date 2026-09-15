@@ -115,6 +115,18 @@ hands back one URL per chunk, `PUT /blobs/{upload_id}/{idx}` uploads each sealed
 chunk, `POST /blobs/finalize` verifies and commits. The per-blob key never goes
 near any of them — it rides inside the attachment op envelope.
 
+The client is `sunrise_core::sync_driver`, draining the `blob_uploads` queue
+`Core::attach_file` writes. Two consequences of that shape are worth knowing
+from this side of the wire. The `up_…` id is reserved **once per blob**, not
+once per attempt, and persisted before the first chunk goes out, so a retry
+re-`PUT`s into the same pending directory rather than stranding one per
+attempt. And what a reader asks `GET /blobs/{blob_id}` for is derived on the
+reading device: the blob's address is the first sixteen bytes of BLAKE3 over its
+ciphertext, which the *sealing* device computed while writing the chunks and
+recorded on the attachment op, because a device that has only the metadata
+cannot hash ciphertext it does not have.
+`crates/sunrise-core/src/blob_sync.rs` carries the rest.
+
 ## Lazy fetch
 
 A device decides per-attachment when to fetch. Default policies:

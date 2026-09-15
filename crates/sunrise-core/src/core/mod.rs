@@ -60,6 +60,9 @@ pub enum CoreError {
     /// Direct SQLite error from a driver-support read.
     #[error("sqlite: {0}")]
     Sqlite(#[from] rusqlite::Error),
+    /// The attachment blob store could not be read or written.
+    #[error(transparent)]
+    BlobStore(#[from] sunrise_storage::BlobStoreError),
     /// Closed Core handed a request.
     #[error("core is closed")]
     Closed,
@@ -747,121 +750,18 @@ impl Core {
         })
     }
 
-    /// Devices this vault has revoked and not yet told the relay about.
+    /// The vault database, locked.
     ///
-    /// The 16-byte ids are the vault's own, which is the only name a revoking
-    /// device holds for a peer and the one
-    /// `DELETE /api/v1/devices/by-vault-id/{id}` takes.
+    /// `pub(crate)` so that the accessors for one table can live in the module
+    /// that owns that table rather than accumulating here — which is the split
+    /// `relay_intents` and `blob_sync` are, and the one the file-size gate asks
+    /// for by name: "a group of symbols that share a table".
     ///
-    /// # Errors
-    /// Storage failures.
-    pub(crate) fn pending_relay_revocations(&self) -> Result<Vec<[u8; 16]>, CoreError> {
-        let db = self.db.lock();
-        let mut stmt = db
-            .conn()
-            .prepare("SELECT device_id FROM relay_revocation_intents ORDER BY created_at_ms ASC")?;
-        let rows = stmt
-            .query_map([], |r| r.get::<_, Vec<u8>>(0))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows
-            .into_iter()
-            .filter_map(|id| <[u8; 16]>::try_from(id.as_slice()).ok())
-            .collect())
-    }
-
-    /// Whether a revocation of `device_id` is still owed to the relay.
-    ///
-    /// The two halves of a revocation are different guarantees and a user is
-    /// entitled to know which they have: the vault half is committed the
-    /// moment `RevokeDevice` returns, while the relay half is a queued intent
-    /// that needs a session. A client that reported only the first would let
-    /// someone with no network believe a stolen laptop had been cut off from
-    /// the server, which it has not been. See issue #160.
-    ///
-    /// # Errors
-    /// Storage failures.
-    pub fn relay_revocation_pending(&self, device_id: &[u8; 16]) -> Result<bool, CoreError> {
-        let db = self.db.lock();
-        let found: Option<i64> = db
-            .conn()
-            .query_row(
-                "SELECT 1 FROM relay_revocation_intents WHERE device_id = ?",
-                rusqlite::params![&device_id[..]],
-                |r| r.get(0),
-            )
-            .ok();
-        Ok(found.is_some())
-    }
-
-    /// Forget an intent the relay has answered.
-    ///
-    /// # Errors
-    /// Storage failures.
-    pub(crate) fn clear_relay_revocation(&self, device_id: [u8; 16]) -> Result<(), CoreError> {
-        let db = self.db.lock();
-        db.conn().execute(
-            "DELETE FROM relay_revocation_intents WHERE device_id = ?",
-            rusqlite::params![&device_id[..]],
-        )?;
-        Ok(())
-    }
-
-    /// Record that an attempt was made and refused, so a relay that keeps
-    /// saying no is visible rather than retried in silence.
-    ///
-    /// # Errors
-    /// Storage failures.
-    pub(crate) fn note_relay_revocation_attempt(
-        &self,
-        device_id: [u8; 16],
-        now_ms: u64,
-    ) -> Result<u64, CoreError> {
-        let db = self.db.lock();
-        db.conn().execute(
-            "UPDATE relay_revocation_intents
-             SET attempts = attempts + 1, last_attempt_ms = ?
-             WHERE device_id = ?",
-            rusqlite::params![i64::try_from(now_ms).unwrap_or(i64::MAX), &device_id[..]],
-        )?;
-        let attempts: i64 = db.conn().query_row(
-            "SELECT attempts FROM relay_revocation_intents WHERE device_id = ?",
-            rusqlite::params![&device_id[..]],
-            |r| r.get(0),
-        )?;
-        Ok(u64::try_from(attempts).unwrap_or(0))
-    }
-
-    /// Queue a relay revocation without going through `Command::RevokeDevice`.
-    ///
-    /// Test-only. The command refuses a device this vault has never admitted,
-    /// which is the right rule and makes the driver's own tests — which have
-    /// no second device to admit — unable to reach the queue at all.
-    #[cfg(test)]
-    pub(crate) fn queue_relay_revocation_for_test(
-        &self,
-        device_id: [u8; 16],
-    ) -> Result<(), CoreError> {
-        let db = self.db.lock();
-        db.conn().execute(
-            "INSERT OR IGNORE INTO relay_revocation_intents (device_id, created_at_ms)
-             VALUES (?, ?)",
-            rusqlite::params![&device_id[..], 1_i64],
-        )?;
-        Ok(())
-    }
-
-    /// How many times the relay has refused this revocation. Test-only.
-    #[cfg(test)]
-    pub(crate) fn relay_revocation_attempts_for_test(
-        &self,
-        device_id: [u8; 16],
-    ) -> Result<i64, CoreError> {
-        let db = self.db.lock();
-        Ok(db.conn().query_row(
-            "SELECT attempts FROM relay_revocation_intents WHERE device_id = ?",
-            rusqlite::params![&device_id[..]],
-            |r| r.get(0),
-        )?)
+    /// Everything the lock rules say still applies to a caller that takes it:
+    /// read, write, and *drop the guard* before any `.await`. The driver's
+    /// `Send` futures depend on it.
+    pub(crate) fn db(&self) -> parking_lot::MutexGuard<'_, Db> {
+        self.db.lock()
     }
 
     /// Count of unacked outbox rows (DB truth).

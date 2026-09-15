@@ -296,6 +296,7 @@ mod testutil {
             blob_id: [9u8; 16],
             chunk_count: 2,
             content_hash: [11u8; 32],
+            ciphertext_hash: [13u8; 32],
         }
     }
 

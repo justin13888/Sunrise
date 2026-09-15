@@ -98,16 +98,25 @@ Attachments are not pre-fetched on sync. Each device pulls on first view, decryp
 - Re-tapping a `partial: true` attachment retries from byte 0 (chunks are 256 KiB each, per [`../03-crypto/data-encryption-format.md`](../03-crypto/data-encryption-format.md) §blob-chunks; the cache uses chunk granularity but resume-from-partial is not implemented in v1).
 - Cellular vs Wi-Fi: per-platform setting `auto_fetch_on_cellular: bool = false`.
 
-> **Lazy fetch is not reachable in v1**
-> ([#176](https://github.com/justin13888/Sunrise/issues/176)). There is no
-> client-side uploader:
-> `Core::attach_file` seals chunks into the *local* vault's `BlobStore` and the
-> metadata op syncs, but nothing drives the relay's
-> `init` → `PUT` → `finalize` flow, which is implemented and tested
-> server-side. So a paired device receives an Attachment's metadata and cannot
-> fetch its bytes. `Core::attachment_is_local` is the query that distinguishes
-> the two cases. Everything above describes the fetch policy for when the
-> uploader lands.
+> **What of this is built** ([#176](https://github.com/justin13888/Sunrise/issues/176)).
+> The byte path is: `Core::attach_file` seals the chunks into the local
+> `BlobStore` and queues the blob in `blob_uploads`;
+> `sunrise_core::sync_driver` drains that queue over the relay's
+> `init` → `PUT` → `finalize`; and a device that holds an attachment's metadata
+> and not its chunks fetches them with `GET /blobs/{blob_id}`, checking the
+> AEAD tag on every chunk and the `content_hash` on the whole before anything is
+> written. `crates/sunrise-core/src/blob_sync.rs` carries the reasoning; the
+> end-to-end proof is
+> `crates/sunrise-e2e/tests/attachment_bytes_round_trip.rs`.
+>
+> The **10 MiB threshold** above is enforced: a larger attachment is not
+> auto-fetched. What is **not** built is the rest of the policy around it — the
+> inline placeholder with its Download and Cancel buttons, the `partial: true`
+> cache state, and `auto_fetch_on_cellular` — so an attachment over the
+> threshold stays unfetched, with no client surface to ask for it, and
+> `Core::attachment_is_local` remains the query that distinguishes "not
+> downloaded" from "cannot be opened". The LRU cache and its per-chunk row
+> states are likewise unbuilt: a fetched blob is kept.
 
 ## Client limitations
 

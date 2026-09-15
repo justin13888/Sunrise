@@ -2734,6 +2734,11 @@ pub struct AttachmentItem {
     pub chunk_count: u32,
     /// BLAKE3 of the concatenated plaintext, 32 bytes, lowercase hex.
     pub content_hash: String,
+    /// BLAKE3 of the concatenated ciphertext, 32 bytes, lowercase hex: the
+    /// name the relay knows this blob by. All zeroes on an attachment written
+    /// before the uploader existed, which is the same thing as "not on the
+    /// relay".
+    pub ciphertext_hash: String,
     /// Tombstoned.
     pub deleted: bool,
 }
@@ -2752,6 +2757,7 @@ impl From<&Attachment> for AttachmentItem {
             blob_id,
             chunk_count,
             content_hash,
+            ciphertext_hash,
             deleted,
             // Deliberately not exported: see the module docs.
             unknown: _,
@@ -2768,6 +2774,7 @@ impl From<&Attachment> for AttachmentItem {
             blob_id: hex16(blob_id),
             chunk_count: *chunk_count,
             content_hash: hex32(content_hash),
+            ciphertext_hash: hex32(ciphertext_hash),
             deleted: *deleted,
         }
     }
@@ -2802,6 +2809,7 @@ impl AttachmentItem {
             blob_id: from_hex(&self.blob_id, "blob_id")?,
             chunk_count: self.chunk_count,
             content_hash: from_hex(&self.content_hash, "content_hash")?,
+            ciphertext_hash: from_hex(&self.ciphertext_hash, "ciphertext_hash")?,
             deleted: self.deleted,
             unknown: sunrise_domain::Unknowns::new(),
         })
@@ -2829,6 +2837,9 @@ pub struct AttachmentDraftIn {
     pub chunk_count: u32,
     /// BLAKE3 of the concatenated plaintext, 64 lowercase hex characters.
     pub content_hash: String,
+    /// BLAKE3 of the concatenated ciphertext, 64 lowercase hex characters.
+    /// See [`sunrise_domain::Attachment::ciphertext_hash`].
+    pub ciphertext_hash: String,
 }
 
 impl TryFrom<AttachmentDraftIn> for sunrise_domain::AttachmentDraft {
@@ -2844,6 +2855,7 @@ impl TryFrom<AttachmentDraftIn> for sunrise_domain::AttachmentDraft {
             blob_id: from_hex(&d.blob_id, "blob_id")?,
             chunk_count: d.chunk_count,
             content_hash: from_hex(&d.content_hash, "content_hash")?,
+            ciphertext_hash: from_hex(&d.ciphertext_hash, "ciphertext_hash")?,
         })
     }
 }
