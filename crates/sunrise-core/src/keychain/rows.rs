@@ -46,12 +46,38 @@ pub(super) fn insert_identity_row(
     identity: &Identity,
     wrapped: &(Vec<u8>, Vec<u8>),
     minted_by: Option<&[u8; 16]>,
+    genesis: ([u8; 16], [u8; 32]),
 ) -> rusqlite::Result<()> {
+    // `genesis_identity_id` and `genesis_id_s_pub` are written here and never
+    // again. Migration 0022
+    // backfills it on a vault that already had a row; a vault created after
+    // 0022 gets no backfill, so leaving it out here would give every new vault
+    // a NULL anchor and no fold at all.
+    //
+    // On the founding and legacy-adoption paths the identity being inserted
+    // *is* the genesis, so this is exact. On the **pairing** path it is not,
+    // and knowingly: `PairingPayload` carries the identity in force and has no
+    // field for the account's first one, so a device paired from an account
+    // that has already rotated records its anchor as whatever it joined at.
+    // That is a real divergence — two replicas of one account would fold from
+    // different starts — and closing it is a wire change to the payload rather
+    // than a line here, and `genesis` is that line: the caller supplies the
+    // anchor rather than this function assuming the identity being inserted is
+    // it. On the founding and legacy-adoption paths it is, and the caller says
+    // so; on the **pairing** path it is whatever the sponsor's payload carried
+    // (fields 10 and 11), which is the sponsor's own anchor and therefore the
+    // account's.
+    //
+    // The key is stored beside the id because the fold needs both: it walks
+    // genesis -> head checking each link's `prev_sig` under the *previous*
+    // link's `ID_S_pub`, and after the first rotation `id_s_pub` below is the
+    // successor's. See migration 0023.
     tx.execute(
         "INSERT OR IGNORE INTO identity
          (id, identity_id, id_s_pub, id_d_pub, id_s_priv_wrapped, id_d_priv_wrapped,
-          created_at_ms, minted_by_device_id)
-         VALUES (1, ?, ?, ?, ?, ?, ?, ?)",
+          created_at_ms, minted_by_device_id, genesis_identity_id,
+          genesis_id_s_pub)
+         VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         params![
             &identity.identity_id[..],
             &identity.signing.public_bytes()[..],
@@ -60,6 +86,8 @@ pub(super) fn insert_identity_row(
             wrapped.1,
             identity.created_at_ms,
             minted_by.map(|d| d.to_vec()),
+            &genesis.0[..],
+            &genesis.1[..],
         ],
     )?;
     Ok(())

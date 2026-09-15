@@ -75,9 +75,9 @@ gate's own thresholds were derived to avoid, and padding would only move the
 cliff rather than remove it. What the padding was tempting for is fixed instead:
 the report says what happened and what to type.
 
-Three files sit exactly *at* their package's threshold (`sunrise-core/src/core.rs`
-at 1782, `sunrise-domain/src/activity.rs` at 763, `sunrise-server/src/api/signed.rs`
-at 857) -- unavoidably, since each threshold is its package's p90 and therefore
+Two files sit exactly *at* their package's threshold (`sunrise-domain/src/activity.rs`
+at 763 and `sunrise-server/src/api/signed.rs` at 857; `sunrise-core/src/core.rs` was a
+third until identity rotation split it into `core/`) -- unavoidably, since each threshold is its package's p90 and therefore
 one of its own files. Adding a line to any of them is a genuine exit 1, which is
 the gate working: those three are the largest files the distribution calls
 ordinary, and the next line really is the one worth arguing about.

@@ -27,7 +27,8 @@ use rusqlite::{params, OptionalExtension, Transaction};
 use sunrise_cbor::hlc::Hlc;
 use sunrise_crypto::op_envelope::open_envelope;
 use sunrise_crypto::{
-    decode_envelope, open_envelope_unverified, stream_key_id, verify_envelope, DeviceCert,
+    decode_envelope, identity_id_from_pub, open_envelope_unverified, roster_digest, shares_digest,
+    stream_key_id, verify_envelope, DeviceCert,
 };
 use sunrise_id::EntityRef;
 use sunrise_storage::{Db, OpLog};
@@ -122,7 +123,21 @@ impl Engine {
             // would receive a key minted by its own revocation. Ordering the
             // write first is the whole fix; nothing downstream needs the
             // register to be absent.
-            self.apply_control_op(tx, &revoke, &self.keychain.device_id(), hlc, now_ms)?;
+            // The epoch this transaction's ops will be sealed under, read
+            // before anything is minted — the same value `seal_under` below
+            // resolves to, and the one a peer will see as `env.epoch`.
+            let at_epoch = self
+                .keychain
+                .current_epoch_tx(tx, &META_STREAM)?
+                .unwrap_or(0);
+            self.apply_control_op(
+                tx,
+                &revoke,
+                &self.keychain.device_id(),
+                hlc,
+                now_ms,
+                at_epoch,
+            )?;
 
             // The epoch every rotation op is sealed under: read before
             // anything is minted, so it is the epoch the departing devices and
@@ -200,6 +215,41 @@ impl Engine {
             other => EngineError::Storage(other),
         })?;
 
+        // 4. Rotate the **identity**, excluding the device just revoked.
+        //
+        //    This is what makes the revocation stick, and it is a second
+        //    transaction on purpose. The first one has to commit before this
+        //    one runs: `rotate_identity` builds its roster from the recipient
+        //    rule — current, unrevoked, not excluded — and the revocation
+        //    register it reads is written above. Building both in one
+        //    transaction would work, but it would also mean a rotation whose
+        //    roster depends on uncommitted state it cannot re-read after a
+        //    rollback.
+        //
+        //    Without it, everything above is exactly the pre-ADR-0032
+        //    behaviour: the register names a device id, the revoked device
+        //    still holds `ID_S_priv`, and it certifies itself back in under a
+        //    fresh id that the register has never heard of
+        //    ([#105](https://github.com/justin13888/Sunrise/issues/105)). The
+        //    rotation moves the head, and the excluded device gets no share of
+        //    the successor, so the id it mints next is certified under an
+        //    identity that is no longer the account.
+        //
+        //    `keep_recovery_code: true` is the request; `rotate_identity`
+        //    overrides it when the device being revoked is the one holding
+        //    `ID_D_priv`, because a carry share sealed to that key would hand
+        //    the successor straight to the device being excluded.
+        let rotation = self.rotate_identity(db, Some(revoked), true)?;
+        if !rotation.carried_recovery_code {
+            tracing::warn!(
+                ev = "core.identity.recovery_code_invalidated",
+                subject_h = hex_short(&revoked),
+                head_h = hex_short(&rotation.to_identity_id),
+                "the revoked device held the account's recovery key, so the successor \
+                 could not be carried forward under it; the user needs a new recovery code"
+            );
+        }
+
         Ok(CommandResult::new(device_id, None, op_id, seq))
     }
 
@@ -248,7 +298,7 @@ impl Engine {
     /// Storage failures.
     pub fn publish_device_cert(&self, db: &mut Db) -> Result<(), EngineError> {
         let now_ms = self.clock.now_ms();
-        let cert = self.keychain.cert_blob().to_vec();
+        let cert = self.keychain.cert_blob();
         let device_id = self.keychain.device_id();
         let already: i64 = db.conn().query_row(
             "SELECT count(*) FROM ops WHERE inner_kind = 'device.cert' AND device_id = ?",
@@ -463,7 +513,8 @@ impl Engine {
                 //     state. They have no row and no LWW contest; routing one
                 //     into `materialize_remote` would file it under `tasks`,
                 //     because that function's kind table ends in a `_ =>` arm.
-                absorbed = self.apply_control_op(tx, &inner, &env.device_id, env.hlc, now_ms)?;
+                absorbed =
+                    self.apply_control_op(tx, &inner, &env.device_id, env.hlc, now_ms, env.epoch)?;
             } else {
                 // f. LWW materialization.
                 materialize_remote(tx, &inner, &lww)?;
@@ -531,12 +582,27 @@ impl Engine {
                     "published cert names another device".into(),
                 ));
             }
-            cert.verify_binding(
-                &self.keychain.identity_signing_pub(),
-                &self.keychain.identity_id(),
-            )
-            .map_err(|e| EngineError::RemoteOpInvalid(format!("published cert: {e}")))?;
-            let _ = db;
+            // Any identity on the chain, not only the head. This function
+            // answers "which key signs this envelope", which is a fact about
+            // the device and not a judgement about its standing —
+            // `lookup_device_cert`'s own doc insists on exactly that
+            // separation, and filtering it there once made revocation
+            // retroactive over work done honestly months earlier.
+            //
+            // So a cert issued under a *superseded* identity still identifies
+            // its device here, and the op still applies. What it does not do is
+            // confer membership: that is `devices.identity_id == head`, tested
+            // at every point of use. Splitting the two is what lets the fix be
+            // convergent — see [`Self::chain_identities`].
+            let chain = self.chain_identities(db.conn())?;
+            if !chain
+                .iter()
+                .any(|(id, pk)| cert.verify_binding(pk, id).is_ok())
+            {
+                return Err(EngineError::RemoteOpInvalid(
+                    "published cert verifies under no identity on this account's chain".into(),
+                ));
+            }
             return Ok(cert.body.d_s_pub);
         }
         Err(EngineError::UnknownDevice)
@@ -762,6 +828,15 @@ impl Engine {
 
     /// Apply one control op. Returns the `(stream_id, epoch)` pairs whose keys
     /// this device newly learned, so the caller can drain their parked ops.
+    ///
+    /// `meta_epoch` is the vault-meta epoch the op was **sealed under** —
+    /// `env.epoch` on the receive side. Only the `IdentityTransition` arm reads
+    /// it, and it is the first and most important component of the fold's
+    /// ordering key: a revoked device provably cannot raise it, because
+    /// `revoke_device` writes the revocation register before it mints, so
+    /// `emit_key_envelopes`' anti-join excludes that device from every epoch
+    /// minted in the same transaction. It therefore holds no key above the one
+    /// it was cut at, and anything it seals sorts below every honest rotation.
     pub(super) fn apply_control_op(
         &self,
         tx: &Transaction<'_>,
@@ -769,6 +844,7 @@ impl Engine {
         sender: &[u8; 16],
         hlc: Hlc,
         now_ms: u64,
+        meta_epoch: u32,
     ) -> rusqlite::Result<Vec<([u8; 16], u32)>> {
         match inner {
             InnerOp::KeyEnvelope(p) => {
@@ -1021,20 +1097,45 @@ impl Engine {
                     );
                     return Ok(Vec::new());
                 }
-                if cert
-                    .verify_binding(
-                        &self.keychain.identity_signing_pub(),
-                        &self.keychain.identity_id(),
-                    )
-                    .is_err()
-                {
+                // Which identity on the chain issued it — the head, a
+                // superseded one, or none. `None` is the only rejection; a
+                // superseded issuer is recorded and applied, because the op is
+                // a fact about the device and refusing it here would not
+                // converge (see [`Self::chain_identities`]).
+                let head = self.current_identity(tx)?;
+                let chain = self.chain_identities(tx)?;
+                let Some((issuer, _)) = chain
+                    .iter()
+                    .find(|(id, pk)| cert.verify_binding(pk, id).is_ok())
+                    .copied()
+                else {
                     tracing::warn!(
                         ev = "core.device.cert_rejected",
                         reason = "binding",
                         sender_h = hex_short(sender),
-                        "a published device cert does not verify under this account identity"
+                        "a published device cert verifies under no identity on this \
+                         account's chain"
                     );
                     return Ok(Vec::new());
+                };
+                if issuer != head.identity_id {
+                    // Disclosed and not gated, exactly like the readmission
+                    // warning below. This is the shape a revoked device's
+                    // rejoin takes once rotation exists: it still holds the
+                    // predecessor's `ID_S_priv`, so its cert is genuine under a
+                    // link that is no longer the last one. The row lands, every
+                    // replica agrees it landed, and the device is a recipient
+                    // of nothing — which is the `identity_id` column written
+                    // just below doing the work, not this log line.
+                    tracing::warn!(
+                        ev = "core.device.cert_superseded_identity",
+                        sender_h = hex_short(sender),
+                        subject_h = hex_short(&cert.body.device_id),
+                        issuer_h = hex_short(&issuer),
+                        head_h = hex_short(&head.identity_id),
+                        "a device cert was issued under an identity this account has \
+                         retired; the device is recorded but confers no membership"
+                    );
                 }
                 // A device id nobody has seen before, appearing in an
                 // account that has revoked something, is the observable
@@ -1090,7 +1191,13 @@ impl Engine {
                         cert.body.nickname,
                         cert.body.platform,
                         i64::try_from(cert.body.created_at_ms).unwrap_or(i64::MAX),
-                        &cert.body.identity_id[..],
+                        // The identity that actually *verified* the cert, not
+                        // the one the cert's body claims. `verify_binding`
+                        // recomputes the id from the key, so the two agree
+                        // whenever the cert is valid; writing the verified one
+                        // is what makes this column safe to read as a
+                        // membership test rather than as a claim.
+                        &issuer[..],
                         &cert.body.d_d_pub[..],
                     ],
                 )?;
@@ -1124,6 +1231,171 @@ impl Engine {
                         cause = %e,
                         "could not seal held stream keys to a newly certified device"
                     );
+                }
+                Ok(Vec::new())
+            }
+            InnerOp::IdentityTransition(p) => {
+                // Every rejection below is logged and dropped, never returned,
+                // on this function's existing house rule: `apply_remote` has
+                // already accepted the envelope — the signature verified and
+                // the sender is a member — so failing the whole delivery over a
+                // payload defect would put a well-formed op into the refusal
+                // path. The op is still recorded in `ops`; what does not happen
+                // is that it becomes a link.
+                //
+                // The checks here are **structural only**. `prev_sig` cannot be
+                // checked without a predecessor, and this replica may not have
+                // established one yet: a transition naming an identity two
+                // links ahead is a legitimate op that must be stored now and
+                // verified when its predecessor lands. That is why the
+                // signatures live in [`Self::chain_identities`] and only the
+                // self-contained facts live here.
+                if identity_id_from_pub(&p.to_id_s_pub) != p.to_identity_id {
+                    tracing::warn!(
+                        ev = "core.identity.transition_rejected",
+                        reason = "id_derivation",
+                        sender_h = hex_short(sender),
+                        "an identity transition names an id that is not the derivation \
+                         of its own successor key"
+                    );
+                    return Ok(Vec::new());
+                }
+                // The digests are **recomputed**, not read: they are in the
+                // signed body and the body is not on the wire, so computing
+                // them is the only way to have them at all. A payload whose
+                // roster or shares are malformed produces no digest, and one
+                // whose contents were swapped produces a digest no signature
+                // covers — which the fold catches. Both failures land in the
+                // same place, which is why this arm does not need to tell them
+                // apart.
+                let certs: Vec<&[u8]> = p.roster.iter().map(|e| e.cert.as_slice()).collect();
+                let Ok(roster_digest) = roster_digest(&certs) else {
+                    tracing::warn!(
+                        ev = "core.identity.transition_rejected",
+                        reason = "roster",
+                        sender_h = hex_short(sender),
+                        "an identity transition's roster does not decode, or names a \
+                         device twice"
+                    );
+                    return Ok(Vec::new());
+                };
+                let shares: Vec<([u8; 16], &[u8])> = p
+                    .device_shares
+                    .iter()
+                    .map(|s| (s.device_id, s.hpke_ciphertext.as_slice()))
+                    .collect();
+                let Ok(shares_digest) =
+                    shares_digest(&shares, p.identity_share.as_ref().map(|b| b.as_slice()))
+                else {
+                    tracing::warn!(
+                        ev = "core.identity.transition_rejected",
+                        reason = "shares",
+                        sender_h = hex_short(sender),
+                        "an identity transition's shares are the wrong width or name a \
+                         device twice"
+                    );
+                    return Ok(Vec::new());
+                };
+                // Every roster cert must verify under the **successor**. This
+                // is what makes the roster a statement by the identity being
+                // adopted rather than a list the emitter wrote: a cert in here
+                // signed by anyone else is not a cert this account issued, and
+                // admitting it would let a transition carry a stranger's device
+                // into the new membership.
+                if p.roster.iter().any(|e| {
+                    DeviceCert::from_cbor(&e.cert)
+                        .and_then(|c| c.verify_binding(&p.to_id_s_pub, &p.to_identity_id))
+                        .is_err()
+                }) {
+                    tracing::warn!(
+                        ev = "core.identity.transition_rejected",
+                        reason = "roster_binding",
+                        sender_h = hex_short(sender),
+                        "an identity transition's roster holds a cert not issued by its \
+                         own successor identity"
+                    );
+                    return Ok(Vec::new());
+                }
+
+                // The **successor** signature, checked here rather than left
+                // entirely to the fold.
+                //
+                // `prev_sig` cannot be checked at this point — the predecessor
+                // is whatever the chain turns out to say, and that is decided
+                // later — but `next_sig` can: every input to it is in this
+                // payload. Without this, the row below is occupiable by anyone.
+                // Applying is unconditional and the row is keyed on
+                // `to_identity_id`, so an observer could take an honest
+                // transition off the wire, substitute its roster or shares, and
+                // publish it first; `INSERT OR IGNORE` would then discard the
+                // honest copy for good. The forged row never *verifies* — the
+                // recomputed digests do not match the signed body, so the fold
+                // refuses the link — but it is never replaced either, and the
+                // account is stuck. A revoked device could keep itself in every
+                // peer's view of the roster by suppressing its own removal.
+                //
+                // Establishing that whoever wrote this payload held the
+                // successor's `ID_S_priv` is what closes that, and it costs one
+                // Ed25519 verification on an op this replica has already
+                // decrypted.
+                let body = sunrise_crypto::IdentityTransitionBody {
+                    from_identity_id: p.from_identity_id,
+                    to_identity_id: p.to_identity_id,
+                    to_id_s_pub: p.to_id_s_pub,
+                    to_id_d_pub: p.to_id_d_pub,
+                    roster_digest,
+                    shares_digest,
+                };
+                let sigs = sunrise_crypto::IdentityTransitionSigs {
+                    prev_sig: p.prev_sig,
+                    next_sig: p.next_sig,
+                };
+                if sunrise_crypto::verify_successor_signature(&body, &sigs).is_err() {
+                    tracing::warn!(
+                        ev = "core.identity.transition_rejected",
+                        reason = "successor_sig",
+                        sender_h = hex_short(sender),
+                        "an identity transition is not signed by the successor it names"
+                    );
+                    return Ok(Vec::new());
+                }
+
+                let Ok(payload) = encode_inner_op(inner) else {
+                    return Ok(Vec::new());
+                };
+                // `INSERT OR IGNORE`, keyed on `to_identity_id`: re-delivery of
+                // the same transition is a no-op, and two transitions cannot
+                // collide on that key because the successor id derives from an
+                // independently random key.
+                tx.execute(
+                    "INSERT OR IGNORE INTO identity_transitions
+                     (to_identity_id, from_identity_id, to_id_s_pub, to_id_d_pub,
+                      meta_epoch, hlc_physical_ms, hlc_logical, emitter_device_id,
+                      payload, prev_sig, next_sig, roster_digest, shares_digest)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    params![
+                        &p.to_identity_id[..],
+                        &p.from_identity_id[..],
+                        &p.to_id_s_pub[..],
+                        &p.to_id_d_pub[..],
+                        meta_epoch,
+                        i64::try_from(hlc.physical_ms).unwrap_or(i64::MAX),
+                        hlc.logical,
+                        &sender[..],
+                        payload,
+                        &p.prev_sig[..],
+                        &p.next_sig[..],
+                        &roster_digest[..],
+                        &shares_digest[..],
+                    ],
+                )?;
+                self.recompute_identity_head(tx, now_ms)?;
+                // The roster is applied only if this transition actually *won*
+                // the fold. A losing branch carries a perfectly valid roster
+                // for a membership the account did not adopt, and writing it
+                // would let the loser decide who is current.
+                if self.current_identity(tx)?.identity_id == p.to_identity_id {
+                    self.apply_roster(tx, &p.roster, &p.to_identity_id)?;
                 }
                 Ok(Vec::new())
             }

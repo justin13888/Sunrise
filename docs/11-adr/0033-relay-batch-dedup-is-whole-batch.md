@@ -35,7 +35,7 @@ construction, with no second sweep and nothing to keep in step by hand.
 
 ### The case it cannot catch
 
-`Core::sync_outbox_grouped` (`crates/sunrise-core/src/core.rs:715`) groups
+`Core::sync_outbox_grouped` (`crates/sunrise-core/src/core/mod.rs:951`) groups
 **every** unacked op for a stream into one batch. There is no size cap, so the
 partition is "everything unacked at this instant", and the fresh-session drain
 (`crates/sunrise-core/src/sync_driver.rs:705`) re-runs it with an empty

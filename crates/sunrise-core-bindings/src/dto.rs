@@ -55,8 +55,9 @@ const ALL_WEEKDAYS: [Weekday; 7] = [
     Weekday::Su,
 ];
 
-/// Format the 16-byte op/device ids UniFFI cannot carry as lowercase hex.
-fn hex16(bytes: &[u8; 16]) -> String {
+/// Format the 16-byte op/device/identity ids UniFFI cannot carry as lowercase
+/// hex.
+pub(crate) fn hex16(bytes: &[u8; 16]) -> String {
     use std::fmt::Write as _;
     let mut s = String::with_capacity(32);
     for b in bytes {
@@ -2421,6 +2422,15 @@ pub struct DeviceListRow {
     pub platform: String,
     /// Revoked.
     pub revoked: bool,
+    /// Certified under the account identity **in force**, and so a member.
+    ///
+    /// Not the negation of `revoked`, and a UI that renders it as one is
+    /// wrong: a device that left and certified itself back in under a fresh id
+    /// is `revoked: false, current: false`, because the register names ids and
+    /// the fresh one is not in it (ADR-0032, #105). Present it as "not active
+    /// on this account" rather than as an accusation — an honest device that
+    /// has not yet applied a rotation looks the same for a moment.
+    pub current: bool,
 }
 
 impl From<&DeviceRow> for DeviceListRow {
@@ -2430,12 +2440,14 @@ impl From<&DeviceRow> for DeviceListRow {
             nickname,
             platform,
             revoked,
+            current,
         } = d;
         Self {
             device_id: hex16(device_id),
             nickname: nickname.clone(),
             platform: platform.clone(),
             revoked: *revoked,
+            current: *current,
         }
     }
 }

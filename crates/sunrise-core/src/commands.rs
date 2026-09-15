@@ -202,14 +202,32 @@ pub enum Command {
     /// transaction, a fresh epoch plus `key_envelope` ops for every stream in
     /// the rotation set — the vault-meta stream and the Inbox included.
     ///
-    /// # This does not cut the device off
+    /// # What this now does, and what it still does not
     ///
-    /// It records that the device was revoked, and every replica converges on
-    /// the same record. Nothing else follows from it: the revoked device goes
-    /// on reading (each epoch is sealed to the account identity, and pairing
-    /// hands every device `ID_D_priv`) and goes on writing (no replica refuses
-    /// its ops). A caller that needs a device actually cut off is waiting on
-    /// `#76` for reads and `#82`, behind `#80`, for writes.
+    /// The shape is unchanged and the meaning is not. It records the
+    /// revocation, rotates every Stream key, **and rotates the account
+    /// identity**, leaving the revoked device out of the new roster. That last
+    /// part is ADR-0032 and it is what makes the first part stick: revocation
+    /// names a device id, while the capability it needs to take away is
+    /// `ID_S_priv`, which the departing device holds and no register touches.
+    /// Before the identity rotated, the revoked device certified itself back in
+    /// under a fresh id the register had never heard of
+    /// ([#105](https://github.com/justin13888/Sunrise/issues/105)). Now the
+    /// head has moved and it holds no share of the successor, so the fresh id
+    /// is certified under an identity that is no longer the account and is a
+    /// recipient of nothing.
+    ///
+    /// Still not cut off: **writes**. No replica refuses a revoked device's
+    /// ops, because refusing at apply time does not converge — see
+    /// `Engine::apply_remote` step 2. That is `#82`, behind `#80`.
+    ///
+    /// The user's **recovery code survives by default**: the successor is
+    /// sealed to the outgoing `ID_D_pub` as well, so the existing code keeps
+    /// working. The exception is the device that holds `ID_D_priv` — the
+    /// account's creator. Revoking *that* device cannot carry the successor
+    /// forward, because the carry share is sealed to the very key being
+    /// excluded, and the user must be told their recovery code no longer opens
+    /// anything (`core.identity.recovery_code_invalidated`).
     ///
     /// The cut recorded is the HLC of the op this emits, not a value the caller
     /// nominates; see [`crate::DeviceRevokePayload`] for why there is no
@@ -219,6 +237,30 @@ pub enum Command {
         device_id: EntityRef,
         /// Why, for the device list to show later.
         reason: RevokeReason,
+    },
+    /// Replace the account identity, keeping every current device.
+    ///
+    /// The user-requested form of what a revocation does as a side effect
+    /// (`docs/03-crypto/key-rotation.md` §Identity rotation): suspected
+    /// recovery-code compromise, or suspected extraction of `ID_S_priv` itself.
+    /// Every current, unrevoked device is in the new roster and receives a
+    /// share, so nobody is excluded and nothing needs re-pairing.
+    ///
+    /// Stream keys are **not** rotated by this. An attacker holding the
+    /// identity key can forge ops going forward; they cannot read content
+    /// unless they also hold a Stream key. A user who wants both runs this and
+    /// then rotates the streams.
+    ///
+    /// `keep_recovery_code` asks for the successor to be sealed to the outgoing
+    /// `ID_D_pub`, so the user's existing BIP-39 code keeps working. Pass
+    /// `false` when the reason for rotating is that the *recovery code* is the
+    /// thing suspected — carrying the successor forward under a compromised key
+    /// would hand the attacker the new identity, which is the one way this
+    /// command can be worse than doing nothing.
+    RotateIdentity {
+        /// Seal the successor to the outgoing `ID_D_pub` so the existing
+        /// recovery code still opens the account.
+        keep_recovery_code: bool,
     },
     /// Mint a new epoch for one Stream and seal it to every current device.
     ///

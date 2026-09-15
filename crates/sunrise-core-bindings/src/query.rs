@@ -8,7 +8,7 @@ use sunrise_domain::{Energy, ExportDataset, ExportFormat, SessionLength};
 use sunrise_id::EntityRef;
 
 use crate::dto::{
-    ActionableTaskRow, ActivityRow, AttachmentItem, BlockGridRow, Cascade, ContextItem,
+    hex16, ActionableTaskRow, ActivityRow, AttachmentItem, BlockGridRow, Cascade, ContextItem,
     ContextListRow, DailyReviewReport, DeviceListRow, EveningReport, FocusTotals, MorningReport,
     NotificationSettings, PlanRow, Reminder, RoutineItem, SessionRow, Snapshot, StreamItem,
     StreamListRow, SyncSnapshot, TaskItem, TrendReport, WeeklyReviewReport,
@@ -43,6 +43,10 @@ pub enum CoreQuery {
     },
     /// Paired devices.
     DeviceList,
+    /// The account's identity chain: its stable name, the identity in force,
+    /// how many rotations separate them, and whether this device still speaks
+    /// for it.
+    IdentityStatus,
     /// Sync health.
     SyncStatus,
     /// Streams, with open counts, Inbox first.
@@ -197,6 +201,7 @@ impl CoreQuery {
             Self::ContextTasks { context } => Query::ContextTasks(context),
             Self::EntityById { id } => Query::EntityById(id),
             Self::DeviceList => Query::DeviceList,
+            Self::IdentityStatus => Query::IdentityStatus,
             Self::SyncStatus => Query::SyncStatus,
             Self::StreamList => Query::StreamList,
             Self::Contexts => Query::Contexts,
@@ -303,6 +308,28 @@ pub enum CoreQueryResult {
     Devices {
         /// The rows.
         devices: Vec<DeviceListRow>,
+    },
+    /// The account's identity chain.
+    Identity {
+        /// The account's stable name: the identity it started as. Show this as
+        /// "your account"; `current` is only the key that signs today.
+        genesis_identity_id: String,
+        /// The identity in force, which every current device cert verifies
+        /// under.
+        current_identity_id: String,
+        /// How many rotations separate the two. `0` on an account that has
+        /// never rotated.
+        transitions: u32,
+        /// Whether *this* device still speaks for the account.
+        ///
+        /// `false` is not an accusation: it means this device holds no share of
+        /// the current identity, which is either "it was left out of a
+        /// rotation" or "it has not applied the transition yet", and nothing
+        /// here can tell those apart. Present it as a state to resolve, not a
+        /// verdict.
+        this_device_is_current: bool,
+        /// Whether this device can seal a recovery blob.
+        holds_recovery_key: bool,
     },
     /// Sync health.
     SyncStatus {
@@ -432,6 +459,13 @@ impl CoreQueryResult {
             },
             QueryResult::Devices(d) => Self::Devices {
                 devices: d.iter().map(DeviceListRow::from).collect(),
+            },
+            QueryResult::Identity(i) => Self::Identity {
+                genesis_identity_id: hex16(&i.genesis_identity_id),
+                current_identity_id: hex16(&i.current_identity_id),
+                transitions: u32::try_from(i.transitions).unwrap_or(u32::MAX),
+                this_device_is_current: i.this_device_is_current,
+                holds_recovery_key: i.holds_recovery_key,
             },
             QueryResult::SyncStatus(s) => Self::SyncStatus {
                 status: SyncSnapshot::from(&s),
