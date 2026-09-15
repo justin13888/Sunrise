@@ -40,11 +40,11 @@ enum PairingFixture {
             + "oQFYIM3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3NCVggq6urq6urq6urq6urq6ur"
             + "q6urq6urq6urq6urq6urq6sKUIiXbcOPokLXyeP8WJiPVg0LWCDQSrIydCu0qzoTaL1GFeTm"
             + "0CJKtxoBa6+FIKMyyXeHNwxYIDMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzDVgg"
-            + "REREREREREREREREREREREREREREREREREREREREREQOWMuiAagBAQJQcOvMRpf/oBT/eOlZ"
-            + "KAVttwNYIBfLefsrQSDysexl5BmNbgiyjoE/6wHkpACDm4XhgIDOBFgg/y7kVgHsG2cxDHeQ"
-            + "QEWFrmlzMe7hwfjPJBlzHB//PmsFUIiXbcOPokLXyeP8WJiPVg0GGwAAAYvP5WgAB2dmaXh0"
-            + "dXJlCGR0ZXN0AlhA35Ys2QnwL/rEafgN6eqvJCB7exLUXnwClj1HOyPpJRlutf1uQkmj3f68"
-            + "VGsnP6TxVlbArRRKgIzy6NS6KHqPBg=="
+            + "REREREREREREREREREREREREREREREREREREREREREQOWM2iAViGqAEBAlBw68xGl/+gFP94"
+            + "6VkoBW23A1ggF8t5+ytBIPKx7GXkGY1uCLKOgT/rAeSkAIObheGAgM4EWCD/LuRWAewbZzEM"
+            + "d5BARYWuaXMx7uHB+M8kGXMcH/8+awVQiJdtw4+iQtfJ4/xYmI9WDQYbAAABi8/laAAHZ2Zp"
+            + "eHR1cmUIZHRlc3QCWEDflizZCfAv+sRp+A3p6q8kIHt7EtRefAKWPUc7I+klGW61/W5CSaPd"
+            + "/rxUayc/pPFWVsCtFEqAjPLo1Looeo8G"
 
     /// The fixture as bytes. `#require` rather than `!`, so a mistyped literal
     /// is a test failure that names itself and not a crash in the suite.
