@@ -11,6 +11,7 @@
 //! whether the sender is revoked, whether the key that opens the op has arrived
 //! yet, and only then what the op says.
 
+use super::identity::{MAX_ROSTER_ENTRIES, MAX_SIBLINGS_PER_PREDECESSOR};
 use super::ids::hex_short;
 use super::lww::{materialize_remote, remap_legacy_inbox, LwwStamp};
 use super::oplog::{record_envelope_recipient, remote_op_id, upsert_sync_cursor};
@@ -1268,6 +1269,23 @@ impl Engine {
                 // covers — which the fold catches. Both failures land in the
                 // same place, which is why this arm does not need to tell them
                 // apart.
+                // Sized before anything is verified. The roster and the share
+                // list are `Vec`s in a payload, so their length is chosen by
+                // whoever wrote the op, and every roster entry below costs a
+                // cert decode and an Ed25519 verification. Checking the length
+                // first is what makes that cost bounded rather than merely
+                // large; see `identity::MAX_ROSTER_ENTRIES` for what it is at
+                // the cap.
+                if p.roster.len() > MAX_ROSTER_ENTRIES || p.device_shares.len() > MAX_ROSTER_ENTRIES
+                {
+                    tracing::warn!(
+                        ev = "core.identity.transition_rejected",
+                        reason = "oversized",
+                        sender_h = hex_short(sender),
+                        "an identity transition names more devices than an account may hold"
+                    );
+                    return Ok(Vec::new());
+                }
                 let certs: Vec<&[u8]> = p.roster.iter().map(|e| e.cert.as_slice()).collect();
                 let Ok(roster_digest) = roster_digest(&certs) else {
                     tracing::warn!(
@@ -1356,6 +1374,75 @@ impl Engine {
                         reason = "successor_sig",
                         sender_h = hex_short(sender),
                         "an identity transition is not signed by the successor it names"
+                    );
+                    return Ok(Vec::new());
+                }
+
+                // `prev_sig`, **when this replica can already check it**.
+                //
+                // The arm's own note above says the signatures live in the fold
+                // because `prev_sig` needs a predecessor the verifier has
+                // established, and a replica may hold a transition two links
+                // ahead of what it knows. That stays true — and it is not a
+                // reason to skip the check in the case where the predecessor
+                // *is* known, which is the ordinary one.
+                //
+                // Checking it here is what makes the sibling cap below safe to
+                // impose. Without it, a row that the fold will certainly reject
+                // still occupies one of a predecessor's sixteen places, so a
+                // member could fill all sixteen above an honest successor and
+                // suppress it permanently. With it, a stored sibling of an
+                // established link is one whose `prev_sig` verified, which costs
+                // its writer the predecessor's `ID_S_priv`.
+                //
+                // The fold still re-checks. A row admitted here while its
+                // predecessor was unknown is verified when the predecessor
+                // lands, and nothing downstream may assume this ran.
+                //
+                // **Untested, and here is why.** The payload that reaches this
+                // check and fails it is one whose `next_sig` was taken over a
+                // `prev_sig` its author chose freely — every cheaper forgery is
+                // caught by `verify_successor_signature` above, because
+                // `next_sig` covers `prev_sig`. `sunrise_crypto` will not build
+                // that payload: `sign_identity_transition` refuses a body whose
+                // `from_identity_id` is not the derivation of the key signing
+                // the `prev` half, and `body_hash` / `next_sig_input` are
+                // private, so no test in this workspace can assemble one
+                // through the public API. A peer implementing the published
+                // format directly can — the domain strings are in
+                // `key-rotation.md` — and that is the reader this check is for.
+                let chain = self.chain_identities(tx)?;
+                if let Some((_, from_pub)) = chain.iter().find(|(id, _)| *id == p.from_identity_id)
+                {
+                    if sunrise_crypto::verify_identity_transition(&body, from_pub, &sigs).is_err() {
+                        tracing::warn!(
+                            ev = "core.identity.transition_rejected",
+                            reason = "prev_sig",
+                            sender_h = hex_short(sender),
+                            "an identity transition is not signed by the predecessor it names, \
+                             which this replica has already established"
+                        );
+                        return Ok(Vec::new());
+                    }
+                }
+
+                // How many rows one predecessor may have. Counted excluding this
+                // transition's own `to_identity_id` so a re-delivery is never
+                // refused by the cap: the insert below is `OR IGNORE`, and a row
+                // that is already here does not consume a fresh place.
+                let siblings: i64 = tx.query_row(
+                    "SELECT count(*) FROM identity_transitions
+                     WHERE from_identity_id = ?1 AND to_identity_id != ?2",
+                    params![&p.from_identity_id[..], &p.to_identity_id[..]],
+                    |r| r.get(0),
+                )?;
+                if siblings >= MAX_SIBLINGS_PER_PREDECESSOR {
+                    tracing::warn!(
+                        ev = "core.identity.transition_rejected",
+                        reason = "siblings",
+                        sender_h = hex_short(sender),
+                        "an identity already has as many recorded successors as the fold \
+                         will verify"
                     );
                     return Ok(Vec::new());
                 }

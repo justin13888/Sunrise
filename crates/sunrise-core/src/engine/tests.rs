@@ -23,6 +23,7 @@ use super::attachment::*;
 use super::block::*;
 use super::context::*;
 use super::focus::*;
+use super::identity::{MAX_ROSTER_ENTRIES, MAX_SIBLINGS_PER_PREDECESSOR};
 use super::ids::*;
 use super::lww::*;
 use super::oplog::*;
@@ -7287,6 +7288,332 @@ fn a_device_offline_across_a_rotation_catches_up_without_re_pairing() {
     if let Some(c) = rows.iter().find(|r| r.device_id == c_id) {
         assert!(!c.current, "the excluded device is not current anywhere");
     }
+}
+
+/// A complete, valid transition whose roster and share list name `devices`
+/// synthetic survivors.
+///
+/// [`build_transition`] can only name engines that exist, and the point of the
+/// size cap is a payload far larger than any real account. This mints the
+/// successor the same way `rotate_identity` does and issues one genuine cert
+/// and one genuine HPKE share per synthetic device, so the only thing wrong
+/// with the result is how many there are of them.
+fn build_transition_naming(emitter: &Engine, devices: usize, now_ms: u64) -> InnerOp {
+    use rand_core::SeedableRng;
+    use sunrise_crypto::keys::{DeviceDhKeyPair, DeviceSigningKeyPair};
+
+    let successor = emitter.keychain.mint_successor_identity(&SystemRng);
+    // The device keys are throwaway: nothing verifies a signature by them here,
+    // only that the HPKE seals target distinct real X25519 points and the certs
+    // carry distinct real Ed25519 ones.
+    let mut rng = rand::rngs::StdRng::seed_from_u64(0xD06F);
+    let mut entries: Vec<RosterEntry> = Vec::with_capacity(devices);
+    let mut shares: Vec<KeyShare> = Vec::with_capacity(devices);
+    for i in 0..devices {
+        let d_s = DeviceSigningKeyPair::generate(&mut rng);
+        let d_d = DeviceDhKeyPair::generate(&mut rng);
+        let mut device_id = [0u8; 16];
+        device_id[..8].copy_from_slice(&(i as u64).to_be_bytes());
+        entries.push(RosterEntry {
+            cert: Keychain::issue_roster_cert(
+                &successor,
+                device_id,
+                d_s.public_bytes(),
+                d_d.public_bytes(),
+                "device",
+                "test",
+                now_ms,
+            )
+            .expect("roster cert"),
+        });
+        shares.push(KeyShare {
+            device_id,
+            hpke_ciphertext: emitter
+                .keychain
+                .seal_successor_device_share(
+                    &successor,
+                    &d_d.public_bytes(),
+                    &device_id,
+                    &SystemRng,
+                )
+                .expect("device share"),
+        });
+    }
+    let certs: Vec<&[u8]> = entries.iter().map(|e| e.cert.as_slice()).collect();
+    let share_refs: Vec<([u8; 16], &[u8])> = shares
+        .iter()
+        .map(|s| (s.device_id, s.hpke_ciphertext.as_slice()))
+        .collect();
+    let body = sunrise_crypto::IdentityTransitionBody {
+        from_identity_id: emitter.keychain.identity_id(),
+        to_identity_id: successor.identity_id(),
+        to_id_s_pub: successor.id_s_pub(),
+        to_id_d_pub: successor.id_d_pub(),
+        roster_digest: sunrise_crypto::roster_digest(&certs).expect("roster digest"),
+        shares_digest: sunrise_crypto::shares_digest(&share_refs, None).expect("shares digest"),
+    };
+    let sigs = emitter
+        .keychain
+        .sign_transition(&body, &successor)
+        .expect("sign");
+    InnerOp::IdentityTransition(Box::new(IdentityTransitionPayload {
+        from_identity_id: body.from_identity_id,
+        to_identity_id: body.to_identity_id,
+        to_id_s_pub: body.to_id_s_pub,
+        to_id_d_pub: body.to_id_d_pub,
+        roster: entries,
+        device_shares: shares,
+        identity_share: None,
+        prev_sig: sigs.prev_sig,
+        next_sig: sigs.next_sig,
+    }))
+}
+
+/// The state `MAX_TRANSITION_CHAIN = 64` could put an account into and never
+/// let it out of.
+///
+/// The fold walked at most 64 links. Any holder of `ID_S_priv` -- which is
+/// every paired device, and every device that ever was one -- could reach that
+/// by rotating, and past it the head was pinned forever: every later transition
+/// was a row the walk never reached, so no rotation took effect, so no
+/// *revocation* took effect either, because a revocation is a rotation. Nothing
+/// recovered from it and nothing reported it; the head was a real identity with
+/// a real set of current devices under it.
+///
+/// Seventy links, which is past the old cap by six. Each one is a genuine
+/// transition -- a minted successor, a roster signed by it, real HPKE shares,
+/// both signatures taken by the keychain -- applied through the same
+/// `apply_control_op` arm a peer's delivery reaches, so what is being folded is
+/// what production writes.
+///
+/// The assertion that matters is the last one: after seventy rotations the
+/// account can still rotate again, and the new head is the one it just moved
+/// to. That is "cannot reach a state it cannot leave", stated as the thing a
+/// frozen account would fail.
+#[test]
+fn a_chain_past_the_old_cap_still_folds_and_can_still_be_extended() {
+    const LINKS: usize = 70;
+
+    let ea = engine_random_keys(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eb = engine_random_keys(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut dba = db_root(ROOT);
+    trust(&ea, &mut dba, &eb);
+    let a_id = ea.keychain.device_id();
+    let genesis = ea.current_identity(dba.conn()).unwrap().identity_id;
+
+    let mut last = genesis;
+    for i in 0..LINKS {
+        let (inner, to) = build_transition(&ea, &[&eb], true, T0);
+        apply_control_at(
+            &ea,
+            &mut dba,
+            &inner,
+            &a_id,
+            Hlc::at(T0 + i as u64 + 1),
+            u32::try_from(i).unwrap() + 1,
+        );
+        assert_eq!(
+            ea.current_identity(dba.conn()).unwrap().identity_id,
+            to,
+            "rotation {i} did not move the head; the fold stopped short of it"
+        );
+        last = to;
+    }
+
+    let chain = ea.chain_identities(dba.conn()).unwrap();
+    assert_eq!(
+        chain.len(),
+        LINKS + 1,
+        "the fold walked {} of {} links",
+        chain.len(),
+        LINKS + 1
+    );
+    assert_eq!(chain.first().unwrap().0, genesis);
+    assert_eq!(chain.last().unwrap().0, last);
+
+    // The point of the whole test: the account is not frozen. One more
+    // rotation, and it takes effect like the seventy before it.
+    let (inner, to) = build_transition(&ea, &[&eb], true, T0);
+    apply_control_at(
+        &ea,
+        &mut dba,
+        &inner,
+        &a_id,
+        Hlc::at(T0 + LINKS as u64 + 1),
+        u32::try_from(LINKS).unwrap() + 1,
+    );
+    assert_eq!(
+        ea.current_identity(dba.conn()).unwrap().identity_id,
+        to,
+        "an account past the old cap can no longer rotate: it is in a state it \
+         cannot leave, which is the defect this test exists for"
+    );
+}
+
+/// An oversized roster is refused, and refused *before* the verification it
+/// would have paid for.
+///
+/// `roster` and `device_shares` are `Vec`s in a payload, so their length is
+/// chosen by whoever wrote the op, and each roster entry costs a `DeviceCert`
+/// decode plus an Ed25519 verification. Nothing bounded either, so one op could
+/// buy arbitrary verification work on every peer in the account.
+///
+/// The oversized transition is **completely valid** apart from its size:
+/// [`build_transition_naming`] mints the successor itself, so every roster
+/// entry is a distinct cert signed by it, every share is a real HPKE seal to a
+/// distinct key, both digests are recomputed over the real contents and both
+/// signatures are genuine. Nothing but the length check can refuse it — which
+/// is the only way to tell "refused for its size" apart from "refused because a
+/// padded payload is malformed", and the only construction under which removing
+/// the check turns this test red.
+#[test]
+fn a_transition_naming_more_devices_than_the_cap_is_refused() {
+    let ea = engine_random_keys(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eb = engine_random_keys(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut dba = db_root(ROOT);
+    trust(&ea, &mut dba, &eb);
+    let a_id = ea.keychain.device_id();
+    let head = ea.current_identity(dba.conn()).unwrap().identity_id;
+
+    let oversized = build_transition_naming(&ea, MAX_ROSTER_ENTRIES + 1, T0);
+    apply_control_at(&ea, &mut dba, &oversized, &a_id, Hlc::at(T0 + 1), 1);
+    assert_eq!(
+        ea.current_identity(dba.conn()).unwrap().identity_id,
+        head,
+        "the oversized transition moved the head"
+    );
+    let rows: i64 = dba
+        .conn()
+        .query_row("SELECT count(*) FROM identity_transitions", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(rows, 0, "the oversized transition was stored");
+
+    // And the cap is a cap rather than a refusal of everything: the same
+    // transition at the cap is accepted. Without this the test above would pass
+    // against a build that refused every transition.
+    let (ok, to) = build_transition(&ea, &[&eb], true, T0);
+    apply_control_at(&ea, &mut dba, &ok, &a_id, Hlc::at(T0 + 2), 1);
+    assert_eq!(ea.current_identity(dba.conn()).unwrap().identity_id, to);
+}
+
+/// One predecessor may accumulate only so many successors, and a re-delivery
+/// of a row already held is never what the cap turns away.
+///
+/// The fold verifies at most `MAX_SIBLING_CANDIDATES` rows per link, so a
+/// seventeenth row under one predecessor would be one the walk could never
+/// reach -- the same shape the chain cap had, one level down. Ingest holds the
+/// two numbers equal so that cannot arise.
+#[test]
+fn a_predecessor_accumulates_only_as_many_successors_as_the_fold_will_verify() {
+    let ea = engine_random_keys(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eb = engine_random_keys(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut dba = db_root(ROOT);
+    trust(&ea, &mut dba, &eb);
+    let a_id = ea.keychain.device_id();
+
+    // Every one of these succeeds the *same* predecessor: `build_transition`
+    // reads `emitter.keychain.identity_id()`, and the emitter only adopts the
+    // transition that wins the fold, so each call forks from the identity it
+    // currently signs under.
+    let mut built = Vec::new();
+    for i in 0..MAX_SIBLINGS_PER_PREDECESSOR + 4 {
+        let (inner, to) = build_transition(&ea, &[&eb], true, T0);
+        built.push((inner, to, i));
+    }
+    // A fresh replica, so the emitter's own adoption does not move the
+    // predecessor between deliveries.
+    let ec = engine_random_keys(ROOT, [3u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut dbc = db_root(ROOT);
+    trust(&ec, &mut dbc, &ea);
+    trust(&ec, &mut dbc, &eb);
+    for (inner, _, i) in &built {
+        apply_control_at(
+            &ec,
+            &mut dbc,
+            inner,
+            &a_id,
+            Hlc::at(T0 + u64::try_from(*i).unwrap() + 1),
+            1,
+        );
+    }
+
+    let rows: i64 = dbc
+        .conn()
+        .query_row("SELECT count(*) FROM identity_transitions", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(
+        rows, MAX_SIBLINGS_PER_PREDECESSOR,
+        "a predecessor accumulated {rows} successors; the fold verifies at most {MAX_SIBLINGS_PER_PREDECESSOR}"
+    );
+
+    // Re-delivering a row already held is not a new sibling and must not be
+    // turned away by a full register -- the insert is OR IGNORE and the row
+    // occupies no fresh place.
+    let (first, _, _) = &built[0];
+    apply_control_at(&ec, &mut dbc, first, &a_id, Hlc::at(T0 + 1), 1);
+    let after: i64 = dbc
+        .conn()
+        .query_row("SELECT count(*) FROM identity_transitions", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(after, rows, "a re-delivery changed the row count");
+}
+
+/// A transition carrying another transition's signature pair occupies no row.
+///
+/// The fifth structural refusal, alongside the four in
+/// `a_malformed_transition_is_dropped_and_moves_nothing`: `next_sig` covers
+/// `body_hash || prev_sig`, so a pair lifted whole from a different transition
+/// is internally consistent and still fits no other body. Without the check the
+/// row is occupiable by anyone — `INSERT OR IGNORE` is keyed on
+/// `to_identity_id`, so a forged copy published first would discard the honest
+/// one for good — and with the sibling cap it would also consume one of the
+/// predecessor's sixteen places.
+#[test]
+fn a_transition_carrying_another_transitions_signatures_is_not_stored() {
+    let ea = engine_random_keys(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eb = engine_random_keys(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut dba = db_root(ROOT);
+    trust(&ea, &mut dba, &eb);
+    let a_id = ea.keychain.device_id();
+    let head = ea.current_identity(dba.conn()).unwrap().identity_id;
+
+    let (inner, _) = build_transition(&ea, &[&eb], true, T0);
+    let InnerOp::IdentityTransition(mut p) = inner else {
+        unreachable!()
+    };
+    // Both signatures from a *different* transition of the same shape: the pair
+    // is internally consistent and belongs to another body, which is the shape
+    // a substitution attack takes.
+    let (other, _) = build_transition(&ea, &[&eb], true, T0);
+    let InnerOp::IdentityTransition(other) = other else {
+        unreachable!()
+    };
+    p.prev_sig = other.prev_sig;
+    p.next_sig = other.next_sig;
+    let forged = InnerOp::IdentityTransition(p);
+
+    apply_control_at(&ea, &mut dba, &forged, &a_id, Hlc::at(T0 + 1), 1);
+    assert_eq!(
+        ea.current_identity(dba.conn()).unwrap().identity_id,
+        head,
+        "the forged transition moved the head"
+    );
+    let rows: i64 = dba
+        .conn()
+        .query_row("SELECT count(*) FROM identity_transitions", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(
+        rows, 0,
+        "a transition signed for another body was stored anyway"
+    );
 }
 
 /// The epoch separation the ordering argument rests on, asserted against the

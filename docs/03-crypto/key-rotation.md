@@ -271,9 +271,25 @@ envelope has already been accepted and failing the delivery would put a
 well-formed op into the refusal path.
 
 At **fold** time: both signatures, against the predecessor the walk has already
-established. A link that fails either is not a link. The walk is bounded at
-`MAX_TRANSITION_CHAIN` and fails closed past it — the head reads as a superseded
-identity and nothing is sealed to anybody.
+established. A link that fails either is not a link.
+
+The walk **terminates** on its visited set — every step adds a `to_identity_id`
+no step has added before, and that column is the table's primary key, so the
+walk cannot outlast the table. It bounds its **work** at
+`MAX_SIBLING_CANDIDATES` rows per link. It does *not* bound the chain's length,
+and it did once, at `MAX_TRANSITION_CHAIN = 64`: past 64 rotations no later
+transition was ever reached, so no rotation took effect, so no revocation took
+effect either — a state an account could not leave and nothing reported. Length
+was never what needed bounding.
+
+Ingest holds the rest: a transition may name at most `MAX_ROSTER_ENTRIES`
+devices (refused on length, before the first cert is decoded) and one
+predecessor accumulates at most `MAX_SIBLINGS_PER_PREDECESSOR` rows, the same
+number the fold will verify, so no stored row is one the walk could never reach.
+A transition whose `prev_sig` does not verify against a predecessor this replica
+has already established is refused rather than stored, which is what keeps the
+sibling cap from being a way to suppress an honest successor by filling its
+places.
 
 ### A device that was offline across the rotation
 
