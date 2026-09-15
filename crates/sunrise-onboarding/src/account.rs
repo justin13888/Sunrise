@@ -88,6 +88,38 @@ pub fn encode_public_key(key: &[u8; 32]) -> String {
     BLOB_B64.encode(key)
 }
 
+/// Decode an identity public key the way `GET /api/v1/accounts/me` serves it.
+///
+/// The inverse of [`encode_public_key`], and here rather than at the call site
+/// for the reason that function gives: a recovering client derives the vault's
+/// `identity_id` from `ID_S_pub` and must read exactly the alphabet the
+/// founding client wrote.
+///
+/// A wrong length is a decode failure rather than something to pad, because the
+/// value it would produce is an `identity_id` that opens no blob and names no
+/// account.
+///
+/// # Errors
+/// [`PublicKeyError`] for a bad alphabet or a length that is not 32 bytes.
+pub fn decode_public_key(encoded: &str) -> Result<[u8; 32], PublicKeyError> {
+    let raw = BLOB_B64
+        .decode(encoded.trim())
+        .map_err(|_| PublicKeyError::Alphabet)?;
+    let len = raw.len();
+    <[u8; 32]>::try_from(raw).map_err(|_| PublicKeyError::Length(len))
+}
+
+/// Why an identity public key off the wire was not one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum PublicKeyError {
+    /// Not base64url, or carried padding.
+    #[error("identity key is not base64url no-pad")]
+    Alphabet,
+    /// Decoded to something other than 32 bytes.
+    #[error("identity key decoded to {0} bytes, not 32")]
+    Length(usize),
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

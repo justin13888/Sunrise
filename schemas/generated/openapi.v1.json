@@ -5906,7 +5906,14 @@
         "properties": {
           "identity_id": {
             "type": "string",
-            "description": "16-byte identity id."
+            "description": "This server's own id for the account, Crockford base-32 of 16 bytes.\n\n**Not the vault's `identity_id`**, despite the name it has carried\nsince before there was an identity to confuse it with: it is minted by\n`Store::resolve_account` on first sight of an `(iss, sub)` and has no\nrelationship to any key. The vault's `identity_id` is\n`BLAKE3(\"sunrise.identity_id.v1\" ‖ ID_S_pub)`, derivable from\n[`AccountInfo::identity_signing_pub`] below."
+          },
+          "identity_signing_pub": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The account identity's Ed25519 public key (`ID_S_pub`), base64url\nno-pad, as the founding device published it with `POST /api/v1/accounts`.\n\nServed back because a **recovering** client needs it and has nowhere\nelse to get it. The recovery blob's AAD is\n`\"sunrise.recovery_blob.v1\" ‖ identity_id`, so a client must know the\nvault's `identity_id` *before* it can open the blob — and on a fresh\ndevice there is no vault to read it from.\n`sunrise_onboarding::recover_identity_from_code` says this value \"MUST\ncome from the OIDC account record\"; until this field existed the account\nrecord carried the server's id under that name and the real one nowhere,\nso the recovery flow's step 5 had no input it could be given.\n\n`None` on an account whose devices never published identity keys.\nNothing is trusted on the strength of it: a recovering client derives\n`identity_id` from it, and the AEAD then refuses any blob that was not\nsealed under exactly that value."
           },
           "email": {
             "type": "string",

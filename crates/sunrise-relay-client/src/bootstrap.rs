@@ -152,6 +152,44 @@ pub async fn bootstrap(
         .map_err(|e| BootstrapError::Account(e.to_string()))?
         .into_inner();
 
+    let device_id = register_device(base_url, bearer, device).await?;
+
+    Ok(BootstrapOutcome {
+        identity_id: created.identity_id,
+        email: created.email,
+        device_id,
+    })
+}
+
+/// Register one device on an account that already exists, and return the id
+/// the relay minted for it.
+///
+/// The second half of [`bootstrap`] on its own, because a **recovery** needs
+/// exactly that and not the first half. `sunrise recover` joins an account it
+/// did not create: the identity keys are already published — they are the ones
+/// it just restored — and the recovery blob column is write-once and already
+/// holds the blob the recovery has just spent. `POST /api/v1/accounts` also
+/// requires a non-empty `email`, which a recovering client has no business
+/// inventing and no reason to resend, since the identity provider owns the address and the
+/// relay reads the body's copy only as a self-host fallback.
+///
+/// Idempotent at the server in the same way `bootstrap` is: a device
+/// re-registering with the same key is a second row rather than an error.
+///
+/// # Errors
+/// [`BootstrapError::Device`] naming what the generated client reported.
+pub async fn register_device(
+    base_url: &str,
+    bearer: &str,
+    device: DeviceIdentity,
+) -> Result<String, BootstrapError> {
+    let client = api::Client::new(base_url)
+        .map_err(|e| BootstrapError::Device(e.to_string()))?
+        .with_credential(
+            "AccountToken",
+            api::Credential::Bearer(SecretString::from(bearer.to_owned())),
+        );
+
     let registered = client
         .register_device(
             None,
@@ -168,10 +206,5 @@ pub async fn bootstrap(
         .await
         .map_err(|e| BootstrapError::Device(e.to_string()))?
         .into_inner();
-
-    Ok(BootstrapOutcome {
-        identity_id: created.identity_id,
-        email: created.email,
-        device_id: registered.device_id,
-    })
+    Ok(registered.device_id)
 }

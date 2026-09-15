@@ -71,11 +71,46 @@ pub async fn login(
     now_ms: u64,
     announce: &mut dyn FnMut(&str),
 ) -> Result<Credentials, LoginError> {
+    login_with(cfg, device_id, store, now_ms, announce, false).await
+}
+
+/// [`login`], but asking the IdP to re-authenticate the user now.
+///
+/// This is what `GET /api/v1/accounts/me/recovery_blob` demands and an
+/// ordinary bearer cannot satisfy: the route reads `auth_time` off the token,
+/// and a browser with a live session hands back whatever `auth_time` that
+/// session started with. `sunrise recover` is the only caller, because it is
+/// the only command that needs the blob.
+///
+/// # Errors
+/// As [`login`].
+pub async fn step_up_login(
+    cfg: &LoginConfig,
+    device_id: &str,
+    store: &dyn CredentialStore,
+    now_ms: u64,
+    announce: &mut dyn FnMut(&str),
+) -> Result<Credentials, LoginError> {
+    login_with(cfg, device_id, store, now_ms, announce, true).await
+}
+
+async fn login_with(
+    cfg: &LoginConfig,
+    device_id: &str,
+    store: &dyn CredentialStore,
+    now_ms: u64,
+    announce: &mut dyn FnMut(&str),
+    step_up: bool,
+) -> Result<Credentials, LoginError> {
     let http = Arc::new(HttpsClient::new()) as Arc<dyn HttpClient>;
     let client = OidcClient::new(cfg.issuer.clone(), cfg.client_id.clone(), http);
 
     let metadata = client.discover().await?;
-    let session = client.begin_login(&metadata, device_id).await?;
+    let session = if step_up {
+        client.begin_step_up_login(&metadata, device_id).await?
+    } else {
+        client.begin_login(&metadata, device_id).await?
+    };
 
     announce(session.authorize_url());
     // A browser that will not open is not fatal: the URL was just printed, and

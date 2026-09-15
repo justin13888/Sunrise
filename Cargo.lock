@@ -2732,6 +2732,7 @@ dependencies = [
  "sunrise-server",
  "sunrise-sync",
  "tempfile",
+ "thiserror 1.0.69",
  "tokio",
  "tracing",
  "zeroize",

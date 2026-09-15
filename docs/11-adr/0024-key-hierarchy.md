@@ -7,6 +7,38 @@
 [`recovery.md`](../03-crypto/recovery.md), which specify the target hierarchy this
 ADR adopts. **Bumps** `CRYPTO_SUITE_V` and `DOC_SCHEMA_V`.
 
+**Amended (2026-09, second):** decision 4 says the identity recipient class
+exists "so the recovery path can reach them", and §What this fixes in
+`recovery.md` below concludes that a pure recovery therefore restores readable
+content. **It did not, and the reason is in this decision rather than in the
+client.** Every `key_envelope` op lives in the vault-meta stream and is sealed
+under that stream's key; at a genesis mint `emit_key_envelopes` passes
+`seal_under: None` and `emit_control_op` resolves that to the very epoch being
+minted. So the identity's copy of the vault-meta genesis key was sealed under
+the vault-meta genesis key. A recovering device held `ID_D_priv` and could open
+nothing with it: the outer AEAD never yielded the inner HPKE ciphertext, the op
+parked in `deferred_ops`, and every later epoch — correctly sealed under its
+predecessor — was stranded behind it. The vault synced, applied nothing, and
+presented as an empty account.
+
+The fix is one derived key and nothing else. **The vault-meta stream's genesis
+key is `BLAKE3.derive_key("sunrise.meta_genesis_key.v1", ID_D_priv ‖
+identity_id)`**, so a recovering vault recomputes the founder's and reads the
+log; every other `(stream, epoch)` key remains 32 random bytes, which is what
+decision 5 needs to be true for rotation to rotate a secret rather than a
+ciphertext. It adds no primitive outside [ADR-0004](./0004-crypto-primitives.md)'s
+frozen suite, changes no stored or wire format, and adds no exposure that
+`ID_D_priv` did not already carry — `recovery.md` §The cost of that, stated
+plainly already records it as a long-lived unwrapping key reaching every epoch
+sealed to it. A device admitted by pairing holds no `ID_D_priv`, derives
+nothing, and needs nothing: its payload carried the account's epochs.
+
+What made this survive review is that nothing had ever opened a second vault
+from a restored identity. `sunrise-e2e/tests/recovery_blob_round_trip.rs`
+asserted the blob round-trips and stopped; the assertion that catches this is
+`recovery_restores_a_working_vault.rs`, which reads back content written before
+the recovery.
+
 **Amended (2026-09):** decision 4 recorded a tension between recovery and
 revocation and resolved it in recovery's favour, filing
 [#76](https://github.com/justin13888/Sunrise/issues/76). The tension was not
