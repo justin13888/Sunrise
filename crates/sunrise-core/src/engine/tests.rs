@@ -23,7 +23,7 @@ use super::attachment::*;
 use super::block::*;
 use super::context::*;
 use super::focus::*;
-use super::identity::{MAX_ROSTER_ENTRIES, MAX_SIBLINGS_PER_PREDECESSOR};
+use super::identity::{MAX_ROSTER_ENTRIES, MAX_SIBLINGS_PER_PREDECESSOR, MAX_SIBLING_CANDIDATES};
 use super::ids::*;
 use super::lww::*;
 use super::oplog::*;
@@ -8247,6 +8247,36 @@ fn a_transition_naming_more_devices_than_the_cap_is_refused() {
     assert_eq!(ea.current_identity(dba.conn()).unwrap().identity_id, to);
 }
 
+/// The fold is willing to look at every row ingest will store.
+///
+/// `apply_control_op` is the only writer of `identity_transitions`, and its
+/// sibling cap lets a predecessor reach exactly
+/// [`MAX_SIBLINGS_PER_PREDECESSOR`] rows. If the fold's `LIMIT` were smaller
+/// than that, the rows past it would be ones the walk could never reach on a
+/// replica that had already stored them — no rotation recorded there could
+/// ever take effect, which is `MAX_TRANSITION_CHAIN = 64` all over again, one
+/// level down.
+///
+/// So the load-bearing property of [`MAX_SIBLING_CANDIDATES`] is not its value
+/// but this inequality, and this is the test that makes the constant causal:
+/// lowering it below the ingest cap turns this red. Its *behaviour* — scanning
+/// past a row that does not verify — is not exercised anywhere, because every
+/// row stored under an established predecessor had `prev_sig` checked at
+/// ingest and therefore verifies here too. See `MAX_SIBLING_CANDIDATES` for
+/// the measurement and the one path that could store a row the fold must skip.
+#[test]
+fn the_fold_looks_at_every_row_ingest_will_store() {
+    let ingest_cap = usize::try_from(MAX_SIBLINGS_PER_PREDECESSOR)
+        .expect("the sibling cap is a small positive number");
+    assert!(
+        MAX_SIBLING_CANDIDATES >= ingest_cap,
+        "the fold verifies at most {MAX_SIBLING_CANDIDATES} candidates per link but ingest \
+         will store {ingest_cap} rows under one predecessor, so {} of them are rows the walk \
+         can never reach and the transitions they carry can never take effect",
+        ingest_cap - MAX_SIBLING_CANDIDATES
+    );
+}
+
 /// One predecessor may accumulate only so many successors, and a re-delivery
 /// of a row already held is never what the cap turns away.
 ///
@@ -8263,9 +8293,12 @@ fn a_predecessor_accumulates_only_as_many_successors_as_the_fold_will_verify() {
     let a_id = ea.keychain.device_id();
 
     // Every one of these succeeds the *same* predecessor: `build_transition`
-    // reads `emitter.keychain.identity_id()`, and the emitter only adopts the
-    // transition that wins the fold, so each call forks from the identity it
-    // currently signs under.
+    // reads `emitter.keychain.identity_id()`, and that only moves when this
+    // device *adopts*, which since #105 needs a cert for itself in the
+    // transition's roster. The roster here is B alone, so A never adopts and
+    // every call forks from genesis -- which is exactly the fan this test
+    // wants, and is why the roster deliberately does not name A the way
+    // `a_chain_past_the_old_cap_still_folds_and_can_still_be_extended` does.
     let mut built = Vec::new();
     for i in 0..MAX_SIBLINGS_PER_PREDECESSOR + 4 {
         let (inner, to) = build_transition(&ea, &[&eb], true, T0);

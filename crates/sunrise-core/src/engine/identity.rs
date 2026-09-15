@@ -57,6 +57,33 @@ use sunrise_storage::Db;
 /// a member could occupy all sixteen places above an honest successor and
 /// suppress it — which is the *other* unleavable state, and why the two
 /// constants have to be read together.
+///
+/// # What this number actually enforces, and what it does not
+///
+/// **It can never truncate.** `apply_control_op` is the only writer of
+/// `identity_transitions` — one `INSERT OR IGNORE`, behind the sibling cap —
+/// and that cap refuses a row when the predecessor already holds
+/// [`MAX_SIBLINGS_PER_PREDECESSOR`] *other* successors, so a predecessor tops
+/// out at exactly that many rows. The `LIMIT` here is the same number, so the
+/// query is never asked for a row it will not return. Raising this constant
+/// changes nothing; only lowering it below the ingest cap does, and what that
+/// would do is make the rows above the limit permanently unreachable — the
+/// unleavable state one level down, which is the whole reason the two numbers
+/// are pinned equal.
+///
+/// **It is barely exercised.** Every row stored under a predecessor this
+/// replica has *already established* had its `prev_sig` checked at ingest, so
+/// it verifies at fold time too, and the walk's `find_map` stops at the first
+/// candidate. Setting this constant to `1` leaves the entire `sunrise-core`
+/// suite green, which is the measurement rather than the claim. The one path
+/// that can store a row the fold must then skip is a transition admitted while
+/// its predecessor was still unknown — `prev_sig` is unchecked there by
+/// design — and nothing in the suite builds that, so the scan-past-a-bad-row
+/// behaviour this constant bounds is untested. Treat it as defence in depth
+/// whose load-bearing property is the inequality, not the value.
+///
+/// The inequality is pinned by
+/// `engine::tests::the_fold_looks_at_every_row_ingest_will_store`.
 pub(super) const MAX_SIBLING_CANDIDATES: usize = 16;
 
 /// How many `identity_transitions` rows this replica stores for one predecessor.
