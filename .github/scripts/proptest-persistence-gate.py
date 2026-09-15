@@ -59,7 +59,7 @@ default misbehaves.
 **Out, and deliberately:**
 
 * **Proptests under `src/`.** The default works there — `crates/sunrise-core`'s
-  `proptest-regressions/engine.txt` is what it produces — so requiring an
+  `proptest-regressions/engine/tests.txt` is what it produces — so requiring an
   explicit setting would be requiring a workaround for a problem that does not
   exist.
 * **What a `#![proptest_config(f())]` helper actually returns.** The `direct`

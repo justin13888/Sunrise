@@ -44,7 +44,7 @@ A cursor is considered **stale** if its device has not heartbeated within 30 day
 
 **Relay-level revocation works.** `DELETE`ing a device through the API sets
 `devices.revoked = 1` and drops its push tokens
-(`Store::revoke_device`, `crates/sunrise-server/src/store.rs`), and every
+(`Store::revoke_device`, `crates/sunrise-server/src/store/devices.rs`), and every
 authenticated lookup selects `WHERE revoked = 0`, so a revoked device stops
 being able to reach the relay. A device cannot revoke itself — the route
 refuses it — because a device that could would be a device a thief can use to

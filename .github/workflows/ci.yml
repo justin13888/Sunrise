@@ -433,6 +433,13 @@ jobs:
         # step's, so 0/2/3 are success here and every other code propagates.
         # Red on this step now means the shard could not be measured at all.
         run: |
+          # cargo-mutants creates its own `mutants.out` but not the parent it
+          # was told to put it in, and `out/` is gitignored, so a fresh
+          # checkout has none. `mise.toml`'s `mutants` task has always created
+          # it; this job never did, so every shard failed here with
+          # `create output parent directory ... No such file or directory`
+          # before it measured a single mutant.
+          mkdir -p out/mutants
           rc=0
           cargo mutants -p ${{ matrix.crate }} \
             --jobs 1 --shard ${{ matrix.shard }} \
@@ -494,6 +501,24 @@ jobs:
       - name: Exit-code contract
         run: python3 .github/scripts/test_mutants_gate.py
 
+  core-filesystem-gate-contract:
+    name: Core filesystem gate contract
+    runs-on: ubuntu-latest
+    # One Python script over a crate it synthesises in a temp directory: no
+    # toolchain, no cargo, no network past the checkout. Seconds of work.
+    timeout-minutes: 5
+    # Deliberately without an `if:`, like the mutation gate's contract above, so
+    # it runs on every trigger this workflow has. What it asserts is that the
+    # gate can still say no: the first version stopped reading a file at its
+    # first `#[cfg(test)]` line, which left 97% of engine/oplog.rs and 95% of
+    # keychain/mod.rs unscanned the moment those modules were split -- and
+    # reported OK for both. The `Determinism gate` job below runs the gate; this
+    # one asserts the gate is a check.
+    steps:
+      - uses: actions/checkout@v4
+      - name: Exit-code and coverage contract
+        run: python3 .github/scripts/test_core_filesystem_gate.py
+
   determinism:
     name: Determinism gate
     runs-on: ubuntu-latest
@@ -516,6 +541,58 @@ jobs:
             "determinism" \
             '\brand::(thread_rng|random|rng)[[:space:]]*(::<[^>]*>)?[[:space:]]*\(|(^|[^.[:alnum:]_])thread_rng[[:space:]]*\(' \
             crates/*/src crates/*/tests crates/*/benches
+      - name: Reject filesystem access outside the core's storage seam
+        # docs/01-architecture/shared-core.md §determinism-rules rule 2 — the
+        # core reads and writes through `CoreConfig::storage`, so a test can
+        # supply one and a vault is the only thing on disk.
+        #
+        # Not a `clippy.toml` entry, and it cannot be: that file is
+        # workspace-wide, and nine of twenty crates touch the filesystem on
+        # purpose. A `std::fs` deny there fires in eight crates the rule was
+        # never about. This is scoped the way the rule is scoped -- one crate --
+        # and carries a visible allowlist of the two documented exceptions.
+        run: python3 .github/scripts/core-filesystem-gate.py
+
+  file-size:
+    name: File size gate
+    runs-on: ubuntu-latest
+    # Checkout plus one pass over the Rust files in three packages.
+    timeout-minutes: 5
+    # Its own job rather than a step inside `Determinism gate`, which is where
+    # it first landed. File length has nothing to do with determinism: the four
+    # rules that job enforces are about clocks, the filesystem, randomness and
+    # threads, and a red "Determinism gate" for a file that got long sends the
+    # reader to shared-core.md to look for a rule that is not there. Every other
+    # gate here is its own check for the same reason -- orphan-crate-gate,
+    # proptest-persistence, doc-comment, docs-link.
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reject a file that grew past its package's threshold
+        # No file in this repository had a bound until engine.rs reached 18,568
+        # lines -- six impl blocks, ninety free functions and a ten-thousand-line
+        # test module in one file. It got there one reasonable commit at a time.
+        #
+        # Thresholds are each package's own p90, not a number from a style
+        # guide, and the baseline in the script names every file over one today
+        # with what it is. That list may shrink and may not grow.
+        #
+        # Exit 1 is "a file grew"; exit 2 is "the baseline needs a line
+        # deleted". Both are red, and the output says which it is.
+        run: python3 .github/scripts/file-size-gate.py
+
+  file-size-gate-contract:
+    name: File size gate contract
+    runs-on: ubuntu-latest
+    # One Python script over packages it synthesises in a temp directory: no
+    # toolchain, no cargo, no network past the checkout. Seconds of work.
+    timeout-minutes: 5
+    # No `if:`, like the other gate contracts, so it runs on pull requests. The
+    # gate shipped with three failure modes and nothing asserting any of them --
+    # they were checked by hand once, against whatever tree was on disk.
+    steps:
+      - uses: actions/checkout@v4
+      - name: Exit-code contract
+        run: python3 .github/scripts/test_file_size_gate.py
 
   log-redaction:
     name: Log redaction gate

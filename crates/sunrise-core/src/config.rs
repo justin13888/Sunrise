@@ -106,9 +106,9 @@ pub trait HlcClock: Send + Sync + std::fmt::Debug {
 /// `seq`, so the device's newer op loses to its own older one on every replica
 /// that merges both. The origin has no LWW gate on its own writes, so it keeps
 /// the new value while everyone else keeps the old: silent, permanent
-/// divergence, inside a five-minute window after every restart. `engine.rs`'s
-/// `a_restart_does_not_make_this_device_emit_beneath_its_own_ops` is that
-/// scenario.
+/// divergence, inside a five-minute window after every restart.
+/// `engine/tests.rs`'s `a_restart_does_not_make_this_device_emit_beneath_its_own_ops`
+/// is that scenario.
 ///
 /// # What is left after priming
 ///

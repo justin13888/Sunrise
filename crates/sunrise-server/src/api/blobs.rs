@@ -42,6 +42,7 @@ use kynos::di::inject::Inject;
 use kynos::extract::body::json::Json;
 use kynos::extract::media::OctetStream;
 use kynos::extract::params::path::Path;
+use kynos::openapi::Schema as OpenApiSchema;
 use kynos::response::status::NoContent;
 use kynos::response::stream::binary::BinaryStream;
 use serde::{Deserialize, Serialize};
@@ -77,7 +78,9 @@ pub struct InitRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, kynos::Schema)]
 #[serde(deny_unknown_fields)]
 pub struct InitResponse {
-    /// Server-assigned upload id, used by the chunk PUTs and by `finalize`.
+    /// Server-assigned upload id, used by the chunk PUTs and by `finalize`:
+    /// `up_` + 32 lowercase hex characters.
+    #[schema(pattern = "^up_[0-9a-f]{32}$")]
     pub upload_id: String,
     /// Per-chunk upload URLs. Self-host returns relative paths under
     /// `/api/v1/blobs/<upload_id>/<idx>`, which the PUT operation serves.
@@ -88,13 +91,111 @@ pub struct InitResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, kynos::Schema)]
 #[serde(deny_unknown_fields)]
 pub struct FinalizeRequest {
-    /// Upload id from `init`.
+    /// Upload id from `init`: `up_` + 32 lowercase hex characters.
+    #[schema(pattern = "^up_[0-9a-f]{32}$")]
     pub upload_id: String,
     /// BLAKE3 of the concatenated chunk ciphertext, 64 lowercase hex.
+    #[schema(pattern = "^[0-9a-f]{64}$")]
     pub content_hash: String,
     /// Per-chunk BLAKE3 hashes, 64 lowercase hex each, in order. Its length is
     /// the chunk count: `init`'s advisory count is not trusted here.
-    pub chunk_hashes: Vec<String>,
+    pub chunk_hashes: Vec<ChunkHash>,
+}
+
+/// A string schema carrying nothing but `pattern`, for the newtypes below.
+///
+/// Anonymous — no `name()` — so each one inlines where it is used rather than
+/// becoming a `$ref` to a component that is only a regex.
+fn hex_pattern(registry: &mut kynos::schema::registry::Registry, pattern: &str) -> OpenApiSchema {
+    // `Constraints` is `#[non_exhaustive]`, so it grows without breaking this
+    // — which also means starting from `default` and assigning rather than
+    // naming every field in a struct expression.
+    let mut constraints = kynos::schema::constraints::Constraints::default();
+    constraints.pattern = Some(pattern.to_owned());
+    constraints.apply(registry.resolve::<String>())
+}
+
+/// One entry of [`FinalizeRequest::chunk_hashes`]: a BLAKE3 as 64 lowercase
+/// hex characters.
+///
+/// A newtype rather than a `String` because `#[schema(...)]` is a *field*
+/// grammar and its keywords land on the field's own schema — which for a
+/// `Vec<String>` is the array, where `pattern` is a keyword JSON Schema
+/// ignores. Constraining the element needs the element to be a type, which is
+/// the remedy `kynos::schema` documents.
+///
+/// Transparent on the wire in both directions, so the JSON is the array of
+/// strings it always was.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ChunkHash(pub String);
+
+impl kynos::schema::Schema for ChunkHash {
+    fn schema(registry: &mut kynos::schema::registry::Registry) -> OpenApiSchema {
+        hex_pattern(registry, "^[0-9a-f]{64}$")
+    }
+}
+
+/// An upload id in a URL path: `up_` + 32 lowercase hex characters.
+///
+/// A newtype for the same reason [`ChunkHash`] is one, in a different corner
+/// of the derive: `kynos::PathParams` builds each parameter's schema from the
+/// field's *type* alone and never reads `#[schema(...)]`, so a constraint on a
+/// path parameter has to be something its type states. Without it the one
+/// place a client actually puts an id in a URL is the one place the published
+/// description says nothing about its shape.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(transparent)]
+pub struct UploadId(pub String);
+
+impl kynos::schema::Schema for UploadId {
+    fn schema(registry: &mut kynos::schema::registry::Registry) -> OpenApiSchema {
+        hex_pattern(registry, "^up_[0-9a-f]{32}$")
+    }
+}
+
+// `PathParams` reads a segment through `FromStr` and writes one through
+// `Display`. Both are infallible and shape-blind on purpose: `parse_upload_id`
+// is the one place that decides whether a segment is a well-formed id, and a
+// second opinion here would be a second error path to keep in step with it.
+impl std::str::FromStr for UploadId {
+    type Err = std::convert::Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(Self(s.to_owned()))
+    }
+}
+
+impl std::fmt::Display for UploadId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// A blob id in a URL path: `blb_` + 32 lowercase hex characters. See
+/// [`UploadId`] for why a path parameter needs a type to carry its pattern.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(transparent)]
+pub struct BlobId(pub String);
+
+impl kynos::schema::Schema for BlobId {
+    fn schema(registry: &mut kynos::schema::registry::Registry) -> OpenApiSchema {
+        hex_pattern(registry, "^blb_[0-9a-f]{32}$")
+    }
+}
+
+impl std::str::FromStr for BlobId {
+    type Err = std::convert::Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(Self(s.to_owned()))
+    }
+}
+
+impl std::fmt::Display for BlobId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
 }
 
 /// `POST /api/v1/blobs/finalize` response body.
@@ -104,6 +205,7 @@ pub struct FinalizeResponse {
     /// Canonical blob id: `blb_` + the first 16 bytes of `content_hash` in
     /// lowercase hex. Content-addressed, so re-uploading identical ciphertext
     /// converges on the same id.
+    #[schema(pattern = "^blb_[0-9a-f]{32}$")]
     pub blob_id: String,
     /// Committed size in bytes.
     pub size_bytes: u64,
@@ -115,7 +217,7 @@ pub struct FinalizeResponse {
 #[derive(Debug, Clone, Deserialize, kynos::PathParams, kynos::Schema)]
 pub struct ChunkPath {
     /// The upload this chunk belongs to.
-    pub upload_id: String,
+    pub upload_id: UploadId,
     /// Zero-based index within the upload.
     pub chunk_idx: u32,
 }
@@ -124,7 +226,7 @@ pub struct ChunkPath {
 #[derive(Debug, Clone, Deserialize, kynos::PathParams, kynos::Schema)]
 pub struct BlobIdPath {
     /// The blob being read.
-    pub blob_id: String,
+    pub blob_id: BlobId,
 }
 
 /// Reserve an upload id and hand back one URL per chunk.
@@ -155,7 +257,7 @@ pub async fn init(
     let upload_id = format!("up_{}", hex::encode(raw));
     // Create the pending area eagerly so a chunk PUT is a write, not a
     // mkdir-then-write race between two concurrent chunk uploads.
-    pending_store(&state, &caller, &upload_id)?;
+    pending_store(&state, &caller, &raw)?;
     let chunk_urls = (0..body.chunk_count)
         .map(|i| format!("/api/v1/blobs/{upload_id}/{i}"))
         .collect();
@@ -173,7 +275,7 @@ pub async fn put_chunk(
     Path(path): Path<ChunkPath>,
     SignedBinary { caller, bytes }: SignedBinary,
 ) -> Result<NoContent, ApiError> {
-    let upload = parse_upload_id(&path.upload_id)?;
+    let upload = parse_upload_id(&path.upload_id.0)?;
     if path.chunk_idx >= MAX_CHUNK_COUNT {
         return Err(ApiError::validation(format!(
             "chunk index must be < {MAX_CHUNK_COUNT}"
@@ -184,7 +286,7 @@ pub async fn put_chunk(
             "chunk must be 1..={MAX_CHUNK_BYTES} bytes"
         )));
     }
-    let store = pending_store(&state, &caller, &path.upload_id)?;
+    let store = pending_store(&state, &caller, &upload)?;
     store
         .put_chunk(&upload, path.chunk_idx, &bytes)
         .map_err(|_| ApiError::internal())?;
@@ -193,6 +295,23 @@ pub async fn put_chunk(
 }
 
 /// Check every stored chunk and commit the blob under its content address.
+///
+/// # Memory
+///
+/// Every chunk is resident at once. The verification loop reads each chunk
+/// back, hashes it, and keeps it so the commit that follows does not have to
+/// read it a second time; the `MAX_BLOB_BYTES` check runs *after* that loop,
+/// on a total the loop has already accumulated in full. So the 100 MB
+/// per-attachment ceiling does not bound what this holds — `MAX_CHUNK_COUNT` x
+/// `MAX_CHUNK_BYTES`, 4096 x 1 MiB, does, and the peak before the ceiling can
+/// fire is about 4 GiB.
+///
+/// `fetch` streams one chunk at a time, and its doc records why: a single
+/// buffered blob pinned 100 MB of the relay's memory and concurrent fetches
+/// made that an availability problem. This path has the same shape and a
+/// larger bound. It is stated rather than fixed because checking the size
+/// inside the loop changes which requests this endpoint accepts, which is a
+/// decision to take deliberately and not a tidy-up.
 #[kynos::post("/api/v1/blobs/finalize", operation_id = "finalizeBlobUpload")]
 pub async fn finalize(
     Inject(state): Inject<ServerState>,
@@ -211,10 +330,10 @@ pub async fn finalize(
     let expected: Vec<[u8; 32]> = body
         .chunk_hashes
         .iter()
-        .map(|h| parse_hash(h, "chunk_hashes"))
+        .map(|h| parse_hash(&h.0, "chunk_hashes"))
         .collect::<Result<_, _>>()?;
 
-    let pending = pending_store(&state, &caller, &body.upload_id)?;
+    let pending = pending_store(&state, &caller, &upload)?;
     // Re-hash what is actually on disk. The client's hashes are a claim; this
     // is the check. A chunk that never arrived, arrived truncated, or arrived
     // corrupted all fail here rather than becoming an unreadable attachment
@@ -289,7 +408,7 @@ pub async fn fetch(
     Path(path): Path<BlobIdPath>,
     SignedParts(caller): SignedParts,
 ) -> Result<BinaryStream<ChunkStream, OctetStream>, ApiError> {
-    let blob = parse_blob_id(&path.blob_id)?;
+    let blob = parse_blob_id(&path.blob_id.0)?;
     let (chunk_count, _) = read_manifest(&state, &caller, &blob)?.ok_or_else(not_found)?;
     let store = committed_store(&state, &caller)?;
     if !store
@@ -352,12 +471,29 @@ fn account_root(state: &ServerState, caller: &Caller, area: &str) -> PathBuf {
 fn pending_store(
     state: &ServerState,
     caller: &Caller,
-    upload_id: &str,
+    upload: &[u8; 16],
 ) -> Result<BlobStore, ApiError> {
-    // One directory per upload keeps a `delete_all` at finalize from touching
-    // any other in-flight upload of the same account.
-    let root = account_root(state, caller, "pending").join(upload_id);
+    let root = pending_dir(&account_root(state, caller, "pending"), upload);
     BlobStore::new(&root).map_err(|_| ApiError::internal())
+}
+
+/// Where one upload's chunks live, under that account's pending root.
+///
+/// One directory per upload keeps a `delete_all` at finalize from touching any
+/// other in-flight upload of the same account.
+///
+/// Named from the **parsed bytes**, re-encoded, rather than from the URL
+/// segment they were parsed out of. `parse_hex16` decodes through
+/// `hex::decode_to_slice`, which is case-insensitive, so `up_AB…` and `up_ab…`
+/// are one upload with two spellings. Joining the raw segment gave them two
+/// directories on a case-sensitive filesystem — chunks PUT under one spelling
+/// were invisible to a `finalize` using the other, and the loser was never
+/// swept. Taking `[u8; 16]` rather than a `&str` is what makes that
+/// unrepresentable: there is no spelling left to disagree about.
+// `Path` in this module is kynos's path extractor, so the filesystem one is
+// spelled out.
+fn pending_dir(root: &std::path::Path, upload: &[u8; 16]) -> PathBuf {
+    root.join(format!("up_{}", hex::encode(upload)))
 }
 
 fn committed_store(state: &ServerState, caller: &Caller) -> Result<BlobStore, ApiError> {
@@ -425,8 +561,9 @@ const fn blob_key(content_hash: &[u8; 32]) -> [u8; 16] {
     out
 }
 
-/// `up_` + 32 lowercase hex characters. Parsing rather than trusting is what
-/// keeps a `../` out of a path built from a URL segment.
+/// `up_` + 32 lowercase hex characters, and uppercase is a `400` rather than a
+/// second spelling of the same id. Parsing rather than trusting is what keeps a
+/// `../` out of a path built from a URL segment.
 fn parse_upload_id(s: &str) -> Result<[u8; 16], ApiError> {
     let hexpart = s
         .strip_prefix("up_")
@@ -442,11 +579,27 @@ fn parse_blob_id(s: &str) -> Result<[u8; 16], ApiError> {
     parse_hex16(hexpart, "blob id")
 }
 
+/// Whether every character is a digit or `a`–`f`.
+///
+/// `hex::decode_to_slice` is case-insensitive, so this is the only thing
+/// standing between the contract these parsers state and the one they enforce.
+/// An id with two spellings is a liability where ids name directories and
+/// content addresses — `pending_dir` carries the concrete cost — and nothing
+/// released spells one any other way.
+fn is_lowercase_hex(s: &str) -> bool {
+    s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
 fn parse_hex16(s: &str, field: &str) -> Result<[u8; 16], ApiError> {
     let mut out = [0u8; 16];
     if s.len() != 32 {
         return Err(ApiError::validation(format!(
             "{field} must carry 32 hex characters"
+        )));
+    }
+    if !is_lowercase_hex(s) {
+        return Err(ApiError::validation(format!(
+            "{field} must be lowercase hex"
         )));
     }
     hex::decode_to_slice(s, &mut out)
@@ -459,6 +612,11 @@ fn parse_hash(s: &str, field: &'static str) -> Result<[u8; 32], ApiError> {
     if s.len() != 64 {
         return Err(ApiError::validation(format!(
             "{field} entries must be 64 hex characters"
+        )));
+    }
+    if !is_lowercase_hex(s) {
+        return Err(ApiError::validation(format!(
+            "{field} must be lowercase hex"
         )));
     }
     hex::decode_to_slice(s, &mut out)
@@ -481,6 +639,7 @@ fn not_found() -> ApiError {
 
 #[cfg(test)]
 mod tests {
+    use super::pending_dir;
     use crate::api::error::codes;
     use crate::api::testing::{Client, SECOND_BEARER};
     use kynos::http::{Method, StatusCode};
@@ -716,26 +875,99 @@ mod tests {
         }
     }
 
-    /// Pinned, not endorsed: an **uppercase** hex upload id is accepted.
+    /// An **uppercase** hex upload id is refused, at the route.
     ///
-    /// `parse_upload_id` is documented as "`up_` + 32 lowercase hex
-    /// characters" and its own refusal says "must be lowercase hex", but the
-    /// decode underneath is case-insensitive, so the same sixteen bytes have
-    /// two spellings that reach the same pending directory.
+    /// It used to be accepted: `parse_upload_id` is documented as "`up_` + 32
+    /// lowercase hex characters" and its refusal says "must be lowercase hex",
+    /// but the decode underneath is case-insensitive, so the message was a
+    /// claim nothing enforced. The parsers now enforce it, which is the
+    /// decision this test records rather than the gap the old one pinned.
     ///
-    /// What the assertion pins is exactly one fact: the status is `204`. The
-    /// message the name invokes is context for why a `204` is surprising, not
-    /// something checked — nothing below reads a response body, so rewording
-    /// the refusal does not fail this test. Nothing here depends on the id
-    /// being canonical, so this is a statement of current behaviour rather
-    /// than an endorsement of it, and it is stated so that tightening the
-    /// parse fails a test instead of passing silently.
+    /// Asserted through the route, not against `parse_hex16`, because the
+    /// refusal has to be the surface's `400 VALIDATION_INVALID` and not a
+    /// `404` from the router or a `500` from somewhere downstream — an
+    /// uppercase id occupies one path segment, so it reaches the handler.
     #[tokio::test]
-    async fn an_uppercase_hex_upload_id_is_accepted_despite_the_message() {
+    async fn an_uppercase_hex_upload_id_is_rejected() {
         let (client, _guard) = Client::with_blob_root();
+        let res = client
+            .send_bytes(
+                Method::PUT,
+                &format!("/api/v1/blobs/up_{}/0", "A".repeat(32)),
+                "application/octet-stream",
+                CHUNKS[0],
+                &[],
+            )
+            .await;
+        res.assert_status(StatusCode::BAD_REQUEST);
+        assert_eq!(res.json()["code"], codes::VALIDATION_INVALID);
+    }
+
+    /// The parsers themselves, on the whole of what they now admit and refuse.
+    ///
+    /// Two of the three canonical-hex parsers live here; `sync::parse_id` is
+    /// the third and is covered beside the sync suite. Each refuses in the
+    /// words its doc comment and its `400` body have always used, so the
+    /// message and the rule are finally the same statement.
+    #[test]
+    fn the_blob_parsers_take_lowercase_hex_and_nothing_else() {
+        use super::{parse_hash, parse_hex16};
+
+        parse_hex16(&"ab".repeat(16), "upload_id").expect("lowercase is the canonical form");
+        parse_hash(&"ab".repeat(32), "content_hash").expect("lowercase is the canonical form");
+
+        for id in ["AB".repeat(16), format!("{}AB", "ab".repeat(15))] {
+            let err = parse_hex16(&id, "upload_id").expect_err("uppercase must not decode");
+            assert_eq!(
+                err.to_string(),
+                "upload_id must be lowercase hex",
+                "for {id}"
+            );
+        }
+        for hash in ["AB".repeat(32), format!("{}AB", "ab".repeat(31))] {
+            let err = parse_hash(&hash, "content_hash").expect_err("uppercase must not decode");
+            assert_eq!(
+                err.to_string(),
+                "content_hash must be lowercase hex",
+                "for {hash}"
+            );
+        }
+    }
+
+    /// An upload's directory is decided by its bytes, never by how they were
+    /// spelled.
+    ///
+    /// `pending_store` used to join the raw URL segment. `parse_hex16` decodes
+    /// case-insensitively, so `up_AB…` and `up_ab…` are the same sixteen bytes
+    /// and used to become two directories: chunks PUT under one spelling were
+    /// invisible to a `finalize` using the other, and the abandoned one was
+    /// never swept.
+    ///
+    /// **Asserted on the constructed path, not on the filesystem.** The split
+    /// only happens where directory names are case-*sensitive*, which is
+    /// production (Linux) and is not macOS, whose APFS volumes fold case by
+    /// default. A test that wrote a chunk under each spelling and looked for
+    /// two directories would therefore have passed on a laptop while the
+    /// defect was live on the relay. Comparing the `PathBuf` is the same
+    /// question asked where the answer does not depend on the host.
+    #[test]
+    fn an_uploads_directory_is_named_by_its_bytes_and_not_by_their_spelling() {
+        let root = std::path::Path::new("/blobs/pending/acct");
+        let mut upper = [0u8; 16];
+        let mut lower = [0u8; 16];
+        hex::decode_to_slice("AB".repeat(16), &mut upper).unwrap();
+        hex::decode_to_slice("ab".repeat(16), &mut lower).unwrap();
+        assert_eq!(upper, lower, "the premise: one upload, two spellings");
+
         assert_eq!(
-            put_chunk(&client, &format!("up_{}", "A".repeat(32)), 0, CHUNKS[0]).await,
-            StatusCode::NO_CONTENT
+            pending_dir(root, &upper),
+            pending_dir(root, &lower),
+            "two spellings of one upload must not become two directories"
+        );
+        assert_eq!(
+            pending_dir(root, &upper),
+            root.join(format!("up_{}", "ab".repeat(16))),
+            "and the one they share is the canonical lowercase spelling"
         );
     }
 

@@ -58,7 +58,7 @@ These three fields are the ones whose plumbing is shortest, so the contract is
 stated explicitly rather than left to be inferred from the CDDL:
 
 - **`description` and `default_context` are persisted.** They are columns on
-  the `streams` table and `read_stream` in `crates/sunrise-core/src/engine.rs`
+  the `streams` table and `read_stream` in `crates/sunrise-core/src/engine/stream.rs`
   reads them back. Anything less is data loss under
   [ADR-0014](../11-adr/0014-entity-level-lww-merge.md): a Stream op is
   full-state, so a device that reads a Stream and re-emits it without a field
@@ -178,7 +178,7 @@ fractional index still does its job — it keeps a *single* reorder from
 rewriting every sibling — but it does not make concurrent reorders merge.
 
 This is behaviour, not a caveat: `concurrent_stream_reorders_converge_on_one_arrangement_not_a_merge`
-in `crates/sunrise-core/src/engine.rs` has two devices drag the same stream at
+in `crates/sunrise-core/src/engine/tests.rs` has two devices drag the same stream at
 the same instant and asserts that both land on one of the two keys and never on
 a third. Two rows can also end up *sharing* a key that way — a device can only
 lose a reorder wholesale, so it can lose it onto a key a sibling already holds —

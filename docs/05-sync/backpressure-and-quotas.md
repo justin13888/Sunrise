@@ -19,9 +19,9 @@ status: proposed
 > **Why it is not v1:** quotas presuppose plan tiers, and plan tiers presuppose
 > billing; ADR-0027 defers all three. What v1 enforces instead is a small set of
 > fixed operator constants that need no per-account state: a 2 MiB request body
-> (`crates/sunrise-server/src/config.rs:76-77`), a 1 MiB ciphertext chunk /
+> (`crates/sunrise-server/src/config/model.rs:104-105,110-112`), a 1 MiB ciphertext chunk /
 > 4096 chunks / 100 MB blob (`api/blobs.rs:53,57,61`), and 30-day / 256 MiB
-> per-channel relay-log retention (`relay_log.rs:54,63`).
+> per-channel relay-log retention (`relay_log.rs:121,130`).
 >
 > **What holds regardless:** the backpressure *shape* below — clients respecting
 > a server signal rather than retrying blind — is the design any future limit

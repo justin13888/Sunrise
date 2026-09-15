@@ -56,7 +56,7 @@ with `ciborium::ser::into_writer`, and `SseTransport` reads it back with
 (`crates/sunrise-sync/src/sse.rs:320-366`). Both bypass the canonicality check
 every other payload gets. The server sees neither frame — `POST /sync/session`
 takes a typed body and rebuilds a `Hello` from its fields
-(`crates/sunrise-server/src/api/sync.rs`) — so the handshake's two hops through
+(`crates/sunrise-server/src/api/sync/credential.rs`) — so the handshake's two hops through
 `ciborium` now happen on one side of the wire, between the driver and the
 adapter that speaks HTTP for it.
 
@@ -245,7 +245,7 @@ maps to `SYNC_OP_INVALID` and every other header failure to
 
 ### Partial OpBatch on disconnect
 
-A batch arrives as one `POST /api/v1/sync/ops`, so a connection that fails mid-request leaves the server with an incomplete body and no handler run at all; nothing is persisted. The relay never *applies* anything — it rebuilds the `OpBatch` frame from the request's base64 op envelopes, reads `stream_id` and the cleartext per-device heads out of it, appends the frame bytes verbatim to the durable relay log, and only then acks (`ops` in `crates/sunrise-server/src/api/sync.rs`; the `handle_op_batch` this once named went with the socket in ADR-0023). A storage failure answers `503` with nothing acked. Durable-before-ack is deliberate: the client drops an acked batch from its outbox, so acking an uncommitted batch would lose it on both sides at once.
+A batch arrives as one `POST /api/v1/sync/ops`, so a connection that fails mid-request leaves the server with an incomplete body and no handler run at all; nothing is persisted. The relay never *applies* anything — it rebuilds the `OpBatch` frame from the request's base64 op envelopes, reads `stream_id` and the cleartext per-device heads out of it, appends the frame bytes verbatim to the durable relay log, and only then acks (`ops` in `crates/sunrise-server/src/api/sync/publish.rs`; the `handle_op_batch` this once named went with the socket in ADR-0023). A storage failure answers `503` with nothing acked. Durable-before-ack is deliberate: the client drops an acked batch from its outbox, so acking an uncommitted batch would lose it on both sides at once.
 
 Client-side: an outbound OpBatch is held in the persistent outbox until the server acks it (`Ack { batch_id, stream_id, server_first_seen_ms }`). On reconnect, unacked batches are re-sent. There is no `applied_seq_range` on the wire — the client learns nothing about server-side sequencing from an `Ack` beyond "this batch landed".
 
@@ -255,7 +255,7 @@ The relay dedups on the **content** of a batch's ops instead: a domain-separated
 
 The key is the **whole batch**, which bounds what "already seen" can mean. Two of the three re-send shapes are covered: a retransmit inside a session replays the encoded frame verbatim, and a reconnect that adds nothing to the outbox re-sends the same ops. An **active** client is not. The client batches every unacked op for a stream into one frame with no size cap (`Core::sync_outbox_grouped`), so a user who edits between a lost `Ack` and the reconnect makes session 2 send `[O1, O2]` where session 1 sent `[O1]`. Those are two different batches by content: the second is stored, and `O1` lands twice. Re-applying it is harmless — ops are idempotent — but the relay pays the disk and fan-out cost. **This is the stated guarantee, not a pending shortfall.** The relay dedups a re-sent batch when the re-send carries exactly the ops the first attempt carried; a re-partitioned re-send is accepted, stored and fanned out again. It is not a correctness event — the receiver's `op_id` dedup below is what correctness rests on — and its cost is bounded by the unacked depth at the moment the ack was lost, and by retention thereafter. A per-op relay key was considered and rejected: the relay stores frames rather than ops, so saving the disk would mean filtering an op out of a batch and re-deriving its heads, and a per-op table would need its own tie to retention, because forgetting an op id is precisely what lets a legitimate replay through. If the case is ever measured to matter, the cheaper fix is client-side — persist the partition in the outbox so a reconnect re-sends the same ops the lost ack covered, which the existing batch key then catches exactly. See [ADR-0033](../11-adr/0033-relay-batch-dedup-is-whole-batch.md) for the argument and for what would reopen it.
 
-Relay dedup sits on top of the **receiver's**, which is the one correctness rests on and whose key is the **`op_id`**: applying an op is an `INSERT OR IGNORE` into `ops` (`OpLog::insert`, `crates/sunrise-storage/src/oplog.rs`), which the receive path calls and then gates on `tx.changes() == 0` (`applied` in `crates/sunrise-core/src/engine.rs`), so a second copy materializes nothing and raises no event. For received ops the op id is derived from exactly `(stream_id, device_id, seq)` (`remote_op_id`); a locally authored op carries a random ULID. The two constraints are independent and both load-bearing: the primary key dedups a re-received remote op, and `UNIQUE(stream_id, device_id, seq)` is what drops a device's own history when the relay hands it back on reconnect. That is why the uncovered re-send shape above costs disk and fan-out rather than correctness.
+Relay dedup sits on top of the **receiver's**, which is the one correctness rests on and whose key is the **`op_id`**: applying an op is an `INSERT OR IGNORE` into `ops` (`OpLog::insert`, `crates/sunrise-storage/src/oplog.rs`), which the receive path calls and then gates on `tx.changes() == 0` (`applied` in `crates/sunrise-core/src/engine/sync.rs`), so a second copy materializes nothing and raises no event. For received ops the op id is derived from exactly `(stream_id, device_id, seq)` (`remote_op_id`); a locally authored op carries a random ULID. The two constraints are independent and both load-bearing: the primary key dedups a re-received remote op, and `UNIQUE(stream_id, device_id, seq)` is what drops a device's own history when the relay hands it back on reconnect. That is why the uncovered re-send shape above costs disk and fan-out rather than correctness.
 
 ### OpBatch and Ack payloads
 
@@ -291,7 +291,7 @@ consequential:
 ### Server timestamp annotation
 
 When the server first sees a batch it stamps `server_first_seen_ms =
-relay_clock` (`crates/sunrise-server/src/api/sync.rs:419`). This is **not** part
+relay_clock` (`crates/sunrise-server/src/api/sync/publish.rs:111,223`). This is **not** part
 of the signed envelope, and it rides on the `Ack` — **once per batch**, not once
 per op.
 
@@ -307,7 +307,7 @@ parses it onto the synthesized `Ack` frame and nothing downstream reads it.
 ## Connection lifecycle
 
 Five typed operations, one of them a stream — four `POST`s and a `GET`, all
-under `/api/v1/` and all in `crates/sunrise-server/src/api/sync.rs`. There is no
+under `/api/v1/` and all in `crates/sunrise-server/src/api/sync/`. There is no
 upgrade and no handshake frame on the wire; the exchange below is what replaced
 them under [ADR-0023](../11-adr/0023-sse-sync-transport.md).
 
@@ -359,7 +359,7 @@ than modelling them as a frame.
 
 The `: sunrise` comment is what replaced `Ping`/`Pong`, and it is an **idle
 timer, not an interval**: every emitted event restarts the 15 s countdown
-(`KEEP_ALIVE_SECS`, `crates/sunrise-server/src/api/sync.rs`), so a stream
+(`KEEP_ALIVE_SECS`, `crates/sunrise-server/src/api/sync/stream.rs`), so a stream
 delivering ops continuously sends no comment at all. A conformance test or a
 proxy healthcheck that expects one within every 15 s window will fail against a
 correct server; what the server promises is that a *silent* stream produces one

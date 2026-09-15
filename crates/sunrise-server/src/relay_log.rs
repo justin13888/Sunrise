@@ -48,8 +48,75 @@ use std::collections::HashMap;
 
 use rusqlite::{params, OptionalExtension};
 
-use crate::relay::{CursorGap, FrameHead};
+use crate::relay::{CursorGap, FrameHead, StreamKey};
 use crate::store::{Store, StoreError};
+
+/// The tables this module is the only reader and writer of.
+///
+/// Declared here rather than with the account and device DDL because the
+/// statements over them are here: a table whose schema lives in one file and
+/// whose only queries live in another is a seam nothing enforces.
+/// [`Store::open`] applies it, because one `Connection` opens one database.
+///
+/// `bytes` is the verbatim wire frame: ciphertext the relay forwards and never
+/// opens.
+pub(crate) const SCHEMA: &str = r"
+CREATE TABLE IF NOT EXISTS relay_frames (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_h  BLOB NOT NULL,
+    stream_id  BLOB NOT NULL,
+    bytes      BLOB NOT NULL,
+    n_bytes    INTEGER NOT NULL,
+    created_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS relay_frames_by_channel
+    ON relay_frames(account_h, stream_id, id);
+
+-- Routing heads, read from each op's cleartext envelope header. This is the
+-- only part of a frame the relay ever parses, and it is what makes
+-- cursor-filtered replay possible without opening the ciphertext.
+CREATE TABLE IF NOT EXISTS relay_frame_heads (
+    frame_id  INTEGER NOT NULL REFERENCES relay_frames(id) ON DELETE CASCADE,
+    device_id BLOB NOT NULL,
+    max_seq   INTEGER NOT NULL,
+    PRIMARY KEY (frame_id, device_id)
+);
+
+-- Per-channel, per-device high-water mark of what retention has deleted.
+-- Survives restart, which is the whole point: an in-memory watermark cannot
+-- tell 'never held it' from 'evicted it', so a fresh process reported no gaps
+-- and the loss was silent.
+CREATE TABLE IF NOT EXISTS relay_evicted (
+    account_h       BLOB NOT NULL,
+    stream_id       BLOB NOT NULL,
+    device_id       BLOB NOT NULL,
+    evicted_through INTEGER NOT NULL,
+    PRIMARY KEY (account_h, stream_id, device_id)
+);
+
+-- One row per op batch the relay has already appended, keyed by the CONTENT of
+-- the batch rather than by its `batch_id`. The client's counter is per session
+-- (`sync_driver.rs` starts it at 0 inside `session()`), so it restarts at 1 on
+-- every reconnect: a `UNIQUE (account_h, device_id, batch_id)` would drop
+-- session 2's batch 1 as a duplicate *while acking it*, and an acked batch is
+-- deleted from the client's outbox. That is silent data loss. Content is the
+-- only key that survives a reconnect, and a reconnect re-draining the outbox
+-- is exactly the churn this table exists to absorb.
+--
+-- `frame_id` is what bounds it: `ON DELETE CASCADE` plus `PRAGMA foreign_keys`
+-- means a batch is forgotten the moment retention deletes the frame it named,
+-- so the dedup window is the retention window, kept in step for free and with
+-- no second sweep to write.
+CREATE TABLE IF NOT EXISTS relay_batches (
+    account_h     BLOB NOT NULL,
+    stream_id     BLOB NOT NULL,
+    ops_h         BLOB NOT NULL,
+    frame_id      INTEGER NOT NULL REFERENCES relay_frames(id) ON DELETE CASCADE,
+    batch_id      INTEGER NOT NULL,
+    first_seen_ms INTEGER NOT NULL,
+    PRIMARY KEY (account_h, stream_id, ops_h)
+);
+CREATE INDEX IF NOT EXISTS relay_batches_by_frame ON relay_batches(frame_id);";
 
 /// Default per-channel age bound: 30 days, matching every other retention
 /// window in the storage spec.
@@ -80,9 +147,6 @@ impl Default for DurableCaps {
         }
     }
 }
-
-/// A channel key: `(account_hash, stream_id)`, the same key the ring uses.
-pub type ChannelKey = ([u8; 16], [u8; 16]);
 
 /// One replayed frame: its durable `relay_frames.id` and its verbatim bytes.
 ///
@@ -142,7 +206,7 @@ impl Store {
     /// case nothing was written and the caller must refuse to ack.
     pub fn relay_append(
         &self,
-        key: ChannelKey,
+        key: StreamKey,
         bytes: &[u8],
         heads: &[FrameHead],
         ops_h: Option<&[u8; 32]>,
@@ -234,7 +298,7 @@ impl Store {
     /// loss.
     pub fn relay_replay(
         &self,
-        key: ChannelKey,
+        key: StreamKey,
         cursors: &HashMap<[u8; 16], u64>,
     ) -> Result<(Vec<Vec<u8>>, Vec<CursorGap>), StoreError> {
         let (frames, gaps) = self.relay_replay_after(key, 0, cursors)?;
@@ -266,7 +330,7 @@ impl Store {
     /// `after_id` owes the same check.
     pub fn relay_replay_after(
         &self,
-        key: ChannelKey,
+        key: StreamKey,
         after_id: u64,
         cursors: &HashMap<[u8; 16], u64>,
     ) -> Result<Replay, StoreError> {
@@ -350,10 +414,7 @@ impl Store {
     ///
     /// # Errors
     /// [`StoreError::Sqlite`] if either read fails.
-    pub fn relay_device_heads(
-        &self,
-        key: ChannelKey,
-    ) -> Result<HashMap<[u8; 16], u64>, StoreError> {
+    pub fn relay_device_heads(&self, key: StreamKey) -> Result<HashMap<[u8; 16], u64>, StoreError> {
         let (account_h, stream_id) = key;
         let conn = self.conn.lock();
         let mut out: HashMap<[u8; 16], u64> = HashMap::new();
@@ -392,7 +453,7 @@ impl Store {
     }
 
     /// Number of retained frames for a channel (tests and diagnostics).
-    pub fn relay_len(&self, key: ChannelKey) -> Result<usize, StoreError> {
+    pub fn relay_len(&self, key: StreamKey) -> Result<usize, StoreError> {
         let (account_h, stream_id) = key;
         let conn = self.conn.lock();
         let n: i64 = conn
@@ -514,7 +575,7 @@ mod tests {
     const ACC: [u8; 16] = [0xa1; 16];
     const STREAM: [u8; 16] = [0x11; 16];
     const DEV: [u8; 16] = [0x22; 16];
-    const KEY: ChannelKey = (ACC, STREAM);
+    const KEY: StreamKey = (ACC, STREAM);
 
     fn store() -> Store {
         Store::open(None).unwrap()

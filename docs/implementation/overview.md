@@ -159,7 +159,7 @@ the code showed they no longer describe it. Both had outlived their fix:
   `a_cursor_at_the_head_replays_nothing_and_reports_no_gap` and
   `a_cursor_past_retention_gets_a_typed_gap_before_the_replay`, plus
   `a_replay_past_the_ring_bound_is_served_from_the_durable_log`. They were
-  `tests/ws_cursors.rs` until ADR-0023; they now live in `api/sync.rs`'s inline
+  `tests/ws_cursors.rs` until ADR-0023; they now live in `api/sync/suite.rs`'s inline
   `mod tests`, under a `-- ws_cursors --` marker that says where they came from.
 - **Blob storage is a stub and unauthenticated**
   ([#22](https://github.com/justin13888/Sunrise/issues/22)) — fixed, and the
@@ -177,7 +177,7 @@ the SSE surface re-checks it on every operation, through `resolve`, and on a
 timer inside the open event stream — which is the case that matters, since a
 subscriber that only reads issues nothing else to check. A mid-session refresh
 is `POST /sync/session/refresh`. The coverage moved with the code, into
-`api/sync.rs`'s inline `mod tests` under a `-- ws_token_expiry --` marker:
+`api/sync/suite.rs`'s inline `mod tests` under a `-- ws_token_expiry --` marker:
 `an_expired_token_ends_the_session`, `a_session_with_no_deadline_is_never_closed`
 and the four refresh cases. What remains true is narrower, and is the entry
 below.
@@ -197,7 +197,7 @@ below.
   so a self-host deployment with no OIDC issuer has no device rows to bind to
   and binds nothing. That is the configured shape rather than an outstanding
   gap — the verifier itself was built and #7 closed with it — and it is bounded
-  where it is decided: no issuer means `NullVerifier`, and `config.rs` refuses
+  where it is decided: no issuer means `NullVerifier`, and `config/model.rs` refuses
   to bind anything but loopback while that verifier is in place. See
   [`../06-server/auth.md`](../06-server/auth.md) §Configuration gates which
   verifier runs. The open event stream is still re-checked on a

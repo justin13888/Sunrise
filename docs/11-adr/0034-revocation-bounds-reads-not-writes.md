@@ -28,19 +28,19 @@ the code rather than from the issue:
 
 - There is **no `refused_ops` table and no refusal record anywhere** —
   `git grep refused_ops` returns nothing across the whole tree.
-- `Engine::is_revoked` (`crates/sunrise-core/src/engine.rs:975`) has exactly two
+- `Engine::is_revoked` (`crates/sunrise-core/src/engine/sync.rs:581`) has exactly two
   non-test callers, and both are on the **key-distribution** side:
   `emit_key_envelopes`'s anti-join against `device_revocations`
-  (`crates/sunrise-core/src/engine.rs:3899`) and the early return in
-  `backfill_key_envelopes` (`:3995`). Nothing in the apply path consults it.
+  (`crates/sunrise-core/src/engine/oplog.rs:280`) and the early return in
+  `backfill_key_envelopes` (`:381`). Nothing in the apply path consults it.
 - `apply_remote_all` says so at step b
-  (`crates/sunrise-core/src/engine.rs:750-758`): *"A revoked device's row is
+  (`crates/sunrise-core/src/engine/sync.rs:359-361`): *"A revoked device's row is
   found here like any other, and its op is applied like any other."*
-- `upsert_sync_cursor`'s doc (`crates/sunrise-core/src/engine.rs:4187`) records
+- `upsert_sync_cursor`'s doc (`crates/sunrise-core/src/engine/oplog.rs:575`) records
   the removal directly: *"A refused op is **not** decided and does not appear
   here. It was, briefly."*
 - The test `a_revoked_devices_ops_still_apply_at_the_replica`
-  (`crates/sunrise-core/src/engine.rs:12650`) revokes a device at a cut before
+  (`crates/sunrise-core/src/engine/tests.rs:5836`) revokes a device at a cut before
   every op it writes — the strongest form of the premise — and asserts the op
   applies, materializes and is passed by the cursor.
 
@@ -57,13 +57,13 @@ Revocation today is a **register plus a read bound**:
 
 - `device_revoke` writes `device_revocations`, an LWW register on the op's own
   HLC with `revoked_by` as the tie-break, and a device may not move its own cut
-  (`crates/sunrise-core/src/engine.rs:1281-1330`).
+  (`crates/sunrise-core/src/engine/sync.rs:936-979`).
 - The cut's `(cut_ms, cut_logical)` decides **which** revocation wins when two
   race. The **presence of the row** is the whole read test — there is no clock
   comparison in the path, and `is_revoked`'s own doc explains at length why a
   correct comparison is indistinguishable from presence and an incorrect one
   collapses to a bare wall clock after a restart, which `HlcClock::peek` makes
-  easy to reach (`crates/sunrise-core/src/config.rs:52-62`).
+  easy to reach (`crates/sunrise-core/src/config.rs:71-79`).
 - Nothing bounds writes. `Command::RevokeDevice` makes no request of the relay,
   and cannot: `DELETE /api/v1/devices/{device_id}` names the **relay's** ULID for
   a device, minted at registration, while a vault knows only its own 16-byte
@@ -180,7 +180,7 @@ not, and that is what the relay bound is for.
   ([#105](https://github.com/justin13888/Sunrise/issues/105)); nothing here
   narrows that, and `key-rotation.md` already states it as unmitigated.
 - **No code changes.** The test doc at
-  `crates/sunrise-core/src/engine.rs:12630` and `apply_remote_all`'s step b gain
+  `crates/sunrise-core/src/engine/tests.rs:5810` and `apply_remote_all`'s step b gain
   a citation of this ADR in place of a bare issue number, so the next reader
   finds a decision rather than an open question.
 

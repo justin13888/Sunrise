@@ -11,7 +11,7 @@ status: proposed
 >
 > **What exists in the tree:** the string `"android"` in the device-platform
 > allowlist (`crates/sunrise-server/src/api/devices.rs:19`,
-> `store.rs:82`, `crates/sunrise-relay-client/src/bootstrap.rs:53`) and two
+> `store/devices.rs:90`, `crates/sunrise-relay-client/src/bootstrap.rs:53`) and two
 > comments saying Kotlin bindings would be generated when Android arrives
 > (`crates/sunrise-core-bindings/src/lib.rs:5`, its `Cargo.toml:10`). No Android
 > source, no Gradle or SDK configuration, no CI job, no device.

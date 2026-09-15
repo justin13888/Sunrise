@@ -30,7 +30,7 @@ independently-generated per-Stream keys and HPKE envelopes. The code implements
 one account-wide random vault root from which everything else is *derived*:
 
 ```rust
-// crates/sunrise-core/src/keychain.rs
+// crates/sunrise-core/src/keychain/legacy.rs
 fn derive_stream_key(vault_root, stream_id, epoch) -> StreamKey {
     derive_key_32("sunrise.stream_key.v1", vault_root ‖ stream_id ‖ epoch)
 }
