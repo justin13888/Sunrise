@@ -52,6 +52,49 @@
 //! - **stream key** — 32 random bytes; stored as
 //!   `wrap_stream_key(vault_root, key, stream_id, epoch)`.
 //!
+//! ## Failures that are not absences, and the ones that still are
+//!
+//! A failure to open, decode or verify can be raised or it can be turned into a
+//! benign-looking value, and a module that does both without saying which is
+//! which has a class of defect in it rather than a set of decisions. This one
+//! was audited end to end for that shape. The list below is the record; every
+//! site named carries the same reasoning at the call site.
+//!
+//! **Now errors**, because the benign value was indistinguishable from a real
+//! state and a caller acted on the wrong one:
+//!
+//! * [`Keychain::current_stream_key_tx`] — an unopenable *live* Stream key read
+//!   as `Ok(None)`, which `Engine::ensure_stream_epoch` answers by minting. One
+//!   corrupt row therefore produced a full unannounced epoch rotation,
+//!   broadcast to every peer, with no revocation and no error. The audit's
+//!   case.
+//! * [`Keychain::current_epoch_tx`] — an epoch outside `u32` read as `1`, the
+//!   genesis epoch: a valid-looking answer that fed the above and would have
+//!   had `mint_epoch` write epoch 2 over a stream far past it.
+//! * `rows::insert_stream_key_row` — a failed wrap returned `Ok(false)`, whose
+//!   meaning is "the row already existed". `absorb_stream_key` then dropped an
+//!   arriving key and skipped the deferred drain; `mint_epoch` returned a key
+//!   it had not persisted.
+//! * [`Keychain::genesis_pair`] — a present-but-short genesis column read as
+//!   "never rotated" and answered with the identity *in force*, which is the
+//!   moving value the fold anchor exists not to be. Its sibling
+//!   [`Keychain::genesis_identity_id`] already raised on the same blob.
+//! * [`Keychain::open_op`] — a forged signature came back as
+//!   [`KeychainError::NoStreamKey`], whose handling is "park and retry". The
+//!   signature is now checked before the key loop, so a forgery is a forgery.
+//! * `load_cache` — an epoch outside `u32` was clamped to `0` and the key
+//!   *misfiled* against a real slot. Now skipped.
+//!
+//! **Still fail open, as decisions**: `load_cache`'s skip of an unopenable row
+//! and of a malformed stream id, [`Keychain::stream_keys_at`]'s empty result,
+//! `Keychain::held_epochs_tx`'s dropped rows, [`Keychain::rotation_set`]'s
+//! dropped stream, [`Keychain::device_labels_tx`]'s placeholder labels,
+//! `legacy::legacy_stream_set`, `legacy::legacy_cert_labels`, and
+//! `rows`'s `minted_by_device_id` and `created_at_ms`. Each says why where it
+//! is. The common shape: they sit on a path where raising loses a whole vault,
+//! a whole revocation or a whole adoption over one row, and the row they drop
+//! is one nothing could have used anyway.
+//!
 //! ## Module map
 //!
 //! [`Keychain`] itself stays in this file, and so does every `impl` on it. Its
@@ -91,9 +134,9 @@ use sunrise_crypto::op_envelope::open_envelope;
 use sunrise_crypto::{
     decode_envelope, encode_envelope, hpke_open, hpke_open_identity, hpke_seal,
     identity_carry_info, identity_id_from_pub, identity_share_info, key_envelope_info,
-    sign_identity_transition, unwrap_stream_key, AeadAlgId, DeviceCert, DeviceCertInner,
-    DeviceDhKeyPair, DeviceSigningKeyPair, HpkeError, IdentityDhKeyPair, IdentitySigningKeyPair,
-    OpEnvelopeError, StreamKey, VaultRootKey,
+    sign_identity_transition, unwrap_stream_key, verify_envelope, AeadAlgId, DeviceCert,
+    DeviceCertInner, DeviceDhKeyPair, DeviceSigningKeyPair, HpkeError, IdentityDhKeyPair,
+    IdentitySigningKeyPair, OpEnvelopeError, StreamKey, VaultRootKey,
 };
 use sunrise_domain::INBOX_STREAM_BYTES;
 use sunrise_pairing::PairingPayload;
@@ -232,6 +275,24 @@ pub enum KeychainError {
     /// A stored row holds a blob of the wrong length for the field it fills.
     #[error("corrupt vault row: {0} is not the right length")]
     CorruptRow(&'static str),
+    /// A stored row exists and does not decode into the value it should hold —
+    /// an unopenable wrap, an out-of-range integer, a blob that is not the
+    /// shape its column promises.
+    ///
+    /// Distinct from [`Self::CorruptRow`], which is a width; this is a row that
+    /// is the right shape and the wrong content. Both name the column, because
+    /// the whole point of raising them is that the failure says which row to
+    /// look at rather than presenting as an absence.
+    #[error("unreadable vault row: {0}")]
+    UnreadableRow(&'static str),
+    /// A secret could not be wrapped under the vault root.
+    ///
+    /// Reachable only through an AEAD size error on a fixed-width key, which is
+    /// to say not reachable — but the alternative to raising it was returning a
+    /// value that means "this key was already stored", and a caller acting on
+    /// that discards the key silently.
+    #[error("could not wrap {0} under the vault root")]
+    WrapFailed(&'static str),
     /// A pre-ADR-0024 vault with more than one device row cannot be adopted:
     /// see `Keychain::adopt_legacy_vault`.
     #[error(
@@ -240,6 +301,27 @@ pub enum KeychainError {
          devices from this one after it upgrades, or open it on a single device only."
     )]
     LegacyMultiDevice(i64),
+}
+
+/// Carry a [`KeychainError`] out through a `rusqlite::Result` boundary.
+///
+/// The engine's transaction closures are all `rusqlite::Result`, and
+/// `rusqlite::Error` has no variant for "the caller's own invariant broke".
+/// The house workaround has been `rusqlite::Error::ExecuteReturnedResults` as a
+/// bare sentinel, which loses the message — and the whole point of the failures
+/// routed through here is that they *name the column*, because each of them
+/// used to present as an absence instead.
+///
+/// `FromSqlConversionFailure` is the variant that fits without inventing one:
+/// it is literally "these bytes would not convert into the value that was
+/// asked for", it carries a boxed source error, and it is not feature-gated.
+pub(crate) fn sqlite_from(err: KeychainError) -> rusqlite::Error {
+    rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Blob, Box::new(err))
+}
+
+/// [`sqlite_from`] for the common case: a row that exists and does not decode.
+pub(crate) fn keychain_row_error(column: &'static str) -> rusqlite::Error {
+    sqlite_from(KeychainError::UnreadableRow(column))
 }
 
 /// The account identity: one keypair pair per account, not per device.
@@ -941,11 +1023,22 @@ impl Keychain {
             let Some(stream_id) = to16(&stream_id) else {
                 continue;
             };
-            let epoch = u32::try_from(epoch).unwrap_or(0);
-            // A row whose wrap does not open under this root is not fatal: the
-            // rest of the vault still works, and refusing to open the whole
-            // keychain over one unreadable row would turn a corrupt byte into
-            // a lost vault.
+            // A negative or out-of-`u32` epoch is skipped rather than clamped.
+            // `unwrap_or(0)` filed the key at epoch 0 — a real slot on a real
+            // stream — which is worse than dropping it: the row was not
+            // skipped, it was *misfiled*, and a key filed at the wrong epoch
+            // opens nothing while looking like a key that does.
+            let Ok(epoch) = u32::try_from(epoch) else {
+                continue;
+            };
+            // **A documented fail-open.** A row whose wrap does not open under
+            // this root is skipped, not raised: the rest of the vault still
+            // works, and refusing to open the whole keychain over one
+            // unreadable row would turn a corrupt byte into a lost vault. The
+            // cost is that this and "this device never received that key" are
+            // the same outcome *in the cache* — which is why
+            // `current_stream_key_tx` now tells them apart at the one point of
+            // use where the difference decides something.
             if let Ok(key) = unwrap_stream_key(&self.vault_root, &wrapped, &stream_id, epoch) {
                 cache.entry((stream_id, epoch)).or_default().push(key);
             }
@@ -1020,8 +1113,18 @@ impl Keychain {
     /// be reached in, because `insert_identity_row` has written both columns
     /// since 0023.
     ///
+    /// A column that is **present and the wrong width** is not that case and no
+    /// longer rides along with it. It used to: the `?`-on-`Option` chain folded
+    /// `to16`/`to32` failing in with the NULLs, so a corrupted anchor byte on a
+    /// rotated vault silently answered with the identity in force — which is
+    /// the moving value the anchor exists not to be, and which
+    /// `export_pairing_payload` then ships to every newly paired device.
+    /// [`Self::genesis_identity_id`] already raised `CorruptRow` for the same
+    /// blob; the two now agree.
+    ///
     /// # Errors
-    /// SQLite failure.
+    /// SQLite failure, or [`KeychainError::CorruptRow`] for a present column of
+    /// the wrong width.
     pub fn genesis_pair(&self, db: &Db) -> Result<([u8; 16], [u8; 32]), KeychainError> {
         /// The two nullable columns, as SQLite hands them back. A `type` alias
         /// before the first statement, because `clippy::type_complexity` is
@@ -1035,11 +1138,14 @@ impl Keychain {
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .optional()?;
-        let found = row.and_then(|(id, pk)| {
-            let id = to16(&id?)?;
-            let pk = to32(&pk?)?;
-            Some((id, pk))
-        });
+        let found = match row {
+            Some((Some(id), Some(pk))) => Some((
+                to16(&id).ok_or(KeychainError::CorruptRow("identity.genesis_identity_id"))?,
+                to32(&pk).ok_or(KeychainError::CorruptRow("identity.genesis_id_s_pub"))?,
+            )),
+            // No row, or either column NULL: the never-rotated case above.
+            _ => None,
+        };
         Ok(found.unwrap_or(self.genesis))
     }
 
@@ -1299,6 +1405,23 @@ impl Keychain {
         let rows = stmt
             .query_map([], |r| Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, i64>(1)?)))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
+        // **A documented fail-open.** A `stream_keys` row whose id is not 16
+        // bytes, or whose epoch is outside `u32`, is dropped from the set this
+        // returns — which is the set `backfill_key_envelopes` seals to a newly
+        // certified device, so the device is never sent that `(stream, epoch)`
+        // and its ops park until the deferred TTL drops them. That is #107's
+        // failure mode arriving from a different direction.
+        //
+        // Left open, because the alternative is worse in the direction that
+        // matters here. This runs on the *sender's* side of an admission, and a
+        // hard error would refuse to backfill any of a newly paired device's
+        // keys because one unrelated row in the table is malformed — turning a
+        // corrupt byte on one stream into a device that can read nothing. The
+        // rows that are skipped are rows this device cannot use either:
+        // `current_epoch_tx` now refuses the same epoch and
+        // `current_stream_key_tx` refuses the same wrap, so the stream is
+        // already loudly broken locally and the peer's silence about it is not
+        // what a reader will notice first.
         Ok(rows
             .into_iter()
             .filter_map(|(sid, epoch)| Some((to16(&sid)?, u32::try_from(epoch).ok()?)))
@@ -1311,6 +1434,21 @@ impl Keychain {
     /// keys are retained; the AEAD tag decides which one actually opens an op.
     /// Losing one to a last-writer-wins on the minting op would lose every op
     /// sealed under it.
+    ///
+    /// # This is infallible on purpose, and what that costs
+    ///
+    /// An empty result is "no key here", and it does not distinguish "this
+    /// device never received one" from "`load_cache` had a row and could not
+    /// open it". That is a **documented fail-open**: the caller is the deferral
+    /// path, which parks an op it cannot open and retries it after every
+    /// absorbed key, and parking is the right answer for the common case by a
+    /// very large margin — a `key_envelope` that has not arrived yet is
+    /// ordinary and self-resolving.
+    ///
+    /// The case where the difference decides something is the *live* key at the
+    /// *current* epoch, because there the answer decides whether to mint. That
+    /// is [`Self::current_stream_key_tx`], which reads the row rather than this
+    /// cache and now raises rather than reporting an absence.
     #[must_use]
     pub fn stream_keys_at(&self, stream_id: &[u8; 16], epoch: u32) -> Vec<StreamKey> {
         let cached: Vec<StreamKey> = self
@@ -1347,7 +1485,14 @@ impl Keychain {
             )
             .optional()?
             .flatten();
-        Ok(epoch.map(|e| u32::try_from(e).unwrap_or(1)))
+        // A negative or out-of-`u32` epoch used to read as `1`, the genesis
+        // epoch — a valid-looking answer that sends the key lookup to a row
+        // that is not there and `mint_epoch` to overwrite a stream that is far
+        // past it. There is no safe substitute for an epoch, so there is no
+        // substitute.
+        epoch
+            .map(|e| u32::try_from(e).map_err(|_| keychain_row_error("stream_keys.epoch")))
+            .transpose()
     }
 
     /// The live `(epoch, key)` for `stream_id`, or `None` if this device holds
@@ -1391,9 +1536,28 @@ impl Keychain {
         let Some(wrapped) = wrapped else {
             return Ok(None);
         };
+        // An unopenable *live* key is an error, not an absence.
+        //
+        // `Ok(None)` here meant "this stream has never had a key", which is
+        // what line 1 of this function returns when the epoch row is genuinely
+        // missing — and the sole caller, `Engine::ensure_stream_epoch`, answers
+        // it by minting. `mint_epoch` reads `MAX(epoch)` and bumps it, so the
+        // mint is not a repair: it is epoch N+1, broadcast to every peer as
+        // `key_envelope` ops, with every subsequent op sealed under it. One
+        // corrupt or wrong-root row therefore produced a full, silent,
+        // unannounced rotation — no revocation, no operator action, no error —
+        // and parked every peer's ops at epoch N until the deferred TTL dropped
+        // them. The corrupt row survived and never re-triggered, because
+        // `MAX(epoch)` now pointed past it.
+        //
+        // `load_cache` still skips such a row at open (one unreadable row is
+        // not a lost vault, and that is the right call there, because the rest
+        // of the vault works). This is the point of use, where the answer
+        // decides whether to mint, and here the two cases have to be told
+        // apart.
         match unwrap_stream_key(&self.vault_root, &wrapped, stream_id, epoch) {
             Ok(key) => Ok(Some((epoch, key))),
-            Err(_) => Ok(None),
+            Err(_) => Err(keychain_row_error("stream_keys.wrapped")),
         }
     }
 
@@ -1579,6 +1743,16 @@ impl Keychain {
                 // no stream to rotate. Skipping it keeps a corrupt row from
                 // silently adding `[0u8; 16]`, the vault-meta stream, to a set
                 // that already contains it.
+                //
+                // **A documented fail-open, and the uncomfortable one.** This
+                // is the revocation set: a stream dropped here is one the
+                // revoked device goes on reading, and `revoke_device` reports
+                // success. It stays a skip because there is genuinely no stream
+                // to rotate — the id names nothing — and because failing the
+                // revocation outright is strictly worse: the user's answer to
+                // "your device was stolen" must not be an error that leaves
+                // *every* stream unrotated. The residue is one unrotatable row,
+                // not a revocation that did nothing.
                 if let Some(id) = to16(&row?) {
                     streams.insert(id);
                 }
@@ -1694,8 +1868,25 @@ impl Keychain {
     /// Every key at the envelope's `(stream_id, epoch)` is tried, because two
     /// devices can have minted that epoch concurrently.
     ///
+    /// # Why the signature is checked before the key loop
+    ///
+    /// `open_envelope` does two things — it verifies the Ed25519 signature
+    /// against `D_S_pub` and it opens the AEAD — and the loop discarded which
+    /// of them failed. A **forged signature** on an op attributed to this
+    /// device therefore came back as [`KeychainError::NoStreamKey`], whose
+    /// documented handling is "park it in `deferred_ops` and wait for a
+    /// `key_envelope`". A forgery was retried indefinitely as a missing key.
+    ///
+    /// Checking the signature once, up front, separates them: a bad signature
+    /// is [`KeychainError::Envelope`] and a genuinely absent key is
+    /// [`KeychainError::NoStreamKey`]. The loop below then narrows to the AEAD,
+    /// which is the one place trying every key at the epoch is the right
+    /// answer — two devices can mint an epoch concurrently and the tag is what
+    /// picks.
+    ///
     /// # Errors
-    /// Bad magic / signature / AEAD failures, an unknown signing device, or
+    /// Bad magic, a signature this device did not make
+    /// ([`KeychainError::Envelope`]), an unknown signing device, or
     /// [`KeychainError::NoStreamKey`] when this device holds no key that opens
     /// it.
     pub fn open_op(&self, envelope_bytes: &[u8]) -> Result<Vec<u8>, KeychainError> {
@@ -1703,6 +1894,7 @@ impl Keychain {
         if env.device_id != self.device_id {
             return Err(KeychainError::UnknownDevice);
         }
+        verify_envelope(&env, &self.device_signing_pub())?;
         for key in self.stream_keys_at(&env.stream_id, env.epoch) {
             if let Ok(inner) = open_envelope(&env, &self.device_signing_pub(), Some(&key)) {
                 return Ok(inner);
@@ -2092,6 +2284,19 @@ impl Keychain {
     ///
     /// # Errors
     /// SQLite failure.
+    /// **A documented fail-open.** A device with no `devices` row is labelled
+    /// `sunrise-device` / this host's OS rather than raising.
+    ///
+    /// The consequential caller is `issue_roster_cert`, so a rotation whose
+    /// emitter has no row for itself re-issues its own cert under a placeholder
+    /// name — a device renamed in the roster, which is the outcome this
+    /// function's neighbours warn about.
+    ///
+    /// Left open because a nickname is presentation and a rotation is not, and
+    /// the trade is one-sided: refusing here fails the *revocation* that drove
+    /// the rotation, over a label. The row's absence is also not a corruption —
+    /// it is the ordinary state of a device between its cert publish and its
+    /// `devices` row, which is exactly when a concurrent rotation can run.
     pub fn device_labels_tx(
         tx: &rusqlite::Transaction<'_>,
         device_id: &[u8; 16],
@@ -2271,6 +2476,253 @@ mod tests {
     /// [`IdentitySeed`] owns its payload and these tests keep reading theirs.
     fn seed_of(payload: &PairingPayload) -> IdentitySeed {
         IdentitySeed::Paired(Box::new(payload.clone()))
+    }
+
+    /// The audit's fail-open, stated as what the caller does with the answer.
+    ///
+    /// A live Stream key that will not open under the vault root used to come
+    /// back as `Ok(None)` — the same value the function returns when the stream
+    /// has genuinely never had a key. `Engine::ensure_stream_epoch` answers
+    /// `None` by minting, and `mint_epoch` reads `MAX(epoch)` and bumps it, so
+    /// the "repair" was a full unannounced rotation: a new epoch broadcast to
+    /// every peer, every subsequent op sealed under it, every peer's ops at the
+    /// old epoch parked until the deferred TTL dropped them, and the corrupt
+    /// row still sitting there — never re-read, because `MAX(epoch)` now
+    /// pointed past it. No revocation, no operator action, no error.
+    ///
+    /// The row here is corrupted by flipping one byte of `wrapped`, which is
+    /// exactly what the AEAD tag exists to catch, and nothing else about the
+    /// vault is touched.
+    #[test]
+    fn a_live_stream_key_that_will_not_open_is_an_error_and_not_an_absence() {
+        let root = VaultRootKey::from_bytes([0x1f; 32]);
+        let mut d = db(&root);
+        let kc = open(&mut d, &root);
+        let stream = [0x77u8; 16];
+
+        // A real key, minted and stored the way production does.
+        d.with_tx(|tx| {
+            kc.mint_epoch(tx, &stream, &SystemRng, 1_700_000_000_000)
+                .map(|_| ())
+        })
+        .expect("mint");
+
+        // The control: it opens, and the answer is the epoch it was minted at.
+        let found = d
+            .with_tx(|tx| kc.current_stream_key_tx(tx, &stream))
+            .expect("a live key reads back");
+        assert!(found.is_some(), "the fixture did not store a live key");
+
+        // One byte of the wrap, flipped. Nothing else changes.
+        d.conn()
+            .execute(
+                "UPDATE stream_keys SET wrapped = ?1 WHERE stream_id = ?2",
+                params![
+                    {
+                        let mut w: Vec<u8> = d
+                            .conn()
+                            .query_row(
+                                "SELECT wrapped FROM stream_keys WHERE stream_id = ?",
+                                params![&stream[..]],
+                                |r| r.get(0),
+                            )
+                            .unwrap();
+                        w[0] ^= 0x01;
+                        w
+                    },
+                    &stream[..]
+                ],
+            )
+            .unwrap();
+
+        // A fresh keychain, so the cached copy from the mint is gone and the
+        // read has to come off the row.
+        let kc = open(&mut d, &root);
+        let answer = d.with_tx(|tx| kc.current_stream_key_tx(tx, &stream));
+        assert!(
+            answer.is_err(),
+            "an unopenable live Stream key came back as {:?}, which every caller \
+             reads as \"this stream has never had a key\" and answers by minting a \
+             new epoch",
+            answer.map(|o| o.map(|(e, _)| e))
+        );
+    }
+
+    /// The same distinction one column over: an epoch SQLite hands back outside
+    /// `u32` is refused rather than read as the genesis epoch.
+    ///
+    /// `unwrap_or(1)` was a valid-looking answer. It sent the key lookup to a
+    /// row that is not there — which fed the fail-open above — and it sent
+    /// `mint_epoch` to write epoch 2 over a stream that may be far past it.
+    #[test]
+    fn an_epoch_outside_u32_is_refused_rather_than_read_as_the_genesis_epoch() {
+        let root = VaultRootKey::from_bytes([0x2f; 32]);
+        let mut d = db(&root);
+        let kc = open(&mut d, &root);
+        let stream = [0x88u8; 16];
+        d.with_tx(|tx| {
+            kc.mint_epoch(tx, &stream, &SystemRng, 1_700_000_000_000)
+                .map(|_| ())
+        })
+        .expect("mint");
+        d.conn()
+            .execute(
+                "UPDATE stream_keys SET epoch = -3 WHERE stream_id = ?",
+                params![&stream[..]],
+            )
+            .unwrap();
+
+        let answer = d.with_tx(|tx| kc.current_epoch_tx(tx, &stream));
+        assert!(
+            answer.is_err(),
+            "a negative epoch read back as {answer:?} instead of being refused"
+        );
+    }
+
+    /// A row whose epoch does not fit `u32` is skipped at load, not clamped
+    /// into epoch 0.
+    ///
+    /// `unwrap_or(0)` did not skip the row, it *misfiled* it: epoch 0 is a real
+    /// slot on a real stream, and a key filed there looks to every reader like
+    /// a key that belongs there. `load_cache`'s other two skips are deliberate
+    /// and documented; this one was not a skip at all.
+    ///
+    /// The fixture has to wrap at epoch 0 and then rewrite the column, because
+    /// the wrap binds `(stream_id, epoch)`: a key wrapped at epoch 1 whose
+    /// column is clamped to 0 simply fails to open and is dropped by the
+    /// documented skip below it. So the clamp could only misfile a row whose
+    /// column and whose wrap disagree — which is the corrupt row this is about,
+    /// and the only shape that tells the clamp and the skip apart.
+    #[test]
+    fn a_row_whose_epoch_does_not_fit_is_skipped_rather_than_filed_at_epoch_zero() {
+        let root = VaultRootKey::from_bytes([0x5f; 32]);
+        let mut d = db(&root);
+        // Opened once to create the vault's rows; the keychain itself is not
+        // needed, because this fixture writes the `stream_keys` row directly.
+        let _ = open(&mut d, &root);
+        let stream = [0xaau8; 16];
+        let key = StreamKey::from_bytes([0x5a; 32]);
+        d.with_tx(|tx| {
+            rows::insert_stream_key_row(
+                tx,
+                &root,
+                &stream,
+                0,
+                &key,
+                KeySource::Local,
+                &SystemRng,
+                0,
+            )
+            .map(|_| ())
+        })
+        .expect("store a key wrapped at epoch 0");
+
+        // The control: as stored, it loads and is found at epoch 0.
+        let reloaded = open(&mut d, &root);
+        assert_eq!(
+            reloaded.stream_keys_at(&stream, 0).len(),
+            1,
+            "the fixture did not store a loadable key at epoch 0"
+        );
+
+        // Now the column disagrees with the wrap.
+        d.conn()
+            .execute(
+                "UPDATE stream_keys SET epoch = -7 WHERE stream_id = ?",
+                params![&stream[..]],
+            )
+            .unwrap();
+        let reloaded = open(&mut d, &root);
+        assert!(
+            reloaded.stream_keys_at(&stream, 0).is_empty(),
+            "a key whose row declares a negative epoch was filed at epoch 0, where \
+             nothing put it and every reader will treat it as belonging"
+        );
+    }
+
+    /// A present-but-wrong-width genesis column is a corrupt row, not "this
+    /// vault has never rotated".
+    ///
+    /// The `?`-on-`Option` chain folded the width failure in with the NULLs, so
+    /// a corrupted anchor byte answered with the identity *in force* — the
+    /// moving value the anchor exists not to be — and `export_pairing_payload`
+    /// ships that answer to every newly paired device.
+    /// `genesis_identity_id` already raised `CorruptRow` for the same blob.
+    #[test]
+    fn a_short_genesis_column_is_corrupt_rather_than_the_identity_in_force() {
+        let root = VaultRootKey::from_bytes([0x3f; 32]);
+        let mut d = db(&root);
+        let kc = open(&mut d, &root);
+
+        // The control: a well-formed row answers, and answers the genesis.
+        let (id, _) = kc.genesis_pair(&d).expect("a well-formed row reads back");
+        assert_eq!(
+            id,
+            kc.identity_id(),
+            "an unrotated vault is its own genesis"
+        );
+
+        d.conn()
+            .execute(
+                "UPDATE identity SET genesis_identity_id = ? WHERE id = 1",
+                params![&[0xaau8; 8][..]],
+            )
+            .unwrap();
+        assert!(
+            matches!(
+                kc.genesis_pair(&d),
+                Err(KeychainError::CorruptRow("identity.genesis_identity_id"))
+            ),
+            "a truncated fold anchor read as the identity in force"
+        );
+    }
+
+    /// A forged signature on an op attributed to this device is a signature
+    /// failure, not a missing key.
+    ///
+    /// `open_envelope` verifies the signature *and* opens the AEAD, and the
+    /// loop that tried every key discarded which of the two failed — so a
+    /// forgery came back as `NoStreamKey`, whose documented handling is "park
+    /// it in `deferred_ops` and wait for a `key_envelope`". It was retried
+    /// indefinitely as a transient absence.
+    #[test]
+    fn a_forged_signature_is_not_reported_as_a_missing_key() {
+        let root = VaultRootKey::from_bytes([0x4f; 32]);
+        let mut d = db(&root);
+        let kc = open(&mut d, &root);
+        let stream = [0x99u8; 16];
+        let (epoch, key) = d
+            .with_tx(|tx| kc.mint_epoch(tx, &stream, &SystemRng, 1_700_000_000_000))
+            .expect("mint");
+
+        let sealed = kc
+            .seal_op_at(
+                stream,
+                1,
+                sunrise_cbor::hlc::Hlc::at(42),
+                b"inner op bytes",
+                &SystemRng,
+                epoch,
+                &key,
+            )
+            .expect("seal");
+
+        // The control: untouched, it opens.
+        kc.open_op(&sealed).expect("an honest envelope opens");
+
+        // Flip a bit of the signature. The key is still held and still right,
+        // so the only thing wrong with this envelope is who signed it.
+        let mut forged = sealed.clone();
+        let n = forged.len();
+        forged[n - 1] ^= 0x01;
+        match kc.open_op(&forged) {
+            Err(KeychainError::Envelope(_)) => {}
+            Err(KeychainError::NoStreamKey) => panic!(
+                "a forged signature was reported as a missing Stream key, which the \
+                 deferral path retries instead of refusing"
+            ),
+            other => panic!("expected a signature failure, got {other:?}"),
+        }
     }
 
     #[test]
