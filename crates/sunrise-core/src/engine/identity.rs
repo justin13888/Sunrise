@@ -74,13 +74,19 @@ use sunrise_storage::Db;
 /// **It is barely exercised.** Every row stored under a predecessor this
 /// replica has *already established* had its `prev_sig` checked at ingest, so
 /// it verifies at fold time too, and the walk's `find_map` stops at the first
-/// candidate. Setting this constant to `1` leaves the entire `sunrise-core`
-/// suite green, which is the measurement rather than the claim. The one path
-/// that can store a row the fold must then skip is a transition admitted while
-/// its predecessor was still unknown — `prev_sig` is unchecked there by
-/// design — and nothing in the suite builds that, so the scan-past-a-bad-row
-/// behaviour this constant bounds is untested. Treat it as defence in depth
-/// whose load-bearing property is the inequality, not the value.
+/// candidate. Before the inequality test below existed, setting this constant
+/// to `1` left the entire `sunrise-core` suite green — as did `2` and `3` —
+/// which is the measurement rather than the claim: no path the suite builds
+/// makes the walk look at a second row. (That sweep no longer reproduces as
+/// written, because the test below now fails on any value under the ingest
+/// cap by construction; re-run it against the *behavioural* tests alone.)
+///
+/// The one path that can store a row the fold must then skip is a transition
+/// admitted while its predecessor was still unknown — `prev_sig` is unchecked
+/// there by design — and nothing in the suite builds that, so the
+/// scan-past-a-bad-row behaviour this constant bounds is untested. Treat it as
+/// defence in depth whose load-bearing property is the inequality, not the
+/// value.
 ///
 /// The inequality is pinned by
 /// `engine::tests::the_fold_looks_at_every_row_ingest_will_store`.
