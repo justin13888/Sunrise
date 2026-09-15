@@ -1350,7 +1350,7 @@ async fn upload_one_blob<T: Transport + ?Sized>(
     tracing::info!(
         ev = "sync.blob.uploaded",
         blob_h = hex_short(&row.blob_id),
-        chunk_count = row.chunk_count,
+        n_chunks = row.chunk_count,
         "an attachment's bytes are on the relay and readable by this account's other devices"
     );
     Ok(())

@@ -38,6 +38,11 @@ pub static ALLOWED: &[&str] = &[
     // Server's own listen address from operator config. Not a client IP:
     // §6.2 forbids logging peer addresses, not the socket we opened.
     "bind",
+    // A truncated hex of an attachment's 16-byte blob id, like every other
+    // `_h` here. The id names ciphertext the relay already holds and can
+    // already correlate; what it never appears beside is the per-blob key,
+    // which lives sealed inside an op envelope and is not loggable at all.
+    "blob_h",
     "block_h",
     "cause",
     "crypto_v",
