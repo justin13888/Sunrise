@@ -56,6 +56,7 @@ pub mod events;
 pub mod inner_op;
 pub mod keychain;
 pub mod queries;
+mod relay_intents;
 pub mod sync_driver;
 pub mod unlock;
 pub mod vault_lock;
