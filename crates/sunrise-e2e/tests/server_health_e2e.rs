@@ -84,8 +84,8 @@ async fn health_meta_metrics_round_trip() {
     );
     assert_eq!(
         meta.crypto_suite_supported,
-        vec![3_i64],
-        "protocol-versioning.md §2 publishes CRYPTO_SUITE_V = 3"
+        vec![4_i64],
+        "protocol-versioning.md §2 publishes CRYPTO_SUITE_V = 4"
     );
     assert_eq!(
         meta.doc_schema_floor, 1_i64,

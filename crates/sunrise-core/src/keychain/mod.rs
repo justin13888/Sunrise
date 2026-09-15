@@ -42,8 +42,13 @@
 //!   `aad = "sunrise.local_identity.v1" || device_id)`.
 //! - **dh_secret_wrapped** — the same, with AAD
 //!   `"sunrise.local_identity.dh.v1" || device_id`.
-//! - **id_s_priv_wrapped / id_d_priv_wrapped** — the same, with AAD
-//!   `"sunrise.local_identity.identity.v1" || identity_id`.
+//! - **id_s_priv_wrapped** — the same, with AAD
+//!   `"sunrise.local_identity.identity.sign.v2" || identity_id`.
+//! - **id_d_priv_wrapped** — the same, with AAD
+//!   `"sunrise.local_identity.identity.dh.v2" || identity_id`. A *different*
+//!   domain from the line above, because they are different secrets with
+//!   different capabilities; one AAD for both made the two blobs
+//!   interchangeable to the AEAD.
 //! - **stream key** — 32 random bytes; stored as
 //!   `wrap_stream_key(vault_root, key, stream_id, epoch)`.
 //!

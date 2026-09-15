@@ -100,7 +100,24 @@ pub const DOC_SCHEMA_FLOOR: u16 = 1;
 /// Nothing is deployed, so no blob sealed under `2` exists to migrate. A `2`
 /// chunk is simply unopenable here, and that is the intended behaviour of a
 /// suite bump.
-pub const CRYPTO_SUITE_V: u16 = 3;
+///
+/// `4` splits the AAD of the account identity's two wrapped halves. Both
+/// `ID_S_priv` and `ID_D_priv` were sealed under
+/// `"sunrise.local_identity.identity.v1" || identity_id`, so either blob opened
+/// under the other's domain and the `identity` row's two columns were
+/// interchangeable to the AEAD. They are now
+/// `"sunrise.local_identity.identity.sign.v2"` and
+/// `"sunrise.local_identity.identity.dh.v2"`.
+///
+/// [`STORAGE_V`] deliberately does **not** move for it. The change is to the
+/// wrapping domain of two blobs and to no table shape, and `STORAGE_V` is
+/// defined as the id of the last migration
+/// (`sunrise_storage::migrations::current_storage_v`, asserted equal to this
+/// constant), so bumping it would mean writing a migration with no DDL in it.
+/// A vault written under the shared domain simply does not open here, which is
+/// what a suite bump is supposed to do and what the absence of any deployment
+/// makes free.
+pub const CRYPTO_SUITE_V: u16 = 4;
 
 /// Local storage schema version. Per-device; never appears on the wire.
 ///
