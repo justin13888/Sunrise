@@ -41,9 +41,16 @@ jobs:
         # steps before CI was billing-blocked: 18m26s on ubuntu-latest, 14m46s
         # on macos-latest. No `rust` cache entry has ever existed, so those
         # observations are cold runs and the multiple is over a cold build.
+        #
+        # Ten minutes were added to each leg when the `fuzz/` clippy and rustdoc
+        # steps landed (#167). That is a second cargo workspace with a target
+        # directory of its own, so on a cold cache it rebuilds the shared
+        # dependency graph once more; the cache entry added below is what keeps
+        # it from doing so on every run, and the ceiling covers the run where
+        # it does.
         include:
-          - { os: ubuntu-latest, timeout: 45 }
-          - { os: macos-latest, timeout: 35 }
+          - { os: ubuntu-latest, timeout: 55 }
+          - { os: macos-latest, timeout: 45 }
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -99,10 +106,30 @@ jobs:
             exit 1
           fi
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Two cargo workspaces, two target directories. `fuzz/` is its own
+          # workspace root (see `fuzz/Cargo.toml`) and the clippy and rustdoc
+          # steps below build it, so without this line each of those steps pays
+          # a cold build of the shared dependency graph on every run.
+          workspaces: |
+            .
+            fuzz
       - name: cargo fmt
         run: cargo fmt --all -- --check
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+      # `fuzz/` is a separate workspace, so the `--workspace` command above
+      # cannot reach it and the six harnesses were the one corner of the tree
+      # that was formatted and linted by nothing (#167). They decide what a
+      # fuzzer explores, which is what makes an unused branch or a `let _ =`
+      # swallowing a result worth catching here rather than in review.
+      #
+      # This runs on the pinned stable, not the nightly the `fuzz` job installs:
+      # nightly is needed for `-Zsanitizer=address` under `cargo fuzz run`, and
+      # for nothing else. The root `clippy.toml` still applies — its lookup
+      # walks up out of `fuzz/` — so the determinism deny-list binds here too.
+      - name: cargo clippy (fuzz)
+        run: cargo clippy --manifest-path fuzz/Cargo.toml --all-targets -- -D warnings
       - name: cargo test
         run: cargo test --workspace --all-targets
       # One run again. This was two, with `--exclude sunrise-server` and a
@@ -131,6 +158,16 @@ jobs:
         env:
           RUSTDOCFLAGS: "-D warnings"
         run: cargo doc --workspace --no-deps --document-private-items
+      # The fuzz half of the same gate (#167). Each harness's module comment is
+      # where the property that target asserts is written down, and an
+      # unresolved `[`link`]` in one renders as literal text for the only
+      # reader it has. Every `[[bin]]` in `fuzz/Cargo.toml` carried `doc =
+      # false` until #167, which would have made this step document nothing and
+      # pass — the manifest now turns `doc` on and says why.
+      - name: cargo doc (fuzz)
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+        run: cargo doc --no-deps --document-private-items --manifest-path fuzz/Cargo.toml
 
   macos-app:
     name: macOS app (xcframework + SwiftLint + XCTest)
@@ -924,9 +961,10 @@ jobs:
       # of whatever it inherits, and `-Zbuild-std` then recompiles the standard
       # library with the result. Denying warnings in code this repository does
       # not own turns an upstream lint change into a red gate here, so the
-      # inherited value is cleared for this job only. Warnings in `fuzz/` are
-      # caught by `cargo clippy` never seeing it and by review — stated plainly
-      # rather than implied, because it is a real gap.
+      # inherited value is cleared for this job only. Warnings in `fuzz/`'s own
+      # sources are not this job's concern either way: the `rust` job lints that
+      # manifest with clippy and builds its rustdoc on the pinned stable, on every
+      # trigger, which is where a warning there goes red (#167).
       RUSTFLAGS: ""
       # `rust-toolchain.toml` overrides the toolchain for the whole checkout,
       # and it names 1.91.1. `RUSTUP_TOOLCHAIN` takes precedence over a

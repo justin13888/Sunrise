@@ -110,9 +110,19 @@ run = [
   "cargo fmt --all --manifest-path fuzz/Cargo.toml",
 ]
 
+# The second invocation is #167. The six `fuzz/` harnesses were the only Rust
+# in the tree that was formatted and then linted by nothing, which matters more
+# for them than for ordinary test code: a warning there is the shape — a `let _
+# =` swallowing a result, a branch nothing reaches — that makes a target
+# quietly stop exercising what its name claims. The pinned stable toolchain
+# runs this; only `cargo fuzz run` needs the nightly, for `-Zsanitizer=address`.
+# The root `clippy.toml` binds here too, its lookup walking up out of `fuzz/`.
 [tasks.rust-clippy]
-description = "Lint Rust with Clippy (warnings denied)"
-run = "cargo clippy --workspace --all-targets -- -D warnings"
+description = "Lint Rust with Clippy (warnings denied), workspace and fuzz/"
+run = [
+  "cargo clippy --workspace --all-targets -- -D warnings",
+  "cargo clippy --manifest-path fuzz/Cargo.toml --all-targets -- -D warnings",
+]
 
 [tasks.rust-check]
 description = "Type-check the Rust workspace"
@@ -156,7 +166,7 @@ description = "Run the workspace doc tests (CI's doc gate, verbatim)"
 run = "cargo test --workspace --doc"
 
 [tasks.rust-doc]
-description = "Build the rustdoc for the workspace with every rustdoc warning denied"
+description = "Build the rustdoc for the workspace and fuzz/, every rustdoc warning denied"
 # The third documentation gate, and the one a compiler decides. `cargo build`,
 # `cargo clippy` and `cargo test` are all blind to a broken intra-doc link:
 # `[`Foo`]` that resolves to nothing renders as literal text for exactly the
@@ -174,7 +184,17 @@ description = "Build the rustdoc for the workspace with every rustdoc warning de
 #
 # `--no-deps` keeps this about this workspace. A dependency's rustdoc is its
 # author's problem and would make the gate flap on a version bump.
-run = 'RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --document-private-items'
+#
+# The second invocation is #167, and it needed one change in `fuzz/Cargo.toml`
+# to be worth running: every `[[bin]]` there carried `doc = false`, so rustdoc
+# over that manifest documented nothing and the gate would have been an empty
+# command that passes. Each harness's module comment is where the property that
+# target asserts is written down, and an unresolved `[`link`]` in one of them
+# flattens into literal text for the only reader it has.
+run = [
+  'RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --document-private-items',
+  'RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --document-private-items --manifest-path fuzz/Cargo.toml',
+]
 
 [tasks.orphan-crates]
 description = "Reject crates that no shipping binary can reach (the CI gate, run locally)"
