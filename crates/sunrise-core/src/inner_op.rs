@@ -20,11 +20,11 @@
 //! contend with one another and re-delivery is a no-op. See ADR-0013 and
 //! [`crate::engine`]'s `materialize_focus_remote`.
 //!
-//! Three families are **control** ops rather than entities: `KeyEnvelope`,
-//! `DeviceRevoke` and `DeviceCertPublish` carry key material and trust, have no
-//! row and no last-writer-wins stamp, and are classed
-//! `OpEffect::Control` so the compiler keeps them out of the entity
-//! materializer. See [`crate::control_op`] and ADR-0024.
+//! Four families are **control** ops rather than entities: `KeyEnvelope`,
+//! `DeviceRevoke`, `DeviceCertPublish` and `IdentityTransition` carry key
+//! material and trust, have no row and no last-writer-wins stamp, and are
+//! classed `OpEffect::Control` so the compiler keeps them out of the entity
+//! materializer. See [`crate::control_op`], ADR-0024 and ADR-0032.
 //!
 //! v1 uses *full-state* ops: `TaskCreate`/`TaskUpdate` carry the entire `Task`,
 //! not a field-level delta. This is the accepted v1 approximation of the CRDT
@@ -33,7 +33,7 @@
 //! its entity with `deleted` set, never a bare id — see `InnerOp::TaskDelete`
 //! and ADR-0014 for why a tombstone marker does not converge.
 
-use crate::control_op::{DeviceRevokePayload, KeyEnvelopePayload};
+use crate::control_op::{DeviceRevokePayload, IdentityTransitionPayload, KeyEnvelopePayload};
 use serde::{Deserialize, Serialize};
 use sunrise_domain::{
     Attachment, Block, Context, FocusEnd, FocusStart, Interruption, ReviewSnapshot, Routine,
@@ -135,6 +135,14 @@ pub(crate) enum InnerOp {
     /// against the account identity, so a stranger's cert cannot enter the
     /// device list however it is delivered. Control op.
     DeviceCertPublish(#[serde(with = "serde_bytes")] Vec<u8>),
+    /// Replace the account identity with a successor (ADR-0032,
+    /// `docs/03-crypto/key-rotation.md` §Identity rotation). Control op.
+    ///
+    /// Boxed for the reason `RoutineCreate` is: the payload carries a roster
+    /// and a share per device, and an unboxed variant would set the size of
+    /// *every* `InnerOp` — including the task ops, which are the ones that
+    /// actually occur in bulk — to the size of the largest rotation.
+    IdentityTransition(Box<IdentityTransitionPayload>),
 }
 
 /// The op's effect class, used to pick the materialization path and the emitted
@@ -192,6 +200,7 @@ impl InnerOp {
             Self::KeyEnvelope(_) => "key.envelope",
             Self::DeviceRevoke(_) => "device.revoke",
             Self::DeviceCertPublish(_) => "device.cert",
+            Self::IdentityTransition(_) => "identity.transition",
         }
     }
 
@@ -209,6 +218,7 @@ impl InnerOp {
             Self::ReviewSnapshotCreate(_) => "review_snapshot",
             Self::KeyEnvelope(_) => "stream_key",
             Self::DeviceRevoke(_) | Self::DeviceCertPublish(_) => "device",
+            Self::IdentityTransition(_) => "identity",
         }
     }
 
@@ -233,6 +243,9 @@ impl InnerOp {
             Self::KeyEnvelope(p) => EntityRef::new(EntityKind::Stream, p.stream_id),
             Self::DeviceRevoke(p) => EntityRef::new(EntityKind::Device, p.revoked_device_id),
             Self::DeviceCertPublish(_) => EntityRef::new(EntityKind::Device, [0u8; 16]),
+            // The *successor*, not the predecessor: a ref names the thing the
+            // op brings about, and after this op the account is `to`.
+            Self::IdentityTransition(p) => EntityRef::new(EntityKind::Identity, p.to_identity_id),
         }
     }
 
@@ -260,9 +273,10 @@ impl InnerOp {
             | Self::RoutineDelete(_)
             | Self::BlockDelete(_)
             | Self::AttachmentDelete(_) => OpEffect::Delete,
-            Self::KeyEnvelope(_) | Self::DeviceRevoke(_) | Self::DeviceCertPublish(_) => {
-                OpEffect::Control
-            }
+            Self::KeyEnvelope(_)
+            | Self::DeviceRevoke(_)
+            | Self::DeviceCertPublish(_)
+            | Self::IdentityTransition(_) => OpEffect::Control,
         }
     }
 
@@ -287,6 +301,7 @@ impl InnerOp {
             Self::ReviewSnapshotCreate(_) => EntityKind::ReviewSnapshot,
             Self::KeyEnvelope(_) => EntityKind::Stream,
             Self::DeviceRevoke(_) | Self::DeviceCertPublish(_) => EntityKind::Device,
+            Self::IdentityTransition(_) => EntityKind::Identity,
         }
     }
 
@@ -297,7 +312,10 @@ impl InnerOp {
     pub(crate) const fn is_control(&self) -> bool {
         matches!(
             self,
-            Self::KeyEnvelope(_) | Self::DeviceRevoke(_) | Self::DeviceCertPublish(_)
+            Self::KeyEnvelope(_)
+                | Self::DeviceRevoke(_)
+                | Self::DeviceCertPublish(_)
+                | Self::IdentityTransition(_)
         )
     }
 }
@@ -316,4 +334,79 @@ pub(crate) fn encode_inner_op(op: &InnerOp) -> Result<Vec<u8>, InnerOpError> {
 /// unknown variant, a malformed payload, or trailing garbage).
 pub(crate) fn decode_inner_op(bytes: &[u8]) -> Result<InnerOp, InnerOpError> {
     ciborium::de::from_reader(bytes).map_err(|e| InnerOpError::Cbor(e.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::control_op::{KeyShare, RosterEntry};
+    use serde_bytes::ByteBuf;
+
+    fn transition() -> InnerOp {
+        InnerOp::IdentityTransition(Box::new(IdentityTransitionPayload {
+            from_identity_id: [7u8; 16],
+            to_identity_id: [8u8; 16],
+            to_id_s_pub: [9u8; 32],
+            to_id_d_pub: [10u8; 32],
+            roster: vec![RosterEntry {
+                cert: vec![11u8; 200],
+            }],
+            device_shares: vec![KeyShare {
+                device_id: [12u8; 16],
+                hpke_ciphertext: vec![13u8; 80],
+            }],
+            identity_share: Some(ByteBuf::from(vec![14u8; 112])),
+            prev_sig: [15u8; 64],
+            next_sig: [16u8; 64],
+        }))
+    }
+
+    #[test]
+    fn an_identity_transition_round_trips_through_the_op_codec() {
+        let op = transition();
+        let back = decode_inner_op(&encode_inner_op(&op).expect("encode")).expect("decode");
+        let (InnerOp::IdentityTransition(a), InnerOp::IdentityTransition(b)) = (&op, &back) else {
+            panic!("the variant must survive the round trip");
+        };
+        assert_eq!(a, b);
+    }
+
+    /// The wire encoding is externally tagged, exactly as the module docs say.
+    /// Pinned here for the reason `control_op`'s `Recipient` test pins its
+    /// shape: a serde attribute added upstream must not silently re-shape a
+    /// signed op, and this one carries the account's whole trust root.
+    #[test]
+    fn identity_transition_encodes_as_a_single_entry_map() {
+        let bytes = encode_inner_op(&transition()).expect("encode");
+        let value: ciborium::value::Value = ciborium::de::from_reader(bytes.as_slice()).unwrap();
+        let ciborium::value::Value::Map(map) = value else {
+            panic!("an InnerOp must encode as a map");
+        };
+        assert_eq!(map.len(), 1);
+        assert_eq!(
+            map[0].0,
+            ciborium::value::Value::Text("IdentityTransition".into())
+        );
+        // Boxing must not show on the wire: `Box<T>` is transparent to serde,
+        // so the entry is the payload map and not a wrapper around it.
+        assert!(matches!(map[0].1, ciborium::value::Value::Map(_)));
+    }
+
+    /// The six tables every new variant has to be added to, asserted together
+    /// so that a family added with five of them cannot pass on the strength of
+    /// the one that happened to be exercised elsewhere.
+    #[test]
+    fn an_identity_transition_is_classed_as_a_control_op_everywhere() {
+        let op = transition();
+        assert_eq!(op.inner_kind(), "identity.transition");
+        assert_eq!(op.target_kind(), "identity");
+        assert_eq!(
+            op.target_ref(),
+            EntityRef::new(EntityKind::Identity, [8u8; 16]),
+            "the ref names the successor, which is what the op brings about"
+        );
+        assert_eq!(op.effect(), OpEffect::Control);
+        assert_eq!(op.entity_kind(), EntityKind::Identity);
+        assert!(op.is_control());
+    }
 }

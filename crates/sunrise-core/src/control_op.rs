@@ -2,8 +2,8 @@
 //! rather than user data.
 //!
 //! Per [ADR-0024](../../../docs/11-adr/0024-key-hierarchy.md) and
-//! `docs/03-crypto/data-encryption-format.md` §Control ops. Three families,
-//! all of them new at `DOC_SCHEMA_V = 5`:
+//! `docs/03-crypto/data-encryption-format.md` §Control ops. Four families; the
+//! first three are new at `DOC_SCHEMA_V = 5` and the fourth at `6`:
 //!
 //! - [`KeyEnvelopePayload`] distributes one `(stream_id, epoch)` Stream key to
 //!   one recipient by HPKE. It is what makes a Stream key reachable by a device
@@ -20,6 +20,13 @@
 //!   admitted by pairing becomes known to every replica without a manual
 //!   trust step. It replaces `Command::TrustDevice`, which accepted any
 //!   self-signed cert and so could not be revoked from.
+//! - [`IdentityTransitionPayload`] replaces the account identity itself with a
+//!   successor, carrying in one op the successor's public halves, a re-issued
+//!   cert for every surviving device, and the successor's secrets sealed to
+//!   each of them. It is what finally closes the gap
+//!   [`crate::keychain::Keychain::issue_cert_for`] names: every member can mint
+//!   a valid cert, so a revoked device can certify itself under a fresh id, and
+//!   no revocation can undo that — only a new identity can.
 //!
 //! These are **not** entities. They have no row, no LWW stamp and no
 //! materialization: `inner_op`'s `OpEffect::Control` variant exists so the
@@ -29,6 +36,7 @@
 //! [`DeviceCert`]: sunrise_crypto::DeviceCert
 
 use serde::{Deserialize, Serialize};
+use serde_bytes::ByteBuf;
 
 // Every fixed-width id and every opaque blob below carries
 // `#[serde(with = "serde_bytes")]`. Without it `[u8; N]` and `Vec<u8>` encode
@@ -160,6 +168,124 @@ pub struct DeviceRevokePayload {
     pub reason_code: RevokeReason,
 }
 
+/// One surviving device's re-issued [`DeviceCert`], signed by the **new**
+/// `ID_S_priv`.
+///
+/// There is deliberately **no `device_id` field**. The id is inside the cert,
+/// in a body the identity signed; a copy beside it would be a second source of
+/// truth that nothing keeps in step, and every reader that trusted the outer
+/// copy would be trusting an unsigned field. `roster_digest` reads the id back
+/// out of the cert for exactly this reason.
+///
+/// A one-field struct rather than a bare `Vec<u8>` because the roster is the
+/// place a later revision most obviously grows a field (a per-device status,
+/// say), and an array of bare byte strings could not take one without
+/// re-shaping the op.
+///
+/// [`DeviceCert`]: sunrise_crypto::DeviceCert
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RosterEntry {
+    /// Canonical-CBOR [`DeviceCert`], as [`sunrise_crypto::DeviceCert::to_cbor`]
+    /// writes it.
+    ///
+    /// [`DeviceCert`]: sunrise_crypto::DeviceCert
+    #[serde(with = "serde_bytes")]
+    pub cert: Vec<u8>,
+}
+
+/// The successor identity's secrets, sealed to one surviving device.
+///
+/// Sealed under [`sunrise_crypto::identity_share_info`], which binds the blob
+/// to the successor identity *and* to this device — HPKE Base authenticates no
+/// sender, so without the device in the `info` a blob could be moved between
+/// entries and the roster would name one device beside another's share.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeyShare {
+    /// The device this share is for.
+    #[serde(with = "serde_bytes")]
+    pub device_id: [u8; 16],
+    /// `enc(32) || ct(32) || tag(16)` — 80 bytes, RFC 9180 Base.
+    #[serde(with = "serde_bytes")]
+    pub hpke_ciphertext: Vec<u8>,
+}
+
+/// The account identity is replaced by a successor.
+///
+/// ADR-0032 and `docs/03-crypto/key-rotation.md` §Identity rotation. One op
+/// carries the whole hand-over, because the parts are not independently
+/// applicable: a replica that learned the new `ID_S_pub` without the re-issued
+/// certs would reject every device in the account, and one that learned the
+/// certs without the transition would have no key to verify them under.
+///
+/// `identity_id` is `identity_id_from_pub(ID_S_pub)`, a derivation rather than
+/// a field, so a new `ID_S` *is* a new id: hence `from_identity_id` and
+/// `to_identity_id` rather than the single unchanged id
+/// `docs/03-crypto/key-rotation.md` draws. Neither is believed — both are
+/// recomputed by [`sunrise_crypto::verify_identity_transition`] from the key
+/// they name.
+///
+/// The devices' own `D_S`/`D_D` are untouched. Those wrap under an AAD binding
+/// to `device_id`, not to the identity, and nothing about rotating the account
+/// key invalidates a device key; only the *cert* — the identity's statement
+/// about the device — has to be re-issued.
+///
+/// # There is no `effective_at` field, for [`DeviceRevokePayload`]'s reasons
+///
+/// The same argument applies, and applies harder. An emitter-chosen cut on a
+/// revocation decided which of one device's ops to refuse; an emitter-chosen
+/// cut on a transition decides which *identity* every op in the account
+/// verifies under. Bounded ahead of the op's HLC it parks the hand-over far
+/// enough forward to take effect nowhere; bounded behind it has nothing to
+/// anchor to, and a device a few minutes slow would retroactively re-attribute
+/// the account's history to a key that did not sign it. The op's own HLC is
+/// monotone, merged from every peer, and already gated for drift.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IdentityTransitionPayload {
+    /// The identity being retired.
+    #[serde(with = "serde_bytes")]
+    pub from_identity_id: [u8; 16],
+    /// The successor identity.
+    #[serde(with = "serde_bytes")]
+    pub to_identity_id: [u8; 16],
+    /// The successor's `ID_S_pub`.
+    #[serde(with = "serde_bytes")]
+    pub to_id_s_pub: [u8; 32],
+    /// The successor's `ID_D_pub`.
+    #[serde(with = "serde_bytes")]
+    pub to_id_d_pub: [u8; 32],
+    /// One re-issued cert per surviving device.
+    pub roster: Vec<RosterEntry>,
+    /// The successor's secrets, sealed to each surviving device.
+    pub device_shares: Vec<KeyShare>,
+    /// The successor's `ID_S_priv || ID_D_priv` (64 B) sealed to the
+    /// **outgoing** `ID_D_pub` — 112 B — under
+    /// [`sunrise_crypto::identity_carry_info`].
+    ///
+    /// Optional because the outgoing `ID_D_priv` is held by at most one device
+    /// and by the recovery blob, and a rotation triggered by *suspected key
+    /// extraction* is precisely the case where carrying the successor forward
+    /// under the compromised key would hand the attacker the new identity too.
+    /// Present, a holder of the old recovery code follows the account forward
+    /// without re-enrolling; absent, they do not, and that is the point.
+    ///
+    /// A [`ByteBuf`] rather than `Option<Vec<u8>>` with a `serde_bytes`
+    /// attribute: the attribute form is easy to drop in a later edit and the
+    /// field would silently start encoding as an array of integers, which is
+    /// the failure the note at the top of this module exists to prevent. The
+    /// type carries the rule instead.
+    ///
+    /// [`ByteBuf`]: serde_bytes::ByteBuf
+    pub identity_share: Option<ByteBuf>,
+    /// Ed25519 by the **outgoing** `ID_S_priv` over
+    /// `"sunrise.identity_transition.v1" || body_hash`.
+    #[serde(with = "serde_bytes")]
+    pub prev_sig: [u8; 64],
+    /// Ed25519 by the **successor** `ID_S_priv` over
+    /// `"sunrise.identity_transition.succ.v1" || body_hash || prev_sig`.
+    #[serde(with = "serde_bytes")]
+    pub next_sig: [u8; 64],
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -205,6 +331,84 @@ mod tests {
         ciborium::ser::into_writer(&p, &mut buf).unwrap();
         let back: KeyEnvelopePayload = ciborium::de::from_reader(buf.as_slice()).unwrap();
         assert_eq!(back, p);
+    }
+
+    fn a_transition() -> IdentityTransitionPayload {
+        IdentityTransitionPayload {
+            from_identity_id: [7u8; 16],
+            to_identity_id: [8u8; 16],
+            to_id_s_pub: [9u8; 32],
+            to_id_d_pub: [10u8; 32],
+            roster: vec![RosterEntry {
+                cert: vec![11u8; 200],
+            }],
+            device_shares: vec![KeyShare {
+                device_id: [12u8; 16],
+                hpke_ciphertext: vec![13u8; 80],
+            }],
+            identity_share: Some(ByteBuf::from(vec![14u8; 112])),
+            prev_sig: [15u8; 64],
+            next_sig: [16u8; 64],
+        }
+    }
+
+    #[test]
+    fn identity_transition_payload_round_trips() {
+        let p = a_transition();
+        let mut buf = Vec::new();
+        ciborium::ser::into_writer(&p, &mut buf).unwrap();
+        let back: IdentityTransitionPayload = ciborium::de::from_reader(buf.as_slice()).unwrap();
+        assert_eq!(back, p);
+
+        // The carry-forward share is genuinely optional, and `None` must not
+        // decode back as an empty blob: absent and empty mean different things
+        // to `shares_digest`'s present flag.
+        let mut without = a_transition();
+        without.identity_share = None;
+        let mut buf = Vec::new();
+        ciborium::ser::into_writer(&without, &mut buf).unwrap();
+        let back: IdentityTransitionPayload = ciborium::de::from_reader(buf.as_slice()).unwrap();
+        assert_eq!(back.identity_share, None);
+    }
+
+    /// Every fixed-width field is a `bstr`, never an array of integers. The
+    /// note at the top of this module is the rule; this is the assertion, and
+    /// it reaches the nested `KeyShare` and `RosterEntry` too, where a dropped
+    /// `serde_bytes` attribute would be easiest to miss.
+    #[test]
+    fn identity_transition_byte_fields_encode_as_byte_strings() {
+        let mut buf = Vec::new();
+        ciborium::ser::into_writer(&a_transition(), &mut buf).unwrap();
+        let value: ciborium::value::Value = ciborium::de::from_reader(buf.as_slice()).unwrap();
+        let ciborium::value::Value::Map(map) = value else {
+            panic!("the payload must encode as a map");
+        };
+        for (key, entry) in &map {
+            let ciborium::value::Value::Text(name) = key else {
+                panic!("field names are text keys");
+            };
+            match name.as_str() {
+                "roster" | "device_shares" => {
+                    let ciborium::value::Value::Array(items) = entry else {
+                        panic!("{name} must be an array");
+                    };
+                    let ciborium::value::Value::Map(inner) = &items[0] else {
+                        panic!("{name} entries must be maps");
+                    };
+                    for (_, v) in inner {
+                        assert!(
+                            matches!(v, ciborium::value::Value::Bytes(_)),
+                            "{name} carries only byte strings"
+                        );
+                    }
+                }
+                _ => assert!(
+                    matches!(entry, ciborium::value::Value::Bytes(_)),
+                    "`{name}` must be a bstr, not an array of integers"
+                ),
+            }
+        }
+        assert_eq!(map.len(), 9);
     }
 
     #[test]

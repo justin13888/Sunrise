@@ -196,22 +196,23 @@ Payload schema by kind is defined in the domain specs (`02-domain/*.md`) for `cr
 | `share_revoke` | 0 | `{ stream_id, recipient_identity_id, effective_at }` |
 | `snapshot` | 1 | `{ covers: { device_id => max_seq }, base_root, state_cbor }` (encrypted under Stream key) |
 | `checkpoint` | 1 | `{ root, covers: { device_id => max_seq } }` (encrypted under Stream key) |
-| `identity_transition` | 0 | `{ new_ID_S_pub, new_ID_D_pub, old_sig, new_sig, effective_at }` |
+| `identity_transition` | 1 | `{ from_identity_id, to_identity_id, to_id_s_pub, to_id_d_pub, roster, device_shares, identity_share?, prev_sig, next_sig }` — no `effective_at`, for `device_revoke`'s reasons; see the CDDL below |
 
 `hpke_ciphertext` is the byte string `enc || ct` produced by HPKE single-shot Base mode; see "HPKE single-shot" below.
 
 `identity_sig` on `share_grant` is `Ed25519_sign(ID_S_priv, "sunrise.share_grant.v1" || canonical_cbor(payload_without_identity_sig))`. Verification requires the granting identity's `ID_S_pub`, looked up from the server-published bundle.
 
-### The three families that are implemented
+### The four families that are implemented
 
-[ADR-0024](../11-adr/0024-key-hierarchy.md) added `key_envelope`, `device_revoke` and `device_cert` at `DOC_SCHEMA_V = 5`. `share_grant`, `share_revoke`, `snapshot`, `checkpoint` and `identity_transition` remain unimplemented; a new op family is a breaking change to the op vocabulary — a build that does not know a family refuses the op rather than applying it wrongly — while `ENVELOPE_FORMAT_V` stays put, because the container is unchanged.
+[ADR-0024](../11-adr/0024-key-hierarchy.md) added `key_envelope`, `device_revoke` and `device_cert` at `DOC_SCHEMA_V = 5`; [ADR-0037](../11-adr/0037-identity-transition.md) added `identity_transition` at `DOC_SCHEMA_V = 6`. `share_grant`, `share_revoke`, `snapshot` and `checkpoint` remain unimplemented; a new op family is a breaking change to the op vocabulary — a build that does not know a family refuses the op rather than applying it wrongly — while `ENVELOPE_FORMAT_V` stays put, because the container is unchanged.
 
-The three are **not** the `OpKind`-tagged shape sketched above. The inner op is a Rust enum encoded externally tagged, so what is on the wire is a one-entry map from the variant name to its payload — the same shape the 21 domain variants already have. This is the encoder's shape, and it is normative:
+The four are **not** the `OpKind`-tagged shape sketched above. The inner op is a Rust enum encoded externally tagged, so what is on the wire is a one-entry map from the variant name to its payload — the same shape the 21 domain variants already have. This is the encoder's shape, and it is normative:
 
 ```cddl
 InnerOp /= { "KeyEnvelope" => KeyEnvelopePayload }
          / { "DeviceRevoke" => DeviceRevokePayload }
          / { "DeviceCertPublish" => bstr }        ; canonical-CBOR DeviceCert
+         / { "IdentityTransition" => IdentityTransitionPayload }
 
 KeyEnvelopePayload = {
     "stream_id" => bstr .size 16,
@@ -225,15 +226,66 @@ DeviceRevokePayload = {
     "revoked_device_id" => bstr .size 16,
     "reason_code" => "Lost" / "Stolen" / "Retired" / "Compromised",
 }
+
+IdentityTransitionPayload = {
+    "from_identity_id" => bstr .size 16,   ; the identity being retired
+    "to_identity_id"   => bstr .size 16,   ; identity_id_from_pub(to_id_s_pub)
+    "to_id_s_pub"      => bstr .size 32,
+    "to_id_d_pub"      => bstr .size 32,
+    "roster"           => [ * RosterEntry ],   ; one per surviving device
+    "device_shares"    => [ * KeyShare ],      ; the successor's ID_S_priv, per device
+    "identity_share"   => bstr .size 112 / null,  ; carry-forward, to the OUTGOING ID_D_pub
+    "prev_sig"         => bstr .size 64,
+    "next_sig"         => bstr .size 64,
+}
+
+RosterEntry = {
+    "cert" => bstr,      ; canonical-CBOR DeviceCert, signed by the NEW ID_S_priv
+}
+
+KeyShare = {
+    "device_id"       => bstr .size 16,
+    "hpke_ciphertext" => bstr .size 80,   ; enc(32) || ct(32) || tag(16)
+}
 ```
+
+The signatures are taken over a **body that is not on the wire**:
+
+```text
+BODY      = { from_identity_id, to_identity_id, to_id_s_pub, to_id_d_pub,
+              roster_digest, shares_digest }
+body_hash = BLAKE3(canonical_cbor(BODY))
+prev_sig  = Ed25519(OLD ID_S_priv, "sunrise.identity_transition.v1"      || body_hash)
+next_sig  = Ed25519(NEW ID_S_priv, "sunrise.identity_transition.succ.v1" || body_hash || prev_sig)
+
+roster_digest = BLAKE3("sunrise.identity_roster.v1" || u32_be(count) ||
+                       concat of device_id(16) || u32_be(len) || cert,
+                       device-id ascending)
+shares_digest = BLAKE3("sunrise.identity_shares.v1" ||
+                       concat of device_id(16) || hpke_ciphertext(80), device-id ascending,
+                       then 0x00, or 0x01 || identity_share(112))
+```
+
+A receiver recomputes both digests from the payload; there is nothing to compare them against directly, and there does not need to be — a payload whose roster or shares were swapped produces a digest no signature covers.
+
+**Neither digest is over a bare concatenation**, because a digest over concatenated variable-length records is ambiguous (`a||bc` and `ab||c` collide) and this one is inside a signature. The two solve it differently, because their records differ:
+
+* `shares_digest`'s records are fixed-width by construction, so it **rejects** a record of the wrong width rather than hashing it, and the trailing present-flag does the same job for the optional carry share.
+* A cert is variable-length and cannot be — `nickname` is 1..=64 bytes and `platform` has no bound — so `roster_digest` **length-prefixes and counts** instead. Both are load-bearing. Without them, `certA || certB || certC` presented as one roster entry decoded as `certA` (`DeviceCert::from_cbor` read one CBOR item and ignored the rest), passed every check, and hashed to the digest the three separate certs hash to. Since entries sort by device id, that let the holder of a signed transition drop any devices from the signed membership while keeping both signatures valid — and `apply_roster` leaves the dropped devices on the retired identity, where nothing seals them a key again. `DeviceCert::from_cbor` now also refuses trailing bytes, so the two defences are independent.
+
+Both digests carry a domain tag for the same reason every other hash in `sunrise-crypto` does: `body_hash`, the envelope hash and the stream-root chain would otherwise share one unkeyed BLAKE3 space with them.
+
+`RosterEntry` deliberately carries **no `device_id`**. The id is inside the cert, in a body the identity signed; a copy beside it would be a second source of truth, and a reader that trusted the outer copy would be trusting an unsigned field.
 
 Map keys are emitted in the order shown — struct declaration order, not sorted — which is what every inner-op payload in the tree does.
 
-Three things about these that the table above does not say:
+Four things about these that the table above does not say:
 
-- **They are sealed, not cleartext.** `aead_alg` is 1: a control op rides in an ordinary sealed envelope under the vault-meta stream's own key. The relay routes them and cannot read them. The key envelopes for a rotation are sealed under the **pre**-rotation meta epoch, because a device that has not yet received the new meta key could not read one sealed under it.
+- **They are sealed, not cleartext.** `aead_alg` is 1 for all four: a control op rides in an ordinary sealed envelope under the vault-meta stream's own key. The relay routes them and cannot read them. The key envelopes for a rotation are sealed under the **pre**-rotation meta epoch, because a device that has not yet received the new meta key could not read one sealed under it.
 - **`recipient` names a class, not just an id.** Every `(stream_id, epoch)` key is sealed twice: once per remaining device (`Device`, to `D_D_pub`) and once to the account identity (`Identity`, to `ID_D_pub`). A replica can tell whose copy an envelope is without trial-decrypting it.
 - **`key_id` is a disambiguator, not an authenticator.** Two devices can mint the same epoch concurrently; both keys are retained at `(stream_id, epoch, key_id)` and the AEAD tag decides which one opens an op. Nothing trusts the field — the value is re-derived from the opened key.
+
+- **An `identity_transition` is sealed under the epoch its own rotation minted**, unlike the key envelopes beside it. That is deliberate and not circular: the `key_envelope` carrying the new meta epoch is sealed under the *old* one, so a device that was offline can always open that first, and then the transition. The epoch is also the fold's primary ordering key, which is why it has to be the one the rotation reached rather than the one it started from — see [`key-rotation.md`](./key-rotation.md) §Ordering.
 
 An op whose `(stream_id, epoch)` key has not arrived yet is **parked**, not refused: it goes to `deferred_ops` and is retried after every absorbed key. There is no per-epoch barrier.
 

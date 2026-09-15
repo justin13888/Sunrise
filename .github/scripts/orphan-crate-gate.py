@@ -39,8 +39,18 @@ list printed is sorted. Same tree in, same verdict out — a gate that flaps get
 disabled within a week and then protects nothing.
 
 Usage: orphan-crate-gate.py [--manifest-path PATH]
-Exit 0 clean, 1 on a violation or a stale list entry, 2 if the gate could not
-run at all (which is a failure, not a pass).
+Exit 0 clean, 1 on a violation or a stale list entry. A gate that could not run
+at all — no manifest, no members, nothing shipping — is *also* 1: each of those
+routes is `raise SystemExit(str)`, which prints the message to stderr and exits
+1. This paragraph claimed 2 for them until `test_orphan_crate_gate.py` went
+looking for one and found that nothing produces it; what matters to both
+callers, ci.yml and a person reading the message, is that it is red rather than
+green, and neither has ever distinguished the two codes.
+
+Every route above is asserted in `test_orphan_crate_gate.py` beside this file,
+run by the `orphan-crate-gate-contract` job in ci.yml on every trigger the
+workflow has. It synthesises its own workspaces and drives this script with
+`--manifest-path`, so it never reads this one.
 """
 
 from __future__ import annotations

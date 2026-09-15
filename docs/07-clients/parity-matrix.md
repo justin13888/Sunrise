@@ -199,6 +199,9 @@ menu item flickering as tasks come and go would explain less.
 | iCal import / export | met *(windowed, no round-trip)* | `sunrise ical import <path\|->` and `sunrise ical export [today\|day\|week] [path]` |
 | OS automation surface | met | stdout is the script contract, notes to stderr, `-` reads stdin, meaningful exit codes |
 
+| Device list and revocation | met *(CLI only; no client surface)* | `sunrise devices` marks revoked and non-current devices distinctly, and `sunrise device revoke <id-prefix> [--reason …]` rotates every Stream key **and** the account identity ([ADR-0037](../11-adr/0037-identity-transition.md)). It prints the two-state disclosure — revoked locally versus the relay has been told — because those are different guarantees and the second is the one a user pressing the button believes they are getting ([#160](https://github.com/justin13888/Sunrise/issues/160)). Neither Apple client has any of this: `Query::DeviceList`, `Query::IdentityStatus` and `Command::RevokeDevice` all cross the UniFFI seam and nothing calls them |
+| Identity status and rotation | met *(CLI only; no client surface)* | `sunrise identity status` prints the chain — the account's stable `genesis_identity_id`, the identity in force, the rotation count, and whether this device still speaks for the account — and `sunrise identity rotate [--new-recovery-code]` replaces the identity while keeping every current device. Same seam note as the row above |
+
 The CLI also carries surfaces this table has no row for: `login` / `logout` /
 `whoami` (OIDC + PKCE, token stored mode-0600 and device-bound), `review`,
 `export` as an *analytics* export, `vaults`, and account joining via

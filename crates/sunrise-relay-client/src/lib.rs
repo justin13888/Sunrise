@@ -67,4 +67,4 @@ pub mod api {
 
 mod bootstrap;
 
-pub use bootstrap::{bootstrap, BootstrapError, BootstrapOutcome, DeviceIdentity};
+pub use bootstrap::{bootstrap, register_device, BootstrapError, BootstrapOutcome, DeviceIdentity};

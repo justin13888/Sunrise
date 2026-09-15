@@ -41,7 +41,7 @@
 use sunrise_cbor::version::{CRYPTO_SUITE_V, DOC_SCHEMA_V, WIRE_PROTO_V};
 use sunrise_cli::{livesync, login, vault};
 use sunrise_core::commands::FocusStartDraft;
-use sunrise_core::{Command, Core, Query, QueryResult, SystemRng};
+use sunrise_core::{Command, Core, Query, QueryResult, RevokeReason, SystemRng};
 use sunrise_domain::routine_rows;
 use sunrise_id::{EntityKind, EntityRef};
 
@@ -84,6 +84,22 @@ USAGE:
     sunrise ical export [today|week] [path]
                                  write .ics to stdout, or to a path
 
+  devices and identity
+    sunrise devices              list this account's devices, marking revoked
+                                 and non-current ones distinctly
+    sunrise device revoke <id-prefix> [--reason lost|stolen|retired|compromised]
+                                 revoke a device, rotate every Stream key and
+                                 rotate the account identity so the device
+                                 cannot certify itself back in
+    sunrise identity status      the account's identity chain: its stable name,
+                                 the identity in force, and whether this device
+                                 still speaks for it
+    sunrise identity rotate [--new-recovery-code]
+                                 replace the account identity, keeping every
+                                 current device. --new-recovery-code refuses to
+                                 carry the old code forward, which is what to
+                                 use when the code itself is suspected
+
   account
     sunrise vaults               list this machine's vaults, marking the open one
     sunrise login                sign in via OIDC and store the token
@@ -92,6 +108,11 @@ USAGE:
     sunrise bootstrap [email]    publish this vault's identity to the relay,
                                  register this device, and print the 24-word
                                  recovery code once. Write that code down
+    sunrise recover <word>...    rebuild this account in an EMPTY vault
+                                 directory from the 24-word code. Reads the
+                                 code from stdin if none is given, and signs
+                                 you in again first — the relay only releases
+                                 a recovery blob to a fresh authentication
 
   plumbing
     sunrise focus <id>           open a focus session on a task
@@ -191,6 +212,57 @@ async fn main() -> std::process::ExitCode {
     }
 }
 
+/// Lowercase hex of a 16-byte id, for the device and identity listings.
+///
+/// These ids have no `EntityRef` prefix — a device id is a BLAKE3 derivation
+/// of `D_S_pub` and an identity id one of `ID_S_pub`, neither of them a ULID —
+/// so hex is the only form they have ever had on screen or in a log.
+fn hex16(bytes: &[u8; 16]) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(32);
+    for b in bytes {
+        let _ = write!(out, "{b:02x}");
+    }
+    out
+}
+
+/// The value after `--name`, if the flag is present with one.
+fn flag_value(args: &[String], name: &str) -> Option<String> {
+    let i = args.iter().position(|a| a == name)?;
+    args.get(i + 1).cloned()
+}
+
+/// Resolve a device id from a hex **prefix**, refusing an ambiguous one.
+///
+/// Full 32-character ids are not something a user retypes, and this CLI already
+/// resolves streams and contexts by partial name. Ambiguity is an error rather
+/// than a first match: the whole point of the command that uses this is to cut
+/// off one specific device, and picking the wrong one is both destructive and
+/// silent.
+async fn resolve_device(core: &Core, prefix: &str) -> Result<[u8; 16], Box<dyn std::error::Error>> {
+    let prefix = prefix.trim().to_ascii_lowercase();
+    if prefix.is_empty() {
+        return Err("give a device id or a prefix of one".into());
+    }
+    let QueryResult::Devices(rows) = core.query(Query::DeviceList).await? else {
+        return Err("expected a device list".into());
+    };
+    let hits: Vec<[u8; 16]> = rows
+        .iter()
+        .filter(|d| hex16(&d.device_id).starts_with(&prefix))
+        .map(|d| d.device_id)
+        .collect();
+    match hits.as_slice() {
+        [one] => Ok(*one),
+        [] => Err(format!("no device id starts with `{prefix}`").into()),
+        many => Err(format!(
+            "`{prefix}` matches {} devices; use more characters",
+            many.len()
+        )
+        .into()),
+    }
+}
+
 fn vault_dir() -> std::path::PathBuf {
     if let Ok(p) = std::env::var("SUNRISE_VAULT") {
         return std::path::PathBuf::from(p);
@@ -252,6 +324,16 @@ async fn run(sub: &str, rest: &[String]) -> Result<(), Box<dyn std::error::Error
         // `UserDefaults` rather than in the vault.
         "vaults" => {
             vaults();
+            return Ok(());
+        }
+        // Also answered without opening anything, and for a stronger reason
+        // than `vaults`: this subcommand *creates* the vault, from an identity
+        // it has not fetched yet. Falling through to the open below would mint
+        // a root and an identity of its own first, and the account a vault
+        // belongs to is decided when it is created — so the recovery would
+        // then have nothing left to join.
+        "recover" => {
+            recover(rest).await?;
             return Ok(());
         }
         _ => {}
@@ -451,6 +533,168 @@ async fn dispatch(
         // moving a task between streams, which `edit #stream` already does.
         "streams" if rest.first().map(String::as_str) == Some("move") => {
             move_stream(core, &rest[1..]).await
+        }
+        // Two states, printed distinctly, because they are different facts
+        // and a user who conflates them will draw the wrong conclusion.
+        // `revoked` is a register entry naming a device id; `current` is
+        // whether the identity that certified the device is the one in force.
+        // A device that left and certified itself back in under a fresh id is
+        // `revoked: no, current: no` — the register has never heard of the new
+        // id, and `current` is the only column that shows it (ADR-0032, #105).
+        "devices" => {
+            let QueryResult::Devices(rows) = core.query(Query::DeviceList).await? else {
+                return Err("expected a device list".into());
+            };
+            let me = core.device_id();
+            for d in rows {
+                let mut marks: Vec<&str> = Vec::new();
+                if d.device_id == me {
+                    marks.push("this device");
+                }
+                if d.revoked {
+                    marks.push("revoked");
+                }
+                if !d.current {
+                    // Deliberately not "compromised" or "impostor". An honest
+                    // device that has not yet applied a rotation reads exactly
+                    // the same way for a moment, and nothing on this replica
+                    // can separate the two.
+                    marks.push("not active on this account");
+                }
+                let suffix = if marks.is_empty() {
+                    String::new()
+                } else {
+                    format!("  [{}]", marks.join(", "))
+                };
+                println!(
+                    "{}  {:<20} {}{suffix}",
+                    hex16(&d.device_id),
+                    d.nickname,
+                    d.platform
+                );
+            }
+            Ok(())
+        }
+        "device" => {
+            let Some(verb) = rest.first().map(String::as_str) else {
+                return Err("usage: sunrise device revoke <id-prefix> [--reason <r>]".into());
+            };
+            if verb != "revoke" {
+                return Err(format!("unknown device subcommand `{verb}`").into());
+            }
+            let args = &rest[1..];
+            let prefix = args
+                .iter()
+                .find(|a| !a.starts_with("--"))
+                .ok_or("usage: sunrise device revoke <id-prefix> [--reason <r>]")?;
+            let reason = match flag_value(args, "--reason").as_deref() {
+                None | Some("lost") => RevokeReason::Lost,
+                Some("stolen") => RevokeReason::Stolen,
+                Some("retired") => RevokeReason::Retired,
+                Some("compromised") => RevokeReason::Compromised,
+                Some(other) => {
+                    return Err(format!(
+                        "unknown reason `{other}`; use lost, stolen, retired or compromised"
+                    )
+                    .into())
+                }
+            };
+            let target = resolve_device(core, prefix).await?;
+            core.submit(Command::RevokeDevice {
+                device_id: EntityRef::new(EntityKind::Device, target),
+                reason,
+            })
+            .await?;
+
+            // The two-state disclosure `docs/03-crypto/key-rotation.md`
+            // §Revocation asks for, and issue #160. These are different
+            // guarantees and the second is the one a user pressing the button
+            // believes they are getting: the local half is done and durable,
+            // the relay half is a queued intent that needs a session. Printing
+            // only "revoked" would let a user with no network believe a stolen
+            // laptop had been cut off from the server, which it has not.
+            println!("Revoked {} locally.", hex16(&target));
+            println!("  - every Stream key rotated, and the account identity with it");
+            println!("  - that device cannot certify itself back in under a new id");
+            let pending = core.relay_revocation_pending(&target)?;
+            if pending {
+                println!(
+                    "  - the relay has NOT been told yet; it is queued and will be sent \
+                     on the next `sunrise sync`"
+                );
+            } else {
+                println!("  - the relay has been told");
+            }
+            Ok(())
+        }
+        "identity" => {
+            let verb = rest.first().map_or("status", String::as_str);
+            match verb {
+                "status" => {
+                    let QueryResult::Identity(st) = core.query(Query::IdentityStatus).await? else {
+                        return Err("expected an identity status".into());
+                    };
+                    // The genesis first and labelled "account": it is the
+                    // value that does not move, and the one two devices
+                    // compare to decide they belong together. The identity in
+                    // force is a key, not a name.
+                    println!("account   {}", hex16(&st.genesis_identity_id));
+                    println!("current   {}", hex16(&st.current_identity_id));
+                    println!("rotations {}", st.transitions);
+                    println!(
+                        "this device {}",
+                        if st.this_device_is_current {
+                            "speaks for the account"
+                        } else {
+                            "does NOT speak for the account (no share of the current identity)"
+                        }
+                    );
+                    println!(
+                        "recovery  {}",
+                        if st.holds_recovery_key {
+                            "this device can seal a recovery code"
+                        } else {
+                            "this device cannot seal a recovery code"
+                        }
+                    );
+                    Ok(())
+                }
+                "rotate" => {
+                    // The flag is phrased as what the user wants to happen —
+                    // a new code — rather than as the internal
+                    // `keep_recovery_code`, which is a double negative at the
+                    // one moment a user must not misread it.
+                    let keep = !rest.iter().any(|a| a == "--new-recovery-code");
+                    core.submit(Command::RotateIdentity {
+                        keep_recovery_code: keep,
+                    })
+                    .await?;
+                    let QueryResult::Identity(st) = core.query(Query::IdentityStatus).await? else {
+                        return Err("expected an identity status".into());
+                    };
+                    println!(
+                        "Rotated. The account is still {}.",
+                        hex16(&st.genesis_identity_id)
+                    );
+                    println!(
+                        "  current identity is now {}",
+                        hex16(&st.current_identity_id)
+                    );
+                    if keep {
+                        println!("  your existing recovery code still works");
+                    } else {
+                        #[allow(clippy::print_stderr)]
+                        {
+                            eprintln!(
+                                "  your old recovery code no longer opens this account; \
+                                 run `sunrise bootstrap` to mint a new one"
+                            );
+                        }
+                    }
+                    Ok(())
+                }
+                other => Err(format!("unknown identity subcommand `{other}`").into()),
+            }
         }
         "streams" => {
             if let QueryResult::Streams(rows) = core.query(Query::StreamList).await? {
@@ -1418,6 +1662,69 @@ fn bootstrap_account(
         },
         code,
     ))
+}
+
+/// `recover` — `docs/03-crypto/recovery.md` §Recovery flow, end to end.
+///
+/// The whole of it happens before there is a vault to open, which is why this
+/// runs from `run`'s pre-open match rather than from `dispatch`. The sequence
+/// and the reasons are in [`sunrise_cli::recover`]; what lives here is the part
+/// that belongs to a terminal — where the words come from, and what is said
+/// afterwards.
+///
+/// Progress goes to **stderr** and the outcome to stdout, the same split every
+/// other subcommand makes: a script that runs this wants the identity id, not
+/// the narration. The 24 words are never echoed back, printed, or logged.
+async fn recover(rest: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    #![allow(clippy::print_stdout)]
+    use std::io::Read as _;
+
+    let dir = vault_dir();
+    std::fs::create_dir_all(&dir).ok();
+    sunrise_cli::recover::require_empty(&dir)?;
+
+    let url = std::env::var(livesync::ENV_SYNC_URL)
+        .map_err(|_| sunrise_cli::recover::RecoverError::NoRelay)?;
+
+    // Read stdin only when there are no arguments, so a terminal session that
+    // typed the words does not then block on a pipe nobody is writing to.
+    let mut piped = String::new();
+    if rest.is_empty() {
+        std::io::stdin().read_to_string(&mut piped).ok();
+    }
+    let code = sunrise_cli::recover::code_from(rest, &piped)
+        .ok_or(sunrise_cli::recover::RecoverError::NoCode)?;
+
+    // stderr, because stdout is the contract a script reads.
+    #[allow(clippy::print_stderr)]
+    let mut announce = |line: &str| eprintln!("{line}");
+
+    // The clock: there is no vault yet, so there is no `Core::now_ms` to ask,
+    // and this value is only used to price the credential this call is about
+    // to mint. `jiff` is already the CLI's time source everywhere else.
+    let now_ms = u64::try_from(jiff::Timestamp::now().as_millisecond()).unwrap_or(0);
+    let bearer = sunrise_cli::recover::step_up_bearer(&dir, now_ms, &mut announce).await?;
+
+    let identity = sunrise_cli::recover::restore_identity(&url, &bearer, &code).await?;
+    drop(code);
+    announce("recovery code accepted; the account identity is restored");
+
+    let done = sunrise_cli::recover::rebuild_vault(
+        &dir,
+        identity,
+        &url,
+        &bearer,
+        env!("CARGO_PKG_VERSION"),
+        &mut announce,
+    )
+    .await?;
+
+    println!("{}", done.identity_id);
+    #[allow(clippy::print_stderr)]
+    {
+        eprintln!("{}", sunrise_cli::recover::aftercare(&done.identity_id));
+    }
+    Ok(())
 }
 
 /// Show the recovery code, once, with what it is for and what losing it costs.

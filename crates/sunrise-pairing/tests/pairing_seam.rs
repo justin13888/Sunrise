@@ -75,6 +75,8 @@ fn payload() -> PairingPayload {
         id_s_pub,
         id_d_pub,
         identity_id: identity_id_from_pub(&id_s_pub),
+        genesis_identity_id: identity_id_from_pub(&id_s_pub),
+        genesis_id_s_pub: id_s_pub,
         vault_root: VAULT_ROOT,
         stream_keys: stream_keys(3, 2),
         nickname: "a laptop".into(),
@@ -226,7 +228,7 @@ fn the_wire_map_carries_exactly_the_fields_this_version_defines() {
 
     assert_eq!(
         keys,
-        vec![1, 3, 4, 5, 6, 7, 8, 9],
+        vec![1, 3, 4, 5, 6, 7, 8, 9, 10, 11],
         "field 2 is burned and no field may appear twice"
     );
 }
@@ -272,6 +274,14 @@ fn hand_built_payload(extra: &[(u8, Value)]) -> Vec<u8> {
         (
             Value::Integer(Integer::from(9_u8)),
             Value::Bytes(p.vault_root.to_vec()),
+        ),
+        (
+            Value::Integer(Integer::from(10_u8)),
+            Value::Bytes(p.genesis_identity_id.to_vec()),
+        ),
+        (
+            Value::Integer(Integer::from(11_u8)),
+            Value::Bytes(p.genesis_id_s_pub.to_vec()),
         ),
     ];
     for (k, v) in extra {
@@ -319,7 +329,11 @@ fn a_legacy_sender_still_emitting_id_d_priv_is_refused() {
 /// specifically is.
 #[test]
 fn an_unknown_future_field_is_ignored() {
-    let from_the_future = hand_built_payload(&[(10, Value::Text("something new".into()))]);
+    // 12, not 10: the genesis anchor took 10 and 11, so the first field a
+    // newer sender could add is the one after them. A test that kept using 10
+    // would be asserting that a field this version *defines* is ignorable,
+    // which is the opposite of what the reserved range exists for.
+    let from_the_future = hand_built_payload(&[(12, Value::Text("something new".into()))]);
     let decoded = decode_pairing_payload(&from_the_future).expect("a newer sender must still pair");
     assert_eq!(decoded.key_count(), 6);
     assert_eq!(decoded.vault_root, VAULT_ROOT);

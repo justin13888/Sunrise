@@ -54,6 +54,7 @@ ADRs are numbered sequentially (`0001`, `0002`, …) and never renumbered.
 | 0034 | [Revocation bounds a device's reads, not its writes, and no replica refuses an op](./0034-revocation-bounds-reads-not-writes.md) | accepted (depends on 0024; amends key rotation §Revocation and the threat model's A3) |
 | 0035 | [The bearer-validity disclosure on `AUTH_DEVICE_SIG_INVALID` is accepted](./0035-bearer-validity-oracle-accepted.md) | accepted (amends server auth §Device binding and the threat model's A2) |
 | 0036 | [The HLC is restored from the op log at open, not left to reset](./0036-hlc-restored-at-open.md) | accepted (amends 0016: its "HLC state does not survive a restart" concession is withdrawn; depends on 0014) |
+| 0037 | [The account identity is a chain, and membership is derived from its head](./0037-identity-transition.md) | accepted (supersedes 0032's decision and keeps its analysis; corrects key rotation §Identity rotation; depends on 0024, 0034) |
 | 0038 | [The macOS app updates itself through Sparkle, and the appcast's EdDSA key is subordinate to the Developer ID certificate in lifecycle, not in authority](./0038-macos-update-feed.md) | accepted (answers 0031's revisit trigger 4; amends `desktop.md` §Update channel and `releasing.md`) |
 | 0039 | [A tag uploads an iOS build to TestFlight; App Store submission is a separate, manual act](./0039-ios-distribution.md) | accepted (takes the channel half of 0028's Decision 6 slot and leaves the MUST-parity half reserved; amends the clients overview §Distribution) |
 
