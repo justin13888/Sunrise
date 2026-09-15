@@ -117,7 +117,16 @@ pub const DOC_SCHEMA_FLOOR: u16 = 1;
 /// A vault written under the shared domain simply does not open here, which is
 /// what a suite bump is supposed to do and what the absence of any deployment
 /// makes free.
-pub const CRYPTO_SUITE_V: u16 = 4;
+///
+/// `5` changes how a `DeviceCert` carries its body. It was a nested CBOR map,
+/// so a verifier parsed it and re-encoded the parse to rebuild the signature
+/// input — checking the signature against a *re-encoding* rather than against
+/// the bytes that arrived. Every parse/encode asymmetry was therefore a
+/// verification gap. The body now travels as an opaque `bstr` and the signature
+/// covers exactly those bytes, which is the construction COSE uses for its
+/// protected header. This is a change to how a signature input is built, which
+/// is what this constant names; the signature algorithm is unchanged.
+pub const CRYPTO_SUITE_V: u16 = 5;
 
 /// Local storage schema version. Per-device; never appears on the wire.
 ///
