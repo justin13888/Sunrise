@@ -53,7 +53,12 @@ const ARGON2_T: u32 = 3;
 const ARGON2_P: u32 = 1;
 
 /// Plaintext payload of a recovery blob.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// Four of the six fields are private keys, so this type has a hand-written
+/// [`Debug`] that names the identity and redacts the rest — the same rule
+/// `sunrise_pairing::PairingPayload` follows, and for the same reason: a
+/// derived one would put the whole account in whatever log a caller writes.
+#[derive(Clone, PartialEq, Eq)]
 pub struct RecoveryPayload {
     /// `ID_S_priv` — Ed25519 private seed.
     pub id_s_priv: [u8; 32],
@@ -67,6 +72,16 @@ pub struct RecoveryPayload {
     pub identity_id: [u8; 16],
     /// Account creation time (ms since epoch).
     pub created_at_ms: u64,
+}
+
+impl core::fmt::Debug for RecoveryPayload {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("RecoveryPayload { identity_id: ")?;
+        for b in &self.identity_id {
+            write!(f, "{b:02x}")?;
+        }
+        write!(f, ", created_at_ms: {}, .. }}", self.created_at_ms)
+    }
 }
 
 impl Zeroize for RecoveryPayload {

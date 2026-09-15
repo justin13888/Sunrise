@@ -48,6 +48,12 @@ pub const HPKE_TAG_LEN: usize = 16;
 /// Domain-separation prefix for a `key_envelope` info string.
 const KEY_ENVELOPE_INFO_PREFIX: &[u8] = b"sunrise.hpke.key_envelope.v1";
 
+/// Domain-separation prefix for an `identity_transition` per-device share.
+const IDENTITY_SHARE_INFO_PREFIX: &[u8] = b"sunrise.identity_share.v1";
+
+/// Domain-separation prefix for an `identity_transition` carry-forward share.
+const IDENTITY_CARRY_INFO_PREFIX: &[u8] = b"sunrise.identity_carry.v1";
+
 /// Errors produced by HPKE seal/open.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum HpkeError {
@@ -79,6 +85,46 @@ pub fn key_envelope_info(stream_id: &[u8; 16], epoch: u32) -> Vec<u8> {
     info.extend_from_slice(KEY_ENVELOPE_INFO_PREFIX);
     info.extend_from_slice(stream_id);
     info.extend_from_slice(&epoch.to_be_bytes());
+    info
+}
+
+/// The `info` string binding an `identity_transition`'s per-device share to
+/// the successor identity **and** to the one device it is for.
+///
+/// `"sunrise.identity_share.v1" || to_identity_id || device_id`.
+///
+/// Both halves are load-bearing. `to_identity_id` is what stops a share sealed
+/// during one rotation opening under a later one — the successor's secrets are
+/// the plaintext, so a replay across transitions would hand a device a key the
+/// account has already retired. `device_id` is what stops a share being
+/// re-addressed: HPKE Base authenticates no sender, so without it a blob sealed
+/// to a device's `D_D_pub` is indistinguishable from the blob for any other
+/// device whose entry an attacker swapped it into, and the roster would then
+/// name one device beside another's share.
+#[must_use]
+pub fn identity_share_info(to_identity_id: &[u8; 16], device_id: &[u8; 16]) -> Vec<u8> {
+    let mut info = Vec::with_capacity(IDENTITY_SHARE_INFO_PREFIX.len() + 16 + 16);
+    info.extend_from_slice(IDENTITY_SHARE_INFO_PREFIX);
+    info.extend_from_slice(to_identity_id);
+    info.extend_from_slice(device_id);
+    info
+}
+
+/// The `info` string binding an `identity_transition`'s carry-forward share to
+/// the successor identity.
+///
+/// `"sunrise.identity_carry.v1" || to_identity_id`.
+///
+/// No device id: this copy is sealed to the **outgoing** `ID_D_pub`, which is
+/// the account's key rather than any device's, and is what lets a holder of the
+/// old recovery blob follow the account forward. Its prefix differs from
+/// [`identity_share_info`] so that the two never collide even though both can
+/// carry the same 64 plaintext bytes for the same `to_identity_id`.
+#[must_use]
+pub fn identity_carry_info(to_identity_id: &[u8; 16]) -> Vec<u8> {
+    let mut info = Vec::with_capacity(IDENTITY_CARRY_INFO_PREFIX.len() + 16);
+    info.extend_from_slice(IDENTITY_CARRY_INFO_PREFIX);
+    info.extend_from_slice(to_identity_id);
     info
 }
 
@@ -218,6 +264,66 @@ mod tests {
         );
         assert_eq!(&info[KEY_ENVELOPE_INFO_PREFIX.len()..][..16], &[0xaa; 16]);
         assert_eq!(&info[info.len() - 4..], &3u32.to_be_bytes());
+    }
+
+    #[test]
+    fn the_identity_transition_infos_are_the_documented_concatenations() {
+        let share = identity_share_info(&[0x11; 16], &[0x22; 16]);
+        assert_eq!(
+            &share[..IDENTITY_SHARE_INFO_PREFIX.len()],
+            b"sunrise.identity_share.v1"
+        );
+        assert_eq!(
+            &share[IDENTITY_SHARE_INFO_PREFIX.len()..],
+            [[0x11u8; 16], [0x22u8; 16]].concat()
+        );
+
+        let carry = identity_carry_info(&[0x11; 16]);
+        assert_eq!(
+            &carry[..IDENTITY_CARRY_INFO_PREFIX.len()],
+            b"sunrise.identity_carry.v1"
+        );
+        assert_eq!(&carry[IDENTITY_CARRY_INFO_PREFIX.len()..], &[0x11u8; 16]);
+    }
+
+    /// The three `info` families must be mutually exclusive: a blob sealed
+    /// under one must not open under another, whatever the recipient key.
+    #[test]
+    fn the_info_families_do_not_collide() {
+        let mut rng = ChaCha20Rng::seed_from_u64(9);
+        let recipient = DeviceDhKeyPair::generate(&mut rng);
+        let to_identity = [0x11u8; 16];
+        let device = [0x22u8; 16];
+        let sealed = hpke_seal(
+            &recipient.public_bytes(),
+            &identity_share_info(&to_identity, &device),
+            b"successor secret",
+            b"",
+            &mut rng,
+        )
+        .expect("seal");
+        for other in [
+            identity_carry_info(&to_identity),
+            key_envelope_info(&to_identity, 1),
+            identity_share_info(&to_identity, &[0x23u8; 16]),
+            identity_share_info(&[0x12u8; 16], &device),
+        ] {
+            assert_eq!(
+                hpke_open(&recipient, &other, &sealed, b""),
+                Err(HpkeError::Open),
+                "a share must not open under a different info"
+            );
+        }
+        assert_eq!(
+            hpke_open(
+                &recipient,
+                &identity_share_info(&to_identity, &device),
+                &sealed,
+                b""
+            )
+            .expect("open"),
+            b"successor secret"
+        );
     }
 
     #[test]

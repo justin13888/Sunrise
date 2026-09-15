@@ -1410,3 +1410,189 @@ async fn streams_move_reorders_the_list_and_persists_it() {
         .status
         .success());
 }
+
+// ---- devices and identity (ADR-0032, #105, #160) -------------------------
+
+/// A fresh vault has one device — itself — and it is current.
+///
+/// The baseline every other assertion here is a departure from, and the one
+/// that says `sunrise devices` exists at all: until this commit the only thing
+/// that drove the device list was `sunrise-e2e`.
+#[test]
+fn devices_lists_this_device_as_current() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = run(dir.path(), &["devices"]);
+    assert!(out.status.success(), "devices failed: {out:?}");
+    let listing = stdout(&out);
+    assert!(
+        listing.contains("this device"),
+        "the vault's own device must be marked, got {listing:?}"
+    );
+    assert!(
+        !listing.contains("revoked"),
+        "nothing has been revoked, got {listing:?}"
+    );
+    assert!(
+        !listing.contains("not active"),
+        "and the only device is current, got {listing:?}"
+    );
+}
+
+/// `identity status` names the account by its **genesis**, not by the key in
+/// force, and reports zero rotations on a fresh vault.
+#[test]
+fn identity_status_reports_the_chain() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = run(dir.path(), &["identity", "status"]);
+    assert!(out.status.success(), "identity status failed: {out:?}");
+    let text = stdout(&out);
+    assert!(text.contains("rotations 0"), "got {text:?}");
+    assert!(text.contains("speaks for the account"), "got {text:?}");
+    // The account line and the current line agree until something rotates,
+    // which is exactly what makes the *next* test meaningful.
+    let account = text
+        .lines()
+        .find_map(|l| l.strip_prefix("account   "))
+        .expect("an account line");
+    let current = text
+        .lines()
+        .find_map(|l| l.strip_prefix("current   "))
+        .expect("a current line");
+    assert_eq!(account, current, "an unrotated account is its own genesis");
+}
+
+/// `identity rotate` moves the identity in force and leaves the account's
+/// stable name alone.
+///
+/// The property a user has to be able to rely on: rotating does not make this
+/// a different account, and nothing needs re-pairing.
+#[test]
+fn identity_rotate_moves_the_key_and_keeps_the_account() {
+    let dir = tempfile::tempdir().unwrap();
+    let before = stdout(&run(dir.path(), &["identity", "status"]));
+    let account_before = before
+        .lines()
+        .find_map(|l| l.strip_prefix("account   "))
+        .expect("an account line")
+        .to_owned();
+
+    let out = run(dir.path(), &["identity", "rotate"]);
+    assert!(out.status.success(), "rotate failed: {out:?}");
+    assert!(
+        stdout(&out).contains("your existing recovery code still works"),
+        "the default carries the code forward, got {:?}",
+        stdout(&out)
+    );
+
+    let after = stdout(&run(dir.path(), &["identity", "status"]));
+    let account_after = after
+        .lines()
+        .find_map(|l| l.strip_prefix("account   "))
+        .expect("an account line");
+    let current_after = after
+        .lines()
+        .find_map(|l| l.strip_prefix("current   "))
+        .expect("a current line");
+    assert_eq!(
+        account_after, account_before,
+        "a rotation does not make this a different account"
+    );
+    assert_ne!(current_after, account_after, "but the key in force moved");
+    assert!(after.contains("rotations 1"), "got {after:?}");
+    assert!(
+        after.contains("speaks for the account"),
+        "the rotating device is still a member, got {after:?}"
+    );
+}
+
+/// `--new-recovery-code` refuses to carry the old code and says so on stderr.
+#[test]
+fn identity_rotate_can_refuse_to_carry_the_recovery_code() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = run(dir.path(), &["identity", "rotate", "--new-recovery-code"]);
+    assert!(out.status.success(), "rotate failed: {out:?}");
+    assert!(
+        !stdout(&out).contains("still works"),
+        "it must not claim the old code survives, got {:?}",
+        stdout(&out)
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("no longer opens this account"),
+        "the user has to be told, got {err:?}"
+    );
+}
+
+/// A device id prefix that matches nothing is refused by name, and a device
+/// cannot revoke itself.
+///
+/// The self-revocation refusal is the engine's and is asserted here because
+/// this is the surface a user can reach it from: revoking the only device
+/// would rotate every key away from the only device holding them.
+#[test]
+fn device_revoke_refuses_an_unknown_prefix_and_refuses_self() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = run(dir.path(), &["device", "revoke", "ffffffff"]);
+    assert!(!out.status.success(), "an unknown prefix must fail");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("no device id starts with"), "got {err:?}");
+
+    // This vault's own id, read back from the listing it just printed.
+    let listing = stdout(&run(dir.path(), &["devices"]));
+    let me = listing
+        .split_whitespace()
+        .next()
+        .expect("the listing names this device")
+        .to_owned();
+    let out = run(dir.path(), &["device", "revoke", &me]);
+    assert!(!out.status.success(), "a device must not revoke itself");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("cannot revoke itself"), "got {err:?}");
+}
+
+/// An unknown reason is refused, and the four documented ones are not.
+#[test]
+fn device_revoke_validates_the_reason() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = run(
+        dir.path(),
+        &["device", "revoke", "ffffffff", "--reason", "borrowed"],
+    );
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("unknown reason `borrowed`"),
+        "the error names the four that work, got {err:?}"
+    );
+    // A valid reason gets past the reason check and fails on the *prefix*,
+    // which is the proof that the reason parsed.
+    for reason in ["lost", "stolen", "retired", "compromised"] {
+        let out = run(
+            dir.path(),
+            &["device", "revoke", "ffffffff", "--reason", reason],
+        );
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            err.contains("no device id starts with"),
+            "`{reason}` must be accepted, got {err:?}"
+        );
+    }
+}
+
+/// `sunrise help` names the new commands.
+///
+/// A subcommand that works and is undiscoverable is a subcommand a user does
+/// not have — the same argument `sunrise vaults` makes about multi-account.
+#[test]
+fn usage_documents_the_device_and_identity_commands() {
+    let dir = tempfile::tempdir().unwrap();
+    let text = stdout(&run(dir.path(), &["help"]));
+    for needle in [
+        "sunrise devices",
+        "sunrise device revoke",
+        "sunrise identity status",
+        "sunrise identity rotate",
+    ] {
+        assert!(text.contains(needle), "usage must name `{needle}`");
+    }
+}

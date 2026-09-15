@@ -63,15 +63,18 @@ pub mod vault_lock;
 pub use attach::AttachError;
 pub use commands::{Command, CommandResult, FocusStartDraft};
 pub use config::{Clock, CoreConfig, HlcClock, MonotonicHlc, Rng, SystemClock, SystemRng};
-pub use control_op::{DeviceRevokePayload, KeyEnvelopePayload, Recipient, RevokeReason};
+pub use control_op::{
+    DeviceRevokePayload, IdentityTransitionPayload, KeyEnvelopePayload, KeyShare, Recipient,
+    RevokeReason, RosterEntry,
+};
 pub use core::{Core, CoreError};
 pub use engine::{Engine, EngineError};
 pub use events::{DomainEvent, SyncStatus};
-pub use keychain::{KeySource, Keychain, KeychainError};
+pub use keychain::{KeySource, Keychain, KeychainError, SuccessorPublics};
 pub use queries::{
     ActionableTask, ContextRow, DeviceRow, FocusPlanRow, FocusSessionRow, Query, QueryResult,
     StreamRow,
 };
 pub use sync_driver::{BoxTransport, ConnectFuture, SyncConfig, TokenSource, TransportFactory};
-pub use unlock::Unlock;
+pub use unlock::{IdentitySeed, Unlock};
 pub use vault_lock::{VaultLock, VaultLockError};

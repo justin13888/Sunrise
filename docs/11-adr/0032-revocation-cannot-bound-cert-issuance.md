@@ -1,6 +1,10 @@
 # 0032 — Revocation cannot bound certificate issuance; disclose it rather than half-enforce it
 
-**Status:** accepted
+**Status:** accepted; its **decision** is superseded by
+[ADR-0037](./0037-identity-transition.md), which builds the identity rotation
+alternative 5 named as required. The analysis below stands unchanged — it is
+why the four narrower shapes were not built, and each of those reasons is still
+load-bearing.
 
 **Amends** [`docs/03-crypto/key-rotation.md`](../03-crypto/key-rotation.md)
 §Revocation and §Identity rotation, and

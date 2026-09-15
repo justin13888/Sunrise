@@ -159,6 +159,22 @@ run = [
   "cargo test -p sunrise-log --test event_catalog",
 ]
 
+[tasks.apple-pairing-fixture]
+description = "Rewrite apps/apple/SunriseTests/PairingFixture.swift from the pairing encoder"
+# Swift has no constructor for a `PairingPayload` — one is built inside the core
+# out of a vault, and a unit test has no vault — so the Apple suite carries the
+# canonical encoding as a base64 literal. This rewrites that literal from
+# `encode_pairing_payload`, and `the_committed_apple_fixture_is_current` fails an
+# ordinary `cargo test` whenever the two disagree, so the literal cannot go stale
+# without something cheap saying so first.
+run = '''
+set -euo pipefail
+cargo test -q -p sunrise-pairing --test apple_fixture -- \
+  --ignored --exact regenerate_the_apple_pairing_fixture
+echo "rewritten: apps/apple/SunriseTests/PairingFixture.swift"
+git status --short apps/apple/SunriseTests/PairingFixture.swift
+'''
+
 [tasks.storage-fixtures]
 description = "Rewrite the committed old-vault fixtures under crates/sunrise-storage/fixtures/"
 shell = "bash -c"

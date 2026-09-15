@@ -153,8 +153,8 @@ pub const ENVELOPE_INNER: &[u8] = b"inner-op-canonical-cbor";
 
 /// `aead_alg = 0` control envelope: plaintext payload, signature only.
 ///
-/// Frozen at `ENVELOPE_FORMAT_V = 3` / `DOC_SCHEMA_V = 5`: field 1 is `3`,
-/// field 5 is the HLC array `[physical_ms, logical]`, field 12 is `5`, and the
+/// Frozen at `ENVELOPE_FORMAT_V = 3` / `DOC_SCHEMA_V = 6`: field 1 is `3`,
+/// field 5 is the HLC array `[physical_ms, logical]`, field 12 is `6`, and the
 /// magic prefix reads `5352 02 0003`.
 ///
 /// Field 12 carries the **document** schema, so the two envelope vectors are
@@ -166,6 +166,12 @@ pub const ENVELOPE_INNER: &[u8] = b"inner-op-canonical-cbor";
 /// 64-byte Ed25519 signature at `[119..182]`, because field 12 is inside the
 /// signature input, and the field-12 byte itself at `[184]`. Everything before
 /// the signature is byte-identical.
+///
+/// The 5 → 6 re-freeze (ADR-0032, the `identity_transition` op family) moved
+/// exactly the same 65 bytes, at the same offsets, for the same reason — which
+/// is the check worth making on a doc-schema bump: any *other* byte moving
+/// would mean the container format had changed too, and that is a different
+/// constant.
 ///
 /// `encode_envelope(ENVELOPE_INNER, STREAM_ID, DEVICE_ID, seq = 7,
 /// hlc = [1_700_000_000_000, 0], AeadAlgId::None, epoch = 0, nonce = [0; 24],
@@ -184,10 +190,10 @@ pub mod signed_only_envelope {
         "5352020003ac010302502222222222222222222222222222222203503333",
         "3333333333333333333333333333040705821b0000018bcfe56800000600",
         "070108000958180000000000000000000000000000000000000000000000",
-        "000a57696e6e65722d6f702d63616e6f6e6963616c2d63626f720b58404f",
-        "f1ce8497cc8d5c8042b3147745f537980c8ab8ee056cc1b63adfbd45675c",
-        "1f0746265249e8b1bee763edd41e91b6c881fce926af747647dbe4dd5e7e",
-        "a03b040c05",
+        "000a57696e6e65722d6f702d63616e6f6e6963616c2d63626f720b5840d1",
+        "b49cf3eea75ea7b1133dc26d5a44dc1f836d19e5ee6b51f99d62874384fc",
+        "dc2be5953c82a51f5fd8abcd13055944dbbc38700769c36139ff61e8ff00",
+        "e310000c06",
     ));
 }
 
@@ -202,6 +208,11 @@ pub mod signed_only_envelope {
 /// under a new AAD. The 23 ciphertext bytes at `[94..117]` are unchanged,
 /// which is the check that matters: the keystream, and therefore the key
 /// schedule and the nonce, did not move.
+///
+/// The 5 → 6 re-freeze (ADR-0032) moved 80 bytes, in the same three regions —
+/// the count differs from 81 only because two bytes of the new signature
+/// happen to equal the old ones. The ciphertext at `[94..117]` is again
+/// untouched.
 ///
 /// `encode_envelope(ENVELOPE_INNER, STREAM_ID, DEVICE_ID, seq = 9,
 /// hlc = [1_700_000_000_001, 0], AeadAlgId::XChaCha20Poly1305, epoch = 3,
@@ -222,10 +233,10 @@ pub mod sealed_envelope {
         "5352020003ac010302502222222222222222222222222222222203503333",
         "3333333333333333333333333333040905821b0000018bcfe56801000601",
         "070108030958185555555555555555555555555555555555555555555555",
-        "550a58276416c4bb3e46b71d10c45af51e2462649e7331f6d5bbb83a965d",
-        "a6ed52b02282bcd99dd8a7847f0b5840028458e018abc5bd7d4bbab79f2d",
-        "d25e19b0e5b34fb74f09457d8eb9d0e9e5c11dc64296aa099a07671d8289",
-        "ee7ba47bd2b99a87510e2f6e65d131af0306780d0c05",
+        "550a58276416c4bb3e46b71d10c45af51e2462649e7331f6d5bbb89a912d",
+        "90db54412f9803227f842e37760b5840f66f92775acb0c7eb0b520c6b9ee",
+        "96aceac827cfba6c82ec2ef1f214c6c12cf3e339dedac6067e62481ddc0a",
+        "9c7f3d644981da4e3275b8373fbca880db8e1f0f0c06",
     ));
 }
 

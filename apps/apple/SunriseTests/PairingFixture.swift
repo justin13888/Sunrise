@@ -12,21 +12,30 @@ import Testing
 ///
 /// Produced by `sunrise_pairing::encode_pairing_payload` over `ID_S_priv` =
 /// 32 x 0x11, `ID_D_pub` = X25519(32 x 0x22), one Stream key (the vault-meta
-/// stream, epoch 1, 32 x 0xCD), and `vault_root` = 32 x 0xAB. Regenerate it if
-/// the payload's CDDL changes; a stale one fails loudly here rather than
-/// quietly somewhere else — which is what happened when key 2, `ID_D_priv`, was
-/// burned: the decoder refuses a payload still carrying it, so the previous
-/// fixture stopped decoding and said so.
+/// stream, epoch 1, 32 x 0xCD), `vault_root` = 32 x 0xAB, and `genesis_*`
+/// equal to the identity in force — which is what an account that has never
+/// rotated looks like, and a fresh vault is one.
+///
+/// **Do not edit this literal by hand.** `mise run apple-pairing-fixture`
+/// rewrites it from the encoder, and
+/// `crates/sunrise-pairing/tests/apple_fixture.rs` asserts on every
+/// `cargo test` that what is written here is what that encoder produces today.
+/// Regenerating by hand is how it went stale when fields 10 and 11 were added:
+/// this file kept the nine-key shape and the failure surfaced as four opaque
+/// XCTest assertions on a macOS runner instead of one named Rust test.
+/// Before that it was key 2, `ID_D_priv`, being burned: the decoder refuses a
+/// payload still carrying it, so the previous fixture stopped decoding.
 enum PairingFixture {
     /// The 32-byte vault root inside ``payload()``.
     static let vaultRoot = Data(repeating: 0xAB, count: 32)
 
     static let base64 =
-        "qAFYIBERERERERERERERERERERERERERERERERERERERERERA1gg0EqyMnQrtKs6E2i9RhXk"
+        "qgFYIBERERERERERERERERERERERERERERERERERERERERERA1gg0EqyMnQrtKs6E2i9RhXk"
             + "5tAiSrcaAWuvhSCjMsl3hzcEWCAPqmhO0ohnuX9Kai3uXfjOl052twGOPyKhxM8meFcPIAVQ"
             + "iJdtw4+iQtfJ4/xYmI9WDQahUAAAAAAAAAAAAAAAAAAAAAChAVggzc3Nzc3Nzc3Nzc3Nzc3N"
             + "zc3Nzc3Nzc3Nzc3Nzc3Nzc0HZ2ZpeHR1cmUIZHRlc3QJWCCrq6urq6urq6urq6urq6urq6ur"
-            + "q6urq6urq6urq6urqw=="
+            + "q6urq6urq6urq6urqwpQiJdtw4+iQtfJ4/xYmI9WDQtYINBKsjJ0K7SrOhNovUYV5ObQIkq3"
+            + "GgFrr4UgozLJd4c3"
 
     /// The fixture as bytes. `#require` rather than `!`, so a mistyped literal
     /// is a test failure that names itself and not a crash in the suite.
