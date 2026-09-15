@@ -73,5 +73,5 @@ pub use queries::{
     StreamRow,
 };
 pub use sync_driver::{BoxTransport, ConnectFuture, SyncConfig, TokenSource, TransportFactory};
-pub use unlock::Unlock;
+pub use unlock::{IdentitySeed, Unlock};
 pub use vault_lock::{VaultLock, VaultLockError};

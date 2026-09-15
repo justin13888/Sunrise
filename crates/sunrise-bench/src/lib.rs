@@ -131,7 +131,7 @@ pub fn open_vault(seed: u64) -> BenchVault {
         VaultRootKey::from_bytes(VAULT_ROOT_KEY_BYTES),
         clock.as_ref(),
         rng.as_ref(),
-        None,
+        &sunrise_core::IdentitySeed::Own,
     )
     .expect("open keychain");
     let engine = Engine::from_clock(clock, rng, Arc::new(keychain));

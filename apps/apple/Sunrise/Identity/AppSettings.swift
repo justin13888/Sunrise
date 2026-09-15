@@ -25,6 +25,17 @@ final class AppSettings {
         didSet { defaults.set(oidcClientID, forKey: Key.oidcClientID) }
     }
 
+    /// The address this account is registered under.
+    ///
+    /// Sent once, by `POST /api/v1/accounts`, and only as a fallback: the
+    /// identity provider owns the address and the relay overwrites this with
+    /// the `email` claim wherever it has one. It is here because the route
+    /// refuses an empty one outright, and a self-host relay running
+    /// `NullVerifier` emits no claim to fall back from.
+    var accountEmail: String {
+        didSet { defaults.set(accountEmail, forKey: Key.accountEmail) }
+    }
+
     private let defaults: UserDefaults
 
     init(defaults: UserDefaults = .standard) {
@@ -32,6 +43,7 @@ final class AppSettings {
         relayURL = defaults.string(forKey: Key.relayURL) ?? ""
         oidcIssuer = defaults.string(forKey: Key.oidcIssuer) ?? ""
         oidcClientID = defaults.string(forKey: Key.oidcClientID) ?? ""
+        accountEmail = defaults.string(forKey: Key.accountEmail) ?? ""
     }
 
     /// Whether a login can even be attempted.
@@ -42,10 +54,18 @@ final class AppSettings {
     /// Whether sync should be started at all.
     var syncIsConfigured: Bool { !relayURL.trimmed.isEmpty }
 
+    /// Whether this device can publish its vault to the relay — which is what
+    /// seals a recovery blob, and therefore what puts a second copy of
+    /// `ID_D_priv` anywhere at all.
+    var canBootstrapAccount: Bool {
+        syncIsConfigured && !accountEmail.trimmed.isEmpty
+    }
+
     private enum Key {
         static let relayURL = "sync.relayURL"
         static let oidcIssuer = "auth.oidcIssuer"
         static let oidcClientID = "auth.oidcClientID"
+        static let accountEmail = "account.email"
     }
 }
 

@@ -1,7 +1,48 @@
 //! Unlock material passed at `Core::open` time.
 
 use sunrise_crypto::keys::VaultRootKey;
+use sunrise_crypto::recovery::RecoveryPayload;
 use sunrise_pairing::PairingPayload;
+
+/// What a vault being created should seed its account identity from.
+///
+/// Split out of [`Unlock`] because the two ways a vault can be handed an
+/// identity are **not** the same thing, and collapsing them is what made
+/// [`Unlock::RecoveryCode`] unusable: it carried a [`PairingPayload`], and
+/// since `#76` that type does not carry `ID_D_priv` at all. A vault seeded
+/// from one therefore came up with `dh_secret: None` — unable to open a single
+/// identity-addressed `key_envelope`, which is the only thing a recovery is
+/// for. See `docs/03-crypto/recovery.md` §Recovery flow step 8.
+pub enum IdentitySeed {
+    /// Nothing is handed over. The vault mints its own account identity on
+    /// first open, or loads the one already on disk.
+    Own,
+    /// A pairing payload, from a sibling device over the Noise channel.
+    ///
+    /// Carries `ID_S_priv` and `ID_D_pub` and deliberately **not** `ID_D_priv`
+    /// — the asymmetry that lets a revocation bound a device's reads.
+    Paired(Box<PairingPayload>),
+    /// An opened recovery blob.
+    ///
+    /// Carries `ID_D_priv`, because that is the whole point: it is the key
+    /// every `key_envelope`'s identity copy is sealed to, and a recovering
+    /// device has no sibling to be handed a Stream key by.
+    Recovered(Box<RecoveryPayload>),
+}
+
+impl std::fmt::Debug for IdentitySeed {
+    /// Names the shape and nothing else, for the reason
+    /// [`PairingPayload`]'s own `Debug` does: the recovered arm holds the
+    /// account's private keys in the clear, and a derived `Debug` would put
+    /// them in whatever log the caller writes.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Own => f.write_str("IdentitySeed::Own"),
+            Self::Paired(_) => f.write_str("IdentitySeed::Paired(..)"),
+            Self::Recovered(_) => f.write_str("IdentitySeed::Recovered(..)"),
+        }
+    }
+}
 
 /// Three unlock modes per `docs/01-architecture/shared-core.md`.
 ///
@@ -9,7 +50,6 @@ use sunrise_pairing::PairingPayload;
 /// no longer reconstructs the key schedule — Stream keys are random, not
 /// derived — so a device arriving by pairing or by recovery has to be handed
 /// the account identity as well, and that is what the extra field is.
-#[derive(Debug)]
 pub enum Unlock {
     /// User typed a passphrase; the caller derives the vault root via
     /// Argon2id with the per-device salt and passes the resulting 32-byte
@@ -36,13 +76,33 @@ pub enum Unlock {
     /// what makes a recovery restore *readable* content rather than a vault
     /// full of ciphertext — the dilemma `recovery.md` used to conclude was
     /// non-negotiable.
+    ///
+    /// `root` is a **fresh** root this device mints. The blob carries the
+    /// account identity and never the vault root, which keys the local
+    /// database and nothing else (`docs/03-crypto/recovery.md` §Recovery flow
+    /// step 8); there is no surviving device to be handed one by, so a
+    /// recovering device makes its own.
     RecoveryCode {
-        /// The vault root.
+        /// The vault root this recovering device mints for itself.
         root: VaultRootKey,
-        /// The identity material the recovery blob carried, in the same shape
-        /// pairing uses.
-        identity: Box<PairingPayload>,
+        /// The identity material the recovery blob carried, `ID_D_priv`
+        /// included.
+        identity: Box<RecoveryPayload>,
     },
+}
+
+impl std::fmt::Debug for Unlock {
+    /// Names the mode and nothing else. Every arm holds key material.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Passphrase(_) => f.write_str("Unlock::Passphrase(..)"),
+            Self::DevicePaired { paired, .. } => f
+                .debug_struct("Unlock::DevicePaired")
+                .field("paired", &paired.is_some())
+                .finish_non_exhaustive(),
+            Self::RecoveryCode { .. } => f.write_str("Unlock::RecoveryCode { .. }"),
+        }
+    }
 }
 
 impl Unlock {
@@ -52,14 +112,16 @@ impl Unlock {
         self.into_parts().0
     }
 
-    /// The vault root and, where the mode carries one, the identity material
-    /// the keychain should seed itself from.
+    /// The vault root and the identity material the keychain should seed
+    /// itself from.
     #[must_use]
-    pub fn into_parts(self) -> (VaultRootKey, Option<Box<PairingPayload>>) {
+    pub fn into_parts(self) -> (VaultRootKey, IdentitySeed) {
         match self {
-            Self::Passphrase(k) => (k, None),
-            Self::DevicePaired { root, paired } => (root, paired),
-            Self::RecoveryCode { root, identity } => (root, Some(identity)),
+            Self::Passphrase(k) => (k, IdentitySeed::Own),
+            Self::DevicePaired { root, paired } => {
+                (root, paired.map_or(IdentitySeed::Own, IdentitySeed::Paired))
+            }
+            Self::RecoveryCode { root, identity } => (root, IdentitySeed::Recovered(identity)),
         }
     }
 }

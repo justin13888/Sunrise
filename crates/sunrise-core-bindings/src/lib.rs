@@ -54,6 +54,7 @@ use sunrise_id::EntityRef;
 use thiserror::Error;
 use tokio::runtime::Handle;
 use tokio::sync::broadcast::error::RecvError;
+use zeroize::Zeroize as _;
 
 pub mod client;
 pub mod command;
@@ -146,6 +147,14 @@ pub enum BindingError {
         /// How many bytes it must carry.
         expected: u32,
     },
+    /// The relay refused a request, or could not be reached.
+    ///
+    /// Kept apart from [`BindingError::Core`] because the two need different
+    /// things from the user: a core failure is a bug or a broken vault, and
+    /// this is a network, a token, or a relay saying no. `bootstrap_account` is
+    /// the only route that raises it.
+    #[error("relay: {0}")]
+    Relay(String),
     /// An attachment's metadata is on this device and its bytes are not.
     ///
     /// Its own variant rather than a `Core` message because it is the one
@@ -646,6 +655,149 @@ impl SunriseCore {
     #[must_use]
     pub fn device_cert(&self) -> Vec<u8> {
         self.inner.device_cert()
+    }
+
+    /// Whether this vault holds `ID_D_priv` — the account identity's
+    /// unwrapping key.
+    ///
+    /// True on the device that created the account and on one restored from a
+    /// recovery code; false on every device admitted by pairing, which since
+    /// `#76` is handed only `ID_D_pub`.
+    ///
+    /// **This is the signal a client is meant to surface rather than act on,
+    /// and it had reached none.** Where no recovery blob has been sealed, a
+    /// `true` here means *this vault is the only place `ID_D_priv` exists, and
+    /// losing it destroys the key permanently*: every `Recipient::Identity`
+    /// copy in the op log becomes unopenable forever, and no recovery feature
+    /// shipped afterwards can retrieve it, because sealing a blob needs the key
+    /// it would carry. `docs/03-crypto/key-rotation.md` §Revocation has said so
+    /// for some time; [#144](https://github.com/justin13888/Sunrise/issues/144)
+    /// is that it was said nowhere a user could see.
+    ///
+    /// It is also the precondition on [`Self::bootstrap_account`] producing a
+    /// recovery code at all: a paired device cannot seal a blob, and one that
+    /// tried would hand its user a code decrypting to a key that opens nothing.
+    #[must_use]
+    pub fn holds_identity_key(&self) -> bool {
+        self.inner.holds_identity_key()
+    }
+
+    /// Seal this account's identity keys into a recovery blob under a
+    /// caller-supplied 32-byte seed.
+    ///
+    /// **Prefer [`Self::bootstrap_account`].** This is the raw operation, and
+    /// the raw operation puts two things on the caller that the caller should
+    /// not be carrying: drawing 32 bytes from a CSPRNG, and destroying them
+    /// afterwards. A seed that crosses this seam lives in a Swift `Data` for as
+    /// long as ARC decides, and a recovery code is the one secret whose whole
+    /// value is that it exists in exactly two places — on the user's paper and
+    /// inside the blob. `bootstrap_account` draws the seed on this side of the
+    /// seam, uses it twice, and drops it.
+    ///
+    /// It is exposed because a caller that has a seed from somewhere else — a
+    /// test vector, or a future social-recovery split that reassembles one from
+    /// shares — has no other way in.
+    ///
+    /// # Errors
+    ///
+    /// [`BindingError::BadFixedBytes`] if `seed` is not exactly 32 bytes, and
+    /// [`BindingError::Core`] on a device admitted by pairing, which holds no
+    /// `ID_D_priv` to seal.
+    pub fn seal_recovery_blob(&self, seed: Vec<u8>) -> Result<Vec<u8>, BindingError> {
+        let mut seed: [u8; 32] = seed.try_into().map_err(|_| BindingError::BadFixedBytes {
+            field: "recovery seed".to_owned(),
+            expected: 32,
+        })?;
+        let out = self.inner.seal_recovery_blob(&seed);
+        seed.zeroize();
+        Ok(out?)
+    }
+
+    /// Publish this vault to the relay and come back with the recovery code —
+    /// the whole of what `sunrise bootstrap` does, for the Apple clients.
+    ///
+    /// Before this existed, `apps/apple` could reach neither
+    /// `Core::seal_recovery_blob` nor `POST /api/v1/accounts`, so **a vault
+    /// created by the app had no recovery blob at all** and was therefore the
+    /// only place `ID_D_priv` existed
+    /// ([#181](https://github.com/justin13888/Sunrise/issues/181)).
+    ///
+    /// One call rather than three, and deliberately: the seed is drawn here,
+    /// sealed here, uploaded here, and dropped here, so the code handed back is
+    /// always the code the stored blob opens. `POST /accounts` answers `409
+    /// RECOVERY_BLOB_EXISTS` to a second, differing blob rather than discarding
+    /// it, which is what makes that guarantee hold across a retry — but only if
+    /// the code is not shown until the upload has been accepted, and a caller
+    /// holding three separate calls is a caller that can get that order wrong.
+    ///
+    /// [`dto::AccountBootstrap::recovery_code`] is `None` on a device admitted by
+    /// pairing, which holds no `ID_D_priv`. That is not an error and the app
+    /// must not present it as one: the device that created the account is the
+    /// one that can produce a code, and this device's account already has one.
+    ///
+    /// # Errors
+    ///
+    /// [`BindingError::Core`] if the blob cannot be sealed, and
+    /// [`BindingError::Relay`] with what the relay said.
+    pub async fn bootstrap_account(
+        &self,
+        relay_url: String,
+        bearer: String,
+        email: String,
+        nickname: String,
+    ) -> Result<dto::AccountBootstrap, BindingError> {
+        use sunrise_core::Rng as _;
+
+        // Exactly `sunrise bootstrap`'s sequence: draw, seal, encode, upload.
+        let (recovery_blob, code) = if self.inner.holds_identity_key() {
+            let mut seed = [0u8; sunrise_crypto::bip39::RECOVERY_ENTROPY_LEN];
+            sunrise_core::SystemRng.fill_bytes(&mut seed);
+            let blob = self.inner.seal_recovery_blob(&seed)?;
+            let code = sunrise_crypto::bip39::encode_recovery_code(&seed);
+            seed.zeroize();
+            (Some(blob), Some(code))
+        } else {
+            (None, None)
+        };
+
+        let outcome = sunrise_relay_client::bootstrap(
+            &relay_url,
+            &bearer,
+            sunrise_onboarding::AccountCreateRequest {
+                email,
+                identity_signing_pub: self.inner.identity_signing_pub(),
+                identity_dh_pub: self.inner.identity_dh_pub(),
+                recovery_blob,
+                terms_at_ms: self.inner.now_ms(),
+            },
+            sunrise_relay_client::DeviceIdentity {
+                device_pub_s: self.inner.device_signing_pub(),
+                device_pub_d: None,
+                device_cert: None,
+                // The only name a sibling can revoke this device by: the relay
+                // mints its own id and never sends it back through the op
+                // stream. A device that omits it cannot be revoked at all.
+                vault_device_id: Some(sunrise_id::crockford::encode_bytes(&self.inner.device_id())),
+                nickname,
+                platform: if cfg!(target_os = "ios") {
+                    "ios".to_owned()
+                } else {
+                    "macos".to_owned()
+                },
+                app_version: Some(env!("CARGO_PKG_VERSION").to_owned()),
+            },
+        )
+        .await
+        .map_err(|e| BindingError::Relay(e.to_string()))?;
+
+        Ok(dto::AccountBootstrap {
+            identity_id: outcome.identity_id,
+            email: outcome.email,
+            device_id: outcome.device_id,
+            // Read out only after the relay accepted the blob, so a code this
+            // ever returns is a code the stored blob opens.
+            recovery_code: code.map(|c| c.reveal().to_owned()),
+        })
     }
 
     /// Start the live-sync driver against `url` (a relay `/sync` endpoint:
