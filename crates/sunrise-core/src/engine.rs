@@ -14495,6 +14495,165 @@ mod tests {
         );
     }
 
+    /// **#105 closed rather than bounded.** The device that gets revoked cannot
+    /// certify itself back in because it never held the key to do it with —
+    /// not because a rotation retired the identity it would have used.
+    ///
+    /// The test above is the *remedy*: the revoked device mints a cert, the
+    /// cert verifies, and rotation makes it worthless. It had to be, while
+    /// every paired device held `ID_S_priv`. It also only bought one
+    /// revocation at a time — the device paired *after* a rotation held the new
+    /// key, so revoking that one replayed the whole trick one identity along.
+    ///
+    /// This is the fix. A device admitted by pairing is handed `ID_S_pub`, so
+    /// the first step of the attack — sign a cert for a fresh device id — does
+    /// not complete, before or after any revocation. Nothing about the
+    /// revocation is what stops it, which is exactly why it keeps working on
+    /// the second device and the third.
+    #[test]
+    fn a_paired_device_cannot_certify_a_fresh_device_id_before_or_after_its_revocation() {
+        use crate::KeychainError;
+        let founder = engine_random_keys(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        // The device under test: same account, admitted by pairing.
+        let paired = Engine::from_clock(
+            Arc::new(FakeClock(PLMutex::new(T0))),
+            Arc::new(SystemRng),
+            Arc::new(Keychain::for_test_paired(
+                VaultRootKey::from_bytes(ROOT),
+                [2u8; 32],
+            )),
+        );
+        let mut dba = db_root(ROOT);
+        let paired_id = paired.keychain.device_id();
+        trust(&founder, &mut dba, &paired);
+
+        // The fresh id the attack needs, with real keys behind it.
+        let fresh = engine_random_keys(ROOT, [3u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let attempt = |e: &Engine| {
+            e.keychain.issue_cert_for(
+                fresh.keychain.device_id(),
+                fresh.keychain.device_signing_pub(),
+                fresh.keychain.device_dh_pub(),
+                "a fresh id",
+                "test",
+                T0,
+            )
+        };
+
+        // Before: the founder can, the paired device cannot. Both are members
+        // of the same account and both hold valid certs of their own.
+        assert!(attempt(&founder).is_ok(), "the control: the creator can");
+        assert!(matches!(
+            attempt(&paired),
+            Err(KeychainError::IdentitySigningKeyAbsent)
+        ));
+
+        // The revocation, from the founder, which rotates the identity.
+        let head_before = founder.current_identity(dba.conn()).unwrap().identity_id;
+        founder
+            .apply(
+                &mut dba,
+                Command::RevokeDevice {
+                    device_id: EntityRef::new(EntityKind::Device, paired_id),
+                    reason: RevokeReason::Lost,
+                },
+            )
+            .unwrap();
+        assert_ne!(
+            founder.current_identity(dba.conn()).unwrap().identity_id,
+            head_before,
+            "the creator holds ID_S_priv, so the revocation still rotates"
+        );
+
+        // After: unchanged, and that is the point. The revoked device's
+        // inability to certify anything is a property of the device, not a
+        // consequence of the rotation — so it survives the *next* revocation
+        // too, which is what the remedy could not do.
+        assert!(matches!(
+            attempt(&paired),
+            Err(KeychainError::IdentitySigningKeyAbsent)
+        ));
+    }
+
+    /// A revocation run from a device that cannot rotate still cuts the reads.
+    ///
+    /// Only the account's creator holds `ID_S_priv` now, so a paired device can
+    /// revoke and cannot rotate the identity. Refusing the command outright
+    /// would be worse than not rotating — the device a user is revoking is
+    /// often the one they lost, and the creator may be the one they lost — so
+    /// the revocation completes and says what it did not do.
+    ///
+    /// What it gives up is bounded: a revoked device that was itself paired
+    /// holds no signing key either way, so there is nothing for the rotation to
+    /// have retired. The case that genuinely needs it is revoking the creator.
+    #[test]
+    fn a_revocation_from_a_paired_device_cuts_the_keys_without_rotating_the_identity() {
+        let paired = Engine::from_clock(
+            Arc::new(FakeClock(PLMutex::new(T0))),
+            Arc::new(SystemRng),
+            Arc::new(Keychain::for_test_paired(
+                VaultRootKey::from_bytes(ROOT),
+                [1u8; 32],
+            )),
+        );
+        let victim = engine_random_keys(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let mut db = db_root(ROOT);
+        let victim_id = victim.keychain.device_id();
+        trust(&paired, &mut db, &victim);
+
+        paired
+            .apply(
+                &mut db,
+                Command::CreateTask(TaskDraft {
+                    title: "before the cut".into(),
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+        let head_before = paired.current_identity(db.conn()).unwrap().identity_id;
+        let sealed_before = envelopes_to(&paired, &db, &victim_id).len();
+
+        paired
+            .apply(
+                &mut db,
+                Command::RevokeDevice {
+                    device_id: EntityRef::new(EntityKind::Device, victim_id),
+                    reason: RevokeReason::Stolen,
+                },
+            )
+            .expect("a device with no signing key can still revoke");
+
+        assert!(
+            paired.is_revoked(db.conn(), &victim_id).unwrap(),
+            "the cut is recorded"
+        );
+        assert_eq!(
+            envelopes_to(&paired, &db, &victim_id).len(),
+            sealed_before,
+            "and the rotation sealed the new epochs to everyone except it"
+        );
+        assert_eq!(
+            paired.current_identity(db.conn()).unwrap().identity_id,
+            head_before,
+            "the identity did not move, because this device cannot sign a transition"
+        );
+
+        // ...and asking for the rotation on its own says so, rather than
+        // failing with something storage-shaped.
+        let err = paired
+            .apply(
+                &mut db,
+                Command::RotateIdentity {
+                    keep_recovery_code: true,
+                },
+            )
+            .expect_err("a paired device cannot rotate the account identity");
+        assert!(
+            matches!(&err, EngineError::Invalid(m) if m.contains("admitted by pairing")),
+            "expected a named refusal, got {err:?}"
+        );
+    }
+
     // ---- the verification rule (ADR-0032, #105) ----
 
     /// Build a complete, valid `identity_transition` from `emitter` onto a

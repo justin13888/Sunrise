@@ -210,8 +210,12 @@ struct AccountView: View {
     /// that was itself added by pairing holds only the public half, so the last
     /// leg of a pairing it sponsored could not be produced — better to say so on
     /// the button than after eight legs of copying.
+    ///
+    /// Read off the session rather than the bridge because the bridge is an
+    /// actor and this is a view body: ``SessionModel/canSponsorPairing`` is the
+    /// snapshot taken when the vault opened.
     private func canSponsor(_ session: SessionModel) -> Bool {
-        session.bridge?.canSponsorPairing() ?? false
+        session.bridge != nil && session.canSponsorPairing
     }
 
     private func makePairing(_ session: SessionModel) -> PairingModel {

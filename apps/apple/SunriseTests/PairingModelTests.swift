@@ -65,11 +65,11 @@ struct PairingModelTests {
         let holder = PairingModel(
             intent: .addAnotherDevice,
             sealOffer: sponsor.map { bridge in
-                { pairing in try bridge.sendPairingOffer(to: pairing) }
+                { pairing in try await bridge.sendPairingOffer(to: pairing) }
             },
             sealGrant: sponsor.map { bridge in
                 { pairing, request in
-                    try bridge.sendPairingGrant(to: pairing, request: request)
+                    try await bridge.sendPairingGrant(to: pairing, request: request)
                 }
             }
         )
@@ -304,8 +304,9 @@ struct PairingModelTests {
     @Test
     func aVaultThatCanSponsorSaysSoAndOneCreatedByPairingWouldNot() async throws {
         let vault = try await TestVault()
+        let canSponsor = await vault.bridge.canSponsorPairing()
         #expect(
-            vault.bridge.canSponsorPairing(),
+            canSponsor,
             "a vault opened without a pairing bundle created its own account, so it holds ID_S_priv"
         )
         await vault.bridge.shutdown()

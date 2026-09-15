@@ -2423,6 +2423,32 @@ impl Keychain {
         Self::for_test_inner(vault_root, signing_seed, false)
     }
 
+    /// A test keychain shaped like a device **admitted by pairing**: the same
+    /// account, the same device keys, and `ID_S_pub` instead of `ID_S`.
+    ///
+    /// Every other test keychain here is a founder, which is fine for the
+    /// engine's ordinary paths and wrong for the two that turn on who holds the
+    /// account's signing key — `revoke_device`'s rotation step and
+    /// `rotate_identity` itself. Without this they would only ever be exercised
+    /// on the one device in an account that can perform them.
+    ///
+    /// Its `cert_blob` is issued here under the real `ID_S_priv`, exactly as a
+    /// sponsor would have issued it, and then the key is dropped rather than
+    /// stored — which is the whole of what pairing does.
+    #[cfg(test)]
+    pub(crate) fn for_test_paired(vault_root: VaultRootKey, signing_seed: [u8; 32]) -> Self {
+        let kc = Self::for_test_inner(vault_root, signing_seed, false);
+        {
+            let mut state = kc.identity.lock();
+            let public = state.identity.signing.public_bytes();
+            state.identity.signing = IdentitySigningKey::PublicOnly(public);
+            // `#76`'s half of the same asymmetry, so the fixture is a device a
+            // pairing could actually have produced rather than a half of one.
+            state.identity.dh_secret = None;
+        }
+        kc
+    }
+
     #[cfg(test)]
     fn for_test_inner(
         vault_root: VaultRootKey,
@@ -4054,6 +4080,274 @@ mod tests {
         let kb =
             Keychain::open(&mut db2, root.clone(), &clock(), &SystemRng, Some(&payload)).unwrap();
         (root, da, ka, db2, kb)
+    }
+
+    /// **The #105 test.** A device admitted by pairing holds no `ID_S_priv`,
+    /// and cannot issue a `DeviceCert` for a fresh device id.
+    ///
+    /// This is the property the whole change exists for, and it is asserted
+    /// three ways that fail independently:
+    ///
+    /// 1. **Behaviourally**, which is what actually matters. `issue_cert_for`
+    ///    is the *only* way to produce a cert, and the paired device is handed
+    ///    exactly the arguments issue #105 describes — a device id it just
+    ///    minted, with keys it holds — and refused. The sponsor is handed the
+    ///    same arguments and succeeds, so the refusal is attributable to the
+    ///    absent key rather than to a malformed request.
+    /// 2. **At rest.** The paired vault's `identity` row stores an empty
+    ///    `id_s_priv_wrapped`, so there is no ciphertext a later build could
+    ///    decide to unwrap. A struct field is a fact about today's source; a
+    ///    zero-length column is a fact about the database.
+    /// 3. **Across a restart**, because the first two would both pass on a
+    ///    device that held the key in memory and simply declined to use it.
+    ///    Re-opening reconstructs the keychain from that row alone.
+    ///
+    /// Note what is *not* asserted: that the struct has no field. That would be
+    /// grepping the type, and the type can be changed by the same commit that
+    /// breaks the property.
+    #[test]
+    fn a_paired_device_cannot_issue_a_cert_for_a_fresh_device_id() {
+        let (root, da, sponsor, mut db2, paired) = paired_pair();
+
+        // The fresh device id a revoked device used to mint for itself: real
+        // keys, derived id, nothing forged about it.
+        let (fresh_signing, fresh_dh, fresh_id) = mint_device_keys(&SystemRng);
+
+        // 1. The sponsor can. This is the control, and it is what makes the
+        //    refusal below mean "no key" rather than "bad arguments".
+        let issued = sponsor
+            .issue_cert_for(
+                fresh_id,
+                fresh_signing.public_bytes(),
+                fresh_dh.public_bytes(),
+                "a fresh id",
+                "test",
+                1_700_000_002_000,
+            )
+            .expect("the account's creator holds ID_S_priv and can certify anything");
+        DeviceCert::from_cbor(&issued)
+            .unwrap()
+            .verify_binding(&sponsor.identity_signing_pub(), &sponsor.identity_id())
+            .expect("and what it produces is a genuinely valid cert");
+
+        // ...and the paired device cannot, for the same id and the same keys.
+        let err = paired
+            .issue_cert_for(
+                fresh_id,
+                fresh_signing.public_bytes(),
+                fresh_dh.public_bytes(),
+                "a fresh id",
+                "test",
+                1_700_000_002_000,
+            )
+            .expect_err("a paired device must not be able to certify anything");
+        assert!(matches!(err, KeychainError::IdentitySigningKeyAbsent));
+
+        // Nor can it speak for the account any other way. Both of these are
+        // signatures under `ID_S_priv` wearing different names.
+        assert!(!paired.can_rotate_identity());
+        assert!(matches!(
+            paired.issue_pairing_grant(
+                &sunrise_pairing::PairingRequest {
+                    device_id: fresh_id,
+                    d_s_pub: fresh_signing.public_bytes(),
+                    d_d_pub: fresh_dh.public_bytes(),
+                    identity_id: paired.identity_id(),
+                    nickname: "a fresh id".into(),
+                    platform: "test".into(),
+                },
+                1_700_000_002_000
+            ),
+            Err(KeychainError::IdentitySigningKeyAbsent)
+        ));
+        assert!(matches!(
+            paired.seal_recovery_blob(&[0x99; 32], &SystemRng),
+            Err(KeychainError::IdentitySecretAbsent | KeychainError::IdentitySigningKeyAbsent)
+        ));
+
+        // 2. At rest: no wrapped signing secret to unwrap, on the paired vault
+        //    and — the control again — one on the sponsor's.
+        let wrapped = |d: &Db| -> Vec<u8> {
+            d.conn()
+                .query_row(
+                    "SELECT id_s_priv_wrapped FROM identity WHERE id = 1",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap()
+        };
+        assert!(
+            wrapped(&db2).is_empty(),
+            "a paired vault must store no ciphertext of the account signing key"
+        );
+        assert!(
+            !wrapped(&da).is_empty(),
+            "the creator's vault does, or the assertion above is vacuous"
+        );
+
+        // 3. Across a restart, so this is not a keychain that holds the key and
+        //    declines to use it.
+        let reopened = open(&mut db2, &root);
+        assert!(!reopened.can_rotate_identity());
+        assert_eq!(
+            reopened.identity_signing_pub(),
+            sponsor.identity_signing_pub(),
+            "it still knows whose account it is — it just cannot sign for it"
+        );
+        assert!(matches!(
+            reopened.issue_cert_for(
+                fresh_id,
+                fresh_signing.public_bytes(),
+                fresh_dh.public_bytes(),
+                "a fresh id",
+                "test",
+                1_700_000_002_000,
+            ),
+            Err(KeychainError::IdentitySigningKeyAbsent)
+        ));
+    }
+
+    /// A payload whose cert does not name the keys beside it is refused at
+    /// `Keychain::create`, not at the first op the device tries to publish.
+    ///
+    /// `PairingGrant::accept` makes the same checks one crate over, and this is
+    /// not the same test: a `PairingPayload` reaches this function across a
+    /// *seam* — a `paired_bundle` from Swift, a file on disk — so it arrives
+    /// having been decoded rather than assembled, and the only thing standing
+    /// between "these bytes decoded" and "this device has a usable identity" is
+    /// the check here.
+    ///
+    /// Each mutation below is a different way for a grant to be wrong, and each
+    /// produces the same silent failure without the check: a vault that opens
+    /// fine and whose every op every peer refuses, because the cert it publishes
+    /// names a key it cannot sign with.
+    #[test]
+    fn a_payload_whose_cert_does_not_match_its_keys_is_refused_at_open() {
+        let root = VaultRootKey::from_bytes([0x73; 32]);
+        let mut da = db(&root);
+        let sponsor = open(&mut da, &root);
+        let honest = || {
+            sponsor
+                .pair_device_in_process(
+                    &da,
+                    "joiner".into(),
+                    "test".into(),
+                    [0x71; 32],
+                    [0x72; 32],
+                    1_700_000_000_000,
+                )
+                .unwrap()
+        };
+
+        // The control: the honest payload opens a vault.
+        let mut good_db = db(&root);
+        Keychain::open(
+            &mut good_db,
+            root.clone(),
+            &clock(),
+            &SystemRng,
+            Some(&honest()),
+        )
+        .expect("an honest grant opens the vault");
+
+        // A cert issued by a well-formed identity that is not this account's.
+        // It verifies against its own key, which is why the check has to name
+        // the identity rather than merely verify the signature.
+        let stranger = IdentitySigningKeyPair::from_secret_bytes(&[0x99; 32]);
+        let mut p = honest();
+        let cert = DeviceCert::from_cbor(&p.device_cert).unwrap();
+        let mut body = cert.body.clone();
+        body.identity_id = identity_id_from_pub(&stranger.public_bytes());
+        p.device_cert = DeviceCert::issue(body, &stranger)
+            .unwrap()
+            .to_cbor()
+            .unwrap();
+
+        // ...and a cert for a different device's keys, signed by the real
+        // account. This is the one a confused sponsor produces.
+        let other = DeviceSigningKeyPair::from_secret_bytes(&[0x51; 32]);
+        let mut q = honest();
+        q.d_s_priv = other.secret_bytes();
+
+        for (name, payload) in [("another identity", p), ("another device", q)] {
+            let mut d = db(&root);
+            let err = Keychain::open(&mut d, root.clone(), &clock(), &SystemRng, Some(&payload))
+                .expect_err("a mismatched grant must not open a vault");
+            assert!(
+                matches!(err, KeychainError::BadGrantCert(_)),
+                "expected a named refusal for {name}, got {err:?}"
+            );
+        }
+    }
+
+    /// A paired device is a **member** — it just cannot speak for the account.
+    ///
+    /// The other half of the test above, and the one that stops "cannot issue a
+    /// cert" from being achieved by breaking the pairing. Everything a device
+    /// is supposed to be able to do, it still does.
+    #[test]
+    fn a_paired_device_is_a_full_member_of_the_account_it_cannot_speak_for() {
+        // Built inline rather than from `paired_pair`, because this one needs a
+        // Stream key to exist *before* the pairing: a bare keychain mints none
+        // — `Core::open` is what mints the base epochs — so the fixture's
+        // grant would carry an empty map and the last assertion below would
+        // pass on nothing.
+        let root = VaultRootKey::from_bytes([0x72; 32]);
+        let mut da = db(&root);
+        let sponsor = open(&mut da, &root);
+        let sid = [0x5a_u8; 16];
+        da.with_tx(|tx| sponsor.mint_epoch(tx, &sid, &SystemRng, 0))
+            .expect("mint a stream key for the grant to carry");
+
+        let payload = sponsor
+            .pair_device_in_process(
+                &da,
+                "joiner".into(),
+                "test".into(),
+                [0x71; 32],
+                [0x72; 32],
+                1_700_000_000_000,
+            )
+            .expect("the creator can sponsor");
+        let mut db2 = db(&root);
+        let paired =
+            Keychain::open(&mut db2, root.clone(), &clock(), &SystemRng, Some(&payload)).unwrap();
+
+        assert_eq!(paired.identity_id(), sponsor.identity_id());
+        assert_eq!(
+            paired.identity_signing_pub(),
+            sponsor.identity_signing_pub()
+        );
+        assert_eq!(paired.identity_dh_pub(), sponsor.identity_dh_pub());
+        assert_eq!(
+            paired.genesis_pair(&db2).unwrap(),
+            sponsor.genesis_pair(&da).unwrap(),
+            "it folds the identity chain from the same anchor"
+        );
+        assert_ne!(
+            paired.device_id(),
+            sponsor.device_id(),
+            "with its own device id, minted here and never sent"
+        );
+
+        // Its cert was issued by the sponsor and verifies under the account.
+        let cert = DeviceCert::from_cbor(&paired.cert_blob()).expect("its cert parses");
+        cert.verify_binding(&sponsor.identity_signing_pub(), &sponsor.identity_id())
+            .expect("and is signed by the account identity, not by itself");
+        assert_eq!(cert.body.device_id, paired.device_id());
+        assert_eq!(cert.body.d_s_pub, paired.device_signing_pub());
+        assert_eq!(cert.body.d_d_pub, paired.device_dh_pub());
+        assert_eq!(
+            cert.body.nickname, "joiner",
+            "the labels it asked for, which the account signed"
+        );
+
+        // And it holds the keys it needs to read the account's history.
+        assert_eq!(paired.held_stream_keys(), sponsor.held_stream_keys());
+        assert!(
+            !paired.held_stream_keys().is_empty(),
+            "or the comparison above is vacuous"
+        );
     }
 
     #[test]
