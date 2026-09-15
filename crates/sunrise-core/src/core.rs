@@ -148,7 +148,7 @@ impl Core {
         // goes wrong when it does not.
         engine.prime_hlc(&db)?;
         // The account's base epochs are an invariant of a vault, not a fact
-        // about pairing. They used to be minted by `export_pairing_payload`,
+        // about pairing. They used to be minted by the pairing export,
         // because that is where their absence was first noticed: a payload is
         // built from the keys this device *holds*, and a vault that had never
         // been written to held none. Minting them there made opening a pairing
@@ -599,7 +599,7 @@ impl Core {
     /// It is no longer sufficient on its own. Since ADR-0024 the root keys the
     /// database and wraps secrets at rest, but it does not imply a single
     /// Stream key: those are random and travel in
-    /// [`Self::export_pairing_payload`]. A device handed only this opens a
+    /// [`Self::issue_pairing_grant`]. A device handed only this opens a
     /// vault it cannot read.
     #[must_use]
     pub fn export_vault_root_for_pairing(&self) -> sunrise_crypto::keys::VaultRootKey {
@@ -1186,7 +1186,7 @@ mod tests {
         }
     }
 
-    /// Every durable trace an `export_pairing_payload` could leave: the op
+    /// Every durable trace assembling a pairing could leave: the op
     /// log, the outbox, and the key rows.
     fn vault_footprint(core: &Core) -> (i64, i64, i64) {
         let db = core.db.lock();
@@ -1201,7 +1201,7 @@ mod tests {
 
     /// **Opening a pairing screen must not change the vault** (issue #106).
     ///
-    /// `export_pairing_payload` minted the account's base epochs for one
+    /// The pairing export minted the account's base epochs for one
     /// revision, which put `key_envelope` ops in the log and rows in the outbox
     /// — fanned out to every other device — for a user who might look at a QR
     /// code and close it. The epochs are now established at `Core::open`, so

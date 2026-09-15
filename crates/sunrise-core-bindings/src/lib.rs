@@ -245,13 +245,15 @@ impl SunriseCore {
     /// The root comes from the platform keychain or a completed pairing; this
     /// seam does not derive it.
     ///
-    /// `paired_bundle` is the sealed payload
-    /// [`DevicePairing::open_pairing_payload`](pairing::DevicePairing::open_pairing_payload)
-    /// returned, and is passed **once**, on the first open of a device that was
-    /// just added. It carries the account identity and the Stream keys, which
-    /// since ADR-0024 the vault root no longer implies: keys are random, not
-    /// derived, so a device handed only a root would open an empty-looking
-    /// vault full of ciphertext it could never read.
+    /// `paired_bundle` is what
+    /// [`DevicePairing::open_pairing_grant`](pairing::DevicePairing::open_pairing_grant)
+    /// assembled out of a completed three-message exchange, and is passed
+    /// **once**, on the first open of a device that was just added. It carries
+    /// the account's public identity, the Stream keys — which since ADR-0024
+    /// the vault root no longer implies, so a device handed only a root would
+    /// open an empty-looking vault full of ciphertext it could never read —
+    /// and this device's own keys with the `DeviceCert` its sponsor signed over
+    /// them.
     ///
     /// It defaults to `None`, so every existing Swift call site keeps
     /// compiling and keeps meaning what it meant.

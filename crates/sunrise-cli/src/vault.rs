@@ -49,11 +49,16 @@
 //! # Sharing a root on purpose
 //!
 //! Two vaults that *should* share a root — one account on two devices — is
-//! pairing, and pairing over the wire is a later slice. [`ENV_VAULT_ROOT`] is
-//! the stand-in, in exactly the spirit of `SUNRISE_PAIRING_FILE`: an
-//! explicit, documented dev affordance that says "use this root", replacing an
-//! implicit constant that said it for you. It is also the escape hatch for a
-//! vault made before this existed — see [`VaultError::PreMultiAccount`].
+//! pairing, and [`crate::pair`] is how it is done: `sunrise pair accept` calls
+//! [`adopt`] with the root that arrived inside a pairing grant, which is the
+//! one path here that keys a directory with a root it did not generate.
+//!
+//! [`ENV_VAULT_ROOT`] is not that. It is an explicit, documented dev affordance
+//! that says "use this root" — replacing an implicit constant that said it for
+//! you — and it makes two vaults share an at-rest key without making them one
+//! *account*: each still mints its own identity, so neither can read the
+//! other's ops. It is also the escape hatch for a vault made before this
+//! existed — see [`VaultError::PreMultiAccount`].
 
 use std::path::{Path, PathBuf};
 

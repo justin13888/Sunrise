@@ -165,13 +165,10 @@ ENVIRONMENT:
                               against a self-host relay
     SUNRISE_OIDC_ISSUER       OIDC issuer URL, for `sunrise login`
     SUNRISE_OIDC_CLIENT_ID    OIDC client id, for `sunrise login`
-    SUNRISE_EXPORT_PAIRING_FILE
-                              write this vault's pairing payload here on
-                              startup, for another vault to join it
-    SUNRISE_PAIRING_FILE      join the account in the payload at this path.
-                              Read before the vault opens, and only a vault
-                              being created can act on it
     SUNRISE_LOG_FILE          override the NDJSON log destination
+
+  Joining an account is `sunrise pair`, not a variable. The two that used to do
+  it carried the account's signing key in one file; see `sunrise pair`.
 ";
 
 /// Returns [`std::process::ExitCode`] rather than a `Result`, because the
