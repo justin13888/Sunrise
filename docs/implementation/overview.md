@@ -36,12 +36,13 @@ and a crate can be reachable while a capability inside it is not.
 
 | Crate / Component | Status | Notes |
 |---|---|---|
-| Workspace + CI | ✅ live | Cargo + Bun workspace, 23 crates; `legacy/` archived and excluded. CI runs the Rust gates, a `macos-app` job on `macos-26`, the reachability gate (`.github/scripts/orphan-crate-gate.py`), and a nightly bench comparison; `release.yml` publishes a tag-driven GitHub Release and a GHCR image ([#17](https://github.com/justin13888/Sunrise/issues/17)) |
+| Workspace + CI | ✅ live | Cargo + Bun workspace, 24 crates; `legacy/` archived and excluded. CI runs the Rust gates, a `macos-app` job on `macos-26`, the reachability gate (`.github/scripts/orphan-crate-gate.py`), and a nightly bench comparison; `release.yml` publishes a tag-driven GitHub Release and a GHCR image ([#17](https://github.com/justin13888/Sunrise/issues/17)) |
 | `sunrise-id` | ✅ live | ULID + `EntityRef`, all twelve prefixes (`fcs_` for focus sessions and `rvw_` for review snapshots), client-side generation |
 | `sunrise-error` | ✅ live | Error registry, `Recoverability`. TS mirror (`packages/sunrise-error-ts`) does not exist |
 | `sunrise-cbor` | ✅ live | Canonical CBOR, magic prefixes |
 | `sunrise-crypto` | ✅ live | Ed25519 / X25519 / XChaCha20-Poly1305 / BLAKE3 / Argon2id; byte-exact `OpEnvelope` |
 | `sunrise-crypto-test-vectors` | ✅ live | Dependency-free frozen literals — identity-id, BLAKE3 KDF, stream Merkle roots, and byte-exact `aead_alg=0`/`aead_alg=1` envelope encodings — asserted by `sunrise-crypto/tests/frozen_vectors.rs`, which dev-depends on it |
+| `sunrise-test-seed` | ✅ live | The workspace's single reader of `SUNRISE_FUZZ_SEED`. One parser, one precedence rule (`PROPTEST_RNG_SEED` → `SUNRISE_FUZZ_SEED` → a per-process random seed) and one announcement, plumbed into `ProptestConfig::rng_seed` by all eight `proptest!` blocks and into the chaos harness by `Toxic::new`. Exempt from the reachability gate for the same reason `sunrise-crypto-test-vectors` is ([#119](https://github.com/justin13888/Sunrise/issues/119)) |
 | `sunrise-domain` | 🟨 partial | Task / Stream / Routine / Context / FocusSession / ReviewSnapshot are complete, as are the capture parser, dependency graph, scheduling constraints, streaks, review/stats folds, export, the `note_body` block-grammar codec, the `notify` reminder planner, `import`'s stable `(source, uid)` → Block id hash, and the `sort_order` base-26 fractional index that gives `Stream.sort_order` its arithmetic. `Block` (6 commands, 3 op kinds, 4 queries) and `Attachment` (2 commands, 2 op kinds, `Query::TaskAttachments`) have full command paths: Block is now reachable from **both** clients (macOS calendar grid; CLI via `ical import` / `ical export`), Attachment from macOS only. `Note` and `Person` are the two entities that genuinely have no path: a struct and a dead table, with nothing in between |
 | `sunrise-storage` | 🟨 partial | Schema, op log and FTS5 are solid. `BlobStore` has two external consumers (`sunrise-core::attach`, `sunrise-server::api::blobs`), so it is reachable from the macOS client. **2** tables are never written — `notes` and `persons`, matching the two entities with no command path. The migration list is `0013_baseline.sql` per [ADR-0018](../11-adr/0018-storage-baseline-reset.md) and every append since; this page does not count them or name `STORAGE_V`'s value, because both move with each migration and both were wrong here through four of them. `crates/sunrise-cbor/src/version.rs` holds the constant and a unit test pins it to the list. The appends began with `0014_stream_sort_order.sql`, the first migration appended after that reset and the one that gives `streams` a real `sort_order` column instead of a synthesized `"a0"`; then `0015_entity_extra_columns.sql`, which gives `streams`, `contexts`, `routines`, `focus_sessions` and `focus_session_ends` the `extra BLOB` that only `tasks`, `blocks` and `attachments` had, so forward-compat unknowns stop being dropped at the projection on five of the nine column-projected entities; then `0016_stream_description_and_default_context.sql`, which gives `Stream.description` and `Stream.default_context` the columns their CDDL always declared — `description` was accepted by the command surface, carried in the op, and then erased on every replica by the next update, because nothing could materialize it. It backfills in the order the sidebar was already displaying (`name COLLATE NOCASE, stream_id`), so no existing vault rearranges itself on upgrade. `BASELINE_STORAGE_V` stays **13**: `db.rs` refuses any vault stamped below it with a typed `STORAGE_V_PRE_BASELINE`, and `refuses_every_pre_baseline_version` asserts that for every version below it |
 | `sunrise-wire-protocol` | ✅ live | 11-byte frame, 15 msg kinds, `Hello`/`HelloAck`, capability negotiation. zstd is implemented but never enabled at any call site |
@@ -82,9 +83,10 @@ tables stay in the frozen baseline schema and stay unwritten, on purpose.
 
 `.github/scripts/orphan-crate-gate.py` enforces the criterion this file is
 built on, and it is **clean**: roots `sunrise-cli`, `sunrise-core-bindings` and
-`sunrise-server`; **20 of 23 crates reachable**; the three that are not are the
+`sunrise-server`; **20 of 24 crates reachable**; the four that are not are the
 permanently exempt harnesses (`sunrise-bench`, `sunrise-e2e`,
-`sunrise-crypto-test-vectors`), whose correct shape is to have no dependents.
+`sunrise-crypto-test-vectors`, `sunrise-test-seed`), whose correct shape is to
+have no dependents.
 
 **The QUARANTINE list is now empty.** Its only entry was `sunrise-integrations`,
 parked against issue #4; wiring iCal into both clients lifted it out. The gate's
@@ -454,7 +456,7 @@ All figures below were **measured on the v1 rewrite line, now merged to
 | `mise run rust-clippy` | clean (pedantic, `-D warnings`) |
 | `cargo deny check` | clean |
 | `mise run validate` | clean (no TS tests exist yet) |
-| `mise run orphan-crates` | clean — 20/23 reachable, QUARANTINE empty |
+| `mise run orphan-crates` | clean — 20/24 reachable, QUARANTINE empty |
 
 The 3 ignored are the `#[ignore]`d child-process bodies the vault-lock crash
 tests spawn; they are executed, as subprocesses, by the tests that `SIGKILL`

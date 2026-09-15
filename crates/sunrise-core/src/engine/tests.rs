@@ -8574,7 +8574,10 @@ proptest::proptest! {
 proptest::proptest! {
     // Each case builds two engines and two databases and delivers up to 18
     // envelopes, so the case count is deliberately low.
-    #![proptest_config(proptest::prelude::ProptestConfig::with_cases(24))]
+    #![proptest_config(proptest::prelude::ProptestConfig {
+        rng_seed: sunrise_test_seed::proptest_rng_seed(),
+        ..proptest::prelude::ProptestConfig::with_cases(24)
+    })]
 
     /// `docs/05-sync/wire-protocol.md:447-453` calls the contiguous-prefix
     /// cursor "a correctness invariant": a `MAX(seq)` cursor "converts an
@@ -9691,7 +9694,10 @@ fn deterministic_routine_task_converges() {
 }
 
 proptest::proptest! {
-    #![proptest_config(proptest::prelude::ProptestConfig::with_cases(32))]
+    #![proptest_config(proptest::prelude::ProptestConfig {
+        rng_seed: sunrise_test_seed::proptest_rng_seed(),
+        ..proptest::prelude::ProptestConfig::with_cases(32)
+    })]
 
     /// Two mutually-trusting engines run random interleaved command streams
     /// on their own DBs; exchanging ALL envelopes both ways (with reordering

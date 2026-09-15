@@ -24,5 +24,6 @@ jiff = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
+sunrise-test-seed = { workspace = true }
 serde_json = { workspace = true }
 jsonschema = { workspace = true }

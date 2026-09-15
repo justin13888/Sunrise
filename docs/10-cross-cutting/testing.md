@@ -59,8 +59,20 @@ replaced with a gate everywhere else.
 #### Convergence property-test determinism
 
 - **Library**: `proptest` (Rust) — a real dependency used by the property tests. Wire-bytes coverage beyond what proptest reaches comes from the `cargo-fuzz` binaries in `fuzz/` — see [Continuous fuzz targets](#continuous-fuzz-targets) for the target set, the seed corpus and the CI shape, rather than restating them here. The division of labour is the point: a property test generates *valid* structures, a fuzzer generates arbitrary bytes, and the first crash the `rrule` target found was an `INTERVAL` value the property test's `1u32..=3` strategy could never draw.
-- **Reproducing a failure**: proptest's own persistence file. When a property test finds a counterexample it writes the case to disk and replays it on every later run, and that is the only reproduction mechanism any property test in this workspace has. **`SUNRISE_FUZZ_SEED` is not one of them** — no proptest reads it and no suite logs a resolved seed, so exporting it changes nothing here. It is the chaos harness's convention and is documented under [Network / chaos tests](#5-network--chaos-tests), where it is implemented and tested. Where those files land is settled in [§2](#2-property-tests-thinner-deep): a `tests/` proptest names its own path under `proptest-regressions/tests/`, the files are tracked rather than ignored, and a flat `<name>.proptest-regressions` beside a test file is the visible symptom of a proptest that forgot to say so.
-- **Specified, not built:** one seed convention across both harnesses. The earlier text of this bullet asked every property test to read `SUNRISE_FUZZ_SEED` (hex), to fall back to the first 8 bytes of the workspace `HEAD` hash, and to log the resolved seed in a suite header. Nothing does. Plumbing a resolved seed into `ProptestConfig`'s RNG and logging it would make the sentence true everywhere and leave one reproduction story instead of two; it does not remove the need for the persistence file, because the shrinker still replays a *specific* minimal case. Tracked in [#119](https://github.com/justin13888/Sunrise/issues/119).
+- **Reproducing a failure**: two mechanisms, and they answer different questions. proptest's own **persistence file** replays the shrunken counterexample — the specific minimal case a failing CI run hands you, which no seed can regenerate once a strategy changes. **`SUNRISE_FUZZ_SEED`** replays the *run*: the same cases, in the same order. Where the persistence files land is settled in [§2](#2-property-tests-thinner-deep): a `tests/` proptest names its own path under `proptest-regressions/tests/`, the files are tracked rather than ignored, and a flat `<name>.proptest-regressions` beside a test file is the visible symptom of a proptest that forgot to say so.
+- **Seed**: `crates/sunrise-test-seed` is the workspace's single reader of `SUNRISE_FUZZ_SEED`, and every `proptest!` block plumbs its answer into `ProptestConfig::rng_seed`:
+
+    ```rust
+    rng_seed: sunrise_test_seed::proptest_rng_seed(),
+    ```
+
+  Precedence is proptest's own `PROPTEST_RNG_SEED` first (its dial must keep working), then `SUNRISE_FUZZ_SEED`, then a fresh random seed drawn once for the process. The last of those is proptest's own default behaviour and is kept deliberately: pinning a constant would mean every CI run forever explores the same cases out of an infinite space. What changes is that the seed is no longer secret — every configured block **announces** the resolved value on stderr, which `cargo test` shows you for exactly the tests that failed:
+
+    ```text
+    proptest: RNG seed 0x00000000deadbeef — reproduce with SUNRISE_FUZZ_SEED=0x00000000deadbeef
+    ```
+
+  The chaos harness announces through the same function, so one grep over a CI log finds the reproduction for either half of the suite. This does not remove the need for the persistence file: a seed reproduces the run, the file replays the minimal case. Closed [#119](https://github.com/justin13888/Sunrise/issues/119).
 - **Volume**: 1 000 random op sequences per CI run; release branches run 100 000 nightly.
 - **Assertion**: for every permutation of the same op set across N simulated devices, the final state is byte-identical (canonical CBOR comparison).
 
@@ -85,7 +97,7 @@ replaced with a gate everywhere else.
 - Toxic-proxy between client and server: drop packets, corrupt bytes, delay, partition.
 - Verify clients converge once the partition heals.
 - Verify integrity warnings fire on tampered envelopes.
-- **Seed**: the harness's RNG seed comes from `SUNRISE_FUZZ_SEED` when set — hex, a leading `0x` forcing hex, and a plain decimal also accepted — and otherwise from the fixed `DEFAULT_FUZZ_SEED` (`0x5352_5f43_4841_4f53`, "SR_CHAOS"), so a run reproduces out of the box without reading git state. `seed_from_env` in `crates/sunrise-e2e/src/chaos/toxic.rs` is the reader, and its unit tests cover hex, `0x`, decimal and absence; `crates/sunrise-e2e/tests/chaos.rs` xors the resolved value with a per-scenario tag so two scenarios never draw the same stream. **This is the only consumer of the variable in the workspace** — it is a chaos-harness convention, not a property-test one.
+- **Seed**: the harness's RNG seed comes from `SUNRISE_FUZZ_SEED` when set — hex, a leading `0x` forcing hex, and a plain decimal also accepted — and otherwise from the fixed `DEFAULT_FUZZ_SEED` (`0x5352_5f43_4841_4f53`, "SR_CHAOS"), so a chaos run reproduces out of the box without reading git state. `sunrise_test_seed::seed_from_env` is the reader, re-exported on `sunrise_e2e::chaos` where callers already name it, and its unit tests cover hex, `0x`, decimal and absence; `crates/sunrise-e2e/tests/chaos.rs` xors the resolved value with a per-scenario tag so two scenarios never draw the same stream, and `Toxic::new` announces the base value. **The variable is workspace-wide** — the property tests read the same one (see [§2](#convergence-property-test-determinism)) — but the two harnesses fall back differently when it is unset, because a chaos run wants the same fault schedule twice and a property run wants a wider search.
 
 ### 6. Performance tests
 
@@ -350,8 +362,9 @@ mise run fuzz op_envelope 3600      # one target, one hour
 
 `SUNRISE_FUZZ_TOOLCHAIN` pins the nightly when a run has to be reproducible;
 `SUNRISE_FUZZ_SECONDS` raises the smoke budget. Neither is
-[`SUNRISE_FUZZ_SEED`](#5-network--chaos-tests), which remains the chaos
-harness's variable and its only consumer in the workspace.
+[`SUNRISE_FUZZ_SEED`](#5-network--chaos-tests), which seeds the chaos harness
+and the property tests. `cargo-fuzz` keeps its own corpus and its own `-seed=`
+flag and reads none of the three.
 
 Being a separate workspace means every gate has to name the manifest to reach
 it, and three now do. `mise run rust-fmt-check`, `mise run rust-clippy` and

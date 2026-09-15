@@ -114,6 +114,7 @@ proptest! {
     // docs/10-cross-cutting/testing.md section 2.
     #![proptest_config(ProptestConfig {
         cases: 256,
+        rng_seed: sunrise_test_seed::proptest_rng_seed(),
         failure_persistence: Some(Box::new(
             proptest::test_runner::FileFailurePersistence::Direct(
                 "proptest-regressions/tests/redaction.txt",

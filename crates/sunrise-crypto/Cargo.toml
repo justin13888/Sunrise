@@ -37,3 +37,4 @@ hex = { workspace = true }
 proptest = { workspace = true }
 rand_chacha = { workspace = true }
 sunrise-crypto-test-vectors = { workspace = true }
+sunrise-test-seed = { workspace = true }

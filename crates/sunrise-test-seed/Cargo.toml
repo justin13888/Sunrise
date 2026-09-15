@@ -1,0 +1,23 @@
+[package]
+name = "sunrise-test-seed"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+description = "The SUNRISE_FUZZ_SEED convention: one resolved seed for every randomised harness in the workspace"
+
+[lints]
+workspace = true
+
+# `proptest` only, and only so that `proptest_rng_seed` can hand back a
+# `ProptestConfig::rng_seed` rather than a `u64` the six call sites would each
+# have to wrap. Everything else here is `std`: the entropy fallback is
+# `RandomState`, deliberately not `rand`, because `rand::random` and
+# `rand::rng` are on clippy.toml's deny list and on the `determinism` grep gate
+# that backstops it, and a seed source is exactly the ambient randomness those
+# rules exist to keep out of shipping code. This crate ships to nobody.
+[dependencies]
+proptest = { workspace = true }
