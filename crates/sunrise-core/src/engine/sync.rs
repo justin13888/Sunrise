@@ -1317,6 +1317,49 @@ impl Engine {
                     return Ok(Vec::new());
                 }
 
+                // The **successor** signature, checked here rather than left
+                // entirely to the fold.
+                //
+                // `prev_sig` cannot be checked at this point — the predecessor
+                // is whatever the chain turns out to say, and that is decided
+                // later — but `next_sig` can: every input to it is in this
+                // payload. Without this, the row below is occupiable by anyone.
+                // Applying is unconditional and the row is keyed on
+                // `to_identity_id`, so an observer could take an honest
+                // transition off the wire, substitute its roster or shares, and
+                // publish it first; `INSERT OR IGNORE` would then discard the
+                // honest copy for good. The forged row never *verifies* — the
+                // recomputed digests do not match the signed body, so the fold
+                // refuses the link — but it is never replaced either, and the
+                // account is stuck. A revoked device could keep itself in every
+                // peer's view of the roster by suppressing its own removal.
+                //
+                // Establishing that whoever wrote this payload held the
+                // successor's `ID_S_priv` is what closes that, and it costs one
+                // Ed25519 verification on an op this replica has already
+                // decrypted.
+                let body = sunrise_crypto::IdentityTransitionBody {
+                    from_identity_id: p.from_identity_id,
+                    to_identity_id: p.to_identity_id,
+                    to_id_s_pub: p.to_id_s_pub,
+                    to_id_d_pub: p.to_id_d_pub,
+                    roster_digest,
+                    shares_digest,
+                };
+                let sigs = sunrise_crypto::IdentityTransitionSigs {
+                    prev_sig: p.prev_sig,
+                    next_sig: p.next_sig,
+                };
+                if sunrise_crypto::verify_successor_signature(&body, &sigs).is_err() {
+                    tracing::warn!(
+                        ev = "core.identity.transition_rejected",
+                        reason = "successor_sig",
+                        sender_h = hex_short(sender),
+                        "an identity transition is not signed by the successor it names"
+                    );
+                    return Ok(Vec::new());
+                }
+
                 let Ok(payload) = encode_inner_op(inner) else {
                     return Ok(Vec::new());
                 };

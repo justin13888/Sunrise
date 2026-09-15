@@ -6454,28 +6454,81 @@ fn a_malformed_transition_is_dropped_and_moves_nothing() {
     }
 }
 
+/// A whole, genuinely signed transition belonging to **another account**.
+///
+/// Built from `sunrise_crypto` directly rather than from a keychain, because
+/// every engine a test can construct shares this vault root and therefore this
+/// account's identity — a stranger needs a predecessor key no keychain here
+/// holds. The shares are the right width and nothing else: the apply path
+/// recomputes their digest and never opens them, and what this fixture is for
+/// is the path, not the payload.
+fn stranger_transition(for_device: &Engine, now_ms: u64) -> InnerOp {
+    use sunrise_crypto::keys::{IdentityDhKeyPair, IdentitySigningKeyPair};
+    use sunrise_crypto::{DeviceCertInner, DEVICE_SHARE_LEN};
+
+    let from = IdentitySigningKeyPair::from_secret_bytes(&[0x5e; 32]);
+    let to = IdentitySigningKeyPair::from_secret_bytes(&[0x7a; 32]);
+    let to_dh = IdentityDhKeyPair::from_secret_bytes([0x7b; 32]);
+    let to_identity_id = sunrise_crypto::identity_id_from_pub(&to.public_bytes());
+
+    let cert = DeviceCert::issue(
+        DeviceCertInner {
+            v: 1,
+            device_id: for_device.keychain.device_id(),
+            d_s_pub: for_device.keychain.device_signing_pub(),
+            d_d_pub: for_device.keychain.device_dh_pub(),
+            identity_id: to_identity_id,
+            created_at_ms: now_ms,
+            nickname: "stranger".into(),
+            platform: "test".into(),
+        },
+        &to,
+    )
+    .expect("issue the stranger's roster cert")
+    .to_cbor()
+    .expect("cbor");
+
+    let share = vec![0x11u8; DEVICE_SHARE_LEN];
+    let body = sunrise_crypto::IdentityTransitionBody {
+        from_identity_id: sunrise_crypto::identity_id_from_pub(&from.public_bytes()),
+        to_identity_id,
+        to_id_s_pub: to.public_bytes(),
+        to_id_d_pub: to_dh.public_bytes(),
+        roster_digest: sunrise_crypto::roster_digest(std::slice::from_ref(&cert))
+            .expect("roster digest"),
+        shares_digest: sunrise_crypto::shares_digest(
+            &[(for_device.keychain.device_id(), share.as_slice())],
+            None,
+        )
+        .expect("shares digest"),
+    };
+    let sigs = sunrise_crypto::sign_identity_transition(&body, &from, &to).expect("sign");
+    InnerOp::IdentityTransition(Box::new(IdentityTransitionPayload {
+        from_identity_id: body.from_identity_id,
+        to_identity_id: body.to_identity_id,
+        to_id_s_pub: body.to_id_s_pub,
+        to_id_d_pub: body.to_id_d_pub,
+        roster: vec![RosterEntry { cert }],
+        device_shares: vec![KeyShare {
+            device_id: for_device.keychain.device_id(),
+            hpke_ciphertext: share,
+        }],
+        identity_share: None,
+        prev_sig: sigs.prev_sig,
+        next_sig: sigs.next_sig,
+    }))
+}
+
 /// A transition signed by somebody who is not the predecessor is stored —
 /// applying is unconditional — and is never a link, because the fold checks
 /// `prev_sig` under the identity it actually claims to succeed.
 #[test]
 fn a_transition_from_a_stranger_is_stored_and_never_folded() {
     let ea = engine_random_keys(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
-    // A second account: same vault root, a different identity seed is not
-    // available through `for_test`, so the stranger is built by rewriting
-    // the body's predecessor to an id this account never had.
-    let eb = engine_random_keys(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
     let mut dba = db_root(ROOT);
-    trust(&ea, &mut dba, &eb);
     let head = ea.current_identity(dba.conn()).unwrap().identity_id;
 
-    let (inner, _) = build_transition(&ea, &[&eb], true, T0);
-    let InnerOp::IdentityTransition(mut p) = inner else {
-        unreachable!()
-    };
-    // The signatures were taken over the real predecessor; naming another
-    // one leaves `prev_sig` covering a body that no longer exists.
-    p.from_identity_id = [0x5e; 16];
-    let inner = InnerOp::IdentityTransition(p);
+    let inner = stranger_transition(&ea, T0);
     apply_control_at(
         &ea,
         &mut dba,
@@ -6497,6 +6550,88 @@ fn a_transition_from_a_stranger_is_stored_and_never_folded() {
         head,
         "and it extends nothing: it does not succeed this account's head"
     );
+}
+
+/// **A body edited after it was signed never reaches the table.**
+///
+/// The row is keyed on `to_identity_id` and written with `INSERT OR IGNORE`, so
+/// whichever copy of a transition arrives first owns that key for good. Before
+/// the successor signature was checked here, anyone who saw an honest
+/// transition could re-publish it with the roster or the shares substituted and
+/// take the key: the forged row never verifies at fold time, so it is never
+/// *believed* — but it is never *replaced* either, and the honest rotation can
+/// then never be recorded on that replica. A revoked device could suppress its
+/// own removal from every peer's view that way.
+///
+/// `next_sig` is checkable without knowing the predecessor, which is what makes
+/// the check possible this early. Here the tamper is on `from_identity_id`, so
+/// the same `body_hash` no longer exists and neither signature covers what
+/// arrived.
+#[test]
+fn a_transition_edited_after_signing_is_refused_rather_than_stored() {
+    let ea = engine_random_keys(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eb = engine_random_keys(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut dba = db_root(ROOT);
+    trust(&ea, &mut dba, &eb);
+
+    let (inner, _) = build_transition(&ea, &[&eb], true, T0);
+    let InnerOp::IdentityTransition(mut p) = inner else {
+        unreachable!()
+    };
+    p.from_identity_id = [0x5e; 16];
+    apply_control_at(
+        &ea,
+        &mut dba,
+        &InnerOp::IdentityTransition(p),
+        &ea.keychain.device_id(),
+        Hlc::at(T0),
+        1,
+    );
+
+    let n: i64 = dba
+        .conn()
+        .query_row("SELECT count(*) FROM identity_transitions", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(n, 0, "an altered body does not get to occupy the key");
+}
+
+/// The same, with the tamper on the part an attacker actually wants to change.
+///
+/// Substituting the roster is the whole point of taking the key: it is what
+/// decides who lands on the successor identity. The recomputed digest then
+/// differs from the signed one, so the body differs, so `next_sig` does not
+/// verify — without needing to know the predecessor at all.
+#[test]
+fn a_transition_whose_roster_was_substituted_is_refused_rather_than_stored() {
+    let ea = engine_random_keys(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eb = engine_random_keys(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut dba = db_root(ROOT);
+    trust(&ea, &mut dba, &eb);
+
+    let (inner, _) = build_transition(&ea, &[&ea, &eb], true, T0);
+    let InnerOp::IdentityTransition(mut p) = inner else {
+        unreachable!()
+    };
+    assert_eq!(p.roster.len(), 2, "the honest roster carries both devices");
+    p.roster.truncate(1);
+    apply_control_at(
+        &ea,
+        &mut dba,
+        &InnerOp::IdentityTransition(p),
+        &ea.keychain.device_id(),
+        Hlc::at(T0),
+        1,
+    );
+
+    let n: i64 = dba
+        .conn()
+        .query_row("SELECT count(*) FROM identity_transitions", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(n, 0, "a roster the successor did not sign is not stored");
 }
 
 /// A vault that has taken no transition has a one-link chain, and the head

@@ -406,6 +406,55 @@ pub fn verify_identity_transition(
     Ok(())
 }
 
+/// Verify the **successor** signature alone, without knowing the predecessor.
+///
+/// `next_sig` is taken under `to_id_s_priv`, and every input to it —
+/// `body_hash` and `prev_sig` — is reconstructible from a transition payload on
+/// its own. So a reader that has not yet established the predecessor, and
+/// therefore cannot check `prev_sig`, can still establish that **whoever
+/// authored this payload held the successor's identity key**.
+///
+/// That is what an apply path needs. Applying is unconditional by design — a
+/// replica records the op and decides later, when the chain is folded, whether
+/// it is the account's — and the row is keyed on `to_identity_id`. Without this
+/// check, anyone could take an honest transition off the wire, substitute the
+/// roster or the shares, and publish it first: the substituted copy occupies
+/// the key, the honest one is `INSERT OR IGNORE`d away, and the rotation can
+/// never be recorded on that replica. The forged row fails
+/// [`verify_identity_transition`] at fold time and is never *believed* — but it
+/// is never *replaced* either, so the account is simply stuck, and a revoked
+/// device could keep itself in the roster of every peer's view by suppressing
+/// its own removal.
+///
+/// This does not replace [`verify_identity_transition`]. It establishes one of
+/// its two signatures; the chain is what establishes the other, and only that
+/// says the transition is *this account's*.
+///
+/// # Errors
+/// [`IdentityTransitionError::ToIdentityMismatch`] if `to_identity_id` is not
+/// the derivation of `to_id_s_pub`, [`IdentityTransitionError::Cbor`] if the
+/// body will not encode, and [`IdentityTransitionError::NextSigVerify`] if the
+/// successor signature does not verify.
+pub fn verify_successor_signature(
+    body: &IdentityTransitionBody,
+    sigs: &IdentityTransitionSigs,
+) -> Result<(), IdentityTransitionError> {
+    let to_derived = identity_id_from_pub(&body.to_id_s_pub);
+    let to_ok: bool = to_derived.ct_eq(&body.to_identity_id).into();
+    if !to_ok {
+        return Err(IdentityTransitionError::ToIdentityMismatch);
+    }
+    let hash = body_hash(body)?;
+    if !verify_ed25519(
+        &body.to_id_s_pub,
+        &next_sig_input(&hash, &sigs.prev_sig),
+        &sigs.next_sig,
+    ) {
+        return Err(IdentityTransitionError::NextSigVerify);
+    }
+    Ok(())
+}
+
 /// Both ids are derivations of the keys they name, and the two differ.
 ///
 /// Constant-time comparison for the same reason
