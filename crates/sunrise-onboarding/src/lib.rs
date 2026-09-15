@@ -12,7 +12,7 @@ pub mod account;
 pub mod recovery;
 
 pub use account::{
-    decode_recovery_blob, encode_public_key, encode_recovery_blob, AccountCreateRequest,
-    AccountInfo,
+    decode_public_key, decode_recovery_blob, encode_public_key, encode_recovery_blob,
+    AccountCreateRequest, AccountInfo, PublicKeyError,
 };
 pub use recovery::{recover_identity, recover_identity_from_code, RecoveryFlowError};

@@ -3144,3 +3144,32 @@ impl From<&sunrise_domain::TaskDraft> for TaskDraftIn {
         }
     }
 }
+
+/// What publishing a vault to the relay established, and the recovery code
+/// that goes with it.
+///
+/// The return of [`crate::SunriseCore::bootstrap_account`], which is the Apple
+/// clients' `sunrise bootstrap`.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct AccountBootstrap {
+    /// The relay's id for this account.
+    pub identity_id: String,
+    /// The normalized email the relay recorded, which the identity provider
+    /// owns and this value reports rather than sets.
+    pub email: String,
+    /// The id the relay assigned this device. Every later request names it.
+    pub device_id: String,
+    /// The twenty-four words, or `None` on a device admitted by pairing.
+    ///
+    /// **Shown once and never stored.** `sunrise-cli`'s `print_recovery_code`
+    /// records why in full: a copy this process saved would be a copy an
+    /// attacker reaching the machine also has, while doing nothing for the user
+    /// who loses the machine. The Swift side must put this on screen and let it
+    /// go — not into a file, not into a log, not into a pasteboard that
+    /// outlives the screen.
+    ///
+    /// `None` is not a failure. It means this device holds no `ID_D_priv`, so
+    /// it cannot seal a blob; the device that created the account is the one
+    /// that can, and it already did.
+    pub recovery_code: Option<String>,
+}

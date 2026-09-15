@@ -73,10 +73,12 @@ mod rows;
 
 use crate::config::{Clock, Rng};
 use crate::engine::hex_short;
+use crate::unlock::IdentitySeed;
 use parking_lot::Mutex;
 use rusqlite::{params, OptionalExtension};
 use std::collections::{BTreeMap, HashMap};
 use sunrise_crypto::aead::AEAD_NONCE_LEN;
+use sunrise_crypto::blake3_kdf::derive_key_32;
 use sunrise_crypto::op_envelope::open_envelope;
 use sunrise_crypto::{
     decode_envelope, encode_envelope, hpke_open, hpke_open_identity, hpke_seal,
@@ -106,6 +108,17 @@ use rows::{
 use crypto::wrap_secret;
 #[cfg(test)]
 use sunrise_crypto::{stream_key_id, DeviceCert, DeviceCertInner};
+
+/// The first epoch of any stream. Named because the vault-meta stream's
+/// genesis is the one epoch in this hierarchy that is derived rather than
+/// drawn — see [`Keychain::meta_genesis_key`].
+const GENESIS_EPOCH: u32 = 1;
+
+/// BLAKE3 `derive_key` context for the vault-meta stream's genesis key.
+///
+/// Versioned like every other context string in the tree, so a future change
+/// to the derivation is a new key rather than a silently different one.
+const META_GENESIS_CONTEXT: &str = "sunrise.meta_genesis_key.v1";
 
 /// Where a Stream key came from. Recorded for forensics, never for policy: a
 /// key opens an op or it does not, whichever route delivered it.
@@ -310,17 +323,25 @@ impl std::fmt::Debug for Keychain {
 impl Keychain {
     /// Load the device identity, or create it on first open.
     ///
-    /// Four cases, and the third is the one that carries the migration:
+    /// Five cases, and the third is the one that carries the migration:
     ///
     /// 1. **Fresh vault** — mint `ID_S`/`ID_D`, mint `D_S`/`D_D`, issue a cert
     ///    signed by `ID_S_priv`, persist both rows.
-    /// 2. **Fresh vault + `paired`** — adopt the identity out of the pairing
-    ///    payload, mint this device's own keys, self-issue a cert *under the
-    ///    account identity* (the payload carries `ID_S_priv`, which is what
-    ///    makes that legitimate), and import every Stream key it carries.
-    /// 3. **Pre-ADR-0024 vault** — a `local_identity` row with no `identity`
+    /// 2. **Fresh vault + [`IdentitySeed::Paired`]** — adopt the identity out
+    ///    of the pairing payload, mint this device's own keys, self-issue a
+    ///    cert *under the account identity* (the payload carries `ID_S_priv`,
+    ///    which is what makes that legitimate), and import every Stream key it
+    ///    carries.
+    /// 3. **Fresh vault + [`IdentitySeed::Recovered`]** — the same, from an
+    ///    opened recovery blob instead, and with one difference that is the
+    ///    whole of `docs/03-crypto/recovery.md` §Recovery flow step 8: the
+    ///    blob carries `ID_D_priv`, so this vault **keeps** it and can
+    ///    therefore open the identity-addressed copy of every `key_envelope`
+    ///    in the op log. It imports no Stream keys, because there is no
+    ///    sibling to have sent any — it reads them out of the log instead.
+    /// 4. **Pre-ADR-0024 vault** — a `local_identity` row with no `identity`
     ///    row. `Self::adopt_legacy_vault` runs, once and idempotently.
-    /// 4. **Known vault** — load and unwrap, failing cleanly on a wrong root.
+    /// 5. **Known vault** — load and unwrap, failing cleanly on a wrong root.
     ///
     /// # Errors
     /// Storage/crypto failures, or a wrong vault root / corrupt identity row.
@@ -329,7 +350,7 @@ impl Keychain {
         vault_root: VaultRootKey,
         clock: &dyn Clock,
         rng: &dyn Rng,
-        paired: Option<&PairingPayload>,
+        seed: &IdentitySeed,
     ) -> Result<Self, KeychainError> {
         let local = load_identity_row(db)?;
         let identity_row = load_account_identity_row(db)?;
@@ -337,7 +358,7 @@ impl Keychain {
         let kc = match (local, identity_row) {
             (Some(local), Some(row)) => Self::load(db, vault_root, &local, &row)?,
             (Some(local), None) => Self::adopt_legacy_vault(db, vault_root, clock, rng, &local)?,
-            (None, _) => Self::create(db, vault_root, clock, rng, paired)?,
+            (None, _) => Self::create(db, vault_root, clock, rng, seed)?,
         };
         kc.load_cache(db)?;
         Ok(kc)
@@ -390,13 +411,13 @@ impl Keychain {
     fn identity_for_create(
         vault_root: &VaultRootKey,
         rng: &dyn Rng,
-        paired: Option<&PairingPayload>,
+        seed: &IdentitySeed,
         existing: Option<&AccountIdentityRow>,
         now_ms: u64,
     ) -> Result<Identity, KeychainError> {
-        match (paired, existing) {
+        match (seed, existing) {
             // A device being paired adopts the account's identity wholesale.
-            (Some(p), existing) => {
+            (IdentitySeed::Paired(p), existing) => {
                 let identity = Identity {
                     identity_id: p.identity_id,
                     signing: IdentitySigningKeyPair::from_secret_bytes(&p.id_s_priv),
@@ -418,12 +439,52 @@ impl Keychain {
                 }
                 Ok(identity)
             }
+            // A device restored from the recovery code. Everything the blob
+            // carried is checked against itself before any of it is trusted:
+            // the two public halves have to be the ones the two secrets
+            // produce, and the identity id has to be the one `ID_S_pub`
+            // derives. A blob that passes `unseal_recovery_blob` is already
+            // AEAD-bound to `identity_id`, so this is not the security
+            // boundary — it is the one that stops a *malformed* blob becoming
+            // a vault that quietly reads nothing.
+            (IdentitySeed::Recovered(r), existing) => {
+                let signing = IdentitySigningKeyPair::from_secret_bytes(&r.id_s_priv);
+                let dh = IdentityDhKeyPair::from_secret_bytes(r.id_d_priv);
+                if signing.public_bytes() != r.id_s_pub
+                    || dh.public_bytes() != r.id_d_pub
+                    || identity_id_from_pub(&signing.public_bytes()) != r.identity_id
+                {
+                    return Err(KeychainError::IdentityIdMismatch);
+                }
+                if let Some(row) = existing {
+                    if row.identity_id != r.identity_id {
+                        return Err(KeychainError::IdentityConflict);
+                    }
+                }
+                Ok(Identity {
+                    identity_id: r.identity_id,
+                    dh_pub: r.id_d_pub,
+                    signing,
+                    // The point of the whole mode, and the one thing a
+                    // `PairingPayload` could never carry. Without it this
+                    // vault opens, syncs, and reads nothing: every
+                    // `key_envelope` addressed to the identity stays shut and
+                    // every op sealed under those epochs parks in
+                    // `deferred_ops` until the TTL drops it — a recovery that
+                    // looks exactly like success. See
+                    // `docs/03-crypto/recovery.md` §Recovery flow step 8.
+                    dh_secret: Some(dh),
+                    // The account's creation time, off the blob. Not this
+                    // moment, which is when the *recovery* happened.
+                    created_at_ms: r.created_at_ms,
+                })
+            }
             // No `local_identity` row, so this vault is about to mint a
             // device id it does not have yet, which is by construction not the
             // one that minted an identity already sitting on disk. `None`
             // therefore withholds `ID_D_priv`, and correctly.
-            (None, Some(row)) => unwrap_identity(vault_root, row, None),
-            (None, None) => {
+            (IdentitySeed::Own, Some(row)) => unwrap_identity(vault_root, row, None),
+            (IdentitySeed::Own, None) => {
                 let mut seed = [0u8; 32];
                 rng.fill_bytes(&mut seed);
                 let signing = IdentitySigningKeyPair::from_secret_bytes(&seed);
@@ -449,19 +510,19 @@ impl Keychain {
         }
     }
 
-    /// Cases 1 and 2: no `local_identity` row at all.
+    /// Cases 1, 2 and 3: no `local_identity` row at all.
     fn create(
         db: &mut Db,
         vault_root: VaultRootKey,
         clock: &dyn Clock,
         rng: &dyn Rng,
-        paired: Option<&PairingPayload>,
+        seed: &IdentitySeed,
     ) -> Result<Self, KeychainError> {
         let now_ms = clock.now_ms();
         let existing = load_account_identity_row(db)?;
 
         let identity =
-            Self::identity_for_create(&vault_root, rng, paired, existing.as_ref(), now_ms)?;
+            Self::identity_for_create(&vault_root, rng, seed, existing.as_ref(), now_ms)?;
 
         let (signing, device_dh, device_id) = mint_device_keys(rng);
         let nickname = "sunrise-device".to_string();
@@ -473,16 +534,26 @@ impl Keychain {
         let wrapped_identity = wrap_identity(&vault_root, &identity, rng);
         let (wrapped_signing, wrapped_dh) =
             wrap_device_secrets(&vault_root, &signing, &device_dh, &device_id, rng);
-        let imported = paired.map(|p| p.stream_keys.clone()).unwrap_or_default();
+        let imported = match seed {
+            // Only pairing hands Stream keys over. A recovering device is
+            // handed none and must not be: it reads them out of the op log,
+            // and that is the difference between a recovery that restores
+            // history and one that restores an empty vault.
+            IdentitySeed::Paired(p) => p.stream_keys.clone(),
+            IdentitySeed::Own | IdentitySeed::Recovered(_) => BTreeMap::new(),
+        };
         let write_identity = existing.is_none();
-        // The founder arm of the match above is the one that generated
-        // `ID_S`/`ID_D` here, so it is the only case whose device may be
-        // recorded as the identity's minter. See [`insert_identity_row`].
-        let minted_by = (paired.is_none() && write_identity).then_some(&device_id);
+        // Which arms of the match above ended up holding `ID_D_priv`: the
+        // founder, which generated it, and the recovered vault, which was
+        // handed it by the blob. A paired device holds only `ID_D_pub` and
+        // must not be recorded, or `unwrap_identity` would hand it a key it
+        // was deliberately not given. See [`insert_identity_row`].
+        let holds_identity_secret = !matches!(seed, IdentitySeed::Paired(_));
+        let minted_by = (holds_identity_secret && write_identity).then_some(&device_id);
 
         db.with_tx(|tx| {
             if write_identity {
-                insert_identity_row(tx, &identity, &wrapped_identity, minted_by, now_ms)?;
+                insert_identity_row(tx, &identity, &wrapped_identity, minted_by)?;
             }
             insert_local_identity_row(
                 tx,
@@ -639,7 +710,7 @@ impl Keychain {
             // A pre-0017 vault mints the account identity right here, which
             // makes this device its creator on exactly the terms the founder
             // branch of `create` is.
-            insert_identity_row(tx, &identity, &wrapped_identity, Some(&device_id), now_ms)?;
+            insert_identity_row(tx, &identity, &wrapped_identity, Some(&device_id))?;
             tx.execute(
                 "UPDATE local_identity
                  SET signing_secret_wrapped = ?, dh_secret_wrapped = ?, cert_blob = ?
@@ -1165,12 +1236,75 @@ impl Keychain {
         if self.test_derived_keys {
             return legacy_derived_stream_key(&self.vault_root, stream_id, epoch);
         }
-        let _ = (stream_id, epoch);
+        if let Some(key) = self.meta_genesis_key(stream_id, epoch) {
+            return key;
+        }
         let mut bytes = [0u8; 32];
         rng.fill_bytes(&mut bytes);
         let key = StreamKey::from_bytes(bytes);
         bytes.zeroize();
         key
+    }
+
+    /// The vault-meta stream's **genesis** key, derived from the account
+    /// identity instead of drawn at random. `None` for every other
+    /// `(stream, epoch)` and on any device that does not hold `ID_D_priv`.
+    ///
+    /// # Why one key in this hierarchy is derived
+    ///
+    /// ADR-0024 decision 4 seals every `(stream_id, epoch)` key to the
+    /// identity's `ID_D_pub` as well as to each device, "so the recovery path
+    /// can reach them". Every one of those `key_envelope` ops lives in the
+    /// **vault-meta stream**, and an op in a stream is sealed under that
+    /// stream's key — including, at epoch 1, the ops that carry that very key.
+    /// [`crate::engine::Engine::emit_key_envelopes`] passes `seal_under: None`
+    /// at a genesis mint, and `emit_control_op` resolves that to the
+    /// vault-meta epoch it is in the middle of minting.
+    ///
+    /// So the identity copy of the vault-meta genesis key is sealed under the
+    /// vault-meta genesis key. A recovering device holds `ID_D_priv` and can
+    /// open nothing with it: the outer AEAD never yields the inner HPKE
+    /// ciphertext, the op parks in `deferred_ops`, and every later epoch —
+    /// which is sealed under its predecessor, correctly — is stranded behind
+    /// it. The vault syncs, applies nothing, and presents as an empty account,
+    /// which is what `docs/03-crypto/recovery.md` §Recovery flow step 8 warns
+    /// looks exactly like success.
+    ///
+    /// Deriving this one key from `ID_D_priv` breaks the cycle and nothing
+    /// else: the recovering vault recomputes the founder's vault-meta genesis
+    /// key, opens the log, and takes every other Stream key out of it through
+    /// the identity envelopes that were already being emitted.
+    ///
+    /// # What it costs
+    ///
+    /// Nothing that `ID_D_priv` did not already cost. `recovery.md` §The cost
+    /// of that, stated plainly already records that `ID_D_priv` is a long-lived
+    /// unwrapping key whose compromise reaches every epoch ever sealed to it;
+    /// this makes the genesis epoch reachable by the same key rather than by a
+    /// second one. It is gated by the same 256-bit recovery code through the
+    /// same Argon2id, it adds no primitive outside ADR-0004's frozen suite
+    /// (BLAKE3 `derive_key`, which already produces `device_id` and
+    /// `stream_key_id`), and it changes no stored or wire format: the result is
+    /// an ordinary `stream_keys` row.
+    ///
+    /// A device admitted by **pairing** holds no `ID_D_priv` and returns `None`
+    /// here, which is correct and costs it nothing: its payload carried the
+    /// account's epochs, so it never mints a vault-meta genesis at all.
+    fn meta_genesis_key(&self, stream_id: &[u8; 16], epoch: u32) -> Option<StreamKey> {
+        if *stream_id != crate::engine::META_STREAM || epoch != GENESIS_EPOCH {
+            return None;
+        }
+        let dh = self.identity.dh_secret.as_ref()?;
+        let mut ikm = [0u8; 48];
+        let mut secret = dh.secret_bytes();
+        ikm[..32].copy_from_slice(&secret);
+        ikm[32..].copy_from_slice(&self.identity.identity_id);
+        secret.zeroize();
+        let mut bytes = derive_key_32(META_GENESIS_CONTEXT, &ikm);
+        ikm.zeroize();
+        let key = StreamKey::from_bytes(bytes);
+        bytes.zeroize();
+        Some(key)
     }
 
     fn cache_insert(&self, stream_id: &[u8; 16], epoch: u32, key: &StreamKey) {
@@ -1513,7 +1647,13 @@ mod tests {
     }
 
     fn open(d: &mut Db, root: &VaultRootKey) -> Keychain {
-        Keychain::open(d, root.clone(), &clock(), &SystemRng, None).unwrap()
+        Keychain::open(d, root.clone(), &clock(), &SystemRng, &IdentitySeed::Own).unwrap()
+    }
+
+    /// A pairing payload as [`Keychain::open`] now takes it. Clones because
+    /// [`IdentitySeed`] owns its payload and these tests keep reading theirs.
+    fn seed_of(payload: &PairingPayload) -> IdentitySeed {
+        IdentitySeed::Paired(Box::new(payload.clone()))
     }
 
     #[test]
@@ -1581,7 +1721,8 @@ mod tests {
         let _ = open(&mut d, &root);
 
         let bad = VaultRootKey::from_bytes([2u8; 32]);
-        let err = Keychain::open(&mut d, bad, &clock(), &SystemRng, None).unwrap_err();
+        let err =
+            Keychain::open(&mut d, bad, &clock(), &SystemRng, &IdentitySeed::Own).unwrap_err();
         assert!(matches!(err, KeychainError::VaultRootMismatch));
     }
 
@@ -1860,7 +2001,7 @@ mod tests {
             root.clone(),
             &clock(),
             &SystemRng,
-            Some(&payload),
+            &seed_of(&payload),
         )
         .unwrap();
         assert_eq!(
@@ -1924,7 +2065,7 @@ mod tests {
                 root.clone(),
                 &clock(),
                 &SystemRng,
-                Some(&payload),
+                &seed_of(&payload),
             )
             .unwrap(),
         );
@@ -1991,7 +2132,7 @@ mod tests {
             root.clone(),
             &clock(),
             &SystemRng,
-            Some(&payload),
+            &seed_of(&payload),
         )
         .unwrap();
         assert!(
@@ -2073,7 +2214,7 @@ mod tests {
             root.clone(),
             &clock(),
             &SystemRng,
-            Some(&payload),
+            &seed_of(&payload),
         )
         .unwrap();
 
@@ -2246,8 +2387,14 @@ mod tests {
             Ok(())
         })
         .unwrap();
-        let err = Keychain::open(&mut d2, root.clone(), &clock(), &SystemRng, None)
-            .expect_err("a truncated identity_id is not an identity");
+        let err = Keychain::open(
+            &mut d2,
+            root.clone(),
+            &clock(),
+            &SystemRng,
+            &IdentitySeed::Own,
+        )
+        .expect_err("a truncated identity_id is not an identity");
         assert!(
             matches!(err, KeychainError::CorruptRow("identity.identity_id")),
             "got {err:?}"
@@ -2264,7 +2411,7 @@ mod tests {
             Ok(())
         })
         .unwrap();
-        let err = Keychain::open(&mut d3, root, &clock(), &SystemRng, None)
+        let err = Keychain::open(&mut d3, root, &clock(), &SystemRng, &IdentitySeed::Own)
             .expect_err("a truncated id_s_pub is not a key");
         assert!(
             matches!(err, KeychainError::CorruptRow("identity.id_s_pub")),
@@ -2313,8 +2460,14 @@ mod tests {
         })
         .unwrap();
 
-        let err = Keychain::open(&mut d, root.clone(), &clock(), &SystemRng, None)
-            .expect_err("a two-device legacy vault must not be adopted");
+        let err = Keychain::open(
+            &mut d,
+            root.clone(),
+            &clock(),
+            &SystemRng,
+            &IdentitySeed::Own,
+        )
+        .expect_err("a two-device legacy vault must not be adopted");
         assert!(
             matches!(err, KeychainError::LegacyMultiDevice(2)),
             "got {err:?}"
@@ -2348,8 +2501,14 @@ mod tests {
         let payload = ka.export_pairing_payload(&da).unwrap();
 
         let mut db2 = db(&root);
-        let kb =
-            Keychain::open(&mut db2, root.clone(), &clock(), &SystemRng, Some(&payload)).unwrap();
+        let kb = Keychain::open(
+            &mut db2,
+            root.clone(),
+            &clock(),
+            &SystemRng,
+            &seed_of(&payload),
+        )
+        .unwrap();
 
         assert_eq!(kb.identity_id(), ka.identity_id());
         assert_eq!(kb.identity_signing_pub(), ka.identity_signing_pub());
@@ -2395,7 +2554,234 @@ mod tests {
         payload.id_s_priv = [0x01; 32];
 
         let mut db2 = db(&root);
-        let err = Keychain::open(&mut db2, root, &clock(), &SystemRng, Some(&payload)).unwrap_err();
+        let err =
+            Keychain::open(&mut db2, root, &clock(), &SystemRng, &seed_of(&payload)).unwrap_err();
         assert!(matches!(err, KeychainError::IdentityIdMismatch));
+    }
+
+    // ---- recovery -------------------------------------------------------
+
+    /// Open the blob `founder` seals under `seed`, the way a recovering device
+    /// does: through the real format, rather than by copying fields across.
+    fn recovered_payload(
+        founder: &Keychain,
+        seed: &[u8; 32],
+    ) -> sunrise_crypto::recovery::RecoveryPayload {
+        let blob = founder.seal_recovery_blob(seed, &SystemRng).unwrap();
+        sunrise_crypto::unseal_recovery_blob(&blob, seed, &founder.identity_id()).unwrap()
+    }
+
+    /// The whole of what `Unlock::RecoveryCode` could not express before: a
+    /// vault seeded from an opened blob **keeps** `ID_D_priv`.
+    ///
+    /// Without it the vault can seal nothing and — far worse — can open none
+    /// of the identity-addressed `key_envelope` ops that are its only route to
+    /// the account's Stream keys. The mode was routed through `PairingPayload`,
+    /// which stopped carrying that key at `#76`, so it came up with
+    /// `dh_secret: None` and read nothing.
+    #[test]
+    fn a_vault_recovered_from_a_blob_holds_the_identity_key() {
+        let founding_root = VaultRootKey::from_bytes([0x71; 32]);
+        let mut founding_db = db(&founding_root);
+        let founder = open(&mut founding_db, &founding_root);
+        assert!(founder.holds_only_copy_of_identity_key());
+        let payload = recovered_payload(&founder, &[0x42; 32]);
+
+        // A different root, because the blob carries no vault root and a
+        // recovering device has nobody to be handed one by.
+        let recovered_root = VaultRootKey::from_bytes([0x17; 32]);
+        let mut recovered_db = db(&recovered_root);
+        let recovered = Keychain::open(
+            &mut recovered_db,
+            recovered_root.clone(),
+            &clock(),
+            &SystemRng,
+            &IdentitySeed::Recovered(Box::new(payload)),
+        )
+        .unwrap();
+
+        assert!(
+            recovered.holds_only_copy_of_identity_key(),
+            "a recovered vault holds ID_D_priv, or it opens no identity envelope"
+        );
+        assert_eq!(recovered.identity_id(), founder.identity_id());
+        assert_eq!(
+            recovered.identity_dh_pub(),
+            founder.identity_dh_pub(),
+            "the same identity, so the envelopes already sealed to it are this vault's"
+        );
+        assert_ne!(
+            recovered.device_id(),
+            founder.device_id(),
+            "a recovery re-keys the device: fresh D_S/D_D under the restored identity"
+        );
+        assert!(!recovered.cert_blob().is_empty());
+
+        // And it survives a reopen, which is what `minted_by_device_id`
+        // decides: `unwrap_identity` hands `ID_D_priv` back only to the device
+        // the row names, so a recovery that did not record itself there would
+        // hold the key exactly once and lose it at the next launch.
+        let reopened = Keychain::open(
+            &mut recovered_db,
+            recovered_root,
+            &clock(),
+            &SystemRng,
+            &IdentitySeed::Own,
+        )
+        .unwrap();
+        assert!(
+            reopened.holds_only_copy_of_identity_key(),
+            "the restored ID_D_priv has to survive closing the app"
+        );
+        assert_eq!(reopened.device_id(), recovered.device_id());
+    }
+
+    /// The account's creation time comes off the blob rather than off the
+    /// clock the recovery ran on, so a blob re-sealed afterwards reports the
+    /// same `created_at` as the one that produced it.
+    #[test]
+    fn a_recovered_vault_keeps_the_accounts_creation_time() {
+        let founding_root = VaultRootKey::from_bytes([0x72; 32]);
+        let mut founding_db = db(&founding_root);
+        let founder = open(&mut founding_db, &founding_root);
+        let payload = recovered_payload(&founder, &[0x43; 32]);
+        let created_at = payload.created_at_ms;
+
+        let recovered_root = VaultRootKey::from_bytes([0x18; 32]);
+        let mut recovered_db = db(&recovered_root);
+        let recovered = Keychain::open(
+            &mut recovered_db,
+            recovered_root,
+            &clock(),
+            &SystemRng,
+            &IdentitySeed::Recovered(Box::new(payload)),
+        )
+        .unwrap();
+
+        let resealed = recovered
+            .seal_recovery_blob(&[0x44; 32], &SystemRng)
+            .unwrap();
+        let reopened =
+            sunrise_crypto::unseal_recovery_blob(&resealed, &[0x44; 32], &founder.identity_id())
+                .unwrap();
+        assert_eq!(reopened.created_at_ms, created_at);
+        assert_eq!(reopened.id_d_pub, founder.identity_dh_pub());
+    }
+
+    /// The cycle [`Keychain::meta_genesis_key`] exists to break, asserted as
+    /// the agreement it produces: a recovering vault that has never met the
+    /// founder computes the founder's vault-meta genesis key.
+    ///
+    /// Everything else in a recovery hangs off this. Every `key_envelope` op
+    /// lives in the vault-meta stream, so a device that cannot open that
+    /// stream's first epoch cannot open the op that would have given it the
+    /// key — and reads nothing, for ever, while looking perfectly healthy.
+    #[test]
+    fn a_recovered_vault_agrees_with_the_founder_on_the_vault_meta_genesis_key() {
+        let founding_root = VaultRootKey::from_bytes([0x73; 32]);
+        let mut founding_db = db(&founding_root);
+        let founder = open(&mut founding_db, &founding_root);
+        let payload = recovered_payload(&founder, &[0x45; 32]);
+
+        let founder_key = founding_db
+            .with_tx(|tx| founder.mint_epoch(tx, &crate::engine::META_STREAM, &SystemRng, 1))
+            .unwrap()
+            .1;
+
+        let recovered_root = VaultRootKey::from_bytes([0x19; 32]);
+        let mut recovered_db = db(&recovered_root);
+        let recovered = Keychain::open(
+            &mut recovered_db,
+            recovered_root,
+            &clock(),
+            &SystemRng,
+            &IdentitySeed::Recovered(Box::new(payload)),
+        )
+        .unwrap();
+        let recovered_key = recovered_db
+            .with_tx(|tx| recovered.mint_epoch(tx, &crate::engine::META_STREAM, &SystemRng, 1))
+            .unwrap()
+            .1;
+
+        assert_eq!(
+            founder_key, recovered_key,
+            "two vaults sharing no root and no device must still agree on the \
+             vault-meta genesis key, or a pure recovery reads nothing"
+        );
+
+        // And the derivation is confined to that one slot: epoch 2 of the same
+        // stream, and epoch 1 of any other, are still drawn at random.
+        let later = founding_db
+            .with_tx(|tx| founder.mint_epoch(tx, &crate::engine::META_STREAM, &SystemRng, 2))
+            .unwrap();
+        assert_eq!(later.0, 2);
+        assert_ne!(later.1, founder_key);
+        let other = founding_db
+            .with_tx(|tx| founder.mint_epoch(tx, &[9u8; 16], &SystemRng, 3))
+            .unwrap();
+        assert_eq!(other.0, 1);
+        assert_ne!(other.1, founder_key);
+    }
+
+    /// A paired device derives nothing here, because it holds no `ID_D_priv`
+    /// — and it must not, or withholding an epoch from a revoked device would
+    /// withhold nothing.
+    #[test]
+    fn a_paired_device_does_not_derive_the_vault_meta_genesis_key() {
+        let root = VaultRootKey::from_bytes([0x74; 32]);
+        let mut founding_db = db(&root);
+        let founder = open(&mut founding_db, &root);
+        let payload = founder.export_pairing_payload(&founding_db).unwrap();
+
+        let mut paired_db = db(&root);
+        let paired = Keychain::open(
+            &mut paired_db,
+            root,
+            &clock(),
+            &SystemRng,
+            &seed_of(&payload),
+        )
+        .unwrap();
+        assert!(!paired.holds_only_copy_of_identity_key());
+        assert!(paired
+            .meta_genesis_key(&crate::engine::META_STREAM, 1)
+            .is_none());
+        assert!(founder
+            .meta_genesis_key(&crate::engine::META_STREAM, 1)
+            .is_some());
+    }
+
+    /// A blob whose public halves disagree with its private ones is refused at
+    /// the door, rather than becoming a vault that silently reads nothing.
+    #[test]
+    fn a_malformed_recovery_payload_is_refused() {
+        type Payload = sunrise_crypto::recovery::RecoveryPayload;
+        let founding_root = VaultRootKey::from_bytes([0x75; 32]);
+        let mut founding_db = db(&founding_root);
+        let founder = open(&mut founding_db, &founding_root);
+
+        let mutations: [fn(&mut Payload); 3] = [
+            |p| p.id_d_pub = [0x01; 32],
+            |p| p.id_s_pub = [0x02; 32],
+            |p| p.identity_id = [0x03; 16],
+        ];
+        for mutate in mutations {
+            let mut payload = recovered_payload(&founder, &[0x46; 32]);
+            mutate(&mut payload);
+            let root = VaultRootKey::from_bytes([0x1a; 32]);
+            let mut d = db(&root);
+            let err = Keychain::open(
+                &mut d,
+                root,
+                &clock(),
+                &SystemRng,
+                &IdentitySeed::Recovered(Box::new(payload)),
+            )
+            .unwrap_err();
+            assert!(
+                matches!(err, KeychainError::IdentityIdMismatch),
+                "got {err:?}"
+            );
+        }
     }
 }

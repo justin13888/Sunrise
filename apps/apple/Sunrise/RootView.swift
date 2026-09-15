@@ -63,6 +63,20 @@ struct RootView: View {
             }
         }
         .task { await session.start() }
+        // The recovery ceremony, over whatever the window is showing.
+        //
+        // Presented here rather than inside `VaultShell` for the reason
+        // `SessionModel` gives: the two shells are a layout apart, and a
+        // ceremony that existed on one platform would be #181 again one
+        // platform along. It appears exactly once per vault, immediately after
+        // `createVault`, because that is the moment the vault becomes the only
+        // place `ID_D_priv` exists.
+        .sheet(item: Binding(
+            get: { session.recoveryCeremony },
+            set: { if $0 == nil { session.endRecoveryCeremony() } }
+        )) { model in
+            RecoveryCodeView(model: model) { session.endRecoveryCeremony() }
+        }
         // Every `sunrise://` link the OS hands this process arrives here.
         // Attached to the window's root rather than to a scene that may not
         // exist: a link that arrives while Sunrise is closed opens this window
