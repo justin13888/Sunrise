@@ -11,7 +11,31 @@
 # 2. `SWIFT_UPCOMING_FEATURE_EXISTENTIAL_ANY` is deliberately absent. Turning
 #    it on produces 20 warnings in the generated bindings, which this project
 #    compiles as errors.
+# 3. Sparkle is pinned to an exact version, not a range. See `packages:` below.
 name: Sunrise
+
+# The macOS updater. ADR-0037 records why Sparkle, and — the part that is a
+# security decision rather than a dependency choice — why its EdDSA appcast key
+# is subordinate to the Developer ID certificate *in lifecycle* rather than a
+# second, co-equal trust root, and why that is not the same as it being the
+# weaker of the two.
+#
+# **`exactVersion`, not `from:`, and that is load-bearing.** `Sunrise.xcodeproj`
+# is generated and gitignored, so the `Package.resolved` Xcode writes *inside*
+# it is not committed either: a version range would let every CI machine and
+# every developer resolve a different Sparkle, with nothing in the repository
+# recording which one shipped. For the one dependency whose job is to authorise
+# code that replaces the running app, "whatever resolved that day" is the wrong
+# answer. Bumping it is a commit, which is what makes it reviewable.
+#
+# `.github/workflows/release.yml` downloads the matching Sparkle *tools*
+# tarball to get `sign_update`, and asserts that its pin equals this line —
+# signing an appcast with a different release of the tooling than the framework
+# that will verify it is the kind of skew nobody notices until an update fails.
+packages:
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    exactVersion: 2.10.0
 
 options:
   bundleIdPrefix: dev.sunrise
@@ -123,6 +147,12 @@ targets:
       # Spotlight, Shortcuts or Siri — a surface that exists only in the
       # binary. `AppIntentsMetadataTests` asserts the bundle is really there.
       - sdk: AppIntents.framework
+      # The updater, on this target only. iOS has no direct-download channel to
+      # update over — ADR-0038 — so Sparkle on `SunriseiOS` would be a
+      # framework that cannot be reached, embedded in a bundle App Store review
+      # looks at. `macOS/SoftwareUpdate.swift` is the only file that imports
+      # it, and it is a macOS-only source path for the same reason.
+      - package: Sparkle
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.sunrise.Sunrise
@@ -179,6 +209,52 @@ targets:
         # build settings keeps one version number in this file.
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        # --- Sparkle (ADR-0037) ------------------------------------------
+        #
+        # The feed the app asks "is there a newer build?". It is the
+        # `appcast.xml` asset of the newest *stable* release: GitHub's
+        # `/releases/latest/` alias skips prereleases, which is why the
+        # `appcast` job in `release.yml` re-uploads the regenerated feed onto
+        # the current stable release whenever it publishes a prerelease. The
+        # feed itself carries both channels; this URL is only how it is
+        # reached.
+        SUFeedURL: https://github.com/justin13888/Sunrise/releases/latest/download/appcast.xml
+        # **Empty on purpose, and the app checks it.** The EdDSA key pair does
+        # not exist yet — only the repository owner can create it, with
+        # `generate_keys`, and the private half becomes the
+        # `SPARKLE_ED_PRIVATE_KEY` repository secret. The public half is not a
+        # secret and belongs here, in the committed bundle, so that what a
+        # build trusts is reviewable rather than injected at signing time.
+        #
+        # Until it is filled in, `SoftwareUpdate.controller` returns nil, no
+        # updater is started and the Check for Updates item says why. That is
+        # the fail-closed direction: a Sparkle configured with no public key
+        # would be an updater that cannot verify what it downloads.
+        SUPublicEDKey: ""
+        # Check in the background; ask before installing. The second half is
+        # narrower than Sparkle's automatic mode on purpose — replacing the
+        # binary of an app that holds a user's encrypted vault without telling
+        # them is a bigger claim than `docs/07-clients/desktop.md` §Update
+        # channel makes. What that section does require is that a running
+        # session is never interrupted, and Sparkle satisfies it either way:
+        # the installer runs when the app quits.
+        SUEnableAutomaticChecks: true
+        SUAutomaticallyUpdate: false
+        # The feed itself is signed, and the app requires it to be. Sparkle
+        # documents `SURequireSignedFeed` as opt-in and says what it buys:
+        # "an attacker that compromises an app's update server will not be
+        # able to inform and trick existing users to update from another
+        # location". This repository *is* the update server, and its release
+        # assets are writable by anything holding a repository token — which
+        # is a strictly wider set than the holders of the EdDSA key.
+        #
+        # `SUVerifyUpdateBeforeExtraction` is not optional beside it: Sparkle
+        # requires it for signed feeds. It is also what makes the rotation
+        # story in ADR-0037 work, because with it enabled Sparkle will only
+        # accept a change of EdDSA key from a Developer ID code signed `.dmg`
+        # — which is exactly what `release.yml` produces and nothing else can.
+        SURequireSignedFeed: true
+        SUVerifyUpdateBeforeExtraction: true
     postCompileScripts:
       - name: SwiftLint
         basedOnDependencyAnalysis: false

@@ -203,6 +203,16 @@ and it carries no MUSTs until an iOS release ships.**
 6. **Promotion to MUST parity is a separate ADR**, written when an iOS release
    is cut. This one deliberately does not pre-commit to it.
 
+   > **Later change, recorded rather than edited in.** The slot this reserves
+   > turned out to hold two things, because
+   > [ADR-0031](./0031-macos-distribution.md) then pointed the iOS *channel*
+   > question at it as well. [ADR-0038](./0038-ios-distribution.md) takes the
+   > channel half — a tag uploads a build to App Store Connect, App Store
+   > submission is a separate manual act — and explicitly leaves this half
+   > where it is. No release has been cut: the six secrets that job needs do
+   > not exist, and nothing it adds puts a build in front of a tester. The
+   > promotion ADR is still unwritten and its trigger is unchanged.
+
 ## Alternatives considered
 
 **Leave iOS deferred.** Rejected as false by the file's own definition:

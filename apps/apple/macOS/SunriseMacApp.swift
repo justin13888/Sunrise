@@ -21,6 +21,24 @@ struct SunriseApp: App {
     @State private var session = SessionModel.standard()
     @State private var surfaces = AppSurfaces()
 
+    /// Starts the updater, and that is the whole reason this initialiser
+    /// exists.
+    ///
+    /// ``SoftwareUpdate/controller`` is a lazy `static let`, so nothing exists
+    /// until something reads it — and the only other reader is a menu item's
+    /// action closure, which runs when a user clicks. Left at that,
+    /// `SUEnableAutomaticChecks` would be a setting nothing acts on: no
+    /// background check is ever scheduled for a user who never opens the menu,
+    /// which is most of them. Touching it here starts Sparkle at launch, which
+    /// is where Sparkle expects to be started.
+    ///
+    /// On a build with no `SUPublicEDKey` this is still the right call and
+    /// still does nothing: the property evaluates to `nil` and no updater is
+    /// created. See ADR-0037.
+    init() {
+        _ = SoftwareUpdate.controller
+    }
+
     var body: some Scene {
         WindowGroup("Sunrise", id: SunriseWindow.main.rawValue) {
             RootView(session: session, surfaces: surfaces)
@@ -49,6 +67,11 @@ struct SunriseApp: App {
                 PrintMenuItems(surfaces: surfaces)
             }
             CommandGroup(after: .appInfo) {
+                // Directly under About, which is where every Mac user already
+                // looks for it. ADR-0037; on a build with no update-signing
+                // public key both items are disabled and say why.
+                SoftwareUpdateMenuItems()
+                Divider()
                 AppMenuItems(surfaces: surfaces)
             }
             CommandGroup(after: .toolbar) {
