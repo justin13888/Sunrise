@@ -414,10 +414,13 @@ description = "Reject a backticked path:line citation that points at nothing (th
 # read as containing it; a code span is therefore exactly the shape those two
 # agree to ignore and exactly the shape a path is cited in. A moved file rots
 # every citation to it in silence, and a `:199` rots without the file moving.
-# Root-anchored paths only, plus a second anchor at the crate root for a file
-# under `crates/<name>/`, because Cargo fixes that layout. Everything else is
-# counted and named in the output rather than silently skipped; pass
-# `--list-unanchored` to see it.
+# Three anchors: the repository root, the citing file's own directory (the
+# resolution imported from `docs-link-gate.py`, so the two gates cannot
+# disagree about where `../x.md` points), and the crate root for a file under
+# `crates/<name>/`. A `../` path has one reading and a dangling one fails; a
+# bare filename has as many readings as there are directories, so it is
+# declined, counted and listable with `--list-unanchored` rather than guessed
+# at. The extension set is closed, or `task.update` reads as a path.
 run = ".github/scripts/citation-gate.py"
 
 # --- Apple clients (Swift / UniFFI) ---

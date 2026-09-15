@@ -6,12 +6,18 @@ Why this file exists
 
 The gate's whole value is a *discrimination*: it has to fire on
 `crates/sunrise-core/src/nonexistent.rs:1` and stay silent on `Vec<u8>`,
-`cargo test --workspace` and the 1,500 path-shaped spans in this repository
-that are shorthand rather than citations. Either half failing makes it
-worthless, and the two fail in opposite directions from the same edit — a
-regex loosened to catch one more real citation catches a hundred code
-snippets, and a regex tightened to stop the snippets stops catching
+`cargo test --workspace`, `task.update` and the 600 bare filenames in this
+repository that are shorthand rather than citations. Either half failing
+makes it worthless, and the two fail in opposite directions from the same
+edit — a rule loosened to catch one more real citation catches a hundred
+code snippets, and one tightened to stop the snippets stops catching
 anything.
+
+The three anchors are where that tension actually lives, so
+`TheCitingFilesOwnDirectory` pins both sides of the one that carries most
+of this repository's citations: a `../` path has a single reading and a
+dangling one must fail, while a bare name or a `./` path has two readings
+and must be declined rather than guessed at.
 
 So the near-misses below are not padding. Every one of them is a span that
 actually appears in this tree, and each has its own assertion that the gate
@@ -30,14 +36,15 @@ rather than for a change to the contract. `git init` plus `git add` is all
 the setup needed — the gate reads the index through `git ls-files`, and the
 fixtures are never committed.
 
-`ALLOWED` and `DEFERRED` are literals in the gate, and every run checks both
-for staleness against the tree it was pointed at, so a fixture repository
-that does not contain this repository's excused and deferred citations fails
-on the stale check before it can be asked anything else. Cases therefore run
-against a copy of the gate with both literals rewritten, the way
-`test_file_size_gate.py` rewrites `THRESHOLDS` and
-`test_orphan_crate_gate.py` rewrites `EXEMPT` — the logic under test is still
-the shipped logic, read from the shipped file at run time.
+`ALLOWED` is a literal in the gate, and every run checks it for staleness
+against the tree it was pointed at, so a fixture repository that does not
+contain this repository's eight excused citations fails on the stale check
+before it can be asked anything else. Cases therefore run against a copy of
+the gate with that literal rewritten, the way `test_file_size_gate.py`
+rewrites `THRESHOLDS` and `test_orphan_crate_gate.py` rewrites `EXEMPT` —
+the logic under test is still the shipped logic, read from the shipped file
+at run time. The copy gets `docs-link-gate.py` beside it, because the gate
+imports that sibling for the resolution anchor 2 uses.
 
 Run it with `python3 .github/scripts/test_citation_gate.py`.
 """
@@ -57,39 +64,33 @@ CLEAN = 0
 DANGLING = 1
 COULD_NOT_RUN = 2
 
-def literal(name: str) -> re.Pattern[str]:
-    return re.compile(
-        rf"^{name}: dict\[tuple\[str, str\], str\] = \{{.*?^\}}$", re.DOTALL | re.MULTILINE
-    )
+ALLOWED_LITERAL = re.compile(
+    r"^ALLOWED: dict\[tuple\[str, str\], str\] = \{.*?^\}$", re.DOTALL | re.MULTILINE
+)
 
-
-ALLOWED_LITERAL = literal("ALLOWED")
-DEFERRED_LITERAL = literal("DEFERRED")
+# The gate imports this one for `resolve_relative`, so a copy of the gate needs
+# a copy of it beside the copy.
+SIBLING = GATE.parent / "docs-link-gate.py"
 
 
 def rewritten_gate(
-    directory: pathlib.Path,
-    allowed: dict[tuple[str, str], str] | None = None,
-    deferred: dict[tuple[str, str], str] | None = None,
+    directory: pathlib.Path, allowed: dict[tuple[str, str], str] | None = None
 ) -> pathlib.Path:
-    """The shipped gate with its two in-file lists replaced.
+    """The shipped gate with its `ALLOWED` literal replaced.
 
-    Only the literals move. Every rule the gate applies is the one on disk,
-    so a change to `classify` is felt here even though neither list is this
+    Only the literal moves. Every rule the gate applies is the one on disk, so
+    a change to `classify` is felt here even though the allowlist is not this
     repository's.
     """
     source = GATE.read_text(encoding="utf-8")
-    for name, pattern, entries in (
-        ("ALLOWED", ALLOWED_LITERAL, allowed or {}),
-        ("DEFERRED", DEFERRED_LITERAL, deferred or {}),
-    ):
-        body = "\n".join(f"    {key!r}: {reason!r}," for key, reason in entries.items())
-        replacement = (
-            f"{name}: dict[tuple[str, str], str] = {{" + (f"\n{body}\n" if body else "") + "}"
-        )
-        source, count = pattern.subn(lambda _, r=replacement: r, source, count=1)
-        if count != 1:
-            raise AssertionError(f"the {name} literal is no longer where this test expects it")
+    body = "\n".join(f"    {key!r}: {reason!r}," for key, reason in (allowed or {}).items())
+    replacement = (
+        "ALLOWED: dict[tuple[str, str], str] = {" + (f"\n{body}\n" if body else "") + "}"
+    )
+    source, count = ALLOWED_LITERAL.subn(lambda _: replacement, source, count=1)
+    if count != 1:
+        raise AssertionError("the ALLOWED literal is no longer where this test expects it")
+    (directory / SIBLING.name).write_text(SIBLING.read_text(encoding="utf-8"), encoding="utf-8")
     path = directory / "gate-under-test.py"
     path.write_text(source, encoding="utf-8")
     return path
@@ -122,12 +123,9 @@ class GateCase(unittest.TestCase):
         return path
 
     def run_gate(
-        self,
-        *args: str,
-        allowed: dict[tuple[str, str], str] | None = None,
-        deferred: dict[tuple[str, str], str] | None = None,
+        self, *args: str, allowed: dict[tuple[str, str], str] | None = None
     ) -> subprocess.CompletedProcess:
-        gate = rewritten_gate(self.tmp, allowed, deferred)
+        gate = rewritten_gate(self.tmp, allowed)
         return subprocess.run(
             [sys.executable, str(gate), "--root", str(self.repo), *args],
             capture_output=True,
@@ -162,17 +160,16 @@ class SelfTest(GateCase):
         result = self.run_gate()
         self.assertIn("OK: citations self-test clean", result.stdout)
 
-    def test_the_shipped_lists_stay_small(self):
-        # Both are the gate's escape hatches and the thing most likely to grow
-        # instead of the docs getting fixed. Twelve and four are not limits
-        # anybody derived; they are tripwires, and passing one should be a
-        # conversation rather than a commit.
-        source = GATE.read_text(encoding="utf-8")
-        for pattern, name, cap in ((ALLOWED_LITERAL, "ALLOWED", 12), (DEFERRED_LITERAL, "DEFERRED", 4)):
-            found = pattern.search(source)
-            self.assertIsNotNone(found, f"the {name} literal moved")
-            entries = found.group(0).count('    (\n')
-            self.assertLessEqual(entries, cap, f"{name} has grown; fix the docs instead")
+    def test_the_shipped_allowlist_stays_small(self):
+        # The list is the gate's one escape hatch and the thing most likely to
+        # grow instead of the docs getting fixed. Twelve is not a limit anybody
+        # derived; it is a tripwire, and passing it should be a conversation
+        # rather than a commit.
+        found = ALLOWED_LITERAL.search(GATE.read_text(encoding="utf-8"))
+        self.assertIsNotNone(found, "the ALLOWED literal moved")
+        self.assertLessEqual(
+            found.group(0).count("    (\n"), 12, "the allowlist has grown; fix the docs instead"
+        )
 
 
 class Clean(GateCase):
@@ -197,12 +194,13 @@ class Clean(GateCase):
         self.write("docs/a.md", "See `docs/three.md:3`.\n")
         self.assert_code(self.run_gate(), CLEAN, "OK: citations clean.")
 
-    def test_a_directory_citation_with_an_extension_resolves(self):
-        # An `.xcodeproj` bundle is a directory whose name carries an
-        # extension, so it passes rule 2 and must resolve as a directory
-        # rather than be reported as a missing file.
-        self.write("apps/Sunrise.xcodeproj/project.pbxproj", "{}\n")
-        self.write("docs/a.md", "See `apps/Sunrise.xcodeproj`.\n")
+    def test_a_directory_citation_with_an_admitted_extension_resolves(self):
+        # Rare, and the branch exists so such a name reports the right thing
+        # rather than "no such file": nothing in this repository is a directory
+        # ending in an admitted extension today, which is exactly why the case
+        # is synthesised rather than borrowed.
+        self.write("schemas/bundle.json/part.json", "{}\n")
+        self.write("docs/a.md", "See `schemas/bundle.json`.\n")
         self.assert_code(self.run_gate(), CLEAN, "OK: citations clean.")
 
 
@@ -247,10 +245,10 @@ class Failures(GateCase):
         self.assert_code(self.run_gate(), DANGLING, "cites line 0; line numbers start at 1.")
 
     def test_a_line_cited_on_a_directory_fails(self):
-        self.write("apps/Sunrise.xcodeproj/project.pbxproj", "{}\n")
-        self.write("docs/a.md", "See `apps/Sunrise.xcodeproj:12`.\n")
+        self.write("schemas/bundle.json/part.json", "{}\n")
+        self.write("docs/a.md", "See `schemas/bundle.json:12`.\n")
         self.assert_code(
-            self.run_gate(), DANGLING, "cites a line, but `apps/Sunrise.xcodeproj` is a directory."
+            self.run_gate(), DANGLING, "cites a line, but `schemas/bundle.json` is a directory."
         )
 
     def test_a_file_that_exists_on_disk_but_is_untracked_fails(self):
@@ -319,18 +317,34 @@ class Discrimination(GateCase):
         # be resolved without guessing which directory is meant.
         self.near_miss("the parser in `qr.rs`, whose predecessor `pair_qr_v0.rs` is gone")
 
-    def test_a_relative_path_out_of_a_document_is_not_checked(self):
-        self.near_miss("`../06-server/api.md` and `Views/TaskEditorView.swift:97`")
+    def test_a_partial_path_relative_to_nothing_is_not_checked(self):
+        # A fragment of a path the surrounding paragraph established. It
+        # resolves against neither the root nor the citing file's directory,
+        # and which directory was meant is not a thing a tool can decide.
+        self.near_miss("`Views/TaskEditorView.swift:97` and `api/observe.rs`")
 
-    def test_unanchored_spans_are_counted_rather_than_dropped(self):
-        # Declining to check something is only honest if the run says how
-        # much it declined. This is the sentence that makes the hole visible.
+    def test_an_op_kind_is_not_a_citation(self):
+        # The closed extension set exists for these: a shape rule reads
+        # `task.update` as a path with a `.update` extension, and this tree
+        # writes hundreds of them.
+        self.near_miss("`task.update`, `Task.blocks` and `focus.end`")
+
+    def test_a_dotted_runtime_path_is_not_a_repository_citation(self):
+        # `./sunrise.toml` is what the server looks for in its working
+        # directory, written beside `/etc/sunrise/sunrise.toml`. `./` is
+        # therefore claimed only when it resolves, unlike `../`.
+        self.near_miss("`./sunrise.toml`, after `$SUNRISE_CONFIG`")
+
+    def test_declined_spans_are_counted_and_split_rather_than_dropped(self):
+        # Declining to check something is only honest if the run says how much
+        # it declined, and says which kind: a bare name and a partial path are
+        # declined for the same reason but size the hole differently.
         self.write("docs/a.md", "See `recovery.md` and `api/observe.rs`.\n")
         result = self.run_gate("--list-unanchored")
         self.assert_code(
             result,
             CLEAN,
-            "2 path-like span(s) are claimed by no anchor and were NOT checked",
+            "2 path-like span(s) were NOT checked — 1 bare filename(s) and 1 partial path(s)",
             "docs/a.md:1: `recovery.md`",
             "docs/a.md:1: `api/observe.rs`",
         )
@@ -442,12 +456,11 @@ class Anchors(GateCase):
         self.write("crates/other/src/lib.rs", "//! See `tests/cli.rs`.\n")
         self.assert_code(self.run_gate(), DANGLING, "crates/other/src/lib.rs")
 
-    def test_a_first_segment_naming_nothing_at_either_anchor_is_unanchored(self):
-        # `src/main.rs` is claimed inside a crate and claimed by nothing from
-        # a document, so it is counted rather than reported.
+    def test_a_first_segment_naming_nothing_at_any_anchor_is_declined(self):
+        # `src/main.rs` is claimed inside a crate and claimed by nothing from a
+        # document, so it is counted rather than reported.
         self.write("docs/a.md", "See `src/main.rs`.\n")
-        result = self.run_gate()
-        self.assert_code(result, CLEAN, "path-like span(s) are claimed by no anchor")
+        self.assert_code(self.run_gate(), CLEAN, "path-like span(s) were NOT checked")
 
     def test_legacy_is_not_scanned(self):
         # The pre-rewrite tree cites paths that resolve against this
@@ -461,6 +474,115 @@ class Anchors(GateCase):
         self.write("legacy/README.md", "The pre-rewrite tree.\n")
         self.write("docs/a.md", "See `legacy/gone.md`.\n")
         self.assert_code(self.run_gate(), DANGLING, "`legacy/gone.md` names no file git tracks.")
+
+
+class TheCitingFilesOwnDirectory(GateCase):
+    """Anchor 2, which is how most of this repository actually cites.
+
+    Split down the middle on purpose: a `../` path has one reading and is
+    held to it, while a bare name or a `./` path has two and is only
+    checked where the reading is unambiguous.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.write("docs/03-crypto/recovery.md", "# Recovery\n")
+        self.write("docs/03-crypto/key-rotation.md", "one\ntwo\nthree\n")
+        self.write("docs/06-server/api.md", "# API\n")
+
+    def test_a_climbing_path_that_resolves_is_checked(self):
+        self.write("docs/05-sync/transports.md", "See `../06-server/api.md`.\n")
+        self.assert_code(self.run_gate(), CLEAN, "OK: citations clean.", "1 anchored citation(s)")
+
+    def test_a_climbing_path_that_resolves_to_nothing_fails(self):
+        # The case this anchor exists for. Before it, the span was declined in
+        # silence and the reader followed a dead pointer.
+        self.write("docs/05-sync/transports.md", "See `../03-crypto/does-not-exist.md`.\n")
+        self.assert_code(
+            self.run_gate(),
+            DANGLING,
+            "::error file=docs/05-sync/transports.md,line=1::citations: "
+            "`../03-crypto/does-not-exist.md` names no file git tracks.",
+        )
+
+    def test_a_climbing_path_is_checked_from_a_rust_doc_comment_too(self):
+        self.write("crates/c/src/lib.rs", "//! See `../../../docs/03-crypto/gone.md`.\n")
+        self.assert_code(self.run_gate(), DANGLING, "crates/c/src/lib.rs,line=1")
+
+    def test_a_line_number_on_a_climbing_path_is_checked(self):
+        self.write("docs/05-sync/a.md", "See `../03-crypto/key-rotation.md:99`.\n")
+        self.assert_code(
+            self.run_gate(),
+            DANGLING,
+            "cites line 99, but `docs/03-crypto/key-rotation.md` has 3 line(s).",
+        )
+
+    def test_a_path_that_climbs_out_of_the_repository_fails(self):
+        self.write("docs/a.md", "See `../../elsewhere.toml`.\n")
+        self.assert_code(self.run_gate(), DANGLING, "climbs out of the repository.")
+
+    def test_a_bare_sibling_that_resolves_is_checked(self):
+        # Asserting the *count*, not just the verdict: if this anchor stopped
+        # resolving, the span would be declined and the run would still be
+        # clean, so "exit 0" alone proves nothing here.
+        self.write("docs/03-crypto/primitives.md", "See `key-rotation.md:3`.\n")
+        self.assert_code(self.run_gate(), CLEAN, "OK: citations clean.", "1 anchored citation(s)")
+
+    def test_a_bare_sibling_with_a_line_past_the_end_fails(self):
+        # The proof that the sibling reading is *checked* rather than merely
+        # counted: `key-rotation.md` has three lines.
+        self.write("docs/03-crypto/primitives.md", "See `key-rotation.md:99`.\n")
+        self.assert_code(
+            self.run_gate(),
+            DANGLING,
+            "cites line 99, but `docs/03-crypto/key-rotation.md` has 3 line(s).",
+        )
+
+    def test_a_bare_name_that_is_not_a_sibling_is_declined_not_failed(self):
+        # `recovery.md` in `docs/06-server/` is shorthand for the one in
+        # `docs/03-crypto/`. Claiming it would fail a correct document, which
+        # is the one thing a gate may not do.
+        self.write("docs/06-server/auth.md", "See `recovery.md`.\n")
+        self.assert_code(self.run_gate(), CLEAN, "1 bare filename(s)")
+
+    def test_a_dotted_path_that_resolves_is_checked(self):
+        self.write("docs/03-crypto/primitives.md", "See `./key-rotation.md:3`.\n")
+        self.assert_code(self.run_gate(), CLEAN, "OK: citations clean.")
+
+    def test_a_dotted_path_that_does_not_resolve_is_declined_not_failed(self):
+        # `./sunrise.toml` names the server's working directory, not this tree.
+        self.write("docs/06-server/self-hosting.md", "Then `./sunrise.toml`.\n")
+        self.assert_code(self.run_gate(), CLEAN, "OK: citations clean.", "1 bare filename(s)")
+
+    def test_the_resolution_is_the_docs_link_gates_own(self):
+        # Imported rather than reimplemented, because that gate resolves
+        # `[a](../x.md)` by the same convention and two implementations of
+        # "where does that point" can disagree about the same tree.
+        gate = GATE.read_text(encoding="utf-8")
+        self.assertIn('_sibling("docs_link_gate", "docs-link-gate.py").resolve_relative', gate)
+        self.assertIn("def resolve_relative(", SIBLING.read_text(encoding="utf-8"))
+
+
+class Extensions(GateCase):
+    """Rule 2: the closed set, and what it keeps out."""
+
+    def test_an_extension_outside_the_set_is_prose(self):
+        # `.update` is an op kind. Nothing in this repository is a file of
+        # that type, so a span ending in one is not a path.
+        self.write("docs/a.md", "The `task.update` op and the `Task.blocks` field.\n")
+        result = self.run_gate()
+        self.assert_code(result, CLEAN, "0 anchored citation(s)")
+        self.assertNotIn("path-like span(s) were NOT checked", result.stdout)
+
+    def test_every_admitted_extension_is_lower_case_and_alphabetic(self):
+        # The membership test lower-cases what it looks up, so an upper-case
+        # entry in the literal would be unreachable and silently drop a type.
+        import re as _re
+
+        found = _re.search(r'EXTENSIONS = frozenset\(\n?\s*"([^"]+)"', GATE.read_text(encoding="utf-8"))
+        self.assertIsNotNone(found, "the EXTENSIONS literal moved")
+        for extension in found.group(1).split():
+            self.assertTrue(extension.islower() and extension.isalnum(), extension)
 
 
 class Allowlist(GateCase):
@@ -507,60 +629,6 @@ class Allowlist(GateCase):
             self.run_gate(allowed={self.ENTRY: "the sentence asserts the absence"}),
             COULD_NOT_RUN,
             "no such citation is there any more; delete the entry.",
-        )
-
-
-class Deferred(GateCase):
-    """The baseline of citations that are wrong and recorded rather than lost.
-
-    `file-size-gate.py` carries the same shape: a list that may shrink and
-    may not grow, printed on every run. The difference from `ALLOWED` is
-    that these sentences are false, so the entry is a debt with an address.
-    """
-
-    ENTRY = ("docs/a.md", "crates/gone.rs")
-    REASON = "a live citation nobody has repointed yet"
-
-    def test_a_deferred_citation_is_printed_on_every_run(self):
-        # Recorded, not hidden. A baseline nobody sees is an exemption.
-        self.write("docs/a.md", "Go and read `crates/gone.rs`.\n")
-        self.write("crates/c/src/lib.rs", "pub fn f() {}\n")
-        self.assert_code(
-            self.run_gate(deferred={self.ENTRY: self.REASON}),
-            CLEAN,
-            "citations: deferred — docs/a.md cites `crates/gone.rs`, which resolves to nothing",
-            self.REASON,
-            "OK: citations clean.",
-        )
-
-    def test_a_deferred_entry_excuses_one_file_and_not_the_spelling_everywhere(self):
-        self.write("docs/a.md", "Go and read `crates/gone.rs`.\n")
-        self.write("docs/b.md", "So should you: `crates/gone.rs`.\n")
-        self.write("crates/c/src/lib.rs", "pub fn f() {}\n")
-        self.assert_code(
-            self.run_gate(deferred={self.ENTRY: self.REASON}),
-            DANGLING,
-            "::error file=docs/b.md,line=1",
-        )
-
-    def test_a_deferred_entry_deletes_itself_when_the_citation_is_fixed(self):
-        # The only thing that removes an entry is fixing what it names, which
-        # is what keeps the list shrinking.
-        self.write("docs/a.md", "Go and read `crates/c/src/lib.rs`.\n")
-        self.write("crates/c/src/lib.rs", "pub fn f() {}\n")
-        self.assert_code(
-            self.run_gate(deferred={self.ENTRY: self.REASON}),
-            COULD_NOT_RUN,
-            "no such citation is there any more; delete the entry.",
-        )
-
-    def test_a_deferred_entry_whose_path_comes_back_is_a_failed_run(self):
-        self.write("docs/a.md", "`crates/gone.rs` is here again.\n")
-        self.write("crates/gone.rs", "pub fn f() {}\n")
-        self.assert_code(
-            self.run_gate(deferred={self.ENTRY: self.REASON}),
-            COULD_NOT_RUN,
-            "git tracks it now; delete the entry.",
         )
 
 

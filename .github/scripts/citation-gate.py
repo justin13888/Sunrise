@@ -6,7 +6,7 @@ Why this gate exists
 
 The dominant way this repository cites its own source is an inline code
 span — `crates/sunrise-core/src/engine/sync.rs:199`, `docs/03-crypto/recovery.md`,
-`crates/sunrise-sync/src/backoff.rs:31-63`. There are close to a thousand of
+`crates/sunrise-sync/src/backoff.rs:31-63`. There are close to two thousand of
 them, in the docs and in Rust doc comments both, and until this script not one
 was checked by anything.
 
@@ -34,50 +34,70 @@ decidable without an opinion about prose:
 1. The span content, after CommonMark's one-space strip, matches
    `<path>(:<start>(-<end>)?)?` and holds nothing else — no spaces, no trailing
    word, no section reference. `` `see crates/foo.rs` `` is not a citation.
-2. The final path segment carries an extension beginning with a letter. This is
-   what separates `crates/sunrise-core/src/lib.rs` from `Vec<u8>`,
-   `cargo test --workspace`, `sunrise_core::engine` and `0.1.0` without the gate
-   needing to know anything about Rust, shells or semver.
+2. The final segment ends in one of the extensions in `EXTENSIONS` below, which
+   is the closed set this repository's tracked files actually use. A *shape*
+   rule instead of a list reads `task.update`, `Task.blocks` and `focus.end` as
+   paths — this tree writes hundreds of op kinds and field names that way — and
+   filing those under "not checked" makes the gate look blinder than it is
+   while burying the residue that genuinely needs a person.
 3. The path is **claimed** by an anchor (below). An unclaimed path is not
    checked, and is counted and reported rather than dropped.
 
 Anchors
 -------
 
-A citation is resolved against the repository root first: `docs/…`, `crates/…`,
-`.github/…`, `Cargo.toml`. It is claimed by that anchor when its first segment
-names a top-level entry git tracks.
+Three, tried in this order, and a path claimed by any of them must resolve:
 
-A citing file that lives under `crates/<name>/` gets a **second anchor at its
-own crate root**, and a path claimed by either is resolved against both. This is
-not a guess: Cargo fixes the layout, so `tests/live_sync.rs` written inside
-`crates/sunrise-cli` means `crates/sunrise-cli/tests/live_sync.rs` and can mean
-nothing else. Thirteen doc comments in this workspace cite that way, and reading
-them against the root alone would report every one of them — against a top-level
-`tests/` directory that holds a chaos harness and nothing they could mean.
+1. **The repository root.** Claimed when the first segment names a top-level
+   entry git tracks: `docs/…`, `crates/…`, `.github/…`, `Cargo.toml`.
+2. **The citing file's own directory.** `../10-cross-cutting/protocol-versioning.md`
+   and `key-rotation.md` are how most of this tree cites, and they mean what a
+   markdown renderer and github.com make them mean: relative to the file they
+   are written in. The resolution is not reimplemented here — it is
+   `docs-link-gate.py`'s `resolve_relative`, imported, because that gate
+   resolves `[a](../x.md)` by the same convention and two implementations of
+   "where does that point" can disagree.
+3. **The crate root**, for a citing file under `crates/<name>/`. Cargo fixes
+   that layout, so `tests/live_sync.rs` written inside `crates/sunrise-cli`
+   means `crates/sunrise-cli/tests/live_sync.rs` and can mean nothing else.
 
-Adding an anchor can only *remove* failures, never invent one, so a second
-anchor is safe in a way a looser *shape* rule would not be.
+Anchor 2 claims on two different terms, and the difference is the whole of this
+gate's honesty:
 
-A citation fails when no anchor resolves it, when a cited line is past the end
-of the resolved file, when a range is empty (`:50-40`), when line 0 is cited, or
-when a line is cited on a directory. Every failure is reported with the citing
-file and its line; the gate exits 1 if any failed and 0 with a count when clean.
+* A path that climbs — `../10-cross-cutting/protocol-versioning.md` — has
+  exactly one reading, because nothing but a repository path is written that
+  way. It is **claimed unconditionally** and a dangling one fails. That is 290
+  citations here, and the reason this anchor exists.
+* Everything else relative — a bare `recovery.md`, `Views/TaskEditorView.swift:97`,
+  or a `./`-prefixed path — is claimed **only if it resolves** against the
+  citing file's directory. It has to be: `recovery.md` in `docs/03-crypto/` is a
+  sibling, and `recovery.md` in `docs/06-server/auth.md` is shorthand for that
+  same other file. `./` is in this half rather than the one above because it has
+  a second reading that this repository uses — `./sunrise.toml` is what the
+  server looks for in its working directory, listed beside
+  `/etc/sunrise/sunrise.toml`, and is not a path in this tree at all. Claiming
+  either unconditionally would fail a correct document, which is the one thing a
+  gate may not do, so they are checked where the reading is unambiguous and
+  **declined, counted and listable** where it is not.
 
-Ambiguity, and what is deliberately not checked
------------------------------------------------
+Adding an anchor can only remove failures from the classes already claimed,
+never invent one there; the explicitly-relative class is new coverage rather
+than a re-reading of something that used to pass.
 
-Around 1,500 path-shaped spans in this repository are claimed by neither anchor.
-`recovery.md` appears 22 times, `main.rs` 15, `Views/TaskEditorView.swift:97`
-and `api/observe.rs` in the same style — shorthand for a path the surrounding
-paragraph has already established. Resolving those would mean guessing, and a
-gate that guesses wrong fails a correct document, which is the one thing a gate
-may not do: `recovery.md` in `docs/03-crypto/` is a sibling and `recovery.md` in
-`docs/06-server/auth.md` is not. So the rule is the narrow one, and the cases it
-declines are **counted and named**, not silently skipped: every run prints how
-many spans went unchecked, and `--list-unanchored` prints each one with its file
-and line. The hole is visible in the gate's own output rather than implied by
-its silence.
+A citation fails when no anchor resolves it, when an explicitly-relative path
+climbs out of the repository, when a cited line is past the end of the resolved
+file, when a range is empty (`:50-40`), when line 0 is cited, or when a line is
+cited on a directory. Every failure is reported with the citing file and its
+line; the gate exits 1 if any failed and 0 with a count when clean.
+
+What is deliberately not checked
+--------------------------------
+
+The residue is bare filenames whose directory the surrounding paragraph
+established and this gate cannot: `main.rs`, `gcal.rs`, `tokens.rs`, `ci.yml`,
+`project.yml`, `0013_baseline.sql`. Every run prints how many there are, and
+`--list-unanchored` prints each with its file and line, so the hole is visible
+in the gate's own output rather than implied by its silence.
 
 Also out, each for a reason:
 
@@ -86,10 +106,7 @@ Also out, each for a reason:
   resolve against this repository's `apps/` and means something else entirely
   there. Scanning it would produce confident nonsense.
 * **Directory citations with no extension** (`crates/sunrise-core/src/engine`).
-  Rule 2 excludes them, so a renamed directory is not caught. A path *with* an
-  extension that turns out to be a directory — an `.xcodeproj` bundle, say;
-  this tree generates rather than tracks one today — is accepted as a
-  directory, and only a line number on one is an error.
+  Rule 2 excludes them, so a renamed directory is not caught.
 * **Fenced code blocks and YAML front matter** in markdown, and fenced blocks
   inside Rust doc comments. Backticks in there are literal, not code spans.
 * **Indented code blocks** in markdown are *not* masked. Deciding whether four
@@ -108,22 +125,6 @@ Also out, each for a reason:
 * **Whether the cited line still says what the citing sentence claims.** No tool
   decides that. This gate answers only "does that line exist".
 
-Two in-file lists, and what separates them
-------------------------------------------
-
-`ALLOWED` excuses a citation that is *correct because the path resolves to
-nothing* — an ADR naming what its own decision deleted, a page saying in bold
-that a specified test does not exist. Repointing one would make the sentence
-false.
-
-`DEFERRED` records a citation that is simply wrong and has not been fixed yet.
-It is a baseline in the sense `file-size-gate.py` uses the word: it may shrink,
-it may not grow, and every run prints what is on it. Both lists are keyed on
-`(citing file, cited path)` so an entry excuses one sentence rather than a
-spelling everywhere it appears, and both are guarded twice — the gate exits 2 if
-a listed path becomes tracked, and exits 2 if a listed citation leaves the file
-it names, so an entry deletes itself the moment its reason stops holding.
-
 Usage: citation-gate.py [--root PATH] [--list-unanchored] [--self-test]
 Exit 0 clean, 1 on a dangling citation, 2 if the gate could not run at all.
 """
@@ -131,27 +132,75 @@ Exit 0 clean, 1 on a dangling citation, 2 if the gate could not run at all.
 from __future__ import annotations
 
 import argparse
+import importlib.util
+import pathlib
 import posixpath
 import re
 import subprocess
 import sys
 from dataclasses import dataclass
 
+
+def _sibling(name: str, filename: str):
+    """Import a sibling gate script, whose name is not an identifier.
+
+    Registered in `sys.modules` before it executes because the module it loads
+    defines dataclasses, and `@dataclass` looks its own module up by name.
+    """
+    path = pathlib.Path(__file__).resolve().parent / filename
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        print(f"::error::citations: cannot load {path}; the gate could not run.")
+        raise SystemExit(2)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+# Anchor 2's resolution, borrowed rather than rewritten. See the docstring.
+resolve_relative = _sibling("docs_link_gate", "docs-link-gate.py").resolve_relative
+
 # A code span, CommonMark's rule: a run of N backticks closed by a run of
 # exactly N. Single-line on purpose -- see the docstring.
 CODE_SPAN = re.compile(r"(?P<ticks>`+)(?!`)(?P<body>[^\n]+?)(?<!`)(?P=ticks)(?!`)")
 
-# The whole span, or it is not a citation. The extension is a shape rather than
-# an enumerated list, so a file type this repository has not used yet is covered
-# the day it appears; the anchor rule is what supplies the precision. It must
-# start with a letter, which is what keeps `0.1.0` from reading as a path.
+# The file types this repository tracks, which is what makes a dotted name a
+# path rather than an op kind (`task.update`, `Task.blocks`, `focus.end`).
+#
+# Derived from the tree rather than invented:
+#
+#   git ls-files | grep -oE '\.[A-Za-z][A-Za-z0-9]*$' | sort -u
+#
+# minus the types nothing cites (`.png`, `.ico`, `.icns`, `.db`, `.html`,
+# `.graphql`, `.example`) and the dotfile suffixes. Measured, so the reasons
+# differ per entry and are worth stating:
+#
+# * `.cbor` and `.jsonc` earn their place outright — three resolving citations
+#   run through the first (`tests/fixtures/hello/v1.cbor` and its neighbours)
+#   and two through the second (`biome.jsonc`), and a shorter list drops them.
+# * `.css` is tracked and cited only by bare name (`tokens.css`), so nothing
+#   resolves through it today. It is here so those spans are counted as paths
+#   this gate declined rather than dismissed as prose.
+# * `.yaml` and `.xml` are speculative: one tracked `.yaml` file, no `.xml` at
+#   all, and no citation to either. They cost nothing and spare the next person
+#   a puzzling miss.
+#
+# **A new file type belongs here.** Until it is added, citations to it are
+# counted as unchecked rather than verified, which the declined tally in every
+# run will show.
+EXTENSIONS = frozenset(
+    "rs md toml py swift sh yml yaml sql json jsonc ts tsx css txt ics xml lock cbor".split()
+)
+
+# The whole span, or it is not a citation.
 CITATION = re.compile(
     r"""
     ^
     (?P<path>
         [A-Za-z0-9_.][A-Za-z0-9_.+-]*
         (?: / [A-Za-z0-9_.+-]+ )*
-        \. [A-Za-z] [A-Za-z0-9]{0,11}
+        \. (?P<ext> [A-Za-z][A-Za-z0-9]{0,11} )
     )
     (?: : (?P<start>[0-9]{1,9}) (?: - (?P<end>[0-9]{1,9}) )? )?
     $
@@ -167,9 +216,15 @@ MARKER = re.compile(r"^(?P<indent>[ \t]*)(?P<marker>///(?!/)|//!)(?P<body>.*)$")
 
 CRATE_PREFIX = re.compile(r"^(crates/[^/]+)/")
 
-# Citations this gate accepts against a path git does not track, keyed by
-# `(citing file, cited path)` so an entry excuses one sentence rather than a
-# spelling everywhere it appears.
+# Citations this gate accepts against a path git does not track.
+#
+# **Keyed on `(citing file, cited path)`, and that pair is load-bearing — do
+# not simplify it to a path key.** An entry excuses one sentence, not a
+# spelling everywhere it appears. ADR-0019 names `docs/07-clients/tui.md`
+# because it is the document that decision deleted; a path key would have
+# silenced the live doc comment in `crates/sunrise-cli/tests/cli.rs` that was
+# still sending readers to it, which is a real defect and was fixed rather
+# than hidden.
 #
 # The admission test is narrow, because an allowlist is how a gate turns into
 # something people argue with instead of fix: the citing prose must *assert the
@@ -216,25 +271,6 @@ ALLOWED: dict[tuple[str, str], str] = {
         "docs/implementation/overview.md",
         "tests/ws_cursors.rs",
     ): "the sentence is 'they were this file until ADR-0023'; the marker survives, the file does not",
-}
-
-# Citations that are simply **wrong** and have not been fixed yet, keyed the
-# same way. This is a baseline in the sense `file-size-gate.py` uses the word:
-# it may shrink and it may not grow, every run prints what is on it, and the
-# staleness guards below delete an entry the moment the citation it names is
-# corrected.
-#
-# It exists so a dangling citation found by a change set that may not edit the
-# file it lives in is *recorded in the gate* rather than lost in a report. An
-# entry is a debt with an address, not an exemption: the difference from
-# `ALLOWED` above is that these sentences are false, and fixing one is the only
-# thing that removes it.
-DEFERRED: dict[tuple[str, str], str] = {
-    (
-        "crates/sunrise-cli/tests/cli.rs",
-        "docs/07-clients/tui.md",
-    ): "a live doc comment pointing at the spec ADR-0019 deleted; repoint it at "
-       "docs/07-clients/parity-matrix.md, which carries the Focus mode MUST",
 }
 
 
@@ -408,7 +444,7 @@ def git_tracked(root: str) -> list[str]:
 
 
 class Tree:
-    """The tracked tree, indexed the three ways `classify` asks about it."""
+    """The tracked tree, indexed the ways `readings` asks about it."""
 
     def __init__(self, tracked: list[str]) -> None:
         self.files = set(tracked)
@@ -423,21 +459,73 @@ class Tree:
                 self.children.setdefault(grandparent, set()).add(posixpath.basename(parent))
                 parent = grandparent
 
-    def anchors(self, citing: str) -> list[str]:
-        """Where a citation in `citing` may be resolved from, root first."""
-        found = [""]
-        crate = CRATE_PREFIX.match(citing)
-        if crate:
-            found.append(crate.group(1))
-        return found
+    def holds(self, path: str) -> bool:
+        """Whether the tree has a file or a directory at `path`."""
+        return path in self.files or path in self.dirs
 
     def claims(self, anchor: str, first_segment: str) -> bool:
         """Whether `anchor` holds an entry the citation's first segment names."""
         return first_segment in self.children.get(anchor, ())
 
     @staticmethod
-    def resolve(anchor: str, path: str) -> str:
-        return posixpath.join(anchor, path) if anchor else path
+    def crate_of(citing: str) -> str | None:
+        """`crates/<name>` when the citing file lives in one."""
+        match = CRATE_PREFIX.match(citing)
+        return match.group(1) if match else None
+
+
+def readings(citing: str, path: str, tree: Tree) -> tuple[list[str], bool, bool]:
+    """How `path`, written in `citing`, could be read.
+
+    Returns the candidate repository paths in anchor order, whether any anchor
+    **claims** the citation — an unclaimed one is declined rather than failed —
+    and whether it climbs out of the repository.
+    """
+    if path.startswith("../"):
+        # A `../` path climbs out of the citing file's directory, which is a
+        # thing only a repository path does: there is exactly one reading and
+        # no ambiguity to be careful about. Claimed either way, so a dangling
+        # one fails -- which is the class this anchor exists for, and 290 of
+        # this repository's citations are in it.
+        #
+        # `./` is *not* here, deliberately. It has a second reading — the
+        # process's working directory — and this repository uses it that way:
+        # `./sunrise.toml` appears in three config-precedence lists beside
+        # `/etc/sunrise/sunrise.toml`, naming a file an operator creates on the
+        # deployment host rather than anything in the tree. So a `./` path
+        # falls through to the implicit rule below and is claimed only when it
+        # resolves, which costs nothing — all four that name a repository file
+        # resolve, and the three that name a runtime path are declined instead
+        # of being reported as defects they are not.
+        relative = resolve_relative(citing, path)
+        if relative is None:
+            return [], True, True
+        return [relative], True, False
+
+    found: list[str] = []
+    claimed = False
+    first = path.split("/", 1)[0]
+
+    if tree.claims("", first):
+        found.append(path)
+        claimed = True
+
+    # Implicitly relative: `recovery.md` beside its sibling means the sibling,
+    # and the same span in another directory is shorthand for somewhere else.
+    # So this anchor claims only what it actually resolves.
+    relative = resolve_relative(citing, path)
+    if relative is not None and tree.holds(relative) and relative not in found:
+        found.append(relative)
+        claimed = True
+
+    crate = tree.crate_of(citing)
+    if crate is not None and tree.claims(crate, first):
+        candidate = posixpath.join(crate, path)
+        if candidate not in found:
+            found.append(candidate)
+        claimed = True
+
+    return found, claimed, False
 
 
 def classify(span: Span, citing: str, root: str, tree: Tree) -> tuple[str, Finding | None]:
@@ -447,20 +535,19 @@ def classify(span: Span, citing: str, root: str, tree: Tree) -> tuple[str, Findi
     `None` when it resolves.
     """
     match = CITATION.match(span.body)
-    if not match:
+    if not match or match.group("ext").lower() not in EXTENSIONS:
         return "skip", None
 
     path = match.group("path")
-    if path.startswith("./"):
-        path = path[2:]
-    first = path.split("/", 1)[0]
-
-    anchors = tree.anchors(citing)
-    if not any(tree.claims(anchor, first) for anchor in anchors):
+    candidates, claimed, escapes = readings(citing, path, tree)
+    if not claimed:
         return "unanchored", None
 
     def broken(message: str) -> tuple[str, Finding]:
         return "checked", Finding(file=citing, line=span.line, span=span.body, message=message)
+
+    if escapes:
+        return broken("climbs out of the repository.")
 
     start = match.group("start")
     end = match.group("end")
@@ -473,15 +560,14 @@ def classify(span: Span, citing: str, root: str, tree: Tree) -> tuple[str, Findi
         if last_line is not None and last_line < first_line:
             return broken(f"cites an empty range ({first_line}-{last_line}).")
 
-    resolved = [Tree.resolve(anchor, path) for anchor in anchors]
-    target = next((candidate for candidate in resolved if candidate in tree.files), None)
+    target = next((candidate for candidate in candidates if candidate in tree.files), None)
 
     if target is None:
-        if any(candidate in tree.dirs for candidate in resolved):
+        if any(candidate in tree.dirs for candidate in candidates):
             if first_line is None:
                 return "checked", None
             return broken(f"cites a line, but `{path}` is a directory.")
-        if (citing, path) in ALLOWED or (citing, path) in DEFERRED:
+        if (citing, path) in ALLOWED:
             return "checked", None
         return broken("names no file git tracks.")
 
@@ -509,14 +595,13 @@ def check(root: str, list_unanchored: bool) -> int:
 
     tree = Tree(tracked)
 
-    for name, listed in (("allowlisted", ALLOWED), ("deferred", DEFERRED)):
-        for (citing, path), reason in sorted(listed.items()):
-            if path in tree.files:
-                print(
-                    f"::error::citations: `{path}` is {name} for {citing} ({reason}) but git "
-                    "tracks it now; delete the entry."
-                )
-                return 2
+    for (citing, path), reason in sorted(ALLOWED.items()):
+        if path in tree.files:
+            print(
+                f"::error::citations: `{path}` is allowlisted for {citing} ({reason}) but git "
+                "tracks it now; delete the entry."
+            )
+            return 2
 
     findings: list[Finding] = []
     unanchored: list[Finding] = []
@@ -540,7 +625,7 @@ def check(root: str, list_unanchored: bool) -> int:
                 continue
             checked += 1
             cited = CITATION.match(span.body)
-            if cited and (name, cited.group("path")) in (ALLOWED | DEFERRED):
+            if cited and (name, cited.group("path")) in ALLOWED:
                 used.add((name, cited.group("path")))
             if finding is not None:
                 findings.append(finding)
@@ -551,21 +636,28 @@ def check(root: str, list_unanchored: bool) -> int:
             f"`{finding.span}` {finding.message}"
         )
 
-    stale = sorted((set(ALLOWED) | set(DEFERRED)) - used)
+    stale = sorted(set(ALLOWED) - used)
     for citing, path in stale:
         print(
             f"::error::citations: the allowlist carries `{path}` in {citing}, but no such "
             "citation is there any more; delete the entry."
         )
 
-    for (citing, path), reason in sorted(DEFERRED.items()):
-        print(f"citations: deferred — {citing} cites `{path}`, which resolves to nothing: {reason}.")
-
     print(f"citations: {checked} anchored citation(s) across {len(files)} file(s).")
     if unanchored:
+        # Split, because the two halves are declined for the same reason but a
+        # reader sizing the hole should see both: `main.rs` and `ci.yml` are
+        # bare names, `api/observe.rs` and `store/devices.rs:90` are fragments
+        # of a path the surrounding paragraph already established. Neither can
+        # be placed without guessing which directory was meant.
+        # A leading `./` does not make a name a path: `./sunrise.toml` is a
+        # bare filename with a prefix that says "here".
+        partial = sum(1 for note in unanchored if "/" in note.span.removeprefix("./"))
         print(
-            f"citations: {len(unanchored)} path-like span(s) are claimed by no anchor and were "
-            "NOT checked; re-run with --list-unanchored to see them."
+            f"citations: {len(unanchored)} path-like span(s) were NOT checked — "
+            f"{len(unanchored) - partial} bare filename(s) and {partial} partial path(s), each "
+            "shorthand for a directory the prose around it establishes and this gate cannot; "
+            "re-run with --list-unanchored to see them."
         )
         if list_unanchored:
             for note in unanchored:
@@ -599,10 +691,10 @@ range `crates/a.rs:31-63`.
 > A block quote citing `docs/quoted.md`.
 
 Not citations: `Vec<u8>`, `cargo test --workspace`, `see docs/prose.md`,
-`sunrise_core::engine`, `--all-features`, `0.1.0`, `#[derive(Debug)]`.
+`sunrise_core::engine`, `--all-features`, `0.1.0`, `#[derive(Debug)]`,
+`task.update`, `Task.blocks`, `focus.end`.
 
-Unanchored, so not checked: `recovery.md`, `../06-server/api.md`,
-`Views/TaskEditorView.swift:97`, `api/observe.rs`.
+Relative, and checked: `../06-server/api.md`, `recovery.md`.
 
 ```text
 Inside a fence, so invisible: `crates/inside/a/fence.rs`
@@ -628,15 +720,18 @@ pub fn f() {
 }
 '''
 
-# A tree with one crate, so the second anchor has something to resolve against,
-# and a top-level `tests/`, which is what makes the two anchors disagree.
+# A tree with one crate, so anchor 3 has something to resolve against, a
+# top-level `tests/`, which is what makes anchors 1 and 3 disagree, and two
+# documents in different directories, which is what anchor 2 is about.
 FIXTURE_TRACKED = [
     "Cargo.toml",
     "docs/03-crypto/recovery.md",
+    "docs/03-crypto/key-rotation.md",
+    "docs/06-server/api.md",
     "crates/sunrise-cli/src/main.rs",
     "crates/sunrise-cli/tests/cli.rs",
     "tests/chaos/README.md",
-    "apps/apple/Sunrise.xcodeproj/project.pbxproj",
+    "schemas/generated.json/kept.json",
 ]
 
 
@@ -666,17 +761,17 @@ def self_test() -> int:
         print(f"::error::citations self-test: the Rust fixture yielded {rust}, expected {wanted}")
         failures += 1
 
-    def verdict(body: str, citing: str = "docs/x.md") -> str:
+    def verdict(body: str, citing: str = "docs/03-crypto/recovery.md") -> str:
         got, _ = classify(Span(line=1, body=body), citing, ".", tree)
         return got
 
-    def finding_for(body: str, citing: str = "docs/x.md") -> Finding | None:
+    def finding_for(body: str, citing: str = "docs/03-crypto/recovery.md") -> Finding | None:
         _, found = classify(Span(line=1, body=body), citing, ".", tree)
         return found
 
     # Near misses. Each is a real span somewhere in this tree, and none of them
     # is a citation: a gate that fires on all of these is as useless as one that
-    # fires on none.
+    # fires on none. The last three are what the closed extension set is for.
     for body in (
         "Vec<u8>",
         "cargo test --workspace",
@@ -687,23 +782,53 @@ def self_test() -> int:
         "#[derive(Debug)]",
         "crates/sunrise-cli/src",  # a directory, and no extension
         "docs/a.md and docs/b.md",
+        "task.update",
+        "Task.blocks",
+        "focus.end",
     ):
         if verdict(body) != "skip":
             print(f"::error::citations self-test: `{body}` was read as a citation")
             failures += 1
 
-    # Path-shaped, but claimed by no anchor: reported as unchecked, not guessed.
-    for body in ("recovery.md", "../06-server/api.md", "Views/TaskEditorView.swift:97", "api/observe.rs"):
+    # Anchor 2, the explicit half: one reading, so a dangling one must fail.
+    if finding_for("../06-server/api.md") is not None:
+        print("::error::citations self-test: a resolving `../` citation was reported broken")
+        failures += 1
+    dangling = finding_for("../06-server/does-not-exist.md")
+    if dangling is None or "names no file" not in dangling.message:
+        print(f"::error::citations self-test: a dangling `../` citation reported {dangling}")
+        failures += 1
+    escaping = finding_for("../../../etc/passwd.toml")
+    if escaping is None or "climbs out" not in escaping.message:
+        print(f"::error::citations self-test: an escaping citation reported {escaping}")
+        failures += 1
+
+    # `./` is the implicit half, not the explicit one, because this repository
+    # writes `./sunrise.toml` for a runtime working directory.
+    if verdict("./key-rotation.md") != "checked":
+        print("::error::citations self-test: a resolving `./` citation was not checked")
+        failures += 1
+    if verdict("./sunrise.toml") != "unanchored":
+        print("::error::citations self-test: a `./` runtime path was read as a repository citation")
+        failures += 1
+
+    # Anchor 2, the implicit half: claimed where it resolves, declined where
+    # it does not, because the same span means different files in different
+    # directories and guessing would fail a correct document.
+    if finding_for("key-rotation.md") is not None:
+        print("::error::citations self-test: a resolving sibling citation was reported broken")
+        failures += 1
+    if verdict("key-rotation.md", "docs/06-server/api.md") != "unanchored":
+        print("::error::citations self-test: a non-sibling bare filename was not declined")
+        failures += 1
+    for body in ("main.rs", "ci.yml", "0013_baseline.sql", "Views/TaskEditorView.swift:97"):
         if verdict(body) != "unanchored":
             print(f"::error::citations self-test: `{body}` classified {verdict(body)!r}, expected 'unanchored'")
             failures += 1
 
-    # The crate anchor. The same span is dangling from a document and resolved
-    # from inside the crate whose layout Cargo fixes -- and `tests/cli.rs` is the
+    # Anchor 3. The same span is dangling from a document and resolved from
+    # inside the crate whose layout Cargo fixes -- and `tests/cli.rs` is the
     # shape that makes the difference, because a top-level `tests/` exists.
-    if verdict("tests/cli.rs") != "checked":
-        print("::error::citations self-test: a top-level `tests/` path was not claimed by the root anchor")
-        failures += 1
     if finding_for("tests/cli.rs") is None:
         print("::error::citations self-test: `tests/cli.rs` resolved from a document, where it cannot")
         failures += 1
@@ -713,12 +838,8 @@ def self_test() -> int:
     if verdict("src/main.rs", "crates/sunrise-cli/tests/cli.rs") != "checked":
         print("::error::citations self-test: the crate anchor did not claim `src/main.rs`")
         failures += 1
-    # And it must not reach outside the crate that owns it.
-    if verdict("src/main.rs") != "unanchored":
-        print("::error::citations self-test: `src/main.rs` was anchored from a document")
-        failures += 1
 
-    for body in ("Cargo.toml", "docs/03-crypto/recovery.md", "apps/apple/Sunrise.xcodeproj"):
+    for body in ("Cargo.toml", "docs/03-crypto/recovery.md", "schemas/generated.json"):
         if finding_for(body) is not None:
             print(f"::error::citations self-test: `{body}` resolves, but was reported broken")
             failures += 1
@@ -726,7 +847,7 @@ def self_test() -> int:
     # The failures the gate exists for, each reported rather than passed.
     for body, fragment in (
         ("docs/gone.md", "names no file"),
-        ("apps/apple/Sunrise.xcodeproj:12", "is a directory"),
+        ("schemas/generated.json:12", "is a directory"),
         ("Cargo.toml:0", "line 0"),
         ("Cargo.toml:50-40", "empty range"),
     ):
@@ -737,7 +858,7 @@ def self_test() -> int:
 
     if failures:
         return 1
-    print("OK: citations self-test clean (36 cases).")
+    print("OK: citations self-test clean (46 cases).")
     return 0
 
 
@@ -747,7 +868,7 @@ def main() -> int:
     parser.add_argument(
         "--list-unanchored",
         action="store_true",
-        help="print every path-like span the anchor rule declined to check",
+        help="print every path-like span the anchor rules declined to check",
     )
     parser.add_argument("--self-test", action="store_true", help="assert the rules and exit")
     args = parser.parse_args()

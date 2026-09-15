@@ -943,11 +943,15 @@ jobs:
         # a moved file or a shifted line number rots in silence — and a `:199`
         # rots without the file moving at all.
         #
-        # Root-anchored citations only, plus a second anchor at the crate root
-        # for a file under `crates/<name>/`, because Cargo fixes that layout.
-        # Everything else is counted and named in the output rather than
-        # silently skipped. The script carries its own self-test and runs it as
-        # a precondition of the check.
+        # Three anchors: the repository root, the citing file's own directory
+        # (the resolution imported from `docs-link-gate.py`, so the two gates
+        # cannot disagree about where `../x.md` points), and the crate root for
+        # a file under `crates/<name>/`, because Cargo fixes that layout. A
+        # `../` path has one reading and a dangling one fails; a bare filename
+        # has as many readings as there are directories, so it is declined,
+        # counted and listable rather than guessed at. The extension set is
+        # closed, or `task.update` and `Task.blocks` read as paths. The script
+        # carries its own self-test and runs it as a precondition.
         run: .github/scripts/citation-gate.py
 
   citation-gate-contract:
@@ -960,10 +964,10 @@ jobs:
     # Deliberately without an `if:`, like the other gate contracts, so it runs
     # on pull requests. What it asserts is the gate's *discrimination*: it has
     # to fire on a dangling `crates/.../nonexistent.rs:1` and stay silent on
-    # `Vec<u8>`, `cargo test --workspace` and the 1,500 path-shaped spans in
-    # this repository that are shorthand rather than citations. Those two halves
-    # fail in opposite directions from the same edit, and a gate that fires on
-    # everything is as useless as one that fires on nothing.
+    # `Vec<u8>`, `cargo test --workspace`, `task.update` and the 600 bare
+    # filenames in this repository that are shorthand rather than citations.
+    # Those two halves fail in opposite directions from the same edit, and a
+    # gate that fires on everything is as useless as one that fires on nothing.
     steps:
       - uses: actions/checkout@v4
       - name: Exit-code and discrimination contract
