@@ -557,6 +557,49 @@ mod tests {
             .expect("re-sending the same blob is the dropped-response retry");
     }
 
+    /// The statement's own half of the rule, with the guard out of the way.
+    ///
+    /// The test above never reaches the `UPDATE` with a conflicting blob — the
+    /// guard returns first — so it would still pass if `recovery_blob`'s
+    /// `COALESCE` were argument-first, which for a while it was. Driving
+    /// [`accounts::SET_IDENTITY`] directly is the only way to observe which of
+    /// its two operands wins, and it is what fails if the order is flipped
+    /// back.
+    ///
+    /// Defence in depth, not the enforcement: the refusal the route answers
+    /// `409` with is the guard's, and a caller reaching this statement without
+    /// it gets silence rather than a conflict. What the assertion pins is that
+    /// the silence is a *no-op* and not an overwrite.
+    #[test]
+    fn the_update_statement_alone_never_moves_a_recovery_blob() {
+        let s = store();
+        let acct = s.resolve_account(&subject("alice"), true, NOW).unwrap();
+        s.set_identity(&acct.account_id, "PUB_S", "PUB_D", Some("first"), NOW)
+            .unwrap();
+
+        let rows = {
+            let conn = s.conn.lock();
+            conn.execute(
+                accounts::SET_IDENTITY,
+                rusqlite::params![
+                    &acct.account_id,
+                    "PUB_S",
+                    "PUB_D",
+                    Some("second"),
+                    i64::try_from(NOW + 1).unwrap(),
+                ],
+            )
+            .unwrap()
+        };
+
+        assert_eq!(rows, 1, "the statement must have matched the account row");
+        assert_eq!(
+            s.recovery_blob(&acct.account_id).unwrap().as_deref(),
+            Some("first"),
+            "the stored blob wins: the column is the first operand"
+        );
+    }
+
     /// An account with no blob reads as `None`, which is the state of every
     /// account this relay holds today and is a `404` rather than a failure.
     #[test]

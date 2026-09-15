@@ -847,6 +847,13 @@ description = "Assert the core filesystem gate still reports (fast, no cargo)"
 # engine and keychain splits meant it read 3% of engine/oplog.rs and reported OK.
 run = "python3 .github/scripts/test_core_filesystem_gate.py"
 
+[tasks.file-size-gate-test]
+description = "Assert the file size gate's exit-code contract (fast, no cargo)"
+# Runs in under a second: it synthesises package trees in a temp directory and
+# overrides the gate's two tables, so it never reads the repository's own crates.
+# The gate shipped with three failure modes and no fixtures for any of them.
+run = "python3 .github/scripts/test_file_size_gate.py"
+
 # --- Release artifacts ---
 #
 # Same Dockerfile and the same build args the release workflow uses, so a
