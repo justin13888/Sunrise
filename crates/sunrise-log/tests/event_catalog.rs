@@ -231,6 +231,16 @@ fn extra_manifests() -> Vec<PathBuf> {
 /// A comment *trailing* real content on the same line is still read. Narrowing
 /// further would mean knowing where each format's strings and comments start,
 /// which is a parser for four grammars in service of a case nothing has hit.
+///
+/// # Punctuation is not part of the path
+///
+/// The argument is the next whitespace-delimited word, so whatever closes the
+/// string or the list around it arrives attached to it: `"…fuzz/Cargo.toml",`
+/// at the end of a TOML array element used to read as `fuzz/Cargo.toml",` and
+/// fail closed on a manifest that is not there (#166). Quotes, a comma and a
+/// closing bracket are trimmed from both ends for that reason. It is not a
+/// TOML parser — it does not need to be, because no path this repository
+/// builds ends in one of those characters, and the flag's argument is a path.
 fn manifest_path_args(text: &str) -> Vec<String> {
     const FLAG: &str = "--manifest-path";
     let mut found = Vec::new();
@@ -246,7 +256,7 @@ fn manifest_path_args(text: &str) -> Vec<String> {
                 .split_whitespace()
                 .next()
                 .unwrap_or_default()
-                .trim_matches(['"', '\'']);
+                .trim_matches(['"', '\'', ',', ']']);
             if !path.is_empty() {
                 found.push(path.to_owned());
             }
@@ -2255,5 +2265,38 @@ cargo build --manifest-path tools/uniffi-bindgen/Cargo.toml
     assert_eq!(
         manifest_path_args("cargo build --manifest-path a/Cargo.toml # note"),
         vec!["a/Cargo.toml".to_owned()]
+    );
+}
+
+#[test]
+fn a_manifest_path_at_the_end_of_a_toml_array_element_is_read() {
+    // #166: the token after the flag is whitespace-delimited, so the `",` that
+    // closes a TOML array element rode along with the path and the gate then
+    // failed closed on `fuzz/Cargo.toml",` — a manifest that is not there.
+    // `mise.toml` worked around it by keeping the flag off the end of every
+    // element, under a comment asking the next person not to tidy the order
+    // back, which is an argument a formatter eventually wins.
+    assert_eq!(
+        manifest_path_args("  \"cargo fmt --all --manifest-path fuzz/Cargo.toml\",\n"),
+        vec!["fuzz/Cargo.toml".to_owned()],
+        "a manifest path at the end of a TOML array element must lose the `\",`"
+    );
+
+    // The last element of an array carries no comma and the bracket closes on
+    // the same line; a single-quoted TOML string is the same shape again.
+    assert_eq!(
+        manifest_path_args("run = [\"cargo doc --manifest-path fuzz/Cargo.toml\"]"),
+        vec!["fuzz/Cargo.toml".to_owned()]
+    );
+    assert_eq!(
+        manifest_path_args("run = ['cargo doc --manifest-path fuzz/Cargo.toml']"),
+        vec!["fuzz/Cargo.toml".to_owned()]
+    );
+
+    // And a path that is not at the end is still read, so the fix cannot be a
+    // rule that only fires on the last token of a line.
+    assert_eq!(
+        manifest_path_args("cargo fmt --manifest-path fuzz/Cargo.toml --all -- --check"),
+        vec!["fuzz/Cargo.toml".to_owned()]
     );
 }

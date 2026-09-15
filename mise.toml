@@ -79,20 +79,23 @@ run = "bun run test:coverage"
 
 # --- Rust (Cargo) ---
 
-# Two commands, not one, on both of these. `--all` means "every member of the
-# workspace this manifest names", and `fuzz/` is deliberately its own workspace
+# Two commands, not one, on every task here that decides whether Rust source is
+# acceptable: `rust-fmt-check`, `rust-fmt`, `rust-clippy` and `rust-doc`.
+# `--all` and `--workspace` both mean "every member of the workspace this
+# manifest names", and `fuzz/` is deliberately its own workspace
 # root (see `fuzz/Cargo.toml`), so the root invocation cannot reach it. Naming
 # its manifest here is also what puts `fuzz/Cargo.toml` in front of
 # `crates/sunrise-log/tests/event_catalog.rs`, which derives the
-# out-of-workspace half of its file set from the manifest paths this file
-# names. (Spelling that flag out in prose is not possible here: the scan is a
-# text search over this file and would read the word in a comment as a path,
-# then fail because no manifest is at `\``.) The same scan is why the manifest
-# path is not the last token of either command: it reads the path as the next
-# whitespace-delimited word and strips quotes, not the `",` that closes a TOML
-# array element, so a path at the end of one of these strings is read as
-# `fuzz/Cargo.toml",` and the gate fails closed on a manifest that is not
-# there. Do not "tidy" the flag order back.
+# out-of-workspace half of its file set from the `--manifest-path` arguments
+# this file names.
+#
+# Two things about that scan used to constrain how these lines are written, and
+# neither does now. It reads whole-line comments as prose rather than as
+# invocations (#147), so this paragraph may spell the flag out; and it trims
+# the quote, comma and bracket a TOML array element closes with (#166), so the
+# flag's argument may be the last token of one of these strings. The coupling
+# itself is still real: keep every manifest path a literal, because a path the
+# scan cannot resolve fails that gate closed.
 [tasks.rust-fmt-check]
 description = "Check Rust formatting, no writes"
 run = [
@@ -104,7 +107,7 @@ run = [
 description = "Format Rust code in place"
 run = [
   "cargo fmt --all",
-  "cargo fmt --manifest-path fuzz/Cargo.toml --all",
+  "cargo fmt --all --manifest-path fuzz/Cargo.toml",
 ]
 
 [tasks.rust-clippy]
