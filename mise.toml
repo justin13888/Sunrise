@@ -854,6 +854,23 @@ description = "Assert the file size gate's exit-code contract (fast, no cargo)"
 # The gate shipped with three failure modes and no fixtures for any of them.
 run = "python3 .github/scripts/test_file_size_gate.py"
 
+[tasks.orphan-crate-gate-test]
+description = "Assert the orphan crate gate's exit-code contract (fast, synthesised workspaces)"
+# A second or two: it synthesises Cargo workspaces of two to four one-line
+# crates in a temp directory and drives the gate at them with --manifest-path,
+# so it never reads this workspace. It does run `cargo metadata --no-deps`,
+# which reads manifests without resolving or compiling. The gate prints the
+# reachable count that overview.md cites and nothing checked the walk behind it.
+run = "python3 .github/scripts/test_orphan_crate_gate.py"
+
+[tasks.kynos-waiver-gate-test]
+description = "Assert the kynos waiver gate's exit-code contract (fast, synthesised workspaces)"
+# About a second: it synthesises a workspace with a stand-in `kynos` path
+# dependency in a temp directory and runs the gate with its cwd inside it,
+# which is the only thing that steers the gate — it takes no arguments. The
+# feature set it reads has already changed shape once under it.
+run = "python3 .github/scripts/test_kynos_waiver_gate.py"
+
 # --- Release artifacts ---
 #
 # Same Dockerfile and the same build args the release workflow uses, so a

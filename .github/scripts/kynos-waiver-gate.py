@@ -33,6 +33,12 @@ is taken anywhere and the strict gate — the one the ADR called "unholdable for
 project with a legitimate upgrade route" — is exactly the one that holds.
 
 Exit 0 when no waiver is reachable, 1 when one is, 2 when the gate cannot run.
+
+All three are asserted in `test_kynos_waiver_gate.py` beside this file, run by
+the `kynos-waiver-gate-contract` job in ci.yml on every trigger the workflow
+has. Because this script takes no arguments and reads no environment variable,
+the working directory is the only thing that steers it, so those cases
+synthesise a workspace with a stand-in `kynos` and run it with `cwd` inside.
 """
 
 from __future__ import annotations
