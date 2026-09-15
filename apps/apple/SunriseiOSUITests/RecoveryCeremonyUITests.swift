@@ -53,15 +53,13 @@ final class RecoveryCeremonyUITests: SunriseUITestCase {
 
         let later = app.buttons["recovery.later"]
         XCTAssertTrue(later.waitForExistence(timeout: 30), "the ceremony is on screen")
-        later.tap()
+        activate(later, named: "the ceremony's 'Not now' button", timeout: 30)
 
         XCTAssertTrue(
             waitUntil(timeout: 10) { !later.exists },
             "the sheet is gone rather than merely dismissed behind itself"
         )
-        let today = app.tabBars.buttons["Today"]
-        XCTAssertTrue(today.waitForExistence(timeout: 10), "the tab bar is reachable again")
-        today.tap()
+        activate(app.tabBars.buttons["Today"], named: "the Today tab, once the sheet is gone")
         XCTAssertTrue(
             waitUntil(timeout: 10) { self.app.state == .runningForeground },
             "and the app is still running"

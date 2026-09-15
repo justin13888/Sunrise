@@ -33,9 +33,10 @@ final class AppNavigationUITests: SunriseUITestCase {
         createVault()
 
         for name in ["inbox", "search", "focus", "routines", "review"] {
-            let row = app.descendants(matching: .any)["sidebar.\(name)"]
-            XCTAssertTrue(row.waitForExistence(timeout: 10), "\(name) is in the sidebar")
-            activate(row)
+            activate(
+                app.descendants(matching: .any)["sidebar.\(name)"],
+                named: "the \(name) row in the sidebar"
+            )
             XCTAssertTrue(
                 waitUntil(timeout: 10) { self.app.windows.firstMatch.exists },
                 "\(name) rendered without taking the window down"
@@ -49,10 +50,12 @@ final class AppNavigationUITests: SunriseUITestCase {
         capture("Renew passport")
         capture("Book the ferry")
 
-        activate(app.descendants(matching: .any)["sidebar.search"])
+        activate(
+            app.descendants(matching: .any)["sidebar.search"],
+            named: "the search row in the sidebar"
+        )
         let field = app.textFields["search.field"]
-        XCTAssertTrue(field.waitForExistence(timeout: 10))
-        activate(field)
+        activate(field, named: "the search field")
         field.typeText("ferry")
 
         XCTAssertTrue(
@@ -78,9 +81,7 @@ final class AppNavigationUITests: SunriseUITestCase {
         // else. See `BrowseSidebar.header(_:)`, and
         // `addButton(_:systemImage:identifier:action:)` for where the
         // control went.
-        let add = app.buttons["sidebar.stream.new"]
-        XCTAssertTrue(add.waitForExistence(timeout: 10), "the Streams header offers +")
-        activate(add)
+        activate(app.buttons["sidebar.stream.new"], named: "the Streams header's + button")
 
         // The sheet's own field, not `textFields.firstMatch`. The list behind
         // this sheet is Today, which has a capture bar — so the first text
@@ -89,10 +90,9 @@ final class AppNavigationUITests: SunriseUITestCase {
         // `staticTexts["Travel"]` assertion off the capture preview. Green
         // test, empty vault.
         let name = app.textFields["stream.name"]
-        XCTAssertTrue(name.waitForExistence(timeout: 10))
-        activate(name)
+        activate(name, named: "the new stream sheet's name field")
         name.typeText("Travel")
-        activate(app.buttons["Create"])
+        activate(app.buttons["Create"], named: "the new stream sheet's Create button")
 
         XCTAssertTrue(
             app.descendants(matching: .any)["sidebar.stream.travel"]
