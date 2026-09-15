@@ -538,12 +538,23 @@ run = """
 set -euo pipefail
 xcodegen generate --quiet
 swiftlint lint --strict --quiet --config .swiftlint.yml
+# See `ios-app` below for why the result bundle is here and what reads it.
+bundle="../../out/test-results/macos.xcresult"
+rm -rf "$bundle"
+mkdir -p "$(dirname "$bundle")"
+status=0
 xcodebuild test \\
   -project Sunrise.xcodeproj \\
   -scheme Sunrise \\
   -destination 'platform=macOS,arch=arm64' \\
+  -resultBundlePath "$bundle" \\
   -quiet \\
-  CODE_SIGNING_ALLOWED=NO
+  CODE_SIGNING_ALLOWED=NO || status=$?
+if [ "$status" -ne 0 ]; then
+  echo "--- assertions from $bundle ---" >&2
+  ../../.github/scripts/xcresult-failures.py "$bundle" >&2 || true
+  exit "$status"
+fi
 """
 
 # Generate the Xcode project, build the iOS app, and run its tests.
@@ -581,12 +592,43 @@ swiftlint lint --strict --quiet --config .swiftlint.yml
 # nine Keychain and vault-root tests fail for a reason that has nothing to
 # do with the code. Ad-hoc (`CODE_SIGN_IDENTITY=-`, set in project.yml) is
 # enough for the simulator and needs no developer account.
+#
+# `-resultBundlePath` and the block below exist because `-quiet` is otherwise
+# a one-way valve. On a failing run it prints the *name* of the failing test
+# and nothing else — no assertion message, no file, no line — which is the
+# entire log tail CI left when `LibraryReachUITests` flaked. Dropping `-quiet`
+# is not the answer either: this job compiles two apps, an xcframework and
+# five test bundles, and its unquiet log buries the twelve lines that matter
+# in tens of thousands that do not. The bundle holds those twelve lines;
+# `xcresult-failures.py` prints them, and only on the failing path.
+#
+# `|| status=$?` and an explicit `exit`, rather than letting the printer be
+# the last command in the task. A shell reports the *last* command's status,
+# so a diagnostic that ran fine would be the thing the task exited with, and
+# a red test run would come back green — the failure mode worth guarding
+# against here is the fix hiding the bug. `set -e` alone does not cover it
+# either: it would abort at `xcodebuild` and the printer would never run,
+# which is the state this is trying to leave behind. So: capture the status,
+# print, and exit with `xcodebuild`'s own code whatever the printer did.
+#
+# The bundle goes under the repository's gitignored `out/`, beside the one
+# `apple-shots` writes. Nothing here commits it.
+bundle="../../out/test-results/ios.xcresult"
+rm -rf "$bundle"
+mkdir -p "$(dirname "$bundle")"
+status=0
 xcodebuild test \\
   -project Sunrise.xcodeproj \\
   -scheme SunriseiOS \\
   -destination "platform=iOS Simulator,name=$ios_sim" \\
+  -resultBundlePath "$bundle" \\
   -quiet \\
-  CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=-
+  CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=- || status=$?
+if [ "$status" -ne 0 ]; then
+  echo "--- assertions from $bundle ---" >&2
+  ../../.github/scripts/xcresult-failures.py "$bundle" >&2 || true
+  exit "$status"
+fi
 """
 
 [tasks.apple-app]
