@@ -166,10 +166,11 @@ fn frozen_envelopes_round_trip_and_verify() {
 fn blob_chunk_nonce_vectors_hold() {
     for v in vectors::BLOB_CHUNK_NONCE_VECTORS {
         assert_eq!(
-            chunk_nonce(&v.blob_key, v.chunk_idx),
+            chunk_nonce(&v.blob_key, &v.blob_id, v.chunk_idx, v.chunk_count),
             v.nonce,
-            "blob chunk nonce drifted at index {}",
-            v.chunk_idx
+            "blob chunk nonce drifted at index {} of {}",
+            v.chunk_idx,
+            v.chunk_count
         );
     }
 }

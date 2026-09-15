@@ -8,12 +8,34 @@
 //! # Why the nonce is derived rather than random
 //!
 //! A random 24-byte nonce would be safe, and it would also have to be stored
-//! per chunk. Deriving it from `blob_key || u32_be(chunk_idx)` makes the chunk
-//! envelope self-describing: given the key and the index — both of which a
-//! reader already has, because it is asking for chunk *n* — the nonce is
-//! recomputable, so the envelope carries no nonce field at all. The derivation
-//! is unique per `(blob_key, chunk_idx)` and `blob_key` is fresh random per
-//! attachment, so no `(key, nonce)` pair is ever reused.
+//! per chunk. Deriving it makes the chunk envelope self-describing: given the
+//! key and the chunking — both of which a reader already has, because it is
+//! asking for chunk *n* of *m* in blob *b* — the nonce is recomputable, so the
+//! envelope carries no nonce field at all.
+//!
+//! # The nonce is derived from the AAD, and that is the whole point
+//!
+//! [`chunk_nonce`] hashes `blob_key || chunk_aad(blob_id, chunk_idx,
+//! chunk_count)`. It does **not** take the three values separately and
+//! reassemble them, because that is the shape the defect had: the nonce was
+//! `blob_key || u32_be(chunk_idx)` and `chunk_count` was bound in the AAD
+//! alone.
+//!
+//! AAD does not enter the keystream. XChaCha20-Poly1305 derives its stream from
+//! `(key, nonce)` and nothing else, so two *different chunkings of the same
+//! plaintext* under one `blob_key` — say the same bytes sealed once as "0 of 1"
+//! and once as "0 of 2" — produced two ciphertexts over one keystream. Their
+//! XOR is the XOR of the two plaintexts: classic two-time-pad, confidentiality
+//! of both messages gone, and the Poly1305 key with it. The AAD caught the
+//! *replay* of one chunk as another but could not prevent the *reuse*, because
+//! it never reached the cipher.
+//!
+//! Feeding the AAD bytes themselves — rather than a hand-rolled copy of the
+//! same three fields — is what keeps the two in step. Anything that becomes
+//! part of what distinguishes one chunking from another has to be added to
+//! [`chunk_aad`], and adding it there now changes the nonce by construction.
+//! A future field bound in the AAD and forgotten in the nonce is not
+//! expressible.
 //!
 //! # Why the AAD names the chunk count
 //!
@@ -56,7 +78,12 @@ pub const SEALED_CHUNK_LEN: usize = CHUNK_PLAINTEXT_LEN + AEAD_TAG_LEN;
 
 /// KDF context for the per-chunk nonce. Unique to this purpose, per
 /// `docs/03-crypto/primitives.md`.
-const NONCE_CONTEXT: &str = "sunrise.blob_chunk_nonce.v1";
+///
+/// `v2` because the key material changed: `v1` hashed `blob_key ||
+/// u32_be(chunk_idx)`, which left the chunking unbound to the keystream. The
+/// context string moves with the derivation so a `v1` and a `v2` sealer cannot
+/// silently produce different nonces under the same name.
+const NONCE_CONTEXT: &str = "sunrise.blob_chunk_nonce.v2";
 
 /// Blob-chunk errors.
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -94,12 +121,28 @@ impl From<AeadError> for BlobChunkError {
     }
 }
 
-/// The nonce for one chunk: `BLAKE3.derive_key(ctx, blob_key || u32_be(idx))`.
+/// The nonce for one chunk:
+/// `BLAKE3.derive_key(ctx, blob_key || chunk_aad(blob_id, idx, count))`.
+///
+/// Takes the whole chunking rather than the index alone. See this module's
+/// header for why the AAD bytes are the key material: the nonce has to
+/// distinguish everything the AAD distinguishes, and reusing the AAD builder
+/// is the only version of that which cannot fall out of step.
+///
+/// The material is a fixed 32-byte key followed by a self-delimiting CBOR map,
+/// so no two `(blob_key, blob_id, chunk_idx, chunk_count)` tuples share an
+/// encoding.
 #[must_use]
-pub fn chunk_nonce(blob_key: &[u8; AEAD_KEY_LEN], chunk_idx: u32) -> [u8; AEAD_NONCE_LEN] {
-    let mut material = [0u8; AEAD_KEY_LEN + 4];
-    material[..AEAD_KEY_LEN].copy_from_slice(blob_key);
-    material[AEAD_KEY_LEN..].copy_from_slice(&chunk_idx.to_be_bytes());
+pub fn chunk_nonce(
+    blob_key: &[u8; AEAD_KEY_LEN],
+    blob_id: &[u8; 16],
+    chunk_idx: u32,
+    chunk_count: u32,
+) -> [u8; AEAD_NONCE_LEN] {
+    let aad = chunk_aad(blob_id, chunk_idx, chunk_count);
+    let mut material = Vec::with_capacity(AEAD_KEY_LEN + aad.len());
+    material.extend_from_slice(blob_key);
+    material.extend_from_slice(&aad);
     let derived = derive_key(NONCE_CONTEXT, &material, AEAD_NONCE_LEN);
     let mut nonce = [0u8; AEAD_NONCE_LEN];
     nonce.copy_from_slice(&derived);
@@ -157,7 +200,7 @@ pub fn seal_chunk(
             len: plaintext.len(),
         });
     }
-    let nonce = chunk_nonce(blob_key, chunk_idx);
+    let nonce = chunk_nonce(blob_key, blob_id, chunk_idx, chunk_count);
     let aad = chunk_aad(blob_id, chunk_idx, chunk_count);
     Ok(aead_seal_xchacha(blob_key, &nonce, plaintext, &aad)?)
 }
@@ -177,7 +220,7 @@ pub fn open_chunk(
     ciphertext: &[u8],
 ) -> Result<Vec<u8>, BlobChunkError> {
     check_range(chunk_idx, chunk_count)?;
-    let nonce = chunk_nonce(blob_key, chunk_idx);
+    let nonce = chunk_nonce(blob_key, blob_id, chunk_idx, chunk_count);
     let aad = chunk_aad(blob_id, chunk_idx, chunk_count);
     Ok(aead_open_xchacha(blob_key, &nonce, ciphertext, &aad)?)
 }
@@ -353,14 +396,81 @@ mod tests {
     }
 
     #[test]
-    fn the_nonce_is_unique_per_index_and_stable_across_calls() {
-        assert_eq!(chunk_nonce(&key(), 0), chunk_nonce(&key(), 0));
-        assert_ne!(chunk_nonce(&key(), 0), chunk_nonce(&key(), 1));
+    fn the_nonce_is_unique_per_chunking_and_stable_across_calls() {
+        assert_eq!(
+            chunk_nonce(&key(), &blob(), 0, 3),
+            chunk_nonce(&key(), &blob(), 0, 3)
+        );
+        assert_ne!(
+            chunk_nonce(&key(), &blob(), 0, 3),
+            chunk_nonce(&key(), &blob(), 1, 3)
+        );
         // A different key gives a different nonce at the same index, so two
         // attachments never share a (key, nonce) pair even at chunk 0.
         let mut other = key();
         other[0] ^= 1;
-        assert_ne!(chunk_nonce(&key(), 0), chunk_nonce(&other, 0));
+        assert_ne!(
+            chunk_nonce(&key(), &blob(), 0, 3),
+            chunk_nonce(&other, &blob(), 0, 3)
+        );
+        // And every other coordinate of the chunking moves it too.
+        let mut elsewhere = blob();
+        elsewhere[0] ^= 1;
+        assert_ne!(
+            chunk_nonce(&key(), &blob(), 0, 3),
+            chunk_nonce(&key(), &elsewhere, 0, 3)
+        );
+        assert_ne!(
+            chunk_nonce(&key(), &blob(), 0, 3),
+            chunk_nonce(&key(), &blob(), 0, 4)
+        );
+    }
+
+    /// The defect this derivation exists to close: two *different chunkings* of
+    /// one blob under one key must not share a keystream.
+    ///
+    /// Asserted on the keystream rather than on the nonce, because the nonce is
+    /// only the mechanism — what matters is that the cipher output for the
+    /// same plaintext differs. Sealing identical plaintext twice makes the
+    /// comparison direct: with a reused `(key, nonce)` the two ciphertexts are
+    /// byte-identical, and any difference at all is proof the keystreams
+    /// diverged.
+    ///
+    /// Before the fix this XOR was `plaintext_a XOR plaintext_b` for *any* two
+    /// plaintexts, which is a two-time pad. `blob_key` being fresh per
+    /// `attach_file` made it unreachable in this build; that was a property of
+    /// the caller, and this is a property of the primitive.
+    #[test]
+    fn two_chunkings_of_one_blob_under_one_key_do_not_share_a_keystream() {
+        let plaintext = b"the very same bytes, chunked two different ways";
+        let as_one = seal_chunk(&key(), &blob(), 0, 1, plaintext).expect("seal as 1 of 1");
+        let as_two = seal_chunk(&key(), &blob(), 0, 2, plaintext).expect("seal as 1 of 2");
+        assert_ne!(
+            as_one, as_two,
+            "identical plaintext under one key at two chunk counts must not seal identically"
+        );
+        // Stronger than `!=`: not one byte of the ciphertext may agree by
+        // construction, so check the keystream difference is not the
+        // (all-zero) plaintext difference anywhere in the body.
+        let body = plaintext.len();
+        assert!(
+            as_one[..body]
+                .iter()
+                .zip(&as_two[..body])
+                .any(|(a, b)| a != b),
+            "the two ciphertext bodies are identical: the keystream was reused"
+        );
+    }
+
+    /// The same statement one level down: two chunkings differing only in
+    /// `chunk_count` derive different nonces, so no `(key, nonce)` pair is
+    /// shared. This is what makes the ciphertext test above true rather than
+    /// lucky.
+    #[test]
+    fn chunk_count_is_bound_into_the_nonce_and_not_only_the_aad() {
+        let a = chunk_nonce(&key(), &blob(), 0, 1);
+        let b = chunk_nonce(&key(), &blob(), 0, 2);
+        assert_ne!(a, b, "chunk_count does not reach the nonce derivation");
     }
 
     /// The truncation case the AAD's `chunk_count` exists for: a chunk sealed

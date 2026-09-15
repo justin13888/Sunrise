@@ -108,8 +108,8 @@ mod tests {
         );
         assert_eq!(
             meta["crypto_suite_supported"],
-            serde_json::json!([2]),
-            "protocol-versioning.md §2 publishes CRYPTO_SUITE_V = 2"
+            serde_json::json!([3]),
+            "protocol-versioning.md §2 publishes CRYPTO_SUITE_V = 3"
         );
         assert_eq!(
             meta["doc_schema_floor"],

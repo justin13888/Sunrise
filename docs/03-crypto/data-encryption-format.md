@@ -316,9 +316,11 @@ BlobChunkEnvelope = {
 ```
 
 ```
+chunk_aad = canonical_cbor({1: blob_id, 2: chunk_idx, 3: chunk_count})
+
 blob_chunk_nonce = BLAKE3.derive_key(
-    context      = "sunrise.blob_chunk_nonce.v1",
-    key_material = blob_key || u32_be(chunk_idx),
+    context      = "sunrise.blob_chunk_nonce.v2",
+    key_material = blob_key || chunk_aad,
     out_len      = 24
 )
 
@@ -326,17 +328,29 @@ ciphertext = XChaCha20-Poly1305_seal(
     key       = blob_key,
     nonce     = blob_chunk_nonce,
     plaintext = chunk_plaintext,
-    aad       = canonical_cbor({1: blob_id, 2: chunk_idx, 3: chunk_count})
+    aad       = chunk_aad
 )
 ```
 
-> **A `blob_key` MUST NOT seal two different byte sequences.** The nonce above is
-> derived from `blob_key ‖ u32_be(chunk_idx)` and carries no randomness, so
-> reusing a key across two distinct plaintexts at the same `chunk_idx` reuses an
+**The nonce derivation takes the AAD bytes, and implementations MUST NOT
+substitute an equivalent hand-built concatenation of the same three fields.**
+The `v1` derivation was `blob_key ‖ u32_be(chunk_idx)`, with `chunk_count`
+bound in the AAD alone. AAD does not enter the keystream: XChaCha20-Poly1305
+derives its stream from `(key, nonce)` only. Two different *chunkings* of the
+same plaintext under one `blob_key` — the same bytes sealed once as `0 of 1` and
+once as `0 of 2` — therefore shared a keystream, and the XOR of the two
+ciphertexts was the XOR of the two plaintexts. Deriving from the AAD bytes makes
+the two definitionally equal: a field added to `chunk_aad` changes the nonce
+without a second edit.
+
+> **A `blob_key` MUST NOT seal two different byte sequences at one chunking.**
+> The nonce carries no randomness, so reusing a key across two distinct
+> plaintexts at the same `(blob_id, chunk_idx, chunk_count)` reuses an
 > XChaCha20-Poly1305 nonce — which forfeits confidentiality of both messages and
 > leaks the Poly1305 authentication key. Every sealed byte sequence — every
 > attachment, every thumbnail, every re-attach of the same file — gets a fresh
-> 32-byte random `blob_key`.
+> 32-byte random `blob_key`, so the rule holds by construction rather than by
+> the caller remembering it.
 >
 > Consequently there is no dedup by key sharing, at any scope, and
 > content-addressing over ciphertext never collides across attachments. See

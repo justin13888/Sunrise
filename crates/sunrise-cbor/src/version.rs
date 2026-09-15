@@ -85,7 +85,22 @@ pub const DOC_SCHEMA_FLOOR: u16 = 1;
 /// self-signed. None of the *primitives* changed — which is why
 /// [`ENVELOPE_FORMAT_V`] does not move — but the key schedule they are applied
 /// to did, and that is what this constant names.
-pub const CRYPTO_SUITE_V: u16 = 2;
+///
+/// `3` re-derives the blob-chunk nonce. It was
+/// `BLAKE3.derive_key("sunrise.blob_chunk_nonce.v1", blob_key ||
+/// u32_be(chunk_idx))`, with `chunk_count` bound in the chunk's AAD and
+/// nowhere else — and AAD does not enter the keystream. Two different
+/// chunkings of one plaintext under one `blob_key` therefore shared a
+/// keystream. The derivation now hashes the chunk AAD itself
+/// (`"sunrise.blob_chunk_nonce.v2"`, `blob_key || chunk_aad`), so everything
+/// the AAD distinguishes the nonce distinguishes too, by construction rather
+/// than by two definitions being kept in step. No primitive changed, which is
+/// again why [`ENVELOPE_FORMAT_V`] does not move: the key schedule did.
+///
+/// Nothing is deployed, so no blob sealed under `2` exists to migrate. A `2`
+/// chunk is simply unopenable here, and that is the intended behaviour of a
+/// suite bump.
+pub const CRYPTO_SUITE_V: u16 = 3;
 
 /// Local storage schema version. Per-device; never appears on the wire.
 ///
