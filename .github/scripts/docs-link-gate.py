@@ -501,6 +501,31 @@ def scan_text(text: str) -> tuple[set[str], list[Link], list[Unparsed]]:
     return slugs, links, unparsed
 
 
+def resolve_relative(citing: str, destination: str) -> str | None:
+    """Where a relative destination written in `citing` points, or None.
+
+    A leading `/` is repository-absolute; anything else joins against the
+    citing file's own directory, which is what a markdown renderer does and
+    what github.com does when a reader clicks. `None` means the result climbs
+    out of the repository, which is a broken link rather than a path.
+
+    Named rather than inlined because `citation-gate.py` imports it: that gate
+    resolves a backticked `../03-crypto/recovery.md` by the same convention
+    this one resolves `[a](../03-crypto/recovery.md)`, and two implementations
+    of "where does that point" can disagree — on the day they do, one of the
+    two gates is wrong about the same tree and neither says so.
+    """
+    joined = (
+        destination[1:]
+        if destination.startswith("/")
+        else posixpath.join(posixpath.dirname(citing), destination)
+    )
+    resolved = posixpath.normpath(joined)
+    if resolved == ".." or resolved.startswith("../"):
+        return None
+    return resolved
+
+
 def git_tracked(root: str) -> list[str]:
     """Every path git tracks, which is what "this file exists" has to mean.
 
@@ -572,9 +597,8 @@ def check(root: str) -> int:
             where = f"::error file={name},line={link.line}::docs-links: [{link.text}]({dest})"
 
             if target:
-                joined = target[1:] if target.startswith("/") else posixpath.join(posixpath.dirname(name), target)
-                resolved = posixpath.normpath(joined)
-                if resolved == ".." or resolved.startswith("../"):
+                resolved = resolve_relative(name, target)
+                if resolved is None:
                     print(f"{where} escapes the repository.")
                     broken += 1
                     continue
