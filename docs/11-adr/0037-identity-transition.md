@@ -77,6 +77,35 @@ The split is the decision. Everything else follows from it.
    therefore holds no key above the one it was cut at. An HLC is a claim; an
    epoch is a key you either hold or do not. The HLC components break ties
    between honest concurrent rotations, which is all they are asked to do.
+
+   Two things this rests on that are not stated in the sentence, and that an
+   adversarial reading finds first:
+
+   - **The honest rotation must sit *above* the shared epoch, not at it.** If
+     the transition that a revocation drives were sealed under the epoch the
+     departing device still holds, both rows would carry the same `meta_epoch`
+     and the decision would fall to `hlc_physical_ms` — which is attacker-chosen
+     within `MAX_DRIFT_MS`, and which the revoked device can therefore win.
+     What prevents that is an ordering across two transactions:
+     `revoke_device` rotates every stream (the vault-meta stream included) and
+     commits, and only then calls `rotate_identity`, so the transition is sealed
+     at E+1 while the excluded device holds nothing above E. Nothing in the type
+     system says so, and the comment in `rotate_identity` asserted the opposite
+     until this was checked, so
+     `a_revocations_transition_is_sealed_above_the_epoch_the_cut_device_holds`
+     pins it.
+   - **A row's `meta_epoch` is not a free claim, even though an envelope's
+     `epoch` field is.** `sunrise_core::engine`'s `DEFERRED_TOTAL_CAP` says
+     "`epoch` is attacker-chosen", and it is — on the *deferral* path, which is
+     reached because no key at that `(stream, epoch)` is held, so nothing has
+     been opened. A row in `identity_transitions` is written only after the
+     envelope opened under a key this replica holds at that exact epoch. The
+     two statements are about the same field and different facts.
+
+   What this does **not** claim: a revoked device's *writes* are bounded. They
+   are not (ADR-0034, and `Engine::apply_remote`'s step 2 says so in terms). It
+   can go on emitting ops, including transitions, at every epoch it holds. The
+   claim is only that none of them outranks a rotation minted after its cut.
 5. **Signatures are verified in the fold, not at apply.** `prev_sig` can only be
    checked against a predecessor the verifier has already established, and a
    replica may hold a transition two links ahead of what it knows. That op is

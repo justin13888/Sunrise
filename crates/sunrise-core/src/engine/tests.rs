@@ -7289,6 +7289,99 @@ fn a_device_offline_across_a_rotation_catches_up_without_re_pairing() {
     }
 }
 
+/// The epoch separation the ordering argument rests on, asserted against the
+/// **production** path rather than against hand-chosen epochs.
+///
+/// `a_higher_meta_epoch_beats_any_hlc` below applies one transition at epoch 1
+/// and the other at epoch 2 and shows the fold prefers the higher. That pins
+/// the comparison and nothing else: it says what happens *if* the honest
+/// rotation outranks the revoked device's, and takes the "if" as given. The
+/// "if" is the security claim.
+///
+/// Nothing in this engine's types produces it. It is an emergent property of
+/// two transactions in `revoke_device`: the register is written, every stream
+/// in `rotation_set` — the vault-meta stream among them — is minted forward and
+/// sealed to the unrevoked devices only, that transaction commits, and *then*
+/// `rotate_identity` runs and seals the transition under whatever epoch is live,
+/// which is now E+1. Reorder those two and the argument collapses silently: the
+/// transition ties the revoked device's own possible rows on `meta_epoch`, and
+/// `hlc_physical_ms` decides — a value that device chooses freely inside
+/// `MAX_DRIFT_MS`.
+///
+/// The comment in `rotate_identity` asserted the collapsed version ("sealed
+/// under the epoch the departing device still shares") until this test was
+/// written, which is exactly how much a comment is worth here.
+#[test]
+fn a_revocations_transition_is_sealed_above_the_epoch_the_cut_device_holds() {
+    let ea = engine_random_keys(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eb = engine_random_keys(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut dba = db_root(ROOT);
+    trust(&ea, &mut dba, &eb);
+    let b_id = eb.keychain.device_id();
+
+    ea.apply(
+        &mut dba,
+        Command::RevokeDevice {
+            device_id: EntityRef::new(EntityKind::Device, b_id),
+            reason: RevokeReason::Lost,
+        },
+    )
+    .expect("the revocation runs");
+
+    // Read the epoch each op was sealed under off its own envelope, which is
+    // what a peer reads.
+    let sealed_at = |kind: &str| -> u32 {
+        let env: Vec<u8> = dba
+            .conn()
+            .query_row(
+                "SELECT envelope FROM ops WHERE inner_kind = ?1 AND stream_id = ?2",
+                params![kind, &META_STREAM[..]],
+                |r| r.get(0),
+            )
+            .unwrap_or_else(|e| panic!("one {kind} op in the vault-meta stream: {e}"));
+        sunrise_crypto::decode_envelope(&env)
+            .expect("the op this engine just wrote decodes")
+            .epoch
+    };
+
+    // The revocation itself is deliberately sealed at the epoch the departing
+    // device still holds -- it has to be readable by every peer that has not
+    // yet received the new one. That is the ceiling on what the cut device can
+    // ever seal under.
+    let cut_epoch = sealed_at("device.revoke");
+    let transition_epoch = sealed_at("identity.transition");
+    assert!(
+        transition_epoch > cut_epoch,
+        "the rotation that makes the revocation stick was sealed at meta epoch \
+         {transition_epoch}, which does not outrank the epoch {cut_epoch} the cut device \
+         still holds; ADR-0037 §4's ordering argument needs it strictly above"
+    );
+
+    // And the ceiling is real: the revoked device was sealed no key at or above
+    // the epoch the transition sits at, so it cannot produce a competing row
+    // there however it dates its HLC.
+    let served_at_or_above: Vec<u32> = key_envelope_envs(&dba)
+        .into_iter()
+        .filter_map(|env| ea.keychain.open_op(&env).ok())
+        .filter_map(|cbor| decode_inner_op(&cbor).ok())
+        .filter_map(|inner| match inner {
+            InnerOp::KeyEnvelope(p)
+                if p.stream_id == META_STREAM
+                    && p.recipient == Recipient::Device(b_id)
+                    && p.epoch >= transition_epoch =>
+            {
+                Some(p.epoch)
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(
+        served_at_or_above.is_empty(),
+        "the revoked device was handed vault-meta keys at {served_at_or_above:?}, at or \
+         above the epoch its own revocation's rotation was sealed under"
+    );
+}
+
 /// **`meta_epoch` sorts first, and that is the security component.**
 ///
 /// Two transitions succeed the same identity. The attacker's carries an

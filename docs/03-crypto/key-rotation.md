@@ -250,6 +250,16 @@ is a claim anybody can make; an epoch is a key you either hold or do not. The
 HLC components break ties between honest concurrent rotations, which is all they
 are asked to do.
 
+The argument needs the honest rotation to be sealed **above** the shared epoch
+rather than at it. A transition sealed under the epoch the departing device
+still holds would tie on `meta_epoch`, and the tie is broken by
+`hlc_physical_ms`, which that device chooses freely inside `MAX_DRIFT_MS`.
+`revoke_device` gets this right by ordering two transactions: it rotates every
+stream — the vault-meta stream among them — and commits, then calls
+`rotate_identity`, which seals the transition under the epoch that rotation
+minted. See [ADR-0037](../11-adr/0037-identity-transition.md) §4 for the two
+assumptions this rests on and what it does not claim.
+
 ### Verification, and what a replica checks when
 
 At **apply** time, structurally and nothing else: `to_identity_id` is the

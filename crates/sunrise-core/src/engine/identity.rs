@@ -344,10 +344,35 @@ impl Engine {
             let encoded =
                 encode_inner_op(&inner).map_err(|_| rusqlite::Error::ExecuteReturnedResults)?;
 
-            // Sealed under the epoch the departing device still shares, like
-            // every other op in a rotating transaction: a peer that has not yet
-            // received the new epoch must still be able to read the op that
-            // tells it the identity moved.
+            // Sealed under whatever meta epoch is live **now** — and on the
+            // revocation path that is the epoch the revocation has already
+            // rotated *to*, not the one the departing device still holds.
+            //
+            // This is load-bearing and it is not visible from inside this
+            // function, because it is a property of two transactions rather
+            // than of one. `revoke_device` writes the revocation register,
+            // mints a fresh epoch for every stream in `rotation_set` — the
+            // vault-meta stream among them — seals each to the unrevoked
+            // devices only, and commits. It calls this function afterwards, in
+            // a second transaction, so `ensure_stream_epoch` below finds the
+            // meta stream already at E+1 while the excluded device holds
+            // nothing above E.
+            //
+            // That separation is the whole of why `meta_epoch` is the security
+            // component of the fold's ordering (ADR-0037 §4). The excluded
+            // device still holds `ID_S_priv` and can sign both halves of a
+            // competing transition from the same predecessor; what it cannot do
+            // is seal one at an epoch it has no key for, so its row sorts below
+            // this one however far ahead it dates its HLC. An HLC is a claim;
+            // an epoch is a key you either hold or do not.
+            //
+            // An earlier version of this comment said the op was sealed "under
+            // the epoch the departing device still shares", which describes the
+            // design in which that argument does not hold — the two rows would
+            // tie on `meta_epoch` and an attacker-chosen `hlc_physical_ms`
+            // would decide. `a_revocations_transition_is_sealed_above_the_epoch\
+            // _the_cut_device_holds` pins the real behaviour, so the comment
+            // cannot drift back to describing the broken one.
             let seal_under = self.ensure_stream_epoch(tx, &META_STREAM, now_ms)?;
             let hlc = self.hlc.send();
             outcome.seq = self.next_seq_tx(tx, &META_STREAM)?;
