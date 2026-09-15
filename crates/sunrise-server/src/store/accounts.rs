@@ -170,7 +170,7 @@ impl Store {
     /// statement either writes or does not — so on its own it would go back
     /// to silently ignoring the second blob, which is the behaviour
     /// [`StoreError::RecoveryBlobExists`] exists to end. It stays as defence
-    /// in depth: if a future caller reaches [`SET_IDENTITY`] without the
+    /// in depth: if a future caller reaches `SET_IDENTITY` without the
     /// guard, the column still does not move.
     ///
     /// # Errors
