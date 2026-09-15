@@ -426,7 +426,7 @@ session is never interrupted by an update. Channels: `stable` and `beta`, with
 the beta channel behind a menu item the user turns on
 (*Sunrise ▸ Include Beta Updates*). The decision, and the trust argument that
 is the substance of it, is
-[ADR-0037](../11-adr/0037-macos-update-feed.md); the operator's half is
+[ADR-0038](../11-adr/0038-macos-update-feed.md); the operator's half is
 [`releasing.md`](./releasing.md) §The update feed.
 
 How it fits together:
@@ -445,7 +445,7 @@ How it fits together:
   user action, while the certificate has no such in-band recovery. It is **not**
   a claim that a stolen feed key is harmless: Sparkle accepts an update on
   *either* credential, so whoever holds the key can ship code until a rotation
-  reaches a user. ADR-0037 has the mechanism, the source it is read from, and
+  reaches a user. ADR-0038 has the mechanism, the source it is read from, and
   the rotation procedure.
 
 **One thing is not done and only the repository owner can do it.** The key pair

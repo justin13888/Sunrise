@@ -34,7 +34,7 @@ struct SunriseApp: App {
     ///
     /// On a build with no `SUPublicEDKey` this is still the right call and
     /// still does nothing: the property evaluates to `nil` and no updater is
-    /// created. See ADR-0037.
+    /// created. See ADR-0038.
     init() {
         _ = SoftwareUpdate.controller
     }
@@ -68,7 +68,7 @@ struct SunriseApp: App {
             }
             CommandGroup(after: .appInfo) {
                 // Directly under About, which is where every Mac user already
-                // looks for it. ADR-0037; on a build with no update-signing
+                // looks for it. ADR-0038; on a build with no update-signing
                 // public key both items are disabled and say why.
                 SoftwareUpdateMenuItems()
                 Divider()

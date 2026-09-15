@@ -1,4 +1,4 @@
-# 0038 — A tag uploads an iOS build to TestFlight; App Store submission is a separate, manual act
+# 0039 — A tag uploads an iOS build to TestFlight; App Store submission is a separate, manual act
 
 **Status:** accepted
 

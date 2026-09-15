@@ -294,7 +294,7 @@ encrypted.
    decisions of the same kind and belong beside this record.
 
    > **Fired, and answered beside this record as instructed:**
-   > [ADR-0037](./0037-macos-update-feed.md). Sparkle, an EdDSA-signed
+   > [ADR-0038](./0038-macos-update-feed.md). Sparkle, an EdDSA-signed
    > `appcast.xml` on the same GitHub Release, and `stable` / `beta` channels
    > read off the `prerelease` value `verify` already computes. It does not
    > reverse anything here — it adds a seventh release secret

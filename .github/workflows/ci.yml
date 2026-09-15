@@ -605,7 +605,7 @@ jobs:
     # which release lands on which Sparkle channel, and whether a signature
     # in hand describes the bytes being advertised. The only other way to
     # find out is to publish a release and watch every installed copy either
-    # update or stop updating. See ADR-0037.
+    # update or stop updating. See ADR-0038.
     steps:
       - uses: actions/checkout@v4
       - name: Appcast rules

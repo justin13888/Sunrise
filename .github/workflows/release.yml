@@ -17,7 +17,7 @@ name: Release
 # and both have their own record:
 #
 #   * `appcast` writes the EdDSA-signed update feed every *installed* copy of
-#     the Mac app reads — ADR-0037. It runs after `release` because it names
+#     the Mac app reads — ADR-0038. It runs after `release` because it names
 #     the release it was triggered by.
 #   * `ios-release` uploads an iOS build to App Store Connect — ADR-0038. It is
 #     the one job whose credentials are deliberately allowed not to exist: it
@@ -907,7 +907,7 @@ jobs:
       # is compared against the running copy's CFBundleVersion, which is this
       # workflow's run number and is not recoverable from a tag.
       #
-      # ADR-0037 records why the key is what it is. `.github/scripts/appcast.py`
+      # ADR-0038 records why the key is what it is. `.github/scripts/appcast.py`
       # consumes this file; `.github/scripts/test_appcast.py` asserts what
       # happens when it disagrees with the Release.
       - name: Sign the .dmg for the update feed
@@ -1057,7 +1057,7 @@ jobs:
             # Double quotes with escaped backticks, for the reason the printf
             # above gives: a bare backtick inside single quotes is a command
             # substitution to shellcheck, and to a shell that ever evaluates it.
-            printf "An installed copy finds this release by itself: the app checks a signed \`appcast.xml\` on this Releases page and offers the update on next launch. \`appcast.xml\` and \`appcast-item.json\` are that mechanism rather than files to download by hand — see [ADR-0037](https://github.com/%s/blob/%s/docs/11-adr/0037-macos-update-feed.md).\n" "$GITHUB_REPOSITORY" "$TAG"
+            printf "An installed copy finds this release by itself: the app checks a signed \`appcast.xml\` on this Releases page and offers the update on next launch. \`appcast.xml\` and \`appcast-item.json\` are that mechanism rather than files to download by hand — see [ADR-0038](https://github.com/%s/blob/%s/docs/11-adr/0038-macos-update-feed.md).\n" "$GITHUB_REPOSITORY" "$TAG"
             echo
             echo '### Checksums'
             echo
@@ -1093,7 +1093,7 @@ jobs:
           # the machine that built and stapled the disk image, and it is how
           # the `appcast` job below -- and every *later* release's `appcast`
           # job -- puts this release into the update feed without re-signing a
-          # file it downloaded. See ADR-0037.
+          # file it downloaded. See ADR-0038.
           gh release upload "$TAG" \
             dist/*.tar.gz dist/*.dmg dist/*.sha256 dist/appcast-item.json --clobber
 
@@ -1103,7 +1103,7 @@ jobs:
   # release until that release exists with its assets attached. Hence
   # `needs: release` rather than `needs: macos-app`.
   #
-  # `docs/11-adr/0037-macos-update-feed.md` is the decision, including the
+  # `docs/11-adr/0038-macos-update-feed.md` is the decision, including the
   # clause that matters most here: the EdDSA key this job signs with is
   # **subordinate to the Developer ID certificate in lifecycle**, because
   # Sparkle authorises a change of EdDSA key with the app's Apple code
@@ -1115,7 +1115,7 @@ jobs:
   # `…/releases/latest/download/appcast.xml`, and GitHub's `latest` alias
   # skips prereleases — so when this tag is a prerelease, the feed a user's
   # Mac fetches is still the one attached to the newest *stable* release, and
-  # it has to be replaced or no beta is ever offered. See ADR-0037 §Hosting.
+  # it has to be replaced or no beta is ever offered. See ADR-0038 §Hosting.
   # ---------------------------------------------------------------------
   appcast:
     name: Update feed (appcast.xml)
@@ -1195,7 +1195,7 @@ jobs:
       # *metadata* — which versions exist, which channel each is on — so that
       # someone who can write to this repository's release assets but does not
       # hold the EdDSA key cannot alter it at all. It does not prevent replay
-      # of an older, genuinely signed feed; ADR-0037 says so rather than
+      # of an older, genuinely signed feed; ADR-0038 says so rather than
       # implying otherwise.
       - name: Sign the feed
         env:
@@ -1236,7 +1236,7 @@ jobs:
   # ---------------------------------------------------------------------
   # iOS → App Store Connect.
   #
-  # `docs/11-adr/0038-ios-distribution.md` is the decision this job
+  # `docs/11-adr/0039-ios-distribution.md` is the decision this job
   # implements, and two halves of it are visible here rather than in a
   # document:
   #
@@ -1304,7 +1304,7 @@ jobs:
             echo
             for s in ${MISSING}; do echo "- \`${s}\`"; done
             echo
-            echo "See [docs/11-adr/0038-ios-distribution.md](https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_REF_NAME}/docs/11-adr/0038-ios-distribution.md)"
+            echo "See [docs/11-adr/0039-ios-distribution.md](https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_REF_NAME}/docs/11-adr/0039-ios-distribution.md)"
             echo "for what each one is and how to create it."
           } >> "$GITHUB_STEP_SUMMARY"
           echo "::notice title=iOS was not uploaded::This release shipped no iOS build. See the job summary for the secrets that are missing."
@@ -1496,7 +1496,7 @@ jobs:
             echo
             echo "**Nothing has been submitted for App Store review.** That is a"
             echo "separate, manual act — see"
-            echo "[ADR-0038](https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_REF_NAME}/docs/11-adr/0038-ios-distribution.md)."
+            echo "[ADR-0038](https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_REF_NAME}/docs/11-adr/0039-ios-distribution.md)."
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Delete the temporary keychain and credentials
         if: always() && env.CONFIGURED == 'true'

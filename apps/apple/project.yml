@@ -14,7 +14,7 @@
 # 3. Sparkle is pinned to an exact version, not a range. See `packages:` below.
 name: Sunrise
 
-# The macOS updater. ADR-0037 records why Sparkle, and — the part that is a
+# The macOS updater. ADR-0038 records why Sparkle, and — the part that is a
 # security decision rather than a dependency choice — why its EdDSA appcast key
 # is subordinate to the Developer ID certificate *in lifecycle* rather than a
 # second, co-equal trust root, and why that is not the same as it being the
@@ -209,7 +209,7 @@ targets:
         # build settings keeps one version number in this file.
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
-        # --- Sparkle (ADR-0037) ------------------------------------------
+        # --- Sparkle (ADR-0038) ------------------------------------------
         #
         # The feed the app asks "is there a newer build?". It is the
         # `appcast.xml` asset of the newest *stable* release: GitHub's
@@ -250,7 +250,7 @@ targets:
         #
         # `SUVerifyUpdateBeforeExtraction` is not optional beside it: Sparkle
         # requires it for signed feeds. It is also what makes the rotation
-        # story in ADR-0037 work, because with it enabled Sparkle will only
+        # story in ADR-0038 work, because with it enabled Sparkle will only
         # accept a change of EdDSA key from a Developer ID code signed `.dmg`
         # — which is exactly what `release.yml` produces and nothing else can.
         SURequireSignedFeed: true

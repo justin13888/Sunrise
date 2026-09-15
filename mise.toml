@@ -861,7 +861,7 @@ description = "Assert the Sparkle appcast generator's rules (fast, no network)"
 # asserts has no other check -- which release lands on which Sparkle channel,
 # and whether the signature in hand describes the bytes being advertised -- and
 # the only other way to find out is to publish a release and watch every
-# installed copy either update or stop updating. See ADR-0037.
+# installed copy either update or stop updating. See ADR-0038.
 run = "python3 .github/scripts/test_appcast.py"
 
 # --- Release artifacts ---

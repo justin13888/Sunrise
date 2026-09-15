@@ -36,7 +36,7 @@ private final class UpdaterChannelDelegate: NSObject, SPUUpdaterDelegate {
 
 /// The macOS updater, and the check that decides whether there is one.
 ///
-/// ADR-0037 records the decision this file implements, including the part that
+/// ADR-0038 records the decision this file implements, including the part that
 /// is not a packaging detail: Sparkle authorises a *change* of appcast key with
 /// the app's Apple code signature, so the EdDSA key is subordinate to the
 /// Developer ID certificate in lifecycle rather than a second, co-equal trust

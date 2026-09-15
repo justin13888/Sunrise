@@ -45,17 +45,17 @@ ADRs are numbered sequentially (`0001`, `0002`, …) and never renumbered.
 | 0025 | [Integration credentials are a synced entity, not a Stream field](./0025-integration-account-entity.md) | accepted (depends on 0024) |
 | 0026 | [The rustc pin moves to 1.91.1](./0026-msrv-bump.md) | accepted (amends 0012, 0019 and 0021) |
 | 0027 | [v1 is self-host-first: managed cloud, billing, quotas, presence, Android and sharing are post-v1](./0027-v1-self-host-first.md) | accepted |
-| 0028 | [iOS is a v1 client with its own parity column, at SHOULD level](./0028-ios-is-a-v1-client.md) | accepted (amends the client parity matrix; closes 0019's revisit trigger 1; 0038 takes the channel half of its Decision 6 slot, the MUST-parity half is still reserved) |
+| 0028 | [iOS is a v1 client with its own parity column, at SHOULD level](./0028-ios-is-a-v1-client.md) | accepted (amends the client parity matrix; closes 0019's revisit trigger 1; 0039 takes the channel half of its Decision 6 slot, the MUST-parity half is still reserved) |
 | 0029 | [Design tokens are compiled from TOML, committed, and drift-checked](./0029-design-token-pipeline.md) | accepted (amends the shared UI system's token section; amended by 0030: the seven light-theme colours below AA are raised and the gate is exhaustive) |
 | 0030 | [Every palette colour clears a stated contrast threshold, and the loader enforces it](./0030-palette-contrast-gate.md) | accepted (amends 0029 and the shared UI system's colour section) |
-| 0031 | [macOS ships as a Developer ID-signed, notarized `.dmg`, not through the Mac App Store](./0031-macos-distribution.md) | accepted (settles the "under evaluation" in the clients overview and `desktop.md`; answers 0019's unstated distribution question; revisit trigger 4 fired — see 0037) |
+| 0031 | [macOS ships as a Developer ID-signed, notarized `.dmg`, not through the Mac App Store](./0031-macos-distribution.md) | accepted (settles the "under evaluation" in the clients overview and `desktop.md`; answers 0019's unstated distribution question; revisit trigger 4 fired — see 0038) |
 | 0032 | [Revocation cannot bound certificate issuance; disclose it rather than half-enforce it](./0032-revocation-cannot-bound-cert-issuance.md) | accepted (amends 0024's revocation guarantee; records why the narrow fixes for #105 are unsound) |
 | 0033 | [The relay dedups whole batches, and a re-partitioned re-send is accepted](./0033-relay-batch-dedup-is-whole-batch.md) | accepted (amends the wire protocol's ack-semantics section) |
 | 0034 | [Revocation bounds a device's reads, not its writes, and no replica refuses an op](./0034-revocation-bounds-reads-not-writes.md) | accepted (depends on 0024; amends key rotation §Revocation and the threat model's A3) |
 | 0035 | [The bearer-validity disclosure on `AUTH_DEVICE_SIG_INVALID` is accepted](./0035-bearer-validity-oracle-accepted.md) | accepted (amends server auth §Device binding and the threat model's A2) |
 | 0036 | [The HLC is restored from the op log at open, not left to reset](./0036-hlc-restored-at-open.md) | accepted (amends 0016: its "HLC state does not survive a restart" concession is withdrawn; depends on 0014) |
-| 0037 | [The macOS app updates itself through Sparkle, and the appcast's EdDSA key is subordinate to the Developer ID certificate](./0037-macos-update-feed.md) | accepted (answers 0031's revisit trigger 4; amends `desktop.md` §Update channel and `releasing.md`) |
-| 0038 | [A tag uploads an iOS build to TestFlight; App Store submission is a separate, manual act](./0038-ios-distribution.md) | accepted (takes the channel half of 0028's Decision 6 slot and leaves the MUST-parity half reserved; amends the clients overview §Distribution) |
+| 0038 | [The macOS app updates itself through Sparkle, and the appcast's EdDSA key is subordinate to the Developer ID certificate in lifecycle, not in authority](./0038-macos-update-feed.md) | accepted (answers 0031's revisit trigger 4; amends `desktop.md` §Update channel and `releasing.md`) |
+| 0039 | [A tag uploads an iOS build to TestFlight; App Store submission is a separate, manual act](./0039-ios-distribution.md) | accepted (takes the channel half of 0028's Decision 6 slot and leaves the MUST-parity half reserved; amends the clients overview §Distribution) |
 
 ## When to write a new ADR
 

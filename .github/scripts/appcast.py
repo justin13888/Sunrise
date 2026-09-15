@@ -89,7 +89,7 @@ The cap is **per channel**, not over the merged list. Ten betas in a row would
 otherwise push every stable item out of a globally-capped feed and strand the
 users who never opted into anything.
 
-See `docs/11-adr/0037-macos-update-feed.md` for the trust argument, and
+See `docs/11-adr/0038-macos-update-feed.md` for the trust argument, and
 `docs/07-clients/releasing.md` for the operator's view.
 """
 

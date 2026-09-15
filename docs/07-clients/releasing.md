@@ -18,7 +18,7 @@ you beyond pushing the tag.
 **iOS is a different runbook and does not exist yet.** The `ios-release` job
 uploads to App Store Connect and no-ops, visibly, until six further secrets and
 an App Store Connect app record exist.
-[ADR-0038](../11-adr/0038-ios-distribution.md) §Decision 5 is that list.
+[ADR-0038](../11-adr/0039-ios-distribution.md) §Decision 5 is that list.
 
 **Why this shape:** [ADR-0031](../11-adr/0031-macos-distribution.md). The short
 version is that the app is not sandboxed
@@ -140,7 +140,7 @@ wrong, and the message does not say which.
 ### `SPARKLE_ED_PRIVATE_KEY`
 
 This is the key that signs the update feed and every disk image listed in it.
-[ADR-0037](../11-adr/0037-macos-update-feed.md) is what it is for and why it is
+[ADR-0038](../11-adr/0038-macos-update-feed.md) is what it is for and why it is
 *subordinate* to the Developer ID certificate in lifecycle rather than a second,
 co-equal trust root. Read it before treating this as just another secret, and
 read the paragraph in its Context headed "what this does not buy" before
@@ -301,7 +301,7 @@ report reported it. It is unrelated to the App Sandbox, which stays off; see
 
 ## The update feed
 
-[ADR-0037](../11-adr/0037-macos-update-feed.md) is the decision. Operationally
+[ADR-0038](../11-adr/0038-macos-update-feed.md) is the decision. Operationally
 there are four things to know.
 
 **Where it lives.** `appcast.xml` is an asset of the GitHub Release. The app
@@ -462,9 +462,9 @@ correct behaviour and it is why the file name says `UNSIGNED`.
 
 - [ADR-0031](../11-adr/0031-macos-distribution.md) — why direct download, why
   not the App Store, and what that forced.
-- [ADR-0037](../11-adr/0037-macos-update-feed.md) — the update feed, and why
+- [ADR-0038](../11-adr/0038-macos-update-feed.md) — the update feed, and why
   its EdDSA key is subordinate to the Developer ID certificate.
-- [ADR-0038](../11-adr/0038-ios-distribution.md) — iOS, which this runbook does
+- [ADR-0038](../11-adr/0039-ios-distribution.md) — iOS, which this runbook does
   not cover, and the six secrets it will need.
 - [ADR-0027](../11-adr/0027-v1-self-host-first.md) — self-host-first, which is
   half of the argument.

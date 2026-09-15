@@ -23,7 +23,7 @@
 # Usage: sparkle-tools.sh <destination-directory>
 # Prints the path to the extracted `bin` directory on stdout.
 #
-# See docs/11-adr/0037-macos-update-feed.md.
+# See docs/11-adr/0038-macos-update-feed.md.
 set -euo pipefail
 
 SPARKLE_VERSION="2.10.0"

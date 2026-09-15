@@ -206,7 +206,7 @@ and it carries no MUSTs until an iOS release ships.**
    > **Later change, recorded rather than edited in.** The slot this reserves
    > turned out to hold two things, because
    > [ADR-0031](./0031-macos-distribution.md) then pointed the iOS *channel*
-   > question at it as well. [ADR-0038](./0038-ios-distribution.md) takes the
+   > question at it as well. [ADR-0038](./0039-ios-distribution.md) takes the
    > channel half — a tag uploads a build to App Store Connect, App Store
    > submission is a separate manual act — and explicitly leaves this half
    > where it is. No release has been cut: the six secrets that job needs do
