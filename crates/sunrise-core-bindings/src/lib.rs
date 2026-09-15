@@ -730,7 +730,7 @@ impl SunriseCore {
     /// the code is not shown until the upload has been accepted, and a caller
     /// holding three separate calls is a caller that can get that order wrong.
     ///
-    /// [`AccountBootstrap::recovery_code`] is `None` on a device admitted by
+    /// [`dto::AccountBootstrap::recovery_code`] is `None` on a device admitted by
     /// pairing, which holds no `ID_D_priv`. That is not an error and the app
     /// must not present it as one: the device that created the account is the
     /// one that can produce a code, and this device's account already has one.
