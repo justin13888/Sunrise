@@ -12,6 +12,17 @@ name: Release
 # workflow artifact, and every job that would touch a Release or a registry
 # sits the run out. `verify`'s `dry_run` output is the single switch the rest of
 # the file reads.
+#
+# Two jobs here publish something that is not an artifact on the Release page,
+# and both have their own record:
+#
+#   * `appcast` writes the EdDSA-signed update feed every *installed* copy of
+#     the Mac app reads — ADR-0038. It runs after `release` because it names
+#     the release it was triggered by.
+#   * `ios-release` uploads an iOS build to App Store Connect — ADR-0038. It is
+#     the one job whose credentials are deliberately allowed not to exist: it
+#     no-ops, with its own name and a summary saying so, until the owner has an
+#     App Store Connect record to upload to.
 on:
   push:
     tags:
@@ -63,6 +74,14 @@ jobs:
       # publishes anything reads this rather than re-deriving the event, so
       # there is one place to look for what a dry run does not do.
       dry_run: ${{ steps.check.outputs.dry_run }}
+      # Whether the six App Store Connect secrets `ios-release` needs exist.
+      # Computed here because a job-level `if:` cannot read the `secrets`
+      # context at all, and because `verify` is already the place this workflow
+      # asks "do the credentials for X exist?". Unlike the macOS six, a missing
+      # one of these is **not** a failure: ADR-0038 builds the plumbing before
+      # the App Store Connect record exists, so the job no-ops visibly instead.
+      ios_configured: ${{ steps.ios.outputs.configured }}
+      ios_missing: ${{ steps.ios.outputs.missing }}
     steps:
       # Shallow: this job reads Cargo.toml and the ref name, nothing else.
       - uses: actions/checkout@v4
@@ -119,7 +138,7 @@ jobs:
       # No secret *value* crosses into this job: each `env` entry is the
       # boolean `secrets.X != ''`, evaluated where the secrets live. A job that
       # only has to know whether a private key exists should not be handed one.
-      - name: Signing and notarization secrets must all be present
+      - name: Signing, notarization and update-feed secrets must all be present
         if: steps.check.outputs.dry_run == 'false'
         env:
           MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 != '' }}
@@ -128,6 +147,13 @@ jobs:
           APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 != '' }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID != '' }}
           APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID != '' }}
+          # The appcast signing key. A seventh secret in the same step, and two
+          # messages rather than one: the six above are about the `.dmg` a
+          # stranger downloads, and this one is about the feed every *already
+          # installed* copy reads. They are created in different places, they
+          # fail in different ways, and an operator who fixes one and re-pushes
+          # the tag should not discover the other on the next run.
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY != '' }}
         run: |
           set -euo pipefail
           # A plain string rather than a bash array: `${arr[@]}` on an empty
@@ -140,11 +166,64 @@ jobs:
             eval "have=\${$s}"
             [ "$have" = "true" ] || missing="$missing $s"
           done
+          missing_feed=""
+          for s in SPARKLE_ED_PRIVATE_KEY; do
+            eval "have=\${$s}"
+            [ "$have" = "true" ] || missing_feed="$missing_feed $s"
+          done
+          # Both reported, then one exit. Reporting the first and stopping
+          # would cost a tag delete, a re-push and a 90-minute macOS job to
+          # learn the second.
+          fail=0
           if [ -n "$missing" ]; then
             echo "::error title=macOS release signing is not configured::Missing repository secret(s):${missing}. This release would ship no macOS app, or an unsigned one that Gatekeeper refuses to open, so nothing is built or pushed. Create them as described in docs/07-clients/releasing.md -- only the repository owner can -- then delete and re-push the tag. To exercise the packaging path meanwhile, run this workflow from the Actions tab with the 'unsigned_macos_dmg' input ticked."
-            exit 1
+            fail=1
           fi
-          echo "all six macOS signing secrets are present"
+          if [ -n "$missing_feed" ]; then
+            echo "::error title=macOS update feed signing is not configured::Missing repository secret(s):${missing_feed}. Every installed copy of the Mac app reads the appcast this workflow publishes, and an unsigned or absent feed means either no update is ever offered or one is offered that nobody can verify. Nothing is built or pushed. Generate the key pair with Sparkle's generate_keys, put the private half in SPARKLE_ED_PRIVATE_KEY and the public half in apps/apple/project.yml's SUPublicEDKey, as described in docs/07-clients/releasing.md, then delete and re-push the tag."
+            fail=1
+          fi
+          [ "$fail" -eq 0 ] || exit 1
+          echo "all seven macOS release secrets are present"
+      # Not a gate. ADR-0038 builds the App Store Connect plumbing *before* the
+      # account records exist, on the owner's decision that the mechanism
+      # should be reviewable now and enrolled later, so a missing secret here
+      # is the expected state rather than a broken release. What it must not do
+      # is look like a successful upload -- see the `ios-release` job, whose
+      # name and summary both change on this output.
+      #
+      # Runs on a dry run too: the whole point of the dispatch is to exercise
+      # paths before the credentials exist, and this step touches nothing.
+      - name: Is iOS App Store Connect distribution configured?
+        id: ios
+        env:
+          IOS_APPSTORE_API_KEY_P8: ${{ secrets.IOS_APPSTORE_API_KEY_P8 != '' }}
+          IOS_APPSTORE_API_KEY_ID: ${{ secrets.IOS_APPSTORE_API_KEY_ID != '' }}
+          IOS_APPSTORE_API_ISSUER_ID: ${{ secrets.IOS_APPSTORE_API_ISSUER_ID != '' }}
+          IOS_DISTRIBUTION_CERTIFICATE_P12: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_P12 != '' }}
+          IOS_DISTRIBUTION_CERTIFICATE_PASSWORD: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_PASSWORD != '' }}
+          IOS_PROVISIONING_PROFILE: ${{ secrets.IOS_PROVISIONING_PROFILE != '' }}
+        run: |
+          set -euo pipefail
+          missing=""
+          for s in IOS_APPSTORE_API_KEY_P8 IOS_APPSTORE_API_KEY_ID \
+                   IOS_APPSTORE_API_ISSUER_ID IOS_DISTRIBUTION_CERTIFICATE_P12 \
+                   IOS_DISTRIBUTION_CERTIFICATE_PASSWORD IOS_PROVISIONING_PROFILE; do
+            eval "have=\${$s}"
+            [ "$have" = "true" ] || missing="$missing $s"
+          done
+          # All six or none: a half-configured iOS upload fails twenty minutes
+          # into a macOS runner with an Apple error that names none of them.
+          if [ -n "$missing" ]; then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "iOS distribution is not configured; missing:${missing}"
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+            echo "iOS distribution is configured"
+          fi
+          # Trimmed of the leading space so the job summary can print it as a
+          # list without a stray separator.
+          echo "missing=${missing# }" >> "$GITHUB_OUTPUT"
 
   # ---------------------------------------------------------------------
   # Release binaries: `sunrise-server` and the `sunrise` CLI.
@@ -653,6 +732,36 @@ jobs:
             -archivePath "$RUNNER_TEMP/Sunrise.xcarchive" \
             -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
             -exportPath "$RUNNER_TEMP/export"
+      # The half of the update mechanism that lives in the bundle rather than
+      # in this workflow, checked here because the two can be configured
+      # independently and either one alone is useless.
+      #
+      # `verify` has already established that SPARKLE_ED_PRIVATE_KEY exists, so
+      # this tag *will* publish a signed appcast. If the app it publishes
+      # alongside carries an empty `SUPublicEDKey`, that app ignores the feed
+      # forever and nobody finds out, because an app that never offers an
+      # update looks exactly like an app with no update available. The pair is
+      # created in one sitting -- `generate_keys` prints both halves -- so
+      # requiring both is requiring the operator to finish the job.
+      - name: The shipped app must be able to verify its own updates
+        if: needs.verify.outputs.dry_run != 'true'
+        run: |
+          set -euo pipefail
+          plist="$RUNNER_TEMP/export/Sunrise.app/Contents/Info.plist"
+          # `-o -` writes to stdout; `raw` unwraps the plist scalar. A missing
+          # key exits non-zero, which under `set -e` is the same failure as an
+          # empty one and wants the same message, so both are handled here.
+          key=$(plutil -extract SUPublicEDKey raw -o - "$plist" 2>/dev/null || true)
+          feed=$(plutil -extract SUFeedURL raw -o - "$plist" 2>/dev/null || true)
+          echo "SUFeedURL=${feed}"
+          if [ -z "$key" ]; then
+            echo "::error title=The app cannot verify the update feed it ships with::apps/apple/project.yml's SUPublicEDKey is empty, so the Sunrise.app this tag would publish ignores the appcast entirely -- and an app that never offers an update is indistinguishable from one that is up to date. SPARKLE_ED_PRIVATE_KEY exists, so the feed will be signed with a key nothing trusts. Run Sparkle's generate_keys, put the printed public key in project.yml, and re-push the tag. docs/07-clients/releasing.md has the procedure."
+            exit 1
+          fi
+          if [ -z "$feed" ]; then
+            echo "::error title=The app ships with no update feed URL::apps/apple/project.yml sets no SUFeedURL, so the app has nowhere to look for updates."
+            exit 1
+          fi
       # Two notarization submissions, not one, and the second is not the
       # redundant one.
       #
@@ -782,6 +891,61 @@ jobs:
           # before it would describe something nobody downloads.
           ( cd dist && shasum -a 256 "${DMG_NAME}" > "${DMG_NAME}.sha256" )
           cat "dist/${DMG_NAME}.sha256"
+      # The update feed's half of the signature story, and it is deliberately
+      # right here: beside the `shasum`, on the machine that produced the file,
+      # after stapling. Stapling rewrites the `.dmg`, so a signature taken
+      # before it would describe something nobody downloads -- the same
+      # argument the checksum step above makes, and a stronger one, because a
+      # wrong checksum is a failed download and a wrong EdDSA signature is an
+      # update that every installed copy refuses.
+      #
+      # The output is a sidecar uploaded to the Release beside the `.dmg`,
+      # because the `appcast` job has to build a feed covering *past* releases
+      # too and cannot re-sign their disk images without downloading and
+      # trusting them. It also carries the three version numbers, read out of
+      # the bundle that actually shipped rather than recomputed: `sparkle:version`
+      # is compared against the running copy's CFBundleVersion, which is this
+      # workflow's run number and is not recoverable from a tag.
+      #
+      # ADR-0038 records why the key is what it is. `.github/scripts/appcast.py`
+      # consumes this file; `.github/scripts/test_appcast.py` asserts what
+      # happens when it disagrees with the Release.
+      - name: Sign the .dmg for the update feed
+        if: needs.verify.outputs.dry_run != 'true'
+        env:
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          tools=$(.github/scripts/sparkle-tools.sh "$RUNNER_TEMP/sparkle")
+          # `umask` before the write, not `chmod` after it: the key would
+          # otherwise be world-readable for the width of one syscall, and the
+          # file is deleted by the `always()` step that deletes the keychain.
+          ( umask 077 && printf '%s' "$SPARKLE_ED_PRIVATE_KEY" > "$RUNNER_TEMP/sparkle_ed.key" )
+          # `-p` prints the bare signature; without it the tool prints the
+          # whole `sparkle:edSignature="…" length="…"` attribute pair, which
+          # would then have to be parsed back apart.
+          signature=$("$tools/sign_update" -p --ed-key-file "$RUNNER_TEMP/sparkle_ed.key" "dist/${DMG_NAME}")
+          rm -f "$RUNNER_TEMP/sparkle_ed.key"
+
+          app="$RUNNER_TEMP/export/Sunrise.app/Contents/Info.plist"
+          short=$(plutil -extract CFBundleShortVersionString raw -o - "$app")
+          build=$(plutil -extract CFBundleVersion raw -o - "$app")
+          minimum=$(plutil -extract LSMinimumSystemVersion raw -o - "$app")
+          length=$(stat -f%z "dist/${DMG_NAME}")
+
+          # Written by `plutil -convert json` from a plist rather than by
+          # `printf`, so a version string holding a character that is special
+          # in JSON cannot produce a file the appcast job fails to parse.
+          plutil -create xml1 "$RUNNER_TEMP/item.plist"
+          plutil -insert schema -integer 1 "$RUNNER_TEMP/item.plist"
+          plutil -insert shortVersionString -string "$short" "$RUNNER_TEMP/item.plist"
+          plutil -insert version -string "$build" "$RUNNER_TEMP/item.plist"
+          plutil -insert dmg -string "${DMG_NAME}" "$RUNNER_TEMP/item.plist"
+          plutil -insert length -integer "$length" "$RUNNER_TEMP/item.plist"
+          plutil -insert edSignature -string "$signature" "$RUNNER_TEMP/item.plist"
+          plutil -insert minimumSystemVersion -string "$minimum" "$RUNNER_TEMP/item.plist"
+          plutil -convert json -o dist/appcast-item.json "$RUNNER_TEMP/item.plist"
+          cat dist/appcast-item.json
       # `always()`, so the private key does not survive a failed archive, a
       # rejected notarization or a cancelled run. The keychain is on an
       # ephemeral runner, but "the machine goes away" is not a deletion policy.
@@ -789,7 +953,9 @@ jobs:
         if: always()
         run: |
           security delete-keychain "$RUNNER_TEMP/sunrise-signing.keychain-db" 2>/dev/null || true
-          rm -f "$RUNNER_TEMP/cert.p12" "$RUNNER_TEMP/AuthKey.p8"
+          # `sparkle_ed.key` is removed by the step that writes it; it is named
+          # again here for the path where that step dies between the two.
+          rm -f "$RUNNER_TEMP/cert.p12" "$RUNNER_TEMP/AuthKey.p8" "$RUNNER_TEMP/sparkle_ed.key"
       - uses: actions/upload-artifact@v4
         with:
           name: macos-app
@@ -888,6 +1054,11 @@ jobs:
             echo
             echo "The full procedure, including what each field of \`codesign -dv --verbose=4\` should say, is in [docs/07-clients/releasing.md](https://github.com/${GITHUB_REPOSITORY}/blob/${TAG}/docs/07-clients/releasing.md)."
             echo
+            # Double quotes with escaped backticks, for the reason the printf
+            # above gives: a bare backtick inside single quotes is a command
+            # substitution to shellcheck, and to a shell that ever evaluates it.
+            printf "An installed copy finds this release by itself: the app checks a signed \`appcast.xml\` on this Releases page and offers the update on next launch. \`appcast.xml\` and \`appcast-item.json\` are that mechanism rather than files to download by hand — see [ADR-0038](https://github.com/%s/blob/%s/docs/11-adr/0038-macos-update-feed.md).\n" "$GITHUB_REPOSITORY" "$TAG"
+            echo
             echo '### Checksums'
             echo
             echo '```'
@@ -917,7 +1088,422 @@ jobs:
           # emits one beside the image, the same way each `binaries` leg does
           # -- and the `### Checksums` block above `cat`s the same glob, so the
           # notes and the uploaded files cannot disagree about what shipped.
-          gh release upload "$TAG" dist/*.tar.gz dist/*.dmg dist/*.sha256 --clobber
+          # `appcast-item.json` is not an artifact a human downloads: it is the
+          # `.dmg`'s EdDSA signature and bundle version numbers, produced on
+          # the machine that built and stapled the disk image, and it is how
+          # the `appcast` job below -- and every *later* release's `appcast`
+          # job -- puts this release into the update feed without re-signing a
+          # file it downloaded. See ADR-0038.
+          gh release upload "$TAG" \
+            dist/*.tar.gz dist/*.dmg dist/*.sha256 dist/appcast-item.json --clobber
+
+  # ---------------------------------------------------------------------
+  # The update feed, last of all: it is the file that tells every *already
+  # installed* copy of the Mac app what to download, so it must not name a
+  # release until that release exists with its assets attached. Hence
+  # `needs: release` rather than `needs: macos-app`.
+  #
+  # `docs/11-adr/0038-macos-update-feed.md` is the decision, including the
+  # clause that matters most here: the EdDSA key this job signs with is
+  # **subordinate to the Developer ID certificate in lifecycle**, because
+  # Sparkle authorises a change of EdDSA key with the app's Apple code
+  # signature — so a stolen key can be rotated away in-band. That is not the
+  # same as it being harmless: Sparkle accepts an update on *either*
+  # credential, so this key ships code. Handle it as a signing key.
+  #
+  # Two uploads, not one, and the second is not redundant. `SUFeedURL` is
+  # `…/releases/latest/download/appcast.xml`, and GitHub's `latest` alias
+  # skips prereleases — so when this tag is a prerelease, the feed a user's
+  # Mac fetches is still the one attached to the newest *stable* release, and
+  # it has to be replaced or no beta is ever offered. See ADR-0038 §Hosting.
+  # ---------------------------------------------------------------------
+  appcast:
+    name: Update feed (appcast.xml)
+    needs: [verify, release]
+    if: needs.verify.outputs.dry_run == 'false'
+    # macOS because `sign_update` is a macOS binary and there is no other
+    # implementation of Sparkle's signing format worth trusting a release to.
+    # It is the cheapest macOS job here by a wide margin -- a checkout, a
+    # tarball, a few small downloads and one signature -- so 15 is generous
+    # for the network and leaves no room for a hang at 10x billing.
+    runs-on: macos-26
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAG: ${{ github.ref_name }}
+      PRERELEASE: ${{ needs.verify.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+      # Every published release, and the signature sidecar each one carries.
+      #
+      # `--jq '.[]'` rather than a bare `--paginate`: over a paged array
+      # endpoint `--paginate` emits one document per page, and a second page
+      # of releases silently dropped is a feed that forgets history.
+      #
+      # A release with no `appcast-item.json` is skipped by the generator with
+      # a note, which is the only workable answer for releases that predate
+      # this pipeline: they cannot grow a sidecar now, and refusing to build
+      # the feed because of them would mean never building it.
+      - name: Collect every release and its signature sidecar
+        run: |
+          set -euo pipefail
+          releases="repos/${GITHUB_REPOSITORY}/releases?per_page=100"
+          gh api "$releases" --paginate --jq '.[]' > "$RUNNER_TEMP/releases.ndjson"
+          # A second call rather than parsing the first back apart. `gh`'s
+          # built-in jq is already here and is the clearer tool for it; the
+          # cost is one cached HTTP round trip.
+          gh api "$releases" --paginate --jq '.[].tag_name' > "$RUNNER_TEMP/tags.txt"
+          mkdir -p "$RUNNER_TEMP/items"
+          while IFS= read -r tag; do
+            [ -n "$tag" ] || continue
+            mkdir -p "$RUNNER_TEMP/items/$tag"
+            # `|| true`: an older release simply has no such asset, and `gh`
+            # treats that as an error. The generator decides what a missing
+            # sidecar means; this step only fetches what is there.
+            # `</dev/null` so the command cannot eat the tag list this loop is
+            # reading from, which is the classic way a `while read` loop
+            # processes exactly one line and reports success.
+            gh release download "$tag" \
+              --pattern appcast-item.json \
+              --dir "$RUNNER_TEMP/items/$tag" </dev/null >/dev/null 2>&1 || true
+          done < "$RUNNER_TEMP/tags.txt"
+          echo "releases seen: $(wc -l < "$RUNNER_TEMP/tags.txt" | tr -d ' ')"
+          echo "sidecars found: $(find "$RUNNER_TEMP/items" -name appcast-item.json | wc -l | tr -d ' ')"
+      # The generator is `.github/scripts/appcast.py`, and the reason it is a
+      # script with a `test_` twin rather than inline YAML is that the rules it
+      # encodes -- which release is on which channel, whether the signature in
+      # hand describes the bytes being advertised -- are decisions nothing else
+      # here can check. `--require-tag` is what stops this run publishing a
+      # feed that omits the release it was triggered by.
+      - name: Generate the appcast
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/appcast.py \
+            --releases "$RUNNER_TEMP/releases.ndjson" \
+            --items-dir "$RUNNER_TEMP/items" \
+            --repository "$GITHUB_REPOSITORY" \
+            --output appcast.xml \
+            --require-tag "$TAG"
+          cat appcast.xml
+      # The feed itself, over and above the per-download signatures inside it.
+      #
+      # It is not a replacement for those: the `sparkle:edSignature` on each
+      # enclosure is what authorises the bytes that get installed, and it would
+      # do its job with an unsigned feed. Signing the feed authenticates the
+      # *metadata* — which versions exist, which channel each is on — so that
+      # someone who can write to this repository's release assets but does not
+      # hold the EdDSA key cannot alter it at all. It does not prevent replay
+      # of an older, genuinely signed feed; ADR-0038 says so rather than
+      # implying otherwise.
+      - name: Sign the feed
+        env:
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          tools=$(.github/scripts/sparkle-tools.sh "$RUNNER_TEMP/sparkle")
+          ( umask 077 && printf '%s' "$SPARKLE_ED_PRIVATE_KEY" > "$RUNNER_TEMP/sparkle_ed.key" )
+          "$tools/sign_update" --ed-key-file "$RUNNER_TEMP/sparkle_ed.key" appcast.xml
+          rm -f "$RUNNER_TEMP/sparkle_ed.key"
+      - name: Publish the feed
+        run: |
+          set -euo pipefail
+          gh release upload "$TAG" appcast.xml --clobber
+          published="$TAG"
+          if [ "$PRERELEASE" = "true" ]; then
+            # `releases/latest` is the same alias `SUFeedURL` resolves through,
+            # and it excludes prereleases — so asking the API for it is asking
+            # exactly "which release is serving the feed right now?".
+            stable=$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" \
+                       --jq '.tag_name' 2>/dev/null || true)
+            if [ -n "$stable" ] && [ "$stable" != "$TAG" ]; then
+              gh release upload "$stable" appcast.xml --clobber
+              published="$published, $stable"
+            else
+              echo "::warning title=No stable release is serving the update feed yet::This prerelease is in the feed, but SUFeedURL resolves through GitHub's 'latest' alias, which skips prereleases. Until a non-prerelease exists there is nothing for an installed copy to fetch. Cutting a stable release fixes it; nothing else needs doing."
+            fi
+          fi
+          {
+            echo "### macOS update feed"
+            echo
+            echo "\`appcast.xml\` published to: ${published}"
+            echo
+            echo "Fetched by installed copies through"
+            echo "\`https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/appcast.xml\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------
+  # iOS → App Store Connect.
+  #
+  # `docs/11-adr/0039-ios-distribution.md` is the decision this job
+  # implements, and two halves of it are visible here rather than in a
+  # document:
+  #
+  #   * **A tag produces a TestFlight build; App Store submission is a
+  #     separate, manual act.** #141 put the choice plainly — App Store review
+  #     is a queue with human latency and a rejection path, and neither fits
+  #     inside a workflow whose premise is that pushing the tag *is*
+  #     publishing. So the tag does the part it can do deterministically
+  #     (upload a build), and nothing here submits anything for review.
+  #   * **It no-ops, visibly, until the account records exist.** None of the
+  #     six secrets below exists and only the owner can create them — the App
+  #     Store Connect app record they depend on does not exist either. The job
+  #     therefore runs with its *name* changed, on a cheap runner, and writes
+  #     a summary saying nothing was uploaded. A skipped job is a grey tick
+  #     nobody reads; a green tick that says nothing is worse.
+  #
+  # `release` deliberately does not depend on this. The GitHub Release carries
+  # no iOS artifact — there is nowhere for one to go, which is the whole
+  # reason iOS needed its own ADR — so gating the Release on an App Store
+  # Connect upload would make an Apple-side outage withhold the CLI tarballs.
+  # ---------------------------------------------------------------------
+  ios-release:
+    name: iOS ${{ needs.verify.outputs.ios_configured == 'true' && '(App Store Connect)' || '(not configured, no-op)' }}
+    needs: verify
+    # Tags only. A dry run exists to exercise the macOS packaging path and has
+    # no iOS half; running this on one would cost a macOS runner to print a
+    # summary nobody asked for.
+    if: needs.verify.outputs.dry_run == 'false'
+    # The no-op costs a cheap runner. macOS minutes bill at 10x, and until the
+    # secrets exist this job's entire body is one `echo` into the summary.
+    runs-on: ${{ needs.verify.outputs.ios_configured == 'true' && 'macos-26' || 'ubuntu-latest' }}
+    # Sized from `macos-app`'s 90 and then reduced: the same xcframework build
+    # and the same Xcode archive, minus two `notarytool submit --wait` round
+    # trips whose latency is Apple's. The upload is a transfer rather than a
+    # wait -- App Store Connect processes the build after `xcodebuild` returns,
+    # and this job does not watch it, because waiting for processing is
+    # waiting for the queue this ADR refuses to put inside a tag.
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      RUSTFLAGS: ""
+      VERSION: ${{ needs.verify.outputs.version }}
+      CONFIGURED: ${{ needs.verify.outputs.ios_configured }}
+    steps:
+      # Everything below is gated on `CONFIGURED`. The alternative -- a job
+      # level `if:` -- is what would make this a skipped job, and a skipped job
+      # is indistinguishable in the checks list from one that was not reached.
+      - name: Nothing to do yet
+        if: env.CONFIGURED != 'true'
+        env:
+          MISSING: ${{ needs.verify.outputs.ios_missing }}
+        run: |
+          set -euo pipefail
+          {
+            echo "### iOS — NOT UPLOADED"
+            echo
+            echo "This release built no iOS app and uploaded nothing to App Store"
+            echo "Connect. That is the expected state today: the App Store Connect"
+            echo "app record, the distribution certificate and the provisioning"
+            echo "profile can only be created by the account holder, and have not"
+            echo "been."
+            echo
+            echo "Missing repository secrets:"
+            echo
+            for s in ${MISSING}; do echo "- \`${s}\`"; done
+            echo
+            echo "See [docs/11-adr/0039-ios-distribution.md](https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_REF_NAME}/docs/11-adr/0039-ios-distribution.md)"
+            echo "for what each one is and how to create it."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::notice title=iOS was not uploaded::This release shipped no iOS build. See the job summary for the secrets that are missing."
+      - uses: actions/checkout@v4
+        if: env.CONFIGURED == 'true'
+      - uses: dtolnay/rust-toolchain@stable
+        if: env.CONFIGURED == 'true'
+      - uses: Swatinem/rust-cache@v2
+        if: env.CONFIGURED == 'true'
+        with:
+          key: release-ios-app
+      # Both iOS slices, for the reason `macos-app` gives: `targets:` on the
+      # toolchain action installs onto stable, and rust-toolchain.toml
+      # overrides this directory to the pinned version.
+      - name: Add the iOS slices to the pinned toolchain
+        if: env.CONFIGURED == 'true'
+        run: rustup target add aarch64-apple-ios aarch64-apple-ios-sim
+      - name: Install mise, XcodeGen and SwiftLint
+        if: env.CONFIGURED == 'true'
+        run: brew install --quiet mise xcodegen swiftlint
+      - name: Trust mise config
+        if: env.CONFIGURED == 'true'
+        run: mise trust --yes
+      # A keychain of its own and an `always()` deletion, exactly as
+      # `macos-app` does it and for the same reasons -- see the long note
+      # there, including why `set-key-partition-list` is not optional.
+      - name: Import the iOS distribution identity
+        if: env.CONFIGURED == 'true'
+        env:
+          IOS_DISTRIBUTION_CERTIFICATE_P12: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_P12 }}
+          IOS_DISTRIBUTION_CERTIFICATE_PASSWORD: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_PASSWORD }}
+          MACOS_TEAM_ID: ${{ secrets.MACOS_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          keychain="$RUNNER_TEMP/sunrise-ios.keychain-db"
+          pw="$(openssl rand -base64 24)"
+          echo "::add-mask::$pw"
+          echo "SIGNING_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
+
+          printf '%s' "$IOS_DISTRIBUTION_CERTIFICATE_P12" | base64 --decode > "$RUNNER_TEMP/ios.p12"
+          security create-keychain -p "$pw" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$pw" "$keychain"
+          security import "$RUNNER_TEMP/ios.p12" -k "$keychain" \
+            -P "$IOS_DISTRIBUTION_CERTIFICATE_PASSWORD" -f pkcs12 \
+            -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$pw" "$keychain" >/dev/null
+          existing=$(security list-keychains -d user | tr -d '"' | tr '\n' ' ')
+          # shellcheck disable=SC2086
+          security list-keychains -d user -s "$keychain" $existing
+          rm -f "$RUNNER_TEMP/ios.p12"
+          # Asserted, not assumed: `security find-identity` exits 0 whether it
+          # found something or nothing, so the bare command proves only that
+          # `security` ran. The pattern matches the *type* and the team,
+          # because an `Apple Development` certificate, or a distribution
+          # certificate belonging to another team, satisfies a count and then
+          # fails `-exportArchive` twenty minutes from here.
+          identities=$(security find-identity -v -p codesigning "$keychain")
+          echo "$identities"
+          if ! grep -qE "^ *[0-9]+\) [0-9A-F]{40} \"Apple Distribution:.*\\(${MACOS_TEAM_ID}\\)\"" <<<"$identities"; then
+            echo "--- identities, including invalid ones ---"
+            security find-identity -p codesigning "$keychain" || true
+            echo "::error title=No Apple Distribution identity for this team::IOS_DISTRIBUTION_CERTIFICATE_P12 decoded and imported, but the keychain holds no valid 'Apple Distribution' identity belonging to MACOS_TEAM_ID. An App Store build cannot be signed with a Developer ID or an Apple Development certificate. Nothing is built or uploaded."
+            exit 1
+          fi
+      # Manual signing, so the profile has to be on the machine. It is a
+      # secret rather than something `-allowProvisioningUpdates` fetches: that
+      # flag makes a release build mutate the team's signing assets on Apple's
+      # side as a side effect, which is a surprising thing for a tag push to
+      # do and is not reversible from here.
+      - name: Install the provisioning profile
+        if: env.CONFIGURED == 'true'
+        env:
+          IOS_PROVISIONING_PROFILE: ${{ secrets.IOS_PROVISIONING_PROFILE }}
+        run: |
+          set -euo pipefail
+          profiles="$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"
+          mkdir -p "$profiles"
+          printf '%s' "$IOS_PROVISIONING_PROFILE" | base64 --decode > "$RUNNER_TEMP/profile.mobileprovision"
+          # A `.mobileprovision` is a CMS envelope around a plist; `security
+          # cms -D` unwraps it. The UUID is the file name Xcode looks for and
+          # the Name is what the export options plist refers to, so both are
+          # read out of the profile itself rather than carried as two more
+          # secrets that could disagree with it.
+          plist="$RUNNER_TEMP/profile.plist"
+          security cms -D -i "$RUNNER_TEMP/profile.mobileprovision" > "$plist"
+          uuid=$(plutil -extract UUID raw -o - "$plist")
+          name=$(plutil -extract Name raw -o - "$plist")
+          expires=$(plutil -extract ExpirationDate raw -o - "$plist")
+          echo "profile: $name ($uuid), expires $expires"
+          cp "$RUNNER_TEMP/profile.mobileprovision" "$profiles/$uuid.mobileprovision"
+          echo "IOS_PROFILE_NAME=$name" >> "$GITHUB_ENV"
+      - name: mise run apple-xcframework
+        if: env.CONFIGURED == 'true'
+        run: mise run apple-xcframework
+      - name: Archive
+        if: env.CONFIGURED == 'true'
+        env:
+          MACOS_TEAM_ID: ${{ secrets.MACOS_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          cd apps/apple
+          xcodegen generate --quiet
+          # As on macOS: the bundle's version numbers come from the tag, not
+          # from project.yml's pinned 0.1.0. `CFBundleVersion` is the run
+          # number because App Store Connect refuses a build whose version it
+          # has already seen for this marketing version, and a `-rc.2`
+          # following a `-rc.1` shares one.
+          short="${VERSION%%-*}"
+          # No `ARCHS=` override, unlike the macOS archive: `generic/platform=iOS`
+          # resolves ARCHS_STANDARD to arm64 alone, which is the one slice
+          # `mise.toml`'s `ios_slices` builds. There is no second architecture
+          # for it to pick up and fail to link.
+          xcodebuild archive \
+            -project Sunrise.xcodeproj \
+            -scheme SunriseiOS \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/SunriseiOS.xcarchive" \
+            -quiet \
+            MARKETING_VERSION="$short" \
+            CURRENT_PROJECT_VERSION="${GITHUB_RUN_NUMBER}" \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="Apple Distribution" \
+            DEVELOPMENT_TEAM="$MACOS_TEAM_ID" \
+            PROVISIONING_PROFILE_SPECIFIER="$IOS_PROFILE_NAME"
+      # `destination: upload` is the whole upload mechanism. `xcrun altool` is
+      # retired, and `xcodebuild -exportArchive` with an App Store Connect API
+      # key is its supported replacement: it exports, signs and transfers in
+      # one command, with no stored Apple ID and no app-specific password.
+      #
+      # A successful return means App Store Connect *accepted* the build, not
+      # that it is available: processing takes minutes to hours and happens on
+      # Apple's side. TestFlight is where it lands. Nothing here submits it for
+      # App Store review -- see ADR-0038.
+      #
+      # `app-store-connect` is the post-Xcode-15.3 spelling of the export
+      # method that used to be `app-store`; the old names are deprecated
+      # aliases. This runs on macos-26, so the current one is correct. The note
+      # is here rather than in the plist because that heredoc is unquoted --
+      # `${MACOS_TEAM_ID}` has to expand -- so a backtick inside it would be a
+      # command substitution rather than a quotation mark.
+      - name: Export and upload to App Store Connect
+        if: env.CONFIGURED == 'true'
+        env:
+          MACOS_TEAM_ID: ${{ secrets.MACOS_TEAM_ID }}
+          IOS_APPSTORE_API_KEY_P8: ${{ secrets.IOS_APPSTORE_API_KEY_P8 }}
+          IOS_APPSTORE_API_KEY_ID: ${{ secrets.IOS_APPSTORE_API_KEY_ID }}
+          IOS_APPSTORE_API_ISSUER_ID: ${{ secrets.IOS_APPSTORE_API_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          ( umask 077 && printf '%s' "$IOS_APPSTORE_API_KEY_P8" | base64 --decode > "$RUNNER_TEMP/AuthKey_ios.p8" )
+          cat > "$RUNNER_TEMP/ExportOptions-iOS.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key><string>app-store-connect</string>
+            <key>destination</key><string>upload</string>
+            <key>teamID</key><string>${MACOS_TEAM_ID}</string>
+            <key>signingStyle</key><string>manual</string>
+            <key>signingCertificate</key><string>Apple Distribution</string>
+            <key>provisioningProfiles</key>
+            <dict>
+              <key>dev.sunrise.SunriseiOS</key><string>${IOS_PROFILE_NAME}</string>
+            </dict>
+            <key>stripSwiftSymbols</key><true/>
+            <key>uploadSymbols</key><true/>
+            <key>manageAppVersionAndBuildNumber</key><false/>
+          </dict>
+          </plist>
+          PLIST
+          plutil -lint "$RUNNER_TEMP/ExportOptions-iOS.plist"
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/SunriseiOS.xcarchive" \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions-iOS.plist" \
+            -exportPath "$RUNNER_TEMP/ios-export" \
+            -authenticationKeyPath "$RUNNER_TEMP/AuthKey_ios.p8" \
+            -authenticationKeyID "$IOS_APPSTORE_API_KEY_ID" \
+            -authenticationKeyIssuerID "$IOS_APPSTORE_API_ISSUER_ID"
+          {
+            echo "### iOS — uploaded to App Store Connect"
+            echo
+            echo "Version \`${VERSION}\`, build \`${GITHUB_RUN_NUMBER}\`."
+            echo
+            echo "App Store Connect accepted the upload. It still has to finish"
+            echo "processing before it appears in TestFlight, which happens on"
+            echo "Apple's side and is not waited on here."
+            echo
+            echo "**Nothing has been submitted for App Store review.** That is a"
+            echo "separate, manual act — see"
+            echo "[ADR-0038](https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_REF_NAME}/docs/11-adr/0039-ios-distribution.md)."
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Delete the temporary keychain and credentials
+        if: always() && env.CONFIGURED == 'true'
+        run: |
+          security delete-keychain "$RUNNER_TEMP/sunrise-ios.keychain-db" 2>/dev/null || true
+          rm -f "$RUNNER_TEMP/ios.p12" "$RUNNER_TEMP/AuthKey_ios.p8" \
+                "$RUNNER_TEMP/profile.mobileprovision" "$RUNNER_TEMP/profile.plist"
 
 # ---------------------------------------------------------------------------
 # Publish targets deliberately absent
