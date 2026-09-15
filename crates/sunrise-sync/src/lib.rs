@@ -36,4 +36,4 @@ pub use signer::DeviceSigner;
 #[cfg(feature = "sse")]
 pub use sse::SseTransport;
 pub use state::SyncState;
-pub use transport::{RevokeOutcome, Transport, TransportError};
+pub use transport::{BlobCommit, RevokeOutcome, Transport, TransportError};
