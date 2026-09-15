@@ -405,6 +405,21 @@ description = "Reject a doc comment mangled into a shape rustdoc misreads (the C
 # library Python over every tracked `.rs`, in under a second.
 run = ".github/scripts/doc-comment-gate.py"
 
+[tasks.citations]
+description = "Reject a backticked path:line citation that points at nothing (the CI gate, run locally)"
+# This repository cites its own source in inline code spans —
+# `crates/sunrise-sync/src/backoff.rs:31-63` — close to a thousand of them, and
+# nothing checked one. `docs-links` and `doc-comments` both *blank* inline code
+# before they read a line, deliberately, so a document about markdown is not
+# read as containing it; a code span is therefore exactly the shape those two
+# agree to ignore and exactly the shape a path is cited in. A moved file rots
+# every citation to it in silence, and a `:199` rots without the file moving.
+# Root-anchored paths only, plus a second anchor at the crate root for a file
+# under `crates/<name>/`, because Cargo fixes that layout. Everything else is
+# counted and named in the output rather than silently skipped; pass
+# `--list-unanchored` to see it.
+run = ".github/scripts/citation-gate.py"
+
 # --- Apple clients (Swift / UniFFI) ---
 #
 # `--manifest-path` arguments in this file are an input to a test in another
@@ -936,6 +951,15 @@ description = "Assert the kynos waiver gate's exit-code contract (fast, synthesi
 # which is the only thing that steers the gate — it takes no arguments. The
 # feature set it reads has already changed shape once under it.
 run = "python3 .github/scripts/test_kynos_waiver_gate.py"
+
+[tasks.citation-gate-test]
+description = "Assert the citation gate's exit-code and discrimination contract (fast, synthesised repos)"
+# A few seconds: it synthesises git repositories in a temp directory, so it
+# never reads this tree. Half of it is the near-misses — `Vec<u8>`,
+# `cargo test --workspace`, a prose filename — because a gate that fires on
+# everything is as useless as one that fires on nothing, and the two halves fail
+# in opposite directions from the same edit to the regex.
+run = "python3 .github/scripts/test_citation_gate.py"
 
 [tasks.doc-comment-gate-test]
 description = "Assert the doc comment gate's exit-code contract (fast, synthesised crates)"

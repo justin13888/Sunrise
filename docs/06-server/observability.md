@@ -315,7 +315,7 @@ and therefore one `.uri()` call away from the query string —
 The URI is never consulted, and what holds it that way is the *tests*, not the
 type signature: `the_query_string_never_reaches_the_log` (`api/observe.rs`) and
 `a_bearer_in_the_query_string_and_in_the_header_both_stay_out_of_the_log`
-(`tests/logging.rs`) each drive a real `?access_token=` through and assert the
+(`crates/sunrise-server/tests/logging.rs`) each drive a real `?access_token=` through and assert the
 sentinel never appears. Neither is redundant, and neither may be dropped on the
 grounds that the leak is impossible by construction. A stock request log records
 the URI verbatim, which is where a bearer would sit if the `?access_token=`

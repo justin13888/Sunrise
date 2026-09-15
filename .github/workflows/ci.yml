@@ -922,6 +922,53 @@ jobs:
         # someone else's outage is one people learn to ignore.
         run: .github/scripts/docs-link-gate.py
 
+  citations:
+    name: Citation gate
+    runs-on: ubuntu-latest
+    # The same shape and the same cost as `docs-links` above: `actions/checkout`
+    # plus one standard-library Python script over the tracked markdown and
+    # `.rs` files, no network call, no toolchain to install and nothing to
+    # cache. Well under a second locally.
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reject a backticked path:line citation that points at nothing
+        # This repository cites its own source in inline code spans —
+        # `crates/sunrise-sync/src/backoff.rs:31-63` — close to a thousand of
+        # them, and until this gate not one was checked. That is not an
+        # oversight in `docs-links` or `doc-comments`: both blank inline code
+        # before they read a line, deliberately, so a document about markdown is
+        # not read as containing it. A code span is therefore exactly the shape
+        # those two agree to ignore and exactly the shape a path is cited in, so
+        # a moved file or a shifted line number rots in silence — and a `:199`
+        # rots without the file moving at all.
+        #
+        # Root-anchored citations only, plus a second anchor at the crate root
+        # for a file under `crates/<name>/`, because Cargo fixes that layout.
+        # Everything else is counted and named in the output rather than
+        # silently skipped. The script carries its own self-test and runs it as
+        # a precondition of the check.
+        run: .github/scripts/citation-gate.py
+
+  citation-gate-contract:
+    name: Citation gate contract
+    runs-on: ubuntu-latest
+    # One Python script over git repositories it synthesises in a temp
+    # directory: no toolchain, no cargo, no network past the checkout. Seconds
+    # of work.
+    timeout-minutes: 5
+    # Deliberately without an `if:`, like the other gate contracts, so it runs
+    # on pull requests. What it asserts is the gate's *discrimination*: it has
+    # to fire on a dangling `crates/.../nonexistent.rs:1` and stay silent on
+    # `Vec<u8>`, `cargo test --workspace` and the 1,500 path-shaped spans in
+    # this repository that are shorthand rather than citations. Those two halves
+    # fail in opposite directions from the same edit, and a gate that fires on
+    # everything is as useless as one that fires on nothing.
+    steps:
+      - uses: actions/checkout@v4
+      - name: Exit-code and discrimination contract
+        run: python3 .github/scripts/test_citation_gate.py
+
   doc-comment-gate-contract:
     name: Doc comment gate contract
     runs-on: ubuntu-latest
