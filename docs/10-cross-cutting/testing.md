@@ -353,14 +353,23 @@ mise run fuzz op_envelope 3600      # one target, one hour
 [`SUNRISE_FUZZ_SEED`](#5-network--chaos-tests), which remains the chaos
 harness's variable and its only consumer in the workspace.
 
-Being a separate workspace has a cost worth stating rather than leaving to be
-discovered. `mise run rust-clippy` and `mise run rust-doc` are `--workspace`
-commands, so **neither reaches `fuzz/`** — the six harnesses are not lint-gated
-and not rustdoc-gated. `mise run rust-fmt-check` does reach them, because it
-names the manifest rather than the workspace. What holds the rest is that each
-file is short, that `mise run fuzz-build` fails on anything the compiler
-rejects, and that `crates/sunrise-log/tests/event_catalog.rs` reads all six as
-a `BUILD_TOOLS` entry and refuses one that names `tracing` or grows a `mod`.
+Being a separate workspace means every gate has to name the manifest to reach
+it, and three now do. `mise run rust-fmt-check`, `mise run rust-clippy` and
+`mise run rust-doc` each run twice — once over the workspace, once over
+`fuzz/Cargo.toml` — so the six harnesses are formatted, linted and
+rustdoc-checked on the same terms as everything else. CI's `rust` job carries
+the clippy and rustdoc halves as steps of their own, on the pinned stable: only
+`cargo fuzz run` needs the nightly, for `-Zsanitizer=address`. The root
+`clippy.toml` applies to `fuzz/` too, its lookup walking up out of that
+directory. Formatting is the one of the three CI does not repeat for `fuzz/`;
+the pre-commit hook runs `mise run rust-fmt-check`, which does.
+
+Two details are worth knowing before editing any of it. Every `[[bin]]` in
+`fuzz/Cargo.toml` sets `doc = true`; it was `false` with `test` and `bench`
+until the rustdoc gate arrived, which would have made that gate document
+nothing and pass. And `mise run rust-check` and `mise run rust-test` are still
+workspace-only: the harnesses have no tests to run and `mise run fuzz-build` is
+what proves they still compile against the crates they drive.
 
 #### Seed corpus
 

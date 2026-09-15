@@ -68,47 +68,55 @@ jiff = { version = "0.2", default-features = false, features = ["std", "tzdb-bun
 futures-executor = { version = "0.3", default-features = false, features = ["std"] }
 async-trait = { version = "0.1", default-features = false }
 
-# Fuzz targets are `bin`s. `test`/`doc`/`bench` are off on every one: they have
+# Fuzz targets are `bin`s. `test` and `bench` are off on every one: they have
 # no test harness and `#![no_main]` has nothing for libtest to link.
+#
+# `doc` is **on**, and was off with the other two until #167. Nothing links for
+# rustdoc, so the `#![no_main]` argument never applied to it; what it did was
+# make `cargo doc --manifest-path fuzz/Cargo.toml` a command that documents
+# nothing and therefore a gate that checks nothing. The module comment on each
+# harness is where the property that target asserts is written down, so a
+# broken intra-doc link there flattens the one explanation of what the fuzzer
+# is for. `mise run rust-doc` builds these six.
 
 [[bin]]
 name = "op_envelope"
 path = "fuzz_targets/op_envelope.rs"
 test = false
-doc = false
+doc = true
 bench = false
 
 [[bin]]
 name = "wire_frame"
 path = "fuzz_targets/wire_frame.rs"
 test = false
-doc = false
+doc = true
 bench = false
 
 [[bin]]
 name = "rrule"
 path = "fuzz_targets/rrule.rs"
 test = false
-doc = false
+doc = true
 bench = false
 
 [[bin]]
 name = "ical"
 path = "fuzz_targets/ical.rs"
 test = false
-doc = false
+doc = true
 bench = false
 
 [[bin]]
 name = "oauth_state"
 path = "fuzz_targets/oauth_state.rs"
 test = false
-doc = false
+doc = true
 bench = false
 
 [[bin]]
 name = "recovery_blob"
 path = "fuzz_targets/recovery_blob.rs"
 test = false
-doc = false
+doc = true
 bench = false
