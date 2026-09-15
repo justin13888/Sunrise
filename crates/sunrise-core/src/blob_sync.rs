@@ -152,7 +152,7 @@ pub(crate) const MAX_UPLOAD_ATTEMPTS: u32 = 10;
 /// does not exist yet — so today a larger attachment is simply not fetched, and
 /// `Core::attachment_bytes` keeps reporting `BytesNotHere`, which is the same
 /// answer it gave before this module existed.
-pub const AUTO_FETCH_MAX_BYTES: u64 = 10 * 1024 * 1024;
+pub(crate) const AUTO_FETCH_MAX_BYTES: u64 = 10 * 1024 * 1024;
 
 /// How many live attachment rows one fetch drain examines.
 ///

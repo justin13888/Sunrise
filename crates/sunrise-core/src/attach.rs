@@ -20,7 +20,7 @@
 //!
 //! Chunks land in **this vault's** blob store, and this module stops there.
 //! Getting them to the relay so a paired device can fetch them —
-//! `POST /blobs/init` → `PUT` → `finalize` — is [`crate::blob_sync`], driven by
+//! `POST /blobs/init` → `PUT` → `finalize` — is `crate::blob_sync`, driven by
 //! [`crate::sync_driver`]; all `attach_file` does about it is write the queue
 //! row. That split is the point: attaching a file is a synchronous local call
 //! the user is waiting on, and it has to finish on a device with no network.

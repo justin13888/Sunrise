@@ -47,7 +47,7 @@
 )]
 
 pub mod attach;
-pub mod blob_sync;
+mod blob_sync;
 pub mod commands;
 pub mod config;
 pub mod control_op;
