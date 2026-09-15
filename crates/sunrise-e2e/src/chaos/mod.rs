@@ -18,8 +18,10 @@
 //! ## Reproducibility
 //!
 //! `Toxic` seeds its RNG from `SUNRISE_FUZZ_SEED` (see
-//! [`seed_from_env`]) or an explicit seed via [`Toxic::with_seed`], so any run
-//! is replayable from its seed.
+//! [`seed_from_env`], a re-export from [`sunrise_test_seed`]) or an explicit
+//! seed via [`Toxic::with_seed`], so any run is replayable from its seed. The
+//! same variable seeds every property test in the workspace, and `Toxic::new`
+//! announces the value it resolved.
 
 pub mod loopback;
 pub mod toxic;

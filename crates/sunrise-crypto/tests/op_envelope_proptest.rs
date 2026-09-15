@@ -353,6 +353,7 @@ fn config() -> ProptestConfig {
         .unwrap_or(256);
     ProptestConfig {
         cases,
+        rng_seed: sunrise_test_seed::proptest_rng_seed(),
         // `Direct`, not the `SourceParallel` default: nothing above a `tests/`
         // file holds a `lib.rs` or `main.rs`, so the default warns and drops the
         // counterexample beside this source instead. See

@@ -33,12 +33,18 @@
 #                           Frozen literals. There is nothing to mutate but the
 #                           constants the vectors exist to pin, and flipping one
 #                           tests the test.
+#   sunrise-test-seed       The `SUNRISE_FUZZ_SEED` reader. Same shape as the
+#                           two entries above: test scaffolding, reachable from
+#                           no shipping binary. Mutating the thing that decides
+#                           which cases a property test draws would also make
+#                           every mutation run non-reproducible.
 exclude_globs = [
     "crates/sunrise-core-bindings/**",
     "crates/sunrise-bench/**",
     "crates/sunrise-e2e/**",
     "crates/sunrise-relay-client/**",
     "crates/sunrise-crypto-test-vectors/**",
+    "crates/sunrise-test-seed/**",
     "**/tests/**",
     "**/benches/**",
     "**/build.rs",
