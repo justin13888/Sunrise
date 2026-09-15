@@ -277,6 +277,22 @@ pub enum EngineError {
     /// Keychain failure while resolving or absorbing a Stream key.
     #[error("keychain: {0}")]
     Keychain(String),
+    /// A command named the vault-meta stream where an ordinary Stream belongs.
+    ///
+    /// The vault-meta stream is the control log — device certs, key envelopes,
+    /// Stream and Context lifecycle. It is addressable as an [`EntityRef`] of
+    /// kind `Stream` because [`EntityRef::new`] does not police the bytes, and
+    /// every draft and patch that carries a `stream_id` crosses the UniFFI
+    /// seam, so any binding can name it. Nothing good happens if one does: a
+    /// Task routed there would take a sequence number the control ops
+    /// themselves are counting, and a Stream parented there would be a child
+    /// of a row that is not a Stream.
+    ///
+    /// Its own variant rather than an [`Self::Invalid`] string, because a
+    /// caller that can build this ref can build it again and deserves to
+    /// switch on the refusal rather than parse it.
+    #[error("the vault-meta stream is not an ordinary Stream")]
+    ReservedStream,
 }
 
 /// One command-application pipeline.

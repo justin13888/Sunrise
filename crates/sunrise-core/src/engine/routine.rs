@@ -14,8 +14,8 @@
 //! that already exists is not an error.
 
 use super::ids::{
-    decode_unknowns, encode_unknowns, energy_str, ms_to_ts, require_kind, task_state_str,
-    time_to_parts,
+    decode_unknowns, encode_unknowns, energy_str, ms_to_ts, require_kind, require_writable_stream,
+    task_state_str, time_to_parts,
 };
 use super::lww::LwwStamp;
 use super::stream::ensure_stream_row;
@@ -76,6 +76,7 @@ impl Engine {
         d: RoutineDraft,
     ) -> Result<CommandResult, EngineError> {
         d.validate()?;
+        require_writable_stream(d.template.stream_id)?;
         let now_ms = self.clock.now_ms();
         let routine_id = self.fresh_id(EntityKind::Routine, now_ms);
         let routine = Routine {
@@ -108,13 +109,14 @@ impl Engine {
         let op_id = self.fresh_op_id(now_ms);
         let inner_op = encode_inner_op(&InnerOp::RoutineCreate(Box::new(routine.clone())))?;
         // Routine ops route to the vault-meta log.
-        let seq = self.next_seq(db, &META_STREAM)?;
-        let lww = self.lww_stamp(seq);
         let routine_clone = routine.clone();
-        db.with_tx(|tx| -> rusqlite::Result<()> {
+        let seq = db.with_tx(|tx| -> rusqlite::Result<u64> {
+            let slot = self.meta_slot(tx, now_ms)?;
+            let seq = slot.seq;
+            let lww = slot.lww;
             ensure_stream_row(tx, &stream, now_ms)?;
             insert_routine_row(tx, &routine_clone, now_ms, &lww)?;
-            self.ops_insert(
+            self.ops_insert_at(
                 tx,
                 &op_id,
                 &META_STREAM,
@@ -128,8 +130,10 @@ impl Engine {
                 None,
                 now_ms,
                 &[],
+                slot.epoch,
+                &slot.key,
             )?;
-            Ok(())
+            Ok(seq)
         })?;
 
         // Materialize the near-horizon occurrences for the freshly-created
@@ -147,6 +151,9 @@ impl Engine {
         patch: RoutinePatch,
     ) -> Result<CommandResult, EngineError> {
         require_kind(id, EntityKind::Routine)?;
+        if let Some(t) = patch.template.as_ref() {
+            require_writable_stream(t.stream_id)?;
+        }
         patch.validate()?;
         let now_ms = self.clock.now_ms();
         let mut routine = read_routine(db.conn(), id.bytes())?
@@ -200,13 +207,14 @@ impl Engine {
         let op_id = self.fresh_op_id(now_ms);
         let inner_op = encode_inner_op(&InnerOp::RoutineUpdate(Box::new(routine.clone())))?;
         let stream = routine.template.stream_id;
-        let seq = self.next_seq(db, &META_STREAM)?;
-        let lww = self.lww_stamp(seq);
         let routine_clone = routine.clone();
-        db.with_tx(|tx| -> rusqlite::Result<()> {
+        let seq = db.with_tx(|tx| -> rusqlite::Result<u64> {
+            let slot = self.meta_slot(tx, now_ms)?;
+            let seq = slot.seq;
+            let lww = slot.lww;
             ensure_stream_row(tx, &stream, now_ms)?;
             update_routine_row(tx, &routine_clone, &lww)?;
-            self.ops_insert(
+            self.ops_insert_at(
                 tx,
                 &op_id,
                 &META_STREAM,
@@ -220,8 +228,10 @@ impl Engine {
                 None,
                 now_ms,
                 &[],
+                slot.epoch,
+                &slot.key,
             )?;
-            Ok(())
+            Ok(seq)
         })?;
 
         if structural {
@@ -245,12 +255,13 @@ impl Engine {
         routine.updated_at = ms_to_ts(now_ms as i64);
         let op_id = self.fresh_op_id(now_ms);
         let inner_op = encode_inner_op(&InnerOp::RoutineDelete(Box::new(routine.clone())))?;
-        let seq = self.next_seq(db, &META_STREAM)?;
-        let lww = self.lww_stamp(seq);
         let routine_clone = routine.clone();
-        db.with_tx(|tx| -> rusqlite::Result<()> {
+        let seq = db.with_tx(|tx| -> rusqlite::Result<u64> {
+            let slot = self.meta_slot(tx, now_ms)?;
+            let seq = slot.seq;
+            let lww = slot.lww;
             update_routine_row(tx, &routine_clone, &lww)?;
-            self.ops_insert(
+            self.ops_insert_at(
                 tx,
                 &op_id,
                 &META_STREAM,
@@ -264,8 +275,10 @@ impl Engine {
                 None,
                 now_ms,
                 &[],
+                slot.epoch,
+                &slot.key,
             )?;
-            Ok(())
+            Ok(seq)
         })?;
         Ok(CommandResult::new(id, None, op_id, seq))
     }
@@ -302,12 +315,13 @@ impl Engine {
 
         let op_id = self.fresh_op_id(now_ms);
         let inner_op = encode_inner_op(&InnerOp::RoutineUpdate(Box::new(routine.clone())))?;
-        let seq = self.next_seq(db, &META_STREAM)?;
-        let lww = self.lww_stamp(seq);
         let routine_clone = routine.clone();
-        db.with_tx(|tx| -> rusqlite::Result<()> {
+        let seq = db.with_tx(|tx| -> rusqlite::Result<u64> {
+            let slot = self.meta_slot(tx, now_ms)?;
+            let seq = slot.seq;
+            let lww = slot.lww;
             update_routine_row(tx, &routine_clone, &lww)?;
-            self.ops_insert(
+            self.ops_insert_at(
                 tx,
                 &op_id,
                 &META_STREAM,
@@ -321,6 +335,8 @@ impl Engine {
                 None,
                 now_ms,
                 &[],
+                slot.epoch,
+                &slot.key,
             )?;
             if let Some(mut t) = drop_task {
                 t.deleted = true;
@@ -350,7 +366,7 @@ impl Engine {
                     &[],
                 )?;
             }
-            Ok(())
+            Ok(seq)
         })?;
 
         Ok(CommandResult::new(id, None, op_id, seq))

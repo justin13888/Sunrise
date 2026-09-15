@@ -13,7 +13,9 @@
 //! query bounds are a *day* and a *week* rather than a timestamp; `notify` is
 //! their one other caller.
 
-use super::ids::{blob16, decode_unknowns, encode_unknowns, ms_to_ts, require_kind};
+use super::ids::{
+    blob16, decode_unknowns, encode_unknowns, ms_to_ts, require_kind, require_writable_stream,
+};
 use super::lww::LwwStamp;
 use super::stream::ensure_stream_row;
 use super::task::read_task;
@@ -36,7 +38,7 @@ impl Engine {
         d: BlockDraft,
     ) -> Result<CommandResult, EngineError> {
         d.validate()?;
-        require_kind(d.stream_id, EntityKind::Stream)?;
+        require_writable_stream(d.stream_id)?;
         for t in &d.tasks {
             require_kind(*t, EntityKind::Task)?;
         }
@@ -93,7 +95,7 @@ impl Engine {
             ));
         }
         d.validate()?;
-        require_kind(d.stream_id, EntityKind::Stream)?;
+        require_writable_stream(d.stream_id)?;
         for t in &d.tasks {
             require_kind(*t, EntityKind::Task)?;
         }
@@ -157,6 +159,9 @@ impl Engine {
         patch: BlockPatch,
     ) -> Result<CommandResult, EngineError> {
         require_kind(id, EntityKind::Block)?;
+        if let Some(s) = patch.stream_id {
+            require_writable_stream(s)?;
+        }
         patch.validate()?;
         let now_ms = self.clock.now_ms();
         let mut block = read_block(db.conn(), id.bytes())?

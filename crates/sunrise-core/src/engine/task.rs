@@ -11,7 +11,7 @@
 use super::block::read_task_blocks;
 use super::ids::{
     blob16, decode_unknowns, encode_unknowns, energy_str, ms_to_ts, parse_energy, parse_task_state,
-    require_kind, task_state_str, time_from_parts, time_to_parts,
+    require_kind, require_writable_stream, task_state_str, time_from_parts, time_to_parts,
 };
 use super::lww::LwwStamp;
 use super::routine::update_routine_row;
@@ -39,6 +39,7 @@ impl Engine {
         let now_ms = self.clock.now_ms();
         let task_id = self.fresh_id(EntityKind::Task, now_ms);
         let stream = d.stream_id.unwrap_or_else(inbox_stream_ref);
+        require_writable_stream(stream)?;
         let op_id = self.fresh_op_id(now_ms);
         let task = Task {
             reminder_lead_s: d.reminder_lead_s,
@@ -113,6 +114,9 @@ impl Engine {
         patch: TaskPatch,
     ) -> Result<CommandResult, EngineError> {
         require_kind(id, EntityKind::Task)?;
+        if let Some(s) = patch.stream_id {
+            require_writable_stream(s)?;
+        }
         patch.validate()?;
         let now_ms = self.clock.now_ms();
         let mut task = read_task(db.conn(), id.bytes())?
@@ -412,7 +416,7 @@ impl Engine {
         stream: EntityRef,
     ) -> Result<CommandResult, EngineError> {
         require_kind(id, EntityKind::Task)?;
-        require_kind(stream, EntityKind::Stream)?;
+        require_writable_stream(stream)?;
         let patch = TaskPatch {
             stream_id: Some(stream),
             ..Default::default()
