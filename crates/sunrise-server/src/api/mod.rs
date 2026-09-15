@@ -246,6 +246,88 @@ mod tests {
         );
     }
 
+    /// Every hex-shaped id in the description states its shape as a `pattern`.
+    ///
+    /// The document said "lowercase hex" in prose and carried no `pattern` key
+    /// at all, so nothing mechanical held either side to it: a generated client
+    /// would send whatever a caller handed it and find out from a `400`. These
+    /// are the fields whose prose makes the claim, and the assertion is that
+    /// the claim is expressed in a keyword rather than only in English.
+    ///
+    /// `the_committed_description_is_current` above catches a *stale* file; it
+    /// cannot catch an attribute being dropped and the file regenerated, which
+    /// is what this one is for.
+    #[test]
+    fn every_hex_id_in_the_description_carries_its_pattern() {
+        const ID: &str = "^[0-9a-f]{32}$";
+        const HASH: &str = "^[0-9a-f]{64}$";
+
+        let json = super::document()
+            .expect("the router must describe at 3.2")
+            .to_json()
+            .expect("the description must serialize");
+        let v: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+        let schemas = &v["components"]["schemas"];
+
+        for (schema, property, want) in [
+            ("DeviceCursor", "device_id", ID),
+            ("StreamSubscription", "stream_id", ID),
+            ("OpsRequest", "stream_id", ID),
+            ("OpsResponse", "stream_id", ID),
+            ("FinalizeRequest", "content_hash", HASH),
+            ("InitResponse", "upload_id", "^up_[0-9a-f]{32}$"),
+            ("FinalizeRequest", "upload_id", "^up_[0-9a-f]{32}$"),
+            ("FinalizeResponse", "blob_id", "^blb_[0-9a-f]{32}$"),
+        ] {
+            assert_eq!(
+                schemas[schema]["properties"][property]["pattern"],
+                serde_json::json!(want),
+                "{schema}.{property} must publish its shape"
+            );
+        }
+
+        // An array's own `pattern` is a keyword JSON Schema ignores, so this
+        // one has to be on the element or it is decoration.
+        assert_eq!(
+            schemas["FinalizeRequest"]["properties"]["chunk_hashes"]["items"]["pattern"],
+            serde_json::json!(HASH),
+            "the constraint belongs to the entries, not to the array"
+        );
+
+        // And the two ids that travel in a URL, where `PathParams` builds the
+        // schema from the field's type and never reads `#[schema(...)]`.
+        let params = |path: &str, method: &str| -> serde_json::Value {
+            v["paths"][path][method]["parameters"].clone()
+        };
+        for (path, method, name, want) in [
+            (
+                "/api/v1/blobs/{upload_id}/{chunk_idx}",
+                "put",
+                "upload_id",
+                "^up_[0-9a-f]{32}$",
+            ),
+            (
+                "/api/v1/blobs/{blob_id}",
+                "get",
+                "blob_id",
+                "^blb_[0-9a-f]{32}$",
+            ),
+        ] {
+            let found = params(path, method)
+                .as_array()
+                .expect("the operation must declare its path parameters")
+                .iter()
+                .find(|p| p["name"] == serde_json::json!(name))
+                .expect("the parameter must be declared")
+                .clone();
+            assert_eq!(
+                found["schema"]["pattern"],
+                serde_json::json!(want),
+                "{path} {method} {name} must publish its shape"
+            );
+        }
+    }
+
     /// The document is the contract, so its shape is a test rather than a
     /// build artefact nobody reads.
     ///

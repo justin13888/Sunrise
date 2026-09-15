@@ -3188,7 +3188,8 @@
             "description": "The upload this chunk belongs to.",
             "required": true,
             "schema": {
-              "type": "string"
+              "type": "string",
+              "pattern": "^up_[0-9a-f]{32}$"
             }
           },
           {
@@ -3528,7 +3529,8 @@
             "description": "The blob being read.",
             "required": true,
             "schema": {
-              "type": "string"
+              "type": "string",
+              "pattern": "^blb_[0-9a-f]{32}$"
             }
           },
           {
@@ -6146,7 +6148,8 @@
         "properties": {
           "upload_id": {
             "type": "string",
-            "description": "Server-assigned upload id, used by the chunk PUTs and by `finalize`."
+            "pattern": "^up_[0-9a-f]{32}$",
+            "description": "Server-assigned upload id, used by the chunk PUTs and by `finalize`:\n`up_` + 32 lowercase hex characters."
           },
           "chunk_urls": {
             "items": {
@@ -6167,15 +6170,18 @@
         "properties": {
           "upload_id": {
             "type": "string",
-            "description": "Upload id from `init`."
+            "pattern": "^up_[0-9a-f]{32}$",
+            "description": "Upload id from `init`: `up_` + 32 lowercase hex characters."
           },
           "content_hash": {
             "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
             "description": "BLAKE3 of the concatenated chunk ciphertext, 64 lowercase hex."
           },
           "chunk_hashes": {
             "items": {
-              "type": "string"
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
             },
             "type": "array",
             "description": "Per-chunk BLAKE3 hashes, 64 lowercase hex each, in order. Its length is\nthe chunk count: `init`'s advisory count is not trusted here."
@@ -6193,6 +6199,7 @@
         "properties": {
           "blob_id": {
             "type": "string",
+            "pattern": "^blb_[0-9a-f]{32}$",
             "description": "Canonical blob id: `blb_` + the first 16 bytes of `content_hash` in\nlowercase hex. Content-addressed, so re-uploading identical ciphertext\nconverges on the same id."
           },
           "size_bytes": {
@@ -6345,6 +6352,7 @@
         "properties": {
           "device_id": {
             "type": "string",
+            "pattern": "^[0-9a-f]{32}$",
             "description": "The originating device, 32 lowercase hex characters."
           },
           "last_applied_seq": {
@@ -6365,6 +6373,7 @@
         "properties": {
           "stream_id": {
             "type": "string",
+            "pattern": "^[0-9a-f]{32}$",
             "description": "The stream, 32 lowercase hex characters."
           },
           "cursors": {
@@ -6401,6 +6410,7 @@
         "properties": {
           "stream_id": {
             "type": "string",
+            "pattern": "^[0-9a-f]{32}$",
             "description": "The stream the batch targets, 32 lowercase hex characters."
           },
           "batch_id": {
@@ -6435,7 +6445,8 @@
           },
           "stream_id": {
             "type": "string",
-            "description": "The stream the batch targeted."
+            "pattern": "^[0-9a-f]{32}$",
+            "description": "The stream the batch targeted, echoed verbatim — so it is the same 32\nlowercase hex characters the request carried."
           },
           "server_first_seen_ms": {
             "type": "integer",
