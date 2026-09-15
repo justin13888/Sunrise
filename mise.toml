@@ -937,6 +937,35 @@ description = "Assert the kynos waiver gate's exit-code contract (fast, synthesi
 # feature set it reads has already changed shape once under it.
 run = "python3 .github/scripts/test_kynos_waiver_gate.py"
 
+[tasks.doc-comment-gate-test]
+description = "Assert the doc comment gate's exit-code contract (fast, synthesised crates)"
+# The gate's own --self-test runs scan_text over six string literals and reaches
+# nothing else: not the listing, not the 50-file floor that says "the scan is
+# broken" rather than "the tree is clean", not the exit codes those produce.
+run = "python3 .github/scripts/test_doc_comment_gate.py"
+
+[tasks.docs-link-gate-test]
+description = "Assert the docs link gate's exit-code contract (fast, synthesised repos)"
+# The gate's own --self-test is an excellent test of `slugify` and no test at
+# all of `check()`, which was exercised only by this repository's own 1,239
+# links — a fixture that changes every week and can only prove the gate green.
+run = "python3 .github/scripts/test_docs_link_gate.py"
+
+[tasks.observability-catalog-gate-test]
+description = "Assert the observability catalogue gate's exit-code contract (fast, synthesised docs)"
+# This gate reads its extraction command out of the document and runs it, which
+# is a second surface that can rot: a marker that loses its `grep` line, a path
+# that stops being a directory, a provenance ref that names no commit. The
+# gate's own self-test reaches none of those routes.
+run = "python3 .github/scripts/test_observability_catalog_gate.py"
+
+[tasks.proptest-persistence-gate-test]
+description = "Assert the proptest persistence gate's exit-code contract (fast, synthesised crates)"
+# Three of the five codes this gate emits — ignored, untracked and flat — are
+# decided by the filesystem and the index rather than by the source text, so the
+# gate's own self-test cannot reach them from a string literal.
+run = "python3 .github/scripts/test_proptest_persistence_gate.py"
+
 # --- Release artifacts ---
 #
 # Same Dockerfile and the same build args the release workflow uses, so a
