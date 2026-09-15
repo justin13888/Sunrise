@@ -128,6 +128,40 @@ actor CoreBridge {
         try core.attachmentIsLocal(attachment: attachment)
     }
 
+    // MARK: - Recovery
+
+    /// Whether this vault holds the account identity's unwrapping key.
+    ///
+    /// True on the device that created the account, false on one admitted by
+    /// pairing. Where no recovery blob has been sealed it means *this vault is
+    /// the only place `ID_D_priv` exists, and losing it destroys that key
+    /// permanently* — which is why it is worth showing and not only acting on
+    /// (#144).
+    func holdsIdentityKey() async -> Bool {
+        core.holdsIdentityKey()
+    }
+
+    /// Publish this vault to the relay and come back with the recovery code.
+    ///
+    /// The Apple clients' `sunrise bootstrap`, and one call rather than three
+    /// on purpose: the seed is drawn, sealed, uploaded and dropped on the Rust
+    /// side, so the code that comes back is always the code the stored blob
+    /// opens. `recoveryCode` is `nil` on a device admitted by pairing, which
+    /// holds no key to seal with — not a failure.
+    func bootstrapAccount(
+        relayURL: String,
+        bearer: String,
+        email: String,
+        nickname: String
+    ) async throws -> AccountBootstrap {
+        try await core.bootstrapAccount(
+            relayUrl: relayURL,
+            bearer: bearer,
+            email: email,
+            nickname: nickname
+        )
+    }
+
     // MARK: - iCalendar
 
     /// Read an `.ics` document's `VEVENT`s into the vault as time blocks.

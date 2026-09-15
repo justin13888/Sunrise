@@ -44,8 +44,9 @@ WASM therefore requires one of three integration paths — all evaluated:
    (`= [dep:sqlite-wasm-rs]`). That feature exists **only in `rusqlite 0.40.x`**
    (verified: absent in every release 0.32–0.39). Adopting it means bumping the
    workspace from `rusqlite 0.31` to `0.40` — a nine-minor-version jump across
-   `sunrise-storage` + `sunrise-core` (100+ call sites; `engine.rs` alone has
-   64 rusqlite references) that swaps the native SQLite/SQLCipher stack wholesale
+   `sunrise-storage` + `sunrise-core` (100+ call sites;
+   `crates/sunrise-core/src/engine/` alone has 174 rusqlite references) that
+   swaps the native SQLite/SQLCipher stack wholesale
    (`libsqlite3-sys 0.28 → 0.38`, SQLite 3.45 → 3.53.x).
 
    **Empirical gate result:** bumping `rusqlite` to `0.40.1` (native features

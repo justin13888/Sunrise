@@ -360,10 +360,11 @@ All project commands are centralized in [`mise.toml`](mise.toml). Run `mise task
 | `mise run test`              | Run the JS/TS test suite once                          |
 | `mise run test-coverage`     | Run the JS/TS test suite with coverage                 |
 | `mise run rust-fmt`          | Format Rust code in place                              |
-| `mise run rust-clippy`       | Lint Rust with Clippy (warnings denied)                |
+| `mise run rust-clippy`       | Lint Rust with Clippy (warnings denied), workspace and `fuzz/` |
 | `mise run rust-check`        | Type-check the Rust workspace                          |
 | `mise run rust-test`         | Run the Rust test suite                                |
-| `mise run rust-doc`          | Build the rustdoc with every rustdoc warning denied     |
+| `mise run log-fields`        | Run the log-event/field gate, building first what it reads from |
+| `mise run rust-doc`          | Build the rustdoc for the workspace and `fuzz/`, every rustdoc warning denied |
 | `mise run orphan-crates`     | Fail if any crate is unreachable from a shipping binary |
 | `mise run docs-links`        | Fail on a markdown link or heading anchor that resolves to nothing |
 | `mise run doc-comments`      | Fail on a doc comment mangled into a shape rustdoc misreads |

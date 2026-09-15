@@ -29,7 +29,7 @@ CREATE VIRTUAL TABLE search_idx USING fts5 (
 
 The `kind` column exists so the table can hold more than one entity kind, and
 **only `'task'` is ever written to it.** `ftsr_upsert_task` and
-`ftsr_delete_task` in `crates/sunrise-core/src/engine.rs` are the only inserts
+`ftsr_delete_task` in `crates/sunrise-core/src/engine/task.rs` are the only inserts
 and deletes, they run inside the same transaction that applies the op, and a
 deleted task is removed from the index rather than left as a tombstone. A
 task's `contexts` column carries its context ids as text, so a context id is a
@@ -39,7 +39,8 @@ indexed. Streams, Blocks, Notes and People have no writer at all.
 ## Free-text search
 
 `Query::Search { text, limit }` (`crates/sunrise-core/src/queries.rs`) is the
-whole query surface. `query_search` (`engine.rs`) matches against `search_idx`
+whole query surface. `query_search`
+(`crates/sunrise-core/src/engine/query.rs:238`) matches against `search_idx`
 with `kind = 'task'`, orders by `bm25(search_idx)`, applies the caller's
 `limit`, reads each hit back as a full Task and drops any that is deleted. It
 returns `QueryResult::Tasks` — so search returns tasks, in relevance order,

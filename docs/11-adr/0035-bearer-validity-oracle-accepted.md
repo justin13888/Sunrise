@@ -24,7 +24,7 @@ oracle.
 ### What the oracle is, precisely
 
 With `require_device_sig = true`, `verify_bytes`
-(`crates/sunrise-server/src/api/signed.rs:152`) destructures
+(`crates/sunrise-server/src/api/signed.rs:170`) destructures
 `(Some(device_id), Some(signature))` and, failing that, returns
 `ApiError::device_sig_invalid()` **before any device or account lookup**. So a
 caller presenting an incomplete binding — either header missing, not only both —
@@ -42,7 +42,7 @@ to know whether it is still live. Not a network attacker — A1 is under TLS and
 never sees the bearer. Not an enumerating stranger — nothing about which accounts
 or devices exist is reachable through this branch, and a device id that is *not*
 on the authenticated account deliberately stays `AUTH_TOKEN_INVALID`
-(`crates/sunrise-server/src/api/signed.rs:176-185`), guarded by
+(`crates/sunrise-server/src/api/signed.rs:194-203`), guarded by
 `an_unknown_device_is_still_indistinguishable_from_a_bad_bearer`.
 
 ### The argument currently on the record is the wrong argument
@@ -64,12 +64,12 @@ configuration including `require_device_sig = true`:
 - `POST /api/v1/devices` (`crates/sunrise-server/src/api/devices.rs:156`)
 
 Both take `SignedBootstrap`, and `signed_of` skips verification entirely when the
-binding is absent (`crates/sunrise-server/src/api/signed.rs:372-376`) — *a device
+binding is absent (`crates/sunrise-server/src/api/signed.rs:390-394`) — *a device
 cannot sign before it exists*, so this exemption is not an oversight and cannot
 be configured away without making device registration impossible.
 
 `caller_of` resolves the bearer **first**, before the binding headers and before
-the body (`crates/sunrise-server/src/api/signed.rs:327-338`, then
+the body (`crates/sunrise-server/src/api/signed.rs:345-356`, then
 `:365-370`). So against either route, with no device key and no binding:
 
 | bearer | outcome |
@@ -146,7 +146,7 @@ exactly the failure #70 fixed for the *partial*-binding caller — a client send
 **Close the bootstrap oracle instead, and then reconsider case 1.** Rejected as
 impossible without breaking registration. `Binding::Bootstrap` exists because a
 device has no key until `POST /api/v1/devices` returns
-(`crates/sunrise-server/src/api/signed.rs:223-227`). Any scheme that refuses a
+(`crates/sunrise-server/src/api/signed.rs:241-245`). Any scheme that refuses a
 binding-less bearer there refuses first-device onboarding.
 
 **Accept it, and leave the record on the doc comment.** Rejected, and this is the
@@ -172,14 +172,14 @@ question — which is what happened.
   what it claims — that `GET /meta` advertises the binding requirement — and it
   makes no claim about the bearer disclosure. Editing a generator input to
   restate an ADR is not worth the regeneration.
-- **The wording defect #79 names is already fixed.** `signed.rs:110-116`,
+- **The wording defect #79 names is already fixed.** `signed.rs:128-134`,
   `error.rs:221` and `codes.toml`'s 204 entry all describe the pre-lookup case as
   an **incomplete** binding — "either header missing, not only both" — matching
-  the `let else` at `signed.rs:152`. Commit `d52999d` landed that before this
+  the `let else` at `signed.rs:170`. Commit `d52999d` landed that before this
   record; nothing further is owed.
 - **No new configuration key.** `require_device_sig` keeps its single meaning and
   its derivation from `oidc_issuer`
-  (`crates/sunrise-server/src/config.rs:486`).
+  (`crates/sunrise-server/src/config/file.rs:175`).
 
 ## What would force revisiting this
 

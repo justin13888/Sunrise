@@ -122,6 +122,11 @@ USAGE:
     sunrise bootstrap [email]    publish this vault's identity to the relay,
                                  register this device, and print the 24-word
                                  recovery code once. Write that code down
+    sunrise recover <word>...    rebuild this account in an EMPTY vault
+                                 directory from the 24-word code. Reads the
+                                 code from stdin if none is given, and signs
+                                 you in again first — the relay only releases
+                                 a recovery blob to a fresh authentication
 
   plumbing
     sunrise focus <id>           open a focus session on a task
@@ -345,6 +350,16 @@ async fn run(sub: &str, rest: &[String]) -> Result<(), Box<dyn std::error::Error
             for line in pair::run(&dir, &cmd).await? {
                 println!("{line}");
             }
+            return Ok(());
+        }
+        // Answered without opening anything for the same reason, in the other
+        // direction: this subcommand *creates* the vault, from an identity it
+        // has not fetched yet. Falling through to the open below would mint a
+        // root and an identity of its own first, and the account a vault
+        // belongs to is decided when it is created — so the recovery would
+        // then have nothing left to join.
+        "recover" => {
+            recover(rest).await?;
             return Ok(());
         }
         _ => {}
@@ -1689,6 +1704,69 @@ fn bootstrap_account(
         },
         code,
     ))
+}
+
+/// `recover` — `docs/03-crypto/recovery.md` §Recovery flow, end to end.
+///
+/// The whole of it happens before there is a vault to open, which is why this
+/// runs from `run`'s pre-open match rather than from `dispatch`. The sequence
+/// and the reasons are in [`sunrise_cli::recover`]; what lives here is the part
+/// that belongs to a terminal — where the words come from, and what is said
+/// afterwards.
+///
+/// Progress goes to **stderr** and the outcome to stdout, the same split every
+/// other subcommand makes: a script that runs this wants the identity id, not
+/// the narration. The 24 words are never echoed back, printed, or logged.
+async fn recover(rest: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    #![allow(clippy::print_stdout)]
+    use std::io::Read as _;
+
+    let dir = vault_dir();
+    std::fs::create_dir_all(&dir).ok();
+    sunrise_cli::recover::require_empty(&dir)?;
+
+    let url = std::env::var(livesync::ENV_SYNC_URL)
+        .map_err(|_| sunrise_cli::recover::RecoverError::NoRelay)?;
+
+    // Read stdin only when there are no arguments, so a terminal session that
+    // typed the words does not then block on a pipe nobody is writing to.
+    let mut piped = String::new();
+    if rest.is_empty() {
+        std::io::stdin().read_to_string(&mut piped).ok();
+    }
+    let code = sunrise_cli::recover::code_from(rest, &piped)
+        .ok_or(sunrise_cli::recover::RecoverError::NoCode)?;
+
+    // stderr, because stdout is the contract a script reads.
+    #[allow(clippy::print_stderr)]
+    let mut announce = |line: &str| eprintln!("{line}");
+
+    // The clock: there is no vault yet, so there is no `Core::now_ms` to ask,
+    // and this value is only used to price the credential this call is about
+    // to mint. `jiff` is already the CLI's time source everywhere else.
+    let now_ms = u64::try_from(jiff::Timestamp::now().as_millisecond()).unwrap_or(0);
+    let bearer = sunrise_cli::recover::step_up_bearer(&dir, now_ms, &mut announce).await?;
+
+    let identity = sunrise_cli::recover::restore_identity(&url, &bearer, &code).await?;
+    drop(code);
+    announce("recovery code accepted; the account identity is restored");
+
+    let done = sunrise_cli::recover::rebuild_vault(
+        &dir,
+        identity,
+        &url,
+        &bearer,
+        env!("CARGO_PKG_VERSION"),
+        &mut announce,
+    )
+    .await?;
+
+    println!("{}", done.identity_id);
+    #[allow(clippy::print_stderr)]
+    {
+        eprintln!("{}", sunrise_cli::recover::aftercare(&done.identity_id));
+    }
+    Ok(())
 }
 
 /// Show the recovery code, once, with what it is for and what losing it costs.

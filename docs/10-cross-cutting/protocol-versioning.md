@@ -219,7 +219,7 @@ record carries it. `wire_v` / `doc_v` / `crypto_v` appear once per process, on
 the `srv.start` line, which is the trade `crates/sunrise-log/src/proto.rs`
 records: restating three constants that cannot change while the process lives
 would cost roughly 50 bytes on every record to say what one line already says.
-`srv.sync.session_open` (`crates/sunrise-server/src/api/sync.rs`) carries
+`srv.sync.session_open` (`crates/sunrise-server/src/api/sync/credential.rs`) carries
 `account_h` and nothing about the protocol.
 
 For today's server that loses nothing, because the server offers exactly one
@@ -269,7 +269,7 @@ The pair `(doc_schema_floor, client.doc_schema_max)` defines the fence:
   - All Streams the user owns have rotated past the old suite (client surfaces the list).
   - At least 12 months since the new suite shipped to all client platforms.
   - A superseding ADR.
-- The negotiated suite is **not logged anywhere**. Negotiation is per session (`max_intersection` in `crates/sunrise-wire-protocol/src/negotiation.rs`), and its result is discarded for observability purposes: `srv.sync.session_open` (`crates/sunrise-server/src/api/sync.rs`) carries `account_h` and nothing about the suite. The `crypto_v` on the startup line is a different number — the binary's compiled `CRYPTO_SUITE_V`, what this process *supports*, not what any session *chose*. Nor do the metrics cover it: `sunrise_sync_session_total` is incremented once per session but is unlabelled. The registry's `render` passes a name containing `{` through verbatim, so a labelled series is expressible as a string, but nothing constructs one — the single `incr` site at `api/sync.rs` would have to build the name (see [§11](#11-logging-and-metrics)).
+- The negotiated suite is **not logged anywhere**. Negotiation is per session (`max_intersection` in `crates/sunrise-wire-protocol/src/negotiation.rs`), and its result is discarded for observability purposes: `srv.sync.session_open` (`crates/sunrise-server/src/api/sync/credential.rs`) carries `account_h` and nothing about the suite. The `crypto_v` on the startup line is a different number — the binary's compiled `CRYPTO_SUITE_V`, what this process *supports*, not what any session *chose*. Nor do the metrics cover it: `sunrise_sync_session_total` is incremented once per session but is unlabelled. The registry's `render` passes a name containing `{` through verbatim, so a labelled series is expressible as a string, but nothing constructs one — the single `incr` site at `api/sync/credential.rs` would have to build the name (see [§11](#11-logging-and-metrics)).
 
 There is no per-session crypto-suite mixing. A session uses exactly one suite for transport-level handshake; ops within the session may carry envelopes encrypted under any suite the recipient supports.
 

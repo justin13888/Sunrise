@@ -11,18 +11,25 @@ import Testing
 /// constructor for the type — a payload is assembled out of a completed
 /// pairing, and a unit test has no second device.
 ///
-/// Regenerate it with
+/// Produced by `sunrise_pairing::encode_pairing_payload` over `ID_S_priv` =
+/// 32 x 0x11, `ID_D_pub` = X25519(32 x 0x22), `D_S_priv` = 32 x 0x33,
+/// `D_D_priv` = 32 x 0x44, one Stream key (the vault-meta stream, epoch 1,
+/// 32 x 0xCD), `vault_root` = 32 x 0xAB, and `genesis_*` equal to the identity
+/// in force — which is what an account that has never rotated looks like, and a
+/// fresh vault is one. Fields 12-14 carry the device keys this device minted
+/// for its own `PairingRequest` and the certificate its sponsor signed over
+/// them; `ID_S_priv` and `ID_D_priv` are in neither, which is what #105 and
+/// #76 closed.
 ///
-///     cargo test -p sunrise-pairing --lib -- --ignored --nocapture apple_fixture
-///
-/// which is the generator that produced it, over `ID_S_priv` = 32 × 0x11,
-/// `ID_D_pub` = X25519(32 × 0x22), `D_S_priv` = 32 × 0x33, `D_D_priv` =
-/// 32 × 0x44, one Stream key (the vault-meta stream, epoch 1, 32 × 0xCD), and
-/// `vault_root` = 32 × 0xAB. A stale one fails loudly here rather than quietly
-/// somewhere else — which is what happened twice: when key 2, `ID_D_priv`, was
-/// burned, and again when key 1, `ID_S_priv`, was (#105) and fields 12–14
-/// arrived to carry this device's own keys and the certificate its sponsor
-/// signed for them.
+/// **Do not edit this literal by hand.** `mise run apple-pairing-fixture`
+/// rewrites it from the encoder, and
+/// `crates/sunrise-pairing/tests/apple_fixture.rs` asserts on every
+/// `cargo test` that what is written here is what that encoder produces today.
+/// Regenerating by hand is how it went stale when fields 10 and 11 were added:
+/// this file kept the nine-key shape and the failure surfaced as four opaque
+/// XCTest assertions on a macOS runner instead of one named Rust test.
+/// Before that it was key 2, `ID_D_priv`, being burned: the decoder refuses a
+/// payload still carrying it, so the previous fixture stopped decoding.
 enum PairingFixture {
     /// The 32-byte vault root inside ``payload()``.
     static let vaultRoot = Data(repeating: 0xAB, count: 32)

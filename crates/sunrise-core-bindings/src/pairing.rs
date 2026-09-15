@@ -446,7 +446,8 @@ impl DevicePairing {
     /// answer.
     ///
     /// The bytes come back rather than the parsed struct, and go straight into
-    /// [`SunriseCore::issue_pairing_grant`](crate::SunriseCore::issue_pairing_grant).
+    /// [`SunriseCore::send_pairing_grant`](crate::SunriseCore::send_pairing_grant),
+    /// which is the seam's name for the core's `issue_pairing_grant`.
     /// The seam does not hold an open vault and the vault does not hold a Noise
     /// channel, so one of them has to hand the other an opaque blob; making it
     /// the *request* — which carries no secret — rather than the grant is the

@@ -400,7 +400,7 @@ No alerting exists, and several triggers below have no metric to fire from.
 
 ## Audit trail (per-account, retained briefly) — NOT IMPLEMENTED
 
-There is no audit table in `store.rs`'s schema, no writer, no "Security" page,
+There is no audit table in `store/`'s schema, no writer, no "Security" page,
 and no retention job. `[observability]` is rejected outright by the config
 parser (see [`self-hosting.md`](./self-hosting.md) §"Not yet wired"), so
 `audit_retention_days` cannot be set. Two of the five actions below could not be

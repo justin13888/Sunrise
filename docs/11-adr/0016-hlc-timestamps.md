@@ -79,7 +79,8 @@ old rule made impossible.
 | `device_id` | Raw 16-byte memcmp, higher wins. Breaks **cross-device** ties deterministically so every replica picks the same winner. Unchanged from ADR-0014. |
 | `seq` | The writer's per-`(stream, device)` counter, already envelope field 4. Reached only when two ops from the **same** device carry an equal `hlc`. |
 
-`seq` closes the residual documented at `engine.rs`. The send rule makes a
+`seq` closes the residual documented on `LwwStamp`
+(`crates/sunrise-core/src/engine/lww.rs:28-42`). The send rule makes a
 same-device HLC tie impossible *while a device's clock state lives*; it becomes
 possible across a process restart. In that window `seq` still orders the two ops
 correctly. This paragraph understated what a restart did until ADR-0036: the

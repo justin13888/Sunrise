@@ -81,9 +81,9 @@ AccountInfo          { identity_id, email, tier, device_count, created_at_ms }
 ```
 
 `AccountInfo.tier` is always the string `"free"`: `resolve_account` sets it at
-provisioning (`crates/sunrise-server/src/store.rs:331`) and nothing updates it or
-reads it for a decision. It is retained for wire compatibility, not because it
-means anything — there are no plan tiers in v1
+provisioning (`crates/sunrise-server/src/store/accounts.rs:107`) and nothing
+updates it or reads it for a decision. It is retained for wire compatibility,
+not because it means anything — there are no plan tiers in v1
 ([ADR-0027](../11-adr/0027-v1-self-host-first.md)).
 
 `AccountInfo` carries a **device count**, not a `[DeviceMeta]` array, and names
@@ -349,20 +349,22 @@ content address, and writes the **manifest last**. A reader that finds no
 manifest sees no blob, so a crash mid-commit leaves an invisible partial rather
 than a short read.
 
-**No client calls any of the four.** Outside the handlers, the only mentions in
-the workspace are this document, the generator's two omit rules
-(`crates/sunrise-relay-client/build.rs:42`, `:46`) and the log field catalogue.
-They are the API for a client that has not landed rather than dead weight:
-`Core::attach_file` seals an attachment's chunks into the *local* vault's blob
-store and stops there, so until an uploader drives these routes an attachment is
-readable only on the device that made it
-([`../02-domain/attachments.md`](../02-domain/attachments.md) §Lazy fetch,
-[#176](https://github.com/justin13888/Sunrise/issues/176)). Two of the four are
-also absent from the generated relay
-client — the raw-binary chunk `PUT` and the blob `GET` — because kynos and
-spargen disagree about how OpenAPI 3.1 describes a raw binary body; `build.rs`
-records the disagreement, so whoever writes the caller hand-writes those two and
-generates `init` and `finalize`.
+**The client is `sunrise_sync::Transport`'s four blob methods**, implemented by
+`SseTransport` and driven by `sunrise_core::sync_driver` out of the
+`blob_uploads` queue; `crates/sunrise-core/src/blob_sync.rs` records where the
+upload is driven from, what a retry re-uses, and every bound on it. Before
+[#176](https://github.com/justin13888/Sunrise/issues/176) nothing in the
+workspace called any of the four, so an attachment was readable only on the
+device that made it.
+
+The client does **not** go through the generated relay client. All four are
+reached with the transport's own hyper client, because two of them — the
+raw-binary chunk `PUT` and the blob `GET` — are absent from the generated
+surface: kynos and spargen disagree about how OpenAPI 3.1 describes a raw
+binary body, and `crates/sunrise-relay-client/build.rs:42`, `:46` record the
+disagreement as two omit rules. Splitting one two-phase commit across two HTTP
+clients to use generated code for half of it would buy nothing and cost a
+second place for the bearer, the base URL and the device binding to live.
 
 **Not yet implemented:** `DELETE /api/v1/blobs/<blob_id>`. Blob deletion is not
 an immediate erase — [`../02-domain/attachments.md`](../02-domain/attachments.md)
@@ -382,7 +384,7 @@ period — so it lands with the GC slice rather than as a bare unlink.
 
 ### Sharing — NOT IMPLEMENTED
 
-No `api/shares.rs` exists, no `shares` table is in `store.rs`'s schema, and
+No `api/shares.rs` exists, no `shares` table is in `store/`'s schema, and
 `/api/v1/shares/*` is not mounted. Sharing is blocked upstream of the API:
 [ADR-0024](../11-adr/0024-key-hierarchy.md) records that under the implemented
 derived-key model there is no key unit smaller than the whole vault to grant,

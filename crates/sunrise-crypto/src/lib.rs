@@ -59,8 +59,9 @@ pub use bip39::{
 };
 pub use blake3_kdf::{derive_key, BLAKE3_OUT_LEN};
 pub use blob_chunk::{
-    chunk_aad, chunk_count_for, chunk_nonce, content_hash, open_chunk, seal_chunk, verify_content,
-    BlobChunkError, CHUNK_PLAINTEXT_LEN,
+    chunk_aad, chunk_count_for, chunk_nonce, ciphertext_hash, content_hash, open_chunk, seal_chunk,
+    split_sealed, verify_content, BlobChunkError, CiphertextHasher, CHUNK_PLAINTEXT_LEN,
+    SEALED_CHUNK_LEN,
 };
 pub use device_cert::{DeviceCert, DeviceCertError, DeviceCertInner, MAX_NICKNAME_BYTES};
 pub use hpke_seal::{
@@ -73,8 +74,8 @@ pub use identity::{device_id_from_pub, identity_id_from_pub, DeviceId, IdentityI
 // reachable as `identity_transition::body_hash`.
 pub use identity_transition::{
     roster_digest, shares_digest, sign_identity_transition, verify_identity_transition,
-    IdentityTransitionBody, IdentityTransitionError, IdentityTransitionSigs, DEVICE_SHARE_LEN,
-    IDENTITY_SHARE_LEN,
+    verify_successor_signature, IdentityTransitionBody, IdentityTransitionError,
+    IdentityTransitionSigs, DEVICE_SHARE_LEN, IDENTITY_SHARE_LEN,
 };
 pub use keys::{
     DeviceDhKeyPair, DeviceSigningKeyPair, IdentityDhKeyPair, IdentitySigningKeyPair, RecoveryKey,

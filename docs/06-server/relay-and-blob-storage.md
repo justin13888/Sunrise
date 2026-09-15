@@ -5,7 +5,7 @@ status: accepted
 # Relay and Blob Storage
 
 > **Implementation status.** The self-host single-binary path is built and is
-> the only one: one SQLite database (`store.rs` + `relay_log.rs`) and a
+> the only one: one SQLite database (`store/` + `relay_log.rs`) and a
 > local-filesystem blob root (`api/blobs.rs` over `sunrise_storage::BlobStore`).
 > There is no Postgres, no object store, and no pub/sub; the "managed" sections
 > below describe a deployment that does not exist. Sections that describe built

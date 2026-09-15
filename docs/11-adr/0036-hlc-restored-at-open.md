@@ -50,7 +50,7 @@ anticipated. `lww_wins` compares `hlc` before `device` and before `seq`, so:
 Two replicas with the same op set, disagreeing permanently, with nothing
 surfaced. A backgrounded mobile app killed and reopened is the whole setup.
 
-`crates/sunrise-core/src/engine.rs`'s
+`crates/sunrise-core/src/engine/tests.rs`'s
 `a_restart_does_not_make_this_device_emit_beneath_its_own_ops` is that scenario
 end to end; with the restore removed it reports the peer keeping
 `"edited before the restart"` after being handed both edits in order.

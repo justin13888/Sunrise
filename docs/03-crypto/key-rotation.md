@@ -23,7 +23,7 @@ Three key types rotate, each with a different cost and cascade. Throughout this 
 
     The exception that remains: the device that *created* the account, and any device restored from the recovery code, hold `ID_D_priv` and can open the identity copy of any epoch. `Command::RevokeDevice` refuses to revoke the device it runs on, so this is reachable only by revoking the account's creator from another device. The recovery blob is the only other place that key is allowed to live, and it is ciphertext behind the user's code rather than a device the account can revoke — so the bound is stated rather than claimed.
 
-    The same fact has a second consequence, in the other direction, and it is the one a user feels: **where no recovery blob has been sealed, that vault is the only place `ID_D_priv` exists, and losing it destroys the key permanently.** No recovery feature added later can retrieve it, because sealing a blob needs the key it would carry. `sunrise bootstrap` seals one at account creation, so a CLI-created account has the second copy; the Apple clients do not, so an account created there does not. See [`recovery.md`](./recovery.md) §Implementation status. `Keychain::holds_only_copy_of_identity_key` answers it in the core API and `Core::holds_identity_key` passes it through; there is still no binding, so the Apple app cannot ask.
+    The same fact has a second consequence, in the other direction, and it is the one a user feels: **where no recovery blob has been sealed, that vault is the only place `ID_D_priv` exists, and losing it destroys the key permanently.** No recovery feature added later can retrieve it, because sealing a blob needs the key it would carry. `sunrise bootstrap` seals one at account creation and, since #181, so do the Apple clients: `SunriseCore::bootstrap_account` is the same ceremony behind one FFI call, and `RecoveryCodeModel` runs it the moment a vault is created. See [`recovery.md`](./recovery.md) §Implementation status. `Keychain::holds_only_copy_of_identity_key` answers it in the core API, `Core::holds_identity_key` passes it through, and the seam exports it — so a client can state the condition as well as clear it.
 
   * *Writes are bounded **at the relay, conditionally**.* The relay cannot learn the revocation from the op stream and must not be able to — `device_revoke` is sealed under the vault-meta Stream key, and promoting the revoked id into the cleartext envelope header would tell the relay which of an account's devices had been revoked and when, for every account it serves — so it is told out of band. `Command::RevokeDevice` queues a `relay_revocation_intents` row in the same transaction as the op and the sync driver drains it to `DELETE /api/v1/devices/by-vault-id/{id}`, retrying on every session until the relay answers. That route takes the vault-side device id, because the relay's own `device_id` is a ULID it mints at registration and never sends back through the op stream — which is why the older route could not express a revocation at all, and why [#80](https://github.com/justin13888/Sunrise/issues/80) was a relay API change before it was a client one. §Revocation step 3 has the mechanism.
 
@@ -114,7 +114,7 @@ Three key types rotate, each with a different cost and cascade. Throughout this 
 * **Rotating the identity from a device that did not create the account.** Signing a transition needs the outgoing `ID_S_priv`, and since #105 only the account's creator holds it. `Command::RotateIdentity` refuses elsewhere by name, and `Command::RevokeDevice` completes without rotating and logs `core.identity.rotation_unavailable`. Refusing the whole revocation would be worse: the device a user is revoking is often the one they lost, and the creator may be the one they lost. What is given up is bounded — a revoked device that was itself paired holds no signing key either way, so there is nothing for the rotation to have retired. The case that genuinely needs it is revoking the creator, and that has to be done from the creator.
 
   A replica applying a certificate for a device id it has never seen, in an account that has revoked something, logs `core.device.admitted_after_revocation`; one issued under a retired identity logs `core.device.cert_superseded_identity`. Both are what an ordinary pairing can look like too, so both disclose and neither gates.
-* **§Device key rotation.** No `device_rotate`; a device's `D_S` / `D_D` are minted once at open and never replaced.
+* **§Device key rotation.** No `device_rotate`; a device's `D_S` / `D_D` are minted once at open and never replaced. The one exception is a **recovery**, which is a fresh vault and therefore mints fresh device keys and a certificate signed by the restored `ID_S_priv` as a matter of course — `sunrise recover`, and [`recovery.md`](./recovery.md) §Recovery flow step 6. That is not device-key rotation: the old device is not superseded, it is gone.
 * **`share_grant` / `share_revoke`.** Sharing is unbuilt, so every "and shared peers" clause below describes nothing.
 * **§Revocation step 4.** Nothing wipes the revoked device's local database, and no UI explains the situation to whoever is holding it.
 
@@ -145,10 +145,10 @@ Ops signed by the old device key stand until that op is emitted; after it, every
 mechanisms and the spec has previously conflated them. At the relay, revocation
 arrives through the account API and never through the op: `DELETE
 /api/v1/devices/{device_id}` sets `revoked = 1` on the relay's own `devices` row
-(`crates/sunrise-server/src/store.rs`), `Store::active_device` filters on it,
-and that refuses every subsequent signed request
+(`crates/sunrise-server/src/store/devices.rs`), `Store::active_device` filters
+on it, and that refuses every subsequent signed request
 (`crates/sunrise-server/src/api/signed.rs`) and ends a live SSE session with
-`AUTH_DEVICE_REVOKED` (`crates/sunrise-server/src/api/sync.rs`). It is a
+`AUTH_DEVICE_REVOKED` (`crates/sunrise-server/src/api/sync/stream.rs`). It is a
 time-less binary flag on relay metadata the relay already holds, not a content
 check, and it refuses the *device's credential* rather than ops signed by a
 superseded key. In the vault, the matching check would be the receiving client's

@@ -231,6 +231,16 @@ fn extra_manifests() -> Vec<PathBuf> {
 /// A comment *trailing* real content on the same line is still read. Narrowing
 /// further would mean knowing where each format's strings and comments start,
 /// which is a parser for four grammars in service of a case nothing has hit.
+///
+/// # Punctuation is not part of the path
+///
+/// The argument is the next whitespace-delimited word, so whatever closes the
+/// string or the list around it arrives attached to it: `"…fuzz/Cargo.toml",`
+/// at the end of a TOML array element used to read as `fuzz/Cargo.toml",` and
+/// fail closed on a manifest that is not there (#166). Quotes, a comma and a
+/// closing bracket are trimmed from both ends for that reason. It is not a
+/// TOML parser — it does not need to be, because no path this repository
+/// builds ends in one of those characters, and the flag's argument is a path.
 fn manifest_path_args(text: &str) -> Vec<String> {
     const FLAG: &str = "--manifest-path";
     let mut found = Vec::new();
@@ -246,7 +256,7 @@ fn manifest_path_args(text: &str) -> Vec<String> {
                 .split_whitespace()
                 .next()
                 .unwrap_or_default()
-                .trim_matches(['"', '\'']);
+                .trim_matches(['"', '\'', ',', ']']);
             if !path.is_empty() {
                 found.push(path.to_owned());
             }
@@ -400,7 +410,7 @@ fn is_shipped_kind(kind: &str) -> bool {
 ///
 /// `#[cfg(test)]` is *not* blanked. A scan for the end of the attributed item
 /// assumed a brace-balanced one, and on a struct field or an enum variant it
-/// ran on — measured, it blanked 130 lines of `api/sync.rs` and hid every
+/// ran on — measured, it blanked 130 lines of `api/sync.rs` (now `api/sync/`) and hid every
 /// `tracing::` call inside from every gate. Deleting it costs a constraint
 /// (a unit test in a shipped file must use allowlisted field names) that the
 /// workspace already met.
@@ -950,8 +960,8 @@ fn dep_info_sources() -> (BTreeMap<String, String>, Vec<String>) {
         let Some(newest) = infos.last().copied() else {
             problems.push(format!(
                 "{package}: no per-unit dep-info for {}. Build the workspace first — \
-                 `cargo test --workspace --all-targets --no-run` — because this gate \
-                 reads what the compiler recorded rather than parsing the module \
+                 `mise run log-fields` does that build and then this gate — because \
+                 it reads what the compiler recorded rather than parsing the module \
                  tree.{}",
                 rel(&src_path, &root),
                 if clippy_only {
@@ -1537,15 +1547,15 @@ fn the_scan_reaches_what_cargo_compiles() {
         missing.is_empty(),
         "these files are tracked under a workspace crate's `src/` and no dep-info \
          names them, so nothing in this file reads a line of them. Either the \
-         workspace has not been built the way this gate needs — \
-         `cargo test --workspace --all-targets --no-run`, which compiles the \
-         feature and cfg combinations an ordinary `cargo build --workspace` does \
-         not — or the file is reachable from no module and is compiled by \
-         nothing:\n  {}",
+         workspace has not been built the way this gate needs — `mise run \
+         log-fields`, which is `cargo test --workspace --all-targets --no-run` \
+         and then this gate, compiling the feature and cfg combinations an \
+         ordinary `cargo build --workspace` does not — or the file is reachable \
+         from no module and is compiled by nothing:\n  {}",
         missing.join("\n  ")
     );
     for expected in [
-        "crates/sunrise-server/src/api/sync.rs",
+        "crates/sunrise-server/src/api/sync/stream.rs",
         "crates/sunrise-core/src/sync_driver.rs",
         "crates/sunrise-log/src/field.rs",
         // Behind `#[cfg(feature = "sse")]`, off by default. Named here because
@@ -2255,5 +2265,38 @@ cargo build --manifest-path tools/uniffi-bindgen/Cargo.toml
     assert_eq!(
         manifest_path_args("cargo build --manifest-path a/Cargo.toml # note"),
         vec!["a/Cargo.toml".to_owned()]
+    );
+}
+
+#[test]
+fn a_manifest_path_at_the_end_of_a_toml_array_element_is_read() {
+    // #166: the token after the flag is whitespace-delimited, so the `",` that
+    // closes a TOML array element rode along with the path and the gate then
+    // failed closed on `fuzz/Cargo.toml",` — a manifest that is not there.
+    // `mise.toml` worked around it by keeping the flag off the end of every
+    // element, under a comment asking the next person not to tidy the order
+    // back, which is an argument a formatter eventually wins.
+    assert_eq!(
+        manifest_path_args("  \"cargo fmt --all --manifest-path fuzz/Cargo.toml\",\n"),
+        vec!["fuzz/Cargo.toml".to_owned()],
+        "a manifest path at the end of a TOML array element must lose the `\",`"
+    );
+
+    // The last element of an array carries no comma and the bracket closes on
+    // the same line; a single-quoted TOML string is the same shape again.
+    assert_eq!(
+        manifest_path_args("run = [\"cargo doc --manifest-path fuzz/Cargo.toml\"]"),
+        vec!["fuzz/Cargo.toml".to_owned()]
+    );
+    assert_eq!(
+        manifest_path_args("run = ['cargo doc --manifest-path fuzz/Cargo.toml']"),
+        vec!["fuzz/Cargo.toml".to_owned()]
+    );
+
+    // And a path that is not at the end is still read, so the fix cannot be a
+    // rule that only fires on the last token of a line.
+    assert_eq!(
+        manifest_path_args("cargo fmt --manifest-path fuzz/Cargo.toml --all -- --check"),
+        vec!["fuzz/Cargo.toml".to_owned()]
     );
 }

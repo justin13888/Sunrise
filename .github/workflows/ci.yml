@@ -41,9 +41,16 @@ jobs:
         # steps before CI was billing-blocked: 18m26s on ubuntu-latest, 14m46s
         # on macos-latest. No `rust` cache entry has ever existed, so those
         # observations are cold runs and the multiple is over a cold build.
+        #
+        # Ten minutes were added to each leg when the `fuzz/` clippy and rustdoc
+        # steps landed (#167). That is a second cargo workspace with a target
+        # directory of its own, so on a cold cache it rebuilds the shared
+        # dependency graph once more; the cache entry added below is what keeps
+        # it from doing so on every run, and the ceiling covers the run where
+        # it does.
         include:
-          - { os: ubuntu-latest, timeout: 45 }
-          - { os: macos-latest, timeout: 35 }
+          - { os: ubuntu-latest, timeout: 55 }
+          - { os: macos-latest, timeout: 45 }
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -99,10 +106,40 @@ jobs:
             exit 1
           fi
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Two cargo workspaces, two target directories. `fuzz/` is its own
+          # workspace root (see `fuzz/Cargo.toml`) and the clippy and rustdoc
+          # steps below build it, so without this line each of those steps pays
+          # a cold build of the shared dependency graph on every run.
+          workspaces: |
+            .
+            fuzz
       - name: cargo fmt
         run: cargo fmt --all -- --check
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+      # `fuzz/` is a separate workspace, so the `--workspace` command above
+      # cannot reach it and the six harnesses were the one corner of the tree
+      # that was formatted and linted by nothing (#167). They decide what a
+      # fuzzer explores, which is what makes an unused branch or a `let _ =`
+      # swallowing a result worth catching here rather than in review.
+      #
+      # This runs on the pinned stable, not the nightly the `fuzz` job installs:
+      # nightly is needed for `-Zsanitizer=address` under `cargo fuzz run`, and
+      # for nothing else. The root `clippy.toml` still applies — its lookup
+      # walks up out of `fuzz/` — so the determinism deny-list binds here too.
+      - name: cargo clippy (fuzz)
+        run: cargo clippy --manifest-path fuzz/Cargo.toml --all-targets -- -D warnings
+      # `--all-targets` is what runs the log-field gate
+      # (`crates/sunrise-log/tests/event_catalog.rs`) against a complete build
+      # rather than a partial one. That gate's file set is the dep-info rustc
+      # wrote beside each artefact, so it can only see what has been compiled,
+      # and `crates/sunrise-sync/src/sse.rs` (feature-gated off by default) and
+      # `crates/sunrise-server/src/api/testing.rs` (`#[cfg(test)]`) are compiled
+      # by no plain `cargo build --workspace`. This command compiles every
+      # target before running a test, so the records exist by the time the gate
+      # reads them; narrowing it would turn that gate red here (#153).
+      # `mise run log-fields` is the same ordering for one gate, run locally.
       - name: cargo test
         run: cargo test --workspace --all-targets
       # One run again. This was two, with `--exclude sunrise-server` and a
@@ -131,6 +168,16 @@ jobs:
         env:
           RUSTDOCFLAGS: "-D warnings"
         run: cargo doc --workspace --no-deps --document-private-items
+      # The fuzz half of the same gate (#167). Each harness's module comment is
+      # where the property that target asserts is written down, and an
+      # unresolved `[`link`]` in one renders as literal text for the only
+      # reader it has. Every `[[bin]]` in `fuzz/Cargo.toml` carried `doc =
+      # false` until #167, which would have made this step document nothing and
+      # pass — the manifest now turns `doc` on and says why.
+      - name: cargo doc (fuzz)
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+        run: cargo doc --no-deps --document-private-items --manifest-path fuzz/Cargo.toml
 
   macos-app:
     name: macOS app (xcframework + SwiftLint + XCTest)
@@ -433,6 +480,13 @@ jobs:
         # step's, so 0/2/3 are success here and every other code propagates.
         # Red on this step now means the shard could not be measured at all.
         run: |
+          # cargo-mutants creates its own `mutants.out` but not the parent it
+          # was told to put it in, and `out/` is gitignored, so a fresh
+          # checkout has none. `mise.toml`'s `mutants` task has always created
+          # it; this job never did, so every shard failed here with
+          # `create output parent directory ... No such file or directory`
+          # before it measured a single mutant.
+          mkdir -p out/mutants
           rc=0
           cargo mutants -p ${{ matrix.crate }} \
             --jobs 1 --shard ${{ matrix.shard }} \
@@ -494,6 +548,24 @@ jobs:
       - name: Exit-code contract
         run: python3 .github/scripts/test_mutants_gate.py
 
+  core-filesystem-gate-contract:
+    name: Core filesystem gate contract
+    runs-on: ubuntu-latest
+    # One Python script over a crate it synthesises in a temp directory: no
+    # toolchain, no cargo, no network past the checkout. Seconds of work.
+    timeout-minutes: 5
+    # Deliberately without an `if:`, like the mutation gate's contract above, so
+    # it runs on every trigger this workflow has. What it asserts is that the
+    # gate can still say no: the first version stopped reading a file at its
+    # first `#[cfg(test)]` line, which left 97% of engine/oplog.rs and 95% of
+    # keychain/mod.rs unscanned the moment those modules were split -- and
+    # reported OK for both. The `Determinism gate` job below runs the gate; this
+    # one asserts the gate is a check.
+    steps:
+      - uses: actions/checkout@v4
+      - name: Exit-code and coverage contract
+        run: python3 .github/scripts/test_core_filesystem_gate.py
+
   determinism:
     name: Determinism gate
     runs-on: ubuntu-latest
@@ -516,6 +588,58 @@ jobs:
             "determinism" \
             '\brand::(thread_rng|random|rng)[[:space:]]*(::<[^>]*>)?[[:space:]]*\(|(^|[^.[:alnum:]_])thread_rng[[:space:]]*\(' \
             crates/*/src crates/*/tests crates/*/benches
+      - name: Reject filesystem access outside the core's storage seam
+        # docs/01-architecture/shared-core.md §determinism-rules rule 2 — the
+        # core reads and writes through `CoreConfig::storage`, so a test can
+        # supply one and a vault is the only thing on disk.
+        #
+        # Not a `clippy.toml` entry, and it cannot be: that file is
+        # workspace-wide, and nine of twenty crates touch the filesystem on
+        # purpose. A `std::fs` deny there fires in eight crates the rule was
+        # never about. This is scoped the way the rule is scoped -- one crate --
+        # and carries a visible allowlist of the two documented exceptions.
+        run: python3 .github/scripts/core-filesystem-gate.py
+
+  file-size:
+    name: File size gate
+    runs-on: ubuntu-latest
+    # Checkout plus one pass over the Rust files in three packages.
+    timeout-minutes: 5
+    # Its own job rather than a step inside `Determinism gate`, which is where
+    # it first landed. File length has nothing to do with determinism: the four
+    # rules that job enforces are about clocks, the filesystem, randomness and
+    # threads, and a red "Determinism gate" for a file that got long sends the
+    # reader to shared-core.md to look for a rule that is not there. Every other
+    # gate here is its own check for the same reason -- orphan-crate-gate,
+    # proptest-persistence, doc-comment, docs-link.
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reject a file that grew past its package's threshold
+        # No file in this repository had a bound until engine.rs reached 18,568
+        # lines -- six impl blocks, ninety free functions and a ten-thousand-line
+        # test module in one file. It got there one reasonable commit at a time.
+        #
+        # Thresholds are each package's own p90, not a number from a style
+        # guide, and the baseline in the script names every file over one today
+        # with what it is. That list may shrink and may not grow.
+        #
+        # Exit 1 is "a file grew"; exit 2 is "the baseline needs a line
+        # deleted". Both are red, and the output says which it is.
+        run: python3 .github/scripts/file-size-gate.py
+
+  file-size-gate-contract:
+    name: File size gate contract
+    runs-on: ubuntu-latest
+    # One Python script over packages it synthesises in a temp directory: no
+    # toolchain, no cargo, no network past the checkout. Seconds of work.
+    timeout-minutes: 5
+    # No `if:`, like the other gate contracts, so it runs on pull requests. The
+    # gate shipped with three failure modes and nothing asserting any of them --
+    # they were checked by hand once, against whatever tree was on disk.
+    steps:
+      - uses: actions/checkout@v4
+      - name: Exit-code contract
+        run: python3 .github/scripts/test_file_size_gate.py
 
   log-redaction:
     name: Log redaction gate
@@ -585,6 +709,28 @@ jobs:
         # the ADR called unholdable, which ADR-0023 made holdable by removing
         # the one legitimate upgrade route.
         run: .github/scripts/kynos-waiver-gate.py
+
+  kynos-waiver-gate-contract:
+    name: Kynos waiver gate contract
+    runs-on: ubuntu-latest
+    # One Python script over two-crate workspaces it synthesises in a temp
+    # directory. It needs a cargo, because what the gate reads is a resolved
+    # feature set and nothing else can produce one — but only
+    # `cargo metadata --all-features` over path dependencies, which resolves
+    # without touching the registry or compiling anything. Seconds of work.
+    timeout-minutes: 10
+    # Deliberately without an `if:`, like the other gate contracts, so it runs
+    # on pull requests. The gate asserts something about the published API
+    # surface — that no operation in the description can be flagged opaque —
+    # on the strength of one feature lookup, and the shape it looks that up in
+    # has already moved once: package ids became opaque in newer Cargo, and
+    # kynos moved to a git pin. A lookup that silently stopped finding the
+    # package would print OK over a workspace with the hatch wide open.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Exit-code contract
+        run: python3 .github/scripts/test_kynos_waiver_gate.py
 
   openapi-current:
     name: OpenAPI description gate
@@ -663,6 +809,26 @@ jobs:
         # carries its own exemption and quarantine lists, each entry with a
         # reason, and fails when one of them goes stale.
         run: .github/scripts/orphan-crate-gate.py
+
+  orphan-crate-gate-contract:
+    name: Orphan crate gate contract
+    runs-on: ubuntu-latest
+    # One Python script over workspaces of two to four one-line crates,
+    # synthesised in a temp directory. It needs a cargo for the same reason the
+    # job above does — `cargo metadata --no-deps` reads manifests and nothing
+    # else — and nothing to cache. Seconds of work.
+    timeout-minutes: 10
+    # Deliberately without an `if:`, like the other gate contracts, so it runs
+    # on pull requests. The number this gate prints is cited by
+    # `docs/implementation/overview.md`, and nothing checked the walk that
+    # produces it: an edge that stopped being followed, or a root that stopped
+    # being a root, changes the count without changing the verdict. Every pass
+    # case in the contract asserts the count for that reason.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Exit-code contract
+        run: python3 .github/scripts/test_orphan_crate_gate.py
 
 
   proptest-persistence:
@@ -805,9 +971,10 @@ jobs:
       # of whatever it inherits, and `-Zbuild-std` then recompiles the standard
       # library with the result. Denying warnings in code this repository does
       # not own turns an upstream lint change into a red gate here, so the
-      # inherited value is cleared for this job only. Warnings in `fuzz/` are
-      # caught by `cargo clippy` never seeing it and by review — stated plainly
-      # rather than implied, because it is a real gap.
+      # inherited value is cleared for this job only. Warnings in `fuzz/`'s own
+      # sources are not this job's concern either way: the `rust` job lints that
+      # manifest with clippy and builds its rustdoc on the pinned stable, on every
+      # trigger, which is where a warning there goes red (#167).
       RUSTFLAGS: ""
       # `rust-toolchain.toml` overrides the toolchain for the whole checkout,
       # and it names 1.91.1. `RUSTUP_TOOLCHAIN` takes precedence over a

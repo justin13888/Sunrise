@@ -2734,6 +2734,11 @@ pub struct AttachmentItem {
     pub chunk_count: u32,
     /// BLAKE3 of the concatenated plaintext, 32 bytes, lowercase hex.
     pub content_hash: String,
+    /// BLAKE3 of the concatenated ciphertext, 32 bytes, lowercase hex: the
+    /// name the relay knows this blob by. All zeroes on an attachment written
+    /// before the uploader existed, which is the same thing as "not on the
+    /// relay".
+    pub ciphertext_hash: String,
     /// Tombstoned.
     pub deleted: bool,
 }
@@ -2752,6 +2757,7 @@ impl From<&Attachment> for AttachmentItem {
             blob_id,
             chunk_count,
             content_hash,
+            ciphertext_hash,
             deleted,
             // Deliberately not exported: see the module docs.
             unknown: _,
@@ -2768,6 +2774,7 @@ impl From<&Attachment> for AttachmentItem {
             blob_id: hex16(blob_id),
             chunk_count: *chunk_count,
             content_hash: hex32(content_hash),
+            ciphertext_hash: hex32(ciphertext_hash),
             deleted: *deleted,
         }
     }
@@ -2802,6 +2809,7 @@ impl AttachmentItem {
             blob_id: from_hex(&self.blob_id, "blob_id")?,
             chunk_count: self.chunk_count,
             content_hash: from_hex(&self.content_hash, "content_hash")?,
+            ciphertext_hash: from_hex(&self.ciphertext_hash, "ciphertext_hash")?,
             deleted: self.deleted,
             unknown: sunrise_domain::Unknowns::new(),
         })
@@ -2829,6 +2837,9 @@ pub struct AttachmentDraftIn {
     pub chunk_count: u32,
     /// BLAKE3 of the concatenated plaintext, 64 lowercase hex characters.
     pub content_hash: String,
+    /// BLAKE3 of the concatenated ciphertext, 64 lowercase hex characters.
+    /// See [`sunrise_domain::Attachment::ciphertext_hash`].
+    pub ciphertext_hash: String,
 }
 
 impl TryFrom<AttachmentDraftIn> for sunrise_domain::AttachmentDraft {
@@ -2844,6 +2855,7 @@ impl TryFrom<AttachmentDraftIn> for sunrise_domain::AttachmentDraft {
             blob_id: from_hex(&d.blob_id, "blob_id")?,
             chunk_count: d.chunk_count,
             content_hash: from_hex(&d.content_hash, "content_hash")?,
+            ciphertext_hash: from_hex(&d.ciphertext_hash, "ciphertext_hash")?,
         })
     }
 }
@@ -3155,4 +3167,33 @@ impl From<&sunrise_domain::TaskDraft> for TaskDraftIn {
             reminder_lead_s: *reminder_lead_s,
         }
     }
+}
+
+/// What publishing a vault to the relay established, and the recovery code
+/// that goes with it.
+///
+/// The return of [`crate::SunriseCore::bootstrap_account`], which is the Apple
+/// clients' `sunrise bootstrap`.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct AccountBootstrap {
+    /// The relay's id for this account.
+    pub identity_id: String,
+    /// The normalized email the relay recorded, which the identity provider
+    /// owns and this value reports rather than sets.
+    pub email: String,
+    /// The id the relay assigned this device. Every later request names it.
+    pub device_id: String,
+    /// The twenty-four words, or `None` on a device admitted by pairing.
+    ///
+    /// **Shown once and never stored.** `sunrise-cli`'s `print_recovery_code`
+    /// records why in full: a copy this process saved would be a copy an
+    /// attacker reaching the machine also has, while doing nothing for the user
+    /// who loses the machine. The Swift side must put this on screen and let it
+    /// go — not into a file, not into a log, not into a pasteboard that
+    /// outlives the screen.
+    ///
+    /// `None` is not a failure. It means this device holds no `ID_D_priv`, so
+    /// it cannot seal a blob; the device that created the account is the one
+    /// that can, and it already did.
+    pub recovery_code: Option<String>,
 }

@@ -4,11 +4,13 @@
 //! What is here is the part an integration test has to drive without a process
 //! boundary: [`livesync`], the env→plan→running-sync-session sequence the
 //! binary performs at startup, [`vault`], which decides what key a vault
-//! directory is opened with, [`private_file`], the one owner-only write both of
-//! them put their secrets on disk with, and [`pair`] — which is here rather
-//! than in the binary because it is the one family of subcommands that runs
-//! *before* a vault is opened, and because a four-step exchange across two
-//! machines is worth driving end to end in one process.
+//! directory is opened with, [`private_file`], the one owner-only write all of
+//! them put their secrets on disk with, and the two families that run *before*
+//! a vault is open — [`recover`], whose whole job happens before a vault
+//! exists, and [`pair`], which runs before the vault is opened because the
+//! usual path would create one the joiner could never replace, and whose
+//! four-step exchange across two machines is worth driving end to end in one
+//! process.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -22,6 +24,7 @@ pub mod livesync;
 pub mod login;
 pub mod pair;
 pub mod private_file;
+pub mod recover;
 pub mod vault;
 
 /// Lowercase hex of a 16-byte id, for the device and identity listings.

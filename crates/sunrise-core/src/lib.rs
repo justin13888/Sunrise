@@ -7,8 +7,12 @@
 //!
 //! Determinism rules (per spec):
 //! 1. No clock access except via `CoreConfig::clock`.
-//! 2. No filesystem access except via `CoreConfig::storage` (well, the
-//!    storage layer; this crate doesn't touch the FS directly).
+//! 2. No filesystem access except via `CoreConfig::storage`, with two
+//!    exceptions this crate does make directly and which
+//!    `.github/scripts/core-filesystem-gate.py` allows by name: the OS
+//!    advisory lock in [`vault_lock`], and the `/etc/localtime` read in
+//!    [`config`] that recovers the host's zone name. Everything else goes
+//!    through the storage handle.
 //! 3. No randomness except via `CoreConfig::rng`.
 //! 4. No threads spawned except by the core's tokio runtime.
 //!
@@ -43,6 +47,7 @@
 )]
 
 pub mod attach;
+mod blob_sync;
 pub mod commands;
 pub mod config;
 pub mod control_op;
@@ -52,6 +57,7 @@ pub mod events;
 pub mod inner_op;
 pub mod keychain;
 pub mod queries;
+mod relay_intents;
 pub mod sync_driver;
 pub mod unlock;
 pub mod vault_lock;
@@ -72,5 +78,5 @@ pub use queries::{
     StreamRow,
 };
 pub use sync_driver::{BoxTransport, ConnectFuture, SyncConfig, TokenSource, TransportFactory};
-pub use unlock::Unlock;
+pub use unlock::{IdentitySeed, Unlock};
 pub use vault_lock::{VaultLock, VaultLockError};

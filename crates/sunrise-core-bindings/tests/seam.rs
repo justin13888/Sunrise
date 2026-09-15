@@ -2099,3 +2099,51 @@ async fn importing_into_something_that_is_not_a_stream_is_refused() {
         .expect_err("refused");
     assert!(matches!(err, BindingError::BadId { .. }), "got {err:?}");
 }
+
+// ---- recovery (#181) ------------------------------------------------------
+
+/// The signal that had reached no client: until a blob is sealed, a vault the
+/// app created is the only place `ID_D_priv` exists, and losing it destroys
+/// that key permanently.
+///
+/// `Core::holds_identity_key` is `Keychain::holds_only_copy_of_identity_key`,
+/// so exposing it here is also the first half of #144 — the app can now *say*
+/// it, not only fix it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_vault_made_here_can_be_asked_whether_it_holds_the_identity_key() {
+    let (_dir, core) = open_core().await;
+    assert!(
+        core.holds_identity_key(),
+        "a vault this seam created founded its account, so it holds ID_D_priv"
+    );
+}
+
+/// The raw seal, which exists for a caller holding a seed from somewhere else,
+/// and refuses anything that is not one.
+///
+/// The blob's contents are `sunrise-crypto`'s to assert; what this covers is
+/// the seam — that the call is reachable from a client at all, which is the
+/// whole of #181's first half, and that the one contract `UniFFI` cannot express
+/// (`[u8; 32]`) is checked here rather than becoming a blob nothing opens.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_recovery_blob_can_be_sealed_across_the_seam() {
+    let (_dir, core) = open_core().await;
+
+    let blob = core
+        .seal_recovery_blob(vec![0x31; 32])
+        .expect("the founder seals");
+    assert!(
+        blob.starts_with(b"SR"),
+        "a sealed blob carries the unified magic prefix"
+    );
+
+    for wrong in [0usize, 16, 31, 33, 64] {
+        let err = core
+            .seal_recovery_blob(vec![0x31; wrong])
+            .expect_err("only 32 bytes is a recovery seed");
+        assert!(
+            matches!(err, BindingError::BadFixedBytes { expected: 32, .. }),
+            "{wrong} bytes gave {err:?}"
+        );
+    }
+}

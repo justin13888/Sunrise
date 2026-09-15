@@ -53,8 +53,9 @@
 //! ever, revoked or not. `sunrise_core`'s
 //! `a_paired_device_cannot_issue_a_cert_for_a_fresh_device_id` is the test, and
 //! it asserts the absence structurally: the paired keychain's `issue_cert_for`
-//! returns [`KeychainError::IdentitySecretAbsent`], because the key is not
-//! there to sign with.
+//! returns `KeychainError::IdentitySigningKeyAbsent`, because the key is not
+//! there to sign with. Not an intra-doc link: `sunrise-core` depends on this
+//! crate, so naming its types here would invert the dependency.
 //!
 //! ## The two one-shot shapes that do not work
 //!

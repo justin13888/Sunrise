@@ -243,8 +243,109 @@ final class SessionModel {
             // same loss by a slower route.
             try rootStore.store(root)
             await open(with: root)
+            // The vault this call just created founded an account, so it holds
+            // the only copy of `ID_D_priv` — and until a recovery blob is
+            // sealed, losing this device destroys that key permanently. That is
+            // the state every Apple-created vault used to stay in for ever
+            // (#181), and this is the one moment it can be left.
+            if phase == .unlocked, Self.presentsRecoveryCeremony {
+                recoveryCeremony = makeRecoveryCeremony()
+            }
         } catch {
             phase = .failed(error.localizedDescription)
+        }
+    }
+
+    /// Whether this process presents the ceremony at all.
+    ///
+    /// `true` everywhere except a UI test that did not ask for it. The
+    /// ceremony is a sheet over the whole window and every UI test in both
+    /// suites begins by creating a vault, so leaving it on covered the app
+    /// before the first assertion and failed twelve tests across five suites
+    /// at once — the whole iOS suite, since macOS runs no `XCUITest` in CI and
+    /// could not see it. `SunriseiOSUITests/RecoveryCeremonyUITests` is the one
+    /// that opts back in, so the ceremony is covered rather than hidden.
+    static var presentsRecoveryCeremony: Bool {
+        #if DEBUG
+        return UITestHarness.presentsRecoveryCeremony()
+        #else
+        return true
+        #endif
+    }
+
+    /// The recovery ceremony a freshly created vault owes its user, or `nil`
+    /// when there is nothing outstanding.
+    ///
+    /// Held here rather than in a shell because the two shells are a *layout*
+    /// apart — see ``VaultModels`` — and a ceremony that existed on macOS and
+    /// not on iOS would be the same defect #181 reports, one platform along.
+    private(set) var recoveryCeremony: RecoveryCodeModel?
+
+    /// The user has finished, deferred, or been told it is not their device's
+    /// job. Either way the sheet goes away.
+    func endRecoveryCeremony() {
+        recoveryCeremony = nil
+    }
+
+    /// Build the ceremony against this session's open vault.
+    ///
+    /// Everything it needs beyond the vault is per-device configuration a user
+    /// has already had to supply to sync at all: where the relay is, who they
+    /// are on it, and a token. With any of those missing there is nothing to
+    /// upload a blob to, and the ceremony says so rather than showing a code
+    /// for a blob that was never stored — which would be the worst outcome
+    /// available, because the user would believe they were covered.
+    private func makeRecoveryCeremony() -> RecoveryCodeModel {
+        let settings = AppSettings()
+        let account = AccountModel()
+        account.restore()
+        let nickname = Platform.deviceName
+        return RecoveryCodeModel { [weak self] in
+            guard let bridge = self?.bridge else {
+                throw RecoverySetupError.vaultClosed
+            }
+            guard settings.canBootstrapAccount else {
+                throw RecoverySetupError.notConfigured
+            }
+            guard let bearer = account.accessToken else {
+                throw RecoverySetupError.signedOut
+            }
+            return try await bridge.bootstrapAccount(
+                relayURL: settings.relayURL.trimmed,
+                bearer: bearer,
+                email: settings.accountEmail.trimmed,
+                nickname: nickname
+            ).recoveryCode
+        }
+    }
+
+    /// Why a recovery blob could not be sealed and uploaded yet.
+    ///
+    /// Each case is something the user can fix, and each says what: none of
+    /// them means the vault is broken, and all of them mean the account key
+    /// still has no second copy.
+    enum RecoverySetupError: LocalizedError, Equatable {
+        case vaultClosed
+        case notConfigured
+        case signedOut
+
+        var errorDescription: String? {
+            switch self {
+            case .vaultClosed:
+                "The vault closed before recovery could be set up."
+            case .notConfigured:
+                """
+                Sunrise needs a relay address and your account email before it \
+                can store your recovery blob. Add them in Settings, then set \
+                recovery up again.
+                """
+            case .signedOut:
+                """
+                Sign in first. Your recovery blob is stored on the relay under \
+                your account, and the relay will not take it from a device it \
+                cannot identify.
+                """
+            }
         }
     }
 

@@ -2871,6 +2871,7 @@
     "/api/v1/blobs/finalize": {
       "post": {
         "summary": "Check every stored chunk and commit the blob under its content address.",
+        "description": "# Memory\n\nEvery chunk is resident at once. The verification loop reads each chunk\nback, hashes it, and keeps it so the commit that follows does not have to\nread it a second time; the `MAX_BLOB_BYTES` check runs *after* that loop,\non a total the loop has already accumulated in full. So the 100 MB\nper-attachment ceiling does not bound what this holds — `MAX_CHUNK_COUNT` x\n`MAX_CHUNK_BYTES`, 4096 x 1 MiB, does, and the peak before the ceiling can\nfire is about 4 GiB.\n\n`fetch` streams one chunk at a time, and its doc records why: a single\nbuffered blob pinned 100 MB of the relay's memory and concurrent fetches\nmade that an availability problem. This path has the same shape and a\nlarger bound. It is stated rather than fixed because checking the size\ninside the loop changes which requests this endpoint accepts, which is a\ndecision to take deliberately and not a tidy-up.",
         "operationId": "finalizeBlobUpload",
         "parameters": [
           {
@@ -3187,7 +3188,8 @@
             "description": "The upload this chunk belongs to.",
             "required": true,
             "schema": {
-              "type": "string"
+              "type": "string",
+              "pattern": "^up_[0-9a-f]{32}$"
             }
           },
           {
@@ -3527,7 +3529,8 @@
             "description": "The blob being read.",
             "required": true,
             "schema": {
-              "type": "string"
+              "type": "string",
+              "pattern": "^blb_[0-9a-f]{32}$"
             }
           },
           {
@@ -4834,7 +4837,7 @@
     "/api/v1/sync/session/refresh": {
       "post": {
         "summary": "Extend a session without re-establishing it.",
-        "description": "The replacement must name the **same principal and the same device**. A\nrefresh that changed either would let one credential hand a live op stream\nto another, which is the whole reason the check exists rather than simply\ntrusting a valid token.",
+        "description": "The replacement must name the **same principal and the same device**. A\nrefresh that changed either would let one credential hand a live op stream\nto another, which is the whole reason the check exists rather than simply\ntrusting a valid token.\n\nThat mismatch does more than refuse the refresh: it **ends the session**\nbefore answering `401`, so the caller has to establish a new one rather\nthan retry with the credential it still holds. The two failure paths are\nasymmetric on purpose. A token that fails *verification* says nothing about\nwho holds the session, so that one is recoverable and the session keeps the\ncredential it already has; a token that verifies and names *someone else*\nmeans the channel namespace fixed at establishment no longer matches the\nholder, and there is nothing left worth serving on it.",
         "operationId": "refreshSyncSession",
         "parameters": [
           {
@@ -5905,7 +5908,14 @@
         "properties": {
           "identity_id": {
             "type": "string",
-            "description": "16-byte identity id."
+            "description": "This server's own id for the account, Crockford base-32 of 16 bytes.\n\n**Not the vault's `identity_id`**, despite the name it has carried\nsince before there was an identity to confuse it with: it is minted by\n`Store::resolve_account` on first sight of an `(iss, sub)` and has no\nrelationship to any key. The vault's `identity_id` is\n`BLAKE3(\"sunrise.identity_id.v1\" ‖ ID_S_pub)`, derivable from\n[`AccountInfo::identity_signing_pub`] below."
+          },
+          "identity_signing_pub": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The account identity's Ed25519 public key (`ID_S_pub`), base64url\nno-pad, as the founding device published it with `POST /api/v1/accounts`.\n\nServed back because a **recovering** client needs it and has nowhere\nelse to get it. The recovery blob's AAD is\n`\"sunrise.recovery_blob.v1\" ‖ identity_id`, so a client must know the\nvault's `identity_id` *before* it can open the blob — and on a fresh\ndevice there is no vault to read it from.\n`sunrise_onboarding::recover_identity_from_code` says this value \"MUST\ncome from the OIDC account record\"; until this field existed the account\nrecord carried the server's id under that name and the real one nowhere,\nso the recovery flow's step 5 had no input it could be given.\n\n`None` on an account whose devices never published identity keys.\nNothing is trusted on the strength of it: a recovering client derives\n`identity_id` from it, and the AEAD then refuses any blob that was not\nsealed under exactly that value."
           },
           "email": {
             "type": "string",
@@ -6145,7 +6155,8 @@
         "properties": {
           "upload_id": {
             "type": "string",
-            "description": "Server-assigned upload id, used by the chunk PUTs and by `finalize`."
+            "pattern": "^up_[0-9a-f]{32}$",
+            "description": "Server-assigned upload id, used by the chunk PUTs and by `finalize`:\n`up_` + 32 lowercase hex characters."
           },
           "chunk_urls": {
             "items": {
@@ -6166,15 +6177,18 @@
         "properties": {
           "upload_id": {
             "type": "string",
-            "description": "Upload id from `init`."
+            "pattern": "^up_[0-9a-f]{32}$",
+            "description": "Upload id from `init`: `up_` + 32 lowercase hex characters."
           },
           "content_hash": {
             "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
             "description": "BLAKE3 of the concatenated chunk ciphertext, 64 lowercase hex."
           },
           "chunk_hashes": {
             "items": {
-              "type": "string"
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
             },
             "type": "array",
             "description": "Per-chunk BLAKE3 hashes, 64 lowercase hex each, in order. Its length is\nthe chunk count: `init`'s advisory count is not trusted here."
@@ -6192,6 +6206,7 @@
         "properties": {
           "blob_id": {
             "type": "string",
+            "pattern": "^blb_[0-9a-f]{32}$",
             "description": "Canonical blob id: `blb_` + the first 16 bytes of `content_hash` in\nlowercase hex. Content-addressed, so re-uploading identical ciphertext\nconverges on the same id."
           },
           "size_bytes": {
@@ -6344,6 +6359,7 @@
         "properties": {
           "device_id": {
             "type": "string",
+            "pattern": "^[0-9a-f]{32}$",
             "description": "The originating device, 32 lowercase hex characters."
           },
           "last_applied_seq": {
@@ -6364,6 +6380,7 @@
         "properties": {
           "stream_id": {
             "type": "string",
+            "pattern": "^[0-9a-f]{32}$",
             "description": "The stream, 32 lowercase hex characters."
           },
           "cursors": {
@@ -6400,6 +6417,7 @@
         "properties": {
           "stream_id": {
             "type": "string",
+            "pattern": "^[0-9a-f]{32}$",
             "description": "The stream the batch targets, 32 lowercase hex characters."
           },
           "batch_id": {
@@ -6434,7 +6452,8 @@
           },
           "stream_id": {
             "type": "string",
-            "description": "The stream the batch targeted."
+            "pattern": "^[0-9a-f]{32}$",
+            "description": "The stream the batch targeted, echoed verbatim — so it is the same 32\nlowercase hex characters the request carried."
           },
           "server_first_seen_ms": {
             "type": "integer",

@@ -27,9 +27,10 @@ When a property test fails, proptest shrinks the case and writes the seed to a
 persistence file, which every later run replays before generating anything new.
 Those files are **committed**: a shrunken counterexample is a test input the
 suite discovered by itself, and it is the one output of a property test that
-cannot be regenerated on demand. `crates/sunrise-core/proptest-regressions/engine.txt`
-is the standing example — two cases from the control-op ordering bug, still
-replayed on every `cargo test`.
+cannot be regenerated on demand.
+`crates/sunrise-core/proptest-regressions/engine/tests.txt` is the standing
+example — two cases from the control-op ordering bug, still replayed on every
+`cargo test`.
 
 There is exactly one shape, `<crate>/proptest-regressions/<source path>.txt`.
 proptest's default (`FileFailurePersistence::SourceParallel`) produces it only
@@ -352,14 +353,23 @@ mise run fuzz op_envelope 3600      # one target, one hour
 [`SUNRISE_FUZZ_SEED`](#5-network--chaos-tests), which remains the chaos
 harness's variable and its only consumer in the workspace.
 
-Being a separate workspace has a cost worth stating rather than leaving to be
-discovered. `mise run rust-clippy` and `mise run rust-doc` are `--workspace`
-commands, so **neither reaches `fuzz/`** — the six harnesses are not lint-gated
-and not rustdoc-gated. `mise run rust-fmt-check` does reach them, because it
-names the manifest rather than the workspace. What holds the rest is that each
-file is short, that `mise run fuzz-build` fails on anything the compiler
-rejects, and that `crates/sunrise-log/tests/event_catalog.rs` reads all six as
-a `BUILD_TOOLS` entry and refuses one that names `tracing` or grows a `mod`.
+Being a separate workspace means every gate has to name the manifest to reach
+it, and three now do. `mise run rust-fmt-check`, `mise run rust-clippy` and
+`mise run rust-doc` each run twice — once over the workspace, once over
+`fuzz/Cargo.toml` — so the six harnesses are formatted, linted and
+rustdoc-checked on the same terms as everything else. CI's `rust` job carries
+the clippy and rustdoc halves as steps of their own, on the pinned stable: only
+`cargo fuzz run` needs the nightly, for `-Zsanitizer=address`. The root
+`clippy.toml` applies to `fuzz/` too, its lookup walking up out of that
+directory. Formatting is the one of the three CI does not repeat for `fuzz/`;
+the pre-commit hook runs `mise run rust-fmt-check`, which does.
+
+Two details are worth knowing before editing any of it. Every `[[bin]]` in
+`fuzz/Cargo.toml` sets `doc = true`; it was `false` with `test` and `bench`
+until the rustdoc gate arrived, which would have made that gate document
+nothing and pass. And `mise run rust-check` and `mise run rust-test` are still
+workspace-only: the harnesses have no tests to run and `mise run fuzz-build` is
+what proves they still compile against the crates they drive.
 
 #### Seed corpus
 
@@ -375,11 +385,27 @@ Every seed comes from something the tree already had:
 | `wire_frame` | `ping`, `ack`, `subscribe`, `stream_update_caught_up`, `close`, `op_batch`, `op_batch_zstd` | `encode_frame` output for each `MsgKind` that has a canonical payload codec, over the same `STREAM_ID` / `DEVICE_ID` the crypto vectors use. `op_batch` carries both frozen envelopes as its `ops`; `op_batch_zstd` is the same batch with the compression bit set, and is the only seed that reaches the decompression path and its bomb caps at all. |
 | `rrule` | nine rule bodies | Every distinct valid `RRULE` the workspace's own tests and `.ics` fixtures use, plus `regression_interval_overflow` (below). |
 | `ical` | `apple.ics`, `google.ics`, `fastmail.ics`, `outlook.ics` | `crates/sunrise-integrations/testdata/<vendor>/basic.ics`, unmodified. Four vendors fold, escape and time-zone their output differently, so the fuzzer starts from four shapes of line folding rather than one. |
+| `ical` | `regression_negative_year.ics` | The minimized reproducer for the second finding (below). Not a vendor shape — a `DTSTART` no client emits, kept because the round trip it broke is the property the target asserts. |
 | `oauth_state` | `rs256_full`, `no_keys`, `symmetric_jwks` | Hand-built `<bearer>\0<discovery>\0<JWKS>` triples: a well-formed RS256 token against a 2048-bit RSA key set, the same token against an empty key set, and the same token against an `oct` key set — the algorithm-confusion branch. |
 | `recovery_blob` | `sealed` | `seal_recovery_blob` output for a fixed seed, identity and CSPRNG state; the harness unseals against the same constants. |
 
 Any new crash a target finds opens a P1 bug, and the minimized input joins the
-seed corpus. That has already happened once, on the first run:
+seed corpus. That has happened twice.
+
+`fuzz/seeds/ical/regression_negative_year.ics` carries `DTSTART:-202
+0302T100000` (issue #190). `jiff`'s `%Y` implements a superset of RFC 5545's
+`date-fullyear`: it takes a sign and as few as one digit, and the directives
+after it skip whitespace, so that value read as the year −202. No year outside
+`0000`–`9999` has an iCalendar spelling, and `strftime`'s `%Y` pads to four
+*columns including the sign*, so `ical::write` emitted `-2020302T100000`, which
+its own parser then read as year −2020 and month 30 and dropped — the
+`write(parse(write(x))) == write(x)` the target asserts, failing on every
+nightly for as long as the target had run. Fixed in
+`crates/sunrise-integrations/src/ical.rs` by holding a `DTSTART`/`DTEND` value
+to the grammar before handing it to `strptime`, which makes the parser's output
+range exactly what the writer can spell.
+
+The first finding, on the first run:
 `fuzz/seeds/rrule/regression_interval_overflow` is
 `FREQ=DAILY;INTERVAL=700017975`, which aborted the process inside
 `routine_gen::expand` — jiff's `Span::new().days(n)` panics outside

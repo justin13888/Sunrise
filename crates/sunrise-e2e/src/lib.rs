@@ -296,6 +296,36 @@ pub async fn open_paired_core_offline(
     open_core_paired(vault_dir, root, addr, clock, None, Some(Box::new(payload))).await
 }
 
+/// Open a vault from an **opened recovery blob** — the state a device is in
+/// after `sunrise recover` has fetched the blob and spent the user's 24 words.
+///
+/// `root` is a fresh vault root this "device" mints for itself: the blob
+/// carries the account identity and never the vault root
+/// (`docs/03-crypto/recovery.md` §Recovery flow step 8), so there is nothing to
+/// be handed one by and nothing to share with the vault that was lost. That is
+/// the difference between this and [`open_paired_core`], and it is the whole
+/// reason a recovery has to read its Stream keys out of the op log.
+pub async fn open_recovered_core(
+    vault_dir: &Path,
+    root: [u8; 32],
+    identity: sunrise_crypto::recovery::RecoveryPayload,
+    addr: SocketAddr,
+    clock: Arc<dyn Clock>,
+    factory: Option<TransportFactory>,
+) -> Arc<Core> {
+    open_core_unlocked(
+        vault_dir,
+        addr,
+        clock,
+        factory,
+        Unlock::RecoveryCode {
+            root: VaultRootKey::from_bytes(root),
+            identity: Box::new(identity),
+        },
+    )
+    .await
+}
+
 async fn open_core_paired(
     vault_dir: &Path,
     root: [u8; 32],
@@ -304,22 +334,33 @@ async fn open_core_paired(
     factory: Option<TransportFactory>,
     paired: Option<Box<sunrise_pairing::PairingPayload>>,
 ) -> Arc<Core> {
-    let cfg = CoreConfig {
-        sync: Some(
-            SyncConfig::new(format!("http://{addr}")).with_resync_interval(HARNESS_RESYNC_INTERVAL),
-        ),
-        ..CoreConfig::with_clock(vault_dir.to_path_buf(), APP_ID, clock, Arc::new(SystemRng))
-    };
-    let core = Core::open(
-        cfg,
+    open_core_unlocked(
+        vault_dir,
+        addr,
+        clock,
+        factory,
         Unlock::DevicePaired {
             root: VaultRootKey::from_bytes(root),
             paired,
         },
     )
     .await
-    .expect("open core");
-    let core = Arc::new(core);
+}
+
+async fn open_core_unlocked(
+    vault_dir: &Path,
+    addr: SocketAddr,
+    clock: Arc<dyn Clock>,
+    factory: Option<TransportFactory>,
+    unlock: Unlock,
+) -> Arc<Core> {
+    let cfg = CoreConfig {
+        sync: Some(
+            SyncConfig::new(format!("http://{addr}")).with_resync_interval(HARNESS_RESYNC_INTERVAL),
+        ),
+        ..CoreConfig::with_clock(vault_dir.to_path_buf(), APP_ID, clock, Arc::new(SystemRng))
+    };
+    let core = Arc::new(Core::open(cfg, unlock).await.expect("open core"));
     if let Some(factory) = factory {
         core.start_sync(factory).expect("start sync");
     }
