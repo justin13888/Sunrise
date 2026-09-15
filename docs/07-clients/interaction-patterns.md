@@ -193,7 +193,7 @@ those three are what the test above watches for.
 **The other way out would be a second window, and that one the tree does
 close.** It is also what separates this cell from *File → Task*. A second
 Sunrise window would put a list beside the grid, but this app cannot vend one:
-`iOS/SunriseiOSApp.swift:23-24` declares a single `WindowGroup`, and multiple
+`iOS/SunriseiOSApp.swift:24-26` declares a single `WindowGroup`, and multiple
 windows on iPadOS are gated on `UIApplicationSupportsMultipleScenes` inside
 `UIApplicationSceneManifest`, which nothing here sets. The `SunriseiOS` target
 has no checked-in plist at all — its Info.plist is generated
