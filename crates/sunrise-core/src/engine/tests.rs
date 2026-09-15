@@ -6913,6 +6913,27 @@ fn a_revocation_from_a_paired_device_cuts_the_keys_without_rotating_the_identity
 /// and the two signatures are taken by the keychain over the real digests —
 /// so a test that applies one is exercising the production path and not a
 /// fixture.
+///
+/// # `roster` must name `emitter` for the emitter to adopt
+///
+/// `roster` is a free parameter here and is **not** free in production:
+/// [`Engine::rotate_identity`] pushes this device into the survivor set
+/// unconditionally, right after the `devices` query that deliberately skips
+/// it, so a real emitter is always in its own roster. Since `#105`,
+/// `recompute_identity_head` takes the adopting device's cert *from* the
+/// roster rather than re-issuing it — most devices hold no `ID_S_priv` and
+/// could not sign one — so an emitter left out of `roster` opens its share,
+/// finds no cert to adopt under, and keeps its old `identity_id`.
+///
+/// That matters to any caller that rotates more than once, because
+/// `from_identity_id` below is `emitter.keychain.identity_id()`: an emitter
+/// that never adopts emits every later transition from the *same*
+/// predecessor, so what accumulates is a fan of siblings off one identity
+/// rather than a chain — and the fan hits
+/// [`MAX_SIBLINGS_PER_PREDECESSOR`] at ingest on the seventeenth.
+/// A caller building a chain must pass `emitter` in `roster`. A caller
+/// deliberately testing a losing branch, a rejected payload or a single
+/// transition need not, and several below do not.
 fn build_transition(
     emitter: &Engine,
     roster: &[&Engine],
@@ -8105,6 +8126,15 @@ fn build_transition_naming(emitter: &Engine, devices: usize, now_ms: u64) -> Inn
 /// `apply_control_op` arm a peer's delivery reaches, so what is being folded is
 /// what production writes.
 ///
+/// The roster names **A as well as B**, because A is the emitter and
+/// `rotate_identity` puts this device in its own survivor set unconditionally.
+/// Without it A opens its share, finds no cert in the roster to adopt under,
+/// and keeps its old `identity_id` -- so every later transition is emitted
+/// from the *same* predecessor and what this builds is seventy siblings of
+/// genesis rather than a chain of seventy links. That is not the shape the
+/// assertions below are about, and it is not a shape production can emit;
+/// see `build_transition` for the invariant.
+///
 /// The assertion that matters is the last one: after seventy rotations the
 /// account can still rotate again, and the new head is the one it just moved
 /// to. That is "cannot reach a state it cannot leave", stated as the thing a
@@ -8122,7 +8152,7 @@ fn a_chain_past_the_old_cap_still_folds_and_can_still_be_extended() {
 
     let mut last = genesis;
     for i in 0..LINKS {
-        let (inner, to) = build_transition(&ea, &[&eb], true, T0);
+        let (inner, to) = build_transition(&ea, &[&ea, &eb], true, T0);
         apply_control_at(
             &ea,
             &mut dba,
@@ -8152,7 +8182,7 @@ fn a_chain_past_the_old_cap_still_folds_and_can_still_be_extended() {
 
     // The point of the whole test: the account is not frozen. One more
     // rotation, and it takes effect like the seventy before it.
-    let (inner, to) = build_transition(&ea, &[&eb], true, T0);
+    let (inner, to) = build_transition(&ea, &[&ea, &eb], true, T0);
     apply_control_at(
         &ea,
         &mut dba,
