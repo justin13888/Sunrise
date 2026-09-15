@@ -63,22 +63,11 @@ impl Engine {
         let inner_op = encode_inner_op(&InnerOp::StreamCreate(stream.clone()))?;
         let stream_clone = stream.clone();
         // Stream lifecycle ops route to the vault-meta log, not the new Stream.
-        //
-        // The epoch is resolved and the sequence number read **inside** this
-        // transaction, in that order, for the reason `emit_control_op` gives
-        // at length: resolving the vault-meta epoch can mint that stream's own
-        // first key, and minting emits `key_envelope` ops into this same
-        // stream. A `seq` read before — or outside — the transaction is
-        // already taken by the time this op reaches the log, `ops` has a
-        // `UNIQUE(stream_id, device_id, seq)`, and the losing insert is
-        // dropped by `INSERT OR IGNORE` before its outbox row fails its
-        // foreign key. `Core::open` runs `ensure_base_epochs`, which is why
-        // this never bit in production; an engine built directly has no such
-        // protection. See `#214`, and `60ee61d` for the same fix next door.
+        // `meta_slot` is what makes the epoch/seq order safe; see `#214`.
         let seq = db.with_tx(|tx| -> rusqlite::Result<u64> {
-            let (epoch, key) = self.ensure_stream_epoch(tx, &META_STREAM, now_ms)?;
-            let seq = self.next_seq_tx(tx, &META_STREAM)?;
-            let lww = self.lww_stamp(seq);
+            let slot = self.meta_slot(tx, now_ms)?;
+            let seq = slot.seq;
+            let lww = slot.lww;
             insert_stream_row(tx, &stream_clone, &lww)?;
             self.ops_insert_at(
                 tx,
@@ -94,8 +83,8 @@ impl Engine {
                 None,
                 now_ms,
                 &[],
-                epoch,
-                &key,
+                slot.epoch,
+                &slot.key,
             )?;
             Ok(seq)
         })?;
@@ -160,12 +149,13 @@ impl Engine {
 
         let op_id = self.fresh_op_id(now_ms);
         let inner_op = encode_inner_op(&InnerOp::StreamUpdate(stream.clone()))?;
-        let seq = self.next_seq(db, &META_STREAM)?;
-        let lww = self.lww_stamp(seq);
         let stream_clone = stream.clone();
-        db.with_tx(|tx| -> rusqlite::Result<()> {
+        let seq = db.with_tx(|tx| -> rusqlite::Result<u64> {
+            let slot = self.meta_slot(tx, now_ms)?;
+            let seq = slot.seq;
+            let lww = slot.lww;
             update_stream_row(tx, &stream_clone, &lww)?;
-            self.ops_insert(
+            self.ops_insert_at(
                 tx,
                 &op_id,
                 &META_STREAM,
@@ -179,8 +169,10 @@ impl Engine {
                 None,
                 now_ms,
                 &[],
+                slot.epoch,
+                &slot.key,
             )?;
-            Ok(())
+            Ok(seq)
         })?;
 
         Ok(CommandResult::new(id, None, op_id, seq))
@@ -207,12 +199,13 @@ impl Engine {
         stream.updated_at = ms_to_ts(now_ms as i64);
         let op_id = self.fresh_op_id(now_ms);
         let inner_op = encode_inner_op(&InnerOp::StreamDelete(stream.clone()))?;
-        let seq = self.next_seq(db, &META_STREAM)?;
-        let lww = self.lww_stamp(seq);
         let stream_clone = stream.clone();
-        db.with_tx(|tx| -> rusqlite::Result<()> {
+        let seq = db.with_tx(|tx| -> rusqlite::Result<u64> {
+            let slot = self.meta_slot(tx, now_ms)?;
+            let seq = slot.seq;
+            let lww = slot.lww;
             update_stream_row(tx, &stream_clone, &lww)?;
-            self.ops_insert(
+            self.ops_insert_at(
                 tx,
                 &op_id,
                 &META_STREAM,
@@ -226,8 +219,10 @@ impl Engine {
                 None,
                 now_ms,
                 &[],
+                slot.epoch,
+                &slot.key,
             )?;
-            Ok(())
+            Ok(seq)
         })?;
         Ok(CommandResult::new(id, None, op_id, seq))
     }

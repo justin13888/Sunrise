@@ -49,11 +49,12 @@ use sunrise_domain::time::SunriseTime;
 use sunrise_domain::Unknowns;
 use sunrise_domain::{
     imported_block_id, inbox_stream_ref, occurrence_key_at, occurrence_task_id, ActivityEvent,
-    Attachment, AttachmentDraft, BlockDraft, BlockPatch, Chunk, ContextDraft, ContextPatch, Energy,
-    ExportDataset, ExportFormat, FocusEnd, FocusKind, FocusStart, InterruptionReason, NoteBody,
-    ReminderSettings, RoutinePatch, ScheduleConstraint, SessionLength, StreamColor, StreamDraft,
-    StreamPatch, StreamReviewCadence, Task, TaskDraft, TaskPatch, TaskState, Trends,
-    ValidationError, WeeklyReview, INBOX_STREAM_BYTES, POMODORO_MS,
+    Attachment, AttachmentDraft, BlockDraft, BlockPatch, Chunk, Context, ContextDraft,
+    ContextPatch, Energy, ExportDataset, ExportFormat, FocusEnd, FocusKind, FocusStart,
+    InterruptionReason, NoteBody, ReminderSettings, ReviewSnapshotDraft, ReviewTotals,
+    RoutinePatch, ScheduleConstraint, SessionLength, Stream, StreamColor, StreamDraft, StreamPatch,
+    StreamReviewCadence, Task, TaskDraft, TaskPatch, TaskState, Trends, ValidationError,
+    WeeklyReview, INBOX_STREAM_BYTES, POMODORO_MS,
 };
 use sunrise_id::{EntityKind, EntityRef};
 use sunrise_storage::{OpLog, Outbox};
@@ -659,6 +660,122 @@ mod testutil {
             .unwrap()
             .collect::<rusqlite::Result<Vec<u64>>>()
             .unwrap()
+    }
+
+    /// A stamp for a row seeded straight into the DB with no op behind it.
+    ///
+    /// Zeroed device and `seq` 0: it loses every LWW comparison, which is the
+    /// right answer for a row no device ever claimed to have written.
+    pub(super) fn seeded_stamp() -> LwwStamp {
+        LwwStamp {
+            hlc: Hlc {
+                physical_ms: T0,
+                logical: 0,
+            },
+            device: [0u8; 16],
+            seq: 0,
+        }
+    }
+
+    /// Materialize a Stream row with **no op**, so a later command against it
+    /// can still be the vault-meta stream's first writer.
+    ///
+    /// Every command emits an op, and the first op of any kind mints the
+    /// vault-meta key — including a Task's, because minting the Inbox key
+    /// emits `key_envelope` control ops into vault-meta, which mints that too.
+    /// So an `UpdateStream` test that created its Stream with `CreateStream`
+    /// would be testing a vault that already had the key, which is precisely
+    /// the case the bug cannot reach. Seeding the row directly is what keeps
+    /// each case's own command the one that mints.
+    pub(super) fn seed_stream(db: &mut Db, name: &str) -> EntityRef {
+        let id = EntityRef::new(EntityKind::Stream, [0x11; 16]);
+        let stream = Stream {
+            id,
+            created_at: ms_to_ts(T0 as i64),
+            updated_at: ms_to_ts(T0 as i64),
+            name: name.to_string(),
+            description: None,
+            color: StreamColor::Slate,
+            icon: None,
+            parent_id: None,
+            sort_order: sort_order::append_after(None),
+            archived: false,
+            paused: false,
+            paused_until: None,
+            review_cadence: StreamReviewCadence::Weekly,
+            default_context: None,
+            reminder_lead_s: None,
+            deleted: false,
+            unknown: Unknowns::new(),
+        };
+        db.with_tx(|tx| insert_stream_row(tx, &stream, &seeded_stamp()))
+            .unwrap();
+        id
+    }
+
+    /// A Context row with no op behind it. See [`seed_stream`].
+    pub(super) fn seed_context(db: &mut Db, name: &str) -> EntityRef {
+        let id = EntityRef::new(EntityKind::Context, [0x22; 16]);
+        let ctx = Context {
+            id,
+            created_at: ms_to_ts(T0 as i64),
+            updated_at: ms_to_ts(T0 as i64),
+            name: name.to_string(),
+            description: None,
+            archived: false,
+            deleted: false,
+            unknown: Unknowns::new(),
+        };
+        db.with_tx(|tx| insert_context_row(tx, &ctx, &seeded_stamp()))
+            .unwrap();
+        id
+    }
+
+    /// A Routine row with no op behind it. See [`seed_stream`].
+    pub(super) fn seed_bare_routine(db: &mut Db) -> EntityRef {
+        let id = EntityRef::new(EntityKind::Routine, [0x33; 16]);
+        let d = routine_draft(
+            inbox_stream_ref(),
+            "FREQ=DAILY",
+            T0 as i64,
+            RoutineCatchupPolicy::Skip,
+            Vec::new(),
+        );
+        let routine = Routine {
+            id,
+            created_at: ms_to_ts(T0 as i64),
+            updated_at: ms_to_ts(T0 as i64),
+            template: d.template,
+            rrule: d.rrule,
+            timezone: d.timezone,
+            starts_at: d.starts_at,
+            ends_at: None,
+            scheduling_constraints: Vec::new(),
+            skip_dates: Vec::new(),
+            skipped_keys: Vec::new(),
+            catchup_policy: d.catchup_policy,
+            streak_counter: 0,
+            last_completed_at: None,
+            grace_window_s: None,
+            forgiveness_enabled: true,
+            streak_started_at: None,
+            forgivenesses_in_window: 0,
+            streak_keys: Vec::new(),
+            paused: false,
+            paused_until: None,
+            archived: false,
+            deleted: false,
+            unknown: Unknowns::new(),
+        };
+        db.with_tx(|tx| {
+            // The routine's template Stream has to exist for the foreign key,
+            // and `ensure_stream_row` materializes one without emitting an op
+            // — which is exactly the property this helper needs.
+            ensure_stream_row(tx, &routine.template.stream_id, T0)?;
+            insert_routine_row(tx, &routine, T0, &seeded_stamp())
+        })
+        .unwrap();
+        id
     }
 
     pub(super) const ROOT: [u8; 32] = [0x5a; 32];
@@ -1625,24 +1742,187 @@ fn create_stream_round_trips() {
     assert_eq!(st.color, StreamColor::Sky);
 }
 
-/// #214: `create_stream` must read its sequence number inside the transaction
-/// whose `ops_insert` can mint the vault-meta stream's first key.
+/// #214: **every** command that writes into the vault-meta log must read its
+/// sequence number inside the transaction that may mint that stream's key.
 ///
-/// A random-key engine that has never run `ensure_base_epochs` holds no
-/// vault-meta key, so the `ops_insert` below mints one and emits the
-/// `key_envelope` ops that distribute it — into the very stream whose `seq`
-/// the command had already read. A read taken before the transaction hands
-/// out a number the mint then consumes, `ops` has a
-/// `UNIQUE(stream_id, device_id, seq)`, and the losing insert is silently
-/// ignored by `INSERT OR IGNORE` before its outbox row fails the foreign key.
-/// This is the same defect `60ee61d` fixed for `emit_control_op`.
+/// The mechanism, once, because it is the same for all of them. `ops_insert`
+/// resolves the routing stream's epoch, and resolving it can mint the stream's
+/// first key; minting emits a `key_envelope` op per recipient, and
+/// `emit_control_op` puts every one of those into **vault-meta**, whatever
+/// stream was being minted for. So a command whose own op is *also* routed to
+/// vault-meta hands out a sequence number the mint then spends.
+/// `UNIQUE(stream_id, device_id, seq)` and `INSERT OR IGNORE` do the rest: the
+/// losing op disappears and its outbox row fails its foreign key.
+///
+/// That is why this covers exactly the commands routed to vault-meta and not
+/// the ones routed to a Task's own Stream. A `CreateTask` into the Inbox reads
+/// the *Inbox's* `seq`, and the envelopes its mint emits land in vault-meta —
+/// a different stream, a different counter, no collision. Those paths read
+/// `next_seq` outside their transaction too and are correct in doing so.
+///
+/// `60ee61d` fixed this for `emit_control_op` and `#214` for `create_stream`;
+/// the other ten are fixed together with them, and `Engine::meta_slot` is now
+/// the only way to obtain a vault-meta sequence number, so the order cannot be
+/// got wrong again.
+///
+/// Every case runs on its own engine that has never seen `ensure_base_epochs`,
+/// because the *first* op of any kind mints vault-meta and there is therefore
+/// only one command per vault that can hit this.
 #[test]
-fn create_stream_reads_its_sequence_after_the_key_it_mints() {
+fn every_vault_meta_command_sequences_after_the_key_it_mints() {
+    type Build = fn(&mut Db) -> Command;
+    let cases: &[(&str, Build)] = &[
+        ("stream.create", |_db| {
+            Command::CreateStream(StreamDraft {
+                name: "Work".into(),
+                ..Default::default()
+            })
+        }),
+        ("stream.update", |db| Command::UpdateStream {
+            id: seed_stream(db, "Work"),
+            patch: StreamPatch {
+                name: Some("Renamed".into()),
+                ..Default::default()
+            },
+        }),
+        ("stream.delete", |db| {
+            Command::DeleteStream(seed_stream(db, "Work"))
+        }),
+        ("context.create", |_db| {
+            Command::CreateContext(ContextDraft {
+                name: "errands".into(),
+                ..Default::default()
+            })
+        }),
+        ("context.update", |db| Command::UpdateContext {
+            id: seed_context(db, "errands"),
+            patch: ContextPatch {
+                name: Some("renamed".into()),
+                ..Default::default()
+            },
+        }),
+        ("context.delete", |db| {
+            Command::DeleteContext(seed_context(db, "errands"))
+        }),
+        ("routine.create", |_db| {
+            Command::CreateRoutine(routine_draft(
+                inbox_stream_ref(),
+                "FREQ=DAILY",
+                T0 as i64,
+                RoutineCatchupPolicy::Skip,
+                Vec::new(),
+            ))
+        }),
+        ("routine.update", |db| Command::UpdateRoutine {
+            id: seed_bare_routine(db),
+            patch: RoutinePatch {
+                timezone: Some("UTC".into()),
+                ..Default::default()
+            },
+        }),
+        ("routine.delete", |db| {
+            Command::DeleteRoutine(seed_bare_routine(db))
+        }),
+        ("routine.skip", |db| Command::SkipRoutineOccurrence {
+            id: seed_bare_routine(db),
+            occurrence_key: occurrence_key_at("UTC", ms_to_ts(T0 as i64)).unwrap(),
+        }),
+        ("review.snapshot", |_db| {
+            Command::SaveReviewSnapshot(ReviewSnapshotDraft {
+                window_start_ms: T0 - 7 * 86_400_000,
+                window_end_ms: T0,
+                totals: ReviewTotals::default(),
+                streams: Vec::new(),
+                streaks: Vec::new(),
+                note: None,
+            })
+        }),
+    ];
+
+    // Failures are collected rather than asserted in place. A table that
+    // panics on its first bad row says nothing about the other ten, and the
+    // whole point of the table is that this is a *class*: reverting two of the
+    // fixes has to name two cases, not one.
+    let mut failures: Vec<String> = Vec::new();
+    for (name, build) in cases {
+        let e = engine_random_keys(ROOT, [7u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+        let mut db = db();
+        // Deliberately no `ensure_base_epochs`. `Core::open` runs it, which is
+        // why none of this is reachable in production; an engine built
+        // directly is not so lucky, and that is every test that skips `Core`.
+        let cmd = build(&mut db);
+        let res = match e.apply(&mut db, cmd) {
+            Ok(res) => res,
+            Err(err) => {
+                failures.push(format!("{name}: collided with the key it mints: {err:?}"));
+                continue;
+            }
+        };
+
+        let seqs = meta_seqs_of(&db, &e.keychain.device_id());
+        // Without this the density check below could hold vacuously on a
+        // transaction that never minted and so never raced anything.
+        if seqs.len() <= 1 {
+            failures.push(format!(
+                "{name}: emitted only its own op, so nothing was raced: {seqs:?}"
+            ));
+            continue;
+        }
+        let dense: Vec<u64> = (1..=seqs.len() as u64).collect();
+        if seqs != dense {
+            failures.push(format!(
+                "{name}: vault-meta seqs must be dense and unique, got {seqs:?}"
+            ));
+        }
+        // Sequence 1 belongs to the first `key_envelope` the mint emitted. A
+        // command that took it is a command that read its number before the
+        // mint spent it — the bug in the form it would take if the UNIQUE
+        // constraint ever stopped catching it.
+        if res.seq <= 1 {
+            failures.push(format!(
+                "{name}: took seq {}, so it sequenced before the envelopes it caused",
+                res.seq
+            ));
+        }
+        // And the op is genuinely in the log rather than `OR IGNORE`d away.
+        let logged: u32 = db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM ops WHERE op_id = ?",
+                params![&res.op_id[..]],
+                |r| r.get(0),
+            )
+            .unwrap();
+        if logged != 1 {
+            failures.push(format!("{name}: {logged} rows in the log for its op id"));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} of {} vault-meta commands race the key they mint:\n  {}",
+        failures.len(),
+        cases.len(),
+        failures.join("\n  ")
+    );
+}
+
+/// The `key_envelope` ops a mint emits now stamp **before** the op they
+/// enable, and that reversal is the one observable consequence of taking the
+/// LWW stamp inside the transaction rather than before it.
+///
+/// It is the causally correct order — the envelope carries the key the op is
+/// sealed under — and it changes no merge outcome, because a control op
+/// materializes no entity row and so is never the other side of an LWW
+/// comparison. What it does mean is that HLC order and `seq` order now agree
+/// within one transaction, where before they disagreed.
+///
+/// In production this never differs: `Core::open` runs `ensure_base_epochs`,
+/// so the mint is a no-op and the transaction makes exactly one `hlc.send`
+/// either way.
+#[test]
+fn a_mints_envelopes_stamp_before_the_op_that_caused_them() {
     let mut db = db();
     let e = engine_random_keys(ROOT, [7u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
-    // Deliberately no `ensure_base_epochs`. `Core::open` runs it, which is why
-    // this is not reachable in production; an engine built directly is not so
-    // lucky, and it is the path every test that skips `Core` takes.
     let res = e
         .apply(
             &mut db,
@@ -1651,37 +1931,43 @@ fn create_stream_reads_its_sequence_after_the_key_it_mints() {
                 ..Default::default()
             }),
         )
-        .expect("the create must not collide with the key it mints");
+        .unwrap();
 
-    // The mint really did emit ops into this stream inside the transaction —
-    // without that, the assertion below would hold vacuously.
-    let seqs = meta_seqs_of(&db, &e.keychain.device_id());
-    assert!(
-        seqs.len() > 1,
-        "the transaction emitted only the create op, so nothing was raced: {seqs:?}"
-    );
-    // One `seq` per op, dense from 1: the create took a number after, not
-    // alongside, the envelopes.
-    assert_eq!(
-        seqs,
-        (1..=seqs.len() as u64).collect::<Vec<u64>>(),
-        "vault-meta sequence numbers must be dense and unique"
-    );
-    assert_eq!(
-        res.seq,
-        *seqs.last().expect("at least one op"),
-        "the create op holds the last sequence number, not the first"
-    );
-    // And the create op is genuinely in the log rather than `OR IGNORE`d away.
-    let logged: u32 = db
+    let mut stmt = db
         .conn()
-        .query_row(
-            "SELECT COUNT(*) FROM ops WHERE op_id = ?",
-            params![&res.op_id[..]],
-            |r| r.get(0),
+        .prepare(
+            "SELECT seq, envelope FROM ops
+                 WHERE stream_id = ? AND device_id = ?
+                 ORDER BY seq ASC",
         )
         .unwrap();
-    assert_eq!(logged, 1, "the stream.create op reached the log");
+    let rows: Vec<(u64, Vec<u8>)> = stmt
+        .query_map(
+            params![&META_STREAM[..], &e.keychain.device_id()[..]],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert!(rows.len() > 1, "the mint emitted envelopes");
+
+    let hlcs: Vec<Hlc> = rows
+        .iter()
+        .map(|(_, env)| sunrise_crypto::decode_envelope(env).unwrap().hlc)
+        .collect();
+    for w in hlcs.windows(2) {
+        assert!(
+            w[0] < w[1],
+            "HLC order must follow seq order within one transaction: {:?} then {:?}",
+            w[0],
+            w[1]
+        );
+    }
+    assert_eq!(
+        rows.last().unwrap().0,
+        res.seq,
+        "the create holds the last seq, so it also holds the last HLC"
+    );
 }
 
 // ---- contexts ----

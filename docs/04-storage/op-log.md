@@ -52,6 +52,28 @@ CREATE TABLE ops (
 
 `received_from` is the `device_id` of the immediate sender (the relay's own device id if forwarded from server, or the originating device id if directly synced). It is set once at first arrival on this device and never overwritten by intermediate hops. It is used only for diagnostics and to detect "this op came from a non-paired peer" anomalies.
 
+### Taking a `seq` for the vault-meta log
+
+`UNIQUE (stream_id, device_id, seq)` is the constraint a writer has to respect,
+and there is one way to get it wrong. Inserting an op resolves its stream's
+epoch, and resolving an epoch can **mint** the stream's first key; minting
+emits one `key_envelope` control op per recipient, and every control op is
+routed to the **vault-meta** stream whatever stream was being minted for. So a
+command whose own op also routes to vault-meta must not read its `seq` before
+the mint that may spend it — and `INSERT OR IGNORE` means it does not get an
+error, it gets silence, followed by a foreign-key failure on its outbox row.
+
+The engine no longer relies on remembering that. `Engine::meta_slot` resolves
+the epoch, reads the sequence number and takes the LWW stamp, in that order, and
+it is the only thing that hands out a vault-meta `seq`. Commands routed to a
+Task's own Stream are unaffected and read `next_seq` outside their transaction:
+their counter is not the one the envelopes consume.
+
+This is [#214](https://github.com/justin13888/Sunrise/issues/214), and it was
+fixed twice as a one-off (`60ee61d`, then `create_stream`) before being made
+unstatable. `Core::open` runs `ensure_base_epochs`, so no released build could
+reach it; an engine constructed directly can.
+
 ## `ts_ms` vs ULID embedded timestamp
 
 `op_id` is a ULID; its embedded timestamp is the device's `ts_ms` at emit time. They are equal by construction at emit. `ts_ms` is what gets serialized in the envelope; the ULID's embedded ts is for sortability only. Clock-skew handling is per [`../03-crypto/audit-and-tamper-evidence.md`](../03-crypto/audit-and-tamper-evidence.md).
