@@ -60,6 +60,9 @@ pub enum CoreError {
     /// Direct SQLite error from a driver-support read.
     #[error("sqlite: {0}")]
     Sqlite(#[from] rusqlite::Error),
+    /// The attachment blob store could not be read or written.
+    #[error(transparent)]
+    BlobStore(#[from] sunrise_storage::BlobStoreError),
     /// Closed Core handed a request.
     #[error("core is closed")]
     Closed,

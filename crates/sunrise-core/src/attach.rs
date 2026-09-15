@@ -18,11 +18,17 @@
 //!
 //! # What this does not do
 //!
-//! Chunks land in **this vault's** blob store. Uploading them to the relay so a
-//! paired device can fetch them is `POST /blobs/init` → `PUT` → `finalize`,
-//! which is mounted and tested server-side and has no client here yet. Until it
-//! does, an attachment is readable on the device that made it and its metadata
-//! — filename, size, type — syncs everywhere. `Core::attachment_bytes` reports
+//! Chunks land in **this vault's** blob store, and this module stops there.
+//! Getting them to the relay so a paired device can fetch them —
+//! `POST /blobs/init` → `PUT` → `finalize` — is [`crate::blob_sync`], driven by
+//! [`crate::sync_driver`]; all `attach_file` does about it is write the queue
+//! row. That split is the point: attaching a file is a synchronous local call
+//! the user is waiting on, and it has to finish on a device with no network.
+//!
+//! So an attachment is readable on the device that made it from the moment
+//! `attach_file` returns, and readable elsewhere once the upload and the fetch
+//! have both run. In between, and for an attachment whose bytes this device has
+//! chosen not to fetch, [`Core::attachment_bytes`] reports
 //! [`AttachError::BytesNotHere`] rather than pretending, so a client can say so.
 
 use crate::commands::Command;
@@ -145,7 +151,14 @@ impl Core {
             ciphertext_hash,
         };
         let result = self.submit(Command::AttachFile(draft)).await?;
-        self.attachment_row(result.entity).await
+        let att = self.attachment_row(result.entity).await?;
+        // The op is durable before the upload is queued, and that order is the
+        // one that is recoverable. A queued upload whose op never landed would
+        // push bytes nothing references; an op whose upload was never queued is
+        // an attachment that stays local, which is precisely the state this
+        // vault was already in and which the user can resolve by re-attaching.
+        self.enqueue_blob_upload(&att)?;
+        Ok(att)
     }
 
     /// Reassemble one attachment's plaintext from this vault's blob store.

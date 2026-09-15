@@ -727,6 +727,11 @@ async fn session(
     // the user revoked a device while offline, or on a device that then closed.
     // Reconnect backoff is therefore the retry schedule.
     drain_relay_revocations(core, transport.as_mut()).await;
+    // A session is also the first moment an attachment sealed offline can
+    // reach the relay, and the first moment one created elsewhere can be
+    // fetched. Both directions run here for the same reason the revocation
+    // does: reconnect backoff is the retry schedule.
+    drain_blob_transfers(core, transport.as_mut()).await;
     maybe_live(core, shared, &subscribed, &caught_up);
 
     // ---- Main pump ----
@@ -764,6 +769,10 @@ async fn session(
                 // whole point of pressing the button. The read is a single-row
                 // query against an almost always empty table.
                 drain_relay_revocations(core, transport.as_mut()).await;
+                // `attach_file` writes its queue row and then submits the op,
+                // which pokes this wake — so the upload starts in the same
+                // breath as the metadata rather than waiting for a reconnect.
+                drain_blob_transfers(core, transport.as_mut()).await;
                 if build_outbox_frames(
                     core,
                     &mut subscribed,
@@ -806,6 +815,17 @@ async fn session(
                         Ok(frame) => pending_sends.push(frame),
                         Err(()) => return SessionEnd::Disconnected,
                     }
+                    // Anti-entropy for bytes, on the same backstop that covers
+                    // frames. Both halves need it and for the same reason the
+                    // resync itself does — the last event in each direction is
+                    // the one nothing else re-triggers. A blob whose metadata
+                    // arrived before its upload finished answers 404 once and
+                    // would otherwise wait for the *next* inbound batch, which
+                    // on a quiet vault is never; an upload refused by a relay
+                    // that has since recovered would wait for the next local
+                    // edit. This is the timer that makes both converge without
+                    // one.
+                    drain_blob_transfers(core, transport.as_mut()).await;
                     deadlines.resynced();
                 }
             }
@@ -826,6 +846,13 @@ async fn session(
                 {
                     return SessionEnd::Disconnected;
                 }
+                // An inbound batch is the only way an attachment created on
+                // another device becomes known here, so it is the trigger the
+                // fetch half needs: without it a device that stays connected
+                // would not look for new bytes until its next reconnect, and a
+                // long-lived session is the ordinary case rather than the
+                // exception.
+                drain_blob_transfers(core, transport.as_mut()).await;
                 maybe_live(core, shared, &subscribed, &caught_up);
             }
             SessionEvent::Recv(Ok(None) | Err(_)) => return SessionEnd::Disconnected,
@@ -1187,6 +1214,194 @@ async fn drain_relay_revocations<T: Transport + ?Sized>(core: &Core, transport: 
                     "the relay has not accepted a device revocation; it still accepts that device"
                 );
             }
+        }
+    }
+}
+
+/// Move attachment ciphertext in both directions: queued blobs up, missing
+/// blobs down.
+///
+/// This is the step that was absent, and its absence is issue #176: the
+/// attachment metadata op reached every device and the bytes reached none, so a
+/// Task's body was complete on the machine that made it and incomplete
+/// everywhere else. [`crate::blob_sync`] carries the reasoning for every policy
+/// decision below — where the upload is driven from, what a retry re-uses, why
+/// the read side is a query rather than a queue, and what each bound is.
+///
+/// Like [`drain_relay_revocations`], a [`TransportError::Unsupported`]
+/// transport ends the drain without counting an attempt: the in-process
+/// loopbacks carry the op stream and nothing else, and charging them would
+/// exhaust `MAX_UPLOAD_ATTEMPTS` on every convergence test that attaches a file.
+async fn drain_blob_transfers<T: Transport + ?Sized>(core: &Core, transport: &mut T) {
+    if upload_queued_blobs(core, transport).await.is_err() {
+        return;
+    }
+    fetch_missing_blobs(core, transport).await;
+}
+
+/// `init` → `PUT` → `finalize`, for up to `MAX_UPLOADS_PER_DRAIN` queued blobs.
+///
+/// `Err(())` means this transport has no blob API, so the caller should stop
+/// rather than try the fetch half against it too.
+async fn upload_queued_blobs<T: Transport + ?Sized>(
+    core: &Core,
+    transport: &mut T,
+) -> Result<(), ()> {
+    let Ok(pending) = core.pending_blob_uploads() else {
+        return Ok(());
+    };
+    for row in pending {
+        match upload_one_blob(core, transport, &row).await {
+            Ok(()) => {}
+            Err(TransportError::Unsupported) => return Err(()),
+            Err(e) => {
+                // The row survives every failure. Whatever went wrong, the
+                // bytes are still on this disk and still not on the relay, and
+                // that is exactly what the row says.
+                let attempts = core.note_blob_upload_attempt(&row.blob_id).unwrap_or(0);
+                // A refusal about the upload *id* is the one thing re-using it
+                // cannot survive, so this is where the id is dropped and a
+                // fresh `init` is allowed. Anything else — a dropped
+                // connection, a 5xx, a refused signature — keeps it, because
+                // keeping it is what stops a retry leaving a second pending
+                // directory on the relay.
+                if matches!(&e, TransportError::Server { code, .. }
+                    if *code == ErrorCode::SyncOpInvalid.as_str())
+                {
+                    let _ = core.forget_blob_upload_id(&row.blob_id);
+                }
+                tracing::warn!(
+                    ev = "sync.blob.upload_failed",
+                    err_code = "SYNC_NETWORK_UNAVAILABLE",
+                    err_kind = "transient",
+                    retryable = attempts < crate::blob_sync::MAX_UPLOAD_ATTEMPTS,
+                    blob_h = hex_short(&row.blob_id),
+                    attempt = attempts,
+                    cause = %e,
+                    "an attachment's bytes have not reached the relay"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// One blob, all the way to a committed relay-side copy.
+async fn upload_one_blob<T: Transport + ?Sized>(
+    core: &Core,
+    transport: &mut T,
+    row: &crate::blob_sync::PendingUpload,
+) -> Result<(), TransportError> {
+    let Ok(Some(chunks)) = core.sealed_chunks(&row.blob_id, row.chunk_count) else {
+        // The chunks are not on this disk. Nothing can be uploaded and no
+        // number of retries will change that, so the row goes rather than
+        // consuming a slot in every drain for the life of the vault.
+        let _ = core.clear_blob_upload(&row.blob_id);
+        tracing::warn!(
+            ev = "sync.blob.upload_abandoned",
+            blob_h = hex_short(&row.blob_id),
+            "a queued attachment's chunks are missing locally; nothing to upload"
+        );
+        return Ok(());
+    };
+
+    // The id from a previous attempt, or one reserved now. Persisted before the
+    // first chunk leaves, so even a crash here retries under this id.
+    let upload_id = if let Some(id) = &row.upload_id {
+        id.clone()
+    } else {
+        let id = transport
+            .blob_init(&row.stream_id, row.chunk_count, row.size_bytes)
+            .await?;
+        core.record_blob_upload_id(&row.blob_id, &id)
+            .map_err(|e| TransportError::Protocol(e.to_string()))?;
+        id
+    };
+
+    for (idx, chunk) in chunks.iter().enumerate() {
+        let idx = u32::try_from(idx).unwrap_or(u32::MAX);
+        transport.blob_put_chunk(&upload_id, idx, chunk).await?;
+    }
+
+    let hashes: Vec<[u8; 32]> = chunks
+        .iter()
+        .map(|c| sunrise_crypto::ciphertext_hash(std::iter::once(c.as_slice())))
+        .collect();
+    let commit = transport
+        .blob_finalize(&upload_id, &row.ciphertext_hash, &hashes)
+        .await?;
+
+    // The relay content-addresses by the hash this device computed while
+    // sealing, so the committed id is one this device already predicted — and
+    // every other device predicts the same one from the same op. A
+    // disagreement would mean the two sides hashed different bytes, which
+    // `finalize` should have refused, so it is logged rather than trusted.
+    let mut expected = [0u8; 16];
+    expected.copy_from_slice(&row.ciphertext_hash[..16]);
+    if commit.blob_id != expected {
+        tracing::warn!(
+            ev = "sync.blob.upload_id_unexpected",
+            blob_h = hex_short(&row.blob_id),
+            "the relay committed this blob under an address no reader will ask for"
+        );
+    }
+
+    let _ = core.clear_blob_upload(&row.blob_id);
+    tracing::info!(
+        ev = "sync.blob.uploaded",
+        blob_h = hex_short(&row.blob_id),
+        chunk_count = row.chunk_count,
+        "an attachment's bytes are on the relay and readable by this account's other devices"
+    );
+    Ok(())
+}
+
+/// Pull the ciphertext for attachments this device has metadata for and bytes
+/// for.
+async fn fetch_missing_blobs<T: Transport + ?Sized>(core: &Core, transport: &mut T) {
+    let Ok(wanted) = core.attachments_awaiting_bytes() else {
+        return;
+    };
+    for att in wanted {
+        let Some(relay_id) = att.relay_blob_id() else {
+            continue;
+        };
+        match transport.blob_fetch(&relay_id).await {
+            // Not committed yet, or not this account's. Either way there is
+            // nothing to hold on to: the attachment row is already the durable
+            // record of what to ask for, so the next drain asks again.
+            Ok(None) => {}
+            Ok(Some(body)) => match core.store_fetched_blob(&att, &body) {
+                Ok(true) => tracing::info!(
+                    ev = "sync.blob.fetched",
+                    blob_h = hex_short(&att.blob_id),
+                    "an attachment created on another device is now readable here"
+                ),
+                Ok(false) => tracing::warn!(
+                    ev = "sync.blob.fetch_rejected",
+                    err_code = "SYNC_OP_INVALID",
+                    err_kind = "user",
+                    retryable = true,
+                    blob_h = hex_short(&att.blob_id),
+                    "the relay returned bytes that are not this attachment's; nothing was stored"
+                ),
+                Err(e) => tracing::warn!(
+                    ev = "sync.blob.fetch_not_stored",
+                    blob_h = hex_short(&att.blob_id),
+                    cause = %e,
+                    "an attachment's bytes arrived and could not be written locally"
+                ),
+            },
+            Err(TransportError::Unsupported) => return,
+            Err(e) => tracing::warn!(
+                ev = "sync.blob.fetch_failed",
+                err_code = "SYNC_NETWORK_UNAVAILABLE",
+                err_kind = "transient",
+                retryable = true,
+                blob_h = hex_short(&att.blob_id),
+                cause = %e,
+                "an attachment's bytes could not be fetched; it stays unreadable here"
+            ),
         }
     }
 }
