@@ -247,6 +247,174 @@ class Accepts(GateCase):
         self.accept(("docs/a.md", "## Notes\n\n## Notes\n\n[second](#notes-1)\n"))
 
 
+class AdrLabelAgreesWithTarget(GateCase):
+    """A cross-reference's two halves, and the renumbering that splits them.
+
+    The live defect: ADR-0039 landed beside ADR-0038 and six links ended up
+    reading `[ADR-0038]` while pointing at `0039-ios-distribution.md`. Every
+    gate stayed green — this one because the file exists, `citation-gate.py`
+    because a markdown link is not a code span — so the class had no check
+    at all until the rule these cases pin.
+
+    Most of what follows must NOT fire. The rule has 1,348 links to stay
+    quiet on and six to catch, so the near-misses carry the weight.
+    """
+
+    def adr(
+        self, *, label: str, target: str, body: str | None = None, adr39: str = "# 0039\n"
+    ) -> subprocess.CompletedProcess:
+        self.write("docs/11-adr/0038-macos-update-feed.md", "# 0038\n")
+        self.write("docs/11-adr/0039-ios-distribution.md", adr39)
+        self.write("docs/11-adr/README.md", "# Index\n")
+        self.write("docs/07-clients/releasing.md", body or f"See [{label}]({target}).\n")
+        return self.run_gate()
+
+    def test_a_label_naming_a_different_adr_than_it_links_to_fails(self):
+        result = self.adr(label="ADR-0038", target="../11-adr/0039-ios-distribution.md")
+        self.assert_code(
+            result,
+            BROKEN,
+            "::error file=docs/07-clients/releasing.md,line=1::docs-links: "
+            "[ADR-0038](../11-adr/0039-ios-distribution.md) says ADR-0038 and links to ADR-0039.",
+            "1 link(s) name one ADR and point at another.",
+        )
+
+    def test_the_message_names_both_numbers(self):
+        # A reader fixes this by deciding which half is wrong, so the finding
+        # has to print both halves rather than "mismatch".
+        result = self.adr(label="ADR-0038", target="../11-adr/0039-ios-distribution.md")
+        self.assertIn("says ADR-0038 and links to ADR-0039.", result.stdout)
+
+    def test_an_adr_citing_itself_wrongly_fails(self):
+        self.write("docs/11-adr/0038-macos-update-feed.md", "# 0038\n\nSee [ADR-0038](./0039-ios-distribution.md).\n")
+        self.write("docs/11-adr/0039-ios-distribution.md", "# 0039\n")
+        self.assert_code(self.run_gate(), BROKEN, "says ADR-0038 and links to ADR-0039.")
+
+    def test_an_agreeing_pair_does_not_fire(self):
+        self.assert_code(
+            self.adr(label="ADR-0039", target="../11-adr/0039-ios-distribution.md"),
+            CLEAN,
+            "OK: docs-links clean.",
+        )
+
+    def test_a_fragment_does_not_hide_a_disagreement(self):
+        # The discriminating case for stripping the fragment. Without it the
+        # target no longer ends in `.md`, no ADR number is read out of it, and
+        # the rule goes quiet on a real mismatch — which is a hole shaped
+        # exactly like the one it was written to close.
+        self.assert_code(
+            self.adr(
+                label="ADR-0038",
+                target="../11-adr/0039-ios-distribution.md#decision",
+                adr39="# 0039\n\n## Decision\n",
+            ),
+            BROKEN,
+            "says ADR-0038 and links to ADR-0039.",
+        )
+
+    def test_a_fragment_on_an_agreeing_target_is_not_a_finding(self):
+        self.assert_code(
+            self.adr(
+                label="ADR-0039",
+                target="../11-adr/0039-ios-distribution.md#decision",
+                adr39="# 0039\n\n## Decision\n",
+            ),
+            CLEAN,
+            "OK: docs-links clean.",
+        )
+
+    def test_a_target_that_names_no_adr_is_not_a_finding(self):
+        # The case that would make the rule useless if it fired: a label may
+        # name an ADR while pointing at an index, a guide or an anchor.
+        self.assert_code(self.adr(label="ADR-0038", target="../11-adr/README.md"), CLEAN, "OK: docs-links clean.")
+
+    def test_an_anchor_only_target_is_not_a_finding(self):
+        self.write("docs/07-clients/releasing.md", "## Heading\n\nSee [ADR-0038](#heading).\n")
+        self.assert_code(self.run_gate(), CLEAN, "OK: docs-links clean.")
+
+    def test_a_third_party_url_with_no_adr_in_it_is_not_a_finding(self):
+        self.assert_code(
+            self.adr(label="ADR-0038", target="https://example.invalid/some/page"),
+            CLEAN,
+            "OK: docs-links clean.",
+        )
+
+    def test_a_label_with_no_adr_number_is_not_a_finding(self):
+        # 54 links in this repository point at an ADR file under a prose
+        # label. None of them is a claim about a number.
+        self.assert_code(
+            self.adr(label="the iOS distribution decision", target="../11-adr/0039-ios-distribution.md"),
+            CLEAN,
+            "OK: docs-links clean.",
+        )
+
+    def test_a_label_naming_several_adrs_passes_if_one_is_the_target(self):
+        self.assert_code(
+            self.adr(label="ADR-0038 and ADR-0039", target="../11-adr/0039-ios-distribution.md"),
+            CLEAN,
+            "OK: docs-links clean.",
+        )
+
+    def test_a_label_naming_several_adrs_fails_when_none_is_the_target(self):
+        self.assert_code(
+            self.adr(label="ADR-0037 and ADR-0038", target="../11-adr/0039-ios-distribution.md"),
+            BROKEN,
+            "says ADR-0037 and links to ADR-0039.",
+        )
+
+    def test_an_absolute_url_into_this_repository_is_still_compared(self):
+        # The one rule here that reads an external link. Resolution cannot --
+        # that is a network call and a red build for someone else's outage --
+        # but the ADR number is in the last path segment, so comparing it is
+        # free and offline. `release.yml` carried exactly this shape.
+        self.assert_code(
+            self.adr(
+                label="ADR-0038",
+                target="https://github.com/o/r/blob/v1/docs/11-adr/0039-ios-distribution.md",
+            ),
+            BROKEN,
+            "says ADR-0038 and links to ADR-0039.",
+        )
+
+    def test_the_rule_reads_rust_doc_comments(self):
+        self.write("docs/11-adr/0039-ios-distribution.md", "# 0039\n")
+        self.write("docs/a.md", "Prose.\n")
+        self.write("crates/c/src/lib.rs", "//! Per [ADR-0038](../../../docs/11-adr/0039-ios-distribution.md).\n")
+        self.assert_code(self.run_gate(), BROKEN, "crates/c/src/lib.rs,line=1", "says ADR-0038 and links to ADR-0039.")
+
+    def test_the_rule_reads_yaml(self):
+        # `release.yml` carried one of the six in a job comment, which is why
+        # this rule reaches past markdown at all.
+        self.write("docs/11-adr/0039-ios-distribution.md", "# 0039\n")
+        self.write("docs/a.md", "Prose.\n")
+        self.write(".github/workflows/release.yml", "# See [ADR-0038](../../docs/11-adr/0039-ios-distribution.md).\non: push\n")
+        self.assert_code(self.run_gate(), BROKEN, ".github/workflows/release.yml,line=1")
+
+    def test_an_index_expression_in_rust_is_not_a_link(self):
+        # `a[0](b)` matches the raw-text extractor. What keeps the rule off
+        # code is the rule: it needs an ADR number on both sides.
+        self.write("docs/a.md", "Prose.\n")
+        self.write("crates/c/src/lib.rs", "fn f() { let _ = a[0](b); }\n")
+        self.assert_code(self.run_gate(), CLEAN, "OK: docs-links clean.")
+
+    def test_legacy_is_not_read_for_this_rule_either(self):
+        self.write("docs/11-adr/0039-ios-distribution.md", "# 0039\n")
+        self.write("docs/a.md", "Prose.\n")
+        self.write("legacy/app/build.rs", "// [ADR-0038](../../docs/11-adr/0039-ios-distribution.md)\n")
+        self.assert_code(self.run_gate(), CLEAN, "OK: docs-links clean.")
+
+    def test_the_run_says_how_many_links_it_compared(self):
+        result = self.adr(label="ADR-0039", target="../11-adr/0039-ios-distribution.md")
+        self.assertIn("link(s) checked for a label that disagrees with its target.", result.stdout)
+
+    def test_a_mislabelled_link_is_not_counted_as_unresolvable(self):
+        # Two different defects with two different remedies: "the file is
+        # gone" and "the label is wrong". Reporting one as the other sends
+        # the reader to fix the wrong half.
+        result = self.adr(label="ADR-0038", target="../11-adr/0039-ios-distribution.md")
+        self.assertNotIn("resolve to nothing", result.stdout)
+
+
 class InlineCodeIsBlanked(GateCase):
     """The masking this gate shares with `doc-comment-gate.py`, pinned.
 

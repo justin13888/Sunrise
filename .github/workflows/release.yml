@@ -19,7 +19,7 @@ name: Release
 #   * `appcast` writes the EdDSA-signed update feed every *installed* copy of
 #     the Mac app reads — ADR-0038. It runs after `release` because it names
 #     the release it was triggered by.
-#   * `ios-release` uploads an iOS build to App Store Connect — ADR-0038. It is
+#   * `ios-release` uploads an iOS build to App Store Connect — ADR-0039. It is
 #     the one job whose credentials are deliberately allowed not to exist: it
 #     no-ops, with its own name and a summary saying so, until the owner has an
 #     App Store Connect record to upload to.
@@ -78,7 +78,7 @@ jobs:
       # Computed here because a job-level `if:` cannot read the `secrets`
       # context at all, and because `verify` is already the place this workflow
       # asks "do the credentials for X exist?". Unlike the macOS six, a missing
-      # one of these is **not** a failure: ADR-0038 builds the plumbing before
+      # one of these is **not** a failure: ADR-0039 builds the plumbing before
       # the App Store Connect record exists, so the job no-ops visibly instead.
       ios_configured: ${{ steps.ios.outputs.configured }}
       ios_missing: ${{ steps.ios.outputs.missing }}
@@ -185,7 +185,7 @@ jobs:
           fi
           [ "$fail" -eq 0 ] || exit 1
           echo "all seven macOS release secrets are present"
-      # Not a gate. ADR-0038 builds the App Store Connect plumbing *before* the
+      # Not a gate. ADR-0039 builds the App Store Connect plumbing *before* the
       # account records exist, on the owner's decision that the mechanism
       # should be reviewable now and enrolled later, so a missing secret here
       # is the expected state rather than a broken release. What it must not do
@@ -1439,7 +1439,7 @@ jobs:
       # A successful return means App Store Connect *accepted* the build, not
       # that it is available: processing takes minutes to hours and happens on
       # Apple's side. TestFlight is where it lands. Nothing here submits it for
-      # App Store review -- see ADR-0038.
+      # App Store review -- see ADR-0039.
       #
       # `app-store-connect` is the post-Xcode-15.3 spelling of the export
       # method that used to be `app-store`; the old names are deprecated
@@ -1496,7 +1496,7 @@ jobs:
             echo
             echo "**Nothing has been submitted for App Store review.** That is a"
             echo "separate, manual act — see"
-            echo "[ADR-0038](https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_REF_NAME}/docs/11-adr/0039-ios-distribution.md)."
+            echo "[ADR-0039](https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_REF_NAME}/docs/11-adr/0039-ios-distribution.md)."
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Delete the temporary keychain and credentials
         if: always() && env.CONFIGURED == 'true'
