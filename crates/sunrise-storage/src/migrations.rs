@@ -79,8 +79,18 @@ pub const MIGRATIONS: &[Migration] = &[
     },
     Migration {
         id: 22,
+        name: "identity_transition",
+        sql: include_str!("../migrations/0022_identity_transition.sql"),
+    },
+    Migration {
+        id: 23,
+        name: "identity_chain_verification",
+        sql: include_str!("../migrations/0023_identity_chain_verification.sql"),
+    },
+    Migration {
+        id: 24,
         name: "attachment_upload",
-        sql: include_str!("../migrations/0022_attachment_upload.sql"),
+        sql: include_str!("../migrations/0024_attachment_upload.sql"),
     },
 ];
 

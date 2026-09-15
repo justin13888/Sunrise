@@ -250,6 +250,7 @@ impl Engine {
         seal_under: Option<&(u32, StreamKey)>,
     ) -> rusqlite::Result<()> {
         let key_id = stream_key_id(key);
+        let head = self.current_identity(tx)?;
         let mut recipients: Vec<(Recipient, [u8; 32])> = Vec::new();
         {
             let mut stmt = tx.prepare(
@@ -274,15 +275,31 @@ impl Engine {
                 // device that has not yet applied the `device_revoke` op has no
                 // row to read and will seal this epoch to the revoked device.
                 // Revocation propagates like every other op.
+                //
+                // The `identity_id` clause is the other half, and it does what
+                // the anti-join structurally cannot. A revoked device that
+                // mints a fresh id has no revocation row to be excluded by, so
+                // the anti-join lets the new name through forever. What it does
+                // not have is a cert under the identity *in force*: the
+                // rotation that accompanies the revocation moves the head, and
+                // the revoked device cannot follow, because the successor's
+                // `ID_S_priv` travelled as HPKE shares sealed to the surviving
+                // devices' `D_D_pub` and it is not one of them.
+                //
+                // This clause bounds every *subsequent* epoch, which is the
+                // failure ADR-0032's alternative 3 could not close: a one-shot
+                // check at admission time leaves the device on the recipient
+                // list for everything minted afterwards.
                 "SELECT d.device_id, d.d_d_pub FROM devices d
                  WHERE d.d_d_pub IS NOT NULL
+                   AND d.identity_id = ?1
                    AND NOT EXISTS (
                        SELECT 1 FROM device_revocations r
                        WHERE r.device_id = d.device_id
                    )",
             )?;
             let rows = stmt
-                .query_map([], |r| {
+                .query_map(params![&head.identity_id[..]], |r| {
                     Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, Vec<u8>>(1)?))
                 })?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -379,6 +396,35 @@ impl Engine {
             return Ok(());
         }
         if self.is_revoked(tx, device_id)? {
+            return Ok(());
+        }
+        // **This is the line that closes #105's round trip.**
+        //
+        // Step 4 of the issue is "`backfill_key_envelopes` then seals C' the
+        // current epoch of every stream": a device revoked under one id mints a
+        // fresh one, self-signs a cert with the `ID_S_priv` it kept, publishes
+        // it, and this function hands the new name every key the revocation had
+        // just rotated away. The revocation register cannot stop it — the new
+        // id is not in it and never was — and no check on the cert can either,
+        // because the cert is genuine.
+        //
+        // What stops it is that the cert is genuine under the *wrong* identity.
+        // A rotation accompanies the revocation, so the head has moved; the
+        // `DeviceCertPublish` arm recorded which chain identity verified the
+        // cert; and a device whose row names anything but the head is not a
+        // member. Nothing here is a judgement about the device — it is a
+        // comparison of two stored values, so every replica holding the same op
+        // set reaches the same answer.
+        let head = self.current_identity(tx)?;
+        let member: Option<Vec<u8>> = tx
+            .query_row(
+                "SELECT identity_id FROM devices WHERE device_id = ?",
+                params![&device_id[..]],
+                |r| r.get(0),
+            )
+            .optional()?
+            .flatten();
+        if member.as_deref().and_then(to16) != Some(head.identity_id) {
             return Ok(());
         }
         for (stream_id, epoch) in Keychain::held_epochs_tx(tx)? {

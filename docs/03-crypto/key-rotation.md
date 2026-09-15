@@ -6,7 +6,7 @@ status: accepted
 
 Three key types rotate, each with a different cost and cascade. Throughout this spec, "the rotating device" is the device the user initiated rotation from; it MUST be a paired, currently-authorized device.
 
-## Implementation status: Stream-key rotation and revocation are built; identity rotation is not
+## Implementation status: Stream-key rotation, revocation and identity rotation are built
 
 [ADR-0024](../11-adr/0024-key-hierarchy.md) landed the hierarchy these procedures assume: Stream keys are 32 random bytes per `(stream_id, epoch)`, wrapped under the vault root in `stream_keys`, and distributed by HPKE `key_envelope` ops.
 
@@ -23,7 +23,7 @@ Three key types rotate, each with a different cost and cascade. Throughout this 
 
     The exception that remains: the device that *created* the account, and any device restored from the recovery code, hold `ID_D_priv` and can open the identity copy of any epoch. `Command::RevokeDevice` refuses to revoke the device it runs on, so this is reachable only by revoking the account's creator from another device. The recovery blob is the only other place that key is allowed to live, and it is ciphertext behind the user's code rather than a device the account can revoke — so the bound is stated rather than claimed.
 
-    The same fact has a second consequence, in the other direction, and it is the one a user feels: **where no recovery blob has been sealed, that vault is the only place `ID_D_priv` exists, and losing it destroys the key permanently.** No recovery feature added later can retrieve it, because sealing a blob needs the key it would carry. `sunrise bootstrap` seals one at account creation, so a CLI-created account has the second copy; the Apple clients do not, so an account created there does not. See [`recovery.md`](./recovery.md) §Implementation status. `Keychain::holds_only_copy_of_identity_key` answers it in the core API and `Core::holds_identity_key` passes it through; there is still no binding, so the Apple app cannot ask.
+    The same fact has a second consequence, in the other direction, and it is the one a user feels: **where no recovery blob has been sealed, that vault is the only place `ID_D_priv` exists, and losing it destroys the key permanently.** No recovery feature added later can retrieve it, because sealing a blob needs the key it would carry. `sunrise bootstrap` seals one at account creation and, since #181, so do the Apple clients: `SunriseCore::bootstrap_account` is the same ceremony behind one FFI call, and `RecoveryCodeModel` runs it the moment a vault is created. See [`recovery.md`](./recovery.md) §Implementation status. `Keychain::holds_only_copy_of_identity_key` answers it in the core API, `Core::holds_identity_key` passes it through, and the seam exports it — so a client can state the condition as well as clear it.
 
   * *Writes are bounded **at the relay, conditionally**.* The relay cannot learn the revocation from the op stream and must not be able to — `device_revoke` is sealed under the vault-meta Stream key, and promoting the revoked id into the cleartext envelope header would tell the relay which of an account's devices had been revoked and when, for every account it serves — so it is told out of band. `Command::RevokeDevice` queues a `relay_revocation_intents` row in the same transaction as the op and the sync driver drains it to `DELETE /api/v1/devices/by-vault-id/{id}`, retrying on every session until the relay answers. That route takes the vault-side device id, because the relay's own `device_id` is a ULID it mints at registration and never sends back through the op stream — which is why the older route could not express a revocation at all, and why [#80](https://github.com/justin13888/Sunrise/issues/80) was a relay API change before it was a client one. §Revocation step 3 has the mechanism.
 
@@ -35,20 +35,44 @@ Three key types rotate, each with a different cost and cascade. Throughout this 
 
   What no rotation can do, however complete: take back what the device already had. Revocation is forward-only.
 
+* **§Identity rotation**, in full, and it is what makes revocation stick
+  ([ADR-0037](../11-adr/0037-identity-transition.md)). The account identity is
+  an append-only **chain** folded from `identity.genesis_identity_id`;
+  `InnerOp::IdentityTransition` carries a whole hand-over — the successor's
+  public halves, a re-issued `DeviceCert` for every surviving device, and the
+  successor's `ID_S_priv` sealed by HPKE to each of their `D_D_pub`.
+  `Command::RotateIdentity` is the explicit entry point and
+  `Command::RevokeDevice` does the same with the revoked device left out.
+
+  The rule is: **a `DeviceCert` is admitted if it verifies under any identity on
+  the chain, and confers membership only while the device's row names the
+  chain's head.** Applying stays unconditional, which is what keeps it
+  convergent (ADR-0034); standing is derived at every point of use from two
+  stored values, so two replicas holding the same op set always agree. Two
+  guards enforce it and they do different jobs:
+  `Engine::backfill_key_envelopes` refuses the initial hand-back, and
+  `emit_key_envelopes`' `identity_id` clause bounds every *subsequent* epoch —
+  which is the failure ADR-0032's alternative 3 could not close.
+
+  So **[#105](https://github.com/justin13888/Sunrise/issues/105) is closed.** A
+  revoked device can still mint a device id and sign a valid cert for it with
+  the `ID_S_priv` it kept — that capability is untouched while `ID_S_priv`
+  travels in `PairingPayload` — but the cert is genuine under an identity the
+  account has retired. The row is admitted, the device is current under nothing,
+  and it is a recipient of nothing.
+  `engine::tests::a_revoked_device_cannot_rejoin_under_a_fresh_device_id` is the
+  test that used to assert the bypass, with its setup unchanged.
+
 * **§Slow peers and out-of-order epochs**, as written. There is no per-epoch barrier: an op whose key has not arrived is parked in `deferred_ops` and retried after every absorbed key, so arrival order across epochs changes nothing.
 
 **Not built, and named here rather than discovered later:**
 
-* **Identity rotation.** There is no `identity_transition` op, and two consequences follow from that rather than from the revocation design.
+* **`ID_S_priv` leaving `PairingPayload`.** It still travels, so a revoked device can still *produce* a valid certificate under the identity it kept — identity rotation bounds what that certificate gets it rather than preventing it. Closing it entirely means the sponsoring device issuing the joining device's cert over the Noise channel, which needs a second message in the opposite direction: the sponsor cannot sign a cert for keys the joining device has not minted yet. The CLI pairs by file drop and the UniFFI seam is one-shot, so neither driver has that leg today.
 
-  The first is the creator exception in §Revocation: `ID_D_priv` has to stay on a device somewhere, and that somewhere is the account creator's own vault — the recovery blob is a copy behind the user's code, not a device that could hold it instead. Identity rotation is what would let a revocation move the account to an identity the revoked device never held.
+  This is **not** [ADR-0032](../11-adr/0032-revocation-cannot-bound-cert-issuance.md)'s rejected alternative 2. That one put a *sponsor countersignature* on the certificate and refused a cert whose sponsor was revoked, which permanently locks out every device a revoked one ever paired. Sponsor-*issued* certs carry no sponsor binding at all: the cert is signed by `ID_S_priv` as it always was, the sponsor is not named in it, and revoking a sponsor locks nobody out.
 
-  The second is unchanged, is not closed by anything above, and is **unmitigated**: a revoked device still holds `ID_S_priv`, so it can issue itself a fresh valid `DeviceCert` under a new device id. Revocation names a device, and the identity keys are what name devices. `Engine::self_authenticating_signer` admits such a cert, applying a `device_cert` op runs `Engine::backfill_key_envelopes`, and the fresh id is sealed every epoch the applying replica holds — so revocation is undone in one round trip. `engine::tests::a_revoked_device_rejoins_under_a_fresh_device_id` asserts exactly that, so this is a measured property and not a worry. Nothing stands against it today.
-
-  Two claims that stood here are withdrawn. Earlier revisions named the relay declining the revoked device's upload as the mitigation. The relay does decline it now (§Revocation step 3), and it still is not a bound on *this*: the fresh device id is a fresh registration, made with the OIDC bearer the device kept, so it arrives as an unrevoked relay device row and uploads its own certificate normally. Later ones named a narrower fix as available and merely unbuilt — *refuse to backfill a device id first seen in a cert whose signer is already revoked* — and **there is no signer to key that on**. A `DeviceCert` is signed by `ID_S_priv`, which is the account's and not any device's, and the `device_cert` op is signed by the subject's own `D_S_priv`, which on a fresh id the revoked device also minted. Both halves are the attacker's; an issuer field would be a value it chooses. In the honest flow there is no issuer to name either, because `Keychain::create` has the joining device self-issue its own certificate.
-
-  [ADR-0032](../11-adr/0032-revocation-cannot-bound-cert-issuance.md) records the four narrow shapes that were priced against this tree and what killed each: an unverifiable issuer field, a sponsor-countersigned certificate (sound, but it restructures pairing and permanently locks out every device a revoked one ever paired), a check on the epoch a cert arrived under (does not close the round trip, and locks out an honest device whose cert races a rotation), and an apply-time refusal (not convergent). Step 1 of §Identity rotation is the complete fix and the only one: it stops `ID_S_priv` signing anything the account accepts. Until it exists, a replica applying a certificate for a device id it has never seen, in an account that has revoked something, logs `core.device.admitted_after_revocation` — which is what an ordinary pairing looks like too, because inside the vault the two are the same event. This is [#105](https://github.com/justin13888/Sunrise/issues/105).
-* **§Device key rotation.** No `device_rotate`; a device's `D_S` / `D_D` are minted once at open and never replaced.
+  Until then, a replica applying a certificate for a device id it has never seen, in an account that has revoked something, logs `core.device.admitted_after_revocation`; one issued under a retired identity logs `core.device.cert_superseded_identity`. Both are what an ordinary pairing can look like too, so both disclose and neither gates.
+* **§Device key rotation.** No `device_rotate`; a device's `D_S` / `D_D` are minted once at open and never replaced. The one exception is a **recovery**, which is a fresh vault and therefore mints fresh device keys and a certificate signed by the restored `ID_S_priv` as a matter of course — `sunrise recover`, and [`recovery.md`](./recovery.md) §Recovery flow step 6. That is not device-key rotation: the old device is not superseded, it is gone.
 * **`share_grant` / `share_revoke`.** Sharing is unbuilt, so every "and shared peers" clause below describes nothing.
 * **§Revocation step 4.** Nothing wipes the revoked device's local database, and no UI explains the situation to whoever is holding it.
 
@@ -128,33 +152,133 @@ The op log for a Stream may contain ops from multiple epochs interleaved (a slow
 - Suspected recovery code compromise.
 - Suspected identity-key extraction (rare; requires escape from OS keystore).
 
+Implemented (ADR-0037). `Command::RotateIdentity { keep_recovery_code }` is the
+explicit form; `Command::RevokeDevice` does the same thing with the revoked
+device left out of the roster.
+
+**The account's stable name is `genesis_identity_id`, not `identity_id`.** The
+identity *in force* changes on every rotation — `identity_id` is
+`BLAKE3.derive_key("sunrise.identity_id.v1", ID_S_pub)[..16]`, a derivation, so
+a new `ID_S` is a new id by construction. The genesis is what every replica
+folds the chain from, what a user is shown as "your account", and what two
+devices compare to decide they belong together. It lives in
+`identity.genesis_identity_id` with `genesis_id_s_pub` beside it (migrations
+0022 and 0023) and travels in `PairingPayload` fields 10 and 11.
+
 **Procedure.**
 
-1. The rotating device generates new `ID_S'`, `ID_D'` keypairs.
-2. It emits an `identity_transition` control op:
-   ```cddl
-   IdentityTransition = {
-       1: bstr .size 16,    ; identity_id_bytes (unchanged — same identity)
-       2: bstr .size 32,    ; new ID_S_pub
-       3: bstr .size 32,    ; new ID_D_pub
-       4: bstr .size 64,    ; sig by OLD ID_S_priv over fields {1,2,3}
-       5: bstr .size 64,    ; sig by NEW ID_S_priv over fields {1,2,3,4}
-       6: uint              ; effective_at (ms since epoch)
-   }
+1. The rotating device generates new `ID_S'`, `ID_D'` keypairs. The account's
+   `created_at_ms` is carried forward unchanged: a rotation does not begin a new
+   account.
+2. It emits one `identity_transition` control op carrying the whole hand-over —
+   the successor's public halves, a re-issued `DeviceCert` for every surviving
+   device, and the successor's `ID_S_priv` sealed by HPKE to each of their
+   `D_D_pub`. One op, because the parts are not independently applicable: a
+   replica that learned the new `ID_S_pub` without the certs would reject every
+   device in the account. The wire shape is
+   `sunrise_core::IdentityTransitionPayload`; the CDDL is in
+   [`data-encryption-format.md`](./data-encryption-format.md) §Control ops.
+3. The body both signatures are taken over is
+   `{from_identity_id, to_identity_id, to_id_s_pub, to_id_d_pub, roster_digest,
+   shares_digest}`, and the roster and shares are committed by BLAKE3 digest
+   rather than carried inside it — so the signature covers the whole transition
+   without putting kilobytes through Ed25519.
+
+   ```text
+   body_hash = BLAKE3(canonical_cbor(BODY))
+   prev_sig  = Ed25519(OLD ID_S_priv, "sunrise.identity_transition.v1"      || body_hash)
+   next_sig  = Ed25519(NEW ID_S_priv, "sunrise.identity_transition.succ.v1" || body_hash || prev_sig)
    ```
-   Both signatures are required so receivers can verify the rotation came from someone holding the old key, and that the new key is a willing successor. Receivers MUST verify in order: old signature first, then new signature; reject on either failure with `CRYPTO_TRANSITION_INVALID`.
-3. It re-issues a fresh `DeviceCert` for **every other still-authorized device** under the new `ID_S_priv'`. (Other devices' own `D_S` and `D_D` are unchanged; only their cert is replaced.) These `device_cert` ops are emitted by the rotating device on behalf of the others. Each peer device, upon seeing both the `identity_transition` and its updated cert, treats itself as still-authorized.
-4. It uploads a fresh recovery blob using the new identity keys (the recovery code itself MAY be rotated at the same time; it is the user's choice).
-5. It emits a fresh `share_grant` to **every shared peer** for every Stream (the peer's identity DH `ID_D_pub` is unchanged; only the granting identity has new keys, so the share signature changes).
-6. It re-publishes `{identity_id, new ID_S_pub, new ID_D_pub}` to the server's identity registry, signed by the new `ID_S_priv'`. The server replaces the public bundle and retains the previous one for `effective_at + 7 days` so peers in flight can still verify recently-emitted ops.
 
-### Atomicity & recipient buffering
+   `prev_sig` is the outgoing identity authorizing the hand-over, `next_sig` the
+   successor accepting it. `next_sig` covers `prev_sig`, so the pair cannot be
+   split: a successor signature lifted from one transition does not fit another
+   transition of the same body signed by a different predecessor.
+4. Receivers apply the op **unconditionally** and check only what is
+   self-contained (ADR-0034, and see §Verification below). The signatures are
+   checked by the *fold*, not at apply time, because `prev_sig` can only be
+   verified against a predecessor the receiver has already established — and a
+   transition naming an identity two links ahead is a legitimate op that must be
+   stored now and verified when its predecessor lands.
+5. A surviving device opens its share, adopts the successor, re-wraps its
+   `identity` row under the new id and re-issues its own cert. It does **not**
+   touch `D_S`/`D_D`: those are unchanged by a rotation and their at-rest AAD
+   binds to `device_id`, not to `identity_id`.
+6. The recovery code is carried forward by default: the successor's
+   `ID_S_priv || ID_D_priv` is sealed to the **outgoing** `ID_D_pub`, so the
+   user's existing BIP-39 code keeps working. `keep_recovery_code: false` skips
+   it, which is what to use when the *code* is the thing suspected. Revoking the
+   device that holds `ID_D_priv` forces no-carry regardless — the carry share is
+   sealed to the very key being excluded — and the user must be told
+   (`core.identity.recovery_code_invalidated`).
+7. When sharing exists, a fresh `share_grant` to every shared peer for every
+   Stream. The peer's `ID_D_pub` is unchanged; only the granting identity has
+   new keys, so the share signature changes. Nothing implements sharing yet.
 
-The `identity_transition` op is a synchronization point.
+### There is no `effective_at`, and no server-side identity registry
 
-- The rotating device emits `identity_transition` and immediately emits `share_grant` for every shared Stream under the new identity. **All ops are submitted in the same batch; the relay forwards them as a single atomic OpBatch.**
-- Recipients buffer `identity_transition` until they have received at least one new `share_grant` for every Stream they previously held. Until then, ops signed by the new identity are **buffered, not applied**.
-- If the new `share_grant` batch is incomplete after 24 h (recipient sees the transition but not all grants), the recipient surfaces: *"Some shares from <person> are pending re-grant."*
+Both were in this section before anything implemented it, and neither survives.
+
+An `effective_at` chosen by the emitter is the same mistake
+[`DeviceRevokePayload`](../../crates/sunrise-core/src/control_op.rs) records
+having tried and removed, and worse here: an emitter-chosen cut on a revocation
+decided which of one device's ops to refuse, while on a transition it decides
+which *identity* every op in the account verifies under. Bounded ahead of the
+op's HLC it takes effect nowhere; bounded behind it has nothing to anchor to,
+because `Hlc::observe` bounds a reading from the future and leaves the past open
+by design. The cut is the op's own HLC, read off the envelope by every replica.
+
+The step that re-published `{identity_id, ID_S_pub, ID_D_pub}` to "the server's
+identity registry" named a registry that does not exist. It is not deferred: it
+is not needed. Every replica learns the new identity from the op log, verifies
+it against the chain it already holds, and the relay — which holds no Stream
+keys — could not read the transition if it were sent one.
+
+### Ordering, and why `meta_epoch` decides
+
+Two devices can rotate the same identity concurrently, neither having seen the
+other. Both transitions are real and both are retained; the fold picks the
+winner by `(meta_epoch, hlc_physical_ms, hlc_logical, emitter_device_id)`,
+greatest first.
+
+**`meta_epoch` sorts first and that is the security component.** It is the
+vault-meta Stream epoch the op was sealed under, and a revoked device provably
+cannot raise it: `revoke_device` writes the revocation register *before* it
+mints, so the recipient anti-join excludes that device from every epoch minted
+in the same transaction, and it holds no key above the one it was cut at. An HLC
+is a claim anybody can make; an epoch is a key you either hold or do not. The
+HLC components break ties between honest concurrent rotations, which is all they
+are asked to do.
+
+### Verification, and what a replica checks when
+
+At **apply** time, structurally and nothing else: `to_identity_id` is the
+derivation of `to_id_s_pub`, the roster decodes with unique device ids, every
+share is the right width, and every roster cert verifies under the *successor*
+(a roster is the successor's statement about who survives, not a list the
+emitter wrote). Failures are logged and dropped — never returned — because the
+envelope has already been accepted and failing the delivery would put a
+well-formed op into the refusal path.
+
+At **fold** time: both signatures, against the predecessor the walk has already
+established. A link that fails either is not a link. The walk is bounded at
+`MAX_TRANSITION_CHAIN` and fails closed past it — the head reads as a superseded
+identity and nothing is sealed to anybody.
+
+### A device that was offline across the rotation
+
+It parks the transition, because that op is sealed under the meta epoch the
+rotation minted and the device does not hold it. This is not circular: the
+`key_envelope` carrying the new meta epoch is itself sealed under the **old**
+one, which the device can always open. So it absorbs that envelope, drains
+`deferred_ops`, applies the transition, and takes its re-issued cert and its
+`ID_S_priv` share out of the roster — with no recovery code and no re-pairing.
+
+A device that is **not** in the roster finds no share, adopts nothing, and reads
+as not-current everywhere. That is the mechanism rather than a failure, and it
+is also what an honest device looks like between applying a transition and
+receiving its roster cert, so `core.identity.not_in_roster` discloses it and
+nothing gates on it.
 
 **Stream keys are NOT rotated as a consequence of identity rotation by itself.** Stream keys rotate only when a device or peer is revoked. If the user's reason to rotate identity is "I think someone has my identity key," that someone could only impersonate me going forward (forge ops); they could not read content unless they also held a Stream key. If the user wants both, they perform identity rotation followed by Stream key rotation per Stream, and the UI offers a single "rotate everything" affordance that does it.
 

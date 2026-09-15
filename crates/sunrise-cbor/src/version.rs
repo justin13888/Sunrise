@@ -53,7 +53,17 @@ pub const ENVELOPE_FORMAT_V: u16 = 3;
 /// new *variants*, so an older build refuses one rather than misreading it, and
 /// the floor still does not move: every v1..v4 payload shape is unchanged and
 /// still decodes here.
-pub const DOC_SCHEMA_V: u16 = 5;
+///
+/// `6` added the fourth control family, `IdentityTransition` (ADR-0032,
+/// issue #105): the account's `ID_S`/`ID_D` pair becomes replaceable, and the
+/// op carries the successor's public halves, a re-issued `DeviceCert` for
+/// every surviving device, and the successor's secrets sealed to each of them.
+/// A new variant again, so a v5 build refuses one rather than misreading it —
+/// and refusing is the right answer here rather than merely the safe one: a
+/// build that skipped a transition would go on verifying every later op
+/// against an identity the account has retired. Every v1..v5 payload shape is
+/// unchanged, so the floor still does not move.
+pub const DOC_SCHEMA_V: u16 = 6;
 
 /// Lowest [`DOC_SCHEMA_V`] this build can still interpret.
 ///
@@ -117,7 +127,23 @@ pub const CRYPTO_SUITE_V: u16 = 2;
 /// Measured at 18.1 ms for a 10k-op log, 183 ms at 100k and 2.01 s at 1M;
 /// with the index, about 60 us at all three.
 ///
-/// `22` is migration `0022_attachment_upload.sql`, which makes an attachment's
+/// `22` is migration `0022_identity_transition.sql`. The account identity
+/// stopped being a value and became a chain: `identity_transitions` holds one
+/// append-only row per absorbed transition, and `identity.genesis_identity_id`
+/// is the fixed point the chain is folded from. `identity.identity_id` could
+/// not serve as that anchor — it is the identity *in force*, so it moves on
+/// every transition, and replicas at different points in the chain would fold
+/// from different starts and disagree about who the account is.
+///
+/// `23` is migration `0023_identity_chain_verification.sql`. 22 built the chain
+/// and left it unverifiable: the fold needs `(identity_id, ID_S_pub)` per link
+/// to check each transition's `prev_sig`, and the *genesis* key is in no row
+/// once `identity.id_s_pub` moves to the successor -- `identity_id` is a
+/// one-way derivation of it. It also needs the two digests the signatures are
+/// taken over, which were inside the payload blob, so the fold would have had
+/// to CBOR-decode a roster on every link at every open.
+///
+/// `24` is migration `0024_attachment_upload.sql`, which makes an attachment's
 /// bytes reachable from a second device (issue #176). It adds
 /// `attachments.ciphertext_hash` — the only thing that names a blob on the
 /// relay, since `finalize` content-addresses by the ciphertext and
@@ -125,4 +151,4 @@ pub const CRYPTO_SUITE_V: u16 = 2;
 /// of blobs whose chunks are sealed locally and not yet committed upstream.
 /// The queue is a table rather than a direct call for the reason 0020's is:
 /// attaching a file has to work offline.
-pub const STORAGE_V: u16 = 22;
+pub const STORAGE_V: u16 = 24;

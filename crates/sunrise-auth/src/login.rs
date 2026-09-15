@@ -122,6 +122,42 @@ impl OidcClient {
         metadata: &ProviderMetadata,
         device_id: &str,
     ) -> Result<LoginSession, LoginError> {
+        self.begin(metadata, device_id, false).await
+    }
+
+    /// Start a login that demands the user **re-authenticate now**, whatever
+    /// session the browser already holds.
+    ///
+    /// This is the client half of the OIDC step-up
+    /// `GET /api/v1/accounts/me/recovery_blob` requires: the route reads
+    /// `auth_time` off the token and refuses anything older than
+    /// `recovery_max_auth_age_secs` (`crates/sunrise-server/src/auth/step_up.rs`,
+    /// and `docs/03-crypto/recovery.md` §Recovery flow step 3). An ordinary
+    /// `begin_login` against a browser with a live session returns a token
+    /// whose `auth_time` is whenever that session started, so it is refused —
+    /// and a refresh mints another with the *same* `auth_time`, which is why
+    /// the route answers `403` rather than `401`.
+    ///
+    /// `max_age=0` and `prompt=login` both say it, and both are sent because
+    /// issuers disagree about which they honour. Neither is a Sunrise
+    /// extension: they are OIDC Core §3.1.2.1.
+    ///
+    /// # Errors
+    /// As [`Self::begin_login`].
+    pub async fn begin_step_up_login(
+        &self,
+        metadata: &ProviderMetadata,
+        device_id: &str,
+    ) -> Result<LoginSession, LoginError> {
+        self.begin(metadata, device_id, true).await
+    }
+
+    async fn begin(
+        &self,
+        metadata: &ProviderMetadata,
+        device_id: &str,
+        step_up: bool,
+    ) -> Result<LoginSession, LoginError> {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
             .map_err(|e| LoginError::Redirect(format!("bind loopback: {e}")))?;
@@ -141,6 +177,11 @@ impl OidcClient {
         }
         if !device_id.is_empty() {
             req = req.add_extra_param(DEVICE_ID_PARAM, device_id);
+        }
+        if step_up {
+            req = req
+                .add_extra_param("max_age", "0")
+                .add_extra_param("prompt", "login");
         }
         let (authorize_url, csrf) = req.url();
 

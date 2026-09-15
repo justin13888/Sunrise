@@ -73,6 +73,7 @@ use std::sync::Arc;
 use sunrise_cbor::hlc::Hlc;
 use sunrise_crypto::decode_envelope;
 use sunrise_domain::inbox_stream_ref;
+use sunrise_id::{EntityKind, EntityRef};
 use sunrise_storage::Db;
 use thiserror::Error;
 
@@ -80,6 +81,7 @@ mod attachment;
 mod block;
 mod context;
 mod focus;
+mod identity;
 mod ids;
 mod lww;
 mod notify;
@@ -474,6 +476,15 @@ impl Engine {
             Command::RevokeDevice { device_id, reason } => {
                 self.revoke_device(db, device_id, reason)
             }
+            Command::RotateIdentity { keep_recovery_code } => {
+                let out = self.rotate_identity(db, None, keep_recovery_code)?;
+                Ok(CommandResult::new(
+                    EntityRef::new(EntityKind::Identity, out.to_identity_id),
+                    None,
+                    out.op_id,
+                    out.seq,
+                ))
+            }
             Command::RotateStreamKey { stream } => self.rotate_stream_key(db, stream),
             Command::StartFocus(d) => self.start_focus(db, d),
             Command::EndFocus {
@@ -497,6 +508,7 @@ impl Engine {
             Query::ContextTasks(c) => self.query_context_tasks(db, &c),
             Query::EntityById(r) => self.query_entity(db, r),
             Query::DeviceList => self.query_device_list(db),
+            Query::IdentityStatus => self.query_identity_status(db),
             Query::StreamList => self.query_stream_list(db),
             Query::Contexts => self.query_contexts(db),
             Query::Routines => self.query_routines(db),

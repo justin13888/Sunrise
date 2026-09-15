@@ -41,5 +41,9 @@ sunrise-http-sig = { workspace = true }
 # that the bytes a real client produces survive a real relay.
 sunrise-relay-client = { workspace = true }
 sunrise-onboarding = { workspace = true }
+# The Apple clients reach the relay through this crate and nothing else, so it
+# is where "a vault created by the app now has a recovery blob" can be asserted
+# against a real server rather than against a mock of one (#181).
+sunrise-core-bindings = { workspace = true }
 proptest = { workspace = true }
 tempfile = "3"

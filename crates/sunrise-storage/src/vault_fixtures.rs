@@ -42,19 +42,21 @@
 //! # Which versions get a fixture
 //!
 //! Two: the oldest supported version, and every later version whose successor
-//! migrations move *data* that the older fixture cannot contain. Of 0014-0020,
-//! three move data rather than only schema — 0014 backfills
+//! migrations move *data* that the older fixture cannot contain. Of 0014-0023,
+//! five move data rather than only schema — 0014 backfills
 //! `streams.sort_order`, 0017 drops `stream_keys`, carries `revoked_at_ms`
-//! into `device_revocations` and re-points the legacy Inbox, and 0019
-//! backfills `identity.minted_by_device_id` and blanks `id_d_priv_wrapped` —
-//! while 0015, 0016, 0018 and 0020 are pure `ALTER TABLE ADD COLUMN` /
-//! `CREATE TABLE`.
+//! into `device_revocations` and re-points the legacy Inbox, 0019 backfills
+//! `identity.minted_by_device_id` and blanks `id_d_priv_wrapped`, 0022
+//! backfills `identity.genesis_identity_id`, and 0023 backfills
+//! `identity.genesis_id_s_pub` — while 0015, 0016, 0018, 0020 and 0021 are
+//! pure `ALTER TABLE ADD COLUMN` / `CREATE TABLE` / `CREATE INDEX`.
 //!
-//! The v13 fixture exercises the first two. It cannot exercise the third: the
-//! `identity` table does not exist before 0017 and 0017 creates it empty, so
-//! 0019's `UPDATE` matches no row on any vault that started at 13. That is the
-//! whole argument for the second fixture, and 17 rather than 18 because 0018
-//! is schema-only and starting a version earlier costs nothing.
+//! The v13 fixture exercises the first two. It cannot exercise the last three,
+//! and for one reason: the `identity` table does not exist before 0017 and
+//! 0017 creates it empty, so 0019's, 0022's and 0023's `UPDATE`s all match no
+//! row on any vault that started at 13. That is the whole argument for the second
+//! fixture, and 17 rather than 18 because 0018 is schema-only and starting a
+//! version earlier costs nothing.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -876,6 +878,80 @@ fn a_v17_vault_gains_the_0018_and_0020_tables_empty() {
         )
         .expect("the seeded op");
     assert_eq!(envelope, OP_ENVELOPE);
+}
+
+/// 0022 turns the account identity from a value into a chain, and the chain is
+/// folded from a fixed point rather than from `identity.identity_id`, which
+/// moves on every transition. A vault that predates rotation has taken none, so
+/// the identity it holds *is* its genesis — asserted, because the backfill is
+/// the only thing that makes that true and leaving the column NULL would open
+/// perfectly while leaving every later fold anchored on nothing.
+#[test]
+fn a_v17_vaults_identity_becomes_its_own_genesis() {
+    let (_dir, db) = open_migrated(V17_FIXTURE);
+    let (identity_id, genesis): (Vec<u8>, Option<Vec<u8>>) = db
+        .conn()
+        .query_row(
+            "SELECT identity_id, genesis_identity_id FROM identity WHERE id = 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .expect("the identity row");
+    assert_eq!(identity_id, IDENTITY_ID.to_vec());
+    assert_eq!(
+        genesis,
+        Some(IDENTITY_ID.to_vec()),
+        "a vault that has never rotated is its own genesis, and 0022 must say \
+         so rather than leaving the anchor NULL"
+    );
+
+    // 0023's half of the same anchor. Without the key, a vault that rotated
+    // once could never verify a cert issued before it did: `identity_id` is a
+    // one-way derivation of `ID_S_pub`, and `identity.id_s_pub` moves to the
+    // successor on the first rotation.
+    let genesis_pub: Option<Vec<u8>> = db
+        .conn()
+        .query_row(
+            "SELECT genesis_id_s_pub FROM identity WHERE id = 1",
+            [],
+            |r| r.get(0),
+        )
+        .expect("the identity row");
+    assert_eq!(genesis_pub, Some(ID_S_PUB.to_vec()));
+
+    // The chain itself arrives empty, and must: a transition is an op, and
+    // inventing one for a vault that never emitted it would make every replica
+    // fold a different history.
+    assert!(table_exists(&db, "identity_transitions"));
+    assert_eq!(row_count(&db, "identity_transitions"), 0);
+}
+
+/// The v13 case, which is the *absence* the module header claims: 0022's
+/// `UPDATE` matches no row, because 0017 created `identity` empty and nothing
+/// since has filled it. The table still has to appear, and the column with it.
+#[test]
+fn a_v13_vault_gains_the_0022_schema_with_no_identity_to_anchor() {
+    let (_dir, db) = open_migrated(V13_FIXTURE);
+    assert_eq!(
+        row_count(&db, "identity"),
+        0,
+        "0017 creates `identity` empty; `Keychain::adopt_legacy_vault` fills \
+         it on the next open, which is not a migration"
+    );
+    assert!(table_exists(&db, "identity_transitions"));
+    assert_eq!(row_count(&db, "identity_transitions"), 0);
+    // The column exists even with no row to carry it, so the adoption path
+    // that mints the identity afterwards has somewhere to write the genesis.
+    let columns: i64 = db
+        .conn()
+        .query_row(
+            "SELECT count(*) FROM pragma_table_info('identity') \
+             WHERE name IN ('genesis_identity_id', 'genesis_id_s_pub')",
+            [],
+            |r| r.get(0),
+        )
+        .expect("pragma");
+    assert_eq!(columns, 2);
 }
 
 /// Re-opening a migrated fixture is a no-op, which is the property

@@ -15,7 +15,7 @@ use super::routine::read_routine;
 use super::stream::read_stream;
 use super::task::{actionable_scan, read_task, ref_of};
 use super::{Engine, EngineError};
-use crate::queries::{ActionableTask, DeviceRow, QueryResult};
+use crate::queries::{ActionableTask, DeviceRow, IdentityStatus, QueryResult};
 use rusqlite::params;
 use std::collections::BTreeMap;
 use sunrise_domain::{effective_state, unblock_cascade, DependencyGraph};
@@ -211,12 +211,18 @@ impl Engine {
     }
 
     pub(super) fn query_device_list(&self, db: &Db) -> Result<QueryResult, EngineError> {
+        // `current` is computed against the chain head rather than stored,
+        // on the same rule every other membership test in this file follows:
+        // it is a fact about the op set, so a row that cached it would go stale
+        // the moment a transition landed.
+        let head = self.current_identity(db.conn())?;
         let mut stmt = db.conn().prepare(
-            "SELECT d.device_id, d.nickname, d.platform, r.device_id IS NOT NULL
+            "SELECT d.device_id, d.nickname, d.platform, r.device_id IS NOT NULL,
+                    d.identity_id IS NOT NULL AND d.identity_id = ?1
              FROM devices d
              LEFT JOIN device_revocations r ON r.device_id = d.device_id",
         )?;
-        let rows = stmt.query_map([], |row| {
+        let rows = stmt.query_map(params![&head.identity_id[..]], |row| {
             let blob: Vec<u8> = row.get(0)?;
             let mut a = [0u8; 16];
             let take = blob.len().min(16);
@@ -226,6 +232,7 @@ impl Engine {
                 nickname: row.get(1)?,
                 platform: row.get(2)?,
                 revoked: row.get(3)?,
+                current: row.get(4)?,
             })
         })?;
         let mut out = Vec::new();
@@ -233,6 +240,25 @@ impl Engine {
             out.push(r?);
         }
         Ok(QueryResult::Devices(out))
+    }
+
+    /// The identity chain, folded fresh. Nothing here is cached: a status that
+    /// could be stale is worse than no status, because the one moment a user
+    /// looks at it is the moment something has just changed.
+    pub(super) fn query_identity_status(&self, db: &Db) -> Result<QueryResult, EngineError> {
+        let chain = self.chain_identities(db.conn())?;
+        let genesis = chain
+            .first()
+            .expect("chain_identities always returns at least the genesis link")
+            .0;
+        let current = self.current_identity(db.conn())?.identity_id;
+        Ok(QueryResult::Identity(Box::new(IdentityStatus {
+            genesis_identity_id: genesis,
+            current_identity_id: current,
+            transitions: chain.len() - 1,
+            this_device_is_current: self.keychain.identity_id() == current,
+            holds_recovery_key: self.keychain.holds_only_copy_of_identity_key(),
+        })))
     }
 
     pub(super) fn query_search(

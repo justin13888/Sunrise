@@ -71,6 +71,19 @@ pub static ALLOWED: &[&str] = &[
     "expires_at_ms",
     "first_seen_ms",
     "from_v",
+    // --- account-identity hashes on the transition chain ---
+    // `hex_short` of an `identity_id`: `issuer_h` is the chain identity that
+    // verified a device cert, `head_h` the identity in force when it did. Both
+    // are truncations of a public, derived value -- `identity_id` is
+    // `BLAKE3.derive_key("sunrise.identity_id.v1", ID_S_pub)[..16]`, and
+    // `ID_S_pub` is in every cert the account has ever published -- so neither
+    // discloses anything a holder of one cert does not already have. They are
+    // here because the one event that needs them, `cert_superseded_identity`,
+    // is unreadable without both: "a cert was issued under a retired identity"
+    // says nothing an operator can act on unless it names which, and which is
+    // current.
+    "head_h",
+    "issuer_h",
     "kind",
     "lat_ms",
     // The epoch this vault currently holds for a stream, printed beside the

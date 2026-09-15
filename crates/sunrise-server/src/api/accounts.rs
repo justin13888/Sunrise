@@ -73,8 +73,33 @@ pub struct RecoveryBlobResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, kynos::Schema)]
 #[serde(deny_unknown_fields)]
 pub struct AccountInfo {
-    /// 16-byte identity id.
+    /// This server's own id for the account, Crockford base-32 of 16 bytes.
+    ///
+    /// **Not the vault's `identity_id`**, despite the name it has carried
+    /// since before there was an identity to confuse it with: it is minted by
+    /// `Store::resolve_account` on first sight of an `(iss, sub)` and has no
+    /// relationship to any key. The vault's `identity_id` is
+    /// `BLAKE3("sunrise.identity_id.v1" ‖ ID_S_pub)`, derivable from
+    /// [`AccountInfo::identity_signing_pub`] below.
     pub identity_id: String,
+    /// The account identity's Ed25519 public key (`ID_S_pub`), base64url
+    /// no-pad, as the founding device published it with `POST /api/v1/accounts`.
+    ///
+    /// Served back because a **recovering** client needs it and has nowhere
+    /// else to get it. The recovery blob's AAD is
+    /// `"sunrise.recovery_blob.v1" ‖ identity_id`, so a client must know the
+    /// vault's `identity_id` *before* it can open the blob — and on a fresh
+    /// device there is no vault to read it from.
+    /// `sunrise_onboarding::recover_identity_from_code` says this value "MUST
+    /// come from the OIDC account record"; until this field existed the account
+    /// record carried the server's id under that name and the real one nowhere,
+    /// so the recovery flow's step 5 had no input it could be given.
+    ///
+    /// `None` on an account whose devices never published identity keys.
+    /// Nothing is trusted on the strength of it: a recovering client derives
+    /// `identity_id` from it, and the AEAD then refuses any blob that was not
+    /// sealed under exactly that value.
+    pub identity_signing_pub: Option<String>,
     /// Normalized email.
     pub email: String,
     /// Subscription tier.
@@ -88,6 +113,7 @@ pub struct AccountInfo {
 fn info(state: &ServerState, account: &Account) -> Result<AccountInfo, ApiError> {
     Ok(AccountInfo {
         identity_id: account.account_id.clone(),
+        identity_signing_pub: account.identity_pub_s.clone(),
         email: account.email.clone().unwrap_or_default(),
         tier: account.tier.clone(),
         device_count: state.store.active_device_count(&account.account_id)?,

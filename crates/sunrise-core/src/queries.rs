@@ -36,6 +36,14 @@ pub enum Query {
     EntityById(EntityRef),
     /// Connected device list.
     DeviceList,
+    /// The account's identity chain, as this replica folds it.
+    ///
+    /// Answers the question every other membership answer is relative to: who
+    /// is this account, how many times has it changed hands, and does *this*
+    /// device still speak for it. Without it a user shown `current: false` on
+    /// a device list has no way to tell "that device was excluded" from "this
+    /// replica has fallen behind the chain".
+    IdentityStatus,
     /// Snapshot of sync status.
     SyncStatus,
     /// All streams (plus the synthetic Inbox row), with open-task counts.
@@ -263,6 +271,9 @@ pub enum QueryResult {
     Routines(Vec<Routine>),
     /// Device list rows: (device_id, nickname, platform, is_revoked).
     Devices(Vec<DeviceRow>),
+    /// `IdentityStatus` returns the account's identity chain as this replica
+    /// folds it. Boxed to keep the enum small.
+    Identity(Box<IdentityStatus>),
     /// Sync status snapshot.
     SyncStatus(crate::events::SyncStatus),
     /// `StreamList` returns stream rows (Inbox first).
@@ -420,6 +431,49 @@ pub struct ContextRow {
     pub task_count: u64,
 }
 
+/// The account's identity chain, as one replica folds it (ADR-0032).
+///
+/// Everything here is derived from the op set on this replica and nothing is
+/// stored as a verdict, so two replicas holding the same ops report the same
+/// thing — and two that do not are *supposed* to differ, which is what makes
+/// this worth surfacing rather than hiding behind a boolean.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IdentityStatus {
+    /// The identity the account **started** as: its stable name, unchanged by
+    /// every rotation, and the point the chain is folded from.
+    ///
+    /// This is the value to show a user as "your account", and the one to
+    /// compare when asking whether two devices belong together. `current` is
+    /// the key that signs today; this is the account.
+    #[serde(with = "serde_bytes")]
+    pub genesis_identity_id: [u8; 16],
+    /// The identity **in force**: what every current cert verifies under and
+    /// what this device must hold a share of to be a member.
+    #[serde(with = "serde_bytes")]
+    pub current_identity_id: [u8; 16],
+    /// How many transitions separate the genesis from the head.
+    ///
+    /// `0` on an account that has never rotated. It goes up by one per
+    /// revocation and per explicit rotation, so it is also the honest answer
+    /// to "how many times has this account changed hands".
+    pub transitions: usize,
+    /// Whether **this** device signs under the identity in force.
+    ///
+    /// `false` means this device holds no share of the current identity: it
+    /// was left out of a rotation's roster, or it has not yet applied the
+    /// transition that moved the head. The two are indistinguishable from here
+    /// and a client must not present the first as though it were established —
+    /// a device that is merely behind catches up on its next sync.
+    pub this_device_is_current: bool,
+    /// Whether this device holds `ID_D_priv` and can therefore seal a recovery
+    /// blob.
+    ///
+    /// True on the account's creator and on a device restored from the
+    /// recovery code. A rotation carries it forward by default; revoking the
+    /// device that holds it cannot, which is when a user needs a new code.
+    pub holds_recovery_key: bool,
+}
+
 /// One row of [`Query::DeviceList`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeviceRow {
@@ -431,4 +485,21 @@ pub struct DeviceRow {
     pub platform: String,
     /// Revoked.
     pub revoked: bool,
+    /// Whether this device is certified under the account identity **in
+    /// force**, and therefore a member.
+    ///
+    /// Separate from `revoked` because the two answer different questions and
+    /// a device can be either without the other. `revoked` is a register entry
+    /// naming this device id; `current` is whether the identity that issued
+    /// this device's cert is the head of the account's transition chain
+    /// (ADR-0032).
+    ///
+    /// A device that left and certified itself back in under a fresh id reads
+    /// `revoked: false, current: false` — the register has never heard of the
+    /// new id, and that is exactly the bypass
+    /// ([#105](https://github.com/justin13888/Sunrise/issues/105)); `current`
+    /// is the field that shows it. An honest device that has not yet applied a
+    /// rotation reads the same way for a moment, so a UI should present this as
+    /// "not active on this account" rather than as an accusation.
+    pub current: bool,
 }
