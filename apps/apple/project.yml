@@ -148,7 +148,7 @@ targets:
       # binary. `AppIntentsMetadataTests` asserts the bundle is really there.
       - sdk: AppIntents.framework
       # The updater, on this target only. iOS has no direct-download channel to
-      # update over — ADR-0038 — so Sparkle on `SunriseiOS` would be a
+      # update over — ADR-0039 — so Sparkle on `SunriseiOS` would be a
       # framework that cannot be reached, embedded in a bundle App Store review
       # looks at. `macOS/SoftwareUpdate.swift` is the only file that imports
       # it, and it is a macOS-only source path for the same reason.

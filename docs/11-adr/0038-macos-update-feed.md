@@ -181,7 +181,7 @@ as what it also is: a credential that ships code.**
 
 `apps/apple/project.yml` gains a `packages:` block and one dependency on the
 `Sunrise` target. `SunriseiOS` does not get it: iOS has no direct-download
-channel to update over at all ([ADR-0038](./0039-ios-distribution.md)), so
+channel to update over at all ([ADR-0039](./0039-ios-distribution.md)), so
 Sparkle there would be a framework nothing can reach, embedded in a bundle that
 App Store review looks at. `apps/apple/macOS/SoftwareUpdate.swift` is the only
 file that imports it, and `macOS/` compiles into the Mac target alone — so the
