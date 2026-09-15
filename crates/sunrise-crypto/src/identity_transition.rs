@@ -62,6 +62,17 @@ const PREV_DOMAIN: &[u8] = b"sunrise.identity_transition.v1";
 /// Domain separator for the successor identity's signature.
 const SUCC_DOMAIN: &[u8] = b"sunrise.identity_transition.succ.v1";
 
+/// Domain tag for [`roster_digest`].
+///
+/// Distinct from [`SHARES_DOMAIN`], and present at all because both digests
+/// used to begin `blake3::Hasher::new()` — an unkeyed space they shared with
+/// `body_hash`, the envelope hash and every other bare BLAKE3 in the
+/// workspace. `merkle.rs` already does this; these two were the exception.
+const ROSTER_DOMAIN: &[u8] = b"sunrise.identity_roster.v1";
+
+/// Domain tag for [`shares_digest`].
+const SHARES_DOMAIN: &[u8] = b"sunrise.identity_shares.v1";
+
 /// Length of a per-device share: `enc(32) || ct(32) || tag(16)`.
 ///
 /// The plaintext is one 32-byte secret, so the ciphertext length is fixed. That
@@ -93,6 +104,14 @@ pub enum IdentityTransitionError {
     /// nothing downstream could say which one is the device's cert.
     #[error("roster names device {0} twice")]
     RosterDuplicate(String),
+    /// The roster, or one cert in it, does not fit its `u32` length prefix.
+    ///
+    /// Unreachable from anything this workspace produces — a roster is bounded
+    /// by the device count and a cert by its field widths — and refused rather
+    /// than truncated because a length prefix that wrapped would reintroduce
+    /// exactly the ambiguity it is there to remove.
+    #[error("roster or roster entry is too large to length-prefix")]
+    RosterTooLarge,
     /// A per-device share is not [`DEVICE_SHARE_LEN`] bytes.
     #[error("device share for {device} is {len} bytes, expected {DEVICE_SHARE_LEN}")]
     ShareLen {
@@ -176,8 +195,12 @@ pub fn body_hash(body: &IdentityTransitionBody) -> Result<[u8; 32], IdentityTran
     Ok(*blake3::hash(&cbor).as_bytes())
 }
 
-/// `BLAKE3` over every re-issued cert blob, concatenated in **device-id
-/// ascending** order.
+/// `BLAKE3` over every re-issued cert blob, in **device-id ascending** order.
+///
+/// ```text
+/// "sunrise.identity_roster.v1" || u32_be(count)
+/// for each entry ascending by device_id:  device_id(16) || u32_be(len) || cert
+/// ```
 ///
 /// The order is normalized here rather than trusted from the caller because the
 /// roster travels as a CBOR array and an array has an order: a peer that
@@ -187,11 +210,40 @@ pub fn body_hash(body: &IdentityTransitionBody) -> Result<[u8; 32], IdentityTran
 /// The device id comes out of the cert, never beside it. A roster entry carries
 /// only the cert precisely so there is one source of truth for which device it
 /// describes; a second copy in the entry could disagree with the signed body
-/// inside it.
+/// inside it. It is hashed as well as the cert so that the hashed input carries
+/// the same identity the duplicate check ran against.
+///
+/// # Why the count and the lengths
+///
+/// A cert is **variable-length by construction** — `nickname` is 1..=64 bytes
+/// and `platform` is a `tstr` with no bound anywhere — and `DeviceCert::from_cbor`
+/// reads one CBOR item without checking for trailing bytes. So a digest over
+/// bare concatenated blobs was ambiguous in the way [`shares_digest`]'s own
+/// documentation had already described and this function did not implement:
+/// entries could be **fused**. `certA ‖ certB ‖ certC`, presented as a
+/// single entry, decodes as `certA`, passes `verify_binding`, passes the
+/// duplicate check, and hashes to exactly the digest the three separate certs
+/// hash to.
+///
+/// That was not theoretical. Because entries sort ascending by device id, the
+/// holder of any signed transition could fuse any contiguous run and present a
+/// roster that was **any subset of the signed one retaining the lowest device
+/// id** — including a roster of one. `apply_roster` moves only the devices it
+/// is given onto the successor identity, and everything that seals a key joins
+/// on `devices.identity_id = head.identity_id`, so the dropped devices were
+/// sealed no epoch ever again: silently revoked, with no revocation record, by
+/// whoever relayed the op. The signatures and the digest were all untouched.
+///
+/// The count is prefixed as well as the lengths because without it a digest is
+/// still a prefix of a longer one; with both, the hashed input determines the
+/// entry list uniquely.
 ///
 /// # Errors
-/// [`IdentityTransitionError::RosterCert`] for an undecodable entry,
-/// [`IdentityTransitionError::RosterDuplicate`] if two entries name one device.
+/// [`IdentityTransitionError::RosterCert`] for an undecodable entry or one
+/// carrying bytes past the cert, [`IdentityTransitionError::RosterDuplicate`]
+/// if two entries name one device, and
+/// [`IdentityTransitionError::RosterTooLarge`] if the roster or a cert is too
+/// large for its length prefix.
 pub fn roster_digest<C: AsRef<[u8]>>(certs: &[C]) -> Result<[u8; 32], IdentityTransitionError> {
     let mut entries: Vec<([u8; 16], &[u8])> = Vec::with_capacity(certs.len());
     for (index, blob) in certs.iter().enumerate() {
@@ -206,8 +258,16 @@ pub fn roster_digest<C: AsRef<[u8]>>(certs: &[C]) -> Result<[u8; 32], IdentityTr
             return Err(IdentityTransitionError::RosterDuplicate(hex16(&pair[0].0)));
         }
     }
+    let count =
+        u32::try_from(entries.len()).map_err(|_| IdentityTransitionError::RosterTooLarge)?;
     let mut hasher = blake3::Hasher::new();
-    for (_, bytes) in &entries {
+    hasher.update(ROSTER_DOMAIN);
+    hasher.update(&count.to_be_bytes());
+    for (device_id, bytes) in &entries {
+        let len =
+            u32::try_from(bytes.len()).map_err(|_| IdentityTransitionError::RosterTooLarge)?;
+        hasher.update(device_id);
+        hasher.update(&len.to_be_bytes());
         hasher.update(bytes);
     }
     Ok(*hasher.finalize().as_bytes())
@@ -256,6 +316,7 @@ pub fn shares_digest<C: AsRef<[u8]>>(
         }
     }
     let mut hasher = blake3::Hasher::new();
+    hasher.update(SHARES_DOMAIN);
     for (device_id, bytes) in &entries {
         hasher.update(device_id);
         hasher.update(bytes);
@@ -503,6 +564,90 @@ mod tests {
         let a = member(1, &to, 0xa1);
         let err = roster_digest(&[a.cert.clone(), a.cert]).expect_err("duplicate");
         assert!(matches!(err, IdentityTransitionError::RosterDuplicate(_)));
+    }
+
+    /// **A roster of three cannot be presented as a roster of one.**
+    ///
+    /// The digest used to be a bare `BLAKE3` over concatenated cert blobs, and
+    /// a cert is variable-length: `nickname` is 1..=64 bytes and `platform` is
+    /// unbounded. `DeviceCert::from_cbor` also read one item and ignored
+    /// whatever followed. So `certA ‖ certB ‖ certC` was a single roster entry
+    /// that decoded as `certA`, passed every check, and hashed to exactly the
+    /// digest the three separate certs hashed to — which meant the holder of a
+    /// signed transition could drop any devices from the signed membership and
+    /// keep the signature valid. `apply_roster` would then leave those devices
+    /// on the retired identity, where nothing ever seals them a key again.
+    ///
+    /// Two independent things now stop it, and this test asserts both: the
+    /// blobs are length-prefixed and counted, and a blob with a tail is not a
+    /// cert.
+    #[test]
+    fn a_fused_roster_entry_neither_decodes_nor_collides() {
+        let to = IdentitySigningKeyPair::from_secret_bytes(&[0x22; 32]);
+        // Ascending by device id, which is the order the digest imposes, and
+        // deliberately of three different lengths.
+        let a = member(1, &to, 0xa1);
+        let b = member(2, &to, 0xb2);
+        let c = member(3, &to, 0xc3);
+        let honest = roster_digest(&[a.cert.clone(), b.cert.clone(), c.cert.clone()])
+            .expect("the honest roster digests");
+
+        let mut fused = a.cert.clone();
+        fused.extend_from_slice(&b.cert);
+        fused.extend_from_slice(&c.cert);
+
+        // First line: the fused blob is not a device cert at all.
+        let err = roster_digest(&[fused.clone()]).expect_err("a fused entry is not a cert");
+        assert_eq!(err, IdentityTransitionError::RosterCert { index: 0 });
+
+        // Second line, asserted independently of the first: even a hypothetical
+        // decoder that tolerated the tail could not reach the honest digest,
+        // because the count and the per-entry lengths are hashed.
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(ROSTER_DOMAIN);
+        hasher.update(&1u32.to_be_bytes());
+        hasher.update(&a.device_id);
+        hasher.update(&u32::try_from(fused.len()).expect("fits").to_be_bytes());
+        hasher.update(&fused);
+        assert_ne!(
+            honest,
+            *hasher.finalize().as_bytes(),
+            "a one-entry roster must not reach a three-entry digest"
+        );
+    }
+
+    /// A cert with anything after it is refused, rather than read as the cert
+    /// it starts with.
+    #[test]
+    fn a_device_cert_with_a_tail_is_not_a_device_cert() {
+        let to = IdentitySigningKeyPair::from_secret_bytes(&[0x22; 32]);
+        let a = member(1, &to, 0xa1);
+        assert!(
+            DeviceCert::from_cbor(&a.cert).is_ok(),
+            "the control decodes"
+        );
+
+        let mut with_tail = a.cert.clone();
+        with_tail.push(0x00);
+        assert!(
+            DeviceCert::from_cbor(&with_tail).is_err(),
+            "one trailing byte is enough to make these bytes not a cert"
+        );
+    }
+
+    /// The two digests live in different domains, so no input to one can ever
+    /// be an input to the other.
+    #[test]
+    fn the_roster_and_share_digests_do_not_share_a_hash_space() {
+        assert_ne!(ROSTER_DOMAIN, SHARES_DOMAIN);
+        let to = IdentitySigningKeyPair::from_secret_bytes(&[0x22; 32]);
+        let a = member(1, &to, 0xa1);
+        let roster = roster_digest(std::slice::from_ref(&a.cert)).expect("roster");
+        // The same bytes, hashed without the domain tag, is what this used to
+        // be. It must not be what it is now.
+        let mut untagged = blake3::Hasher::new();
+        untagged.update(&a.cert);
+        assert_ne!(roster, *untagged.finalize().as_bytes());
     }
 
     #[test]

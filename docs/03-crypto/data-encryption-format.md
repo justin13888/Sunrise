@@ -258,12 +258,22 @@ body_hash = BLAKE3(canonical_cbor(BODY))
 prev_sig  = Ed25519(OLD ID_S_priv, "sunrise.identity_transition.v1"      || body_hash)
 next_sig  = Ed25519(NEW ID_S_priv, "sunrise.identity_transition.succ.v1" || body_hash || prev_sig)
 
-roster_digest = BLAKE3(concat of each cert blob, device-id ascending)
-shares_digest = BLAKE3(concat of device_id(16) || hpke_ciphertext(80), device-id ascending,
+roster_digest = BLAKE3("sunrise.identity_roster.v1" || u32_be(count) ||
+                       concat of device_id(16) || u32_be(len) || cert,
+                       device-id ascending)
+shares_digest = BLAKE3("sunrise.identity_shares.v1" ||
+                       concat of device_id(16) || hpke_ciphertext(80), device-id ascending,
                        then 0x00, or 0x01 || identity_share(112))
 ```
 
-A receiver recomputes both digests from the payload; there is nothing to compare them against directly, and there does not need to be — a payload whose roster or shares were swapped produces a digest no signature covers. Both digest functions **reject** a record of the wrong width rather than hashing it: a digest over concatenated variable-length records is ambiguous (`a||bc` and `ab||c` collide), and this one is inside a signature.
+A receiver recomputes both digests from the payload; there is nothing to compare them against directly, and there does not need to be — a payload whose roster or shares were swapped produces a digest no signature covers.
+
+**Neither digest is over a bare concatenation**, because a digest over concatenated variable-length records is ambiguous (`a||bc` and `ab||c` collide) and this one is inside a signature. The two solve it differently, because their records differ:
+
+* `shares_digest`'s records are fixed-width by construction, so it **rejects** a record of the wrong width rather than hashing it, and the trailing present-flag does the same job for the optional carry share.
+* A cert is variable-length and cannot be — `nickname` is 1..=64 bytes and `platform` has no bound — so `roster_digest` **length-prefixes and counts** instead. Both are load-bearing. Without them, `certA || certB || certC` presented as one roster entry decoded as `certA` (`DeviceCert::from_cbor` read one CBOR item and ignored the rest), passed every check, and hashed to the digest the three separate certs hash to. Since entries sort by device id, that let the holder of a signed transition drop any devices from the signed membership while keeping both signatures valid — and `apply_roster` leaves the dropped devices on the retired identity, where nothing seals them a key again. `DeviceCert::from_cbor` now also refuses trailing bytes, so the two defences are independent.
+
+Both digests carry a domain tag for the same reason every other hash in `sunrise-crypto` does: `body_hash`, the envelope hash and the stream-root chain would otherwise share one unkeyed BLAKE3 space with them.
 
 `RosterEntry` deliberately carries **no `device_id`**. The id is inside the cert, in a body the identity signed; a copy beside it would be a second source of truth, and a reader that trusted the outer copy would be trusting an unsigned field.
 
