@@ -600,11 +600,12 @@ async fn dispatch(
                 }
             };
             let target = resolve_device(core, prefix).await?;
-            core.submit(Command::RevokeDevice {
-                device_id: EntityRef::new(EntityKind::Device, target),
-                reason,
-            })
-            .await?;
+            let outcome = core
+                .submit(Command::RevokeDevice {
+                    device_id: EntityRef::new(EntityKind::Device, target),
+                    reason,
+                })
+                .await?;
 
             // The two-state disclosure `docs/03-crypto/key-rotation.md`
             // §Revocation asks for, and issue #160. These are different
@@ -614,7 +615,22 @@ async fn dispatch(
             // only "revoked" would let a user with no network believe a stolen
             // laptop had been cut off from the server, which it has not.
             println!("Revoked {} locally.", hex16(&target));
-            println!("  - every Stream key rotated, and the account identity with it");
+            // Not "every Stream key rotated" unconditionally: that was a claim
+            // this command could not always make. A vault row whose stream id
+            // is malformed names no stream to rotate, and the revoked device
+            // goes on holding whatever key it was last given for it.
+            if outcome.unrotated_streams.is_empty() {
+                println!("  - every Stream key rotated, and the account identity with it");
+            } else {
+                println!("  - the account identity rotated, and every Stream key BUT these:");
+                for raw in &outcome.unrotated_streams {
+                    println!("      {raw}  (not a 16-byte stream id; nothing to rotate)");
+                }
+                println!(
+                    "    that device may still read them. This is a corrupt row in the \
+                     local vault, not something the revocation can retry."
+                );
+            }
             println!("  - that device cannot certify itself back in under a new id");
             let pending = core.relay_revocation_pending(&target)?;
             if pending {

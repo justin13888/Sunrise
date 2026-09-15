@@ -24,21 +24,66 @@ use sunrise_crypto::identity_transition::{IdentityTransitionBody, IdentityTransi
 use sunrise_crypto::{roster_digest, shares_digest, verify_identity_transition, DeviceCert};
 use sunrise_storage::Db;
 
-/// How many links [`Engine::chain_identities`] will walk before it stops.
+/// How many candidate rows [`Engine::chain_identities`] verifies at one link.
 ///
-/// An account rotates its identity on a revocation and on an explicit request,
-/// so 64 is several lifetimes of ordinary use — the bound is not a budget, it
-/// is a termination guarantee for a function that decides who the account is
-/// and must not be able to run forever on a table somebody else's op wrote
-/// into. `to_identity_id` is a primary key, so the only cycle the schema admits
-/// is a self-loop, and the visited set catches that; this catches everything
-/// the schema would admit if it ever stopped being a primary key.
+/// A link's successors are taken greatest-first and the first that *verifies*
+/// wins, so a row that does not verify costs one Ed25519 pair — about 52.5 µs
+/// measured — and buys whoever wrote it one place in the ordering. Sixteen caps
+/// the fold at roughly **0.84 ms per link** against about 52.5 µs for an
+/// honest one, which has a single successor (two or three when devices rotate
+/// concurrently without having seen each other).
 ///
-/// A chain truncated here is not silently wrong in the dangerous direction: the
-/// fold stops early, the head is a *superseded* identity, and every device
-/// certified under the real head reads as not-current. That fails closed —
-/// nothing is sealed to anybody — rather than admitting a device it should not.
-const MAX_TRANSITION_CHAIN: usize = 64;
+/// This is a bound on *work*, and deliberately not on chain length. It replaced
+/// `MAX_TRANSITION_CHAIN = 64`, which bounded length and could put an account
+/// in a state it could never leave: any holder of `ID_S_priv` could rotate 63
+/// times, and from then on the fold stopped at the 64th identity, every later
+/// transition was a row the walk never reached, and no rotation could ever take
+/// effect again — which means revocation could never take effect again either,
+/// because a revocation *is* a rotation. Nothing recovered from that, and
+/// nothing detected it: the head was a real identity that a real set of devices
+/// was current under.
+///
+/// Length needed no bound. Every iteration of the walk either stops or inserts
+/// a previously unseen `to_identity_id` into the visited set, that column is the
+/// table's primary key, and the table is finite — so the walk terminates in at
+/// most `count(*)` steps whatever the table contains, including a table with a
+/// cycle in it. The old constant's own doc called itself "a termination
+/// guarantee"; the visited set already was one.
+///
+/// The cap here is safe only because ingest refuses what it can already tell is
+/// not a link: [`Engine::apply_control_op`]'s `IdentityTransition` arm checks
+/// `prev_sig` against the predecessor whenever this replica has established
+/// one, and holds siblings to [`MAX_SIBLINGS_PER_PREDECESSOR`]. Without those,
+/// a member could occupy all sixteen places above an honest successor and
+/// suppress it — which is the *other* unleavable state, and why the two
+/// constants have to be read together.
+pub(super) const MAX_SIBLING_CANDIDATES: usize = 16;
+
+/// How many `identity_transitions` rows this replica stores for one predecessor.
+///
+/// An honest predecessor has exactly one successor; two or three when devices
+/// rotate concurrently. Sixteen is that with room, and it is deliberately the
+/// same number as [`MAX_SIBLING_CANDIDATES`] so the fold can never be asked to
+/// look past what ingest admitted: a seventeenth row would be one the walk
+/// could never reach, which is the shape the old chain cap had.
+///
+/// Costed at the cap: sixteen rows under one predecessor is 0.84 ms of fold,
+/// and storing each one already cost its writer a valid `next_sig`, a roster
+/// every entry of which verifies under the successor, and — when this replica
+/// knows the predecessor — a valid `prev_sig`. The cap is what stops that being
+/// unbounded, not what makes it expensive.
+pub(super) const MAX_SIBLINGS_PER_PREDECESSOR: i64 = 16;
+
+/// How many devices one transition's roster, or its share list, may name.
+///
+/// Both are `Vec`s in a payload, so both are sized by whoever wrote the op, and
+/// every roster entry costs a `DeviceCert` decode plus one Ed25519 verification
+/// before the transition can be judged at all. 256 devices is far past any real
+/// account and caps that check at about **13.4 ms** for one op
+/// (256 × ~52.5 µs). Checked *before* the first verification runs, so an
+/// oversized roster costs a length comparison rather than its own size — which
+/// is the whole point: the work has to be bounded before it is done, not after.
+pub(super) const MAX_ROSTER_ENTRIES: usize = 256;
 
 /// One device that survives a rotation, with everything its roster entry and
 /// its share need.
@@ -344,10 +389,35 @@ impl Engine {
             let encoded =
                 encode_inner_op(&inner).map_err(|_| rusqlite::Error::ExecuteReturnedResults)?;
 
-            // Sealed under the epoch the departing device still shares, like
-            // every other op in a rotating transaction: a peer that has not yet
-            // received the new epoch must still be able to read the op that
-            // tells it the identity moved.
+            // Sealed under whatever meta epoch is live **now** — and on the
+            // revocation path that is the epoch the revocation has already
+            // rotated *to*, not the one the departing device still holds.
+            //
+            // This is load-bearing and it is not visible from inside this
+            // function, because it is a property of two transactions rather
+            // than of one. `revoke_device` writes the revocation register,
+            // mints a fresh epoch for every stream in `rotation_set` — the
+            // vault-meta stream among them — seals each to the unrevoked
+            // devices only, and commits. It calls this function afterwards, in
+            // a second transaction, so `ensure_stream_epoch` below finds the
+            // meta stream already at E+1 while the excluded device holds
+            // nothing above E.
+            //
+            // That separation is the whole of why `meta_epoch` is the security
+            // component of the fold's ordering (ADR-0037 §4). The excluded
+            // device still holds `ID_S_priv` and can sign both halves of a
+            // competing transition from the same predecessor; what it cannot do
+            // is seal one at an epoch it has no key for, so its row sorts below
+            // this one however far ahead it dates its HLC. An HLC is a claim;
+            // an epoch is a key you either hold or do not.
+            //
+            // An earlier version of this comment said the op was sealed "under
+            // the epoch the departing device still shares", which describes the
+            // design in which that argument does not hold — the two rows would
+            // tie on `meta_epoch` and an attacker-chosen `hlc_physical_ms`
+            // would decide. `a_revocations_transition_is_sealed_above_the_epoch\
+            // _the_cut_device_holds` pins the real behaviour, so the comment
+            // cannot drift back to describing the broken one.
             let seal_under = self.ensure_stream_epoch(tx, &META_STREAM, now_ms)?;
             let hlc = self.hlc.send();
             outcome.seq = self.next_seq_tx(tx, &META_STREAM)?;
@@ -453,11 +523,24 @@ impl Engine {
     /// unconditional (ADR-0034); standing is computed from the op set, so two
     /// replicas holding the same ops agree whatever order they arrived in.
     ///
-    /// Bounded at [`MAX_TRANSITION_CHAIN`] links, with the visited set as the
-    /// second bound: `to_identity_id` is a primary key so a self-loop is the
-    /// only cycle the schema admits, but a fold that decides who the account is
-    /// must terminate on a malformed table rather than on an argument about
-    /// one.
+    /// # What bounds it
+    ///
+    /// **Termination** is the visited set and nothing else. Every iteration
+    /// either breaks or inserts a `to_identity_id` the walk has not seen;
+    /// candidates already in the set are skipped; that column is the table's
+    /// primary key. So the walk takes at most `count(identity_transitions)`
+    /// steps on any table at all, including one with a cycle in it. There is no
+    /// chain-length cap, and there was one — see [`MAX_SIBLING_CANDIDATES`] for
+    /// the account-freezing state it could reach and why length was never the
+    /// thing that needed bounding.
+    ///
+    /// **Work** is [`MAX_SIBLING_CANDIDATES`] per link, applied as a `LIMIT` so
+    /// the rows beyond it are never read rather than read and discarded.
+    ///
+    /// Neither bound changes *which* link wins, only how much the walk costs.
+    /// Standing stays a pure function of the op set (ADR-0037 §2): nothing here
+    /// is stored, memoized or carried between calls, so two replicas holding
+    /// the same rows still agree whatever order those rows arrived in.
     pub(crate) fn chain_identities(
         &self,
         conn: &rusqlite::Connection,
@@ -483,17 +566,22 @@ impl Engine {
         let mut seen: BTreeSet<[u8; 16]> = BTreeSet::new();
         seen.insert(start.0);
         let mut stmt = conn.prepare(
-            "SELECT to_identity_id, to_id_s_pub, to_id_d_pub, roster_digest,
-                    shares_digest, prev_sig, next_sig
-             FROM identity_transitions
-             WHERE from_identity_id = ?
-             ORDER BY meta_epoch DESC, hlc_physical_ms DESC, hlc_logical DESC,
-                      emitter_device_id DESC",
+            "SELECT t.to_identity_id, t.to_id_s_pub, t.to_id_d_pub, t.roster_digest,
+                    t.shares_digest, t.prev_sig, t.next_sig
+             FROM identity_transitions t
+             WHERE t.from_identity_id = ?1
+             ORDER BY t.meta_epoch DESC, t.hlc_physical_ms DESC, t.hlc_logical DESC,
+                      t.emitter_device_id DESC
+             LIMIT ?2",
         )?;
-        while chain.len() < MAX_TRANSITION_CHAIN {
+        let limit = i64::try_from(MAX_SIBLING_CANDIDATES).unwrap_or(i64::MAX);
+        // Terminates on the visited set: see this function's doc. Each pass
+        // either breaks or adds an id no pass has added before, and
+        // `to_identity_id` is the table's primary key.
+        loop {
             let (from_id, from_pub) = *chain.last().expect("the chain starts non-empty");
             let candidates = stmt
-                .query_map(params![&from_id[..]], |r| {
+                .query_map(params![&from_id[..], limit], |r| {
                     Ok((
                         r.get::<_, Vec<u8>>(0)?,
                         r.get::<_, Vec<u8>>(1)?,

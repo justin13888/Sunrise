@@ -48,6 +48,14 @@ pub(super) fn legacy_stream_set(db: &Db) -> rusqlite::Result<std::collections::B
         let mut stmt = conn.prepare(sql)?;
         let rows = stmt.query_map([], |r| r.get::<_, Vec<u8>>(0))?;
         for row in rows {
+            // **A documented fail-open.** A stream id that is not 16 bytes is
+            // dropped, so adoption never recomputes that stream's epoch-1
+            // derived key and every op in it becomes unopenable — while
+            // adoption reports success. Left open because this runs once, on a
+            // pre-ADR-0024 vault, and the alternative is refusing to open a
+            // vault at all over one malformed row in a legacy table: the
+            // streams that do decode are recovered, and the one that does not
+            // was not recoverable by any path.
             if let Some(id) = to16(&row?) {
                 streams.insert(id);
             }
@@ -74,6 +82,21 @@ pub(super) fn legacy_derived_stream_key(
 
 /// Read the nickname/platform out of a legacy self-signed cert so adoption
 /// keeps the device's name rather than renaming it behind the user's back.
+///
+/// # A documented fail-open, twice over
+///
+/// A `cert_blob` that does not decode yields placeholder labels rather than an
+/// error; and on the `Ok` path **no signature is verified** — `from_cbor`
+/// decodes, and nothing calls `verify` or `verify_binding` — so the nickname and
+/// platform carried into the freshly issued, identity-signed cert are
+/// unauthenticated strings out of a local row.
+///
+/// Both stay. The blob is this device's own `local_identity.cert_blob`, written
+/// by this device under this vault root; anyone who can rewrite it can rewrite
+/// the wrapped secrets beside it, so a signature check here defends against an
+/// attacker who has already won. And the values are labels: they name the device
+/// in a list, they bind nothing, and refusing to adopt a legacy vault because
+/// its old cert will not parse would lose the vault over a display string.
 pub(super) fn legacy_cert_labels(cert_blob: &[u8]) -> (String, String) {
     DeviceCert::from_cbor(cert_blob).map_or_else(
         |_| {

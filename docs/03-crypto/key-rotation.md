@@ -35,6 +35,8 @@ Three key types rotate, each with a different cost and cascade. Throughout this 
 
   What no rotation can do, however complete: take back what the device already had. Revocation is forward-only.
 
+  * *The rotation can also be **incomplete**, and says so when it is.* `Keychain::rotation_set` builds the set from the `stream_id` columns of `stream_keys`, `streams` and `ops`, and a column that is not 16 bytes names no stream to mint an epoch for. Such a row is not padded out — that would file a key against the vault-meta stream — and it is no longer dropped in silence either, because the revoked device goes on holding whatever key it was last given for whatever the row refers to. `Command::RevokeDevice` rotates what it can and returns the rest on `CommandResult::unrotated_streams`; it also emits `core.device.revoke_incomplete`. A client must disclose a non-empty list rather than print "revoked", which is the same rule the relay half already follows ([#160](https://github.com/justin13888/Sunrise/issues/160)). Failing the whole revocation instead would be worse: the device that is gone is the entire scenario.
+
 * **§Identity rotation**, in full, and it is what makes revocation stick
   ([ADR-0037](../11-adr/0037-identity-transition.md)). The account identity is
   an append-only **chain** folded from `identity.genesis_identity_id`;
@@ -250,6 +252,16 @@ is a claim anybody can make; an epoch is a key you either hold or do not. The
 HLC components break ties between honest concurrent rotations, which is all they
 are asked to do.
 
+The argument needs the honest rotation to be sealed **above** the shared epoch
+rather than at it. A transition sealed under the epoch the departing device
+still holds would tie on `meta_epoch`, and the tie is broken by
+`hlc_physical_ms`, which that device chooses freely inside `MAX_DRIFT_MS`.
+`revoke_device` gets this right by ordering two transactions: it rotates every
+stream — the vault-meta stream among them — and commits, then calls
+`rotate_identity`, which seals the transition under the epoch that rotation
+minted. See [ADR-0037](../11-adr/0037-identity-transition.md) §4 for the two
+assumptions this rests on and what it does not claim.
+
 ### Verification, and what a replica checks when
 
 At **apply** time, structurally and nothing else: `to_identity_id` is the
@@ -261,9 +273,25 @@ envelope has already been accepted and failing the delivery would put a
 well-formed op into the refusal path.
 
 At **fold** time: both signatures, against the predecessor the walk has already
-established. A link that fails either is not a link. The walk is bounded at
-`MAX_TRANSITION_CHAIN` and fails closed past it — the head reads as a superseded
-identity and nothing is sealed to anybody.
+established. A link that fails either is not a link.
+
+The walk **terminates** on its visited set — every step adds a `to_identity_id`
+no step has added before, and that column is the table's primary key, so the
+walk cannot outlast the table. It bounds its **work** at
+`MAX_SIBLING_CANDIDATES` rows per link. It does *not* bound the chain's length,
+and it did once, at `MAX_TRANSITION_CHAIN = 64`: past 64 rotations no later
+transition was ever reached, so no rotation took effect, so no revocation took
+effect either — a state an account could not leave and nothing reported. Length
+was never what needed bounding.
+
+Ingest holds the rest: a transition may name at most `MAX_ROSTER_ENTRIES`
+devices (refused on length, before the first cert is decoded) and one
+predecessor accumulates at most `MAX_SIBLINGS_PER_PREDECESSOR` rows, the same
+number the fold will verify, so no stored row is one the walk could never reach.
+A transition whose `prev_sig` does not verify against a predecessor this replica
+has already established is refused rather than stored, which is what keeps the
+sibling cap from being a way to suppress an honest successor by filling its
+places.
 
 ### A device that was offline across the rotation
 

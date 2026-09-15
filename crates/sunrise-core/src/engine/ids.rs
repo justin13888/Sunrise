@@ -193,6 +193,22 @@ pub(crate) fn hex_short(b: &[u8; 16]) -> String {
     s
 }
 
+/// A whole blob as lowercase hex.
+///
+/// Distinct from [`hex_short`], which truncates to four bytes because what it
+/// renders is an id and four bytes are enough to correlate one. This renders a
+/// column value that is *not* an id — the wrong-width `stream_id` of a row a
+/// revocation could not rotate — where truncating would throw away the only
+/// thing that distinguishes one such row from another.
+pub(crate) fn hex_bytes(b: &[u8]) -> String {
+    let mut s = String::with_capacity(b.len() * 2);
+    for byte in b {
+        use core::fmt::Write;
+        let _ = write!(s, "{byte:02x}");
+    }
+    s
+}
+
 /// Left-pad / truncate a stored blob into a 16-byte id.
 pub(super) fn blob16(raw: &[u8]) -> [u8; 16] {
     let mut a = [0u8; 16];
