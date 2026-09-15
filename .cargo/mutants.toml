@@ -51,14 +51,47 @@ exclude_globs = [
 # assertions that pin formatting — which then break on every unrelated change.
 # That is the whole argument, and it reaches exactly these two traits.
 #
-# Known gap, deliberately left alone here: cargo-mutants matches these against
-# the names `--list` prints, and an impl written `impl std::fmt::Debug for X` is
-# named `<impl std::fmt::Debug for X>::fmt`, which none of the four patterns
-# match. Sixteen `fmt` mutants across the scoped crates are scored today for
-# that reason. Closing it excludes sixteen more mutants and so moves the rates
-# in `mutants/baseline.json`; it belongs with the re-baseline, not here.
+# The patterns are written against the names `--list` prints, not against the
+# source. cargo-mutants names a trait method by its impl header, so
+# `impl std::fmt::Debug for CoreConfig` is listed as
+# `<impl std::fmt::Debug for CoreConfig>::fmt` -- the path the source happens to
+# spell is carried into the name verbatim. This tree spells it four ways
+# (`Debug`, `fmt::Debug`, `std::fmt::Debug`, `core::fmt::Debug`), so the pattern
+# has to admit an optional path prefix rather than anchor on the bare trait
+# name. `(?:[A-Za-z0-9_]+::)*` is that prefix, and it is deliberately *not*
+# `.*`: a wildcard would also swallow
+# `<impl Deserialize<'de> for WeekdaySet>::deserialize::<impl Visitor<'de> for
+# SetVisitor>::expecting`, which returns a `fmt::Result` but is a
+# deserializer's error message, not a rendering of a value -- a test may
+# legitimately assert on it, so it stays scored.
 #
-# Two patterns were removed from this list, for opposite reasons.
+# The four patterns this replaces -- `impl Debug`, `impl Display`,
+# `<impl Debug for`, `<impl Display for` -- matched **nothing**. #118 removed
+# two dead patterns from this list and left these on the assumption they were
+# live; they were not. Every hand-written `Debug`/`Display` impl in the four
+# scoped crates qualifies the path, and a derived one has no body to mutate, so
+# `cargo mutants -p <crate> --list` returns an identical population with this
+# key set to `[]` as it does with those four patterns in place: 1130, 525, 137
+# and 1357 for core, crypto, sync and domain. The gap #125 reported was
+# therefore total, not partial.
+#
+# Widening it excludes 21 mutants, every one of them a `Debug` or `Display`
+# `fmt`, and it is the first change to this key that moves the population:
+#
+#   sunrise-core     1130 -> 1121  (-9)
+#   sunrise-crypto    525 ->  516  (-9)
+#   sunrise-sync      137 ->  135  (-2)
+#   sunrise-domain   1357 -> 1356  (-1)
+#
+# `mutants/baseline.json` is **not** re-recorded here. Its floors are absolute
+# counts plus a percentage, and which side of the caught/missed line each of
+# those 21 sat on is only knowable from a campaign, not from `--list`. The
+# floors for `sunrise-crypto` and `sunrise-sync` are the two recorded today and
+# both shrink by at most 9 and 2 respectively; the next nightly's artifacts are
+# what should set them.
+#
+# Two patterns were removed from this list by #118, for opposite reasons, and
+# the reasoning is worth keeping.
 #
 # `fn main` was dead. The scope above is `sunrise-core`, `sunrise-crypto`,
 # `sunrise-sync` and `sunrise-domain`, and none of them has a binary target, so
@@ -73,15 +106,9 @@ exclude_globs = [
 # crates hold keys, cursors and caches. Every `Clone` in the four scoped crates
 # is derived today, so the pattern was matching nothing either; dropping it
 # means the first hand-written one gets scored instead of silently skipped.
-#
-# Neither removal moves the mutant population, which is why this lands without a
-# re-baseline: `cargo mutants -p <crate> --list` returns the same 959, 349, 94
-# and 1349 mutants for the four scoped crates before and after.
 exclude_re = [
-    "impl Debug",
-    "impl Display",
-    "<impl Debug for",
-    "<impl Display for",
+    "<impl (?:[A-Za-z0-9_]+::)*Debug for ",
+    "<impl (?:[A-Za-z0-9_]+::)*Display for ",
 ]
 
 # `sunrise-crypto` runs Argon2id at production parameters — 64 MiB, t=3, p=1
