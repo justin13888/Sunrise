@@ -47,6 +47,7 @@ impl Engine {
             blob_id: d.blob_id,
             chunk_count: d.chunk_count,
             content_hash: d.content_hash,
+            ciphertext_hash: d.ciphertext_hash,
             deleted: false,
             unknown: Unknowns::new(),
         };
@@ -163,10 +164,11 @@ pub(super) fn upsert_attachment_row(
     tx.execute(
         "INSERT INTO attachments
          (id, parent_kind, parent_id, filename, mime_type, size_bytes,
-          blob_key, blob_id, chunk_count, content_hash, deleted, extra,
+          blob_key, blob_id, chunk_count, content_hash, ciphertext_hash,
+          deleted, extra,
           created_at_ms, updated_at_ms,
           lww_hlc_ms, lww_hlc_logical, lww_seq, lww_device)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (id) DO UPDATE SET
             filename = excluded.filename,
             mime_type = excluded.mime_type,
@@ -175,6 +177,7 @@ pub(super) fn upsert_attachment_row(
             blob_id = excluded.blob_id,
             chunk_count = excluded.chunk_count,
             content_hash = excluded.content_hash,
+            ciphertext_hash = excluded.ciphertext_hash,
             deleted = excluded.deleted,
             extra = excluded.extra,
             updated_at_ms = excluded.updated_at_ms,
@@ -193,6 +196,7 @@ pub(super) fn upsert_attachment_row(
             &a.blob_id[..],
             a.chunk_count,
             &a.content_hash[..],
+            &a.ciphertext_hash[..],
             a.deleted as i64,
             encode_unknowns(&a.unknown)?,
             a.created_at.as_millisecond(),
@@ -217,14 +221,15 @@ fn attachment_parent_kind(parent: EntityRef) -> &'static str {
     }
 }
 
-pub(super) fn read_attachment(
+pub(crate) fn read_attachment(
     conn: &rusqlite::Connection,
     id: &[u8; 16],
 ) -> Result<Option<Attachment>, EngineError> {
     let row = conn
         .query_row(
             "SELECT parent_kind, parent_id, filename, mime_type, size_bytes,
-                    blob_key, blob_id, chunk_count, content_hash, deleted, extra,
+                    blob_key, blob_id, chunk_count, content_hash, ciphertext_hash,
+                    deleted, extra,
                     created_at_ms, updated_at_ms
              FROM attachments WHERE id = ?",
             params![&id[..]],
@@ -239,10 +244,11 @@ pub(super) fn read_attachment(
                     r.get::<_, Vec<u8>>(6)?,
                     r.get::<_, i64>(7)?,
                     r.get::<_, Vec<u8>>(8)?,
-                    r.get::<_, i64>(9)?,
-                    r.get::<_, Option<Vec<u8>>>(10)?,
-                    r.get::<_, i64>(11)?,
+                    r.get::<_, Vec<u8>>(9)?,
+                    r.get::<_, i64>(10)?,
+                    r.get::<_, Option<Vec<u8>>>(11)?,
                     r.get::<_, i64>(12)?,
+                    r.get::<_, i64>(13)?,
                 ))
             },
         )
@@ -257,8 +263,8 @@ pub(super) fn read_attachment(
     };
     Ok(Some(Attachment {
         id: EntityRef::new(EntityKind::Attachment, *id),
-        created_at: ms_to_ts(a.11.max(0)),
-        updated_at: ms_to_ts(a.12.max(0)),
+        created_at: ms_to_ts(a.12.max(0)),
+        updated_at: ms_to_ts(a.13.max(0)),
         parent: EntityRef::new(parent_kind, blob16(&a.1)),
         filename: a.2,
         mime_type: a.3,
@@ -267,7 +273,11 @@ pub(super) fn read_attachment(
         blob_id: blob16(&a.6),
         chunk_count: u32::try_from(a.7.max(0)).unwrap_or(0),
         content_hash: blob32(&a.8),
-        deleted: a.9 != 0,
-        unknown: decode_unknowns(a.10),
+        // `blob32` left-pads, so the zero-width `X''` that 0022 backfilled onto
+        // pre-existing rows reads back as the all-zero hash — which is exactly
+        // `Attachment::is_fetchable`'s "this blob has no name on the relay".
+        ciphertext_hash: blob32(&a.9),
+        deleted: a.10 != 0,
+        unknown: decode_unknowns(a.11),
     }))
 }

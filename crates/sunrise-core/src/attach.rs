@@ -30,7 +30,7 @@ use crate::core::{Core, CoreError};
 use crate::queries::{Query, QueryResult};
 use sunrise_crypto::blob_chunk::{
     chunk_count_for, content_hash, open_chunk, seal_chunk, verify_content, BlobChunkError,
-    CHUNK_PLAINTEXT_LEN,
+    CiphertextHasher, CHUNK_PLAINTEXT_LEN,
 };
 use sunrise_domain::validation::MAX_ATTACHMENT_BYTES;
 use sunrise_domain::{Attachment, AttachmentDraft};
@@ -119,11 +119,19 @@ impl Core {
 
         let chunk_count = chunk_count_for(size_bytes);
         let store = BlobStore::new(self.vault_dir())?;
+        // The ciphertext hash accumulates here and nowhere else. It is the only
+        // name the relay knows this blob by, and this loop is the one moment
+        // every sealed chunk exists: recomputing it later would mean reading
+        // the whole attachment back off disk to learn something that was free
+        // while it was being written.
+        let mut ciphertext = CiphertextHasher::new();
         for (idx, piece) in bytes.chunks(CHUNK_PLAINTEXT_LEN).enumerate() {
             let idx = u32::try_from(idx).unwrap_or(u32::MAX);
             let sealed = seal_chunk(&blob_key, &blob_id, idx, chunk_count, piece)?;
+            ciphertext.update(&sealed);
             store.put_chunk(&blob_id, idx, &sealed)?;
         }
+        let ciphertext_hash = ciphertext.finish();
 
         let draft = AttachmentDraft {
             parent,
@@ -134,6 +142,7 @@ impl Core {
             blob_id,
             chunk_count,
             content_hash: content_hash(bytes),
+            ciphertext_hash,
         };
         let result = self.submit(Command::AttachFile(draft)).await?;
         self.attachment_row(result.entity).await

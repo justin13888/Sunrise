@@ -59,7 +59,8 @@ pub use bip39::{
 pub use blake3_kdf::{derive_key, BLAKE3_OUT_LEN};
 pub use blob_chunk::{
     chunk_aad, chunk_count_for, chunk_nonce, ciphertext_hash, content_hash, open_chunk, seal_chunk,
-    split_sealed, verify_content, BlobChunkError, CHUNK_PLAINTEXT_LEN, SEALED_CHUNK_LEN,
+    split_sealed, verify_content, BlobChunkError, CiphertextHasher, CHUNK_PLAINTEXT_LEN,
+    SEALED_CHUNK_LEN,
 };
 pub use device_cert::{DeviceCert, DeviceCertError, DeviceCertInner, MAX_NICKNAME_BYTES};
 pub use hpke_seal::{

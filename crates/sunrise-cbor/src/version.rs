@@ -116,4 +116,13 @@ pub const CRYPTO_SUITE_V: u16 = 2;
 /// full scans of the widest table in the vault, decrypting it a page at a time.
 /// Measured at 18.1 ms for a 10k-op log, 183 ms at 100k and 2.01 s at 1M;
 /// with the index, about 60 us at all three.
-pub const STORAGE_V: u16 = 21;
+///
+/// `22` is migration `0022_attachment_upload.sql`, which makes an attachment's
+/// bytes reachable from a second device (issue #176). It adds
+/// `attachments.ciphertext_hash` — the only thing that names a blob on the
+/// relay, since `finalize` content-addresses by the ciphertext and
+/// `content_hash` covers the plaintext — and `blob_uploads`, the durable queue
+/// of blobs whose chunks are sealed locally and not yet committed upstream.
+/// The queue is a table rather than a direct call for the reason 0020's is:
+/// attaching a file has to work offline.
+pub const STORAGE_V: u16 = 22;

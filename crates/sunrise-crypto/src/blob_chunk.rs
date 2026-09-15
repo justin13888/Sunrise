@@ -236,11 +236,51 @@ pub fn ciphertext_hash<'a, I>(sealed_chunks: I) -> [u8; 32]
 where
     I: IntoIterator<Item = &'a [u8]>,
 {
-    let mut hasher = blake3::Hasher::new();
+    let mut hasher = CiphertextHasher::new();
     for chunk in sealed_chunks {
         hasher.update(chunk);
     }
-    *hasher.finalize().as_bytes()
+    hasher.finish()
+}
+
+/// [`ciphertext_hash`] for a caller that seals one chunk at a time.
+///
+/// The sealing loop writes each chunk to the blob store and drops it, so it
+/// never holds the whole ciphertext — which for a 100 MB attachment is the
+/// difference between one copy in memory and two. It still needs the hash over
+/// all of it, so it accumulates here.
+///
+/// Kept in this module rather than reached for as a bare `blake3::Hasher` by
+/// the caller: what is hashed, in what order, and over the *sealed* rather than
+/// the plaintext bytes is part of the blob format, and a second implementation
+/// of it would be a second thing to keep in step with the relay's `finalize`.
+#[derive(Debug, Clone)]
+pub struct CiphertextHasher(blake3::Hasher);
+
+impl CiphertextHasher {
+    /// A hasher with nothing absorbed.
+    #[must_use]
+    pub fn new() -> Self {
+        Self(blake3::Hasher::new())
+    }
+
+    /// Absorb one sealed chunk. Call in chunk order; BLAKE3 is not commutative
+    /// and `finalize` re-hashes the concatenation the relay stored.
+    pub fn update(&mut self, sealed_chunk: &[u8]) {
+        self.0.update(sealed_chunk);
+    }
+
+    /// The blob's ciphertext hash.
+    #[must_use]
+    pub fn finish(&self) -> [u8; 32] {
+        *self.0.finalize().as_bytes()
+    }
+}
+
+impl Default for CiphertextHasher {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Split a concatenated blob body back into the chunks it was sealed as.
