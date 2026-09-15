@@ -138,41 +138,57 @@ a Block is bound to a Task from the grid side, by dropping the task onto it.
 
 **The iOS cell for *Task → Calendar block* is No: both ends ship, and no screen
 in the shell presents them together.** The drag source (`TaskRowView.swift:74`)
-and the grid's drop target (`CalendarView.swift:221`, into `accept(items:at:)`
-at `:312`) are shared, unguarded and compiled into `SunriseiOS` — this cell
+and the grid's drop target (`CalendarView.swift:280`, into `accept(items:at:)`
+at `:371`) are shared, unguarded and compiled into `SunriseiOS` — this cell
 fails on reach, not on code. `TaskRowView` renders only inside `TaskListView`
 (`:172`) and `DailyBriefBody` (`DailyBriefView.swift:82`); the grid renders on
-iOS only at `VaultTabs.swift:72`, its own tab, and `:228`, a pushed destination
+iOS only at `VaultTabs.swift:79`, its own tab, and `:287`, a pushed destination
 that replaces the list on the same stack. The tab is not the boundary and it
-would be wrong to say it is: `pushed(destination:)` (`VaultTabs.swift:212`) is
-attached to the Today and the Browse stacks alike (`:136`, `:144`), so the grid
+would be wrong to say it is: `pushed(destination:)` (`VaultTabs.swift:268`) is
+attached to the Today and the Browse stacks alike (`:164`, `:175`), so the grid
 can be pushed onto the very stack a task list is on — it just arrives *instead
 of* the list, not beside it. Three things the tree establishes: no iOS screen
 shows a task row and the grid together, no `Tab` carries a `dropDestination`,
 and nothing configures spring-loading. Nothing in the tree shows a path that
 completes the gesture, and that is what the **No** records.
 
-**The one path this file could not settle has now been run, and it does not
-open.** The question [#72](https://github.com/justin13888/Sunrise/issues/72)
-asked was whether a drag held across a tab switch bridges the two ends, which
-no reading of the tree can answer. `SunriseiOSUITests/DragAcrossTabsUITests`
-answers the half a test harness can reach: it lifts a task row on Today, drags
-it onto the **Calendar** tab and holds it there for two seconds — about four
-times what iOS gives a spring-loaded control — and the tab does not change. The
-tab bar does not spring-load a drag, so the **one-handed** gesture ends where
-it started, and there is no point in the app at which the grid is under the
-finger holding the row.
+**The third of those three is now a test rather than a claim.**
+`SunriseTests/TabDropTargetTests.swift` reads every Swift source under
+`apps/apple/iOS/` — the shell, and only the shell, since four views under
+`Sunrise/` are drop targets on purpose — and fails if any of them writes a
+`dropDestination`, an `onDrop`, a `springLoadingBehavior` or a
+`UISpringLoadedInteraction`. A companion test asserts the shape it is reading,
+so it cannot go green by finding a file that has moved. The commit that gives a
+tab a drop target is the commit that reds this cell.
+
+It replaced a two-second simulator drag, and the reason is worth recording.
+`SunriseiOSUITests/DragAcrossTabsUITests` used to lift a task row on Today,
+drag it onto the **Calendar** tab and hold it there, asserting that the tab did
+not change. It failed the `ios-app` job on a pull request that touched five
+markdown files, then passed a re-run of the same commit
+([#215](https://github.com/justin13888/Sunrise/issues/215)). A negative
+assertion that can fail spuriously can pass spuriously too: if the long-press
+never lifted the row, nothing was ever dragged anywhere and "the tab did not
+change" is satisfied by the gesture having failed to start. Twenty-six minutes
+of CI were buying a **No** that rested on the absence of an event the test
+could not show had happened.
+
+So what [#72](https://github.com/justin13888/Sunrise/issues/72) asked — what a
+*held* drag does as it crosses the bar — is recorded here as **not claimed**
+rather than as measured. What is claimed, and asserted, is the thing the
+verdict actually needs: nothing in this app builds a path for such a drag to
+complete along.
 
 The **two-handed** gesture — hold the row with one finger, tap a tab with the
-other — is still unmeasured, and deliberately recorded as unmeasured rather
-than assumed either way. XCUITest drives one gesture at a time and offers no
-API for two independent simultaneous touches, so the harness that runs on every
-build cannot express it; settling it would take a person with a device, and a
-result nothing in CI would then hold in place. The verdict stays **No** on the
-rule this table already applies: a completable path has to be *shown*, not left
-open. What would overturn it is no longer a grep or a simulator run but a
+other — is unmeasured for a different and permanent reason. XCUITest drives one
+gesture at a time and offers no API for two independent simultaneous touches,
+so the harness that runs on every build cannot express it; settling it would
+take a person with a device, and a result nothing in CI would then hold in
+place. The verdict stays **No** on the rule this table already applies: a
+completable path has to be *shown*, not left open. What would overturn it is a
 built path — a drop destination on the tab itself, spring-loading configured,
-or a screen that shows a list and the grid together.
+or a screen that shows a list and the grid together — and the first two of
+those three are what the test above watches for.
 
 **The other way out would be a second window, and that one the tree does
 close.** It is also what separates this cell from *File → Task*. A second
