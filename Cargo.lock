@@ -2865,6 +2865,7 @@ dependencies = [
  "rand_core 0.6.4",
  "sunrise-cbor",
  "sunrise-core",
+ "sunrise-core-bindings",
  "sunrise-crypto",
  "sunrise-domain",
  "sunrise-http-sig",
