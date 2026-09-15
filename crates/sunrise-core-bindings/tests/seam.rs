@@ -70,6 +70,11 @@ async fn a_command_lowers_into_the_core_and_the_result_comes_back() {
     assert!(out.entity.to_str().starts_with("tsk_"));
     assert_eq!(out.op_id.len(), 32, "op id is 16 bytes of hex");
     assert!(out.soft_violations.is_empty());
+    // Both "it must not vanish" fields cross the seam, and both are empty for
+    // a command that neither schedules nor revokes. Asserted here because the
+    // seam is where a field added to `CommandResult` and forgotten in
+    // `CommandOutcome` would otherwise be lost in silence.
+    assert!(out.unrotated_streams.is_empty());
 
     let CoreQueryResult::Tasks { tasks } = core.query(CoreQuery::Inbox).await.expect("inbox")
     else {

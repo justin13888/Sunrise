@@ -85,15 +85,24 @@
 //! * `load_cache` — an epoch outside `u32` was clamped to `0` and the key
 //!   *misfiled* against a real slot. Now skipped.
 //!
+//! * [`Keychain::rotation_set`] — a `stream_id` column that is not 16 bytes was
+//!   dropped from the **revocation** set, so the revoked device went on reading
+//!   that stream while `revoke_device` returned success. It still does not
+//!   raise — refusing the whole revocation over one row is worse, because the
+//!   device that is gone is the whole scenario — but it no longer stays quiet:
+//!   the row comes back in [`RotationSet::unrotatable`], reaches the caller on
+//!   `CommandResult::unrotated_streams`, and is disclosed. Same shape as issue
+//!   #160 one level up.
+//!
 //! **Still fail open, as decisions**: `load_cache`'s skip of an unopenable row
 //! and of a malformed stream id, [`Keychain::stream_keys_at`]'s empty result,
-//! `Keychain::held_epochs_tx`'s dropped rows, [`Keychain::rotation_set`]'s
-//! dropped stream, [`Keychain::device_labels_tx`]'s placeholder labels,
+//! `Keychain::held_epochs_tx`'s dropped rows,
+//! [`Keychain::device_labels_tx`]'s placeholder labels,
 //! `legacy::legacy_stream_set`, `legacy::legacy_cert_labels`, and
 //! `rows`'s `minted_by_device_id` and `created_at_ms`. Each says why where it
-//! is. The common shape: they sit on a path where raising loses a whole vault,
-//! a whole revocation or a whole adoption over one row, and the row they drop
-//! is one nothing could have used anyway.
+//! is. The common shape: they sit on a path where raising loses a whole vault
+//! or a whole adoption over one row, and the row they drop is one nothing could
+//! have used anyway.
 //!
 //! ## Module map
 //!
@@ -322,6 +331,26 @@ pub(crate) fn sqlite_from(err: KeychainError) -> rusqlite::Error {
 /// [`sqlite_from`] for the common case: a row that exists and does not decode.
 pub(crate) fn keychain_row_error(column: &'static str) -> rusqlite::Error {
     sqlite_from(KeychainError::UnreadableRow(column))
+}
+
+/// What [`Keychain::rotation_set`] found: the streams a revocation can rotate,
+/// and the rows it cannot.
+///
+/// A pair rather than a bare `Vec` because the second list is the point. See
+/// [`Keychain::rotation_set`] for why an unrotatable row is reported rather
+/// than dropped or raised.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RotationSet {
+    /// Every stream with a live epoch, ascending. The vault-meta stream and
+    /// the Inbox are always present.
+    pub streams: Vec<[u8; 16]>,
+    /// The distinct `stream_id` column values that are not 16 bytes, ascending.
+    ///
+    /// Raw bytes rather than an id type, because these are precisely the values
+    /// that are *not* ids — there is no `[u8; 16]` to hand back, and padding
+    /// one out is the bug `to16` exists to prevent. A caller that wants to
+    /// show them renders hex.
+    pub unrotatable: Vec<Vec<u8>>,
 }
 
 /// The account identity: one keypair pair per account, not per device.
@@ -1720,15 +1749,44 @@ impl Keychain {
         }
     }
 
-    /// Every `(stream_id, live epoch)` this device holds a key for.
+    /// Every `(stream_id, live epoch)` this device holds a key for, **and the
+    /// rows it could not turn into one**.
     ///
     /// This is the rotation set: revoking a device mints a new epoch for every
-    /// one of them, the vault-meta stream and the Inbox included.
+    /// stream in it, the vault-meta stream and the Inbox included.
+    ///
+    /// # Why this returns two lists and not one
+    ///
+    /// A `stream_keys`, `streams` or `ops` row whose `stream_id` is not 16
+    /// bytes cannot be rotated — the id names nothing, and there is no stream
+    /// to mint an epoch for. It is *not* zero-padded into `[0u8; 16]`, which is
+    /// the vault-meta stream and would file a stranger's key against it.
+    ///
+    /// Dropping it silently is the part that was wrong. This is the revocation
+    /// set, so a row dropped here is a stream the revoked device goes on
+    /// reading — and `revoke_device` used to return success having not rotated
+    /// it. A security operation that reports success without having done the
+    /// thing is the failure this module spent the rest of its audit removing.
+    ///
+    /// Raising instead would be worse, and that is not the alternative. The
+    /// user's answer to "my laptop was stolen" must not be an error that leaves
+    /// *every* stream unrotated, because the device that is gone is the whole
+    /// scenario. So the revocation succeeds partially and says so: the caller
+    /// rotates [`RotationSet::streams`] and reports
+    /// [`RotationSet::unrotatable`], and a user learns their revocation is
+    /// incomplete and which rows it could not reach.
+    ///
+    /// The same distinction one level up is issue #160 and
+    /// [`Core::relay_revocation_pending`](crate::Core::relay_revocation_pending):
+    /// a revocation has halves with different guarantees and a user is entitled
+    /// to know which they have.
     ///
     /// # Errors
     /// SQLite failure.
-    pub fn rotation_set(&self, tx: &rusqlite::Transaction<'_>) -> rusqlite::Result<Vec<[u8; 16]>> {
+    pub fn rotation_set(&self, tx: &rusqlite::Transaction<'_>) -> rusqlite::Result<RotationSet> {
         let mut streams: std::collections::BTreeSet<[u8; 16]> = std::collections::BTreeSet::new();
+        let mut unrotatable: std::collections::BTreeSet<Vec<u8>> =
+            std::collections::BTreeSet::new();
         streams.insert(crate::engine::META_STREAM);
         streams.insert(INBOX_STREAM_BYTES);
         for sql in [
@@ -1739,26 +1797,24 @@ impl Keychain {
             let mut stmt = tx.prepare(sql)?;
             let rows = stmt.query_map([], |r| r.get::<_, Vec<u8>>(0))?;
             for row in rows {
-                // A stream id that is not 16 bytes cannot be rotated — there is
-                // no stream to rotate. Skipping it keeps a corrupt row from
-                // silently adding `[0u8; 16]`, the vault-meta stream, to a set
-                // that already contains it.
-                //
-                // **A documented fail-open, and the uncomfortable one.** This
-                // is the revocation set: a stream dropped here is one the
-                // revoked device goes on reading, and `revoke_device` reports
-                // success. It stays a skip because there is genuinely no stream
-                // to rotate — the id names nothing — and because failing the
-                // revocation outright is strictly worse: the user's answer to
-                // "your device was stolen" must not be an error that leaves
-                // *every* stream unrotated. The residue is one unrotatable row,
-                // not a revocation that did nothing.
-                if let Some(id) = to16(&row?) {
-                    streams.insert(id);
+                let raw = row?;
+                // A `BTreeSet`, because the same malformed blob can appear in
+                // all three queries and a user counting "streams I could not
+                // rotate" must not be told three.
+                match to16(&raw) {
+                    Some(id) => {
+                        streams.insert(id);
+                    }
+                    None => {
+                        unrotatable.insert(raw);
+                    }
                 }
             }
         }
-        Ok(streams.into_iter().collect())
+        Ok(RotationSet {
+            streams: streams.into_iter().collect(),
+            unrotatable: unrotatable.into_iter().collect(),
+        })
     }
 
     // ---- key envelopes ----
@@ -3440,9 +3496,16 @@ mod tests {
         let kc = open(&mut d, &root);
         let set = d.with_tx(|tx| kc.rotation_set(tx)).unwrap();
         assert_eq!(
-            set,
+            set.streams,
             vec![crate::engine::META_STREAM, INBOX_STREAM_BYTES],
             "a truncated stream id must not be padded into a stream of its own"
+        );
+        // ...and it is reported rather than dropped, because the stream it
+        // stands for is one a revocation did not rotate.
+        assert_eq!(
+            set.unrotatable,
+            vec![vec![0x00u8, 0x11]],
+            "the row that could not be rotated must reach the caller"
         );
 
         // A short `identity.identity_id` is fatal, and says which column.

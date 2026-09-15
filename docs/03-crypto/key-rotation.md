@@ -35,6 +35,8 @@ Three key types rotate, each with a different cost and cascade. Throughout this 
 
   What no rotation can do, however complete: take back what the device already had. Revocation is forward-only.
 
+  * *The rotation can also be **incomplete**, and says so when it is.* `Keychain::rotation_set` builds the set from the `stream_id` columns of `stream_keys`, `streams` and `ops`, and a column that is not 16 bytes names no stream to mint an epoch for. Such a row is not padded out — that would file a key against the vault-meta stream — and it is no longer dropped in silence either, because the revoked device goes on holding whatever key it was last given for whatever the row refers to. `Command::RevokeDevice` rotates what it can and returns the rest on `CommandResult::unrotated_streams`; it also emits `core.device.revoke_incomplete`. A client must disclose a non-empty list rather than print "revoked", which is the same rule the relay half already follows ([#160](https://github.com/justin13888/Sunrise/issues/160)). Failing the whole revocation instead would be worse: the device that is gone is the entire scenario.
+
 * **§Identity rotation**, in full, and it is what makes revocation stick
   ([ADR-0037](../11-adr/0037-identity-transition.md)). The account identity is
   an append-only **chain** folded from `identity.genesis_identity_id`;

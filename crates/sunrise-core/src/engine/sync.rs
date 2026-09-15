@@ -12,7 +12,7 @@
 //! yet, and only then what the op says.
 
 use super::identity::{MAX_ROSTER_ENTRIES, MAX_SIBLINGS_PER_PREDECESSOR};
-use super::ids::hex_short;
+use super::ids::{hex_bytes, hex_short};
 use super::lww::{materialize_remote, remap_legacy_inbox, LwwStamp};
 use super::oplog::{record_envelope_recipient, remote_op_id, upsert_sync_cursor};
 use super::{
@@ -105,6 +105,10 @@ impl Engine {
         // `UNIQUE(stream_id, device_id, seq)`. That is the bug `60ee61d`
         // fixed for `emit_control_op`, and this is the same shape.
         let mut seq = 0u64;
+        // Rows the rotation below could not reach. Hoisted out of the closure
+        // because it has to outlive the transaction and reach the caller: see
+        // `CommandResult::unrotated_streams`.
+        let mut unrotatable: Vec<Vec<u8>> = Vec::new();
         db.with_tx(|tx| -> rusqlite::Result<()> {
             let known: i64 = tx.query_row(
                 "SELECT count(*) FROM devices WHERE device_id = ?",
@@ -201,7 +205,15 @@ impl Engine {
             //        The exclusion is not cosmetic, because the identity copy
             //        emitted alongside is no longer openable by a device
             //        pairing admitted.
-            for stream_id in self.keychain.rotation_set(tx)? {
+            //        `rotation_set` returns two lists: the streams it can
+            //        rotate and the rows it cannot. The second is not dropped
+            //        here — a row with a malformed `stream_id` is a stream the
+            //        revoked device goes on reading, and returning success over
+            //        it is the shape this whole path exists to refuse. It is
+            //        carried out to the caller instead.
+            let set = self.keychain.rotation_set(tx)?;
+            unrotatable = set.unrotatable;
+            for stream_id in set.streams {
                 let (epoch, key) =
                     self.keychain
                         .mint_epoch(tx, &stream_id, self.rng.as_ref(), now_ms)?;
@@ -251,7 +263,24 @@ impl Engine {
             );
         }
 
-        Ok(CommandResult::new(device_id, None, op_id, seq))
+        // The disclosure. A caller that printed "revoked" over a non-empty
+        // list would be telling a user their stolen laptop had been cut off
+        // from streams it can still read, which is the same disclosure failure
+        // issue #160 fixed for the relay half.
+        let unrotated_streams: Vec<String> = unrotatable.iter().map(|b| hex_bytes(b)).collect();
+        if !unrotated_streams.is_empty() {
+            tracing::warn!(
+                ev = "core.device.revoke_incomplete",
+                subject_h = hex_short(&revoked),
+                n_streams = unrotated_streams.len(),
+                "a revocation could not rotate every stream: these rows name a stream id \
+                 that is not 16 bytes, so there was no epoch to mint, and the revoked \
+                 device still holds whatever key it was last given for them"
+            );
+        }
+
+        Ok(CommandResult::new(device_id, None, op_id, seq)
+            .with_unrotated_streams(unrotated_streams))
     }
 
     /// Mint a new epoch for one Stream and distribute it.

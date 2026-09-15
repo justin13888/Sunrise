@@ -7616,6 +7616,103 @@ fn a_transition_carrying_another_transitions_signatures_is_not_stored() {
     );
 }
 
+/// A revocation that cannot rotate every stream succeeds **and says which it
+/// could not**.
+///
+/// `rotation_set` drops a `stream_id` column that is not 16 bytes, because
+/// there is genuinely no stream to mint an epoch for and padding one out would
+/// file a stranger's key against the vault-meta stream. What was wrong is that
+/// it dropped it *silently*: the revoked device goes on holding whatever key it
+/// was last given for that row, and `revoke_device` returned a plain success.
+///
+/// Raising is not the alternative — the device being revoked is often the one
+/// that is gone, so failing the whole operation is the worse answer. The third
+/// option is the one issue #160 already took one level up for the relay half:
+/// succeed partially and disclose it.
+///
+/// So this asserts both halves, and the first is what stops it from passing
+/// against a build that simply refuses the revocation.
+#[test]
+fn a_revocation_that_cannot_rotate_every_stream_says_which_it_could_not() {
+    let ea = engine_random_keys(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eb = engine_random_keys(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut dba = db_root(ROOT);
+    trust(&ea, &mut dba, &eb);
+    let b_id = eb.keychain.device_id();
+
+    // A real stream with a real key, then its id truncated in place. The row
+    // survives, names nothing, and is what the rotation cannot reach.
+    let doomed = [0x4du8; 16];
+    dba.with_tx(|tx| {
+        ea.keychain.mint_epoch(tx, &doomed, &SystemRng, T0)?;
+        Ok(())
+    })
+    .expect("mint the stream that is about to be corrupted");
+    dba.conn()
+        .execute(
+            "UPDATE stream_keys SET stream_id = X'00aabb' WHERE stream_id = ?",
+            params![&doomed[..]],
+        )
+        .unwrap();
+
+    let before = meta_epoch_now(&dba);
+    let out = ea
+        .apply(
+            &mut dba,
+            Command::RevokeDevice {
+                device_id: EntityRef::new(EntityKind::Device, b_id),
+                reason: RevokeReason::Stolen,
+            },
+        )
+        .expect("the revocation must still succeed: the device that is gone is the scenario");
+
+    // Half one: the rest of the revocation really happened.
+    assert!(
+        meta_epoch_now(&dba) > before,
+        "the vault-meta stream was not rotated, so this is not a partial success \
+         but a failure wearing one"
+    );
+
+    // Half two: and it is not quiet about the row it could not reach.
+    assert_eq!(
+        out.unrotated_streams,
+        vec!["00aabb".to_string()],
+        "the revocation reported success without naming the stream it could not \
+         rotate, which the revoked device can still read"
+    );
+}
+
+/// The vault-meta stream's live epoch, as a revocation moves it.
+fn meta_epoch_now(db: &Db) -> i64 {
+    db.conn()
+        .query_row(
+            "SELECT COALESCE(MAX(epoch), 0) FROM stream_keys WHERE stream_id = ?",
+            params![&META_STREAM[..]],
+            |r| r.get(0),
+        )
+        .unwrap()
+}
+
+/// A revocation with nothing wrong reports nothing, so the field above is a
+/// signal rather than noise every caller learns to ignore.
+#[test]
+fn an_ordinary_revocation_reports_no_unrotated_streams() {
+    let ea = engine_random_keys(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eb = engine_random_keys(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut dba = db_root(ROOT);
+    trust(&ea, &mut dba, &eb);
+    let out = ea
+        .apply(
+            &mut dba,
+            Command::RevokeDevice {
+                device_id: EntityRef::new(EntityKind::Device, eb.keychain.device_id()),
+                reason: RevokeReason::Lost,
+            },
+        )
+        .expect("revoke");
+    assert!(out.unrotated_streams.is_empty());
+}
+
 /// The epoch separation the ordering argument rests on, asserted against the
 /// **production** path rather than against hand-chosen epochs.
 ///
