@@ -488,7 +488,17 @@ jobs:
           # before it measured a single mutant.
           mkdir -p out/mutants
           rc=0
+          # `--all-features` for the reason mise.toml's `mutants` task spells
+          # out at length: cargo-mutants mutates the source file, cargo decides
+          # whether that file is compiled, and a module behind a non-default
+          # feature is mutated, not built, and then scored MISSED. That reads
+          # in outcomes.json exactly like a mutant the tests failed to kill.
+          # Without this flag every one of `sunrise-sync`'s 94 `src/sse.rs`
+          # mutants missed — 94 of 94 — and this job reported it as the crate's
+          # coverage. The two must stay in step; a matrix that measures
+          # something the local task does not is a floor nobody can reproduce.
           cargo mutants -p ${{ matrix.crate }} \
+            --all-features \
             --jobs 1 --shard ${{ matrix.shard }} \
             --output out/mutants || rc=$?
           case "$rc" in

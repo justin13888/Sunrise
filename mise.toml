@@ -898,7 +898,35 @@ mkdir -p "out/mutants/$slug"
 # needed it. Coverage is the gate's verdict, not this task's; any other exit
 # code is a real failure and is re-raised.
 rc=0
-cargo mutants -p "$usage_crate" --jobs 1 $shard_arg --output "out/mutants/$slug" || rc=$?
+# `--all-features`, and this line is the other one to read before changing it.
+#
+# cargo-mutants mutates the *source file*; cargo decides whether that file is
+# compiled. A module behind a non-default feature is mutated and then not
+# built, so the mutant changes nothing, the suite passes, and it is scored
+# MISSED — indistinguishable in the outcomes from a mutant a real test failed
+# to kill. That is not a coverage measurement at all: it is the feature flag
+# being reported as a test gap.
+#
+# Measured on this workspace at `1d4b484`, `sunrise-sync` without this flag:
+# **all 94 of its `src/sse.rs` mutants missed, 94 of 94**, while the crate's
+# own ten `sse` tests — including the one asserting every transport operation
+# carries a device binding — never compiled. Same tree, same 135-mutant
+# population, the flag the only difference:
+#
+#   without  26 caught, 104 missed, 1 timeout,  4 unviable  -> 19.85%
+#   with     45 caught,  76 missed, 1 timeout, 13 unviable  -> 36.89%
+#
+# The 17 points between those two lines were never a property of the tests.
+# See #193.
+#
+# Unconditional rather than a flag, because the failure it prevents is silent.
+# `sunrise-sync`'s `sse` is the only feature any of the four scoped crates has
+# today, so this is a no-op for the other three — and it stays a no-op until
+# someone adds a feature-gated module, which is exactly the moment the old
+# behaviour would have started under-reporting again with nothing to say so.
+# If a crate ever gains mutually exclusive features this fails the build
+# loudly, which is the right direction to fail in.
+cargo mutants -p "$usage_crate" --all-features --jobs 1 $shard_arg --output "out/mutants/$slug" || rc=$?
 case "$rc" in
   0 | 2 | 3) ;;
   *) exit "$rc" ;;

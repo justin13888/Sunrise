@@ -196,21 +196,71 @@ the four either — the argument goes straight to `-p` — so
 `mise run mutants sunrise-storage` mutates an unscoped crate and the gate fails
 that run the same way.
 
+### Features
+
+**Every mutation run passes `--all-features`, and a run that does not is not a
+coverage measurement.**
+
+cargo-mutants mutates the *source file*. cargo decides whether that file is
+compiled. A module behind a non-default feature is therefore mutated and then
+not built: the mutant changes nothing, the suite passes, and the mutant is
+recorded MISSED — which in `outcomes.json` is the same value a mutant gets when
+a test genuinely failed to kill it. The two are indistinguishable downstream,
+so the gate scores the feature flag as though it were a test gap.
+
+This was not hypothetical. `sunrise-sync` puts its SSE + POST client transport
+behind a non-default `sse` feature, and neither `mise run mutants` nor `ci.yml`
+enabled it. At `1d4b484`, on one tree and one 135-mutant population, with the
+flag the only difference:
+
+| | caught | missed | timeout | unviable | caught_pct |
+|---|---:|---:|---:|---:|---:|
+| without `--all-features` | 26 | 104 | 1 | 4 | 19.85% |
+| with `--all-features` | 45 | 76 | 1 | 13 | 36.89% |
+
+All 94 of `src/sse.rs`'s mutants missed — 94 of 94 — while the crate's own ten
+`sse` tests, including the one asserting that every transport operation carries
+a device binding, never compiled. Seventeen points of the crate's score were a
+build configuration, and #193 read them as untested security code.
+
+Why it went unnoticed for so long is worth keeping, because it is the part that
+generalises. `cargo test --workspace` compiles `src/sse.rs` and runs all ten of
+those tests — `sunrise-cli`, `sunrise-e2e`, `sunrise-bench` and
+`sunrise-core-bindings` each depend on `sunrise-sync` with `features = ["sse"]`,
+and Cargo unifies features across a workspace build. cargo-mutants does not do a
+workspace build: it builds `-p sunrise-sync` alone, where nothing asks for the
+feature and the default is off. So the ordinary suite and the mutation run
+disagreed about which files existed, and only the mutation run was wrong.
+
+`sunrise-sync`'s `sse` is the only feature any of the four scoped crates has
+today, so the flag is a no-op for the other three. It is passed unconditionally
+anyway, because the failure it prevents is silent: the next feature-gated module
+would otherwise start under-reporting with nothing to say so.
+
 ### Cost, measured
 
 | Crate | mutants | `cargo test -p`, rebuilt |
 |---|---:|---:|
-| `sunrise-domain` | 1 349 | 4.9 s |
-| `sunrise-core` | 982 | 14.0 s |
-| `sunrise-crypto` | 349 | 2.7 s |
-| `sunrise-sync` | 97 | 1.2 s |
+| `sunrise-domain` | 1 356 | 4.9 s |
+| `sunrise-core` | 1 259 | 14.0 s |
+| `sunrise-crypto` | 519 | 2.7 s |
+| `sunrise-sync` | 135 | 1.2 s |
 
 Both columns are reproducible, and the left one is cheap enough that there is no
 excuse for it being wrong:
 
 ```
-cargo mutants --list -p <crate> | wc -l
+cargo mutants --list -p <crate> --all-features | wc -l
 ```
+
+The left column was re-taken at `1d4b484`; it had drifted on every row, by 28%
+on `sunrise-core`, which had just gained `src/blob_fetch.rs`. The right column
+is the original measurement and was **not** re-taken with it — the two columns
+are from different commits, and the right one is a cost estimate rather than a
+number anything checks.
+
+`--all-features` matters and is not decoration: see "Features" below. It makes
+no difference to three of these four crates, which have no features at all.
 
 `--list` parses the crate and prints one line per mutant **without building
 anything**, so all four counts take seconds. The right column is
