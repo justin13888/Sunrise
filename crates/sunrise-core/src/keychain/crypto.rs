@@ -264,6 +264,55 @@ mod tests {
     const ID: [u8; 16] = [0x11; 16];
     const DEVICE: [u8; 16] = [0x11; 16];
 
+    /// The four AADs, anchored to frozen literals.
+    ///
+    /// [`each_wrapped_secret_has_its_own_domain`] above proves the four differ
+    /// from *each other*, which is a property this file can satisfy while
+    /// every one of them has drifted away from what is on disk. An AAD is not
+    /// stored beside the ciphertext it authenticates, so a build that renamed
+    /// a prefix — or swapped `prefix || id` for `id || prefix` — wraps and
+    /// unwraps its own vault perfectly and cannot open anybody else's.
+    ///
+    /// The expectations are literals in `sunrise-crypto-test-vectors`, a crate
+    /// with no dependencies at all, so a coordinated edit to a constant here
+    /// and to the test beside it cannot pass.
+    ///
+    /// `WRAPPED_SECRET_LEN` is asserted here for the same reason and in the
+    /// same place: it is the length of every `local_identity` and `identity`
+    /// blob ever written, [`unwrap_secret`] refuses anything else, and nothing
+    /// else in the tree wrote the number down.
+    #[test]
+    fn the_wrapped_secret_aads_are_byte_exact() {
+        use sunrise_crypto_test_vectors::at_rest::keychain_aad as k;
+
+        assert_eq!(
+            device_aad(&k::DEVICE_ID),
+            k::DEVICE_SIGNING,
+            "the sunrise.local_identity.v1 AAD drifted"
+        );
+        assert_eq!(
+            device_dh_aad(&k::DEVICE_ID),
+            k::DEVICE_DH,
+            "the sunrise.local_identity.dh.v1 AAD drifted"
+        );
+        assert_eq!(
+            identity_signing_aad(&k::IDENTITY_ID),
+            k::IDENTITY_SIGNING,
+            "the sunrise.local_identity.identity.sign.v2 AAD drifted"
+        );
+        assert_eq!(
+            identity_dh_aad(&k::IDENTITY_ID),
+            k::IDENTITY_DH,
+            "the sunrise.local_identity.identity.dh.v2 AAD drifted"
+        );
+        assert_eq!(
+            WRAPPED_SECRET_LEN,
+            k::WRAPPED_SECRET_LEN,
+            "WRAPPED_SECRET_LEN moved away from the length every wrapped \
+             secret on disk already has"
+        );
+    }
+
     /// The rule this module's header states, asserted rather than described.
     ///
     /// `device_id` and `identity_id` are both 16 bytes, so the id half of the

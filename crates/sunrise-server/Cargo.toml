@@ -68,3 +68,4 @@ futures-util = { workspace = true }
 http-body-util = { workspace = true }
 tempfile = "3"
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+sunrise-crypto-test-vectors = { workspace = true }

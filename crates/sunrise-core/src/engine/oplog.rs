@@ -703,3 +703,33 @@ pub(super) fn upsert_sync_cursor(
     )?;
     Ok(())
 }
+
+#[cfg(test)]
+mod frozen_domain {
+    use sunrise_crypto_test_vectors::at_rest::REMOTE_OP_ID_VECTORS;
+
+    /// `sunrise.remote_op_id.v1`, anchored to frozen literals.
+    ///
+    /// Two replicas have to assign a received op the same op-log primary key
+    /// without ever exchanging it — that agreement is what makes
+    /// `UNIQUE(stream, device, seq)` idempotent *across* devices rather than
+    /// only within one. The derivation is never transmitted, so a build that
+    /// spelled the context differently, or ordered the three inputs
+    /// differently, would store every peer's op under an id no peer agrees
+    /// with and notice nothing.
+    ///
+    /// The expectations are literals in `sunrise-crypto-test-vectors`, which
+    /// depends on nothing, so a rename here cannot be absorbed by editing the
+    /// test.
+    #[test]
+    fn remote_op_id_vectors_hold() {
+        for v in REMOTE_OP_ID_VECTORS {
+            assert_eq!(
+                super::remote_op_id(&v.stream_id, &v.device_id, v.seq),
+                v.op_id,
+                "the sunrise.remote_op_id.v1 derivation drifted at seq {}",
+                v.seq
+            );
+        }
+    }
+}

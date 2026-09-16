@@ -16,10 +16,35 @@
 //! **These values MUST NOT change.** A change is a crypto-suite version bump
 //! per `docs/03-crypto/key-rotation.md`, not a test fix. Regenerate only
 //! alongside a new suite id.
+//!
+//! # What lives where
+//!
+//! This file holds the vectors `sunrise-crypto` asserts against its own
+//! primitives: the two id derivations, `BLAKE3.derive_key`, the stream-root
+//! chain, the two whole envelopes, the HPKE key envelope, and the blob chunk.
+//!
+//! Three sibling modules hold the rest of the freeze, split by who has to
+//! agree with whom rather than by which crate owns the code:
+//!
+//! - [`identity_transition`] — the cert and rotation family, asserted by
+//!   `sunrise-crypto`.
+//! - [`at_rest`] — what a vault holds on disk, asserted by `sunrise-crypto`
+//!   and `sunrise-core`.
+//! - [`protocol`] — values two parties derive without transmitting the rule,
+//!   asserted by `sunrise-pairing`, `sunrise-http-sig`, `sunrise-domain` and
+//!   `sunrise-server`.
+//!
+//! Every production domain-separation constant in `crates/` is anchored by
+//! one of them or named as residue in `docs/03-crypto/key-rotation.md`
+//! §What the format freeze covers.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 #![allow(clippy::doc_markdown)]
+
+pub mod at_rest;
+pub mod identity_transition;
+pub mod protocol;
 
 /// Decode a lowercase hex literal into a fixed-size byte array at compile
 /// time. A length or digit mistake in a frozen vector is a compile error.
@@ -73,6 +98,41 @@ pub const IDENTITY_ID_VECTORS: [IdentityIdVector; 4] = [
     IdentityIdVector {
         id_s_pub: DEVICE_SIGNING_PUBLIC,
         identity_id: hex("88976dc38fa242d7c9e3fc58988f560d"),
+    },
+];
+
+/// One `device_id_from_pub` vector.
+///
+/// `device_id = BLAKE3.derive_key("sunrise.device_id.v1", D_S_pub, 16)` per
+/// `docs/03-crypto/identity-and-device-keys.md`.
+///
+/// Frozen for the same reason the identity id is, and with one extra edge: the
+/// derivation is spelled out twice in the tree — `sunrise_crypto::device_id_from_pub`
+/// and `sunrise_core::keychain::device::device_id_from_pub` — and the two are
+/// asserted against this one vector separately, because anchoring either says
+/// nothing about the other.
+#[derive(Debug, Clone, Copy)]
+pub struct DeviceIdVector {
+    /// 32-byte Ed25519 device signing public key (`D_S_pub`).
+    pub d_s_pub: [u8; 32],
+    /// Expected 16-byte device id.
+    pub device_id: [u8; 16],
+}
+
+/// Device-id derivation vectors: two edge inputs and one real Ed25519 public
+/// key ([`DEVICE_SIGNING_PUBLIC`]).
+pub const DEVICE_ID_VECTORS: [DeviceIdVector; 3] = [
+    DeviceIdVector {
+        d_s_pub: [0x00; 32],
+        device_id: hex("56794ff25077f543576fde4a3dd93942"),
+    },
+    DeviceIdVector {
+        d_s_pub: [0xff; 32],
+        device_id: hex("67c63599f3aac10c8b48b2bc4cd86988"),
+    },
+    DeviceIdVector {
+        d_s_pub: DEVICE_SIGNING_PUBLIC,
+        device_id: hex("bd7a2df3f45482e111edeee969e0168e"),
     },
 ];
 

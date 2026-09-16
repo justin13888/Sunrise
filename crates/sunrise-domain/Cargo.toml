@@ -27,3 +27,4 @@ sunrise-id = { workspace = true }
 proptest = { workspace = true }
 sunrise-test-seed = { workspace = true }
 serde_json = { workspace = true }
+sunrise-crypto-test-vectors = { workspace = true }

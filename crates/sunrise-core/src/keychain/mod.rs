@@ -119,12 +119,19 @@
 //!   structs they load into.
 //! - `device` — minting this device's id, its two keypairs and its cert.
 //! - `legacy` — the pre-ADR-0024 adoption path, deleted whole at 1.0.
+//! - `fixture` — test-only: the committed vault this build must still open,
+//!   and the `#[ignore]`d generator that writes it.
 //!
 //! `to16` and `to32` stay here: `to16` is the crate's blob-to-id decoder
 //! and `core` and `engine` reach it as `crate::keychain::to16`.
 
 mod crypto;
 mod device;
+/// One real vault, sealed by this build and committed, that the keychain must
+/// open. Test-only, and a module inside the crate rather than a file under
+/// `tests/` because the AAD builders it asserts against are `pub(super)`.
+#[cfg(test)]
+mod fixture;
 mod legacy;
 mod rows;
 
@@ -4953,6 +4960,63 @@ mod tests {
                 .unwrap();
         assert_eq!(reopened.created_at_ms, created_at);
         assert_eq!(reopened.id_d_pub, founder.identity_dh_pub());
+    }
+
+    /// `sunrise.meta_genesis_key.v1`, anchored to a frozen literal.
+    ///
+    /// The test below proves two vaults *agree* with each other, which is a
+    /// property they keep while both have drifted away from what every vault
+    /// already written holds. This one pins the bytes: the derivation is the
+    /// one Stream key in the hierarchy that is computed rather than drawn, and
+    /// it is computed from a secret and an id that never travel together, so
+    /// nothing on the wire or on disk would reveal that a build derives it
+    /// differently. A device restored from the recovery code would simply read
+    /// nothing, for ever, while looking healthy — because every `key_envelope`
+    /// op lives in the stream this key opens.
+    ///
+    /// The expectation is a literal in `sunrise-crypto-test-vectors`, a crate
+    /// with no dependencies, so renaming [`META_GENESIS_CONTEXT`] cannot be
+    /// absorbed by editing the assertion beside it.
+    #[test]
+    fn the_vault_meta_genesis_key_is_byte_exact() {
+        use sunrise_crypto_test_vectors::at_rest::meta_genesis as m;
+
+        let root = VaultRootKey::from_bytes([0x7a; 32]);
+        let mut d = db(&root);
+        let id_s = IdentitySigningKeyPair::from_secret_bytes(&m::ID_S_PRIV);
+        let id_d = IdentityDhKeyPair::from_secret_bytes(m::ID_D_PRIV);
+        let payload = sunrise_crypto::recovery::RecoveryPayload {
+            id_s_priv: m::ID_S_PRIV,
+            id_d_priv: m::ID_D_PRIV,
+            id_s_pub: id_s.public_bytes(),
+            id_d_pub: id_d.public_bytes(),
+            identity_id: identity_id_from_pub(&id_s.public_bytes()),
+            created_at_ms: 1_700_000_000_000,
+        };
+        assert_eq!(
+            payload.identity_id,
+            m::IDENTITY_ID,
+            "the frozen identity id is not the one this seed derives"
+        );
+
+        let kc = Keychain::open(
+            &mut d,
+            root,
+            &clock(),
+            &SystemRng,
+            &IdentitySeed::Recovered(Box::new(payload)),
+        )
+        .expect("open a recovered vault");
+
+        let key = kc
+            .meta_genesis_key(&m::META_STREAM, m::GENESIS_EPOCH)
+            .expect("a recovered vault holds ID_D_priv and derives the key");
+        assert_eq!(
+            key.as_bytes(),
+            &m::KEY,
+            "the sunrise.meta_genesis_key.v1 derivation drifted — every vault \
+             restored from a recovery code would read nothing"
+        );
     }
 
     /// The cycle [`Keychain::meta_genesis_key`] exists to break, asserted as

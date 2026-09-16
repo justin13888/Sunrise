@@ -108,3 +108,35 @@ pub(super) fn legacy_cert_labels(cert_blob: &[u8]) -> (String, String) {
         |cert| (cert.body.nickname, cert.body.platform),
     )
 }
+
+#[cfg(test)]
+mod frozen_domain {
+    use super::*;
+    use sunrise_crypto_test_vectors::at_rest::{LEGACY_STREAM_KEY_VECTORS, LEGACY_VAULT_ROOT};
+
+    /// `sunrise.stream_key.v1`, anchored to frozen literals.
+    ///
+    /// `sunrise-crypto-test-vectors`'s `KDF_VECTORS` already freezes
+    /// `derive_key` under this context — but it does so against a context
+    /// string spelled out *in the vector*, which says nothing about whether
+    /// the adoption path still uses that spelling. This goes through
+    /// [`legacy_derived_stream_key`] itself, which is the difference between
+    /// pinning a string and anchoring a constant.
+    ///
+    /// What is at stake is a pre-ADR-0024 vault: every op in it is sealed
+    /// under a key only this derivation can recompute, and there is no second
+    /// copy anywhere. A drift here does not fail an adoption — it adopts the
+    /// vault and silently reads none of its history.
+    #[test]
+    fn the_legacy_derivation_is_byte_exact() {
+        let root = VaultRootKey::from_bytes(LEGACY_VAULT_ROOT);
+        for v in LEGACY_STREAM_KEY_VECTORS {
+            assert_eq!(
+                legacy_derived_stream_key(&root, &v.stream_id, v.epoch).as_bytes(),
+                &v.key,
+                "the sunrise.stream_key.v1 legacy derivation drifted at epoch {}",
+                v.epoch
+            );
+        }
+    }
+}

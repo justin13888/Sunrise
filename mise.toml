@@ -199,6 +199,28 @@ echo "rewritten: crates/sunrise-storage/fixtures/"
 git status --short crates/sunrise-storage/fixtures/
 """
 
+[tasks.keychain-fixture]
+description = "Rewrite the committed vault under crates/sunrise-core/fixtures/ that the keychain must open"
+shell = "bash -c"
+# Same shape as `storage-fixtures` and for the same reason: the generator is an
+# `#[ignore]`d test rather than a binary, so the file and the assertions about
+# it are one piece of code reading one set of constants.
+#
+# This one is rarer still. The fixture is a vault sealed by the current crypto
+# suite, and the only legitimate reason to rewrite it is a deliberate
+# `CRYPTO_SUITE_V` bump landing with a rotation plan — at which point it is
+# renamed to the new suite version rather than replaced in place. Regenerating
+# it to turn `the_committed_vault_opens_and_its_keys_are_the_frozen_ones` green
+# is exactly the failure it exists to catch.
+run = """
+set -euo pipefail
+cargo test -p sunrise-core --lib \
+  keychain::fixture::regenerate_the_keychain_vault_fixture -- --ignored --exact
+echo
+echo "rewritten: crates/sunrise-core/fixtures/"
+git status --short crates/sunrise-core/fixtures/
+"""
+
 [tasks.rust-doctest]
 description = "Run the workspace doc tests (CI's doc gate, verbatim)"
 # `--all-targets` above silently excludes doc tests, so this is the only local
