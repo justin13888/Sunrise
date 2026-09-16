@@ -309,3 +309,34 @@ fn frame_heads(batch: &OpBatchPayload) -> Vec<FrameHead> {
     out.sort_by_key(|h| h.device_id);
     out
 }
+
+#[cfg(test)]
+mod frozen_domain {
+    use sunrise_crypto_test_vectors::protocol::relay_batch;
+
+    /// `sunrise.relay.batch.v1`, anchored to a frozen literal.
+    ///
+    /// The relay dedups a retried publish on this hash and on nothing else
+    /// (ADR-0033), and the hash is computed on the server from bytes the client
+    /// sent — the rule itself never travels. A build whose hash moved would
+    /// read a retry as a new batch and append every op twice, while the client
+    /// reported success both times.
+    ///
+    /// The expectation is a literal in `sunrise-crypto-test-vectors`, a crate
+    /// with no dependencies, so renaming the domain string here cannot be made
+    /// to pass by editing the test beside it.
+    #[test]
+    fn the_batch_dedup_hash_is_byte_exact() {
+        let ops = vec![relay_batch::OP_ONE.to_vec(), relay_batch::OP_TWO.to_vec()];
+        assert_eq!(
+            super::batch_ops_hash(&ops),
+            Some(relay_batch::HASH),
+            "the sunrise.relay.batch.v1 dedup key drifted — every in-flight \
+             retry would be read as a new batch"
+        );
+        assert!(
+            super::batch_ops_hash(&[]).is_none(),
+            "an empty batch has no content to be the same as"
+        );
+    }
+}

@@ -26,3 +26,4 @@ thiserror = { workspace = true }
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
 rand = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
+sunrise-crypto-test-vectors = { workspace = true }

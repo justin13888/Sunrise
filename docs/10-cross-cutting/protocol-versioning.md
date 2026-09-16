@@ -263,7 +263,7 @@ The pair `(doc_schema_floor, client.doc_schema_max)` defines the fence:
 
 `CRYPTO_SUITE_V` is the most conservative surface.
 
-- A new suite means new `aead_alg` / `sig_alg` / `kdf_alg` ids in the op envelope (see [03-crypto/data-encryption-format.md](../03-crypto/data-encryption-format.md)).
+- A new suite means new `aead_alg` / `sig_alg` / `kdf_alg` ids in the op envelope (see [03-crypto/data-encryption-format.md](../03-crypto/data-encryption-format.md)). It also means *any* change to a domain-separation string, an AAD prefix, a KDF context or a wrapped-blob length — none of which travels, so none of which any negotiation could catch. [03-crypto/key-rotation.md](../03-crypto/key-rotation.md) §What the format freeze covers lists which of those are pinned by a frozen vector or by the committed keychain vault, and which are still residue.
 - Suite migration is **per-Stream** via key-rotation epoch (see [03-crypto/key-rotation.md](../03-crypto/key-rotation.md)). A client that supports both suites can read both; rotation re-encrypts new ops under the new suite while old ops remain readable until compaction GCs them.
 - Suite deprecation requires:
   - All Streams the user owns have rotated past the old suite (client surfaces the list).
@@ -363,6 +363,8 @@ The crypto spec describes byte-exact test vectors. This spec adds:
   CBOR, not the JSON this section originally named: the artefact under test is a signed, canonically encoded envelope, and JSON cannot represent one without a re-encoding step that would be the thing actually being tested.
 
 These fixtures are checked into the repo. Any change to them must be a deliberate version bump — which is why regeneration sits behind `SUNRISE_REGEN_FIXTURES=1` rather than happening automatically.
+
+Two more committed binaries sit outside this list and follow the same rule under their own switches: `sunrise-storage`'s old-vault fixtures (`mise run storage-fixtures`), which pin the migration chain, and `sunrise-core`'s keychain vault (`mise run keychain-fixture`), which pins the key hierarchy's wrapping domains. The second is regenerated only for a `CRYPTO_SUITE_V` bump; see [03-crypto/key-rotation.md](../03-crypto/key-rotation.md) §The vault that has to open.
 
 Three of them are built from the live constants and therefore move with a
 version bump *by construction*: `hello/*.cbor` and the `version-mismatch`

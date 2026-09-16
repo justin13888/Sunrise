@@ -397,6 +397,70 @@ A revoked device that never reconnects retains whatever plaintext it had at the 
 
 So the guarantee a user's device may promise is: **once this replica knows about the revocation, the revoked device reads nothing written afterwards.** Not that it stops writing, and not that what it wrote before the revocation reached everyone is rolled back. The decision, its rejected alternatives and what would reopen it are [ADR-0034](../11-adr/0034-revocation-bounds-reads-not-writes.md).
 
+## What the format freeze covers
+
+Every value in this document is a **format**, not an implementation detail. A domain-separation string, an AAD prefix, a KDF context and a wrapped-blob length are all the same kind of thing: they are never transmitted and never stored beside what they protect, so a build that spells one differently seals and opens its own data perfectly and nobody else's. Nothing on the wire, on disk or in a log would say so. The user finds out when a second device, a restored recovery code, or the next release cannot read the vault.
+
+That class of change is a **crypto-suite version bump** — a `CRYPTO_SUITE_V` increment landing with a rotation plan — and never a test fix.
+
+### How a constant is anchored
+
+`crates/sunrise-crypto-test-vectors` has **no dependencies at all**. Every value in it is a literal, produced once by running the implementation and then written down. A vector can therefore only agree with the implementation if the implementation still produces the same bytes, and a coordinated edit to a constant *and* to the test beside it cannot pass, because the expectation lives in a different crate and does not move.
+
+Two things are deliberately not done:
+
+- **No vector is computed.** An assertion that called the code under test to produce the value it then checks would prove nothing. That is the exact failure the audit found in the "legacy vault" tests, which wrapped their secrets in-process with the same AAD they then unwrapped with.
+- **No vector is asserted only by a round trip.** A seal-then-open test is self-consistent by construction for every constant that is not transmitted, which is all of them.
+
+### What is pinned
+
+| Constant | Anchored by |
+|---|---|
+| `sunrise.identity_id.v1` | `IDENTITY_ID_VECTORS`, and the committed keychain vault |
+| `sunrise.device_id.v1` | `DEVICE_ID_VECTORS`, asserted **twice** — the derivation is spelled out in `sunrise-crypto` and again in `sunrise-core`, and they are separate constants |
+| `sunrise.device_cert.v1` | a whole frozen cert: body bytes, signature, outer encoding, and a verification of the frozen bytes under the frozen identity |
+| `sunrise.identity_transition.v1`, `…succ.v1`, `sunrise.identity_roster.v1`, `sunrise.identity_shares.v1` | one canonical transition — frozen body CBOR, body hash and signature pair — plus the two digests as their own literals |
+| `sunrise.identity_share.v1`, `sunrise.identity_carry.v1` | the two HPKE `info` strings, byte for byte |
+| `sunrise.hpke.key_envelope.v1` | `key_envelope::INFO` and a frozen seal |
+| `sunrise.stream_root.init.v1`, `sunrise.stream_root.step.v1` | the frozen merkle chain |
+| `sunrise.op_envelope.v1` | the two whole-envelope vectors |
+| `sunrise.blob_chunk_nonce.v2` | the nonce vectors and a frozen sealed chunk |
+| `sunrise.stream_key_id.v1` | `KDF_VECTORS` and the truncation assertion |
+| `sunrise.wrap.stream_key.v1` | a frozen wrapped key that opens **only** at its own `(stream_id, epoch)`, and the committed keychain vault |
+| `sunrise.recovery_blob.v1` | a whole frozen blob, which also pins the magic prefix, the Argon2id parameters and the payload's CBOR field numbering |
+| `sunrise.local_identity.v1`, `…dh.v1`, `…identity.sign.v2`, `…identity.dh.v2` | the four AADs as literals, and the committed keychain vault |
+| `sunrise.meta_genesis_key.v1` | a frozen key, and the committed keychain vault |
+| `sunrise.sqlcipher_key.v1` | the committed keychain vault, and `sunrise-storage`'s committed old-vault fixtures |
+| `sunrise.stream_key.v1` (the pre-ADR-0024 derivation) | two frozen legacy keys, through `legacy_derived_stream_key` itself |
+| `sunrise.remote_op_id.v1` | three frozen op-log ids |
+| `sunrise.pair_sas.v1` | three frozen six-digit codes |
+| `sunrise.account_email_hash.v1` | three frozen bucket keys |
+| `sunrise-device-sig-v2` | the canonical string spelled out, and two frozen signatures that also verify |
+| `sunrise.import_block.v1` | three frozen Block ids |
+| `sunrise.routine_task.v1` | two frozen Task ids |
+| `sunrise.relay.batch.v1` | one frozen batch-dedup hash |
+| `sunrise.inbox` | the sentinel asserted as ASCII in `sunrise-domain` |
+| `sunrise.invalid` | the exported `UID` host, asserted in `sunrise-domain`'s round-trip test |
+| `WRAPPED_SECRET_LEN`, `WRAPPED_STREAM_KEY_LEN` | literals in the vectors crate, and the blob lengths in the committed vault |
+
+### The vault that has to open
+
+`crates/sunrise-core/fixtures/keychain_vault_suite_v5.db` is an encrypted `SQLCipher` vault sealed by this build and committed. `crates/sunrise-core/src/keychain/fixture.rs` copies it, opens it through the ordinary `Db::open` and `Keychain::open`, and asserts that every key that comes out is a literal written down elsewhere. Ten of the constants above are needed to get that far and none of them is in the file.
+
+It exists because the wrapping side of the hierarchy had no test that was not self-consistent: both "legacy vault" tests synthesise their vault in-process with the same `wrap_secret` and AAD builders they read it back with, and `sunrise-storage`'s fixtures go through a real `Db::open` but assert *rows* — their wrapped blobs are invented byte strings no keychain ever unwraps.
+
+Regenerate with `mise run keychain-fixture`, and only for a `CRYPTO_SUITE_V` bump — at which point the file is renamed to the new suite version rather than replaced. `crates/sunrise-core/fixtures/README.md` has the full rule. Regenerating it to turn a red test green is the one thing it exists to catch.
+
+### Residue: what is still not pinned
+
+Named rather than left to be discovered.
+
+- **The two `identity_transition` HPKE shares are frozen only as `info` strings, not as sealed blobs.** HPKE draws an ephemeral KEM key per seal, so a byte-exact vector needs a stated CSPRNG state. `key_envelope` has one; these two do not. The `info` literals are what a second implementation has to match, and they are the part that is not transmitted — but the blob layout `enc || ct || tag` is pinned only by `DEVICE_SHARE_LEN` and `IDENTITY_SHARE_LEN`, which are constants rather than literals.
+- **No committed *legacy* vault.** `sunrise.stream_key.v1` is anchored as a derivation, but the pre-ADR-0024 adoption path is still exercised only against a vault the test synthesises in-process. A fixture for it would have to be written by a build that no longer exists; the alternative — hand-assembling one — reintroduces the self-consistency the fixture is for.
+- **Most length constants are not literals.** `WRAPPED_SECRET_LEN` and `WRAPPED_STREAM_KEY_LEN` are, because nothing else wrote them down. `AEAD_NONCE_LEN`, `HPKE_ENC_LEN`, `HPKE_TAG_LEN`, `STREAM_KEY_ID_LEN`, `DEVICE_SHARE_LEN`, `IDENTITY_SHARE_LEN`, `RECOVERY_SALT_LEN`, `CHUNK_PLAINTEXT_LEN` and `SEALED_CHUNK_LEN` are not — each is either implied by a frozen blob's length or is a chunking-geometry choice with no stored witness. `CHUNK_PLAINTEXT_LEN` is the one worth naming on its own: it decides how a blob is split, two builds that disagree produce different chunk counts for one file, and no frozen vector covers a multi-chunk blob.
+- **Nothing pins these constants across languages.** The Apple clients call into the core through FFI and re-implement none of this, so there is no second implementation to disagree — which is also why there is no cross-language vector suite. If one is ever written, this table is the list it starts from.
+- **The suite version itself is not in most frozen bytes.** Only the two whole-envelope vectors carry a version field (field 12, the document schema). Every other vector here would survive a `CRYPTO_SUITE_V` bump that changed nothing, and would fail one that changed anything — which is the intended asymmetry, not a gap.
+
 ## What rotation does not do
 
 - It does not retroactively un-leak content. A revoked device keeps whatever plaintext it had on disk.

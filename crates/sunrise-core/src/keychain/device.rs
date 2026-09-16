@@ -190,3 +190,29 @@ pub(super) fn mint_own_device_keys(
         platform,
     })
 }
+
+#[cfg(test)]
+mod frozen_domain {
+    use sunrise_crypto_test_vectors::DEVICE_ID_VECTORS;
+
+    /// `sunrise.device_id.v1`, anchored to frozen literals — again.
+    ///
+    /// The derivation is spelled out twice in the tree:
+    /// `sunrise_crypto::device_id_from_pub` and [`super::device_id_from_pub`].
+    /// They are separate constants in separate crates, and
+    /// `sunrise-crypto/tests/frozen_domains.rs` anchoring the first says
+    /// nothing about the second — which matters here more than there, because
+    /// this copy is what every vault open recomputes and compares against the
+    /// stored `local_identity.device_id`. A drift makes every existing vault
+    /// fail `DeviceIdMismatch` at the door.
+    #[test]
+    fn device_id_vectors_hold() {
+        for v in DEVICE_ID_VECTORS {
+            assert_eq!(
+                super::device_id_from_pub(&v.d_s_pub),
+                v.device_id,
+                "the core's sunrise.device_id.v1 derivation drifted"
+            );
+        }
+    }
+}
