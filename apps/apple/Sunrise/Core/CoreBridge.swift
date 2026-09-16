@@ -128,6 +128,42 @@ actor CoreBridge {
         try core.attachmentIsLocal(attachment: attachment)
     }
 
+    /// Download one attachment's bytes on demand, whatever its size.
+    ///
+    /// What the Download button calls. Under the core's 10 MiB auto-fetch
+    /// threshold nothing needs this — the sync driver fetches those unasked —
+    /// and over it this is the only route to the bytes at all.
+    ///
+    /// Returns when they are here. It has no timeout by design, and cancelling
+    /// the Swift `Task` awaiting it will not stop it: a UniFFI async call
+    /// carries no cancellation across the seam, so the way to end one is
+    /// `cancelAttachmentFetch`.
+    ///
+    /// Throws `BindingError.AttachmentDownloadCancelled` when that happens,
+    /// which is the user's own decision rather than a failure to report.
+    func fetchAttachment(_ id: EntityRef) async throws {
+        try await core.fetchAttachment(id: id)
+    }
+
+    /// Stop a running download and mark the attachment partial.
+    ///
+    /// Synchronous and immediate: it releases the pending `fetchAttachment`
+    /// whether or not a relay is answering, which is the state a user is most
+    /// likely to be cancelling from. A no-op for an id with nothing
+    /// outstanding.
+    func cancelAttachmentFetch(_ id: EntityRef) throws {
+        try core.cancelAttachmentFetch(id: id)
+    }
+
+    /// This device's cache state for one attachment's bytes.
+    ///
+    /// Durable, so a row still reads `.partial` after a relaunch — which is
+    /// what makes it a cache state rather than a view state, and why the model
+    /// reads it back rather than remembering it.
+    func attachmentFetchState(_ id: EntityRef) throws -> AttachmentFetchState {
+        try core.attachmentFetchState(id: id)
+    }
+
     // MARK: - Recovery
 
     /// Whether this vault holds the account identity's unwrapping key.
