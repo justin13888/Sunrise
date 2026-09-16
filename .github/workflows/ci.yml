@@ -402,6 +402,27 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Reads the `rust` gate's entry rather than keeping one of its own.
+          # Same runner image and the same workflow-level `RUSTFLAGS`, so the
+          # same env hash — the segment these three and the `rust` job already
+          # agreed on, and the job id that `shared-key` substitutes for is the
+          # only one they differed in. Not a full key match: the `rust` gate
+          # also declares `workspaces: . + fuzz`, which folds `fuzz/`'s manifests
+          # into the trailing lock hash. rust-cache fixes its restore-key before
+          # that hash, so this is a prefix hit — master's newest `rust` entry —
+          # rather than an exact one, which is all this job needs.
+          shared-key: rust
+          # Reader, not writer. rust-cache skips saving whenever the restore
+          # was an exact key hit, so under one shared key the first job to
+          # finish decides the entry's contents until the next manifest change.
+          # This job must not be that job. The `rust` gate's
+          # `cargo test --workspace --all-targets` already compiles
+          # `sunrise-bench`'s criterion dependency graph, so there is nothing
+          # here to contribute — and this job is `continue-on-error`, so a
+          # cache shaped by a run that was allowed to fail is not one the gate
+          # should inherit.
+          save-if: false
       - name: cargo bench
         # `--benches` alone still includes the lib's unittest harness, which
         # rejects criterion flags; the crate opts its lib and bin out via
@@ -464,6 +485,27 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Reads the `rust` gate's entry rather than keeping one of its own.
+          # Same runner image and the same workflow-level `RUSTFLAGS`, so the
+          # same env hash — the segment these three and the `rust` job already
+          # agreed on, and the job id that `shared-key` substitutes for is the
+          # only one they differed in. Not a full key match: the `rust` gate
+          # also declares `workspaces: . + fuzz`, which folds `fuzz/`'s manifests
+          # into the trailing lock hash. rust-cache fixes its restore-key before
+          # that hash, so this is a prefix hit — master's newest `rust` entry —
+          # rather than an exact one, which is all this job needs.
+          shared-key: rust
+          # Reader, not writer, and here that settles two questions at once.
+          # rust-cache skips saving whenever the restore was an exact key hit,
+          # so under one shared key the first job to finish decides the entry's
+          # contents until the next manifest change — and cargo-mutants copies
+          # the tree into temporary directories and builds there, so a leg's
+          # `target/` at job end holds the baseline build and nothing else, the
+          # least representative snapshot of the thirteen. The other question is
+          # that there are thirteen legs: left saving, they would race for one
+          # immutable key, and twelve would upload ~700 MiB apiece to lose it.
+          save-if: false
       - name: Install cargo-mutants
         uses: taiki-e/install-action@v2
         with:
@@ -759,6 +801,26 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Reads the `rust` gate's entry rather than keeping one of its own.
+          # Same runner image and the same workflow-level `RUSTFLAGS`, so the
+          # same env hash — the segment these three and the `rust` job already
+          # agreed on, and the job id that `shared-key` substitutes for is the
+          # only one they differed in. Not a full key match: the `rust` gate
+          # also declares `workspaces: . + fuzz`, which folds `fuzz/`'s manifests
+          # into the trailing lock hash. rust-cache fixes its restore-key before
+          # that hash, so this is a prefix hit — master's newest `rust` entry —
+          # rather than an exact one, which is all this job needs.
+          shared-key: rust
+          # Reader, not writer. rust-cache skips saving whenever the restore
+          # was an exact key hit, so under one shared key the first job to
+          # finish decides the entry's contents until the next manifest change.
+          # This job must not be that job: it builds only `sunrise-server` and
+          # finishes in under a minute warm, so an entry shaped by it would be
+          # a poor inheritance for the `--workspace --all-targets` build that
+          # fills it — that is the 36-53s-versus-4m17s spread noted above,
+          # seen from the other side.
+          save-if: false
       - name: Reject a description that has drifted from its handlers
         # `schemas/generated/openapi.v1.json` is an *input*: `spargen` generates the relay
         # client from it. A stale one yields a client that disagrees with the
@@ -1130,6 +1192,17 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: fuzz
+          # `fuzz` is the literal job id, which is what rust-cache uses when no
+          # `shared-key` is given — so naming it preserves the existing entry
+          # rather than orphaning it. It is its own family and shares with
+          # nothing: a nightly toolchain and `RUSTFLAGS: ""` put it at a
+          # different env hash from every other cache in this file.
+          shared-key: fuzz
+          # This job runs only on `schedule` and `workflow_dispatch`, so the
+          # ref is the default branch in practice. The exception this guards is
+          # a manual dispatch on a feature branch, which would otherwise write
+          # a ~260 MiB entry nothing else can ever read.
+          save-if: ${{ github.ref == 'refs/heads/master' }}
       - name: Install cargo-fuzz
         # From source rather than through an install action: `cargo-fuzz` is
         # not a tool this repository has ever seen an action resolve, and a
