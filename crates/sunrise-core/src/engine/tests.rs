@@ -871,6 +871,17 @@ mod testutil {
             .unwrap()
     }
 
+    /// How many `device_revoke` ops this replica has kept, believed or not.
+    ///
+    /// The register is a fold over these, so "stored and skipped" and "never
+    /// arrived" look identical in `device_revocations` and are told apart only
+    /// here.
+    pub(super) fn ledger_rows(db: &Db) -> i64 {
+        db.conn()
+            .query_row("SELECT count(*) FROM device_revoke_ops", [], |r| r.get(0))
+            .unwrap()
+    }
+
     /// The queued vault device ids, oldest first.
     pub(super) fn pending_relay_revocations(db: &Db) -> Vec<[u8; 16]> {
         let conn = db.conn();
@@ -5938,6 +5949,75 @@ fn a_key_envelope_far_above_the_live_epoch_is_refused() {
     );
 }
 
+/// **A revoked device's third-party recipient claim is not recorded at all.**
+///
+/// The other half of the bound below, and the second thing ADR-0041 takes away
+/// from a revoked device. `key_envelope_recipients` is what
+/// `backfill_key_envelopes` reads to decide a device has already been served,
+/// so a claim filed on nobody's behalf is a way to withhold a key — and the
+/// comment in `apply_control_op` names the exact sender class it could not
+/// argue away: a revoked device's reads are bounded by the rotation and (before
+/// this) its writes by nothing, so it could file these rows and could not read
+/// what they withhold.
+///
+/// This gate is free of the convergence question the register's fold is about,
+/// because the table is a hint rather than state: a replica that declines the
+/// row finds no row and emits the backfill, so the gate can only ever cause
+/// *more* key distribution, never less.
+#[test]
+fn a_revoked_devices_third_party_envelope_claim_is_not_recorded() {
+    let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let er = engine_random_keys(ROOT, [4u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut db = db_root(ROOT);
+    let a_id = ea.keychain.device_id();
+    let victim = [0x77u8; 16];
+    let stream = [0x5d; 16];
+
+    let claim = |db: &mut Db| {
+        let inner = InnerOp::KeyEnvelope(KeyEnvelopePayload {
+            stream_id: stream,
+            epoch: 1,
+            recipient: Recipient::Device(victim),
+            key_id: [0u8; 8],
+            hpke_ciphertext: vec![0u8; 48],
+        });
+        db.with_tx(|tx| er.apply_control_op(tx, &inner, &a_id, Hlc::at(T0), T0, 1))
+            .unwrap();
+    };
+    let filed = |db: &Db| -> i64 {
+        db.conn()
+            .query_row(
+                "SELECT count(*) FROM key_envelope_recipients
+                 WHERE stream_id = ? AND recipient = ?",
+                params![&stream[..], &victim[..]],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+
+    // While A is a member the claim is recorded, unchecked, as it always was.
+    claim(&mut db);
+    assert_eq!(filed(&db), 1);
+
+    // Revoked, and a claim about a *different* epoch is refused outright.
+    revoke(&er, &mut db, &eb, a_id, T0);
+    let inner = InnerOp::KeyEnvelope(KeyEnvelopePayload {
+        stream_id: stream,
+        epoch: 2,
+        recipient: Recipient::Device(victim),
+        key_id: [0u8; 8],
+        hpke_ciphertext: vec![0u8; 48],
+    });
+    db.with_tx(|tx| er.apply_control_op(tx, &inner, &a_id, Hlc::at(T0 + 1), T0 + 1, 1))
+        .unwrap();
+    assert_eq!(
+        filed(&db),
+        1,
+        "a revoked device must not be able to say a key has already been delivered"
+    );
+}
+
 /// A third party's recipient claim is bounded in epoch before it is
 /// recorded.
 ///
@@ -6385,16 +6465,215 @@ fn a_device_cannot_move_its_own_revocation_cut() {
     );
 }
 
+/// **A revoked device cannot revoke another device.**
+///
+/// The hole ADR-0041 closes. Before it, the only `device_revoke` the arm
+/// refused was one naming its own sender, so a laptop the account had already
+/// expelled could expel everything else in the account: its cert is still on
+/// the chain, it still holds the vault-meta key for the epoch it was cut at,
+/// and peers keep old epoch keys, so the op verifies, decrypts and applies
+/// everywhere. Revocation has no inverse — nothing deletes a
+/// `device_revocations` row and `is_revoked` is presence and nothing else — so
+/// the result was permanent on every replica
+/// ([#82](https://github.com/justin13888/Sunrise/issues/82)).
+#[test]
+fn a_revoked_device_cannot_revoke_another_device() {
+    let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let ec = engine_seeded(ROOT, [3u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let er = engine_seeded(ROOT, [4u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut db = db_root(ROOT);
+    let (a_id, c_id) = (ea.keychain.device_id(), ec.keychain.device_id());
+
+    // B revokes A: the ordinary administrative action.
+    revoke(&er, &mut db, &eb, a_id, T0);
+    assert!(er.is_revoked(db.conn(), &a_id).unwrap());
+
+    // A then tries to revoke C, which is the account turning on itself.
+    revoke(&er, &mut db, &ea, c_id, T0 + 60_000);
+    assert_eq!(
+        revocation_row(&db, &c_id),
+        None,
+        "an expelled device must not be able to expel anything else"
+    );
+    assert!(
+        er.is_revoked(db.conn(), &a_id).unwrap(),
+        "and A is still out"
+    );
+
+    // The op is kept, not dropped: that is what makes the skip reversible.
+    assert_eq!(
+        ledger_rows(&db),
+        2,
+        "the refused op is stored and only its effect is refused"
+    );
+
+    // Anyone else revoking C still works, so this gates the sender and does
+    // not freeze the row.
+    revoke(&er, &mut db, &eb, c_id, T0 + 90_000);
+    assert!(revocation_row(&db, &c_id).is_some());
+}
+
+/// **The skip does not depend on which of the two ops arrived first.**
+///
+/// This is the property ADR-0034 corollary 3 demands of any peer-side
+/// enforcement, and the reason the register is a fold over a kept ledger rather
+/// than a refusal taken where an op lands. A replica that sees A's revocation
+/// of C *before* it learns A was itself revoked must end up with the same
+/// register as one that sees them the other way round — otherwise two replicas
+/// holding identical op sets disagree forever about who is a member.
+#[test]
+fn the_register_is_the_same_whichever_order_the_two_revocations_arrive() {
+    let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let ec = engine_seeded(ROOT, [3u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let er = engine_seeded(ROOT, [4u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let (a_id, c_id) = (ea.keychain.device_id(), ec.keychain.device_id());
+
+    // Replica one: B-revokes-A first, then A-revokes-C.
+    let mut one = db_root(ROOT);
+    revoke(&er, &mut one, &eb, a_id, T0);
+    revoke(&er, &mut one, &ea, c_id, T0 + 60_000);
+
+    // Replica two: the same two ops, delivered the other way round. A's op
+    // lands while A is still, as far as this replica knows, a member.
+    let mut two = db_root(ROOT);
+    revoke(&er, &mut two, &ea, c_id, T0 + 60_000);
+    assert!(
+        revocation_row(&two, &c_id).is_some(),
+        "before it knows better, this replica believes A's op"
+    );
+    revoke(&er, &mut two, &eb, a_id, T0);
+
+    assert_eq!(revocation_row(&one, &a_id), revocation_row(&two, &a_id));
+    assert_eq!(
+        revocation_row(&one, &c_id),
+        revocation_row(&two, &c_id),
+        "the same op set must give the same register in either delivery order"
+    );
+    assert_eq!(
+        revocation_row(&two, &c_id),
+        None,
+        "and learning the sender was revoked undoes what it had already written"
+    );
+}
+
+/// **A cut correction does not bring a skipped revocation back, and the
+/// remedy is to make it again.**
+///
+/// The question [#82](https://github.com/justin13888/Sunrise/issues/82) defers,
+/// answered with its second option and pinned here so the answer is asserted
+/// rather than assumed. The cut *is* the op's own HLC, so a correction sorts
+/// **after** the op it would rescue and cannot reach back past it: what gates a
+/// row is the prefix, and the prefix does not change when something is appended
+/// to the end of it.
+///
+/// That is acceptable here and would not be acceptable for a task edit, which
+/// is exactly why ADR-0041 scopes the gate to this op family. What is lost is
+/// an administrative act by a device the account has expelled — a thing a human
+/// can simply do again, from a device the account still trusts, and a thing
+/// they would want to look at again anyway.
+#[test]
+fn a_cut_correction_does_not_re_fold_a_skipped_revocation() {
+    let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let ec = engine_seeded(ROOT, [3u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let er = engine_seeded(ROOT, [4u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut db = db_root(ROOT);
+    let (a_id, c_id) = (ea.keychain.device_id(), ec.keychain.device_id());
+
+    // A device with a slow clock cuts A at T0, before A's honest revocation of
+    // C at T0 + 60s — so that one is skipped.
+    revoke(&er, &mut db, &eb, a_id, T0);
+    revoke(&er, &mut db, &ea, c_id, T0 + 60_000);
+    assert_eq!(revocation_row(&db, &c_id), None);
+
+    // Correcting the cut forward changes what is sealed next and nothing about
+    // the prefix, so C stays current.
+    revoke(&er, &mut db, &eb, a_id, T0 + 120_000);
+    assert_eq!(
+        revocation_row(&db, &c_id),
+        None,
+        "a correction sorts after the op it would rescue, so it cannot rescue it"
+    );
+    assert!(
+        er.is_revoked(db.conn(), &a_id).unwrap(),
+        "and A is still revoked: correcting the cut is not un-revoking"
+    );
+
+    // The remedy, which is the whole reason the loss is tolerable: anyone the
+    // account still trusts revokes C again.
+    revoke(&er, &mut db, &eb, c_id, T0 + 180_000);
+    assert!(er.is_revoked(db.conn(), &c_id).unwrap());
+}
+
+/// **Two devices revoking each other still converge on both revocations.**
+///
+/// The gate's exception, asserted from the direction that makes it necessary.
+/// An HLC sorts first by being dated earlier and nothing charges for that, so a
+/// rule of "whoever revoked first silences the other" would hand a stolen
+/// laptop the account: back-date a revocation of the owner's Mac and the Mac's
+/// answer never lands. Both revocations standing is the safe resolution, and it
+/// is what the engine did before this gate existed.
+#[test]
+fn a_gate_on_the_sender_does_not_let_a_back_dated_revocation_silence_its_target() {
+    let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let er = engine_seeded(ROOT, [4u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut db = db_root(ROOT);
+    let (a_id, b_id) = (ea.keychain.device_id(), eb.keychain.device_id());
+
+    // A, holding stolen credentials, gets its revocation of B in a year early.
+    revoke(&er, &mut db, &ea, b_id, T0 - 365 * 24 * 60 * 60 * 1000);
+    // B answers at the real time.
+    revoke(&er, &mut db, &eb, a_id, T0);
+
+    assert!(
+        er.is_revoked(db.conn(), &a_id).unwrap(),
+        "the answer to a back-dated revocation must still land"
+    );
+    assert!(er.is_revoked(db.conn(), &b_id).unwrap());
+}
+
+/// A revoked device's revocations from **before** its own cut still stand.
+///
+/// Revocation is not retroactive anywhere else in this module — a cert issued
+/// under a superseded identity still identifies its device, and filtering it
+/// once made revocation retroactive over work done honestly months earlier —
+/// and the fold keeps that property by construction: the prefix of the order is
+/// what decides, so an op that sorts below its sender's cut is folded.
+#[test]
+fn a_revocation_written_before_the_senders_own_cut_still_stands() {
+    let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let ec = engine_seeded(ROOT, [3u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let er = engine_seeded(ROOT, [4u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut db = db_root(ROOT);
+    let (a_id, c_id) = (ea.keychain.device_id(), ec.keychain.device_id());
+
+    // A retires C honestly, long before anything happens to A.
+    revoke(&er, &mut db, &ea, c_id, T0);
+    // A is itself revoked a minute later.
+    revoke(&er, &mut db, &eb, a_id, T0 + 60_000);
+
+    assert!(
+        revocation_row(&db, &c_id).is_some(),
+        "work done while a device was a member survives its later revocation"
+    );
+}
+
 /// A revoked device's ops still **apply** at a receiving replica, and its
 /// cursor still advances.
 ///
-/// This half is deliberately not a gate, and there is no write bound
-/// elsewhere for it to defer to. Nothing bounds a revoked device's writes
-/// today: the relay would have to be told out of band and cannot be,
-/// because `DELETE /api/v1/devices/{device_id}` names the **relay's** id
-/// for a device — a ULID it minted at registration — while a vault knows
-/// only its own 16-byte device id and no peer's relay id
-/// ([#80](https://github.com/justin13888/Sunrise/issues/80)).
+/// This half is deliberately not a gate, and there is now a write bound
+/// elsewhere for it to defer to. `Command::RevokeDevice` records a
+/// `relay_revocation_intents` row in the same transaction as the op and the
+/// sync driver drains it into `DELETE /api/v1/devices/{device_id}`, after which
+/// the relay refuses the device's uploads and tears down its live session
+/// ([#80](https://github.com/justin13888/Sunrise/issues/80), closed). That
+/// bound is where an *entity* write is stopped. The gate ADR-0041 adds here is
+/// over control ops only, and this test is the boundary of it: a task the
+/// revoked device wrote still applies.
 ///
 /// Refusing here instead is a live hazard, and six review rounds produced
 /// six defects that were all this shape. Refusing a device's ops freezes
@@ -6407,7 +6686,10 @@ fn a_device_cannot_move_its_own_revocation_cut() {
 /// not: delivery order is not an input to the materialized state, and a
 /// cut correction is lossless. Decided in ADR-0034
 /// (`docs/11-adr/0034-revocation-bounds-reads-not-writes.md`), which closed
-/// #78; #82 is where a convergent form belongs, after the relay bound.
+/// #78; #82 is where a convergent form belongs, after the relay bound, and
+/// ADR-0041 (`docs/11-adr/0041-peer-side-revocation-is-a-fold.md`) is that
+/// form — scoped to the control ops whose effect can be re-derived, which a
+/// task edit's cannot.
 ///
 /// What *is* enforced here is reads, and that is the test below.
 #[test]

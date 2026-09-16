@@ -210,4 +210,11 @@ pub const CRYPTO_SUITE_V: u16 = 5;
 /// answer written down, because the predicate is about the moment the cert
 /// applied and nothing else in the schema can reconstruct that afterwards. It
 /// feeds the device list on every client rather than an operator's NDJSON.
-pub const STORAGE_V: u16 = 26;
+///
+/// `27` is migration `0027_device_revoke_ops.sql`, the ledger that turns
+/// `device_revocations` from a running upsert into a fold (issue #82,
+/// ADR-0041). Keeping every `device_revoke` op is what lets a replica skip one
+/// whose sender the account had already revoked without the answer depending on
+/// which of the two ops it saw first, and what lets a skipped op be folded
+/// again if a corrected cut later makes it legitimate.
+pub const STORAGE_V: u16 = 27;

@@ -681,6 +681,36 @@ fn a_v13_vaults_revoked_device_becomes_a_device_revocations_row() {
     assert_eq!(reason, "Retired");
 }
 
+/// 0027 seeds its ledger from the register, so an upgraded vault folds to what
+/// it already holds rather than to an empty one.
+///
+/// The seeded sender is the empty blob — a pre-0017 `devices.revoked_at_ms`
+/// names nobody — and that is asserted rather than tolerated: the fold gates on
+/// "is this sender a revoked device", the empty blob matches no device id, and
+/// inventing one here would be the migration claiming a fact the vault does not
+/// have.
+#[test]
+fn a_v13_vaults_revocation_is_seeded_into_the_0027_ledger() {
+    let (_dir, db) = open_migrated(V13_FIXTURE);
+    assert!(table_exists(&db, "device_revoke_ops"));
+    let (sender, revoked, ms, logical): (Vec<u8>, Vec<u8>, i64, i64) = db
+        .conn()
+        .query_row(
+            "SELECT sender, revoked_device_id, op_hlc_ms, op_hlc_logical
+             FROM device_revoke_ops",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .expect("exactly one ledger row");
+    assert!(
+        sender.is_empty(),
+        "a carried-over revocation names no sender"
+    );
+    assert_eq!(revoked, DEVICE_RETIRED.to_vec());
+    assert_eq!(ms, RETIRED_AT_MS);
+    assert_eq!(logical, 0);
+}
+
 /// The one deliberate loss in the chain, asserted as a loss.
 ///
 /// 0017 drops every pre-hierarchy `stream_keys` row because each wrapped a key
