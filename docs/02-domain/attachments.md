@@ -109,23 +109,45 @@ Attachments are not pre-fetched on sync. Each device pulls on first view, decryp
 > end-to-end proof is
 > `crates/sunrise-e2e/tests/attachment_bytes_round_trip.rs`.
 >
-> The **10 MiB threshold** above is enforced: a larger attachment is not
-> auto-fetched. What is **not** built is the rest of the policy around it — the
-> inline placeholder with its Download and Cancel buttons, the `partial: true`
-> cache state, and `auto_fetch_on_cellular` — so an attachment over the
-> threshold stays unfetched, with no client surface to ask for it, and
-> `Core::attachment_is_local` remains the query that distinguishes "not
-> downloaded" from "cannot be opened". The LRU cache and its per-chunk row
-> states are likewise unbuilt: a fetched blob is kept.
+> The **10 MiB threshold** above is enforced, and since
+> [#227](https://github.com/justin13888/Sunrise/issues/227) it bounds only what
+> is fetched *unasked*. `Core::fetch_attachment`
+> (`crates/sunrise-core/src/blob_fetch.rs:207`) asks for one named attachment
+> whatever its size: it writes a `blob_fetches` row (migration 0025), the sync
+> driver — which owns the transport — drains it with no size predicate, and the
+> call returns when the chunks are here. `Core::cancel_attachment_fetch`
+> (`:306`) is the Cancel button, and it marks the request `partial` without
+> needing the relay to agree, because a stalled transfer is what people cancel.
+> Both are on the seam, behind the pane's Download and Cancel controls
+> (`apps/apple/Sunrise/Views/AttachmentsView.swift:99`) and behind
+> `sunrise attachment get` / `cancel`. The end-to-end proof is
+> `crates/sunrise-e2e/tests/attachment_bytes_round_trip.rs`.
+>
+> `partial: true` lives on the local request row rather than on the attachment,
+> because §Lazy fetch calls it a fact about the *cache* and the attachment row
+> is a replicated write-once entity — marking it would mean either an un-synced
+> column on a synced table or an op telling every device that one of them
+> cancelled a download.
+>
+> What is **not** built: `auto_fetch_on_cellular`, and resume-from-partial,
+> which this section already excludes from v1 — a cancelled transfer's chunks
+> are discarded so the next attempt starts from byte 0, which is what the
+> sentence above promises. The LRU cache and its configurable per-device size
+> are likewise unbuilt: a fetched blob is kept.
 
 ## Client limitations
 
-- `sunrise-cli` has no attachment surface at all — no subcommand reaches
-  `AttachFile`, `DetachFile` or `TaskAttachments`. The pane is Apple-only in
-  v1, and it is *shared* rather than macOS-only:
-  `apps/apple/Sunrise/Views/AttachmentsView.swift` and
+- `sunrise-cli` reads attachments and downloads them — `sunrise attachments
+  <task-id>`, `sunrise attachment get <id> [path]`, `sunrise attachment cancel
+  <id>` — and cannot *create* one: no subcommand reaches `AttachFile` or
+  `DetachFile`, because attaching starts from a file the user picked and that
+  is a GUI act. `attachment` is one of only two verbs that start a sync driver
+  (the other is `sync`), since a download with no driver is a request nothing
+  can service.
+- The attachments *pane* is Apple-only in v1, and it is *shared* rather than
+  macOS-only: `apps/apple/Sunrise/Views/AttachmentsView.swift` and
   `apps/apple/Sunrise/Tasks/AttachmentsModel.swift` compile into both targets
-  (`apps/apple/project.yml:75`, `:169`) and are reached from the task editor on
+  (`apps/apple/project.yml:164`, `:322`) and are reached from the task editor on
   each (`apps/apple/Sunrise/Views/TaskEditorView.swift:93`).
 - Web in private-browsing mode cannot persist large attachment caches; falls back to per-session memory cache.
 
