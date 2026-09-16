@@ -1379,18 +1379,21 @@ impl Keychain {
     /// `PairingPayload` stopped carrying the key (that is the whole of the #76
     /// read bound — see [`sunrise_pairing::payload`]).
     ///
-    /// **Whether it is the *only* copy depends on the client.** The second
-    /// copy is the recovery blob, and [`Self::seal_recovery_blob`] now has a
-    /// production caller — `sunrise bootstrap` seals one at account creation.
-    /// The Apple clients do not, so a vault created there is still the only
-    /// place `ID_D_priv` exists, and if it is lost the key is gone
+    /// **Whether it is the *only* copy depends on whether a blob was sealed.**
+    /// The second copy is the recovery blob, and [`Self::seal_recovery_blob`]
+    /// has production callers on both clients: `sunrise bootstrap` seals one at
+    /// account creation, and since #181 so does `RecoveryCodeModel`, the moment
+    /// an Apple vault is created. Where the ceremony did not complete — an
+    /// upload that failed, a vault with no relay — this device is still the
+    /// only place `ID_D_priv` exists, and if it is lost the key is gone
     /// permanently: every `Recipient::Identity` copy in the op log becomes
     /// unopenable forever, and no recovery feature shipped afterwards can
     /// retrieve it, because sealing a blob needs the key it would carry.
     ///
     /// Callers should surface this, not act on it. It answers "does this
-    /// device hold the key" and, on a client that seals no blob, "is this the
-    /// last place it exists".
+    /// device hold the key", and with it the consequence of losing this vault.
+    /// Both clients now do: `sunrise devices` prints it under the listing and
+    /// the Apple device list states it on this device's row (#144).
     ///
     /// See `docs/03-crypto/recovery.md` §Implementation status.
     #[must_use]

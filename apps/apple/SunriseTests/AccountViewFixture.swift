@@ -22,7 +22,8 @@ enum AccountViewFixture {
         signIn: @escaping () async -> Void,
         allowNotifications: @escaping () async -> Void,
         keyboard: KeyboardPreferences,
-        session: SessionModel?
+        session: SessionModel?,
+        devices: DeviceListModel? = nil
     ) -> AccountView {
         #if os(macOS)
         AccountView(
@@ -36,7 +37,8 @@ enum AccountViewFixture {
             signIn: signIn,
             allowNotifications: allowNotifications,
             keyboard: keyboard,
-            session: session
+            session: session,
+            devices: devices
         )
         #else
         AccountView(
@@ -49,7 +51,8 @@ enum AccountViewFixture {
             signIn: signIn,
             allowNotifications: allowNotifications,
             keyboard: keyboard,
-            session: session
+            session: session,
+            devices: devices
         )
         #endif
     }

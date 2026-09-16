@@ -35,6 +35,10 @@ struct AccountView: View {
     /// ``RootView``; optional only so a preview can stand this screen up
     /// without one, which is what hides the Vaults section.
     let session: SessionModel?
+    /// What has access to this account. Optional for the same reason `session`
+    /// is: a preview stands this screen up without an open vault, and a device
+    /// list with no core behind it would render an empty list as a fact.
+    let devices: DeviceListModel?
 
     @State private var pairing: PairingModel?
     @State private var newVaultName = ""
@@ -43,6 +47,9 @@ struct AccountView: View {
 
     var body: some View {
         Form {
+            if let devices {
+                DeviceListSection(model: devices)
+            }
             vaultSection
 
             Section("Sync") {

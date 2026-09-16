@@ -1229,11 +1229,24 @@ impl Engine {
                          has revoked a device"
                     );
                 }
+                // The same answer, kept. A `tracing::warn!` reaches an operator
+                // reading NDJSON and nobody else, and `readmission` cannot be
+                // recomputed later from anything that survives here — see
+                // `0026_device_admitted_after_revocation.sql` for why the three
+                // candidate timestamps all fail. Writing the column is what
+                // puts the signal on the device list, which is the surface that
+                // already answers "what has access to this account" (#144).
+                //
+                // Set on insert only. The `ON CONFLICT` arm below deliberately
+                // leaves it alone: `readmission` is false whenever the row
+                // already exists (`known` is true), so carrying `excluded`'s
+                // value across would let a device clear its own mark by
+                // re-publishing its certificate.
                 tx.execute(
                     "INSERT INTO devices
                      (device_id, cert_blob, nickname, platform, created_at_ms,
-                      identity_id, d_d_pub)
-                     VALUES (?, ?, ?, ?, ?, ?, ?)
+                      identity_id, d_d_pub, admitted_after_revocation)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                      ON CONFLICT(device_id) DO UPDATE SET
                         cert_blob = excluded.cert_blob,
                         nickname = excluded.nickname,
@@ -1254,6 +1267,7 @@ impl Engine {
                         // membership test rather than as a claim.
                         &issuer[..],
                         &cert.body.d_d_pub[..],
+                        i64::from(readmission),
                     ],
                 )?;
                 // The device is a member as of this line, so anything this

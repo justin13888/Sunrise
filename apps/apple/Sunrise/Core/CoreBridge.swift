@@ -177,6 +177,17 @@ actor CoreBridge {
         core.holdsIdentityKey()
     }
 
+    /// Whether a revocation of `device` is still owed to the relay.
+    ///
+    /// The second half of what a device list must say after revoking
+    /// something. The vault half is committed when the command returns; this
+    /// one is a queued intent that needs a session, and a client reporting only
+    /// the first would let someone with no network believe a stolen laptop had
+    /// been cut off from the server (#160).
+    func relayRevocationPending(_ device: EntityRef) async throws -> Bool {
+        try core.relayRevocationPending(device: device)
+    }
+
     /// Publish this vault to the relay and come back with the recovery code.
     ///
     /// The Apple clients' `sunrise bootstrap`, and one call rather than three

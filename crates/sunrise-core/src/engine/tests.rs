@@ -6746,6 +6746,149 @@ fn a_revoked_device_cannot_rejoin_under_a_fresh_device_id() {
     );
 }
 
+/// A helper for the four tests below: the device list row for one id.
+fn device_list_row(e: &Engine, db: &Db, id: &[u8; 16]) -> crate::queries::DeviceRow {
+    let QueryResult::Devices(rows) = e.query(db, Query::DeviceList).unwrap() else {
+        panic!("expected Devices")
+    };
+    rows.into_iter()
+        .find(|r| &r.device_id == id)
+        .expect("the device is listed")
+}
+
+/// A device id that turns up **after** this vault has recorded a revocation is
+/// marked as such in the device list, not only in a log line.
+///
+/// `core.device.admitted_after_revocation` has existed since ADR-0032 and
+/// reaches an operator reading NDJSON and nobody else, which is the whole of
+/// issue #144's second half. The condition cannot be recomputed afterwards —
+/// `0026_device_admitted_after_revocation.sql` walks the three columns that
+/// look like they could and cannot — so it is written down where it is known.
+#[test]
+fn a_device_admitted_after_a_revocation_says_so_in_the_device_list() {
+    let ea = engine_random_keys(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eb = engine_random_keys(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let ec = engine_random_keys(ROOT, [3u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut dba = db_root(ROOT);
+    let b_id = eb.keychain.device_id();
+    let c_id = ec.keychain.device_id();
+
+    // B is here before anything has been revoked.
+    trust(&ea, &mut dba, &eb);
+    ea.apply(
+        &mut dba,
+        Command::RevokeDevice {
+            device_id: EntityRef::new(EntityKind::Device, b_id),
+            reason: RevokeReason::Lost,
+        },
+    )
+    .expect("revoke");
+    // C turns up afterwards.
+    trust_at(&ea, &mut dba, &ec, T0 + 1);
+
+    assert!(
+        device_list_row(&ea, &dba, &c_id).admitted_after_revocation,
+        "the device list must carry the signal the log line has always had"
+    );
+    assert!(
+        !device_list_row(&ea, &dba, &b_id).admitted_after_revocation,
+        "a device that was already here did not join after anything"
+    );
+}
+
+/// And an account that has revoked nothing marks nobody, so the field is a
+/// signal rather than a badge every device wears.
+#[test]
+fn a_device_admitted_with_no_revocation_on_record_is_not_marked() {
+    let ea = engine_random_keys(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eb = engine_random_keys(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut dba = db_root(ROOT);
+    trust(&ea, &mut dba, &eb);
+    assert!(
+        !device_list_row(&ea, &dba, &eb.keychain.device_id()).admitted_after_revocation,
+        "nothing has been revoked, so nobody joined after a revocation"
+    );
+}
+
+/// The mark is not something the marked device can rub out.
+///
+/// `DeviceCertPublish` upserts, and a device that re-publishes its certificate
+/// takes the `ON CONFLICT` arm — where `readmission` is necessarily false,
+/// because the row it is conflicting with is what makes `known` true. Carrying
+/// `excluded.admitted_after_revocation` across would therefore hand the one
+/// party the signal is about a one-op way to clear it.
+#[test]
+fn a_republished_certificate_does_not_clear_the_readmission_mark() {
+    let ea = engine_random_keys(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eb = engine_random_keys(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let ec = engine_random_keys(ROOT, [3u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut dba = db_root(ROOT);
+    let c_id = ec.keychain.device_id();
+
+    trust(&ea, &mut dba, &eb);
+    ea.apply(
+        &mut dba,
+        Command::RevokeDevice {
+            device_id: EntityRef::new(EntityKind::Device, eb.keychain.device_id()),
+            reason: RevokeReason::Stolen,
+        },
+    )
+    .expect("revoke");
+    trust_at(&ea, &mut dba, &ec, T0 + 1);
+    assert!(device_list_row(&ea, &dba, &c_id).admitted_after_revocation);
+
+    trust_at(&ea, &mut dba, &ec, T0 + 2);
+    assert!(
+        device_list_row(&ea, &dba, &c_id).admitted_after_revocation,
+        "publishing the certificate again must not clear the mark"
+    );
+}
+
+/// **The combination no other column in the device list can show**, and the
+/// reason this one is worth a migration.
+///
+/// `revoked` names an id in the register and `current` names the identity that
+/// verified a cert, so between them they already cover the readmission ADR-0032
+/// describes *when the revocation rotated the identity*: the fresh cert is
+/// under a retired link and `current` is false. They cover nothing when it did
+/// not. A replica that has applied a `device_revoke` and not (yet, or ever) the
+/// transition beside it — the ordinary shape of a remote revocation, and the
+/// permanent shape of one run from a device that holds no `ID_S_priv` and logs
+/// `core.identity.rotation_unavailable` — sees the fresh device id certified
+/// under the identity in force. It reads `revoked: false, current: true`: the
+/// same three columns as any honest member.
+///
+/// So this asserts the negative half first. Without the fourth column the row
+/// is indistinguishable, and the user is told nothing.
+#[test]
+fn a_readmission_under_the_live_identity_is_visible_in_no_other_column() {
+    let ea = engine_random_keys(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eb = engine_random_keys(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let ec = engine_random_keys(ROOT, [3u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut dba = db_root(ROOT);
+    let c_id = ec.keychain.device_id();
+
+    trust(&ea, &mut dba, &eb);
+    // A revocation that arrived as an op, with no transition beside it.
+    revoke(&ea, &mut dba, &ea, eb.keychain.device_id(), T0);
+    trust_at(&ea, &mut dba, &ec, T0 + 1);
+
+    let row = device_list_row(&ea, &dba, &c_id);
+    assert!(
+        !row.revoked,
+        "the register names ids and has never heard of this one"
+    );
+    assert!(
+        row.current,
+        "and the identity that certified it is the one in force, so every \
+         other column reads exactly like an honest member's"
+    );
+    assert!(
+        row.admitted_after_revocation,
+        "which leaves this as the only field that can tell the user anything"
+    );
+}
+
 /// **#105 closed rather than bounded.** The device that gets revoked cannot
 /// certify itself back in because it never held the key to do it with —
 /// not because a rotation retired the identity it would have used.

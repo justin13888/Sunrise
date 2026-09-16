@@ -218,7 +218,8 @@ impl Engine {
         let head = self.current_identity(db.conn())?;
         let mut stmt = db.conn().prepare(
             "SELECT d.device_id, d.nickname, d.platform, r.device_id IS NOT NULL,
-                    d.identity_id IS NOT NULL AND d.identity_id = ?1
+                    d.identity_id IS NOT NULL AND d.identity_id = ?1,
+                    d.admitted_after_revocation
              FROM devices d
              LEFT JOIN device_revocations r ON r.device_id = d.device_id",
         )?;
@@ -233,6 +234,7 @@ impl Engine {
                 platform: row.get(2)?,
                 revoked: row.get(3)?,
                 current: row.get(4)?,
+                admitted_after_revocation: row.get(5)?,
             })
         })?;
         let mut out = Vec::new();

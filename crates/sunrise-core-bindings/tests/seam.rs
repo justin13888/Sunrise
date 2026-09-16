@@ -2165,6 +2165,54 @@ async fn importing_into_something_that_is_not_a_stream_is_refused() {
     assert!(matches!(err, BindingError::BadId { .. }), "got {err:?}");
 }
 
+/// The second of #144's signals reaches a client: every device row carries
+/// whether that device turned up **after** this vault had recorded a
+/// revocation.
+///
+/// What the truth of the field means is `sunrise-core`'s to assert and it does,
+/// four ways. What is checked here is the half only this crate can break: the
+/// column is read by `query_device_list`, survives `DeviceListRow::from`, and
+/// arrives on the `uniffi::Record` a Swift device list renders. A field dropped
+/// in that lowering would compile, pass every core test, and silently show a
+/// user nothing — which is the exact failure mode #144 is about.
+#[tokio::test(flavor = "multi_thread")]
+async fn every_device_row_carries_the_readmission_signal() {
+    let (_dir, core) = open_core().await;
+    let CoreQueryResult::Devices { devices } = core
+        .query(CoreQuery::DeviceList)
+        .await
+        .expect("device list")
+    else {
+        panic!("expected Devices")
+    };
+    let me = devices
+        .iter()
+        .find(|d| d.device_id == core.device_id())
+        .expect("this vault lists its own device");
+    assert!(
+        !me.admitted_after_revocation,
+        "a vault that founded its own account revoked nothing before it existed"
+    );
+    // The row carries an id `RevokeDevice` will actually take. Without this a
+    // client could list its devices and revoke none of them: `device_id` is
+    // hex and the command wants an `EntityRef`, and converting between them in
+    // Swift means reimplementing Crockford base32 against a Rust encoder.
+    assert!(me.device_ref.starts_with("dev_"), "got {:?}", me.device_ref);
+    let parsed = sunrise_id::EntityRef::parse_any(&me.device_ref)
+        .expect("the row's `device_ref` is what `RevokeDevice` parses");
+    assert_eq!(parsed.kind(), sunrise_id::EntityKind::Device);
+    assert_eq!(
+        parsed.bytes().iter().fold(String::new(), |mut acc, b| {
+            use std::fmt::Write as _;
+            let _ = write!(acc, "{b:02x}");
+            acc
+        }),
+        me.device_id,
+        "the two forms must name the same device, or a client would revoke \
+         whatever the other one points at"
+    );
+}
+
 // ---- recovery (#181) ------------------------------------------------------
 
 /// The signal that had reached no client: until a blob is sealed, a vault the

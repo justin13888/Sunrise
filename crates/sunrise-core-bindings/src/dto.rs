@@ -42,7 +42,7 @@ use sunrise_domain::{
     StreamReviewCadence, StreamTrend, SunriseTime, Task, TaskState, TaskTemplate, TimeOfDayRange,
     Trends, UnblockCascade, WeekBucket, Weekday, WeeklyReview,
 };
-use sunrise_id::EntityRef;
+use sunrise_id::{EntityKind, EntityRef};
 
 /// Monday-first, matching how the domain orders a weekday set.
 const ALL_WEEKDAYS: [Weekday; 7] = [
@@ -2415,7 +2415,20 @@ impl From<&ContextRow> for ContextListRow {
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct DeviceListRow {
     /// Device id, lowercase hex.
+    ///
+    /// The form a user reads and a CLI resolves a prefix against. **Not** the
+    /// form `CoreCommand::RevokeDevice` takes — see [`Self::device_ref`], which
+    /// is here because a client that could only list devices in hex could not
+    /// revoke one without reimplementing Crockford base32 in Swift.
     pub device_id: String,
+    /// The same device as an `EntityRef` string, `dev_…`.
+    ///
+    /// What `CoreCommand::RevokeDevice` wants, so a device list can act on a
+    /// row it is showing. Both forms are carried rather than one converted,
+    /// because the two are read by different audiences: the hex is what
+    /// `sunrise devices` prints and what a user retypes a prefix of, and this
+    /// is an opaque token a client passes straight back.
+    pub device_ref: String,
     /// Human-readable nickname.
     pub nickname: String,
     /// Platform string.
@@ -2431,6 +2444,19 @@ pub struct DeviceListRow {
     /// on this account" rather than as an accusation — an honest device that
     /// has not yet applied a rotation looks the same for a moment.
     pub current: bool,
+    /// This device id was first seen **after** this vault had already recorded
+    /// a revocation.
+    ///
+    /// `core.device.admitted_after_revocation` made durable, so it reaches the
+    /// device list instead of only an operator's NDJSON
+    /// ([#144](https://github.com/justin13888/Sunrise/issues/144)). Also not an
+    /// accusation: the ordinary cause is pairing a new device in an account
+    /// that revoked something earlier. The case it exists for is a revoked
+    /// *creator* certifying a fresh id after a revocation that could not rotate
+    /// the identity, which reads `revoked: false, current: true` and is
+    /// otherwise indistinguishable from any other member. Word it as "joined
+    /// after a device was removed".
+    pub admitted_after_revocation: bool,
 }
 
 impl From<&DeviceRow> for DeviceListRow {
@@ -2441,13 +2467,16 @@ impl From<&DeviceRow> for DeviceListRow {
             platform,
             revoked,
             current,
+            admitted_after_revocation,
         } = d;
         Self {
             device_id: hex16(device_id),
+            device_ref: EntityRef::new(EntityKind::Device, *device_id).to_str(),
             nickname: nickname.clone(),
             platform: platform.clone(),
             revoked: *revoked,
             current: *current,
+            admitted_after_revocation: *admitted_after_revocation,
         }
     }
 }

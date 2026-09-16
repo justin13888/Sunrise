@@ -480,7 +480,8 @@ extension VaultTabs {
                 signIn: signIn,
                 allowNotifications: { await surfaces.reminders?.requestAuthorization() },
                 keyboard: keys,
-                session: session
+                session: session,
+                devices: models.devices
             )
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)

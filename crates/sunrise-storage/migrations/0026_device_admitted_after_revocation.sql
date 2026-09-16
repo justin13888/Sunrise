@@ -1,0 +1,62 @@
+-- 0026: keep the fact that a device joined *after* a revocation, instead of
+-- only logging it.
+--
+-- `apply_control_op`'s `DeviceCertPublish` arm already computes this. A device
+-- id this vault has never seen, whose cert lands in an account that holds at
+-- least one `device_revocations` row, is the observable signature of a
+-- readmission -- and `core.device.admitted_after_revocation` says so, to an
+-- operator reading NDJSON and to nobody else (issue #144).
+--
+-- The condition is computed once and cannot be recomputed
+-- ------------------------------------------------------
+--
+-- This is the reason it needs a column rather than a `query_device_list`
+-- expression. The predicate is "was there a revocation *at the moment this
+-- cert applied*", and nothing left in the schema afterwards answers it:
+--
+--   * `devices.created_at_ms` comes out of the certificate body, which the
+--     certifying device chose. It is a claim, not an observation, and the one
+--     party with a motive to move it is the one the signal is about.
+--   * `device_revocations.recorded_at_ms` is when *this* replica wrote the
+--     register row, so comparing the two compares a local clock against a
+--     remote assertion.
+--   * The register is an LWW register keyed on the revoked id (0017), so a
+--     later revocation overwrites an earlier one's cut and the "was anything
+--     revoked yet" history is not kept anywhere.
+--
+-- So the answer is written down when it is known.
+--
+-- It is a fact about this replica, and that is correct
+-- ----------------------------------------------------
+--
+-- Two replicas can disagree: one that applied the revocation before the cert
+-- marks the device, one that applied them in the other order does not. That is
+-- not a convergence bug, because nothing derives *standing* from this column --
+-- `current`, `revoked` and `key_envelope` recipiency are all unchanged, and all
+-- three are computed from the op set. This column is exactly as replica-local
+-- as the log line it replaces, which is what makes it a faithful surfacing of
+-- that line rather than a new and stronger claim.
+--
+-- What it means now, which is not what #144 assumed
+-- -------------------------------------------------
+--
+-- When #144 was filed, every paired device held `ID_S_priv`, so any revoked
+-- device could mint a fresh id and self-certify (#105). #221 removed that: the
+-- sponsor issues the joiner's cert and the signing key never leaves it. So the
+-- mark now covers two cases and a UI must not accuse on it:
+--
+--   * an ordinary pairing, in an account that has revoked something -- the
+--     common case, and benign;
+--   * a revoked device that *did* hold `ID_S_priv`, which since #221 means the
+--     device the account was created on, certifying a fresh id for itself. When
+--     the revocation rotated the identity the fresh cert is under a retired
+--     link and `current` is already false. When it could not
+--     (`core.identity.rotation_unavailable` -- a revocation run from a paired
+--     device), the fresh cert verifies under the head and `current` is *true*.
+--     That last combination is the one no existing column shows, and the reason
+--     this one exists.
+--
+-- `0` is right for every pre-existing row. The alternative -- backfilling by
+-- guessing from timestamps -- would manufacture the accusation this column is
+-- careful not to make.
+ALTER TABLE devices ADD COLUMN admitted_after_revocation INTEGER NOT NULL DEFAULT 0;

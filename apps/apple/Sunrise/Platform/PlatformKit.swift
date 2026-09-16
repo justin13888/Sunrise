@@ -279,6 +279,40 @@ extension View {
         self
         #endif
     }
+
+    /// Give a sheet somewhere for its `.toolbar` items to render, on the one
+    /// platform where a sheet does not supply that itself.
+    ///
+    /// **macOS draws a sheet's toolbar whether or not anything asked it to;
+    /// iOS does not.** So `.toolbar { ToolbarItem(placement: .confirmationAction) … }`
+    /// on a sheet root is a working Save button on a Mac and *nothing at all*
+    /// on a phone — a modal a user can open and cannot complete or cancel,
+    /// which is what `BlockDraftSheetView` and `BlockEditorView` shipped as
+    /// ([#174](https://github.com/justin13888/Sunrise/issues/174)). Confirmed
+    /// by `BlockSheetUITests` against the unfixed tree, not inferred.
+    ///
+    /// The `#if` is the point. A `NavigationStack` on both platforms would
+    /// change the Mac too — the sheet gains a navigation container it never
+    /// needed and a second place a title can render — and the Mac was not
+    /// broken. The narrowest fix is the one that touches only the platform
+    /// with the defect, and it keeps the `.toolbar` declarations themselves
+    /// identical on both, so a control added to one is added to both.
+    ///
+    /// `title` is not optional. A bar that appears with three unlabelled
+    /// controls and no statement of what they commit is the smaller version of
+    /// the same problem.
+    @ViewBuilder
+    func sheetCommitBar(title: String) -> some View {
+        #if os(macOS)
+        self
+        #else
+        NavigationStack {
+            self
+                .navigationTitle(title)
+                .navigationBarTitleDisplayMode(.inline)
+        }
+        #endif
+    }
 }
 
 // MARK: - Software-keyboard input modes

@@ -519,4 +519,29 @@ pub struct DeviceRow {
     /// rotation reads the same way for a moment, so a UI should present this as
     /// "not active on this account" rather than as an accusation.
     pub current: bool,
+    /// Whether this device id was **first seen after** this vault had already
+    /// recorded a revocation.
+    ///
+    /// The durable form of `core.device.admitted_after_revocation`, written by
+    /// `DeviceCertPublish` at the moment the certificate applied, because the
+    /// predicate is about that moment and nothing left in the schema can
+    /// reconstruct it (see `0026_device_admitted_after_revocation.sql`).
+    ///
+    /// **It is not an accusation, and a UI that renders it as one is wrong.**
+    /// Since [#221](https://github.com/justin13888/Sunrise/pull/221) a device
+    /// admitted by pairing holds no `ID_S_priv`, so it cannot certify a fresh
+    /// device id at all, and the ordinary reason this is true is the innocent
+    /// one: somebody paired a new device in an account that had revoked
+    /// something earlier. What it is *for* is the case no other field shows —
+    /// revoking the device the account was created on from a device that
+    /// cannot rotate the identity (`core.identity.rotation_unavailable`) leaves
+    /// that revoked device holding the head identity's signing key, so a fresh
+    /// id it certifies reads `revoked: false, current: true` and looks like any
+    /// other member. Present it as "joined after a device was removed" and let
+    /// a human decide.
+    ///
+    /// Replica-local on purpose: two replicas that applied the revocation and
+    /// the certificate in different orders disagree, exactly as they do about
+    /// the log line. Nothing derives standing from it.
+    pub admitted_after_revocation: bool,
 }
