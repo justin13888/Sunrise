@@ -36,6 +36,7 @@ struct BlockDraftSheetView: View {
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
                 Button("Cancel") { dismiss() }
+                    .accessibilityIdentifier("block.cancel")
             }
             ToolbarItem(placement: .confirmationAction) {
                 Button("Add block") {
@@ -51,9 +52,14 @@ struct BlockDraftSheetView: View {
                 }
                 .disabled(endsAt <= startsAt)
                 .keyboardShortcut(.defaultAction)
+                .accessibilityIdentifier("block.add")
             }
         }
         .padding(.bottom, 8)
+        // Applied *after* `.toolbar`, so the items are declared on the content
+        // that ends up inside the stack. See `sheetCommitBar` for why a phone
+        // showed none of them.
+        .sheetCommitBar(title: "New block")
     }
 
     private func ms(_ date: Date) -> Int64 { Int64(date.timeIntervalSince1970 * 1000) }
@@ -156,6 +162,7 @@ struct BlockEditorView: View {
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
                 Button("Cancel") { dismiss() }
+                    .accessibilityIdentifier("block.cancel")
             }
             ToolbarItem(placement: .destructiveAction) {
                 Button("Delete", role: .destructive) {
@@ -164,6 +171,7 @@ struct BlockEditorView: View {
                         dismiss()
                     }
                 }
+                .accessibilityIdentifier("block.delete")
             }
             ToolbarItem(placement: .confirmationAction) {
                 Button("Save") {
@@ -174,9 +182,11 @@ struct BlockEditorView: View {
                 }
                 .disabled(endsAt <= startsAt)
                 .keyboardShortcut(.defaultAction)
+                .accessibilityIdentifier("block.save")
             }
         }
         .padding(.bottom, 8)
+        .sheetCommitBar(title: "Edit block")
     }
 
     /// Only what changed.
