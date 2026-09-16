@@ -25,191 +25,244 @@ env:
   RUSTFLAGS: "-D warnings"
 
 jobs:
-  rust:
-    name: Rust (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    # Per leg, not one value for both, because the legs do not cost the same:
-    # macOS minutes bill at 10x, so the expensive leg gets the *tighter* cap
-    # rather than inheriting a ceiling sized for the slower-but-cheaper one.
-    # `timeout-minutes` takes an expression, and the `mutants` job below
-    # already carries per-entry matrix keys, so this costs one key.
-    timeout-minutes: ${{ matrix.timeout }}
-    strategy:
-      fail-fast: false
-      matrix:
-        # Each leg is ~2.4x the slowest of the twelve runs that still had real
-        # steps before CI was billing-blocked: 18m26s on ubuntu-latest, 14m46s
-        # on macos-latest. No `rust` cache entry has ever existed, so those
-        # observations are cold runs and the multiple is over a cold build.
-        #
-        # Ten minutes were added to each leg when the `fuzz/` clippy and rustdoc
-        # steps landed (#167). That is a second cargo workspace with a target
-        # directory of its own, so on a cold cache it rebuilds the shared
-        # dependency graph once more; the cache entry added below is what keeps
-        # it from doing so on every run, and the ceiling covers the run where
-        # it does.
-        include:
-          - { os: ubuntu-latest, timeout: 55 }
-          - { os: macos-latest, timeout: 45 }
+  # Which of the jobs below this push can possibly affect. Only the three
+  # Apple jobs consult it, because they are the only ones whose cost is worth
+  # a filter: they run on a runner class that bills at 10x and is capped at
+  # five concurrent jobs account-wide, and 13 of the 60 pull requests merged in
+  # the fortnight before this job was added touched neither Rust nor Apple
+  # sources and paid ~33 macOS-minutes each anyway.
+  #
+  # A job-level `if:` on the consumers, never a workflow-level `paths:` filter.
+  # The two are not interchangeable here: a job skipped by a conditional
+  # reports a check run GitHub counts as successful, whereas a workflow filtered
+  # out by `paths:` reports nothing at all — and `macOS app (…)` and
+  # `iOS app (…)` are required contexts in the `Protect master` ruleset, so
+  # that second shape would leave every docs-only pull request permanently
+  # unmergeable.
+  #
+  # `git diff` rather than `dorny/paths-filter` or `tj-actions/changed-files`.
+  # Fifteen lines of shell do not justify a third-party action running in the
+  # runner context, and this repository pins actions by floating major tag —
+  # the exact configuration that made CVE-2025-30066, in which every tag of
+  # `tj-actions/changed-files` was retargeted to dump runner memory into build
+  # logs, reach the repositories it reached. `gh api .../compare` was the other
+  # candidate and is wrong for a different reason: its `files` array truncates
+  # at 300 entries with no error, so a large pull request would silently report
+  # that it changed nothing relevant.
+  changes:
+    name: Changed paths
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      apple: ${{ steps.filter.outputs.apple }}
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
-      # First, and before the cache is restored, because it is the cheapest
-      # failure in the file and everything after it assumes the answer.
-      #
-      # Installing `stable` above is deliberately not what gets asserted: every
-      # `rustc` below runs inside the checkout, where rust-toolchain.toml
-      # overrides the directory and rustup installs the pinned toolchain on
-      # first use. That override is the mechanism this job, `macos-app` and
-      # `ios-app` all depend on and none of them used to test. It lives here
-      # rather than in a job of its own so it runs on **both** matrix legs —
-      # the override is per-directory and per-machine, and macOS is where the
-      # iOS slices are added to it — and so it costs no second toolchain
-      # download.
-      - name: The four places that name the toolchain all name one version
-        # `rust-toolchain.toml` decides what CI and developers compile with;
-        # `rust-version` decides which MSRV-gated lints clippy applies and what
-        # a reader takes as the floor; the `Dockerfile`'s `ARG RUST_VERSION` is
-        # the compiler for every published server image, because
-        # `release.yml`'s image job passes only `VERSION` and `VCS_REF` as
-        # build-args and so takes that default. Drift between any two of them
-        # is silent, and it is the state this repository was in before
-        # ADR-0026, where five files disagreed about why 1.88 was pinned.
-        # ADR-0026 requires the three file literals byte-identical and the
-        # `rustc` a checkout resolves to match them, so equality is the whole
-        # check — there is nothing to parse loosely. Fail closed: an
-        # unreadable value is a failure, not a skipped comparison. The
-        # Dockerfile pattern excludes space, `#` and `"` deliberately: a value
-        # carrying a trailing comment or quotes then matches nothing and is
-        # reported as unreadable, rather than being captured verbatim and
-        # reported as a version disagreement it is not.
+          # The diff below needs the merge base. The repository is ~43 MiB
+          # packed, so full history costs seconds.
+          fetch-depth: 0
+      - id: filter
+        name: Does this change reach the Apple apps?
+        # Fails open in every direction, which is the only safe bias for a job
+        # that decides whether a gate runs. Any event that is not a pull
+        # request answers `true`; a `git diff` that cannot resolve its endpoints
+        # — a force-pushed base on a stacked pull request is the realistic way —
+        # answers `true` rather than failing the step, because a red X here
+        # would be a worse signal than an Apple job that did not need to run.
+        #
+        # **Directory prefixes, not file extensions.** The tempting version of
+        # this matches `\.rs$` and the manifests, and it is wrong: the slices
+        # compile several things that are not Rust and not a manifest.
+        # `crates/sunrise-crypto/src/bip39-english.txt` is `include_str!`d by
+        # `bip39.rs`; `crates/sunrise-storage/src/migrations.rs` `include_str!`s
+        # twelve `.sql` files; and `crates/sunrise-relay-client/build.rs` reads
+        # `schemas/generated/openapi.v1.json` to generate the entire relay
+        # client. Each of those changes the bytes of the xcframework while an
+        # extension match says nothing happened. `crates/` is 348 tracked files
+        # of which two are markdown, so the prefix costs almost nothing over the
+        # extension it replaces and cannot miss an asset added later.
+        #
+        #   crates/**                the workspace, assets and fixtures included
+        #   tools/**                 `uniffi-bindgen`, built `--locked` from its
+        #                            own tracked lockfile to generate the Swift
+        #   schemas/**               `build.rs` input for the relay client
+        #   **/Cargo.{toml,lock}     the root and `fuzz/` manifests the two
+        #                            prefixes above do not reach
+        #   *.rs                     a Rust file added outside those trees
+        #   rust-toolchain*          selects the compiler for all three slices
+        #   .cargo/**                declares the three Apple target triples
+        #   apps/apple/**            the Swift, project.yml and .swiftlint.yml
+        #   mise.toml                defines every task the Apple jobs run
+        #   tokens.swift             generated, committed, compiled into both apps
+        #   .github/workflows/ci.yml a change to these jobs must run them
+        #   .github/actions/**       likewise for anything they call
+        #
+        # Known and deliberate omission: `.github/scripts/xcresult-failures.py`
+        # is called by both app tasks, but only on the failing path and under
+        # `|| true`, so it cannot turn a green run red or a red run green.
         run: |
           set -euo pipefail
-          channel=$(sed -n 's/^channel *= *"\(.*\)"$/\1/p' rust-toolchain.toml)
-          rust_version=$(sed -n 's/^rust-version *= *"\(.*\)"$/\1/p' Cargo.toml)
-          docker_version=$(sed -n 's/^ARG RUST_VERSION=\([^ #"]*\)$/\1/p' Dockerfile)
-          actual=$(rustc --version | cut -d' ' -f2)
-          echo "rust-toolchain.toml channel   : ${channel:-<none>}"
-          echo "Cargo.toml rust-version       : ${rust_version:-<none>}"
-          echo "Dockerfile ARG RUST_VERSION   : ${docker_version:-<none>}"
-          echo "rustc in the checkout         : ${actual:-<none>}"
-          for pair in "rust-toolchain.toml:$channel" "Cargo.toml:$rust_version" "Dockerfile:$docker_version" "rustc:$actual"; do
-            if [ -z "${pair#*:}" ]; then
-              echo "::error::msrv: could not read the pinned version from ${pair%%:*}"
-              exit 1
-            fi
-          done
-          if [ "$channel" != "$rust_version" ] || [ "$channel" != "$docker_version" ] || [ "$channel" != "$actual" ]; then
-            echo "::error::msrv: the toolchain pin disagrees with itself — rust-toolchain.toml=${channel}, Cargo.toml=${rust_version}, Dockerfile=${docker_version}, rustc=${actual}; ADR-0026 requires one version in all four"
-            exit 1
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "apple=true" >> "$GITHUB_OUTPUT"
+            echo "not a pull request; running the Apple jobs"
+            exit 0
           fi
-      - uses: Swatinem/rust-cache@v2
-        with:
-          # Two cargo workspaces, two target directories. `fuzz/` is its own
-          # workspace root (see `fuzz/Cargo.toml`) and the clippy and rustdoc
-          # steps below build it, so without this line each of those steps pays
-          # a cold build of the shared dependency graph on every run.
-          workspaces: |
-            .
-            fuzz
-      - name: cargo fmt
-        run: cargo fmt --all -- --check
-      - name: cargo clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
-      # `fuzz/` is a separate workspace, so the `--workspace` command above
-      # cannot reach it and the six harnesses were the one corner of the tree
-      # that was formatted and linted by nothing (#167). They decide what a
-      # fuzzer explores, which is what makes an unused branch or a `let _ =`
-      # swallowing a result worth catching here rather than in review.
-      #
-      # This runs on the pinned stable, not the nightly the `fuzz` job installs:
-      # nightly is needed for `-Zsanitizer=address` under `cargo fuzz run`, and
-      # for nothing else. The root `clippy.toml` still applies — its lookup
-      # walks up out of `fuzz/` — so the determinism deny-list binds here too.
-      - name: cargo clippy (fuzz)
-        run: cargo clippy --manifest-path fuzz/Cargo.toml --all-targets -- -D warnings
-      # `--all-targets` is what runs the log-field gate
-      # (`crates/sunrise-log/tests/event_catalog.rs`) against a complete build
-      # rather than a partial one. That gate's file set is the dep-info rustc
-      # wrote beside each artefact, so it can only see what has been compiled,
-      # and `crates/sunrise-sync/src/sse.rs` (feature-gated off by default) and
-      # `crates/sunrise-server/src/api/testing.rs` (`#[cfg(test)]`) are compiled
-      # by no plain `cargo build --workspace`. This command compiles every
-      # target before running a test, so the records exist by the time the gate
-      # reads them; narrowing it would turn that gate red here (#153).
-      # `mise run log-fields` is the same ordering for one gate, run locally.
-      - name: cargo test
-        run: cargo test --workspace --all-targets
-      # One run again. This was two, with `--exclude sunrise-server` and a
-      # `--skip relative_uri` filter, to contain the 18 doctests kynos 0.1.0's
-      # route macros generated out of English prose. The kynos pin now carries
-      # the upstream fix, so there is nothing left to contain and no crate is
-      # excluded from doctest coverage.
-      - name: cargo doc-test
-        run: cargo test --workspace --doc
-      # A step in this job rather than a gate job of its own, because rustdoc
-      # needs the same dependency graph `cargo test` above just compiled and
-      # this job's cache is already warm — standing it up separately would pay
-      # a cold workspace build for a check that runs in about a minute here.
-      #
-      # `cargo build`, `cargo clippy` and `cargo test` are all blind to a broken
-      # intra-doc link: it renders as literal text for exactly the reader the
-      # comment was written for, and nothing goes red. Forty-eight such errors
-      # were standing on master when this step was added.
-      # `--document-private-items` documents the private half of every crate, so
-      # a link inside a private item is checked rather than skipped, and it
-      # turns on `rustdoc::private_intra_doc_links` — the lint for a *public*
-      # comment pointing somewhere a public reader cannot follow. `--no-deps`
-      # keeps the verdict about this workspace. `mise run rust-doc` is this
-      # command verbatim -- keep them in step.
-      - name: cargo doc
-        env:
-          RUSTDOCFLAGS: "-D warnings"
-        run: cargo doc --workspace --no-deps --document-private-items
-      # The fuzz half of the same gate (#167). Each harness's module comment is
-      # where the property that target asserts is written down, and an
-      # unresolved `[`link`]` in one renders as literal text for the only
-      # reader it has. Every `[[bin]]` in `fuzz/Cargo.toml` carried `doc =
-      # false` until #167, which would have made this step document nothing and
-      # pass — the manifest now turns `doc` on and says why.
-      - name: cargo doc (fuzz)
-        env:
-          RUSTDOCFLAGS: "-D warnings"
-        run: cargo doc --no-deps --document-private-items --manifest-path fuzz/Cargo.toml
+          base='${{ github.event.pull_request.base.sha }}'
+          head='${{ github.event.pull_request.head.sha }}'
+          # `--no-renames` is load-bearing, not tidiness. `--name-only` prints
+          # only a rename's *destination*, so `git mv apps/apple/Foo.swift
+          # scratch/Foo.txt` would report one path that matches nothing here,
+          # skip all three Apple jobs, report both required contexts green, and
+          # break master on merge. With `--no-renames` the same commit reports a
+          # delete and an add, and the delete matches.
+          if ! changed=$(git diff --no-renames --name-only "$base...$head"); then
+            echo "apple=true" >> "$GITHUB_OUTPUT"
+            echo "could not diff $base...$head; running the Apple jobs"
+            exit 0
+          fi
+          echo "changed paths:"
+          printf '%s\n' "$changed"
+          # A here-string, not `printf '%s\n' "$changed" | grep -qE`. That
+          # pipeline fails in the one direction the paragraph above says this
+          # job must never fail in. `grep -q` exits on its first match without
+          # draining stdin; `printf` then takes SIGPIPE; and `pipefail`
+          # promotes that 141 to the status of the whole pipeline — so the
+          # `else` branch runs, and a pull request that *did* touch `crates/`
+          # reports `apple=false`, skips all three Apple jobs, reports both
+          # required contexts green, and breaks master on merge. That is the
+          # same failure `--no-renames` above exists to prevent, arriving by a
+          # different route.
+          #
+          # It needs the payload to exceed the 64 KiB pipe buffer *and* a match
+          # to sort early — and since `git diff --name-only` emits sorted
+          # paths, `.github/`, `apps/apple/` and `crates/` are exactly the
+          # entries that sort early, so the early match is the likely case
+          # rather than the unlikely one. All 890 tracked files changing at
+          # once is 34 KiB today, so this is headroom and not a live bug; the
+          # point is that a job whose contract is "fail open in every
+          # direction" should not be relying on the tree staying small. A
+          # here-string redirects from a temporary file, so there is no reader
+          # to close the pipe and nothing to take a signal.
+          if grep -qE \
+            '(^crates/|^tools/|^schemas/|(^|/)Cargo\.(toml|lock)$|\.rs$|^rust-toolchain|^\.cargo/|^apps/apple/|^mise\.toml$|^packages/sunrise-ui-tokens/generated/tokens\.swift$|^\.github/workflows/ci\.yml$|^\.github/actions/)' \
+            <<<"$changed"
+          then
+            echo "apple=true" >> "$GITHUB_OUTPUT"
+            echo "a path the Apple apps are built from changed; running them"
+          else
+            echo "apple=false" >> "$GITHUB_OUTPUT"
+            echo "nothing the Apple apps are built from changed; skipping them"
+          fi
 
-  macos-app:
-    name: macOS app (xcframework + SwiftLint + XCTest)
-    # `macos-26` is the arm64 Tahoe image; `macos-latest` points at the same
-    # one today, but this pin is load-bearing rather than cosmetic:
-    # apps/apple/project.yml sets `deploymentTarget.macOS: "26.0"`, which no
-    # earlier image can build. macOS 26 ships Xcode 26.6 by default (Xcode 26.0
-    # through 26.6 are all present), matching the SDK the app is developed
-    # against, so nothing here is approximated — the deployment target is met
-    # exactly. If `macos-latest` ever advances past 26, revisit this together
-    # with `macos_target` in mise.toml and `deploymentTarget` in project.yml,
-    # which must all agree.
+  # The Rust gate runs twice, as two jobs naming one composite action, rather
+  # than as the two-leg matrix this used to be. The names below are
+  # byte-identical to the legs they replace because both are required status
+  # checks in the `Protect master` ruleset, and the mechanism that keeps the
+  # macOS one off the pull-request path only works on a whole job. See the
+  # header of .github/actions/rust-checks/action.yml for why.
+  #
+  # `timeout-minutes` is a literal per job, not `${{ matrix.timeout }}`: the
+  # legs never cost the same — macOS minutes bill at 10x, so the expensive one
+  # gets the *tighter* cap rather than inheriting a ceiling sized for the
+  # slower-but-cheaper one — and two jobs can simply say so.
+  rust:
+    name: Rust (ubuntu-latest)
+    runs-on: ubuntu-latest
+    # ~2.4x the slowest cold observation (18m26s), plus the ten minutes the
+    # `fuzz/` clippy and rustdoc steps added (#167): a second cargo workspace
+    # with a target directory of its own, which on a cold cache rebuilds the
+    # shared dependency graph once more. Warm, this job runs in about 5m20s.
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/rust-checks
+
+  rust-macos:
+    name: Rust (macos-latest)
+    runs-on: macos-latest
+    # ~2.4x the slowest cold observation (14m46s), plus the same ten minutes.
+    timeout-minutes: 45
+    # Off the pull-request path, and this is the single largest thing in this
+    # file that was blocking one. GitHub caps this account at five concurrent
+    # macOS jobs; every run launched three of them and spent a median 41.5
+    # macOS-minutes, so under two runs fit at once and the p90 wait for a macOS
+    # job to *start* was 56 minutes against a p90 execution time of 25.6. The
+    # worst observed waits — 118 to 137 minutes — all began with four or five
+    # macOS jobs already running.
     #
-    # Cost note: macOS minutes bill at 10x Linux, and this job builds a release
-    # xcframework and runs XCTest. If minutes become the constraint, the lever
-    # is a path filter on `apps/apple/**` + `crates/sunrise-core-bindings/**`,
-    # not deleting the job — nothing else in CI compiles a line of Swift.
+    # This leg is the cheapest of the three to give up, because it duplicates
+    # the ubuntu one almost exactly. `crates/` contains no `cfg(target_os)` at
+    # all and nine `cfg(unix)` sites, and `cfg(unix)` is true on Linux too — so
+    # there is no source path this leg compiles that the ubuntu leg does not.
+    # What it still earns is the behaviour underneath the source: APFS
+    # case-insensitivity and timestamp granularity, Keychain, SQLite locking,
+    # and whatever a dependency does differently on Darwin. That is worth a run
+    # a day and a run per merge, which is what this condition leaves.
+    #
+    # `skipped`, not absent: a job skipped by a job-level `if:` reports a check
+    # run GitHub counts as successful, so the required context is still
+    # satisfied on every pull request. The cost of that is honest and worth
+    # writing down — this required check can now only go red after a merge.
+    if: >-
+      github.event_name == 'schedule'
+      || github.event_name == 'workflow_dispatch'
+      || (github.event_name == 'push' && github.ref == 'refs/heads/master')
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/rust-checks
+
+  apple-xcframework:
+    name: Apple xcframework (3 slices + Swift bindings)
+    # `macos-26` for the same reason the two app jobs pin it: the slices are
+    # compiled with `MACOSX_DEPLOYMENT_TARGET` / `IPHONEOS_DEPLOYMENT_TARGET`
+    # of 26.0 — mise.toml's `macos_target` / `ios_target`, which must equal
+    # project.yml's `deploymentTarget` — and `xcodebuild -create-xcframework`
+    # packages them. No earlier SDK can do either.
     runs-on: macos-26
-    timeout-minutes: 60
+    # 45, matching `rust-macos` above, rather than the 60 the app jobs carry.
+    # The warm phase measures 5.8-6.3 min inside those jobs, but no cold run of
+    # it has ever been observed on its own — the first run after this lands
+    # will be one, because `shared-key: apple` is a new discriminator — and a
+    # release build of sqlite, zstd and ring for three triples is the largest
+    # thing this repository does. So the cap is set from what the file already
+    # knows a macOS job can need, not from the warm number, and tightened once
+    # a cold run has been measured.
+    timeout-minutes: 45
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.apple != 'false' }}
     env:
-      # Deliberately clears the workflow-level `-D warnings`. This job compiles
-      # `tools/uniffi-bindgen`, a separate manifest whose third-party
-      # dependency tree is not ours to keep warning-free; denying warnings
-      # there turns an upstream deprecation into a red macOS build for a
-      # problem no one here can fix. The workspace's own warning discipline is
-      # enforced by the `rust` job's clippy step on both platforms.
+      # Deliberately clears the workflow-level `-D warnings`, and this is now
+      # the only job that needs to: it compiles `tools/uniffi-bindgen`, a
+      # separate manifest whose third-party dependency tree is not ours to keep
+      # warning-free. Denying warnings there turns an upstream deprecation into
+      # a red macOS build for a problem no one here can fix. The workspace's
+      # own warning discipline is enforced by the `rust` job's clippy step.
       RUSTFLAGS: ""
     steps:
       - uses: actions/checkout@v4
       # The toolchain file pins 1.91.1, which rustup installs on first use.
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          # `macos-app` and `ios-app` each used to keep their own copy of this
+          # entry — two 496 MiB caches of one dependency graph — because
+          # rust-cache discriminates by job id when nothing tells it otherwise,
+          # and their keys differed in nothing else. One job builds now, so one
+          # entry exists.
+          #
+          # This does *not* inherit either of those entries, and the first run
+          # after it lands is fully cold. `shared-key` substitutes for the job
+          # id in the key, so this is `v0-rust-apple-Darwin-arm64-…` where the
+          # old ones were `v0-rust-macos-app-…`; the restore-key prefix differs
+          # too, so there is no partial hit to fall back on. Naming it
+          # `macos-app` would inherit, at the price of a key that lies about
+          # which job owns it — one cold macOS build, once, is the better half
+          # of that trade.
+          shared-key: apple
+          # As in the `rust` gate: writes only from `master`, so a pull request
+          # cannot spend the repository's 10 GiB cache quota on an entry that
+          # only that same pull request can read.
+          save-if: ${{ github.ref == 'refs/heads/master' }}
       # aarch64-apple-darwin is the host triple on this runner, but the
       # xcframework carries three slices and the other two are not installed by
       # default — `mise run apple-xcframework` fails without them.
@@ -223,7 +276,118 @@ jobs:
       # so the slices land on the toolchain that actually does the build.
       - name: Add the iOS slices to the pinned toolchain
         run: rustup target add aarch64-apple-ios aarch64-apple-ios-sim
-      # None of the three are in the runner image.
+      # mise only. XcodeGen and SwiftLint belong to the two jobs below; this
+      # one compiles no Swift.
+      - name: Install mise
+        run: brew install --quiet mise
+      # mise refuses to run tasks from a config it has not been told to trust,
+      # and a fresh checkout is never trusted. Explicit rather than implicit:
+      # the runner has no interactive prompt to answer.
+      - name: Trust mise config
+        run: mise trust --yes
+      - name: mise run apple-xcframework
+        run: mise run apple-xcframework
+      # One artefact, not two. `out/swift/sunrise_core_bindings.swift` is
+      # generated by the same build that produced the slices and is compiled
+      # into both apps; splitting them would let a job download one half.
+      #
+      # The upload root is the least common ancestor of the matched paths,
+      # which these two make `out/` — so the artefact holds
+      # `SunriseCore.xcframework/` and `swift/` at its root and the jobs below
+      # unpack it with `path: out`. The framework name is mise.toml's `ffi_fw`;
+      # if that ever changes, this path and the two below change with it.
+      #
+      # `compression-level: 1` because both ends of this round trip are
+      # 10x-billed macOS runners: 195 MB of static archives zip to 83 MB at
+      # level 1, and the few MB level 6 would save are not worth the CPU. No
+      # tar: this xcframework is three `.a` files, their headers and an
+      # Info.plist, with no symlink and no executable bit, so a zip round trip
+      # loses nothing.
+      - name: Upload the framework and the bindings
+        uses: actions/upload-artifact@v4
+        with:
+          name: apple-xcframework
+          path: |
+            out/SunriseCore.xcframework
+            out/swift
+          if-no-files-found: error
+          compression-level: 1
+          # Nothing outside this run consumes it, but "Re-run failed jobs" on
+          # `ios-app` the next morning is an ordinary thing to do and it
+          # re-enters the *same* run, downloading rather than rebuilding. At 1
+          # day that re-run fails on a expired artefact; a week covers it. The
+          # repository is public, so Actions storage is not the constraint.
+          retention-days: 7
+
+  macos-app:
+    name: macOS app (xcframework + SwiftLint + XCTest)
+    # `macos-26` is the arm64 Tahoe image; `macos-latest` points at the same
+    # one today, but this pin is load-bearing rather than cosmetic:
+    # apps/apple/project.yml sets `deploymentTarget.macOS: "26.0"`, which no
+    # earlier image can build. macOS 26 ships Xcode 26.6 by default (Xcode 26.0
+    # through 26.6 are all present), matching the SDK the app is developed
+    # against, so nothing here is approximated — the deployment target is met
+    # exactly. If `macos-latest` ever advances past 26, revisit this together
+    # with `macos_target` in mise.toml and `deploymentTarget` in project.yml,
+    # which must all agree.
+    #
+    # This job no longer builds the xcframework — `apple-xcframework` above
+    # does, once, and hands it here. It used to build its own, and so did
+    # `ios-app`: the same three release slices and the same
+    # `tools/uniffi-bindgen`, twice per run, measured at 6.3 and 5.8 minutes
+    # on the runner class that bills at 10x.
+    runs-on: macos-26
+    timeout-minutes: 60
+    needs: [changes, apple-xcframework]
+    if: ${{ !cancelled() && needs.changes.outputs.apple != 'false' }}
+    env:
+      # The framework and the bindings arrive from `apple-xcframework`. This is
+      # what stops them being rebuilt here, and it is read in two places that
+      # are both load-bearing: mise.toml's `apple-xcframework` task, which
+      # `macos-app` `depends` on, and the `SunriseFFI` aggregate target in
+      # apps/apple/project.yml, whose build script `xcodebuild` runs
+      # *unconditionally* (`basedOnDependencyAnalysis: false`) and whose first
+      # act would otherwise be an `rm -rf` over the artefact this job has just
+      # downloaded. `mise run macos-app` passes the variable through to
+      # `xcodebuild` as a build setting so Xcode exports it into that script's
+      # environment.
+      #
+      # Nothing sets it on a developer's machine, so a local `mise run
+      # macos-app` still builds the framework first, exactly as before.
+      SUNRISE_FFI_PREBUILT: "1"
+    steps:
+      # First, and before the runner does anything else. `!cancelled()` in the
+      # `if:` above replaces the implicit `success()` that `needs:` would
+      # otherwise carry, so a *failed* `apple-xcframework` dispatches this job
+      # rather than skipping it. That is deliberate: this job's name is a
+      # required context and `apple-xcframework`'s is not, so skipping here
+      # would report success and let a broken framework build merge. Running
+      # and failing is the correct outcome — but without this step the failure
+      # arrives minutes later as "Artifact not found", which names the symptom
+      # and not the cause. This turns it into one line, in seconds, and gives
+      # the macOS slot straight back.
+      - name: The framework job must have succeeded
+        if: needs.apple-xcframework.result != 'success'
+        run: |
+          echo "::error::apple-xcframework did not succeed (result: ${{ needs.apple-xcframework.result }}); there is no framework to download."
+          exit 1
+      - uses: actions/checkout@v4
+      - name: Download the framework and the bindings
+        uses: actions/download-artifact@v4
+        with:
+          name: apple-xcframework
+          path: out
+      # None of the three are in the runner image. No Rust toolchain and no
+      # `rustup target add`: with the framework prebuilt, nothing in this job
+      # compiles a line of Rust.
+      #
+      # If `SUNRISE_FFI_PREBUILT` ever stops being honoured, this job goes red
+      # rather than silently rebuilding — but not for the reason it looks like.
+      # The `macos-26` image ships rustup and cargo, so the failure is not a
+      # missing toolchain; it is `E0463: can't find crate for core`, from the
+      # `rustup target add` that used to be here and now lives in
+      # `apple-xcframework`. Red either way, and that is the direction that
+      # matters, but the message names the slice rather than the guard.
       - name: Install mise, XcodeGen and SwiftLint
         run: brew install --quiet mise xcodegen swiftlint
       # mise refuses to run tasks from a config it has not been told to trust,
@@ -232,20 +396,30 @@ jobs:
       - name: Trust mise config
         run: mise trust --yes
       - name: Toolchain versions
-        # Printed, not asserted: if the default Xcode ever regresses below 26,
-        # the build fails on the deployment target with a clearer message than
-        # any assertion here would produce. This is for reading the log after.
+        # The versions are printed, not asserted: if the default Xcode ever
+        # regresses below 26, the build fails on the deployment target with a
+        # clearer message than any assertion here would produce. This is for
+        # reading the log after.
+        #
+        # The `du` is the exception, and it is deliberately last. A `run:`
+        # block runs under `bash -e`, so `du` on a path that is not there exits
+        # non-zero and fails the step — which is the point: it turns "the
+        # artefact did not unpack where project.yml expects it" into a one-line
+        # failure naming the path, instead of a SwiftLint or linker error
+        # thirty lines into `xcodebuild` that names something else.
         run: |
           xcodebuild -version
           xcodebuild -showsdks | grep -i macos
           swiftlint version
           xcodegen --version
-      # One task, deliberately. `mise run macos-app` builds the xcframework,
-      # runs `xcodegen generate` (the .xcodeproj is gitignored and this is the
-      # only supported way to get one), runs `swiftlint lint --strict`, and
-      # runs `xcodebuild test`. Re-expressing those four steps as YAML would
-      # create a second definition of the macOS build that drifts from the one
-      # developers actually run.
+          du -sh out/SunriseCore.xcframework out/swift
+      # One task, deliberately. `mise run macos-app` runs `xcodegen generate`
+      # (the .xcodeproj is gitignored and this is the only supported way to get
+      # one), runs `swiftlint lint --strict`, and runs `xcodebuild test`.
+      # Re-expressing those steps as YAML would create a second definition of
+      # the macOS build that drifts from the one developers actually run — so
+      # the prebuilt framework is signalled by the environment above rather
+      # than by CI calling a different task.
       - name: mise run macos-app
         run: mise run macos-app
 
@@ -256,24 +430,39 @@ jobs:
     # 26 SDK and simulators ship with the Xcode on `macos-26`.
     #
     # A separate job rather than a step on `macos-app`. The two share only the
-    # xcframework, they fail for different reasons, and a red iOS test run
-    # should not hide a green macOS one — nor cost the macOS build its result
-    # when the simulator is the thing that broke.
+    # xcframework — which they now share as an artefact rather than by building
+    # it twice — they fail for different reasons, and a red iOS test run should
+    # not hide a green macOS one, nor cost the macOS build its result when the
+    # simulator is the thing that broke.
     runs-on: macos-26
     timeout-minutes: 60
+    needs: [changes, apple-xcframework]
+    if: ${{ !cancelled() && needs.changes.outputs.apple != 'false' }}
     env:
-      # As in `macos-app`: this job builds `tools/uniffi-bindgen`, whose
-      # third-party tree is not ours to keep warning-free.
-      RUSTFLAGS: ""
+      # As in `macos-app`, and for the reason spelled out there.
+      SUNRISE_FFI_PREBUILT: "1"
     steps:
+      # First, and before the runner does anything else. `!cancelled()` in the
+      # `if:` above replaces the implicit `success()` that `needs:` would
+      # otherwise carry, so a *failed* `apple-xcframework` dispatches this job
+      # rather than skipping it. That is deliberate: this job's name is a
+      # required context and `apple-xcframework`'s is not, so skipping here
+      # would report success and let a broken framework build merge. Running
+      # and failing is the correct outcome — but without this step the failure
+      # arrives minutes later as "Artifact not found", which names the symptom
+      # and not the cause. This turns it into one line, in seconds, and gives
+      # the macOS slot straight back.
+      - name: The framework job must have succeeded
+        if: needs.apple-xcframework.result != 'success'
+        run: |
+          echo "::error::apple-xcframework did not succeed (result: ${{ needs.apple-xcframework.result }}); there is no framework to download."
+          exit 1
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      # As in `macos-app`, and for the reason spelled out there: a step rather
-      # than the action's `targets:` input, so the slices land on the pinned
-      # 1.91.1 that rust-toolchain.toml selects rather than on stable.
-      - name: Add the iOS slices to the pinned toolchain
-        run: rustup target add aarch64-apple-ios aarch64-apple-ios-sim
+      - name: Download the framework and the bindings
+        uses: actions/download-artifact@v4
+        with:
+          name: apple-xcframework
+          path: out
       - name: Install mise, XcodeGen and SwiftLint
         run: brew install --quiet mise xcodegen swiftlint
       # mise refuses to run tasks from a config it has not been told to trust,
@@ -286,12 +475,12 @@ jobs:
           xcodebuild -version
           xcodebuild -showsdks | grep -i ios
           xcrun simctl list devices available | grep -i iphone
-      # One task, as with macOS. `mise run ios-app` builds the three-slice
-      # xcframework, runs `xcodegen generate`, `swiftlint --strict`, and
-      # `xcodebuild test` against the iPhone 17 Pro simulator — which runs both
-      # the shared `SunriseTests` bundle and, unlike the macOS job, the UI
-      # tests: a simulator runner needs no change to the machine's security
-      # posture, so there is nothing to opt into.
+          du -sh out/SunriseCore.xcframework out/swift
+      # One task, as with macOS. `mise run ios-app` runs `xcodegen generate`,
+      # `swiftlint --strict`, and `xcodebuild test` against the iPhone 17 Pro
+      # simulator — which runs both the shared `SunriseTests` bundle and,
+      # unlike the macOS job, the UI tests: a simulator runner needs no change
+      # to the machine's security posture, so there is nothing to opt into.
       - name: mise run ios-app
         run: mise run ios-app
 
@@ -402,6 +591,27 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Reads the `rust` gate's entry rather than keeping one of its own.
+          # Same runner image and the same workflow-level `RUSTFLAGS`, so the
+          # same env hash — the segment these three and the `rust` job already
+          # agreed on, and the job id that `shared-key` substitutes for is the
+          # only one they differed in. Not a full key match: the `rust` gate
+          # also declares `workspaces: . + fuzz`, which folds `fuzz/`'s manifests
+          # into the trailing lock hash. rust-cache fixes its restore-key before
+          # that hash, so this is a prefix hit — master's newest `rust` entry —
+          # rather than an exact one, which is all this job needs.
+          shared-key: rust
+          # Reader, not writer. rust-cache skips saving whenever the restore
+          # was an exact key hit, so under one shared key the first job to
+          # finish decides the entry's contents until the next manifest change.
+          # This job must not be that job. The `rust` gate's
+          # `cargo test --workspace --all-targets` already compiles
+          # `sunrise-bench`'s criterion dependency graph, so there is nothing
+          # here to contribute — and this job is `continue-on-error`, so a
+          # cache shaped by a run that was allowed to fail is not one the gate
+          # should inherit.
+          save-if: false
       - name: cargo bench
         # `--benches` alone still includes the lib's unittest harness, which
         # rejects criterion flags; the crate opts its lib and bin out via
@@ -464,6 +674,27 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Reads the `rust` gate's entry rather than keeping one of its own.
+          # Same runner image and the same workflow-level `RUSTFLAGS`, so the
+          # same env hash — the segment these three and the `rust` job already
+          # agreed on, and the job id that `shared-key` substitutes for is the
+          # only one they differed in. Not a full key match: the `rust` gate
+          # also declares `workspaces: . + fuzz`, which folds `fuzz/`'s manifests
+          # into the trailing lock hash. rust-cache fixes its restore-key before
+          # that hash, so this is a prefix hit — master's newest `rust` entry —
+          # rather than an exact one, which is all this job needs.
+          shared-key: rust
+          # Reader, not writer, and here that settles two questions at once.
+          # rust-cache skips saving whenever the restore was an exact key hit,
+          # so under one shared key the first job to finish decides the entry's
+          # contents until the next manifest change — and cargo-mutants copies
+          # the tree into temporary directories and builds there, so a leg's
+          # `target/` at job end holds the baseline build and nothing else, the
+          # least representative snapshot of the thirteen. The other question is
+          # that there are thirteen legs: left saving, they would race for one
+          # immutable key, and twelve would upload ~700 MiB apiece to lose it.
+          save-if: false
       - name: Install cargo-mutants
         uses: taiki-e/install-action@v2
         with:
@@ -759,6 +990,26 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Reads the `rust` gate's entry rather than keeping one of its own.
+          # Same runner image and the same workflow-level `RUSTFLAGS`, so the
+          # same env hash — the segment these three and the `rust` job already
+          # agreed on, and the job id that `shared-key` substitutes for is the
+          # only one they differed in. Not a full key match: the `rust` gate
+          # also declares `workspaces: . + fuzz`, which folds `fuzz/`'s manifests
+          # into the trailing lock hash. rust-cache fixes its restore-key before
+          # that hash, so this is a prefix hit — master's newest `rust` entry —
+          # rather than an exact one, which is all this job needs.
+          shared-key: rust
+          # Reader, not writer. rust-cache skips saving whenever the restore
+          # was an exact key hit, so under one shared key the first job to
+          # finish decides the entry's contents until the next manifest change.
+          # This job must not be that job: it builds only `sunrise-server` and
+          # finishes in under a minute warm, so an entry shaped by it would be
+          # a poor inheritance for the `--workspace --all-targets` build that
+          # fills it — that is the 36-53s-versus-4m17s spread noted above,
+          # seen from the other side.
+          save-if: false
       - name: Reject a description that has drifted from its handlers
         # `schemas/generated/openapi.v1.json` is an *input*: `spargen` generates the relay
         # client from it. A stale one yields a client that disagrees with the
@@ -1130,6 +1381,17 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: fuzz
+          # `fuzz` is the literal job id, which is what rust-cache uses when no
+          # `shared-key` is given — so naming it preserves the existing entry
+          # rather than orphaning it. It is its own family and shares with
+          # nothing: a nightly toolchain and `RUSTFLAGS: ""` put it at a
+          # different env hash from every other cache in this file.
+          shared-key: fuzz
+          # This job runs only on `schedule` and `workflow_dispatch`, so the
+          # ref is the default branch in practice. The exception this guards is
+          # a manual dispatch on a feature branch, which would otherwise write
+          # a ~260 MiB entry nothing else can ever read.
+          save-if: ${{ github.ref == 'refs/heads/master' }}
       - name: Install cargo-fuzz
         # From source rather than through an install action: `cargo-fuzz` is
         # not a tool this repository has ever seen an action resolve, and a

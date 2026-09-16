@@ -1,0 +1,188 @@
+# The Rust gate: formatting, clippy and rustdoc over both cargo workspaces,
+# the workspace test suite, and the assertion that the toolchain pin agrees
+# with itself.
+#
+# This is a composite action rather than a two-leg matrix in ci.yml because
+# `Rust (macos-latest)` is a required status check in the `Protect master`
+# ruleset, and the two ways of not running a matrix leg are not equivalent. A
+# leg removed by `exclude` reports *nothing*, so the required context sits at
+# "Expected — waiting for status to be reported" and the pull request can
+# never merge. A whole job skipped by a job-level `if:` reports `skipped`,
+# which GitHub counts as a successful status. Keeping the macOS leg off the
+# pull-request path therefore needs it to be a job of its own — and two jobs
+# running identical steps need those steps written once, here.
+#
+# The caller supplies `actions/checkout@v4` before this action, because an
+# action stored in the repository cannot check out the repository it lives in.
+name: Rust checks
+description: Format, lint, test and document both cargo workspaces on the pinned toolchain.
+
+runs:
+  using: composite
+  steps:
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        components: rustfmt, clippy
+    # First, and before the cache is restored, because it is the cheapest
+    # failure in the file and everything after it assumes the answer.
+    #
+    # Installing `stable` above is deliberately not what gets asserted: every
+    # `rustc` below runs inside the checkout, where rust-toolchain.toml
+    # overrides the directory and rustup installs the pinned toolchain on
+    # first use. That override is the mechanism this action and the
+    # `apple-xcframework` job both depend on and neither used to test. It
+    # lives in this action rather than in a job of its own so it runs for
+    # **both** callers — the override is per-directory and per-machine, so
+    # Linux and macOS each have to resolve it themselves — and so it costs no
+    # second toolchain download.
+    - name: The four places that name the toolchain all name one version
+      # `rust-toolchain.toml` decides what CI and developers compile with;
+      # `rust-version` decides which MSRV-gated lints clippy applies and what
+      # a reader takes as the floor; the `Dockerfile`'s `ARG RUST_VERSION` is
+      # the compiler for every published server image, because
+      # `release.yml`'s image job passes only `VERSION` and `VCS_REF` as
+      # build-args and so takes that default. Drift between any two of them
+      # is silent, and it is the state this repository was in before
+      # ADR-0026, where five files disagreed about why 1.88 was pinned.
+      # ADR-0026 requires the three file literals byte-identical and the
+      # `rustc` a checkout resolves to match them, so equality is the whole
+      # check — there is nothing to parse loosely. Fail closed: an
+      # unreadable value is a failure, not a skipped comparison. The
+      # Dockerfile pattern excludes space, `#` and `"` deliberately: a value
+      # carrying a trailing comment or quotes then matches nothing and is
+      # reported as unreadable, rather than being captured verbatim and
+      # reported as a version disagreement it is not.
+      shell: bash
+      run: |
+        set -euo pipefail
+        channel=$(sed -n 's/^channel *= *"\(.*\)"$/\1/p' rust-toolchain.toml)
+        rust_version=$(sed -n 's/^rust-version *= *"\(.*\)"$/\1/p' Cargo.toml)
+        docker_version=$(sed -n 's/^ARG RUST_VERSION=\([^ #"]*\)$/\1/p' Dockerfile)
+        actual=$(rustc --version | cut -d' ' -f2)
+        echo "rust-toolchain.toml channel   : ${channel:-<none>}"
+        echo "Cargo.toml rust-version       : ${rust_version:-<none>}"
+        echo "Dockerfile ARG RUST_VERSION   : ${docker_version:-<none>}"
+        echo "rustc in the checkout         : ${actual:-<none>}"
+        for pair in "rust-toolchain.toml:$channel" "Cargo.toml:$rust_version" "Dockerfile:$docker_version" "rustc:$actual"; do
+          if [ -z "${pair#*:}" ]; then
+            echo "::error::msrv: could not read the pinned version from ${pair%%:*}"
+            exit 1
+          fi
+        done
+        if [ "$channel" != "$rust_version" ] || [ "$channel" != "$docker_version" ] || [ "$channel" != "$actual" ]; then
+          echo "::error::msrv: the toolchain pin disagrees with itself — rust-toolchain.toml=${channel}, Cargo.toml=${rust_version}, Dockerfile=${docker_version}, rustc=${actual}; ADR-0026 requires one version in all four"
+          exit 1
+        fi
+    - uses: Swatinem/rust-cache@v2
+      with:
+        # Two cargo workspaces, two target directories. `fuzz/` is its own
+        # workspace root (see `fuzz/Cargo.toml`) and the clippy and rustdoc
+        # steps below build it, so without this line each of those steps pays
+        # a cold build of the shared dependency graph on every run.
+        workspaces: |
+          .
+          fuzz
+        # Deliberately the literal `rust`, which is the id of the job this
+        # action was extracted from. rust-cache discriminates by *job id* when
+        # no `shared-key` is given, so naming it reproduces byte-for-byte the
+        # key that job already writes
+        # (`v0-rust-rust-<os>-<arch>-<env+rustc>-<manifests>`). Two things
+        # follow. Splitting one matrix into the `rust` and `rust-macos` jobs
+        # in ci.yml does not move the key, so neither pays a cold build for
+        # the split. And `openapi-current`, `mutants` and `bench-regression` — same
+        # runner, same `RUSTFLAGS`, so the same env hash — start reading this
+        # entry the moment they name the same shared key, instead of keeping
+        # three separate copies of one dependency graph.
+        shared-key: rust
+        # Restricting writes to `master` is what stops a pull request saving a
+        # ~660 MiB entry that only that same pull request can ever read.
+        # GitHub scopes a cache written on `refs/pull/N/merge` to that ref, so
+        # ten such entries — 5.4 GB, half a 10 GiB quota — were doing nothing
+        # but evicting, by LRU, the `master` entries every pull request
+        # actually restores from. A pull request still restores: changing a
+        # manifest moves only the trailing hash, and rust-cache falls back to
+        # the prefix restore-key, which resolves to master's newest entry.
+        #
+        # Written out here rather than taken as an action input, and the
+        # difference matters. Both callers would pass the same expression, so
+        # an input buys nothing — and it would route this particular value
+        # through the one mechanism that is known to be unreliable: rust-cache
+        # re-reads `save-if` with `core.getInput` in its *post* step, nested
+        # action inputs are not always restored there (actions/runner#2030,
+        # open since 2022), and rust-cache's fallback for an empty read is to
+        # save. That failure is silent and it is exactly the one this line
+        # exists to prevent. `github.ref` is available in a composite action
+        # and needs no such restoration.
+        save-if: ${{ github.ref == 'refs/heads/master' }}
+    - name: cargo fmt
+      shell: bash
+      run: cargo fmt --all -- --check
+    - name: cargo clippy
+      shell: bash
+      run: cargo clippy --workspace --all-targets -- -D warnings
+    # `fuzz/` is a separate workspace, so the `--workspace` command above
+    # cannot reach it and the six harnesses were the one corner of the tree
+    # that was formatted and linted by nothing (#167). They decide what a
+    # fuzzer explores, which is what makes an unused branch or a `let _ =`
+    # swallowing a result worth catching here rather than in review.
+    #
+    # This runs on the pinned stable, not the nightly the `fuzz` job installs:
+    # nightly is needed for `-Zsanitizer=address` under `cargo fuzz run`, and
+    # for nothing else. The root `clippy.toml` still applies — its lookup
+    # walks up out of `fuzz/` — so the determinism deny-list binds here too.
+    - name: cargo clippy (fuzz)
+      shell: bash
+      run: cargo clippy --manifest-path fuzz/Cargo.toml --all-targets -- -D warnings
+    # `--all-targets` is what runs the log-field gate
+    # (`crates/sunrise-log/tests/event_catalog.rs`) against a complete build
+    # rather than a partial one. That gate's file set is the dep-info rustc
+    # wrote beside each artefact, so it can only see what has been compiled,
+    # and `crates/sunrise-sync/src/sse.rs` (feature-gated off by default) and
+    # `crates/sunrise-server/src/api/testing.rs` (`#[cfg(test)]`) are compiled
+    # by no plain `cargo build --workspace`. This command compiles every
+    # target before running a test, so the records exist by the time the gate
+    # reads them; narrowing it would turn that gate red here (#153).
+    # `mise run log-fields` is the same ordering for one gate, run locally.
+    - name: cargo test
+      shell: bash
+      run: cargo test --workspace --all-targets
+    # One run again. This was two, with `--exclude sunrise-server` and a
+    # `--skip relative_uri` filter, to contain the 18 doctests kynos 0.1.0's
+    # route macros generated out of English prose. The kynos pin now carries
+    # the upstream fix, so there is nothing left to contain and no crate is
+    # excluded from doctest coverage.
+    - name: cargo doc-test
+      shell: bash
+      run: cargo test --workspace --doc
+    # A step in this job rather than a gate job of its own, because rustdoc
+    # needs the same dependency graph `cargo test` above just compiled and
+    # this job's cache is already warm — standing it up separately would pay
+    # a cold workspace build for a check that runs in about a minute here.
+    #
+    # `cargo build`, `cargo clippy` and `cargo test` are all blind to a broken
+    # intra-doc link: it renders as literal text for exactly the reader the
+    # comment was written for, and nothing goes red. Forty-eight such errors
+    # were standing on master when this step was added.
+    # `--document-private-items` documents the private half of every crate, so
+    # a link inside a private item is checked rather than skipped, and it
+    # turns on `rustdoc::private_intra_doc_links` — the lint for a *public*
+    # comment pointing somewhere a public reader cannot follow. `--no-deps`
+    # keeps the verdict about this workspace. `mise run rust-doc` is this
+    # command verbatim -- keep them in step.
+    - name: cargo doc
+      env:
+        RUSTDOCFLAGS: "-D warnings"
+      shell: bash
+      run: cargo doc --workspace --no-deps --document-private-items
+    # The fuzz half of the same gate (#167). Each harness's module comment is
+    # where the property that target asserts is written down, and an
+    # unresolved `[`link`]` in one renders as literal text for the only
+    # reader it has. Every `[[bin]]` in `fuzz/Cargo.toml` carried `doc =
+    # false` until #167, which would have made this step document nothing and
+    # pass — the manifest now turns `doc` on and says why.
+    - name: cargo doc (fuzz)
+      env:
+        RUSTDOCFLAGS: "-D warnings"
+      shell: bash
+      run: cargo doc --no-deps --document-private-items --manifest-path fuzz/Cargo.toml
+

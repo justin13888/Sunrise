@@ -442,6 +442,36 @@ description = "Build the Swift bindings + SunriseCore.xcframework both Apple app
 shell = "bash -c"
 run = """
 set -euo pipefail
+
+# CI builds this once, in the `apple-xcframework` job, and hands it to the
+# `macos-app` and `ios-app` jobs as an artefact; `SUNRISE_FFI_PREBUILT=1` is
+# how those jobs say the framework already in `out/` is the right one. Two
+# paths would otherwise rebuild it, and both reach this line: this task,
+# because `macos-app` and `ios-app` `depends` on it, and the `SunriseFFI`
+# aggregate target in apps/apple/project.yml, whose build script runs this
+# task again from inside `xcodebuild` and carries the same guard.
+#
+# An explicit opt-out rather than an "is out/ already populated?" test. The
+# default has to stay "rebuild", because cargo — not a file-existence check —
+# is what decides whether there is work to do, and the caller most likely to
+# trip a file-existence check is the developer who has just edited the crate
+# and would be handed a stale core without a word. Nothing sets this variable
+# on a developer's machine.
+#
+# The artefacts are asserted rather than assumed: a job that sets the variable
+# and then fails to download would otherwise reach `xcodebuild` minutes later
+# and fail on a missing framework, naming neither the cause nor this task.
+if [ "${SUNRISE_FFI_PREBUILT:-}" = "1" ]; then
+  for required in "out/$ffi_fw.xcframework" "out/swift/$ffi_lib.swift"; do
+    if [ ! -e "$required" ]; then
+      echo "SUNRISE_FFI_PREBUILT=1 but $required is not here" >&2
+      exit 1
+    fi
+  done
+  echo "SUNRISE_FFI_PREBUILT=1: reusing out/$ffi_fw.xcframework + out/swift"
+  exit 0
+fi
+
 rm -rf build "out/$ffi_fw.xcframework"
 mkdir -p build/headers build/macos build/ios build/ios-sim out/swift
 
@@ -547,6 +577,15 @@ echo "out/$ffi_fw.xcframework (macOS + iOS + iOS Simulator) + out/swift/$ffi_lib
 # to the target, so the xcframework is built first even though the project's
 # own `SunriseFFI` target would rebuild it. `.xcodeproj` is gitignored: this
 # task is the only supported way to get one.
+#
+# Both of those rebuilds are what `SUNRISE_FFI_PREBUILT=1` turns off, and CI
+# sets it because a job upstream has already built the framework and handed it
+# over as an artefact. The `depends` above reads it; so does the `SunriseFFI`
+# script phase, which is why the `xcodebuild` line below forwards it on as a
+# build setting — Xcode gives a script phase the build settings, not this
+# shell's environment. `${x:+...}` expands to nothing at all when the variable
+# is unset, so a developer's command line is character-for-character what it
+# was, and it is `set -u`-safe. Nothing sets the variable outside CI.
 [tasks.macos-app]
 description = "Generate the Xcode project, build the macOS app, and run its tests"
 depends = ["apple-xcframework"]
@@ -567,7 +606,7 @@ xcodebuild test \\
   -destination 'platform=macOS,arch=arm64' \\
   -resultBundlePath "$bundle" \\
   -quiet \\
-  CODE_SIGNING_ALLOWED=NO || status=$?
+  CODE_SIGNING_ALLOWED=NO ${SUNRISE_FFI_PREBUILT:+SUNRISE_FFI_PREBUILT=$SUNRISE_FFI_PREBUILT} || status=$?
 if [ "$status" -ne 0 ]; then
   echo "--- assertions from $bundle ---" >&2
   ../../.github/scripts/xcresult-failures.py "$bundle" >&2 || true
@@ -611,6 +650,11 @@ swiftlint lint --strict --quiet --config .swiftlint.yml
 # do with the code. Ad-hoc (`CODE_SIGN_IDENTITY=-`, set in project.yml) is
 # enough for the simulator and needs no developer account.
 #
+# `${SUNRISE_FFI_PREBUILT:+...}` on that same command forwards CI's "the
+# framework in `out/` is already the right one" flag into the `SunriseFFI`
+# script phase as a build setting; see the note above `macos-app` for why that
+# is the mechanism, and why an unset variable leaves the line unchanged.
+#
 # `-resultBundlePath` and the block below exist because `-quiet` is otherwise
 # a one-way valve. On a failing run it prints the *name* of the failing test
 # and nothing else — no assertion message, no file, no line — which is the
@@ -641,7 +685,7 @@ xcodebuild test \\
   -destination "platform=iOS Simulator,name=$ios_sim" \\
   -resultBundlePath "$bundle" \\
   -quiet \\
-  CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=- || status=$?
+  CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=- ${SUNRISE_FFI_PREBUILT:+SUNRISE_FFI_PREBUILT=$SUNRISE_FFI_PREBUILT} || status=$?
 if [ "$status" -ne 0 ]; then
   echo "--- assertions from $bundle ---" >&2
   ../../.github/scripts/xcresult-failures.py "$bundle" >&2 || true
@@ -650,7 +694,7 @@ fi
 """
 
 [tasks.apple-app]
-description = "Both Apple apps, back to back. What CI runs across its two jobs"
+description = "Both Apple apps, back to back. What CI runs across two of its three Apple jobs"
 # Sequential rather than `depends`, which mise runs in parallel: two release
 # builds of the C dependencies at once is how the disk fills.
 run = ["mise run macos-app", "mise run ios-app"]

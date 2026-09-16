@@ -197,7 +197,7 @@ Sunrise window would put a list beside the grid, but this app cannot vend one:
 windows on iPadOS are gated on `UIApplicationSupportsMultipleScenes` inside
 `UIApplicationSceneManifest`, which nothing here sets. The `SunriseiOS` target
 has no checked-in plist at all — its Info.plist is generated
-(`project.yml:359-368`, `GENERATE_INFOPLIST_FILE: YES` at `:346`) from three
+(`project.yml:390-399`, `GENERATE_INFOPLIST_FILE: YES` at `:346`) from three
 `properties` (`CFBundleURLTypes` and the two version keys) and three
 `INFOPLIST_KEY_` settings (`UILaunchScreen_Generation`, and the two
 `UISupportedInterfaceOrientations`, `:347-355`). Neither key appears in any of

@@ -48,8 +48,12 @@ What exists today:
 - `SunriseiOSUITests` — and unlike the macOS UI tests, these are **not** skipped.
   A simulator runner needs no change to the machine's security posture, so iOS is
   the platform where a tap is proved to reach the core on every build.
-- CI: an `ios-app` job on `macos-26`. It carries no `if:` and no path filter,
-  so it runs whenever CI runs. Four triggers
+- CI: an `ios-app` job on `macos-26`, downstream of the `apple-xcframework`
+  job that builds the framework it links. It runs whenever CI runs, except on
+  a pull request that touches nothing the Apple apps are built from — no Rust,
+  no manifest, no `apps/apple/**`, no `mise.toml` — which the `changes` job
+  decides. A skipped job reports a check GitHub counts as successful, so the
+  required context is still satisfied. Four triggers
   (`.github/workflows/ci.yml:3-17`), one of them branch-filtered: `push` on
   `master`. `pull_request` carries no `branches:` key, deliberately — that key
   filters on the *base* branch, so constraining it meant a pull request stacked

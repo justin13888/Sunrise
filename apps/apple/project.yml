@@ -8,6 +8,9 @@
 #    the app target: Xcode resolves and processes an `.xcframework` while it
 #    plans that target's build, before any of its phases run, so a phase that
 #    deletes and recreates the framework would race its own consumer.
+#    In CI the framework is built once, by a job of its own, and that job's
+#    consumers set `SUNRISE_FFI_PREBUILT=1`, which makes this target a no-op —
+#    see the note on its script.
 # 2. `SWIFT_UPCOMING_FEATURE_EXISTENTIAL_ANY` is deliberately absent. Turning
 #    it on produces 20 warnings in the generated bindings, which this project
 #    compiles as errors.
@@ -124,6 +127,34 @@ aggregateTargets:
         basedOnDependencyAnalysis: false
         script: |
           set -euo pipefail
+
+          # CI builds the framework once, in a job of its own, and hands it to
+          # the macOS and iOS jobs as an artefact. Those jobs pass
+          # `SUNRISE_FFI_PREBUILT=1` to `xcodebuild` as a build setting, which
+          # Xcode exports into this script's environment. Without this exit,
+          # the first thing `apple-xcframework` does — `rm -rf` over
+          # `out/SunriseCore.xcframework` — would delete the artefact the job
+          # had just downloaded and rebuild it on a runner that no longer
+          # carries a Rust toolchain. `basedOnDependencyAnalysis: false` above
+          # is why nothing else can stop this phase from running.
+          #
+          # The freshness check below is not a substitute, and this is the
+          # reason it sits first rather than being folded into it: that check
+          # compares mtimes, and an artefact's mtimes survive a zip round trip
+          # in a way this script cannot verify from the inside. A downloaded
+          # framework could easily look older than a checkout made after it was
+          # built. An explicit flag from the job that did the downloading is the
+          # only signal here that means what it says.
+          #
+          # It is an opt-out and not an opt-in for the same reason the check
+          # below is a check and not an assumption: on a developer's machine
+          # the default has to stay "ask cargo". Nothing sets this variable
+          # outside CI.
+          if [ "${SUNRISE_FFI_PREBUILT:-}" = "1" ]; then
+            echo "note: SUNRISE_FFI_PREBUILT=1 — reusing the prebuilt SunriseCore.xcframework"
+            exit 0
+          fi
+
           cd "$SRCROOT/../.."
           # Xcode's PATH carries neither Homebrew nor rustup.
           export PATH="/opt/homebrew/bin:$HOME/.cargo/bin:$PATH"

@@ -9,9 +9,19 @@
 > now closed — `pull_request` carries no `branches:` key, so **every** pull
 > request is gated whatever it targets, and `v1-rewrite` is retired. Every
 > citation below to `master` or `v1-rewrite` as the gated set, and every line
-> number into the trigger block, describes the file as it was. The decision is
-> unaffected: it rests on the `ios-app` job being unconditional, which it
-> still is, and on a strictly wider trigger set than the one it was argued from.
+> number into the trigger block, describes the file as it was.
+>
+> **Second later change, same treatment.** `ios-app` is no longer
+> unconditional: it carries a job-level `if:` and a changed-paths filter, and
+> it now depends on an `apple-xcframework` job that builds the framework once
+> per run. Every sentence below calling the job unconditional — the Context
+> bullet on `ci.yml`, and the revisit triggers' *"put an `if:` or a path filter
+> on it"* — describes the file as it was; revisit trigger 2 carries the
+> amendment and the argument for why the evidential claim survives. In short:
+> the filter skips the job only when a pull request touches nothing the app is
+> built from, so it removes runs whose result was already determined and no
+> others. The decision is unaffected, and rests now on that narrower property
+> rather than on unconditionality.
 
 **Amends:** [`../07-clients/parity-matrix.md`](../07-clients/parity-matrix.md)
 (one new column, 31 cells, plus an audit section, two hard rules — the iOS
@@ -46,21 +56,21 @@ This ADR answers the question that was left open.
 
 Read from the tree rather than from a plan:
 
-- **`apps/apple/project.yml:157-212` defines `SunriseiOS`**, a full application
-  target: iOS 26.0 (`:29`, matching the Mac's major so the shared tree needs no
-  `@available` forks), `TARGETED_DEVICE_FAMILY: "1,2"` (`:191`, iPhone and
-  iPad), a `sunrise://` registration of its own (`:198-201`), and
-  `AppIntents.framework` named explicitly (`:173`) so
+- **`apps/apple/project.yml:188-243` defines `SunriseiOS`**, a full application
+  target: iOS 26.0 (`:32`, matching the Mac's major so the shared tree needs no
+  `@available` forks), `TARGETED_DEVICE_FAMILY: "1,2"` (`:222`, iPhone and
+  iPad), a `sunrise://` registration of its own (`:229-232`), and
+  `AppIntents.framework` named explicitly (`:204`) so
   `appintentsmetadataprocessor` writes the metadata bundle without which the
   intents link and are never offered.
-- **`SunriseiOSTests` (`:273-290`) compiles the same `SunriseTests/` sources a
+- **`SunriseiOSTests` (`:304-321`) compiles the same `SunriseTests/` sources a
   second time against the iOS product.** Both app targets pin
   `PRODUCT_MODULE_NAME: Sunrise` precisely so `@testable import Sunrise`
   resolves in either bundle. The claim this buys is not "the iOS app compiles"
   but "the shared half behaves the same on both platforms".
-- **`SunriseiOSUITests` (`:250-262`) is not skipped** in the `SunriseiOS`
-  scheme (`:337-351`), unlike `SunriseUITests`, which is `skipped: true` in the
-  macOS scheme (`:318-319`) because a macOS XCUITest needs
+- **`SunriseiOSUITests` (`:281-293`) is not skipped** in the `SunriseiOS`
+  scheme (`:368-382`), unlike `SunriseUITests`, which is `skipped: true` in the
+  macOS scheme (`:349-350`) because a macOS XCUITest needs
   `sudo DevToolsSecurity -enable` on the machine. Five cases run on the
   simulator on every build (`SunriseiOSUITests/TabShellUITests.swift:24`,
   `:46`, `:77`, `:98`, `:133`). **iOS is the only Apple product where CI proves
@@ -170,7 +180,7 @@ and it carries no MUSTs until an iOS release ships.**
      `NewMenuItems`, `IcalMenuItems`, `PrintMenuItems`, `GoMenuItems` — and
      declares no `Commands`-conforming type, as nothing in the tree does. The
      `SunriseiOS` target's `sources:` are `Sunrise` and `iOS`
-     (`project.yml:160-164`), so it compiles neither file. That is a
+     (`project.yml:191-195`), so it compiles neither file. That is a
      keyboard-navigation narrowness, recorded there, not a second menu-bar
      row.)
    - ***deferred*** four times: the three [ADR-0020](./0020-v1-must-demotions.md)
@@ -399,16 +409,30 @@ is tested, and has not been released.
    the re-entry point is that promotion ADR, not an edit to this one.
 2. **`ios-app` ceasing to prove that a tap reaches the core.** The case against
    *deferred* and against MAY is evidential — a UI test drives the shell on a
-   simulator in CI on every pull request into `master` or `v1-rewrite`. Delete
-   the job, put an `if:` or a path filter on it, or mark `SunriseiOSUITests`
-   `skipped: true` the way the macOS scheme marks its own
-   (`project.yml:319`), and every row here falls back to "it compiles", which
-   this file says is not evidence.
+   simulator in CI on every pull request that can affect it. Delete the job,
+   mark `SunriseiOSUITests` `skipped: true` the way the macOS scheme marks its
+   own (`project.yml:350`), or narrow the condition described below, and every
+   row here falls back to "it compiles", which this file says is not evidence.
+
+   That condition is the amendment to this clause. The job now carries an
+   `if:` and a changed-paths filter, which this clause originally named as
+   disqualifying on its face. The evidential claim survives because of what the
+   filter is keyed on: it skips the job only when a pull request touches
+   **nothing the app is built from** — no `crates/`, `tools/` or `schemas/`, no
+   manifest, no `rust-toolchain`, no `.cargo/`, no `apps/apple/`, no
+   `mise.toml`, no generated `tokens.swift`. A change that could move the
+   tap-to-core path cannot satisfy that, so the runs the filter removes are
+   exactly the runs whose result was already determined. What motivated it was
+   not cost in the abstract: GitHub caps this account at five concurrent macOS
+   jobs, and the queue those three Apple jobs created was delaying every
+   pull request in the repository by up to two hours. If the filter is ever
+   widened to skip on a change that *could* reach the app, this clause fires as
+   written.
 3. **A widget, share or watch extension target appearing in `project.yml`.**
    Decision 3 defers the widget row, and grades *Watch app* MAY, on the
    strength of there being no such target — today `targets:` declares six, all
    applications and test bundles, with `aggregateTargets:` adding `SunriseFFI`
-   (`project.yml:50-51`). One landing moves the widget row off
+   (`project.yml:53-54`). One landing moves the widget row off
    *deferred*, and the macOS and CLI cells on that row **are** N/A, so unlike
    this ADR that edit does meet the N/A rule and needs its own record.
 4. **The shared tree ceasing to be shared.** SHOULD is assigned by reachability
