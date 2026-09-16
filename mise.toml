@@ -317,9 +317,9 @@ run = "cargo \"+${SUNRISE_FUZZ_TOOLCHAIN:-nightly}\" fuzz build --fuzz-dir fuzz"
 # changes its behaviour.
 #
 # `SUNRISE_FUZZ_SECONDS` raises the budget. Note it is a different name from
-# `SUNRISE_FUZZ_SEED`, which `docs/10-cross-cutting/testing.md` §5 documents as
-# the chaos harness's variable and says is the only consumer in the workspace;
-# that sentence stays true.
+# `SUNRISE_FUZZ_SEED`, which seeds the chaos harness and every property test
+# (`crates/sunrise-test-seed`) and is read by nothing in `fuzz/`: libFuzzer
+# takes `-seed=` and keeps its own corpus.
 [tasks.fuzz-smoke]
 description = "Run every fuzz target briefly against its committed seeds. Proves they execute"
 shell = "bash -c"

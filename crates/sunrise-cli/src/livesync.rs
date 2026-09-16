@@ -9,26 +9,24 @@
 //!    by an integration test against a spawned relay, with no process boundary
 //!    and no second device (see `tests/live_sync.rs`).
 //!
-//! # Pairing is a dev affordance here
+//! # Pairing is not here any more
 //!
 //! Two vaults that share a vault root are **not** two devices on one account.
-//! Since ADR-0024 each vault mints its own account identity, Stream keys are
-//! random rather than derived from the root, and a device joins an account by
-//! being handed a `PairingPayload` — the identity keys plus every Stream key —
-//! over an authenticated channel.
+//! Since ADR-0024 each vault mints its own account identity and Stream keys are
+//! random rather than derived from the root, so a device joins an account by
+//! being handed the account's identity, a `DeviceCert` issued for it, and every
+//! Stream key.
 //!
-//! Sharing a root was already a dev stand-in ([`crate::vault::ENV_VAULT_ROOT`],
-//! since every vault otherwise gets its own); this is the second half of the
-//! same stand-in, and it now has to carry the payload rather than a
-//! certificate. For the demo we shuttle it through **files**:
-//! `SUNRISE_EXPORT_PAIRING_FILE` writes this device's payload after startup and
-//! `SUNRISE_PAIRING_FILE` is read *before* the vault opens and adopted as the
-//! account.
+//! This module used to shuttle all of that through two environment variables —
+//! `SUNRISE_EXPORT_PAIRING_FILE` wrote one file and `SUNRISE_PAIRING_FILE` read
+//! it back — and **both are gone**. They cannot survive #105: the file they
+//! moved was the whole account including `ID_S_priv`, and withholding that key
+//! is what stops a revoked device certifying itself back in. A pairing is three
+//! messages now, the middle one carries keys the joining device mints, and no
+//! single file written at startup can stand in for a round trip.
 //!
-//! The payload is the account, in the clear, on disk. That is acceptable for a
-//! two-terminal walkthrough on one machine and is **not** how production
-//! pairing works — real pairing seals it through the Noise XX channel in
-//! `sunrise-pairing`, which is what the app does.
+//! [`crate::pair`] is the replacement, and it is a real command rather than a
+//! dev affordance: `sunrise pair offer`, `request`, `issue`, `accept`.
 
 use std::path::{Path, PathBuf};
 
@@ -49,10 +47,6 @@ use sunrise_sync::{DeviceSigner, SseTransport};
 /// a URL to any one of them. Example for the bundled self-host server:
 /// `http://127.0.0.1:8443`.
 pub const ENV_SYNC_URL: &str = "SUNRISE_SYNC_URL";
-/// Env var: path to write this device's pairing payload on startup.
-pub const ENV_EXPORT_PAIRING: &str = "SUNRISE_EXPORT_PAIRING_FILE";
-/// Env var: path to a pairing payload to adopt when opening the vault.
-pub const ENV_ADOPT_PAIRING: &str = "SUNRISE_PAIRING_FILE";
 /// Env var: bearer token presented as `Authorization: Bearer` on every
 /// `/api/v1/sync` request.
 ///
@@ -118,10 +112,6 @@ pub fn load_relay_device_id(vault_dir: &Path) -> Option<String> {
 pub struct SyncEnv {
     /// Raw `SUNRISE_SYNC_URL`.
     pub url: Option<String>,
-    /// Raw `SUNRISE_EXPORT_PAIRING_FILE`.
-    pub export_pairing: Option<String>,
-    /// Raw `SUNRISE_PAIRING_FILE`.
-    pub adopt_pairing: Option<String>,
     /// Raw `SUNRISE_SYNC_TOKEN`.
     pub token: Option<String>,
     /// Access token from a previous `sunrise login`, if any. Lower precedence
@@ -140,8 +130,6 @@ impl SyncEnv {
     pub fn from_process_env() -> Self {
         Self {
             url: std::env::var(ENV_SYNC_URL).ok(),
-            export_pairing: std::env::var(ENV_EXPORT_PAIRING).ok(),
-            adopt_pairing: std::env::var(ENV_ADOPT_PAIRING).ok(),
             token: std::env::var(ENV_SYNC_TOKEN).ok(),
             stored_token: None,
             device_id: std::env::var(ENV_SYNC_DEVICE_ID).ok(),
@@ -180,10 +168,6 @@ impl SyncEnv {
 pub struct SyncPlan {
     /// `Some` ⇒ start the driver against this relay; `None` ⇒ offline.
     pub sync: Option<SyncConfig>,
-    /// `Some` ⇒ write this device's pairing payload here on startup.
-    pub export_pairing: Option<PathBuf>,
-    /// `Some` ⇒ adopt this pairing payload when opening the vault.
-    pub adopt_pairing: Option<PathBuf>,
     /// `Some` ⇒ bind every relay request to this device row.
     ///
     /// `None` leaves the transport unsigned, which reaches a self-host relay
@@ -214,8 +198,6 @@ pub fn plan_from_env(env: &SyncEnv) -> SyncPlan {
     let credential = TokenSource::new(token);
     SyncPlan {
         sync: clean(env.url.as_deref()).map(|url| SyncConfig::new(url).with_credential(credential)),
-        export_pairing: clean(env.export_pairing.as_deref()).map(PathBuf::from),
-        adopt_pairing: clean(env.adopt_pairing.as_deref()).map(PathBuf::from),
         // Same precedence as the bearer, for the same reason: the override is
         // for a registration that happened somewhere else, and a user who ran
         // `sunrise bootstrap` should not also have to export a variable.
@@ -263,26 +245,24 @@ pub fn ws_factory(
     })
 }
 
-/// Execute `plan` against an already-opened `core`: export this device's
-/// pairing payload, then start the sync driver. Returns human-readable log
-/// lines for the startup banner.
+/// Execute `plan` against an already-opened `core`: start the sync driver.
+/// Returns human-readable log lines for the startup banner.
 ///
-/// Adopting a payload is *not* here, because it cannot be: an account identity
-/// is chosen when the vault is created, not afterwards. [`open_with_plan`]
-/// reads it before `Core::open`.
+/// It used to also write this device's pairing payload to a file. That file was
+/// the whole account in the clear, `ID_S_priv` included, and withholding that
+/// key is what stops a revoked device certifying itself back in (#105). There
+/// is no longer any single blob a device can emit unprompted that admits
+/// another one — [`crate::pair`] is a four-command exchange instead.
 ///
 /// Not `async`, but must still be called from within a tokio runtime:
-/// [`Core::start_sync`] spawns the driver task. It awaits nothing itself —
-/// adopting a pairing payload is the one step that has to happen inside
-/// `Core::open`, so it left this function. Every step is best-effort for the
-/// demo: a missing/unwritable pairing file is logged, not fatal.
+/// [`Core::start_sync`] spawns the driver task.
 ///
 /// # Two outputs, on purpose
 ///
-/// The returned `Vec<String>` is for the *demo*: it names the files it
-/// touched, which is exactly what a human running the two-terminal walkthrough
-/// needs to see. Those strings are not log records and must not become them —
-/// a filesystem path carries the operator's home directory, and
+/// The returned `Vec<String>` is for the operator: it names what it touched,
+/// which is what a human running the two-terminal walkthrough needs to see.
+/// Those strings are not log records and must not become them — a filesystem
+/// path carries the operator's home directory, and
 /// `docs/10-cross-cutting/logging.md` §6 does not put that on the allowlist.
 ///
 /// The `tracing` events emitted alongside carry the *structure* — did it work,
@@ -290,45 +270,6 @@ pub fn ws_factory(
 /// read the strings; the log reads the events.
 pub fn apply_plan(core: &Arc<Core>, plan: &SyncPlan) -> Vec<String> {
     let mut log = Vec::new();
-
-    if let Some(path) = &plan.export_pairing {
-        match core
-            .export_pairing_payload()
-            .map_err(|e| e.to_string())
-            .and_then(|p| sunrise_pairing::encode_pairing_payload(&p).map_err(|e| e.to_string()))
-            // Owner-only, and not at the process umask: this is the whole
-            // account in the clear — `ID_S_priv`, the vault root and every
-            // Stream key — so it is strictly more sensitive than the vault root
-            // `vault.rs` already refuses to write that way. (`ID_D_priv` is no
-            // longer among them; it never leaves the recovery blob.)
-            .and_then(|bytes| {
-                crate::private_file::write_private(path, &bytes).map_err(|e| e.to_string())
-            }) {
-            Ok(()) => {
-                tracing::info!(
-                    ev = "ui.pair.payload_exported",
-                    result = "ok",
-                    "pairing payload written"
-                );
-                log.push(format!("exported pairing payload -> {}", path.display()));
-            }
-            Err(cause) => {
-                tracing::warn!(
-                    ev = "ui.pair.payload_exported",
-                    result = "failed",
-                    err_code = "IO_WRITE_FAILED",
-                    err_kind = "permanent",
-                    retryable = false,
-                    cause,
-                    "pairing payload not written"
-                );
-                log.push(format!(
-                    "pairing export failed ({}): {cause}",
-                    path.display()
-                ));
-            }
-        }
-    }
 
     // The relay's id for this device plus the core's signing key is the whole
     // binding; either half missing means an unsigned transport, which a
@@ -400,65 +341,39 @@ pub fn relay_host(url: &str) -> String {
     }
 }
 
-/// Open a core at `vault_dir` keyed by `root`, then execute
-/// `plan` (export/trust certs, start sync). Returns the `Arc<Core>` plus the
-/// startup log.
+/// Open a core at `vault_dir` keyed by `root`, then execute `plan` (start
+/// sync). Returns the `Arc<Core>` plus the startup log.
 ///
 /// This is exactly the sequence the binary runs at startup, factored out so the
 /// integration test can drive it against a spawned relay without a TTY.
 ///
 /// `root` stays an explicit argument rather than being resolved in here: where
 /// a root comes from is [`crate::vault`]'s question, and a two-replica test has
-/// to be able to say so. Note that a shared root is no longer *sufficient* to
-/// make two vaults one account — `plan.adopt_pairing` is what does that.
+/// to be able to say so. A shared root is not *sufficient* to make two vaults
+/// one account; `paired` is what does that.
+///
+/// `paired` is `Some` exactly once per device, on the open that
+/// `sunrise pair accept` performs — see [`crate::pair`]. It used to be read
+/// from a file named by an environment variable on every open, which cannot
+/// work now: the material a device joins with includes a `DeviceCert` issued
+/// for keys that device minted during the pairing, so there is nothing to read
+/// until a pairing has actually happened.
+///
+/// # Errors
+/// Whatever `Core::open` refuses, including a pairing payload whose cert does
+/// not name this device's keys.
 pub async fn open_with_plan(
     vault_dir: PathBuf,
     app: &str,
     root: [u8; 32],
     plan: &SyncPlan,
+    paired: Option<Box<sunrise_pairing::PairingPayload>>,
 ) -> Result<(Arc<Core>, Vec<String>), CoreError> {
     let mut cfg = CoreConfig::production(vault_dir, app.to_string());
     // Seed the config's sync URL for parity with the driver's dialing target;
     // the driver itself takes the already-built factory from `apply_plan`.
     cfg.sync.clone_from(&plan.sync);
-    let mut preamble = Vec::new();
-    // Read before opening: the identity a vault belongs to is decided when it
-    // is created, so a payload that arrives later cannot be adopted at all.
-    // A missing or malformed file is logged and the vault opens as its own
-    // account, which is what an operator who forgot the export step wants to
-    // see rather than a failed startup.
-    let paired = plan.adopt_pairing.as_ref().and_then(|path| {
-        match std::fs::read(path)
-            .map_err(|e| e.to_string())
-            .and_then(|b| sunrise_pairing::decode_pairing_payload(&b).map_err(|e| e.to_string()))
-        {
-            Ok(payload) => {
-                tracing::info!(
-                    ev = "ui.pair.payload_adopted",
-                    result = "ok",
-                    "pairing payload adopted"
-                );
-                preamble.push(format!("adopted pairing payload <- {}", path.display()));
-                Some(Box::new(payload))
-            }
-            Err(cause) => {
-                tracing::warn!(
-                    ev = "ui.pair.payload_adopted",
-                    result = "skipped",
-                    err_code = "IO_READ_FAILED",
-                    err_kind = "permanent",
-                    retryable = false,
-                    cause,
-                    "pairing payload not adopted"
-                );
-                preamble.push(format!(
-                    "pairing payload not read ({}): {cause}",
-                    path.display()
-                ));
-                None
-            }
-        }
-    });
+    let preamble = Vec::new();
     let core = Arc::new(
         Core::open(
             cfg,
@@ -555,8 +470,7 @@ mod tests {
     fn plan_is_off_with_no_env() {
         let plan = plan_from_env(&SyncEnv::default());
         assert!(plan.is_off());
-        assert!(plan.export_pairing.is_none());
-        assert!(plan.adopt_pairing.is_none());
+        assert!(plan.device_id.is_none());
     }
 
     #[test]
@@ -601,25 +515,30 @@ mod tests {
         assert!(!plan.sync.as_ref().unwrap().credential.is_set());
     }
 
+    /// Whitespace-only exports collapse to `None`, so an exported-but-empty
+    /// variable behaves as unset rather than as a relay at "".
     #[test]
-    fn plan_reads_url_and_pairing_paths_and_trims() {
+    fn plan_reads_the_url_and_the_device_id_and_trims_both() {
         let env = SyncEnv {
             url: Some("  http://127.0.0.1:8443 ".into()),
-            export_pairing: Some("/tmp/self.cbor".into()),
-            adopt_pairing: Some("   ".into()), // whitespace-only -> None
             token: None,
             stored_token: None,
-            device_id: None,
-            stored_device_id: None,
+            device_id: Some("  dev_01J  ".into()),
+            stored_device_id: Some("   ".into()),
         };
         let plan = plan_from_env(&env);
         assert_eq!(
             plan.sync.as_ref().map(|s| s.url.as_str()),
             Some("http://127.0.0.1:8443")
         );
-        assert_eq!(plan.export_pairing, Some(PathBuf::from("/tmp/self.cbor")));
-        assert_eq!(plan.adopt_pairing, None);
+        assert_eq!(plan.device_id.as_deref(), Some("dev_01J"));
         assert!(!plan.is_off());
+
+        let blank = plan_from_env(&SyncEnv {
+            device_id: Some("   ".into()),
+            ..SyncEnv::default()
+        });
+        assert_eq!(blank.device_id, None);
     }
 
     #[test]
@@ -674,8 +593,6 @@ mod tests {
             .unwrap();
         let env = SyncEnv {
             url: Some("wss://relay.example/sync".into()),
-            export_pairing: None,
-            adopt_pairing: None,
             token: None,
             stored_token: None,
             device_id: None,
@@ -704,8 +621,6 @@ mod tests {
             .unwrap();
         let env = SyncEnv {
             url: Some("wss://relay.example/sync".into()),
-            export_pairing: None,
-            adopt_pairing: None,
             token: Some("from-env".into()),
             stored_token: None,
             device_id: None,
@@ -739,8 +654,6 @@ mod tests {
             .unwrap();
         let env = SyncEnv {
             url: Some("wss://relay.example/sync".into()),
-            export_pairing: None,
-            adopt_pairing: None,
             token: None,
             stored_token: None,
             device_id: None,

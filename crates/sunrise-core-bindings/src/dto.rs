@@ -2500,6 +2500,14 @@ pub struct CommandOutcome {
     /// in planning views, and the client is expected to say *which* window was
     /// missed. Empty for every command that schedules nothing.
     pub soft_violations: Vec<Constraint>,
+    /// Streams a `RevokeDevice` could **not** rotate, as lowercase hex.
+    ///
+    /// Non-empty means the revocation is incomplete and the revoked device can
+    /// still read whatever these rows refer to. A client must not print
+    /// "revoked" over this: it is the same disclosure the relay half already
+    /// gets through `relayRevocationPending` (#160), one level down. Empty for
+    /// every other command and for almost every revocation.
+    pub unrotated_streams: Vec<String>,
 }
 
 impl From<&CommandResult> for CommandOutcome {
@@ -2510,6 +2518,7 @@ impl From<&CommandResult> for CommandOutcome {
             op_id,
             seq,
             soft_violations,
+            unrotated_streams,
         } = r;
         Self {
             entity: *entity,
@@ -2517,6 +2526,7 @@ impl From<&CommandResult> for CommandOutcome {
             op_id: hex16(op_id),
             seq: *seq,
             soft_violations: soft_violations.iter().map(Constraint::from).collect(),
+            unrotated_streams: unrotated_streams.clone(),
         }
     }
 }

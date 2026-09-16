@@ -52,11 +52,12 @@ impl Engine {
 
         let op_id = self.fresh_op_id(now_ms);
         let inner_op = encode_inner_op(&InnerOp::ContextCreate(ctx.clone()))?;
-        let seq = self.next_seq(db, &META_STREAM)?;
-        let lww = self.lww_stamp(seq);
-        db.with_tx(|tx| -> rusqlite::Result<()> {
+        let seq = db.with_tx(|tx| -> rusqlite::Result<u64> {
+            let slot = self.meta_slot(tx, now_ms)?;
+            let seq = slot.seq;
+            let lww = slot.lww;
             insert_context_row(tx, &ctx, &lww)?;
-            self.ops_insert(
+            self.ops_insert_at(
                 tx,
                 &op_id,
                 &META_STREAM,
@@ -70,8 +71,10 @@ impl Engine {
                 None,
                 now_ms,
                 &[],
+                slot.epoch,
+                &slot.key,
             )?;
-            Ok(())
+            Ok(seq)
         })?;
 
         Ok(CommandResult::new(ctx_id, None, op_id, seq))
@@ -109,11 +112,12 @@ impl Engine {
 
         let op_id = self.fresh_op_id(now_ms);
         let inner_op = encode_inner_op(&InnerOp::ContextUpdate(ctx.clone()))?;
-        let seq = self.next_seq(db, &META_STREAM)?;
-        let lww = self.lww_stamp(seq);
-        db.with_tx(|tx| -> rusqlite::Result<()> {
+        let seq = db.with_tx(|tx| -> rusqlite::Result<u64> {
+            let slot = self.meta_slot(tx, now_ms)?;
+            let seq = slot.seq;
+            let lww = slot.lww;
             update_context_row(tx, &ctx, &lww)?;
-            self.ops_insert(
+            self.ops_insert_at(
                 tx,
                 &op_id,
                 &META_STREAM,
@@ -127,8 +131,10 @@ impl Engine {
                 None,
                 now_ms,
                 &[],
+                slot.epoch,
+                &slot.key,
             )?;
-            Ok(())
+            Ok(seq)
         })?;
 
         Ok(CommandResult::new(id, None, op_id, seq))
@@ -155,12 +161,13 @@ impl Engine {
 
         let op_id = self.fresh_op_id(now_ms);
         let inner_op = encode_inner_op(&InnerOp::ContextDelete(ctx.clone()))?;
-        let seq = self.next_seq(db, &META_STREAM)?;
-        let lww = self.lww_stamp(seq);
-        db.with_tx(|tx| -> rusqlite::Result<()> {
+        let seq = db.with_tx(|tx| -> rusqlite::Result<u64> {
+            let slot = self.meta_slot(tx, now_ms)?;
+            let seq = slot.seq;
+            let lww = slot.lww;
             update_context_row(tx, &ctx, &lww)?;
             purge_context_from_tasks(tx, id.bytes())?;
-            self.ops_insert(
+            self.ops_insert_at(
                 tx,
                 &op_id,
                 &META_STREAM,
@@ -174,8 +181,10 @@ impl Engine {
                 None,
                 now_ms,
                 &[],
+                slot.epoch,
+                &slot.key,
             )?;
-            Ok(())
+            Ok(seq)
         })?;
 
         Ok(CommandResult::new(id, None, op_id, seq))

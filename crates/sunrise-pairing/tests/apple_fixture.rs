@@ -22,16 +22,29 @@ use std::path::PathBuf;
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
-use sunrise_crypto::identity_id_from_pub;
-use sunrise_crypto::keys::{IdentityDhKeyPair, IdentitySigningKeyPair};
+use sunrise_crypto::keys::{
+    DeviceDhKeyPair, DeviceSigningKeyPair, IdentityDhKeyPair, IdentitySigningKeyPair,
+};
+use sunrise_crypto::{device_id_from_pub, identity_id_from_pub, DeviceCert, DeviceCertInner};
 use sunrise_pairing::{encode_pairing_payload, PairingPayload};
 
 /// `ID_S_priv` for the fixture. Public in the repository on purpose: this
 /// payload seals nothing real, and a test that cannot be read is a test nobody
 /// checks.
+///
+/// Since #105 it does **not** travel in the payload; it is here only because
+/// the fixture's `device_cert` has to be signed by the account, which is what
+/// a sponsor does with this key and a joiner never can.
 const ID_S_PRIV: [u8; 32] = [0x11; 32];
 /// The X25519 scalar behind the fixture's `ID_D_pub`. Never travels itself.
 const ID_D_PRIV: [u8; 32] = [0x22; 32];
+/// `D_S_priv` and `D_D_priv`: the device keys the *joiner* mints for its
+/// `PairingRequest`, which the sponsor then writes into the cert.
+const D_S_PRIV: [u8; 32] = [0x33; 32];
+const D_D_PRIV: [u8; 32] = [0x44; 32];
+/// The cert's `created_at_ms`. Fixed, because the fixture has to encode to the
+/// same bytes on every run or the guard test below would fail by the clock.
+const CERT_CREATED_AT_MS: u64 = 1_700_000_000_000;
 /// The vault root inside the fixture, which `PairingFixture.vaultRoot` repeats
 /// on the Swift side.
 const VAULT_ROOT: [u8; 32] = [0xAB; 32];
@@ -43,24 +56,47 @@ const META_KEY: [u8; 32] = [0xCD; 32];
 ///
 /// `genesis_*` equal the identity in force, which is what an account that has
 /// never rotated looks like — and that is the account a fresh vault is.
+///
+/// Since #105 this is what a joiner *assembles* at the end of a three-message
+/// exchange rather than what a sponsor sends: the account's public identity
+/// from the offer, the device keys it minted itself for the request, and the
+/// cert the sponsor issued over exactly those keys. Neither `ID_S_priv` nor
+/// `ID_D_priv` is in it, which is the whole point, so `SunriseCore.open`
+/// re-derives the cert's bindings and would refuse a fixture whose cert and
+/// keys disagreed.
 fn fixture_payload() -> PairingPayload {
     let signing = IdentitySigningKeyPair::from_secret_bytes(&ID_S_PRIV);
     let id_s_pub = signing.public_bytes();
+    let d_s = DeviceSigningKeyPair::from_secret_bytes(&D_S_PRIV);
+    let d_d = DeviceDhKeyPair::from_secret_bytes(D_D_PRIV);
     let mut stream_keys = BTreeMap::new();
     let mut per_epoch = BTreeMap::new();
     per_epoch.insert(1u32, META_KEY);
     stream_keys.insert(META_STREAM, per_epoch);
+    let body = DeviceCertInner {
+        v: 1,
+        device_id: device_id_from_pub(&d_s.public_bytes()),
+        d_s_pub: d_s.public_bytes(),
+        d_d_pub: d_d.public_bytes(),
+        identity_id: identity_id_from_pub(&id_s_pub),
+        created_at_ms: CERT_CREATED_AT_MS,
+        nickname: "fixture".into(),
+        platform: "test".into(),
+    };
     PairingPayload {
-        id_s_priv: ID_S_PRIV,
         id_s_pub,
         id_d_pub: IdentityDhKeyPair::from_secret_bytes(ID_D_PRIV).public_bytes(),
         identity_id: identity_id_from_pub(&id_s_pub),
         genesis_identity_id: identity_id_from_pub(&id_s_pub),
         genesis_id_s_pub: id_s_pub,
+        d_s_priv: d_s.secret_bytes(),
+        d_d_priv: d_d.secret_bytes(),
+        device_cert: DeviceCert::issue(body, &signing)
+            .expect("issue the fixture's device cert")
+            .to_cbor()
+            .expect("encode the fixture's device cert"),
         vault_root: VAULT_ROOT,
         stream_keys,
-        nickname: "fixture".into(),
-        platform: "test".into(),
     }
 }
 

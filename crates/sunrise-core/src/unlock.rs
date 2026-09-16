@@ -8,25 +8,33 @@ use sunrise_pairing::PairingPayload;
 ///
 /// Split out of [`Unlock`] because the two ways a vault can be handed an
 /// identity are **not** the same thing, and collapsing them is what made
-/// [`Unlock::RecoveryCode`] unusable: it carried a [`PairingPayload`], and
-/// since `#76` that type does not carry `ID_D_priv` at all. A vault seeded
-/// from one therefore came up with `dh_secret: None` — unable to open a single
-/// identity-addressed `key_envelope`, which is the only thing a recovery is
-/// for. See `docs/03-crypto/recovery.md` §Recovery flow step 8.
+/// [`Unlock::RecoveryCode`] unusable: it carried a [`PairingPayload`], which
+/// since `#76` does not carry `ID_D_priv` and since `#105` does not carry
+/// `ID_S_priv` either. A vault seeded from one therefore came up with
+/// `dh_secret: None` — unable to open a single identity-addressed
+/// `key_envelope`, which is the only thing a recovery is for. See
+/// `docs/03-crypto/recovery.md` §Recovery flow step 8.
 pub enum IdentitySeed {
     /// Nothing is handed over. The vault mints its own account identity on
     /// first open, or loads the one already on disk.
     Own,
-    /// A pairing payload, from a sibling device over the Noise channel.
+    /// A pairing payload, assembled by the joiner from a completed
+    /// three-message exchange.
     ///
-    /// Carries `ID_S_priv` and `ID_D_pub` and deliberately **not** `ID_D_priv`
-    /// — the asymmetry that lets a revocation bound a device's reads.
+    /// Carries `ID_S_pub` and `ID_D_pub` and deliberately **neither** private
+    /// half: not `ID_D_priv`, the asymmetry that lets a revocation bound a
+    /// device's reads (`#76`), and not `ID_S_priv`, the asymmetry that stops a
+    /// paired device minting a cert for a device id of its own invention
+    /// (`#105`). What it does carry is the device keypair this device minted
+    /// for its own request and the cert its sponsor issued over them.
     Paired(Box<PairingPayload>),
     /// An opened recovery blob.
     ///
     /// Carries `ID_D_priv`, because that is the whole point: it is the key
     /// every `key_envelope`'s identity copy is sealed to, and a recovering
-    /// device has no sibling to be handed a Stream key by.
+    /// device has no sibling to be handed a Stream key by. This is the carrier
+    /// [`Unlock::RecoveryCode`] always needed — borrowing pairing's is what
+    /// made the variant look finished while nothing could construct it.
     Recovered(Box<RecoveryPayload>),
 }
 
@@ -50,6 +58,11 @@ impl std::fmt::Debug for IdentitySeed {
 /// no longer reconstructs the key schedule — Stream keys are random, not
 /// derived — so a device arriving by pairing or by recovery has to be handed
 /// the account identity as well, and that is what the extra field is.
+///
+/// The two arrive by different carriers and must not be collapsed back
+/// together. A pairing hands over the account's *public* identity plus this
+/// device's own sponsor-issued cert; a recovery hands over `ID_D_priv` itself.
+/// See [`IdentitySeed`].
 pub enum Unlock {
     /// User typed a passphrase; the caller derives the vault root via
     /// Argon2id with the per-device salt and passes the resulting 32-byte
@@ -60,12 +73,13 @@ pub enum Unlock {
     /// `paired` is `None` for the ordinary case — an already-established device
     /// whose OS keystore released the root, and whose identity is already in
     /// its vault. It is `Some` exactly once, on the first open of a device
-    /// being added, and carries the identity keys and Stream keys the sending
-    /// device sealed through the Noise channel.
+    /// being added, and carries the account's public identity, the device keys
+    /// this device minted for its pairing request, the cert its sponsor issued
+    /// over them, and every Stream key the sponsor held.
     DevicePaired {
         /// The vault root.
         root: VaultRootKey,
-        /// The pairing payload, on a device's very first open.
+        /// The assembled pairing material, on a device's very first open.
         paired: Option<Box<PairingPayload>>,
     },
     /// Recovery code path: the recovery blob has been unsealed and its identity

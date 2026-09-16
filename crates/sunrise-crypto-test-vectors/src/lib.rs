@@ -302,28 +302,45 @@ pub mod key_envelope {
 pub struct BlobChunkNonceVector {
     /// Per-blob key.
     pub blob_key: [u8; 32],
+    /// Blob id.
+    pub blob_id: [u8; 16],
     /// Chunk index.
     pub chunk_idx: u32,
+    /// Total chunks in the blob.
+    pub chunk_count: u32,
     /// Expected 24-byte nonce.
     pub nonce: [u8; 24],
 }
 
 /// Nonce vectors at the first, second and a far index.
+///
+/// Re-frozen at `CRYPTO_SUITE_V = 3`: the derivation took `blob_key ||
+/// u32_be(chunk_idx)` and now takes `blob_key || chunk_aad(blob_id, chunk_idx,
+/// chunk_count)`, so `blob_id` and `chunk_count` are inputs where they were
+/// not. The third vector deliberately varies all four coordinates at once, and
+/// the first two share a `blob_id` so a reader can see the index and the count
+/// moving the nonce on their own.
 pub const BLOB_CHUNK_NONCE_VECTORS: [BlobChunkNonceVector; 3] = [
     BlobChunkNonceVector {
         blob_key: [0x11; 32],
+        blob_id: [0x22; 16],
         chunk_idx: 0,
-        nonce: hex("9fc613c31eb65eb42ebd54bd790f2c7d0f9811e90a848111"),
+        chunk_count: 1,
+        nonce: hex("4ba88bff1b7cdeadd77845d21be4b88797a68ffeb1b30934"),
     },
     BlobChunkNonceVector {
         blob_key: [0x11; 32],
+        blob_id: [0x22; 16],
         chunk_idx: 1,
-        nonce: hex("f4a943628c81b445f7218db847298edb7f0d7e731415139f"),
+        chunk_count: 3,
+        nonce: hex("dde4af4a2fad9e9d30664bf93a05bcd3838201cb5a70dc18"),
     },
     BlobChunkNonceVector {
         blob_key: [0x11; 32],
+        blob_id: [0x22; 16],
         chunk_idx: 65_535,
-        nonce: hex("8f90d729bddf642ad4748ff95b7eca11938ba4d3e8a73421"),
+        chunk_count: 65_536,
+        nonce: hex("4afd4dac74a1ee520a8f35feb4f7b054f1707dd6dacc25d6"),
     },
 ];
 
@@ -342,8 +359,11 @@ pub mod blob_chunk {
     /// Canonical CBOR AAD: `{1: blob_id, 2: chunk_idx, 3: chunk_count}`.
     pub const AAD: [u8; 23] = super::hex("a301502222222222222222222222222222222202010303");
     /// Expected `ciphertext || tag`.
+    ///
+    /// Re-frozen at `CRYPTO_SUITE_V = 3` with the nonce derivation; the AAD
+    /// above is unchanged.
     pub const SEALED: [u8; 41] = super::hex(concat!(
-        "d20f50e4fc0ee6d009ca35b2fcbf316c3d283653fb22168c93",
-        "fe841b1c37e50c6e977586204024de63",
+        "5008b2429eab512d2fc997b1672c17fe8e8244314f0b5e9d37",
+        "8907b27f02e328b0be65555debe8887e",
     ));
 }

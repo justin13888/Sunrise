@@ -225,9 +225,7 @@ pub async fn open_paired_core_with_factory(
     clock: Arc<dyn Clock>,
     factory: TransportFactory,
 ) -> Arc<Core> {
-    let payload = existing
-        .export_pairing_payload()
-        .expect("export pairing payload");
+    let payload = pair_with(existing);
     let root = payload.vault_root;
     open_core_paired(
         vault_dir,
@@ -238,6 +236,34 @@ pub async fn open_paired_core_with_factory(
         Some(Box::new(payload)),
     )
     .await
+}
+
+/// Run a whole pairing against `existing` and return what the joiner installs.
+///
+/// Three messages, not one, since #105: the sponsor offers its account's public
+/// identity, the joiner mints `D_S`/`D_D` and asks to be certified, and the
+/// sponsor — which is the only device in the account holding `ID_S_priv` —
+/// issues the cert and hands over the root and the Stream keys. A harness that
+/// short-circuited that would be testing a pairing no client performs.
+///
+/// The device seeds are drawn fresh per call so two devices paired from the
+/// same sponsor in one test get different `device_id`s. A fixed seed here would
+/// give them the same id, and the second would silently overwrite the first's
+/// `devices` row.
+///
+/// Panics rather than returning an error: a sponsor that cannot sponsor is a
+/// broken fixture, not a scenario any of these tests is about.
+#[must_use]
+pub fn pair_with(existing: &Core) -> sunrise_pairing::PairingPayload {
+    use sunrise_core::Rng as _;
+    let rng = sunrise_core::SystemRng;
+    let mut seed_s = [0u8; 32];
+    let mut seed_d = [0u8; 32];
+    rng.fill_bytes(&mut seed_s);
+    rng.fill_bytes(&mut seed_d);
+    existing
+        .pair_device_in_process("e2e-joiner".into(), "test".into(), seed_s, seed_d)
+        .expect("the sponsor holds ID_S_priv and can issue a cert")
 }
 
 /// Open a core with **no sync driver running**, so the caller can register its
@@ -265,9 +291,7 @@ pub async fn open_paired_core_offline(
     addr: SocketAddr,
     clock: Arc<dyn Clock>,
 ) -> Arc<Core> {
-    let payload = existing
-        .export_pairing_payload()
-        .expect("export pairing payload");
+    let payload = pair_with(existing);
     let root = payload.vault_root;
     open_core_paired(vault_dir, root, addr, clock, None, Some(Box::new(payload))).await
 }

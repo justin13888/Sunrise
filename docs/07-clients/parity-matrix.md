@@ -150,8 +150,9 @@ around it is recorded in the cells below and in
 | Quick capture (hotkey / menu bar) | met | Carbon `RegisterEventHotKey` ⌘⇧N + `MenuBarExtra`; both via `previewCapture` |
 | Reminders / local notifications | met | `ReminderScheduler` follows the change feed, reconciles against pending requests, snooze targets from the domain |
 | Multi-account | met | Settings → vault picker → `SessionModel.switchTo`, teardown before reopen |
-| Pairing — scan QR | met *(paste half)* | `PairingView` paste-accept → `DevicePairing.accept`. **No camera scanner exists**; the row's "camera or paste" is satisfied by paste |
+| Pairing — scan QR | met *(paste half)* | `PairingView` paste-accept → `DevicePairing.accept`. **No camera scanner exists**; the row's "camera or paste" is satisfied by paste. The script is **eight legs, not six**, since the account signing key stopped travelling (#105): the last hand-over became offer → request → grant, because the device holding the vault cannot certify keys the joining device has not minted yet |
 | Pairing — show QR | met | `QRCode.image` (CoreImage) rendered on the code leg, with copyable text beside it |
+| Pairing — sponsor a device | met *(with a stated limit)* | Settings → **Add a device…**, disabled with an explanation on a vault that was itself added by pairing. Such a vault holds `ID_S_pub` and no signing key, so it cannot issue a certificate — the same absence that stops a *revoked* device certifying itself back in. `SunriseCore.canSponsorPairing()` is the question; `SessionModel.canSponsorPairing` is the snapshot a view body can read |
 | iCal import / export | met *(windowed, no round-trip)* | File → Import Calendar… (⌘⇧I) and Export Calendar ▸ Today \| This Week → `AppSurfaces` → `IcalModel` → `CoreBridge.importIcal` / `.exportIcal` → the seam's `import_ical` / `export_ical` |
 | Background sync (while running) | met | `startSync` spawns a live driver for the life of the window; off when no relay URL is set |
 | Menu bar | met | `MenuBarExtra` with real Today / Inbox / sync data off the change feed |
@@ -199,15 +200,23 @@ menu item flickering as tasks come and go would explain less.
 | iCal import / export | met *(windowed, no round-trip)* | `sunrise ical import <path\|->` and `sunrise ical export [today\|day\|week] [path]` |
 | OS automation surface | met | stdout is the script contract, notes to stderr, `-` reads stdin, meaningful exit codes |
 
-| Device list and revocation | met *(CLI only; no client surface)* | `sunrise devices` marks revoked and non-current devices distinctly, and `sunrise device revoke <id-prefix> [--reason …]` rotates every Stream key **and** the account identity ([ADR-0037](../11-adr/0037-identity-transition.md)). It prints the two-state disclosure — revoked locally versus the relay has been told — because those are different guarantees and the second is the one a user pressing the button believes they are getting ([#160](https://github.com/justin13888/Sunrise/issues/160)). Neither Apple client has any of this: `Query::DeviceList`, `Query::IdentityStatus` and `Command::RevokeDevice` all cross the UniFFI seam and nothing calls them |
-| Identity status and rotation | met *(CLI only; no client surface)* | `sunrise identity status` prints the chain — the account's stable `genesis_identity_id`, the identity in force, the rotation count, and whether this device still speaks for the account — and `sunrise identity rotate [--new-recovery-code]` replaces the identity while keeping every current device. Same seam note as the row above |
+| Device list and revocation | met *(CLI only; no client surface)* | `sunrise devices` marks revoked and non-current devices distinctly, and `sunrise device revoke <id-prefix> [--reason …]` rotates every Stream key — **and** the account identity, when run from the device that created the account ([ADR-0037](../11-adr/0037-identity-transition.md)). Only that device holds `ID_S_priv` since #105, so a revocation elsewhere cuts the keys and logs `core.identity.rotation_unavailable`; it costs little, because a revoked device that was itself paired cannot certify itself back in either way. It prints the two-state disclosure — revoked locally versus the relay has been told — because those are different guarantees and the second is the one a user pressing the button believes they are getting ([#160](https://github.com/justin13888/Sunrise/issues/160)). Neither Apple client has any of this: `Query::DeviceList`, `Query::IdentityStatus` and `Command::RevokeDevice` all cross the UniFFI seam and nothing calls them |
+| Identity status and rotation | met *(CLI only; no client surface)* | `sunrise identity status` prints the chain — the account's stable `genesis_identity_id`, the identity in force, the rotation count, whether this device still speaks for the account, whether it can seal a recovery code, and whether it can **add another device** — and `sunrise identity rotate [--new-recovery-code]` replaces the identity while keeping every current device, refusing by name on a device admitted by pairing. Same seam note as the row above |
 
 The CLI also carries surfaces this table has no row for: `login` / `logout` /
 `whoami` (OIDC + PKCE, token stored mode-0600 and device-bound), `review`,
-`export` as an *analytics* export, `vaults`, and account joining via
-`SUNRISE_PAIRING_FILE`, which is read before `Core::open` on every subcommand
-and hands the vault an account identity and every Stream key. The last is
-security-relevant and unrowed.
+`export` as an *analytics* export, `vaults`, and **pairing** — `sunrise pair
+offer | request | issue | accept`, the four-command file exchange that makes a
+second vault a second device. The last is security-relevant and unrowed.
+
+It replaced `SUNRISE_PAIRING_FILE` and `SUNRISE_EXPORT_PAIRING_FILE`, which are
+**gone**. They moved one file, read before `Core::open` on every subcommand,
+carrying the account identity including `ID_S_priv` — and withholding that key
+is what stops a revoked device certifying itself back in
+([#105](https://github.com/justin13888/Sunrise/issues/105)). A pairing is three
+messages now and the middle one carries keys the joining device mints, so no
+single file written at startup can stand in for it. The CLI is the driver with
+no channel at all, which is why the protocol had to be transport-agnostic.
 
 `SUNRISE_VAULT_ROOT` is the other unrowed surface, and it is the one to read
 carefully: it supplies a root outright and touches no keystore, which is how two
@@ -244,7 +253,7 @@ it is the record of what a user can actually reach on a phone.
 | Quick capture (system surface) | met | a **Capture** toolbar button on all five tab roots and on every pushed task list (`VaultTabs.swift:318-324`, attached at `:74`, `:84`, `:137`, `:146`, `:161`, `:225`; the six other pushed destinations at `:227-238` carry none, because a `.toolbar` on a `NavigationStack` root is not inherited by a `navigationDestination`), routed to the inline bar where the list has one and to the sheet where it does not (`:339-362`, `:471-498`); `sunrise://capture?text=`, registered by the iOS target in its own right (`project.yml:198-201`); and the **Capture Task** App Shortcut (`SunriseShortcuts.swift:23-33`) |
 | Reminders / local notifications | met | `ReminderScheduler` follows the change feed for the life of the shell (`VaultTabs.swift:454`); the category, its three buttons and the response delegate are one shared file (`NotificationCenterClient.swift:60-105`); Settings asks for authorization (`VaultTabs.swift:374`) |
 | Multi-account | met | More → Settings (`VaultTabs.swift:364-386`) → the vault picker (`AccountView.swift:131-145`), whose binding setter calls `SessionModel.switchTo` (`AccountView.swift:183`); teardown before reopen is in the method itself — `await bridge?.shutdown()` then re-point (`SessionModel.swift:257`, `:269-272`) |
-| Pairing — scan QR | met *(paste half)* | `PairingView`'s paste field (`:233-240`), reached from Settings → **Add a device…** (`AccountView.swift:159`) and from `LockedView` (`:62`). **No camera scanner exists on either platform**; the row's "camera or paste" is satisfied by paste, as it is on macOS |
+| Pairing — scan QR | met *(paste half)* | `PairingView`'s paste field, reached from Settings → **Add a device…** and from `LockedView`. **No camera scanner exists on either platform**; the row's "camera or paste" is satisfied by paste, as it is on macOS. Eight legs here too — `apps/apple/Sunrise/Pairing/` compiles into both targets, so the extra round trip #105 forced is one implementation, not two |
 | Pairing — show QR | met | `QRCode.image` (`QRCode.swift:29-48`) through `PlatformImage`'s `UIImage` branch (`PlatformKit.swift:42-52`), with the copyable text beside it |
 | iCal import / export | met *(windowed, no round-trip)* | Browse → More → **Import calendar…** / **Export calendar ▸ Today \| This Week** (`iOS/VaultTabs.swift`, `overflowMenu`), into the same URL-taking `AppSurfaces.importIcal(from:)` / `exportIcal(_:to:)` the Mac's File menu reaches — a `fileImporter` and a `fileExporter` in place of the Mac's two `NSPanel`s (`iOS/VaultSurfaces.swift`, `iOS/IcalDocuments.swift`), and `IcalSurfaces` hung on the tab shell as the Mac hangs it on its window, so the notice report an import produces is shown here too. The picked document's security scope is held across the read. Same scope note as the Mac's row, and for the same reason: it is the seam's |
 | Background sync | met *(frontmost only)* | `startSync` on the shell's `.task` and again on every relay-URL change (`VaultTabs.swift:388-394`, `:448-457`), exactly as the Mac's window does it. There is no `BGAppRefreshTask` anywhere in `apps/apple`, so sync stops when the app leaves the foreground ([#31](https://github.com/justin13888/Sunrise/issues/31)) |

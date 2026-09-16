@@ -1,29 +1,112 @@
-//! The `PairingPayload` — everything a second device needs to become a real
-//! member of an account.
+//! The `PairingPayload` — everything a device that has just been admitted needs
+//! to open its vault, and nothing it could use to admit anybody else.
 //!
-//! Before ADR-0024 pairing transferred **only** the 32-byte vault root, and
-//! that was enough because every Stream key was *derived* from it: the new
-//! device recomputed the whole key schedule from one number. Deleting that
-//! derivation deletes the shortcut. A device now needs the account identity —
-//! so it can hold an identity-signed cert instead of a self-signed one — and
-//! the Stream keys themselves, which are random and cannot be recomputed from
-//! anything.
+//! This is not a wire message. It is what a completed three-message exchange
+//! ([`crate::protocol`]) *assembles* on the joining device: the account's public
+//! identity from the offer, the device keys the joiner minted for the request,
+//! and the cert, vault root and Stream keys the grant carried. It has an
+//! encoding because two seams need to carry it across a process or language
+//! boundary — UniFFI's `paired_bundle`, and the CLI's pending-pairing file —
+//! not because a peer ever sends it.
 //!
 //! ```cddl
 //! PairingPayload = {
-//!     1: bstr .size 32,   ; ID_S_priv
+//!     ; 1 was ID_S_priv. Burned, never reused -- see below.
 //!     ; 2 was ID_D_priv. Burned, never reused -- see below.
 //!     3: bstr .size 32,   ; ID_S_pub
 //!     4: bstr .size 32,   ; ID_D_pub
 //!     5: bstr .size 16,   ; identity_id
 //!     6: { * bstr .size 16 => { * uint => bstr .size 32 } },  ; stream_keys
-//!     7: tstr,            ; nickname of the sending device
-//!     8: tstr,            ; platform of the sending device
+//!     ; 7 was the sender's nickname, 8 its platform. Burned: the labels that
+//!     ;   matter are the ones inside the cert, and two sources disagree.
 //!     9: bstr .size 32,   ; vault_root
 //!    10: bstr .size 16,   ; genesis_identity_id
 //!    11: bstr .size 32,   ; genesis_id_s_pub
+//!    12: bstr .size 32,   ; D_S_priv, minted by this device
+//!    13: bstr .size 32,   ; D_D_priv, minted by this device
+//!    14: bstr,            ; DeviceCert issued for this device under ID_S
 //! }
 //! ```
+//!
+//! # Why `ID_S_priv` does not travel (field 1, burned)
+//!
+//! It used to, and while it did every paired device held the account's signing
+//! key. A `DeviceCert` carries no issuer field — `DeviceCertInner` names the
+//! *subject* (`device_id`, `d_s_pub`, `d_d_pub`, `identity_id`) and its single
+//! signature is the identity's — so any device holding `ID_S_priv` could mint a
+//! genuinely valid cert for any device id it liked, including a fresh one it had
+//! just invented. That is
+//! [#105](https://github.com/justin13888/Sunrise/issues/105): a revoked device
+//! minted a new `D_S`, derived a device id the revocation register had never
+//! heard of, certified it, and rejoined.
+//!
+//! ADR-0037's identity rotation bounded that without closing it. The cert the
+//! revoked device signed was valid under an identity the account had *retired*,
+//! so the fresh id was admitted, current under nothing, and sealed no key. But
+//! the device paired after the rotation held the new `ID_S_priv`, so revoking
+//! *it* replayed the whole trick one identity along. Rotation made the bypass
+//! cost one revocation each time rather than making it impossible.
+//!
+//! Withholding the key makes it impossible. The joiner mints `D_S`/`D_D`, asks
+//! for a cert, and the sponsor — which does hold `ID_S_priv` — issues it. No
+//! device admitted this way can produce a cert for anything, itself included,
+//! ever, revoked or not. `sunrise_core`'s
+//! `a_paired_device_cannot_issue_a_cert_for_a_fresh_device_id` is the test, and
+//! it asserts the absence structurally: the paired keychain's `issue_cert_for`
+//! returns `KeychainError::IdentitySigningKeyAbsent`, because the key is not
+//! there to sign with. Not an intra-doc link: `sunrise-core` depends on this
+//! crate, so naming its types here would invert the dependency.
+//!
+//! ## The two one-shot shapes that do not work
+//!
+//! Both were priced and both are worse than a second round trip:
+//!
+//! 1. **The sponsor mints the joiner's keypair.** One message again, and
+//!    `ID_S_priv` still never travels. It also hands the sponsor permanent
+//!    impersonation of every device it ever paired — and unlike `ID_S_priv`, no
+//!    rotation touches `D_S`, so revoking the sponsor does not take the
+//!    capability away. It is #105 in a new shape.
+//! 2. **The joiner self-issues and is re-certified afterwards.** The joiner
+//!    holds no valid cert during the window, so it cannot publish anything —
+//!    including the request for the cert that would end the window.
+//!
+//! ## What this costs, stated plainly
+//!
+//! A device admitted by pairing cannot sponsor another one, and cannot rotate
+//! the account identity, because both need `ID_S_priv`. The device that created
+//! the account is the only one that can. `Command::RevokeDevice` from a paired
+//! device therefore still cuts the revoked device off from every future epoch —
+//! that is Stream-key rotation and needs no identity key — but cannot rotate the
+//! *identity*, and says so in the log. That matters in exactly one case: revoking
+//! the account's creator, which is the only remaining device that holds
+//! `ID_S_priv` and so the only one that could still certify itself back in. See
+//! `docs/03-crypto/key-rotation.md` §Revocation.
+//!
+//! # Why `ID_D_priv` does not travel either (field 2, burned)
+//!
+//! `ID_D_priv` is the X25519 scalar that opens the identity-sealed copy of every
+//! `key_envelope`. Field 2 used to carry it, and that is what made revocation
+//! unenforceable ([#76](https://github.com/justin13888/Sunrise/issues/76)): a
+//! revoked device dropped from a new epoch's recipient list simply opened the
+//! identity copy instead. Every device holding it meant no device could be
+//! excluded from anything.
+//!
+//! A device gets the keys it needs two other ways: field 6 hands it every Stream
+//! key the sponsor holds, which covers every epoch minted before it paired, and
+//! it is a `Recipient::Device` on every epoch minted after — sealed to its own
+//! `D_D_pub`, which a revocation can stop addressing. `ID_D_priv` stays on the
+//! device that *created* the account and travels in the recovery blob behind the
+//! BIP-39 code, which is what lets a recovery with no surviving device restore
+//! readable content.
+//!
+//! Which device that is stopped being guesswork in `STORAGE_V` 19:
+//! `identity.minted_by_device_id` records it at mint time, and `Keychain::load`
+//! loads `ID_D_priv` only when the row names the vault reading it.
+//!
+//! Sealing needs only the public half, so field 4 (`ID_D_pub`) still travels and
+//! a paired device can still mint epochs for the identity. Asymmetric
+//! cryptography is doing real work here: the device can address the recovery
+//! path without being able to walk it.
 //!
 //! # Why the genesis travels (fields 10 and 11)
 //!
@@ -34,104 +117,14 @@
 //! because the identity *in force* moves and a chain read from a moving anchor
 //! is not a chain.
 //!
-//! Fields 5 and 4 carry the identity in force, which is what the joining device
-//! needs to sign and seal with. They are not the genesis once the account has
-//! rotated even once, and a device paired after a rotation used to record the
-//! identity it happened to join at as its own anchor. Two replicas of one
-//! account then folded from different starting points and disagreed about who
-//! the account was — silently, because each was internally consistent.
-//!
-//! So the genesis travels explicitly. The receiver recomputes
-//! `identity_id_from_pub(genesis_id_s_pub)` and refuses a payload where the two
-//! disagree, exactly as it already does for field 5: both are values the sender
-//! chose, and neither is believed.
-//!
-//! # Why `ID_S_priv` travels and `ID_D_priv` does not
-//!
-//! The two identity private keys look symmetric and are not, and the asymmetry
-//! is the whole of what makes revocation bound a device's reads.
-//!
-//! `ID_D_priv` is the X25519 scalar that opens the identity-sealed copy of
-//! every `key_envelope`. Field 2 used to carry it, and that is what made
-//! revocation unenforceable (`#76`): a revoked device dropped from a new
-//! epoch's recipient list simply opened the identity copy instead, because
-//! pairing had handed it the identity's own unwrapping key. Every device
-//! holding it meant no device could be excluded from anything.
-//!
-//! It does not travel now. A device gets the keys it needs two other ways:
-//! field 6 hands it every Stream key the sender holds, which covers every
-//! epoch minted before it paired, and it is a `Recipient::Device` on every
-//! epoch minted after — sealed to its own `D_D_pub`, which a revocation can
-//! stop addressing. `ID_D_priv` stays on the device that *created* the account
-//! and travels in the recovery blob behind the BIP-39 code, which is what lets
-//! a recovery with no surviving device restore readable content. `sunrise
-//! bootstrap` seals that blob at account creation; the Apple clients do not
-//! yet, so on a vault created there the creator's is still the only copy of the
-//! key. Either way, revoking that one device does not bound its reads.
-//!
-//! Which device that is stopped being guesswork in `STORAGE_V` 19:
-//! `identity.minted_by_device_id` records it at mint time, and `Keychain::load`
-//! loads `ID_D_priv` only when the row names the vault reading it. A device
-//! paired while `STORAGE_V` was 17 — when field 2 still carried the key — had
-//! wrapped a copy into its own row and kept it through the upgrade, and
-//! migration 0019 clears it, telling a creator from a paired device by
-//! `stream_keys.source`. That was issue #87.
-//!
-//! Sealing needs only the public half, so field 4 (`ID_D_pub`) still travels
-//! and a paired device can still mint epochs for the identity. Asymmetric
-//! cryptography is doing real work here: the device can address the recovery
-//! path without being able to walk it.
-//!
-//! `ID_S_priv` does still travel, because it is what lets a device issue a
-//! `device_cert` for the *next* device it pairs, and a pairing that withheld it
-//! would produce a device that can never admit another one.
-//!
-//! **That it is on every device — a revoked one included — is a hole, and
-//! identity rotation bounds it rather than closing it.** A `DeviceCert` carries
-//! no issuer field: `DeviceCertInner` names the *subject* (`device_id`,
-//! `d_s_pub`, `d_d_pub`, `identity_id`) and the signature is the identity's,
-//! which every device can produce. So a revoked device mints a fresh device id
-//! and signs a genuinely valid cert for it with the `ID_S_priv` it still holds,
-//! and nothing can refuse the cert on its own terms.
-//!
-//! What changed with ADR-0037 is what the cert *obtains*. `Command::RevokeDevice`
-//! now rotates the account identity as well as the Stream keys, leaving the
-//! revoked device out of the new roster, so the cert it signs is valid under an
-//! identity the account has **retired**. `Engine::apply_control_op` records
-//! which chain identity verified it, every membership test compares that to the
-//! chain's head, and the fresh id is admitted, current under nothing, and
-//! sealed no key — by `Engine::backfill_key_envelopes` for the initial
-//! hand-back and by `emit_key_envelopes`' `identity_id` clause for every epoch
-//! after it. `sunrise_core`'s
-//! `a_revoked_device_cannot_rejoin_under_a_fresh_device_id` is the test that
-//! used to assert the bypass.
-//!
-//! A narrow fix once named here — *refuse to backfill a device id first seen in
-//! a cert whose signer is already revoked* — remains unavailable and the reason
-//! is worth keeping: **there is no signer to key it on.** The certificate's only
-//! signature is `ID_S_priv`'s, which belongs to the account rather than to any
-//! device, and the `device_cert` op's signature is the subject's own
-//! `D_S_priv`, which on a fresh device id the revoked device minted along with
-//! everything else.
-//!
-//! **What would close it entirely is `ID_S_priv` not travelling here at all**,
-//! with the sponsoring device issuing the joining device's cert over this same
-//! Noise channel. That needs a second message in the opposite direction — the
-//! sponsor cannot sign a cert for keys the joiner has not minted yet — and
-//! neither the CLI's file-drop pairing nor the one-shot UniFFI seam has one.
-//! It is *not* ADR-0032's rejected alternative 2: there would be no sponsor
-//! countersignature and no sponsor binding on the cert, so revoking a sponsor
-//! would lock nobody out. ADR-0032 records the shapes that do not work,
-//! ADR-0037 the one that does, and `docs/03-crypto/key-rotation.md`
-//! §Identity rotation is the procedure.
-//!
-//! The channel it travels over is the Noise XX transport confirmed by a SAS
-//! both users read aloud. That is the same channel the vault root already used,
-//! and the vault root was never the smaller secret.
+//! Fields 5 and 3 carry the identity in force, which is what the joining device
+//! seals under and verifies its own cert against. They are not the genesis once
+//! the account has rotated even once, and a device paired after a rotation used
+//! to record the identity it happened to join at as its own anchor. Two replicas
+//! of one account then folded from different starting points and disagreed about
+//! who the account was — silently, because each was internally consistent.
 
 use std::collections::BTreeMap;
-use subtle::ConstantTimeEq;
-use sunrise_crypto::identity_id_from_pub;
 use thiserror::Error;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
@@ -143,7 +136,7 @@ use crate::handshake::MAX_NOISE_MESSAGE;
 /// ChaCha20-Poly1305 tag, so this is the real ceiling on the plaintext.
 pub const MAX_PAIRING_PAYLOAD: usize = MAX_NOISE_MESSAGE - 16;
 
-/// Errors from the pairing payload codec.
+/// Errors from the pairing codecs — the payload and all three wire messages.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum PairingPayloadError {
     /// CBOR encode/decode failure.
@@ -168,12 +161,24 @@ pub enum PairingPayloadError {
     /// account can reach.
     #[error("pairing payload genesis_identity_id does not match its genesis ID_S_pub")]
     GenesisMismatch,
+    /// A pairing request's `device_id` is not the id derived from its
+    /// `D_S_pub`.
+    ///
+    /// The joiner does not get to name its own id. Choosing it is how a device
+    /// would claim an id the account's revocation register has no row for, or
+    /// one that collides with a sibling's.
+    #[error("pairing request device_id does not match its D_S_pub")]
+    DeviceIdMismatch,
+    /// The granted `DeviceCert` does not decode, does not verify under the
+    /// identity the offer named, or names a different device.
+    #[error("pairing grant certificate: {0}")]
+    BadCert(&'static str),
     /// The encoded payload does not fit in one Noise transport message.
     ///
     /// Surfaced rather than silently truncated. Chunking it across several
     /// transport messages is the eventual answer — the channel is
     /// bidirectional and already carries multiple frames — but it needs a
-    /// framing contract that reaches the Swift seam, where a sealed payload is
+    /// framing contract that reaches the Swift seam, where a sealed message is
     /// currently one base64 string. A vault this large is far past anything v1
     /// produces, and a wrong answer here is a device that silently cannot read
     /// half its own content.
@@ -184,22 +189,20 @@ pub enum PairingPayloadError {
     },
 }
 
-/// Everything the existing device hands the new one.
+/// Everything a device admitted by pairing installs at its first open.
 ///
-/// Zeroized on drop: it holds the vault root, the identity signing seed and
-/// every Stream key in the account — the single most sensitive value this
-/// codebase ever materializes. It does **not** hold `ID_D_priv`; see the
-/// module docs for why that one stays in the recovery blob.
+/// Zeroized on drop: it holds the vault root, this device's signing and DH
+/// secrets, and every Stream key in the account. It does **not** hold
+/// `ID_S_priv` or `ID_D_priv`; see the module docs for why neither travels and
+/// what the first of those costs.
 #[derive(Clone)]
 pub struct PairingPayload {
-    /// `ID_S_priv`, the identity Ed25519 seed.
-    pub id_s_priv: [u8; 32],
-    /// `ID_S_pub`.
+    /// `ID_S_pub`. The account's signing key, public half only.
     pub id_s_pub: [u8; 32],
     /// `ID_D_pub`.
     pub id_d_pub: [u8; 32],
-    /// The account's identity id — the one **in force**, which is what the
-    /// joining device signs and seals under.
+    /// The account's identity id — the one **in force**, which is what this
+    /// device seals under and verifies its own cert against.
     pub identity_id: [u8; 16],
     /// The identity the account **started** as, which no rotation changes.
     ///
@@ -215,19 +218,31 @@ pub struct PairingPayload {
     /// Without it a device paired into a rotated account could never verify a
     /// cert issued before the rotation it joined after.
     pub genesis_id_s_pub: [u8; 32],
+    /// `D_S_priv`, minted **by this device** and never sent anywhere.
+    ///
+    /// Present here rather than minted inside `Keychain::create` because the
+    /// two-message protocol forces it: the cert the sponsor issued names a
+    /// specific `D_S_pub`, so the keychain has to adopt the key that cert was
+    /// written for rather than mint a fresh one it would not match.
+    pub d_s_priv: [u8; 32],
+    /// `D_D_priv`, likewise minted by this device.
+    pub d_d_priv: [u8; 32],
+    /// The `DeviceCert` the sponsor issued for these keys, canonical CBOR.
+    ///
+    /// Signed by `ID_S_priv`, which this device does not hold. The device's
+    /// nickname and platform are read back out of here rather than carried
+    /// beside it: the cert is what the account signed, and a second copy of a
+    /// label is a second thing that can disagree.
+    pub device_cert: Vec<u8>,
     /// The vault root, which still keys the local database and wraps
     /// everything at rest.
     pub vault_root: [u8; 32],
-    /// Every Stream key the sending device holds: `stream_id -> epoch -> key`.
+    /// Every Stream key the sponsoring device held: `stream_id -> epoch -> key`.
     ///
     /// `BTreeMap` all the way down so the encoding is canonical without a sort
     /// step, and so two devices that assembled the same set produce the same
     /// bytes.
     pub stream_keys: BTreeMap<[u8; 16], BTreeMap<u32, [u8; 32]>>,
-    /// Nickname of the sending device, for the new device's device list.
-    pub nickname: String,
-    /// Platform of the sending device.
-    pub platform: String,
 }
 
 impl Zeroize for PairingPayload {
@@ -235,12 +250,14 @@ impl Zeroize for PairingPayload {
     /// its nodes without scrubbing them, so each key is zeroized in place
     /// first and only then dropped.
     fn zeroize(&mut self) {
-        self.id_s_priv.zeroize();
         self.id_s_pub.zeroize();
         self.id_d_pub.zeroize();
         self.identity_id.zeroize();
         self.genesis_identity_id.zeroize();
         self.genesis_id_s_pub.zeroize();
+        self.d_s_priv.zeroize();
+        self.d_d_priv.zeroize();
+        self.device_cert.zeroize();
         self.vault_root.zeroize();
         for epochs in self.stream_keys.values_mut() {
             for key in epochs.values_mut() {
@@ -300,16 +317,16 @@ pub fn encode_pairing_payload(p: &PairingPayload) -> Result<Vec<u8>, PairingPayl
     }
 
     let map = vec![
-        (int(1), Value::Bytes(p.id_s_priv.to_vec())),
         (int(3), Value::Bytes(p.id_s_pub.to_vec())),
         (int(4), Value::Bytes(p.id_d_pub.to_vec())),
         (int(5), Value::Bytes(p.identity_id.to_vec())),
         (int(6), Value::Map(streams)),
-        (int(7), Value::Text(p.nickname.clone())),
-        (int(8), Value::Text(p.platform.clone())),
         (int(9), Value::Bytes(p.vault_root.to_vec())),
         (int(10), Value::Bytes(p.genesis_identity_id.to_vec())),
         (int(11), Value::Bytes(p.genesis_id_s_pub.to_vec())),
+        (int(12), Value::Bytes(p.d_s_priv.to_vec())),
+        (int(13), Value::Bytes(p.d_d_priv.to_vec())),
+        (int(14), Value::Bytes(p.device_cert.clone())),
     ];
     let mut out = Vec::with_capacity(512);
     ciborium::ser::into_writer(&Value::Map(map), &mut out)
@@ -324,15 +341,22 @@ pub fn encode_pairing_payload(p: &PairingPayload) -> Result<Vec<u8>, PairingPayl
 
 /// Decode and validate a pairing payload.
 ///
-/// The `identity_id` is recomputed from `ID_S_pub` and compared before the
-/// value is handed back, so a caller cannot forget to.
+/// The `identity_id`s are recomputed from their public keys and compared before
+/// the value is handed back, so a caller cannot forget to. What is *not*
+/// re-checked here is the cert: verifying it needs nothing this function lacks,
+/// but refusing it needs somewhere for the failure to go that is not "your vault
+/// will not open", and `Keychain::create` is where that check belongs — it is the
+/// only caller that can act on the answer.
 ///
 /// # Errors
 /// [`PairingPayloadError::Cbor`] for malformed CBOR,
 /// [`PairingPayloadError::BadField`] for a missing or wrongly-shaped field, and
-/// [`PairingPayloadError::IdentityMismatch`] when the id and the key disagree.
+/// [`PairingPayloadError::IdentityMismatch`] / [`PairingPayloadError::GenesisMismatch`]
+/// when an id and its key disagree.
 pub fn decode_pairing_payload(bytes: &[u8]) -> Result<PairingPayload, PairingPayloadError> {
     use ciborium::value::Value;
+    use subtle::ConstantTimeEq;
+    use sunrise_crypto::identity_id_from_pub;
 
     if bytes.len() > MAX_PAIRING_PAYLOAD {
         return Err(PairingPayloadError::TooLarge { len: bytes.len() });
@@ -343,64 +367,44 @@ pub fn decode_pairing_payload(bytes: &[u8]) -> Result<PairingPayload, PairingPay
         return Err(PairingPayloadError::Cbor("payload must be a map".into()));
     };
 
-    let mut id_s_priv: Option<[u8; 32]> = None;
     let mut id_s_pub: Option<[u8; 32]> = None;
     let mut id_d_pub: Option<[u8; 32]> = None;
     let mut identity_id: Option<[u8; 16]> = None;
     let mut genesis_identity_id: Option<[u8; 16]> = None;
     let mut genesis_id_s_pub: Option<[u8; 32]> = None;
     let mut vault_root: Option<[u8; 32]> = None;
+    let mut d_s_priv: Option<[u8; 32]> = None;
+    let mut d_d_priv: Option<[u8; 32]> = None;
+    let mut device_cert: Option<Vec<u8>> = None;
     let mut stream_keys: BTreeMap<[u8; 16], BTreeMap<u32, [u8; 32]>> = BTreeMap::new();
-    let mut nickname: Option<String> = None;
-    let mut platform: Option<String> = None;
 
     for (k, v) in map {
         let Value::Integer(i) = k else {
             return Err(PairingPayloadError::Cbor("non-int key".into()));
         };
         match (i128::from(i), v) {
-            (1, Value::Bytes(b)) => id_s_priv = Some(arr32(&b, "id_s_priv")?),
-            // Key 2 was `ID_D_priv` and is burned. A sender old enough to
-            // still emit it is refused rather than tolerated: accepting the
-            // field and dropping it would leave the operator believing a
-            // revocation binds when the peer that paired still holds the key
-            // that unbinds it.
+            // Keys 1 and 2 were `ID_S_priv` and `ID_D_priv`, and both are
+            // burned. A sender old enough to still emit either is refused
+            // rather than tolerated: accepting the field and dropping it would
+            // leave the operator believing a revocation binds when the device
+            // that paired still holds the key that unbinds it (key 2, `#76`),
+            // or believing a revoked device cannot certify itself back in when
+            // it still can (key 1, `#105`).
             //
-            // Having no arm here is what refuses it, and the arm that catches
-            // it is the **reserved-range** one -- `(1..=9)` -- not the
+            // Having no arm here is what refuses them, and the arm that catches
+            // them is the **reserved-range** one -- `(1..=14)` -- not the
             // unknown-key `_` arm after it. That distinction is the whole
-            // guard: field 2 is inside the reserved range, so it errors; the
-            // `_` arm ignores what it catches, so if field 2 ever reached it
-            // the payload would decode with the burned key silently dropped
-            // and `#76` would be reopened. See the note on that arm.
+            // guard: 1 and 2 are inside the reserved range, so they error; the
+            // `_` arm ignores what it catches, so if either reached it the
+            // payload would decode with the burned key silently dropped.
             (3, Value::Bytes(b)) => id_s_pub = Some(arr32(&b, "id_s_pub")?),
             (4, Value::Bytes(b)) => id_d_pub = Some(arr32(&b, "id_d_pub")?),
             (5, Value::Bytes(b)) => identity_id = Some(arr16(&b, "identity_id")?),
-            (6, Value::Map(streams)) => {
-                for (sid, per_epoch) in streams {
-                    let Value::Bytes(sid) = sid else {
-                        return Err(PairingPayloadError::BadField("stream_keys key"));
-                    };
-                    let Value::Map(per_epoch) = per_epoch else {
-                        return Err(PairingPayloadError::BadField("stream_keys value"));
-                    };
-                    let sid = arr16(&sid, "stream_keys key")?;
-                    let entry = stream_keys.entry(sid).or_default();
-                    for (epoch, key) in per_epoch {
-                        let Value::Integer(epoch) = epoch else {
-                            return Err(PairingPayloadError::BadField("epoch"));
-                        };
-                        let Value::Bytes(key) = key else {
-                            return Err(PairingPayloadError::BadField("stream key"));
-                        };
-                        let epoch = u32::try_from(i128::from(epoch))
-                            .map_err(|_| PairingPayloadError::BadField("epoch range"))?;
-                        entry.insert(epoch, arr32(&key, "stream key")?);
-                    }
-                }
-            }
-            (7, Value::Text(s)) => nickname = Some(s),
-            (8, Value::Text(s)) => platform = Some(s),
+            (6, Value::Map(streams)) => read_stream_keys(streams, &mut stream_keys)?,
+            // 7 and 8 were the sending device's nickname and platform. Burned
+            // for a duller reason than 1 and 2: the labels that matter now are
+            // the ones the account signed into the cert, and a second copy
+            // beside it is a second thing that can disagree with it.
             (9, Value::Bytes(b)) => vault_root = Some(arr32(&b, "vault_root")?),
             (10, Value::Bytes(b)) => {
                 genesis_identity_id = Some(arr16(&b, "genesis_identity_id")?);
@@ -408,21 +412,23 @@ pub fn decode_pairing_payload(bytes: &[u8]) -> Result<PairingPayload, PairingPay
             (11, Value::Bytes(b)) => {
                 genesis_id_s_pub = Some(arr32(&b, "genesis_id_s_pub")?);
             }
+            (12, Value::Bytes(b)) => d_s_priv = Some(arr32(&b, "d_s_priv")?),
+            (13, Value::Bytes(b)) => d_d_priv = Some(arr32(&b, "d_d_priv")?),
+            (14, Value::Bytes(b)) => device_cert = Some(b),
             // The reserved range: every field this version defines, plus the
-            // burned field 2. A value in it that matched none of the arms
-            // above is either the wrong CBOR shape for a field we know or the
+            // four burned ones. A value in it that matched none of the arms
+            // above is either the wrong CBOR shape for a field we know or a
             // burned key itself, and both are errors rather than things to
             // ignore.
             //
-            // The upper bound moves when a field is added -- it moved to 11
-            // when the genesis anchor arrived, and a future field 12 needs
-            // `(1..=12)`. The **lower** bound and field 2's membership do not
-            // move: shrinking the range past 2, or special-casing 2 into the
-            // ignore arm, makes a payload carrying `ID_D_priv` decode
-            // successfully with the key dropped, which is exactly the state
-            // `#76` was filed about.
-            // `a_payload_still_carrying_the_burned_id_d_priv_is_refused` pins it.
-            (id, _) if (1..=11).contains(&id) => {
+            // The upper bound moves when a field is added; the **lower** bound
+            // and fields 1 and 2's membership do not. Shrinking the range past
+            // them, or special-casing either into the ignore arm, makes a
+            // payload carrying an identity private key decode successfully with
+            // the key dropped, which is exactly the state `#76` and `#105` were
+            // filed about. `a_payload_still_carrying_a_burned_identity_key_is_refused`
+            // pins it.
+            (id, _) if (1..=14).contains(&id) => {
                 return Err(PairingPayloadError::BadField("field shape"));
             }
             // Forward-compat: a newer sender's extra fields are ignored, not
@@ -432,7 +438,6 @@ pub fn decode_pairing_payload(bytes: &[u8]) -> Result<PairingPayload, PairingPay
     }
 
     let payload = PairingPayload {
-        id_s_priv: id_s_priv.ok_or(PairingPayloadError::BadField("id_s_priv"))?,
         id_s_pub: id_s_pub.ok_or(PairingPayloadError::BadField("id_s_pub"))?,
         id_d_pub: id_d_pub.ok_or(PairingPayloadError::BadField("id_d_pub"))?,
         identity_id: identity_id.ok_or(PairingPayloadError::BadField("identity_id"))?,
@@ -440,77 +445,97 @@ pub fn decode_pairing_payload(bytes: &[u8]) -> Result<PairingPayload, PairingPay
             .ok_or(PairingPayloadError::BadField("genesis_identity_id"))?,
         genesis_id_s_pub: genesis_id_s_pub
             .ok_or(PairingPayloadError::BadField("genesis_id_s_pub"))?,
+        d_s_priv: d_s_priv.ok_or(PairingPayloadError::BadField("d_s_priv"))?,
+        d_d_priv: d_d_priv.ok_or(PairingPayloadError::BadField("d_d_priv"))?,
+        device_cert: device_cert.ok_or(PairingPayloadError::BadField("device_cert"))?,
         vault_root: vault_root.ok_or(PairingPayloadError::BadField("vault_root"))?,
         stream_keys,
-        nickname: nickname.ok_or(PairingPayloadError::BadField("nickname"))?,
-        platform: platform.ok_or(PairingPayloadError::BadField("platform"))?,
     };
 
-    // The checks that cannot be skipped: every public half in the payload is a
-    // derivation of a private half that is also in the payload, so each one is
-    // recomputed rather than trusted.
-    //
     // Both comparisons are constant-time, which is what
     // `docs/03-crypto/pairing-and-onboarding.md` §7 has always said they were
     // and what a plain `!=` on `[u8; 16]` is not. The timing signal is small —
-    // the attacker here is on the far side of a SAS-confirmed Noise channel —
-    // but a documented property that the code does not have is worse than
-    // either having it or not claiming it, and the fix is one call.
-    let id_ok = identity_id_from_pub(&payload.id_s_pub).ct_eq(&payload.identity_id);
-    // The same check on the anchor, and for the same reason: the sender chose
-    // both bytes. A genesis id that does not derive from the genesis key would
-    // anchor this device's fold at a point no other replica can reach, and the
-    // divergence would be silent because each replica stays internally
-    // consistent.
+    // this payload never crosses a network — but a documented property that the
+    // code does not have is worse than either having it or not claiming it.
     let genesis_ok =
         identity_id_from_pub(&payload.genesis_id_s_pub).ct_eq(&payload.genesis_identity_id);
     if !bool::from(genesis_ok) {
         return Err(PairingPayloadError::GenesisMismatch);
     }
-    // `ID_D_pub` used to be checked against the `ID_D_priv` beside it. With the
-    // private half gone there is nothing to recompute it from, and no check
-    // here can establish that the public key is the account's: a receiver
+    // `ID_D_pub` is not checked against anything, and cannot be: a receiver
     // holding only public material cannot tell a real `ID_D_pub` from any other
-    // valid X25519 point. What stands behind it is the channel — Noise XX,
-    // SAS-confirmed — which is the same thing that stands behind `ID_S_priv`
-    // and the vault root in the same message. A wrong `ID_D_pub` here does not
-    // expose anything; it produces epochs the recovery blob cannot open, which
-    // is a recovery failure and is the reason `identity_id` is still checked
-    // below.
-    if !bool::from(id_ok) {
+    // valid X25519 point. What stands behind it is the channel the offer came
+    // over. A wrong one does not expose anything; it produces epochs the
+    // recovery blob cannot open, which is a recovery failure.
+    if !bool::from(identity_id_from_pub(&payload.id_s_pub).ct_eq(&payload.identity_id)) {
         return Err(PairingPayloadError::IdentityMismatch);
     }
     Ok(payload)
 }
 
-fn int(n: u8) -> ciborium::value::Value {
+pub(crate) fn int(n: u8) -> ciborium::value::Value {
     ciborium::value::Value::Integer(ciborium::value::Integer::from(n))
 }
 
-fn arr32(b: &[u8], what: &'static str) -> Result<[u8; 32], PairingPayloadError> {
+pub(crate) fn arr32(b: &[u8], what: &'static str) -> Result<[u8; 32], PairingPayloadError> {
     b.try_into()
         .map_err(|_| PairingPayloadError::BadField(what))
 }
 
-fn arr16(b: &[u8], what: &'static str) -> Result<[u8; 16], PairingPayloadError> {
+pub(crate) fn arr16(b: &[u8], what: &'static str) -> Result<[u8; 16], PairingPayloadError> {
     b.try_into()
         .map_err(|_| PairingPayloadError::BadField(what))
+}
+
+/// Read a `stream_id -> epoch -> key` CBOR map into `out`.
+///
+/// Shared by the payload and the grant, which carry the same map for the same
+/// reason and must therefore reject the same malformed shapes.
+pub(crate) fn read_stream_keys(
+    streams: Vec<(ciborium::value::Value, ciborium::value::Value)>,
+    out: &mut BTreeMap<[u8; 16], BTreeMap<u32, [u8; 32]>>,
+) -> Result<(), PairingPayloadError> {
+    use ciborium::value::Value;
+    for (sid, per_epoch) in streams {
+        let Value::Bytes(sid) = sid else {
+            return Err(PairingPayloadError::BadField("stream_keys key"));
+        };
+        let Value::Map(per_epoch) = per_epoch else {
+            return Err(PairingPayloadError::BadField("stream_keys value"));
+        };
+        let sid = arr16(&sid, "stream_keys key")?;
+        let entry = out.entry(sid).or_default();
+        for (epoch, key) in per_epoch {
+            let Value::Integer(epoch) = epoch else {
+                return Err(PairingPayloadError::BadField("epoch"));
+            };
+            let Value::Bytes(key) = key else {
+                return Err(PairingPayloadError::BadField("stream key"));
+            };
+            let epoch = u32::try_from(i128::from(epoch))
+                .map_err(|_| PairingPayloadError::BadField("epoch range"))?;
+            entry.insert(epoch, arr32(&key, "stream key")?);
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sunrise_crypto::keys::{IdentityDhKeyPair, IdentitySigningKeyPair};
+    use sunrise_crypto::identity_id_from_pub;
+    use sunrise_crypto::keys::{
+        DeviceDhKeyPair, DeviceSigningKeyPair, IdentityDhKeyPair, IdentitySigningKeyPair,
+    };
 
     fn payload(streams: u32, epochs: u32) -> PairingPayload {
         let signing = IdentitySigningKeyPair::from_secret_bytes(&[0x21; 32]);
         let id_s_pub = signing.public_bytes();
-        // `id_s_pub` is still recomputed from its private half by the decoder,
-        // so that one has to be a real pair. `id_d_pub` no longer has a private
-        // half in the payload to be checked against, but it is kept a real
-        // X25519 point here rather than a constant: a fixture that is not a
-        // valid point would pass this codec and fail the first time anything
-        // sealed to it.
+        // `id_s_pub` is still recomputed from `identity_id` by the decoder, so
+        // that one has to be a real key. `id_d_pub` has no private half here to
+        // be checked against, but it is kept a real X25519 point rather than a
+        // constant: a fixture that is not a valid point would pass this codec
+        // and fail the first time anything sealed to it.
         let id_d_pub = IdentityDhKeyPair::from_secret_bytes([0x22; 32]).public_bytes();
         let mut stream_keys = BTreeMap::new();
         for s in 0..streams {
@@ -523,7 +548,6 @@ mod tests {
             stream_keys.insert(sid, per_epoch);
         }
         PairingPayload {
-            id_s_priv: [0x21; 32],
             id_s_pub,
             id_d_pub,
             identity_id: identity_id_from_pub(&id_s_pub),
@@ -531,10 +555,11 @@ mod tests {
             // every account these unit tests build.
             genesis_identity_id: identity_id_from_pub(&id_s_pub),
             genesis_id_s_pub: id_s_pub,
+            d_s_priv: DeviceSigningKeyPair::from_secret_bytes(&[0x31; 32]).secret_bytes(),
+            d_d_priv: DeviceDhKeyPair::from_secret_bytes([0x32; 32]).secret_bytes(),
+            device_cert: vec![0xa0; 48],
             vault_root: [0x25; 32],
             stream_keys,
-            nickname: "a laptop".into(),
-            platform: "macos".into(),
         }
     }
 
@@ -543,14 +568,14 @@ mod tests {
         let p = payload(3, 2);
         let bytes = encode_pairing_payload(&p).unwrap();
         let back = decode_pairing_payload(&bytes).unwrap();
-        assert_eq!(back.id_s_priv, p.id_s_priv);
         assert_eq!(back.id_s_pub, p.id_s_pub);
         assert_eq!(back.id_d_pub, p.id_d_pub);
         assert_eq!(back.identity_id, p.identity_id);
         assert_eq!(back.vault_root, p.vault_root);
+        assert_eq!(back.d_s_priv, p.d_s_priv);
+        assert_eq!(back.d_d_priv, p.d_d_priv);
+        assert_eq!(back.device_cert, p.device_cert);
         assert_eq!(back.stream_keys, p.stream_keys);
-        assert_eq!(back.nickname, p.nickname);
-        assert_eq!(back.platform, p.platform);
         assert_eq!(back.key_count(), 6);
     }
 
@@ -571,6 +596,17 @@ mod tests {
         assert!(matches!(
             decode_pairing_payload(&bytes),
             Err(PairingPayloadError::IdentityMismatch)
+        ));
+    }
+
+    #[test]
+    fn a_rewritten_genesis_anchor_is_refused() {
+        let mut p = payload(1, 1);
+        p.genesis_identity_id = [0xff; 16];
+        let bytes = encode_pairing_payload(&p).unwrap();
+        assert!(matches!(
+            decode_pairing_payload(&bytes),
+            Err(PairingPayloadError::GenesisMismatch)
         ));
     }
 
@@ -616,68 +652,49 @@ mod tests {
         assert_eq!(decode_pairing_payload(&bytes).unwrap().key_count(), 1000);
     }
 
-    /// `identity_id` is checked against `ID_S_pub`, and `ID_D_pub` is **not**
-    /// checked at all — which is a statement about what a receiver can know,
-    /// not an omission.
+    /// A payload carrying either burned identity key is refused, not tolerated.
     ///
-    /// This test used to assert both halves. It could, because the payload
-    /// carried `ID_D_priv` and the decoder recomputed `ID_D_pub` from it. With
-    /// the private half gone (`#76`) there is nothing to recompute from: a
-    /// receiver holding only public material cannot distinguish the account's
-    /// real `ID_D_pub` from any other valid X25519 point, and no check written
-    /// here could. What stands behind the field is the Noise XX channel and the
-    /// SAS both users read aloud, which is the same thing that stands behind
-    /// `ID_S_priv` and the vault root in the same message.
-    ///
-    /// The consequence of a wrong `ID_D_pub` is bounded and is not disclosure:
-    /// it seals epochs to a key the recovery blob cannot open, so the account
-    /// becomes unrecoverable rather than readable by a stranger. That is why
-    /// `identity_id` — which *is* checkable, and which decides whose account
-    /// this device joins — keeps its constant-time check.
+    /// Key 1 was `ID_S_priv` and key 2 was `ID_D_priv`. A sender still emitting
+    /// one is a build from before the bound it removes: with key 2 a revoked
+    /// device opens every rotated epoch (`#76`), and with key 1 it certifies
+    /// itself back in under a fresh device id (`#105`). Silently ignoring the
+    /// field would leave the operator believing a revocation binds when it does
+    /// not.
     #[test]
-    fn a_payload_whose_identity_id_does_not_match_its_signing_key_is_refused() {
-        let mut q = payload(2, 1);
-        q.identity_id = [0x88; 16];
-        let bytes = encode_pairing_payload(&q).unwrap();
-        assert!(matches!(
-            decode_pairing_payload(&bytes),
-            Err(PairingPayloadError::IdentityMismatch)
-        ));
+    fn a_payload_still_carrying_a_burned_identity_key_is_refused() {
+        for burned in [1u8, 2] {
+            let good = payload(2, 1);
+            let bytes = encode_pairing_payload(&good).unwrap();
+            let mut v: ciborium::value::Value =
+                ciborium::de::from_reader(bytes.as_slice()).expect("decode to a cbor map");
+            let ciborium::value::Value::Map(entries) = &mut v else {
+                panic!("a pairing payload is a map");
+            };
+            entries.push((int(burned), ciborium::value::Value::Bytes(vec![0x22; 32])));
+            let mut with_burned = Vec::new();
+            ciborium::ser::into_writer(&v, &mut with_burned).expect("re-encode");
 
-        // And the honest payload still round-trips, so the check is not simply
-        // refusing everything.
-        let good = payload(2, 1);
-        let bytes = encode_pairing_payload(&good).unwrap();
-        assert_eq!(
-            decode_pairing_payload(&bytes).unwrap().id_d_pub,
-            good.id_d_pub
-        );
+            assert!(
+                decode_pairing_payload(&with_burned).is_err(),
+                "a payload carrying burned field {burned} must not decode"
+            );
+        }
     }
 
-    /// A payload carrying the burned key 2 is refused, not tolerated.
+    /// The property this whole change exists for, asserted on the bytes.
     ///
-    /// Key 2 was `ID_D_priv`. A sender still emitting it is a build from before
-    /// revocation bounded reads, and pairing with it would produce a device
-    /// holding the identity's unwrapping key — exactly the state `#76` is
-    /// about. Silently ignoring the field would leave the operator believing a
-    /// later revocation binds when the device it paired can still open every
-    /// rotated epoch.
+    /// A struct with no `id_s_priv` field cannot encode one, but "the struct has
+    /// no field" is a claim about today's source. This is a claim about the
+    /// wire: whatever the encoder does, the account's signing secret is not in
+    /// what comes out of it.
     #[test]
-    fn a_payload_still_carrying_the_burned_id_d_priv_is_refused() {
-        let good = payload(2, 1);
-        let bytes = encode_pairing_payload(&good).unwrap();
-        let mut v: ciborium::value::Value =
-            ciborium::de::from_reader(bytes.as_slice()).expect("decode to a cbor map");
-        let ciborium::value::Value::Map(entries) = &mut v else {
-            panic!("a pairing payload is a map");
-        };
-        entries.push((int(2), ciborium::value::Value::Bytes(vec![0x22; 32])));
-        let mut with_key_2 = Vec::new();
-        ciborium::ser::into_writer(&v, &mut with_key_2).expect("re-encode");
-
+    fn no_encoded_payload_contains_the_account_signing_secret() {
+        let signing = IdentitySigningKeyPair::from_secret_bytes(&[0x21; 32]);
+        let secret = signing.secret_bytes();
+        let bytes = encode_pairing_payload(&payload(3, 2)).unwrap();
         assert!(
-            decode_pairing_payload(&with_key_2).is_err(),
-            "a payload carrying ID_D_priv must not decode"
+            !bytes.windows(secret.len()).any(|w| w == secret),
+            "ID_S_priv must not appear anywhere in an encoded pairing payload"
         );
     }
 
@@ -685,7 +702,7 @@ mod tests {
     fn debug_does_not_leak() {
         let p = payload(1, 1);
         let rendered = format!("{p:?}");
-        assert!(!rendered.contains(&hex::encode(p.id_s_priv)));
+        assert!(!rendered.contains(&hex::encode(p.d_s_priv)));
         assert!(!rendered.contains(&hex::encode(p.vault_root)));
     }
 }
