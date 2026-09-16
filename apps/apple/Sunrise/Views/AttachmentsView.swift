@@ -55,27 +55,20 @@ struct AttachmentsView: View {
 
     private var list: some View {
         List(model.rows, selection: $selection) { row in
+            // Read once per row, so the icon, the subtitle and the buttons
+            // cannot disagree about what this attachment is doing.
+            let transfer = model.transfer(row)
             HStack(spacing: 8) {
-                Image(systemName: symbol(for: row))
-                    .foregroundStyle(row.isLocal ? .primary : .secondary)
+                Image(systemName: symbol(for: row, transfer))
+                    .foregroundStyle(transfer == .here ? .primary : .secondary)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(row.item.filename)
-                    Text(subtitle(for: row))
+                    Text(subtitle(for: row, transfer))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                if row.isLocal {
-                    Button("Open", systemImage: "arrow.up.forward.app") {
-                        Task {
-                            if let url = await model.exportToTemporary(row) {
-                                Platform.openExternal(url)
-                            }
-                        }
-                    }
-                    .labelStyle(.iconOnly)
-                    .buttonStyle(.plain)
-                }
+                transferControls(for: row, transfer)
                 Button("Remove", systemImage: "trash") {
                     Task { await model.detach(row) }
                 }
@@ -87,6 +80,56 @@ struct AttachmentsView: View {
             .onTapGesture { Task { await model.preview(row) } }
         }
         .frame(minHeight: 120)
+    }
+
+    /// What the row offers to do about its bytes.
+    ///
+    /// `docs/02-domain/attachments.md` §Lazy fetch names three of these four
+    /// and the fourth is the ordinary case. An attachment on this device opens;
+    /// one over the 10 MiB auto-fetch threshold "shows an inline placeholder
+    /// with file name, size, and a 'Download' button" — the name and size are
+    /// the two lines to the left, which is what makes this the button rather
+    /// than a whole placeholder view; and "the 'Cancel' button during transfer
+    /// aborts".
+    ///
+    /// Under the threshold none of this is drawn for long: the sync driver
+    /// fetches those unasked, so the row is `.absent` only until the next drain
+    /// and then opens.
+    @ViewBuilder
+    private func transferControls(
+        for row: AttachmentRow,
+        _ transfer: AttachmentTransfer
+    ) -> some View {
+        switch transfer {
+        case .here:
+            Button("Open", systemImage: "arrow.up.forward.app") {
+                Task {
+                    if let url = await model.exportToTemporary(row) {
+                        Platform.openExternal(url)
+                    }
+                }
+            }
+            .labelStyle(.iconOnly)
+            .buttonStyle(.plain)
+        case .running:
+            ProgressView().controlSize(.small)
+            Button("Cancel", systemImage: "xmark.circle") {
+                model.cancelDownload(row)
+            }
+            .labelStyle(.iconOnly)
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("cancel-attachment-download")
+        case .interrupted, .absent:
+            Button(
+                transfer == .interrupted ? "Download again" : "Download",
+                systemImage: "arrow.down.circle"
+            ) {
+                model.download(row)
+            }
+            .labelStyle(.iconOnly)
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("download-attachment")
+        }
     }
 
     /// The inline preview. Images and PDFs only — everything else opens in the
@@ -116,19 +159,34 @@ struct AttachmentsView: View {
         }
     }
 
-    private func symbol(for row: AttachmentRow) -> String {
-        guard row.isLocal else { return "icloud.and.arrow.down" }
-        switch row.previewKind {
-        case .image: return "photo"
-        case .pdf: return "doc.richtext"
-        case .none: return "doc"
+    private func symbol(for row: AttachmentRow, _ transfer: AttachmentTransfer) -> String {
+        switch transfer {
+        case .running: return "arrow.down.circle"
+        case .interrupted: return "exclamationmark.icloud"
+        case .absent: return "icloud.and.arrow.down"
+        case .here:
+            switch row.previewKind {
+            case .image: return "photo"
+            case .pdf: return "doc.richtext"
+            case .none: return "doc"
+            }
         }
     }
 
-    private func subtitle(for row: AttachmentRow) -> String {
-        row.isLocal
-            ? "\(row.sizeText) · \(row.item.mimeType)"
-            : "\(row.sizeText) · not on this device"
+    /// The second line of the placeholder: the size, always, and then what the
+    /// row is waiting for.
+    ///
+    /// "Interrupted" is worth its own wording rather than folding into "not on
+    /// this device". It is the one state where pressing the button again is
+    /// the whole remedy, and a user who cannot tell it from an ordinary
+    /// un-downloaded row has no reason to press anything.
+    private func subtitle(for row: AttachmentRow, _ transfer: AttachmentTransfer) -> String {
+        switch transfer {
+        case .here: return "\(row.sizeText) · \(row.item.mimeType)"
+        case .running: return "\(row.sizeText) · downloading…"
+        case .interrupted: return "\(row.sizeText) · download interrupted"
+        case .absent: return "\(row.sizeText) · not on this device"
+        }
     }
 }
 

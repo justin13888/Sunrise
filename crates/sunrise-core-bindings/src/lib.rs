@@ -48,7 +48,7 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use sunrise_core::{Command, Core, CoreConfig, CoreError, Unlock};
+use sunrise_core::{AttachmentFetchState, Command, Core, CoreConfig, CoreError, Unlock};
 use sunrise_crypto::keys::VaultRootKey;
 use sunrise_id::EntityRef;
 use thiserror::Error;
@@ -167,7 +167,24 @@ pub enum BindingError {
         /// The attachment.
         id: String,
     },
+    /// A client called [`SunriseCore::cancel_attachment_fetch`] while the
+    /// download was running.
+    ///
+    /// Its own variant for the same reason [`BindingError::AttachmentNotHere`]
+    /// is: it is not a failure. The user pressed Cancel and the app should go
+    /// quietly back to the placeholder — a client that showed this in an error
+    /// banner would be reporting the user's own decision back to them.
+    #[error("the download of attachment {id} was cancelled")]
+    AttachmentDownloadCancelled {
+        /// The attachment.
+        id: String,
+    },
     /// The attachment byte path failed for any other reason.
+    ///
+    /// Carries the core's own wording, which is written to be shown: an
+    /// attachment nothing ever uploaded, a vault with no sync session, and a
+    /// relay that could not serve the blob are three different things to tell
+    /// the user and each says so in its message.
     #[error("attachment: {0}")]
     Attachment(String),
     /// An `.ics` import or export failed.
@@ -204,6 +221,9 @@ impl From<sunrise_core::AttachError> for BindingError {
             sunrise_core::AttachError::BytesNotHere { id } => {
                 Self::AttachmentNotHere { id: id.to_str() }
             }
+            sunrise_core::AttachError::FetchCancelled { id } => {
+                Self::AttachmentDownloadCancelled { id: id.to_str() }
+            }
             other => Self::Attachment(other.to_string()),
         }
     }
@@ -219,6 +239,17 @@ impl From<CoreError> for BindingError {
     fn from(e: CoreError) -> Self {
         Self::Core(e.to_string())
     }
+}
+
+/// See [`sunrise_core::AttachmentFetchState`].
+///
+/// Declared remotely rather than mirrored so that a new state upstream fails
+/// this crate's build instead of becoming a value the app cannot name.
+#[uniffi::remote(Enum)]
+pub enum AttachmentFetchState {
+    Idle,
+    Requested,
+    Partial,
 }
 
 /// A live vault.
@@ -594,6 +625,70 @@ impl SunriseCore {
         attachment: dto::AttachmentItem,
     ) -> Result<bool, BindingError> {
         Ok(self.inner.attachment_is_local(&attachment.to_domain()?)?)
+    }
+
+    /// Download one attachment's bytes now, whatever its size, and return when
+    /// they are here.
+    ///
+    /// What the "Download" button in `docs/02-domain/attachments.md` §Lazy
+    /// fetch calls. Below the 10 MiB auto-fetch threshold a client never needs
+    /// this — the sync driver fetches those unasked — and above it this is the
+    /// only route to the bytes at all.
+    ///
+    /// `async` because it is `GET /blobs/{id}` over however many 256 KiB
+    /// chunks, and because the whole point is that the caller can draw a
+    /// spinner beside it. It does **not** time out: the caller has the better
+    /// instrument, which is a Cancel button and a person looking at it. Call
+    /// [`SunriseCore::cancel_attachment_fetch`] to end it — cancelling the
+    /// foreign `Task` will not, since a UniFFI async call carries no
+    /// cancellation across the seam.
+    ///
+    /// Safe to call for an attachment already here: that case does no I/O
+    /// beyond a per-chunk `exists` and returns immediately.
+    ///
+    /// # Errors
+    ///
+    /// [`BindingError::AttachmentDownloadCancelled`] when the user cancelled,
+    /// which is not a failure to report. Everything else is
+    /// [`BindingError::Attachment`], carrying wording that distinguishes an
+    /// attachment nothing ever uploaded, a vault with no sync session, and a
+    /// relay that would not serve the blob.
+    pub async fn fetch_attachment(&self, id: EntityRef) -> Result<(), BindingError> {
+        Ok(self.inner.fetch_attachment(id).await?)
+    }
+
+    /// Stop a running download and mark the attachment `partial`.
+    ///
+    /// Synchronous and immediate: it releases the pending
+    /// [`SunriseCore::fetch_attachment`] with
+    /// [`BindingError::AttachmentDownloadCancelled`] whether or not a relay is
+    /// answering. A no-op for an id with nothing outstanding.
+    ///
+    /// # Errors
+    ///
+    /// [`BindingError::Attachment`] if the vault could not be written.
+    pub fn cancel_attachment_fetch(&self, id: EntityRef) -> Result<(), BindingError> {
+        Ok(self.inner.cancel_attachment_fetch(id)?)
+    }
+
+    /// This device's cache state for one attachment's bytes.
+    ///
+    /// Read beside [`SunriseCore::attachment_is_local`] to choose what to draw:
+    /// `Idle` with no local bytes is the placeholder and its Download button,
+    /// `Requested` is the transfer and its Cancel button, and `Partial` is the
+    /// interrupted transfer that restarts from byte 0 when asked again.
+    ///
+    /// Durable, so a row still reads `Partial` after the app is relaunched —
+    /// which is the point of it being a cache state rather than a view state.
+    ///
+    /// # Errors
+    ///
+    /// [`BindingError::Attachment`] if the vault could not be read.
+    pub fn attachment_fetch_state(
+        &self,
+        id: EntityRef,
+    ) -> Result<AttachmentFetchState, BindingError> {
+        Ok(self.inner.attachment_fetch_state(id)?)
     }
 
     /// Whether this vault can sponsor a pairing at all.
