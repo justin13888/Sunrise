@@ -195,14 +195,24 @@ document's intent, not yet implemented).
   are **views**, and nothing schedules a notification for them.
 - **built — Keychain** holds the unlock material. Nothing else does. The
   account is **per vault**, so a second vault gets its own item rather than
-  overwriting the first. Two items, under two services, and **both** ask for
-  `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`:
+  overwriting the first. Three items, under three services, and **all three**
+  ask for `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`:
   `dev.sunrise.Sunrise.vault-root`, `dev.sunrise.Sunrise.oidc-credentials` and
   `dev.sunrise.Sunrise.relay-device-id`.
   An item an older build left in the weaker `…AfterFirstUnlock` is raised on
   the next load rather than left where it was, and a Keychain that refuses the
   raise fails the load rather than handing back a secret whose guarantee is not
   the one the app claims.
+
+  Each store also runs a **keychain migration** on `load`, immediately before
+  that raise — `KeychainMigration` in
+  `apps/apple/Sunrise/Identity/KeychainMigration.swift`. The order is
+  load-bearing: move the item to the keychain this build addresses, then raise
+  the class, because the class only starts meaning anything once the item is
+  somewhere that implements one. Which keychain that is comes from
+  `KeychainDomain.probe()`, which asks the platform rather than assuming from
+  `#if os(…)`. On every build this repository can make the probe answers
+  `.login`, so both halves are inert today; see below.
 
   **The Mac does not honour the class**: without the App Sandbox or a
   keychain-access-group entitlement the app uses the file-based login keychain,
@@ -302,12 +312,42 @@ So the entitlement is not a setting that can be committed on its own: a build
 carrying it will not launch without a real signing identity, and
 `mise run macos-app` builds `CODE_SIGNING_ALLOWED=NO` — which is what keeps the
 Mac app buildable by a contributor with no Apple account, the same thing
-`DEVELOPMENT_TEAM: ""` exists for. Whoever lands this has to answer that
-question too, on top of the migration the existing login-keychain items need:
-read the old item, write the new one, **verify the read-back**, and only then
-delete the old, safe to interrupt at every step, because a build that silently
-starts reading an empty data-protection keychain looks exactly like a lost
-vault.
+`DEVELOPMENT_TEAM: ""` exists for.
+
+**The migration that has to go with it is built; the entitlement is not.** The
+half that does not need a signing identity is in the tree, and the half that
+does is not:
+
+- `KeychainDomain` — `.login` and `.dataProtection`, and a memoised
+  `probe()` that adds one fixed non-secret byte under a probe-only service in
+  `.dataProtection`, keeps the status, deletes whatever it wrote, and answers
+  `.dataProtection` only on `errSecSuccess`. It **never throws**: it fails open
+  to the weaker-but-reachable keychain, deliberately the opposite direction
+  from the accessibility raise, because a refused raise leaves a readable
+  secret whose guarantee is wrong while a refused domain would leave a secret
+  the app cannot see at all.
+- `KeychainMigration` — five resumable steps holding one invariant: **a
+  readable copy exists at every instant.** Read the destination, read the
+  source, write the destination, read it back and compare byte-for-byte, and
+  only then delete the source. A kill between any two steps leaves a state the
+  next launch finishes from. It refuses exactly one thing — a destination whose
+  bytes differ from the source's, meaning two different secrets claim one
+  `(service, account)` — and falls back to the source item for every other
+  Security status, because locking a user out over a *destination* problem
+  while the secret is perfectly readable where it has always been is a worse
+  trade than the raise takes.
+- Each of the three stores migrates **its own** item inside its own `load`.
+  There is no launch-time pass over all three: the OIDC credential is keyed per
+  account and the other two per vault, so "all three" is not one set.
+
+None of it changes behaviour on any build this repository can produce. The
+probe answers `.login` on an unsigned or ad-hoc-signed Mac, and iOS has only
+one keychain, so in both cases the migration's source and destination are two
+names for one stored item and it does nothing at all — a case the code checks
+for explicitly and the tests pin, because a migration that missed it would
+verify that item against itself and then delete it. What is left for whoever
+holds an Apple team is the entitlements file, `DEVELOPMENT_TEAM`, and turning
+the probe's answer over on macOS.
 
 The **hardened runtime**, which is a different setting, is on and has to be:
 Apple's notary service rejects a submission without it.
