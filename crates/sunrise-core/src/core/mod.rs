@@ -98,6 +98,13 @@ pub struct Core {
     /// The periodic routine-materialization task, if
     /// [`Core::start_routine_timer`] has run. Aborted alongside the driver.
     routine_handle: Mutex<Option<JoinHandle<()>>>,
+    /// The live half of on-demand attachment fetches: which downloads have been
+    /// cancelled, and who is waiting to hear how one ended.
+    ///
+    /// On `Core` rather than on `SyncShared` because a fetch request outlives
+    /// any one session — that is the reason it is a table at all — while
+    /// `SyncShared` is scoped to the driver's own connection state.
+    blob_fetch: Arc<crate::blob_fetch::BlobFetchSignals>,
     closed: Mutex<bool>,
 }
 
@@ -210,6 +217,7 @@ impl Core {
             sync_credential,
             sync_handle: Mutex::new(None),
             routine_handle: Mutex::new(None),
+            blob_fetch: Arc::new(crate::blob_fetch::BlobFetchSignals::new()),
             closed: Mutex::new(false),
         })
     }
@@ -422,6 +430,38 @@ impl Core {
         let handle = tokio::spawn(sync_driver::run(weak, shared, factory, rng));
         *guard = Some(handle);
         Ok(())
+    }
+
+    /// The cancellation flags and outcome broadcast behind
+    /// [`Core::fetch_attachment`].
+    pub(crate) fn blob_fetch_signals(&self) -> &crate::blob_fetch::BlobFetchSignals {
+        &self.blob_fetch
+    }
+
+    /// Whether [`Core::start_sync`] has run, and therefore whether anything in
+    /// this process holds a transport that could reach the relay.
+    pub(crate) fn sync_is_active(&self) -> bool {
+        self.sync_shared.is_active()
+    }
+
+    /// Wake the driver so it drains now rather than at the next inbound frame.
+    ///
+    /// The same wake `submit` uses, and deliberately so: `SessionEvent::Submit`
+    /// already drains blob transfers, so a fetch request rides a path that
+    /// exists rather than adding a second notification for the driver to
+    /// select on.
+    pub(crate) fn poke_sync(&self) {
+        if self.sync_shared.is_active() {
+            self.sync_shared.poke_submit();
+        }
+    }
+
+    /// Resolves once this vault is shutting down.
+    ///
+    /// Awaited beside anything that waits on the driver, so a `close` cannot
+    /// strand a caller on an answer the aborted driver will never give.
+    pub(crate) async fn sync_shutdown_notified(&self) {
+        self.sync_shared.shutdown_notified().await;
     }
 
     /// Start the periodic routine-materialization timer.

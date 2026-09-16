@@ -11,7 +11,7 @@
 //! whether the sender is revoked, whether the key that opens the op has arrived
 //! yet, and only then what the op says.
 
-use super::identity::{MAX_ROSTER_ENTRIES, MAX_SIBLINGS_PER_PREDECESSOR};
+use super::identity::{SiblingRank, MAX_ROSTER_ENTRIES};
 use super::ids::{hex_bytes, hex_short};
 use super::lww::{materialize_remote, remap_legacy_inbox, LwwStamp};
 use super::oplog::{record_envelope_recipient, remote_op_id, upsert_sync_cursor};
@@ -25,6 +25,7 @@ use crate::events::DomainEvent;
 use crate::inner_op::{decode_inner_op, encode_inner_op, InnerOp, OpEffect};
 use crate::keychain::{EnvelopeRecipient, KeySource};
 use rusqlite::{params, OptionalExtension, Transaction};
+use std::collections::BTreeSet;
 use sunrise_cbor::hlc::Hlc;
 use sunrise_crypto::op_envelope::open_envelope;
 use sunrise_crypto::{
@@ -1452,6 +1453,15 @@ impl Engine {
                 // predecessor was unknown is verified when the predecessor
                 // lands, and nothing downstream may assume this ran.
                 //
+                // **What this check does not do is bound the register.** It
+                // cannot run in the case where a forged sibling is cheapest —
+                // an unestablished predecessor — which is #232: while the cap
+                // below counted arrivals, sixteen rows nothing had verified
+                // took every place and the honest successor was refused for
+                // good. `admit_sibling` is what bounds it now, and this check
+                // is what keeps a row that fails it from being stored at all
+                // once the predecessor is known.
+                //
                 // **Untested, and here is why.** The payload that reaches this
                 // check and fails it is one whose `next_sig` was taken over a
                 // `prev_sig` its author chose freely — every cheaper forgery is
@@ -1464,7 +1474,12 @@ impl Engine {
                 // through the public API. A peer implementing the published
                 // format directly can — the domain strings are in
                 // `key-rotation.md` — and that is the reader this check is for.
+                // Narrowed once, and used for both the ordering decision and the
+                // stored column, so a row can never sort by one value and be
+                // written with another.
+                let hlc_physical_ms_i64 = i64::try_from(hlc.physical_ms).unwrap_or(i64::MAX);
                 let chain = self.chain_identities(tx)?;
+                let established: BTreeSet<[u8; 16]> = chain.iter().map(|(id, _)| *id).collect();
                 if let Some((_, from_pub)) = chain.iter().find(|(id, _)| *id == p.from_identity_id)
                 {
                     if sunrise_crypto::verify_identity_transition(&body, from_pub, &sigs).is_err() {
@@ -1477,25 +1492,32 @@ impl Engine {
                         );
                         return Ok(Vec::new());
                     }
+                    // Sweep before counting, not after. A predecessor
+                    // established between two deliveries can be holding rows
+                    // admitted while it was unknown, and those places are what
+                    // the row about to be judged needs.
+                    self.purge_unverifiable_siblings(tx, &p.from_identity_id, from_pub)?;
                 }
 
-                // How many rows one predecessor may have. Counted excluding this
-                // transition's own `to_identity_id` so a re-delivery is never
-                // refused by the cap: the insert below is `OR IGNORE`, and a row
-                // that is already here does not consume a fresh place.
-                let siblings: i64 = tx.query_row(
-                    "SELECT count(*) FROM identity_transitions
-                     WHERE from_identity_id = ?1 AND to_identity_id != ?2",
-                    params![&p.from_identity_id[..], &p.to_identity_id[..]],
-                    |r| r.get(0),
-                )?;
-                if siblings >= MAX_SIBLINGS_PER_PREDECESSOR {
+                // Which rows one predecessor keeps. A place is taken by rank
+                // rather than by arrival, so a register at the cap still admits
+                // a row that outranks its weakest — see
+                // `identity::MAX_SIBLINGS_PER_PREDECESSOR` for why that is the
+                // difference between a bound and a weapon.
+                let rank = SiblingRank {
+                    meta_epoch: i64::from(meta_epoch),
+                    hlc_physical_ms: hlc_physical_ms_i64,
+                    hlc_logical: i64::from(hlc.logical),
+                    emitter_device_id: sender.to_vec(),
+                    to_identity_id: p.to_identity_id.to_vec(),
+                };
+                if !self.admit_sibling(tx, &p.from_identity_id, &rank)? {
                     tracing::warn!(
                         ev = "core.identity.transition_rejected",
                         reason = "siblings",
                         sender_h = hex_short(sender),
                         "an identity already has as many recorded successors as the fold \
-                         will verify"
+                         will verify, and every one of them outranks this transition"
                     );
                     return Ok(Vec::new());
                 }
@@ -1519,7 +1541,7 @@ impl Engine {
                         &p.to_id_s_pub[..],
                         &p.to_id_d_pub[..],
                         meta_epoch,
-                        i64::try_from(hlc.physical_ms).unwrap_or(i64::MAX),
+                        hlc_physical_ms_i64,
                         hlc.logical,
                         &sender[..],
                         payload,
@@ -1529,6 +1551,18 @@ impl Engine {
                         &shares_digest[..],
                     ],
                 )?;
+                // This row may have established identities the chain could not
+                // reach a moment ago — the ordinary shape of a replica catching
+                // up, and the one that has to converge: every successor stored
+                // under one of them while it was unknown is now decidable, and
+                // the ones that verify against nothing are deleted rather than
+                // left holding places an honest rotation will need. Bounded by
+                // the links this op newly reached, each swept at most once per
+                // establishment.
+                let reached = self.chain_identities(tx)?;
+                for (id, id_s_pub) in reached.iter().filter(|(id, _)| !established.contains(id)) {
+                    self.purge_unverifiable_siblings(tx, id, id_s_pub)?;
+                }
                 self.recompute_identity_head(tx)?;
                 // The roster is applied only if this transition actually *won*
                 // the fold. A losing branch carries a perfectly valid roster

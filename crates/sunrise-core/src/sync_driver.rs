@@ -340,7 +340,7 @@ impl SyncShared {
 
     /// Resolves when shutdown has been requested. Lost-wakeup-safe: re-checks
     /// the flag after arming the notification.
-    async fn shutdown_notified(&self) {
+    pub(crate) async fn shutdown_notified(&self) {
         loop {
             if self.shutdown.load(Ordering::SeqCst) {
                 return;
@@ -1338,6 +1338,16 @@ async fn drain_relay_revocations<T: Transport + ?Sized>(core: &Core, transport: 
 /// exhaust `MAX_UPLOAD_ATTEMPTS` on every convergence test that attaches a file.
 async fn drain_blob_transfers<T: Transport + ?Sized>(core: &Core, transport: &mut T) {
     if upload_queued_blobs(core, transport).await.is_err() {
+        return;
+    }
+    // Asked-for downloads before unasked ones. Both halves are sequential and
+    // an attachment may be 100 MB, so the order decides how long somebody
+    // watching a Download button waits — and nobody is watching the automatic
+    // queue. See [`crate::blob_fetch`] for the rest of that route.
+    if crate::blob_fetch::drain_requested(core, transport)
+        .await
+        .is_err()
+    {
         return;
     }
     fetch_missing_blobs(core, transport).await;

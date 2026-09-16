@@ -16,6 +16,7 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
+use sunrise_core::AttachmentFetchState;
 use sunrise_core_bindings::dto::{CaptureIssue, Constraint, TaskDraftIn, TaskEdit, TimeValue};
 use sunrise_core_bindings::vocab::{
     constraint_summary, duration_clock, energy_label, relative_day, short_duration, today_section,
@@ -1463,6 +1464,65 @@ async fn an_attachment_whose_bytes_are_elsewhere_has_its_own_error() {
         core.attachment_bytes(att.id).await,
         Err(BindingError::AttachmentNotHere { .. })
     ));
+}
+
+/// The Download button's seam: an attachment already on this device needs no
+/// download, and asking for one on a vault with no sync session is a typed
+/// answer rather than a wait.
+///
+/// The second half is the one worth a test at this layer. `fetch_attachment`
+/// has no timeout by design — the Cancel button is the timeout — so a vault
+/// that can never service the request has to say so at the call, or the Swift
+/// `Task` awaiting it never finishes and the pane spins for the life of the
+/// window.
+#[tokio::test(flavor = "multi_thread")]
+async fn asking_for_an_attachment_this_device_cannot_reach_is_answered_not_awaited() {
+    let (dir, core) = open_core().await;
+    let task = core
+        .submit(CoreCommand::CreateTask {
+            draft: draft("Download me"),
+        })
+        .await
+        .expect("create")
+        .entity;
+    let att = core
+        .attach_file(task, "n.txt".into(), "text/plain".into(), b"hello".to_vec())
+        .await
+        .expect("attach");
+
+    assert_eq!(
+        core.attachment_fetch_state(att.id).expect("state"),
+        AttachmentFetchState::Idle,
+        "nothing has been asked for"
+    );
+    core.fetch_attachment(att.id)
+        .await
+        .expect("the bytes are already here, so this is a no-op");
+
+    // What a replica that synced the metadata and not the chunks looks like.
+    std::fs::remove_dir_all(dir.path().join("blobs")).expect("drop the chunks");
+
+    let refused = core
+        .fetch_attachment(att.id)
+        .await
+        .expect_err("no driver, so nothing could ever service this");
+    assert!(
+        matches!(&refused, BindingError::Attachment(m) if m.contains("no sync session")),
+        "the seam must carry wording the app can show: {refused}"
+    );
+    assert_eq!(
+        core.attachment_fetch_state(att.id).expect("state"),
+        AttachmentFetchState::Idle,
+        "a refused request must not leave a row claiming one is outstanding"
+    );
+
+    // Cancelling something nobody asked for is a no-op rather than an error:
+    // the client calls this on teardown without tracking what it started.
+    core.cancel_attachment_fetch(att.id).expect("cancel");
+    assert_eq!(
+        core.attachment_fetch_state(att.id).expect("state"),
+        AttachmentFetchState::Idle
+    );
 }
 
 /// A row whose fixed-width fields were tampered with is refused at the

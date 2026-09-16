@@ -57,6 +57,7 @@ ADRs are numbered sequentially (`0001`, `0002`, …) and never renumbered.
 | 0037 | [The account identity is a chain, and membership is derived from its head](./0037-identity-transition.md) | accepted (supersedes 0032's decision and keeps its analysis; corrects key rotation §Identity rotation; depends on 0024, 0034) |
 | 0038 | [The macOS app updates itself through Sparkle, and the appcast's EdDSA key is subordinate to the Developer ID certificate in lifecycle, not in authority](./0038-macos-update-feed.md) | accepted (answers 0031's revisit trigger 4; amends `desktop.md` §Update channel and `releasing.md`) |
 | 0039 | [A tag uploads an iOS build to TestFlight; App Store submission is a separate, manual act](./0039-ios-distribution.md) | accepted (takes the channel half of 0028's Decision 6 slot and leaves the MUST-parity half reserved; amends the clients overview §Distribution) |
+| 0040 | [A predecessor's successor places are held by rank, not by arrival, and are re-judged when the predecessor is established](./0040-sibling-admission-is-a-rank.md) | accepted (amends 0037 §Consequences and key rotation §Verification; depends on 0034, 0037) |
 
 ## When to write a new ADR
 

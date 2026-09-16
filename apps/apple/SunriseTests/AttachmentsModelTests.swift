@@ -140,6 +140,64 @@ struct AttachmentsModelTests {
         await vault.bridge.shutdown()
     }
 
+    /// The row state the pane had no way out of, and now does.
+    ///
+    /// Nothing covered `isLocal == false` before this: the pane drew a greyed
+    /// row and offered no affordance, so there was no branch to test. There is
+    /// now, and the three states it can be in are the three
+    /// `docs/02-domain/attachments.md` §Lazy fetch names.
+    ///
+    /// The vault here has no sync session — `TestVault` opens offline — which
+    /// makes this the honest test of the pane's worst case rather than a
+    /// limitation of the harness. A download that could never be serviced has
+    /// to *report*, because `fetchAttachment` has no deadline by design; a pane
+    /// that inherited that would spin for the life of the window.
+    @Test
+    func anAttachmentWhoseBytesAreElsewhereOffersADownload() async throws {
+        let vault = try await TestVault()
+        let task = try await aTask(vault)
+        let model = AttachmentsModel(bridge: vault.bridge, task: task)
+        let file = try temporaryFile(named: "survey.pdf", bytes: Data("%PDF-1.7 survey".utf8))
+        await model.attach(contentsOf: file)
+
+        let here = try #require(model.rows.first)
+        #expect(model.transfer(here) == .here)
+
+        // Exactly what a replica that synced the metadata and not the chunks
+        // looks like. The blob store is a directory of files beside the
+        // database rather than in it, so this is done on the open vault — the
+        // same fixture the core's own tests use for this state.
+        try FileManager.default.removeItem(at: vault.directory.appending(path: "blobs"))
+        let after = AttachmentsModel(bridge: vault.bridge, task: task)
+        await after.refresh()
+
+        let absent = try #require(after.rows.first)
+        #expect(!absent.isLocal)
+        #expect(after.transfer(absent) == .absent, "the placeholder with its Download button")
+
+        // Tapping the row is not the download: over the threshold the document
+        // asks for a button, and the tap says where the button is.
+        await after.preview(absent)
+        #expect(after.previewing == nil)
+        #expect(after.errorMessage?.contains("Download") == true)
+
+        // And the button itself, against a vault that can never service it.
+        after.download(absent)
+        while after.transfer(absent) == .running {
+            try await _Concurrency.Task.sleep(for: .milliseconds(10))
+        }
+        let reported = after.errorMessage ?? "nothing was reported"
+        #expect(
+            reported.contains("no sync session"),
+            "a download with no driver must be reported, not awaited"
+        )
+        #expect(
+            after.transfer(absent) == .absent,
+            "a refused request leaves no row claiming one is outstanding"
+        )
+        await vault.bridge.shutdown()
+    }
+
     /// The types come from `UTType`, which is the platform's table and not one
     /// worth copying into Rust.
     @Test

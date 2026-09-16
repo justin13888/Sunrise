@@ -47,6 +47,7 @@
 )]
 
 pub mod attach;
+mod blob_fetch;
 mod blob_sync;
 pub mod commands;
 pub mod config;
@@ -63,6 +64,7 @@ pub mod unlock;
 pub mod vault_lock;
 
 pub use attach::AttachError;
+pub use blob_sync::AUTO_FETCH_MAX_BYTES;
 pub use commands::{Command, CommandResult, FocusStartDraft};
 pub use config::{Clock, CoreConfig, HlcClock, MonotonicHlc, Rng, SystemClock, SystemRng};
 pub use control_op::{
@@ -71,7 +73,9 @@ pub use control_op::{
 };
 pub use core::{Core, CoreError};
 pub use engine::{Engine, EngineError};
-pub use events::{DomainEvent, SyncStatus};
+pub use events::{
+    AttachmentFetch, AttachmentFetchOutcome, AttachmentFetchState, DomainEvent, SyncStatus,
+};
 pub use keychain::{IdentitySigningKey, KeySource, Keychain, KeychainError, SuccessorPublics};
 pub use queries::{
     ActionableTask, ContextRow, DeviceRow, FocusPlanRow, FocusSessionRow, Query, QueryResult,

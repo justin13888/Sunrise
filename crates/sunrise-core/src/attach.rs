@@ -30,6 +30,11 @@
 //! have both run. In between, and for an attachment whose bytes this device has
 //! chosen not to fetch, [`Core::attachment_bytes`] reports
 //! [`AttachError::BytesNotHere`] rather than pretending, so a client can say so.
+//!
+//! "Chosen not to fetch" is a decision with a way out of it, which is the part
+//! issue #227 reported missing. [`Core::fetch_attachment`], in this crate's
+//! private `blob_fetch` module, asks for one named attachment whatever its
+//! size, and is what a client's "Download" button calls.
 
 use crate::commands::Command;
 use crate::core::{Core, CoreError};
@@ -64,6 +69,43 @@ pub enum AttachError {
     /// attachment created on another device, whose bytes were never fetched.
     #[error("attachment {id} has no bytes on this device")]
     BytesNotHere {
+        /// The attachment.
+        id: EntityRef,
+    },
+    /// The bytes cannot be fetched because no device ever uploaded them: the
+    /// attachment predates [`sunrise_domain::Attachment::ciphertext_hash`], so
+    /// this replica cannot even *name* the blob on the relay.
+    ///
+    /// Terminal. Distinct from [`AttachError::BytesNotHere`] on purpose: that
+    /// one is an invitation to press Download, and this one is the answer that
+    /// pressing it will never work.
+    #[error("attachment {id} was never uploaded, so there is nothing to fetch")]
+    NotOnRelay {
+        /// The attachment.
+        id: EntityRef,
+    },
+    /// [`Core::fetch_attachment`] was called on a vault with no sync driver
+    /// running, so nothing could ever service the request.
+    ///
+    /// Not a hang and not a silent failure: an offline vault is a legitimate
+    /// state — the CLI opens one for every subcommand but `sync` — and a
+    /// Download button there has to say so rather than spin.
+    #[error("attachment {id} cannot be fetched: this vault has no sync session")]
+    SyncOffline {
+        /// The attachment.
+        id: EntityRef,
+    },
+    /// A client called [`Core::cancel_attachment_fetch`] while the transfer was
+    /// running. The request is marked `partial`; asking again restarts it.
+    #[error("the download of attachment {id} was cancelled")]
+    FetchCancelled {
+        /// The attachment.
+        id: EntityRef,
+    },
+    /// The relay could not serve the blob within the attempt ceiling. The
+    /// request is marked `partial`; asking again restarts it.
+    #[error("attachment {id} could not be fetched from the relay")]
+    FetchUnavailable {
         /// The attachment.
         id: EntityRef,
     },
@@ -211,7 +253,7 @@ impl Core {
     }
 
     /// One live attachment by id.
-    async fn attachment_row(&self, id: EntityRef) -> Result<Attachment, AttachError> {
+    pub(crate) async fn attachment_row(&self, id: EntityRef) -> Result<Attachment, AttachError> {
         match self.query(Query::EntityById(id)).await {
             Ok(QueryResult::Attachments(rows)) => rows
                 .into_iter()
