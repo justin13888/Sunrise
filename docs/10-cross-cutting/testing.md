@@ -273,9 +273,26 @@ An earlier version of this table gave the column no definition at all, which is
 why its numbers could not be checked and drifted by up to a third before anyone
 noticed.
 
-At `--jobs 1`: **604 MB peak RSS** — about one `cargo build` — and roughly
-1.8 s per mutant on `sunrise-sync`. (Those two are the original measurements and
-were not re-taken.) Each additional job is another copy of the source tree on
+At `--jobs 1`: **604 MB peak RSS** — about one `cargo build`. (That one is the
+original measurement and was not re-taken.)
+
+Per-mutant cost does **not** transfer between crates, and assuming it does was
+how this job's CI timeout came to be derived from the wrong crate. It spans a
+factor of eight. Full local passes at `--jobs 1`, 2026-09-16 at `1d4b484`:
+
+| Crate | mutants | wall | per mutant |
+|---|---:|---:|---:|
+| `sunrise-crypto` | 519 | 16 m | ~1.9 s |
+| `sunrise-sync` | 135 | 7 m | ~3.1 s |
+| `sunrise-domain` | 1 356 | 2 h | ~5.3 s |
+| `sunrise-core` | 1 259 | — | ~15.4 s |
+
+`sunrise-core`'s row is a partial sample over its first 76 mutants — it is the
+one crate no local pass has run to completion — and projects to roughly 5.4
+hours whole. It is why `sunrise-core` is still the only scoped crate without a
+recorded floor.
+
+Each additional job is another copy of the source tree on
 disk and another resident rustc, which is why `mise run mutants` pins one and
 says so. A full pass over all four is hours, which is why it runs nightly and
 sharded rather than on a pull request.

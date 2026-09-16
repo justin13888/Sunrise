@@ -413,17 +413,24 @@ jobs:
   mutants:
     name: Mutation coverage
     runs-on: ubuntu-latest
-    # No run of this job has ever completed, so this is derived rather than
-    # measured, and one step of the derivation is an assumption: 1352
-    # sunrise-domain mutants over 6 shards is 226 in the largest, and
-    # mise.toml's `mutants` task records ~1.8s per mutant at `--jobs 1` on a
-    # developer machine -- but it records that for **sunrise-sync**, a
-    # 94-mutant crate, and a mutant costs an incremental rebuild plus a test
-    # run of the crate it is in, which does not transfer between crates. Five
-    # times that figure, plus the baseline build cargo-mutants does first,
-    # still lands a shard inside an hour, and 120 is double the result. Both
-    # the transfer and the cushion want replacing with a measurement the
-    # first time a nightly actually completes.
+    # Measured rather than derived, finally. The per-mutant cost was previously
+    # assumed to transfer between crates from a `sunrise-sync` figure, with a
+    # note saying that assumption wanted replacing. It does not transfer: it
+    # spans a factor of eight. Full local passes at `--jobs 1` on an Apple
+    # silicon laptop, 2026-09-16 at `1d4b484`:
+    #
+    #   sunrise-crypto    519 mutants   16m    ~1.9 s/mutant
+    #   sunrise-sync      135 mutants    7m    ~3.1 s/mutant
+    #   sunrise-domain   1356 mutants    2h    ~5.3 s/mutant
+    #   sunrise-core     1259 mutants     -    ~15.4 s/mutant, over the first 76
+    #
+    # `sunrise-core` is the only one not run to completion; its rate is a
+    # partial sample and projects to roughly 5.4 hours whole. That is what sets
+    # this ceiling, not `sunrise-domain`: core's largest shard is 315 mutants at
+    # ~15.4 s, about 81 minutes, where domain's 226 at ~5.3 s is about 20. A
+    # hosted runner is slower than the laptop these came from, so 120 leaves
+    # core's shard roughly 50% headroom and every other shard several times
+    # over. If core's shard count rises, this can come down with it.
     timeout-minutes: 120
     # Nightly and on demand, never on a pull request. The four scoped crates
     # generate ~2,500 mutants and each one is an incremental rebuild plus a
