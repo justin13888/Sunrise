@@ -50,46 +50,51 @@ use sunrise_storage::Db;
 /// cycle in it. The old constant's own doc called itself "a termination
 /// guarantee"; the visited set already was one.
 ///
-/// The cap here is safe only because ingest refuses what it can already tell is
-/// not a link: [`Engine::apply_control_op`]'s `IdentityTransition` arm checks
-/// `prev_sig` against the predecessor whenever this replica has established
-/// one, and holds siblings to [`MAX_SIBLINGS_PER_PREDECESSOR`]. Without those,
-/// a member could occupy all sixteen places above an honest successor and
-/// suppress it — which is the *other* unleavable state, and why the two
+/// The cap here is safe only because ingest keeps **the same sixteen rows this
+/// query reads**: [`Engine::apply_control_op`]'s `IdentityTransition` arm holds
+/// a predecessor to [`MAX_SIBLINGS_PER_PREDECESSOR`] rows, ordered by
+/// [`SIBLING_ORDER_DESC`] — the order below — so the rows it discards are the
+/// rows this `LIMIT` would never have reached anyway. Without that agreement a
+/// member could occupy all sixteen places above an honest successor and
+/// suppress it, which is the *other* unleavable state, and why the two
 /// constants have to be read together.
+///
+/// It used to be an *arrival-order* cap, and that was
+/// [#232](https://github.com/justin13888/Sunrise/issues/232): the first sixteen
+/// rows to land held the places whatever they ranked, so sixteen forgeries of a
+/// predecessor this replica had not yet established — where `prev_sig` cannot be
+/// checked and deliberately is not — turned the honest successor away for good.
+/// See [`MAX_SIBLINGS_PER_PREDECESSOR`] and ADR-0040.
 ///
 /// # What this number actually enforces, and what it does not
 ///
 /// **It can never truncate.** `apply_control_op` is the only writer of
-/// `identity_transitions` — one `INSERT OR IGNORE`, behind the sibling cap —
-/// and that cap refuses a row when the predecessor already holds
-/// [`MAX_SIBLINGS_PER_PREDECESSOR`] *other* successors, so a predecessor tops
-/// out at exactly that many rows. The `LIMIT` here is the same number, so the
-/// query is never asked for a row it will not return. Raising this constant
-/// changes nothing; only lowering it below the ingest cap does, and what that
-/// would do is make the rows above the limit permanently unreachable — the
-/// unleavable state one level down, which is the whole reason the two numbers
-/// are pinned equal.
+/// `identity_transitions` — one `INSERT OR IGNORE`, behind
+/// [`Engine::admit_sibling`] — and that keeps a predecessor at
+/// [`MAX_SIBLINGS_PER_PREDECESSOR`] rows, so a predecessor tops out at exactly
+/// that many. The `LIMIT` here is the same number, so the query is never asked
+/// for a row it will not return. Raising this constant changes nothing; only
+/// lowering it below the ingest cap does, and what that would do is make the
+/// rows above the limit permanently unreachable — the unleavable state one
+/// level down, which is the whole reason the two numbers are pinned equal.
 ///
-/// **It is barely exercised.** Every row stored under a predecessor this
-/// replica has *already established* had its `prev_sig` checked at ingest, so
-/// it verifies at fold time too, and the walk's `find_map` stops at the first
-/// candidate. Before the inequality test below existed, setting this constant
-/// to `1` left the entire `sunrise-core` suite green — as did `2` and `3` —
-/// which is the measurement rather than the claim: no path the suite builds
-/// makes the walk look at a second row. (That sweep no longer reproduces as
-/// written, because the test below now fails on any value under the ingest
-/// cap by construction; re-run it against the *behavioural* tests alone.)
-///
-/// The one path that can store a row the fold must then skip is a transition
-/// admitted while its predecessor was still unknown — `prev_sig` is unchecked
-/// there by design — and nothing in the suite builds that, so the
-/// scan-past-a-bad-row behaviour this constant bounds is untested. Treat it as
-/// defence in depth whose load-bearing property is the inequality, not the
-/// value.
+/// **It is barely exercised, and that is now a statement about work rather than
+/// about coverage.** The walk's `find_map` stops at the first candidate that
+/// verifies, and after #232 there are two kinds of row it can step past: one
+/// admitted while its predecessor was unknown and not yet swept by
+/// [`Engine::purge_unverifiable_siblings`], and one from a genuinely concurrent
+/// rotation that lost the ordering. Both are bounded by this number.
+/// `engine::tests::forged_siblings_cannot_suppress_the_successor_of_an_unestablished_predecessor`
+/// builds the first and is the suite's only exercise of the scan-past-a-bad-row
+/// behaviour; before it existed, setting this constant to `1` left the entire
+/// `sunrise-core` suite green — as did `2` and `3` — which was the measurement
+/// rather than the claim.
 ///
 /// The inequality is pinned by
-/// `engine::tests::the_fold_looks_at_every_row_ingest_will_store`.
+/// `engine::tests::the_fold_looks_at_every_row_ingest_will_store`, and the
+/// stronger property it stands in for — that the set ingest *keeps* is the set
+/// this query *reads* — by
+/// `engine::tests::what_ingest_keeps_is_what_the_fold_reads_whatever_order_it_arrives_in`.
 pub(super) const MAX_SIBLING_CANDIDATES: usize = 16;
 
 /// How many `identity_transitions` rows this replica stores for one predecessor.
@@ -105,7 +110,49 @@ pub(super) const MAX_SIBLING_CANDIDATES: usize = 16;
 /// every entry of which verifies under the successor, and — when this replica
 /// knows the predecessor — a valid `prev_sig`. The cap is what stops that being
 /// unbounded, not what makes it expensive.
+///
+/// # It is a rank, not a queue
+///
+/// **Which** sixteen matters as much as how many, because the third of those
+/// three costs is the one an adversary does not pay. A transition naming a
+/// predecessor this replica has not established carries a `prev_sig` nothing
+/// here can check — deliberately, so a replica may receive a chain newest-first
+/// — so the cheapest possible row is one Ed25519 signature over an empty
+/// roster. While this was a first-sixteen-to-arrive queue, sixteen of those
+/// refused the honest successor for good
+/// ([#232](https://github.com/justin13888/Sunrise/issues/232)).
+///
+/// [`Engine::admit_sibling`] therefore admits by [`SIBLING_ORDER_DESC`] and
+/// evicts the weakest row rather than refusing the newest one. Two consequences,
+/// and both are the point:
+///
+/// * **`meta_epoch` sorts first**, and a device cut by a rotation provably holds
+///   no key above the epoch it was cut at, so its rows sort below the rotation
+///   that cuts it however it dates its HLC (ADR-0037 §4). It can no longer
+///   spend the budget the honest successor needs.
+/// * **The retained set stops depending on arrival order.** Two replicas holding
+///   the same ops keep the same rows and fold to the same head; under the queue
+///   they could differ, which was a convergence defect independent of the
+///   suppression.
 pub(super) const MAX_SIBLINGS_PER_PREDECESSOR: i64 = 16;
+
+/// The total order both ingest and the fold put a predecessor's successors in,
+/// greatest first, as a SQL `ORDER BY` tail.
+///
+/// One string used by [`Engine::chain_identities`]' `LIMIT` and by
+/// [`Engine::admit_sibling`]'s eviction, because the two agreeing is the whole
+/// safety argument for [`MAX_SIBLING_CANDIDATES`]: a row ingest discards must be
+/// one the fold would never have reached. Two copies could drift, and the
+/// drift's symptom is a stored row the walk cannot see — silent, and the shape
+/// of every bound in this file that has gone wrong.
+///
+/// `to_identity_id` is last and is not decorative. Without it the order is
+/// partial — two rows from one device at one HLC tie — and SQLite would break
+/// the tie by whatever the scan happened to produce, differently on two
+/// replicas holding identical rows. It is the table's primary key, so with it
+/// the order is total.
+pub(super) const SIBLING_ORDER_DESC: &str = "meta_epoch DESC, hlc_physical_ms DESC, \
+     hlc_logical DESC, emitter_device_id DESC, to_identity_id DESC";
 
 /// How many devices one transition's roster, or its share list, may name.
 ///
@@ -204,6 +251,36 @@ impl TransitionLink {
             },
         })
     }
+}
+
+/// Where one `identity_transitions` row sits in [`SIBLING_ORDER_DESC`].
+///
+/// The field order **is** the comparison — `derive(Ord)` is lexicographic over
+/// declaration order — so this type and that string say the same thing twice,
+/// in the only two languages the decision has to be made in.
+/// `engine::tests::the_rank_type_and_the_sql_order_agree` is what stops them
+/// disagreeing.
+///
+/// The two id fields are `Vec<u8>` rather than `[u8; 16]` because one side of
+/// every comparison comes out of SQLite as a blob of whatever width the row
+/// holds. Rust compares byte slices the way SQLite compares blobs — `memcmp`,
+/// shorter-is-less on a prefix — so a malformed row sorts consistently in both
+/// rather than panicking on a width conversion.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) struct SiblingRank {
+    /// The vault-meta epoch the op was sealed under. First, because it is the
+    /// only component an excluded device cannot raise — see
+    /// [`MAX_SIBLINGS_PER_PREDECESSOR`] and ADR-0037 §4.
+    pub meta_epoch: i64,
+    /// The emitter's HLC physical half, as stored.
+    pub hlc_physical_ms: i64,
+    /// The emitter's HLC logical half: two ops in one millisecond still order.
+    pub hlc_logical: i64,
+    /// The device that signed the envelope.
+    pub emitter_device_id: Vec<u8>,
+    /// The successor named, which is the table's primary key and makes the
+    /// order total.
+    pub to_identity_id: Vec<u8>,
 }
 
 impl Engine {
@@ -609,15 +686,14 @@ impl Engine {
         let mut chain = vec![start];
         let mut seen: BTreeSet<[u8; 16]> = BTreeSet::new();
         seen.insert(start.0);
-        let mut stmt = conn.prepare(
-            "SELECT t.to_identity_id, t.to_id_s_pub, t.to_id_d_pub, t.roster_digest,
-                    t.shares_digest, t.prev_sig, t.next_sig
-             FROM identity_transitions t
-             WHERE t.from_identity_id = ?1
-             ORDER BY t.meta_epoch DESC, t.hlc_physical_ms DESC, t.hlc_logical DESC,
-                      t.emitter_device_id DESC
-             LIMIT ?2",
-        )?;
+        let mut stmt = conn.prepare(&format!(
+            "SELECT to_identity_id, to_id_s_pub, to_id_d_pub, roster_digest,
+                    shares_digest, prev_sig, next_sig
+             FROM identity_transitions
+             WHERE from_identity_id = ?1
+             ORDER BY {SIBLING_ORDER_DESC}
+             LIMIT ?2"
+        ))?;
         let limit = i64::try_from(MAX_SIBLING_CANDIDATES).unwrap_or(i64::MAX);
         // Terminates on the visited set: see this function's doc. Each pass
         // either breaks or adds an id no pass has added before, and
@@ -655,6 +731,168 @@ impl Engine {
             chain.push(next);
         }
         Ok(chain)
+    }
+
+    /// Whether `rank` may take one of `from_identity_id`'s
+    /// [`MAX_SIBLINGS_PER_PREDECESSOR`] places, **evicting the weakest row to
+    /// make one**.
+    ///
+    /// The register is full at the cap and stays full; what changes is which
+    /// rows are in it. An arriving row that outranks the weakest displaces it,
+    /// and one that does not is refused — so the sixteen rows a predecessor
+    /// ends up with are the sixteen greatest of everything ever offered, which
+    /// is a function of the op set and not of the order it arrived in. See
+    /// [`MAX_SIBLINGS_PER_PREDECESSOR`] for why that is the security property
+    /// and not merely a tidier one.
+    ///
+    /// The count excludes `rank.to_identity_id` so a **re-delivery is never
+    /// refused by a full register**: the insert behind this is `OR IGNORE`, and
+    /// a row already present occupies no fresh place. Excluding it also keeps a
+    /// re-delivery from evicting anything, since a row cannot outrank itself.
+    ///
+    /// Eviction is a `DELETE`, and a deleted row is not lost standing. The
+    /// evicted row is by construction one [`Self::chain_identities`] would
+    /// never have read — same order, same count — so no fold on any replica
+    /// holding these rows could have reached it.
+    pub(super) fn admit_sibling(
+        &self,
+        tx: &Transaction<'_>,
+        from_identity_id: &[u8; 16],
+        rank: &SiblingRank,
+    ) -> rusqlite::Result<bool> {
+        let held: i64 = tx.query_row(
+            "SELECT count(*) FROM identity_transitions
+             WHERE from_identity_id = ?1 AND to_identity_id != ?2",
+            params![&from_identity_id[..], &rank.to_identity_id],
+            |r| r.get(0),
+        )?;
+        if held < MAX_SIBLINGS_PER_PREDECESSOR {
+            return Ok(true);
+        }
+        // The weakest row held, read in the same order the fold reads and this
+        // one ascending, so "the weakest" and "the one the fold reaches last"
+        // are the same row by construction.
+        let weakest: Option<SiblingRank> = tx
+            .query_row(
+                &format!(
+                    "SELECT meta_epoch, hlc_physical_ms, hlc_logical, emitter_device_id,
+                            to_identity_id
+                     FROM identity_transitions
+                     WHERE from_identity_id = ?1 AND to_identity_id != ?2
+                     ORDER BY {SIBLING_ORDER_DESC}
+                     LIMIT 1 OFFSET ?3"
+                ),
+                params![
+                    &from_identity_id[..],
+                    &rank.to_identity_id,
+                    MAX_SIBLINGS_PER_PREDECESSOR - 1
+                ],
+                |r| {
+                    Ok(SiblingRank {
+                        meta_epoch: r.get(0)?,
+                        hlc_physical_ms: r.get(1)?,
+                        hlc_logical: r.get(2)?,
+                        emitter_device_id: r.get(3)?,
+                        to_identity_id: r.get(4)?,
+                    })
+                },
+            )
+            .optional()?;
+        let Some(weakest) = weakest else {
+            // `held >= cap` and yet the cap-th row does not exist. Unreachable
+            // against a consistent table; refusing is the safe half, because
+            // admitting here would leave the register over its bound.
+            return Ok(false);
+        };
+        if *rank <= weakest {
+            return Ok(false);
+        }
+        tx.execute(
+            "DELETE FROM identity_transitions WHERE to_identity_id = ?",
+            params![&weakest.to_identity_id],
+        )?;
+        tracing::warn!(
+            ev = "core.identity.sibling_evicted",
+            issuer_h = hex_short(from_identity_id),
+            "an identity's successors are at the cap; the lowest-ordered row was \
+             dropped for a higher-ordered one"
+        );
+        Ok(true)
+    }
+
+    /// Delete every row stored under `from_identity_id` that its **now known**
+    /// key does not sign, and return how many went.
+    ///
+    /// The converging half of [#232](https://github.com/justin13888/Sunrise/issues/232).
+    /// A transition naming a predecessor this replica has not established is
+    /// stored with `prev_sig` unchecked — it must be, or a replica could not
+    /// receive a chain newest-first — so a predecessor can accumulate rows
+    /// nobody has verified. The moment the predecessor lands on the chain those
+    /// rows become decidable, and the ones that fail are deleted rather than
+    /// left holding places.
+    ///
+    /// **Deleting is permanent and that is sound.** `from_identity_id` is
+    /// `identity_id_from_pub` of the key a row has to verify under, so the id
+    /// determines the key: a row that fails here fails under every chain state
+    /// this replica or any other could ever reach. It is not a link now and
+    /// never will be, and no fold could have used it.
+    ///
+    /// Costs at most [`MAX_SIBLINGS_PER_PREDECESSOR`] Ed25519 pairs, once per
+    /// identity per establishment — the same bound the fold already pays at one
+    /// link, and paid on the path that removes the reason to pay it again.
+    pub(super) fn purge_unverifiable_siblings(
+        &self,
+        tx: &Transaction<'_>,
+        from_identity_id: &[u8; 16],
+        from_pub: &[u8; 32],
+    ) -> rusqlite::Result<usize> {
+        let rows: Vec<TransitionRow> = {
+            let mut stmt = tx.prepare(
+                "SELECT to_identity_id, to_id_s_pub, to_id_d_pub, roster_digest,
+                        shares_digest, prev_sig, next_sig
+                 FROM identity_transitions
+                 WHERE from_identity_id = ?1",
+            )?;
+            let rows = stmt
+                .query_map(params![&from_identity_id[..]], |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                        r.get(6)?,
+                    ))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            rows
+        };
+        let mut dropped = 0usize;
+        for row in &rows {
+            // A row whose columns are the wrong width is one no signature could
+            // have been taken over, which the fold reads as "not a link" too.
+            let verified = TransitionLink::from_row(*from_identity_id, row).is_some_and(|link| {
+                verify_identity_transition(&link.body, from_pub, &link.sigs).is_ok()
+            });
+            if verified {
+                continue;
+            }
+            dropped += tx.execute(
+                "DELETE FROM identity_transitions WHERE to_identity_id = ?",
+                params![&row.0],
+            )?;
+        }
+        if dropped > 0 {
+            tracing::warn!(
+                ev = "core.identity.siblings_purged",
+                issuer_h = hex_short(from_identity_id),
+                n_dropped = dropped,
+                "an identity this replica has now established had successors stored \
+                 under it that it never signed; they were dropped"
+            );
+        }
+        Ok(dropped)
     }
 
     /// Move every device the roster names onto the successor identity.
