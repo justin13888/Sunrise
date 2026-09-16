@@ -259,7 +259,7 @@ is the original measurement and was **not** re-taken with it — the two columns
 are from different commits, and the right one is a cost estimate rather than a
 number anything checks.
 
-`--all-features` matters and is not decoration: see "Features" below. It makes
+`--all-features` matters and is not decoration: see §Features above. It makes
 no difference to three of these four crates, which have no features at all.
 
 `--list` parses the crate and prints one line per mutant **without building
