@@ -328,12 +328,29 @@ was never what needed bounding.
 
 Ingest holds the rest: a transition may name at most `MAX_ROSTER_ENTRIES`
 devices (refused on length, before the first cert is decoded) and one
-predecessor accumulates at most `MAX_SIBLINGS_PER_PREDECESSOR` rows, the same
-number the fold will verify, so no stored row is one the walk could never reach.
-A transition whose `prev_sig` does not verify against a predecessor this replica
-has already established is refused rather than stored, which is what keeps the
-sibling cap from being a way to suppress an honest successor by filling its
-places.
+predecessor keeps at most `MAX_SIBLINGS_PER_PREDECESSOR` rows, the same number
+the fold will verify, so no stored row is one the walk could never reach. A
+transition whose `prev_sig` does not verify against a predecessor this replica
+has already established is refused rather than stored.
+
+Which `MAX_SIBLINGS_PER_PREDECESSOR` rows those are is the other half, and for a
+while it was the wrong half ([ADR-0040](../11-adr/0040-sibling-admission-is-a-rank.md)).
+The `prev_sig` refusal above cannot run for a predecessor this replica has not
+established, which is exactly where a forged sibling is cheapest, and while the
+cap kept the first sixteen rows to arrive, sixteen forgeries could take every
+place and refuse the honest successor permanently. The places are now held by
+**rank**: the sixteen greatest rows in the fold's own order
+(`meta_epoch`, then the HLC pair, then the emitter, then `to_identity_id`), and
+an arriving row that outranks the weakest displaces it. A device a rotation
+excludes holds no meta epoch above its cut, so it cannot outrank that rotation
+however it dates its HLC — the §Identity rotation ordering argument, applied to
+admission rather than to the fold.
+
+The moment a predecessor *does* become established, every row stored under it is
+re-verified and the ones that fail are deleted. `from_identity_id` is the
+derivation of the key those rows must verify under, so a row that fails once
+fails forever; deleting it frees its place and costs no fold anything it could
+have used.
 
 ### A device that was offline across the rotation
 

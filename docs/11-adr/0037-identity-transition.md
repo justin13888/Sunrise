@@ -250,6 +250,17 @@ already know who it trusts; that is what makes `prev_sig` mean anything.
   siblings; what it can no longer write is a sibling that is not a candidate.
   See `docs/03-crypto/key-rotation.md` §Verification.
 
+  **That last claim was false as written, and
+  [ADR-0040](./0040-sibling-admission-is-a-rank.md) amends it.** "Whenever this
+  replica has already established the predecessor" is the whole of the problem:
+  for a predecessor it has *not* established — the case item 5 requires it to
+  accept — nothing checks `prev_sig`, and while the cap counted arrivals,
+  sixteen unverifiable rows took every place and refused the honest successor
+  permanently ([#232](https://github.com/justin13888/Sunrise/issues/232)). The
+  places are now held by rank in the fold's own order rather than by arrival,
+  and are re-judged when the predecessor lands. Item 4's `meta_epoch` argument
+  is what makes that work; read ADR-0040 with it.
+
 ## What would force revisiting this
 
 1. ~~**`ID_S_priv` leaving `PairingPayload`.**~~ **Done.** It removed the
