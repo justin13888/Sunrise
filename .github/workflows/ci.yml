@@ -122,8 +122,30 @@ jobs:
           fi
           echo "changed paths:"
           printf '%s\n' "$changed"
-          if printf '%s\n' "$changed" | grep -qE \
-            '(^crates/|^tools/|^schemas/|(^|/)Cargo\.(toml|lock)$|\.rs$|^rust-toolchain|^\.cargo/|^apps/apple/|^mise\.toml$|^packages/sunrise-ui-tokens/generated/tokens\.swift$|^\.github/workflows/ci\.yml$|^\.github/actions/)'
+          # A here-string, not `printf '%s\n' "$changed" | grep -qE`. That
+          # pipeline fails in the one direction the paragraph above says this
+          # job must never fail in. `grep -q` exits on its first match without
+          # draining stdin; `printf` then takes SIGPIPE; and `pipefail`
+          # promotes that 141 to the status of the whole pipeline — so the
+          # `else` branch runs, and a pull request that *did* touch `crates/`
+          # reports `apple=false`, skips all three Apple jobs, reports both
+          # required contexts green, and breaks master on merge. That is the
+          # same failure `--no-renames` above exists to prevent, arriving by a
+          # different route.
+          #
+          # It needs the payload to exceed the 64 KiB pipe buffer *and* a match
+          # to sort early — and since `git diff --name-only` emits sorted
+          # paths, `.github/`, `apps/apple/` and `crates/` are exactly the
+          # entries that sort early, so the early match is the likely case
+          # rather than the unlikely one. All 890 tracked files changing at
+          # once is 34 KiB today, so this is headroom and not a live bug; the
+          # point is that a job whose contract is "fail open in every
+          # direction" should not be relying on the tree staying small. A
+          # here-string redirects from a temporary file, so there is no reader
+          # to close the pipe and nothing to take a signal.
+          if grep -qE \
+            '(^crates/|^tools/|^schemas/|(^|/)Cargo\.(toml|lock)$|\.rs$|^rust-toolchain|^\.cargo/|^apps/apple/|^mise\.toml$|^packages/sunrise-ui-tokens/generated/tokens\.swift$|^\.github/workflows/ci\.yml$|^\.github/actions/)' \
+            <<<"$changed"
           then
             echo "apple=true" >> "$GITHUB_OUTPUT"
             echo "a path the Apple apps are built from changed; running them"
