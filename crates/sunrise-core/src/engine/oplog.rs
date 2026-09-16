@@ -18,6 +18,7 @@ use sunrise_storage::{Db, OpLog, Outbox};
 // `open_op_row` is the only user and is `#[cfg(test)]`.
 #[cfg(test)]
 use super::ids::hex_short;
+use super::lww::LwwStamp;
 use super::{Engine, EngineError, META_STREAM};
 
 impl Engine {
@@ -506,6 +507,44 @@ impl Engine {
         )
     }
 
+    /// Everything a vault-meta write needs, taken inside `tx` and in the one
+    /// order that is safe.
+    ///
+    /// The order is the whole value of this function, and it is not obvious
+    /// enough to be left to eleven call sites to remember. Resolving the epoch
+    /// can **mint** the vault-meta stream's own first key, and minting emits a
+    /// `key_envelope` op per recipient into that same stream — so a sequence
+    /// number taken before the epoch is already spent by the time the caller's
+    /// op reaches the log. `ops` has a `UNIQUE(stream_id, device_id, seq)` and
+    /// [`OpLog::insert`] is `INSERT OR IGNORE`, so the losing op vanishes
+    /// without a word and its outbox row then fails its foreign key.
+    ///
+    /// That defect was fixed once for `emit_control_op` (`60ee61d`) and once
+    /// for `create_stream` (`#214`) before it was clear that the right fix was
+    /// to make it unstatable. There is now no way to obtain a vault-meta `seq`
+    /// outside a transaction that has already resolved the epoch, because this
+    /// is the only thing that hands one out.
+    ///
+    /// The [`LwwStamp`] comes with it because [`Engine::lww_stamp`] must be
+    /// called **once** per emitted op and the `seq` it carries is this one;
+    /// handing back a `seq` without its stamp invites a caller to stamp with a
+    /// second [`HlcClock::send`](crate::config::HlcClock::send).
+    pub(super) fn meta_slot(
+        &self,
+        tx: &Transaction<'_>,
+        now_ms: u64,
+    ) -> rusqlite::Result<MetaSlot> {
+        let (epoch, key) = self.ensure_stream_epoch(tx, &META_STREAM, now_ms)?;
+        let seq = self.next_seq_tx(tx, &META_STREAM)?;
+        let lww = self.lww_stamp(seq);
+        Ok(MetaSlot {
+            epoch,
+            key,
+            seq,
+            lww,
+        })
+    }
+
     /// Next `seq` for `(stream_id, this device)`, read from the committed DB.
     pub(super) fn next_seq(&self, db: &Db, stream_id: &[u8; 16]) -> Result<u64, EngineError> {
         let stream_blob: Vec<u8> = stream_id.to_vec();
@@ -551,6 +590,23 @@ impl Engine {
             .open_op(&env)
             .map_err(|e| EngineError::Invalid(e.to_string()))
     }
+}
+
+/// One vault-meta log slot: the epoch to seal under, the key, the sequence
+/// number, and the LWW stamp that goes on whatever row the op materializes.
+///
+/// Produced only by [`Engine::meta_slot`], which is what makes the order the
+/// four are taken in unstatable rather than merely documented.
+pub(super) struct MetaSlot {
+    /// Live epoch of the vault-meta stream, resolved (and possibly minted)
+    /// before `seq` was read.
+    pub(super) epoch: u32,
+    /// The key for `epoch`.
+    pub(super) key: StreamKey,
+    /// Next `seq` for `(vault-meta, this device)`, read after any mint.
+    pub(super) seq: u64,
+    /// The stamp for the row this op writes. Carries `seq`.
+    pub(super) lww: LwwStamp,
 }
 
 /// Deterministic op-id for a received op, derived from

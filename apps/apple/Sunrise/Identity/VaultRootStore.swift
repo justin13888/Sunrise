@@ -91,6 +91,27 @@ extension VaultRootError: LocalizedError {
     }
 }
 
+/// Unpredictable bytes, from the one source this app draws them from.
+///
+/// Two callers now: the vault root, and the `D_S`/`D_D` seeds a device mints
+/// when it asks to be paired. Both are 32 bytes that decide what the device
+/// *is*, and a second randomness source for the second caller would be a second
+/// thing to get wrong.
+enum SystemRandom {
+    /// # Throws
+    /// ``VaultRootError/randomnessUnavailable(_:)`` if the system declines.
+    /// There is no fallback and must not be: a seeded-looking `D_S_priv` is a
+    /// device anybody can impersonate.
+    static func bytes(_ count: Int) throws -> Data {
+        var bytes = [UInt8](repeating: 0, count: count)
+        let status = SecRandomCopyBytes(kSecRandomDefault, count, &bytes)
+        guard status == errSecSuccess else {
+            throw VaultRootError.randomnessUnavailable(status)
+        }
+        return Data(bytes)
+    }
+}
+
 /// The vault root key itself.
 enum VaultRoot {
     /// Fixed by the crypto suite; the seam rejects anything else.
@@ -102,11 +123,6 @@ enum VaultRoot {
     /// v1: the key is random, the Keychain holds it, and a second device gets
     /// it by pairing rather than by the user retyping anything.
     static func generate() throws -> Data {
-        var bytes = [UInt8](repeating: 0, count: byteCount)
-        let status = SecRandomCopyBytes(kSecRandomDefault, byteCount, &bytes)
-        guard status == errSecSuccess else {
-            throw VaultRootError.randomnessUnavailable(status)
-        }
-        return Data(bytes)
+        try SystemRandom.bytes(byteCount)
     }
 }

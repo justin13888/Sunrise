@@ -29,6 +29,11 @@ async-trait = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
 rand_core = { workspace = true }
+# The `SUNRISE_FUZZ_SEED` reader. In `[dependencies]` rather than
+# `[dev-dependencies]` because `src/chaos/toxic.rs` is the consumer, and the
+# whole point of #119 is that this harness and the property tests read one
+# parser rather than two.
+sunrise-test-seed = { workspace = true }
 
 [dev-dependencies]
 parking_lot = { workspace = true }

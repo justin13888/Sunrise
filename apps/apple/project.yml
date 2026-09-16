@@ -89,9 +89,34 @@ settings:
     # macOS target below and ADR-0031.
     ENABLE_HARDENED_RUNTIME: YES
 
-# Builds `out/SunriseCore.xcframework` + `out/swift/sunrise_core_bindings.swift`.
-# Cargo decides whether there is anything to do, so an unchanged core costs a
-# fingerprint check.
+# Builds `out/SunriseCore.xcframework` + `out/swift/sunrise_core_bindings.swift`,
+# but only when there is something to build.
+#
+# The guard is not an optimisation. `apple-xcframework` opens with
+# `rm -rf build out/SunriseCore.xcframework`, because
+# `xcodebuild -create-xcframework` refuses to overwrite an existing output — so
+# the task *destroys the framework before it knows it can replace it*, and
+# anything that fails in between leaves the tree with no framework at all. Point
+# 1 at the top of this file records that hazard for a script phase on the app
+# target. It applies just as much to this aggregate target when the caller is
+# `mise run ios-app` or `mise run macos-app`, whose `depends` has already built
+# the framework moments earlier: the phase then deletes a *current* artefact
+# that the very `xcodebuild` invocation running it is about to link, spends five
+# minutes rebuilding three release slices of the C dependencies to arrive back
+# where it started, and on any failure in those five minutes — a full disk is
+# the one seen twice — surfaces as
+# `The file "libsunrise_core_bindings.a" couldn't be opened`, which reads like a
+# broken build and is nothing of the kind.
+#
+# So: rebuild when the framework is missing, when the generated bindings are
+# missing, or when anything that feeds either is newer than the framework.
+# Otherwise say so and stop. That leaves the two callers doing the right thing
+# for the same reason — `mise run <task>` skips, because its `depends` just
+# built it; Xcode on its own builds, because nothing else was going to.
+#
+# `basedOnDependencyAnalysis: false` stays. Xcode's own analysis needs the
+# inputs enumerated, and the inputs are the whole Rust workspace; the check
+# below asks that question directly and costs one `find`.
 aggregateTargets:
   SunriseFFI:
     buildScripts:
@@ -102,6 +127,25 @@ aggregateTargets:
           cd "$SRCROOT/../.."
           # Xcode's PATH carries neither Homebrew nor rustup.
           export PATH="/opt/homebrew/bin:$HOME/.cargo/bin:$PATH"
+
+          framework="out/SunriseCore.xcframework"
+          bindings="out/swift/sunrise_core_bindings.swift"
+          # `-create-xcframework` writes Info.plist last, so its timestamp is
+          # the moment the framework became usable rather than the moment the
+          # build started.
+          stamp="$framework/Info.plist"
+
+          # `mise.toml` is an input: it names the three slices and both
+          # deployment targets. `target/` directories are pruned — cargo's own
+          # output is not an input, and walking it would dominate the check.
+          if [ -f "$stamp" ] && [ -f "$bindings" ] && [ -z "$(
+                find crates tools Cargo.toml Cargo.lock rust-toolchain.toml mise.toml \
+                  \( -type d -name target -prune \) -o \( -newer "$stamp" -print -quit \)
+              )" ]; then
+            echo "note: $framework is newer than every input; nothing to rebuild."
+            exit 0
+          fi
+
           # `mise exec --` rather than a bare `mise run`: this script runs
           # under Xcode, which has none of the shell activation mise normally
           # relies on to put the toolchain on PATH.
@@ -148,7 +192,7 @@ targets:
       # binary. `AppIntentsMetadataTests` asserts the bundle is really there.
       - sdk: AppIntents.framework
       # The updater, on this target only. iOS has no direct-download channel to
-      # update over — ADR-0038 — so Sparkle on `SunriseiOS` would be a
+      # update over — ADR-0039 — so Sparkle on `SunriseiOS` would be a
       # framework that cannot be reached, embedded in a bundle App Store review
       # looks at. `macOS/SoftwareUpdate.swift` is the only file that imports
       # it, and it is a macOS-only source path for the same reason.

@@ -368,6 +368,27 @@ pub struct CommandResult {
     /// every command that does not schedule.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub soft_violations: Vec<ScheduleConstraint>,
+    /// Streams a `RevokeDevice` could **not** rotate, as lowercase hex.
+    ///
+    /// Empty for every command but `RevokeDevice`, and for almost every one of
+    /// those. A non-empty value means the revocation is **incomplete**: the
+    /// named rows carry a `stream_id` that is not 16 bytes, so there was no
+    /// stream to mint a new epoch for, and the revoked device still holds the
+    /// last key it was given for whatever those rows refer to.
+    ///
+    /// Reported rather than raised for the same reason the relay half of a
+    /// revocation is queued rather than awaited (issue #160,
+    /// [`Core::relay_revocation_pending`](crate::Core::relay_revocation_pending)):
+    /// the device being revoked is often the one that is gone, so failing the
+    /// whole operation is the worse answer — but a caller that printed
+    /// "revoked" over this would be telling a user their stolen laptop was cut
+    /// off when it was not. Same rule as `soft_violations` above: it does not
+    /// block the write and it must not vanish.
+    ///
+    /// Hex rather than ids because these values are exactly the ones that are
+    /// not ids; see `Keychain::rotation_set`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unrotated_streams: Vec<String>,
 }
 
 impl CommandResult {
@@ -385,7 +406,15 @@ impl CommandResult {
             op_id,
             seq,
             soft_violations: Vec::new(),
+            unrotated_streams: Vec::new(),
         }
+    }
+
+    /// Attach the streams a revocation could not rotate.
+    #[must_use]
+    pub fn with_unrotated_streams(mut self, v: Vec<String>) -> Self {
+        self.unrotated_streams = v;
+        self
     }
 
     /// Attach the `soft` constraint violations observed while scheduling.

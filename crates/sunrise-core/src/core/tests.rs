@@ -38,7 +38,7 @@ fn unlock() -> Unlock {
     }
 }
 
-/// Every durable trace an `export_pairing_payload` could leave: the op
+/// Every durable trace assembling a pairing could leave: the op
 /// log, the outbox, and the key rows.
 fn vault_footprint(core: &Core) -> (i64, i64, i64) {
     let db = core.db.lock();
@@ -53,7 +53,7 @@ fn vault_footprint(core: &Core) -> (i64, i64, i64) {
 
 /// **Opening a pairing screen must not change the vault** (issue #106).
 ///
-/// `export_pairing_payload` minted the account's base epochs for one
+/// The pairing export minted the account's base epochs for one
 /// revision, which put `key_envelope` ops in the log and rows in the outbox
 /// — fanned out to every other device — for a user who might look at a QR
 /// code and close it. The epochs are now established at `Core::open`, so
@@ -62,13 +62,17 @@ fn vault_footprint(core: &Core) -> (i64, i64, i64) {
 /// The three counters are compared rather than one because the write took
 /// three forms: a `stream_keys` row, an op, and an outbox entry.
 #[tokio::test]
-async fn export_pairing_payload_does_not_write() {
+async fn assembling_a_pairing_grant_does_not_write() {
     let dir = tempfile::tempdir().unwrap();
     let core = Core::open(cfg(dir.path()), unlock()).await.unwrap();
 
     let before = vault_footprint(&core);
-    let payload = core.export_pairing_payload().unwrap();
-    let again = core.export_pairing_payload().unwrap();
+    let payload = core
+        .pair_device_in_process("joiner".into(), "test".into(), [0x71; 32], [0x72; 32])
+        .unwrap();
+    let again = core
+        .pair_device_in_process("joiner".into(), "test".into(), [0x71; 32], [0x72; 32])
+        .unwrap();
     let after = vault_footprint(&core);
 
     assert_eq!(
@@ -93,7 +97,9 @@ async fn a_freshly_opened_vault_already_carries_its_base_epochs() {
 
     let dir = tempfile::tempdir().unwrap();
     let core = Core::open(cfg(dir.path()), unlock()).await.unwrap();
-    let payload = core.export_pairing_payload().unwrap();
+    let payload = core
+        .pair_device_in_process("joiner".into(), "test".into(), [0x71; 32], [0x72; 32])
+        .unwrap();
 
     assert!(
         payload.stream_keys.contains_key(&[0u8; 16]),

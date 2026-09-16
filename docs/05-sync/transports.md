@@ -141,15 +141,24 @@ and the relay has no part in pairing at all.** There is no pairing route in
 server's `Hello` response sets only `REQUIRED_CLIENT_BITS |
 REQUIRED_SERVER_BITS | SrvTokenRefresh`.
 
-What ships instead is a **manual two-file pairing-payload exchange**, driven by
-the CLI in `crates/sunrise-cli/src/livesync.rs`: `SUNRISE_EXPORT_PAIRING_FILE`
-writes this device's `PairingPayload` on startup and `SUNRISE_PAIRING_FILE`
-reads one and hands it to `Core::open`. It is read *before* the vault opens,
-because since [ADR-0024](../11-adr/0024-key-hierarchy.md) the identity a vault
-belongs to is decided when the vault is created; a payload offered afterwards
-has nothing left to join. Both steps are best-effort — an unwritable or missing
-file is logged (`ui.pair.payload_exported`, `ui.pair.payload_adopted`), not
-fatal. The QR, Noise-XX handshake and SAS
+What ships instead is a **manual three-file exchange**, driven by the CLI in
+`crates/sunrise-cli/src/pair.rs`: `sunrise pair offer`, `request`, `issue`,
+`accept`, with the user moving each file between the two machines. Three files
+because pairing is three messages — the account's signing key does not travel,
+so the sponsoring device issues the joining device's certificate and cannot sign
+one for keys that device has not minted yet
+([#105](https://github.com/justin13888/Sunrise/issues/105),
+[`../03-crypto/pairing-and-onboarding.md`](../03-crypto/pairing-and-onboarding.md)
+§Flow).
+
+`accept` is what opens the joining vault, because since
+[ADR-0024](../11-adr/0024-key-hierarchy.md) the identity a vault belongs to is
+decided when the vault is created; material offered afterwards has nothing left
+to join. Each step logs (`ui.pair.offer_written`, `ui.pair.request_written`,
+`ui.pair.grant_written`, `ui.pair.accepted`) and fails the command rather than
+carrying on — this is a user-driven exchange now, not a best-effort startup
+affordance. `SUNRISE_EXPORT_PAIRING_FILE` and `SUNRISE_PAIRING_FILE` are gone:
+the single file they moved carried the whole account including `ID_S_priv`. The QR, Noise-XX handshake and SAS
 machinery in `crates/sunrise-pairing/` (`qr.rs`, `handshake.rs`, `sas.rs`) is
 built and tested but has no relay transport under it, so nothing routes a
 handshake between two devices yet. See

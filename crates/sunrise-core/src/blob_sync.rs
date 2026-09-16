@@ -149,7 +149,7 @@ pub(crate) const MAX_UPLOAD_ATTEMPTS: u32 = 10;
 /// `docs/02-domain/attachments.md` §Lazy fetch: "Default auto-fetch threshold:
 /// 10 MiB. Smaller attachments fetch silently on first view." Anything larger
 /// waits for the Download button in the next sentence of that section, which is
-/// [`Core::fetch_attachment`] and [`crate::blob_fetch`].
+/// [`Core::fetch_attachment`] and this crate's private `blob_fetch` module.
 ///
 /// This is therefore a bound on what happens **unasked**, and on nothing else.
 /// It was the whole story until issue #227, when it was also the only story:

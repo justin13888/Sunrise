@@ -939,6 +939,128 @@ jobs:
         # someone else's outage is one people learn to ignore.
         run: .github/scripts/docs-link-gate.py
 
+  citations:
+    name: Citation gate
+    runs-on: ubuntu-latest
+    # The same shape and the same cost as `docs-links` above: `actions/checkout`
+    # plus one standard-library Python script over the tracked markdown and
+    # `.rs` files, no network call, no toolchain to install and nothing to
+    # cache. Well under a second locally.
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reject a backticked path:line citation that points at nothing
+        # This repository cites its own source in inline code spans —
+        # `crates/sunrise-sync/src/backoff.rs:31-63` — close to a thousand of
+        # them, and until this gate not one was checked. That is not an
+        # oversight in `docs-links` or `doc-comments`: both blank inline code
+        # before they read a line, deliberately, so a document about markdown is
+        # not read as containing it. A code span is therefore exactly the shape
+        # those two agree to ignore and exactly the shape a path is cited in, so
+        # a moved file or a shifted line number rots in silence — and a `:199`
+        # rots without the file moving at all.
+        #
+        # Three anchors: the repository root, the citing file's own directory
+        # (the resolution imported from `docs-link-gate.py`, so the two gates
+        # cannot disagree about where `../x.md` points), and the crate root for
+        # a file under `crates/<name>/`, because Cargo fixes that layout. A
+        # `../` path has one reading and a dangling one fails; a bare filename
+        # has as many readings as there are directories, so it is declined,
+        # counted and listable rather than guessed at. The extension set is
+        # closed, or `task.update` and `Task.blocks` read as paths. The script
+        # carries its own self-test and runs it as a precondition.
+        run: .github/scripts/citation-gate.py
+
+  citation-gate-contract:
+    name: Citation gate contract
+    runs-on: ubuntu-latest
+    # One Python script over git repositories it synthesises in a temp
+    # directory: no toolchain, no cargo, no network past the checkout. Seconds
+    # of work.
+    timeout-minutes: 5
+    # Deliberately without an `if:`, like the other gate contracts, so it runs
+    # on pull requests. What it asserts is the gate's *discrimination*: it has
+    # to fire on a dangling `crates/.../nonexistent.rs:1` and stay silent on
+    # `Vec<u8>`, `cargo test --workspace`, `task.update` and the 600 bare
+    # filenames in this repository that are shorthand rather than citations.
+    # Those two halves fail in opposite directions from the same edit, and a
+    # gate that fires on everything is as useless as one that fires on nothing.
+    steps:
+      - uses: actions/checkout@v4
+      - name: Exit-code and discrimination contract
+        run: python3 .github/scripts/test_citation_gate.py
+
+  doc-comment-gate-contract:
+    name: Doc comment gate contract
+    runs-on: ubuntu-latest
+    # One Python script over crates it synthesises in a temp directory: no
+    # toolchain, no cargo, no network past the checkout. Seconds of work.
+    timeout-minutes: 5
+    # Deliberately without an `if:`, like the other gate contracts, so it runs
+    # on pull requests. The gate's own `--self-test` runs `scan_text` over six
+    # string literals and reaches nothing else: not the `git ls-files` listing,
+    # not the 50-file floor that says "the scan is broken" rather than "the tree
+    # is clean", not the exit codes those produce. It also pins the
+    # inline-code-blanking this gate shares with `docs-links` — the behaviour
+    # that leaves backticked citations to `citation-gate.py` — so the three do
+    # not start fighting over the same span.
+    steps:
+      - uses: actions/checkout@v4
+      - name: Exit-code contract
+        run: python3 .github/scripts/test_doc_comment_gate.py
+
+  docs-link-gate-contract:
+    name: Docs link gate contract
+    runs-on: ubuntu-latest
+    # One Python script over repositories it synthesises in a temp directory: no
+    # toolchain, no cargo, no network past the checkout. Seconds of work.
+    timeout-minutes: 5
+    # Deliberately without an `if:`, like the other gate contracts, so it runs
+    # on pull requests. The gate's own `--self-test` is a very good test of
+    # `slugify` and no test at all of `check()` — the listing, the resolution of
+    # a relative destination, the file/directory distinction, the two exit codes.
+    # Those were exercised only by this repository's own 1,239 links, a fixture
+    # that changes every week and can only ever prove the gate is green.
+    steps:
+      - uses: actions/checkout@v4
+      - name: Exit-code contract
+        run: python3 .github/scripts/test_docs_link_gate.py
+
+  observability-catalog-gate-contract:
+    name: Observability catalogue gate contract
+    runs-on: ubuntu-latest
+    # One Python script over documents it synthesises in a temp git repository:
+    # no toolchain, no cargo, no network past the checkout. Seconds of work. It
+    # commits once, because the gate resolves each block's `Last extracted` ref
+    # against git and a fixture that could not answer would retire that check.
+    timeout-minutes: 5
+    # Deliberately without an `if:`, like the other gate contracts, so it runs
+    # on pull requests. This gate reads its extraction command out of the
+    # document and runs it, which is what keeps the two from disagreeing and is
+    # also a second surface that can rot: a marker that loses its `grep` line, a
+    # path that stops being a directory, a provenance ref that names no commit.
+    # The gate's own self-test reaches none of those routes.
+    steps:
+      - uses: actions/checkout@v4
+      - name: Exit-code contract
+        run: python3 .github/scripts/test_observability_catalog_gate.py
+
+  proptest-persistence-gate-contract:
+    name: Proptest persistence gate contract
+    runs-on: ubuntu-latest
+    # One Python script over crates it synthesises in a temp git repository: no
+    # toolchain, no cargo, no network past the checkout. Seconds of work.
+    timeout-minutes: 5
+    # Deliberately without an `if:`, like the other gate contracts, so it runs
+    # on pull requests. Three of the five codes this gate emits — `ignored`,
+    # `untracked` and `flat` — are decided by the filesystem and the index
+    # rather than by the source text, so the gate's own self-test cannot reach
+    # them from a string literal and nothing exercised them at all.
+    steps:
+      - uses: actions/checkout@v4
+      - name: Exit-code contract
+        run: python3 .github/scripts/test_proptest_persistence_gate.py
+
 
   fuzz:
     name: Fuzz (${{ matrix.target }})

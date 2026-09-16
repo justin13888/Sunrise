@@ -85,7 +85,48 @@ pub const DOC_SCHEMA_FLOOR: u16 = 1;
 /// self-signed. None of the *primitives* changed — which is why
 /// [`ENVELOPE_FORMAT_V`] does not move — but the key schedule they are applied
 /// to did, and that is what this constant names.
-pub const CRYPTO_SUITE_V: u16 = 2;
+///
+/// `3` re-derives the blob-chunk nonce. It was
+/// `BLAKE3.derive_key("sunrise.blob_chunk_nonce.v1", blob_key ||
+/// u32_be(chunk_idx))`, with `chunk_count` bound in the chunk's AAD and
+/// nowhere else — and AAD does not enter the keystream. Two different
+/// chunkings of one plaintext under one `blob_key` therefore shared a
+/// keystream. The derivation now hashes the chunk AAD itself
+/// (`"sunrise.blob_chunk_nonce.v2"`, `blob_key || chunk_aad`), so everything
+/// the AAD distinguishes the nonce distinguishes too, by construction rather
+/// than by two definitions being kept in step. No primitive changed, which is
+/// again why [`ENVELOPE_FORMAT_V`] does not move: the key schedule did.
+///
+/// Nothing is deployed, so no blob sealed under `2` exists to migrate. A `2`
+/// chunk is simply unopenable here, and that is the intended behaviour of a
+/// suite bump.
+///
+/// `4` splits the AAD of the account identity's two wrapped halves. Both
+/// `ID_S_priv` and `ID_D_priv` were sealed under
+/// `"sunrise.local_identity.identity.v1" || identity_id`, so either blob opened
+/// under the other's domain and the `identity` row's two columns were
+/// interchangeable to the AEAD. They are now
+/// `"sunrise.local_identity.identity.sign.v2"` and
+/// `"sunrise.local_identity.identity.dh.v2"`.
+///
+/// [`STORAGE_V`] deliberately does **not** move for it. The change is to the
+/// wrapping domain of two blobs and to no table shape, and `STORAGE_V` is
+/// defined as the id of the last migration
+/// (`sunrise_storage::migrations::current_storage_v`, asserted equal to this
+/// constant), so bumping it would mean writing a migration with no DDL in it.
+/// A vault written under the shared domain simply does not open here, which is
+/// what a suite bump is supposed to do and what the absence of any deployment
+/// makes free.
+///
+/// `5` changes how a `DeviceCert` carries its body. It was a nested CBOR map,
+/// so a verifier parsed it and re-encoded the parse to rebuild the signature
+/// input — checking the signature against a *re-encoding* rather than against
+/// the bytes that arrived. Every parse/encode asymmetry was therefore a
+/// verification gap. The body now travels as an opaque `bstr` and the signature
+/// covers exactly those bytes, which is the construction COSE uses for its
+/// protected header. This is a change to how a signature input is built, which
+/// is what this constant names; the signature algorithm is unchanged.
+pub const CRYPTO_SUITE_V: u16 = 5;
 
 /// Local storage schema version. Per-device; never appears on the wire.
 ///

@@ -39,7 +39,7 @@
 )]
 
 use sunrise_cbor::version::{CRYPTO_SUITE_V, DOC_SCHEMA_V, WIRE_PROTO_V};
-use sunrise_cli::{livesync, login, vault};
+use sunrise_cli::{livesync, login, pair, vault};
 use sunrise_core::commands::FocusStartDraft;
 use sunrise_core::{Command, Core, Query, QueryResult, RevokeReason, SystemRng};
 use sunrise_domain::routine_rows;
@@ -85,12 +85,26 @@ USAGE:
                                  write .ics to stdout, or to a path
 
   devices and identity
+    sunrise pair offer --out <file>
+                                 (on the device with the vault) write the
+                                 account's public identity. Carries no key
+    sunrise pair request --offer <file> --out <file>
+                                 (on the device being added) mint this device's
+                                 keys and ask for a certificate
+    sunrise pair issue --request <file> --out <file>
+                                 (on the device with the vault) certify those
+                                 keys and hand over the vault. This file carries
+                                 your vault key
+    sunrise pair accept --response <file>
+                                 (on the device being added) adopt the
+                                 certificate and open the vault
     sunrise devices              list this account's devices, marking revoked
                                  and non-current ones distinctly
     sunrise device revoke <id-prefix> [--reason lost|stolen|retired|compromised]
-                                 revoke a device, rotate every Stream key and
-                                 rotate the account identity so the device
-                                 cannot certify itself back in
+                                 revoke a device and rotate every Stream key, so
+                                 it reads nothing written afterwards. Also
+                                 rotates the account identity, on the device
+                                 that created the account
     sunrise identity status      the account's identity chain: its stable name,
                                  the identity in force, and whether this device
                                  still speaks for it
@@ -156,13 +170,10 @@ ENVIRONMENT:
                               against a self-host relay
     SUNRISE_OIDC_ISSUER       OIDC issuer URL, for `sunrise login`
     SUNRISE_OIDC_CLIENT_ID    OIDC client id, for `sunrise login`
-    SUNRISE_EXPORT_PAIRING_FILE
-                              write this vault's pairing payload here on
-                              startup, for another vault to join it
-    SUNRISE_PAIRING_FILE      join the account in the payload at this path.
-                              Read before the vault opens, and only a vault
-                              being created can act on it
     SUNRISE_LOG_FILE          override the NDJSON log destination
+
+  Joining an account is `sunrise pair`, not a variable. The two that used to do
+  it carried the account's signing key in one file; see `sunrise pair`.
 ";
 
 /// Returns [`std::process::ExitCode`] rather than a `Result`, because the
@@ -326,10 +337,25 @@ async fn run(sub: &str, rest: &[String]) -> Result<(), Box<dyn std::error::Error
             vaults();
             return Ok(());
         }
-        // Also answered without opening anything, and for a stronger reason
-        // than `vaults`: this subcommand *creates* the vault, from an identity
-        // it has not fetched yet. Falling through to the open below would mint
-        // a root and an identity of its own first, and the account a vault
+        // Dispatched **before** the open, and that is not an optimisation.
+        // `pair request` and `pair accept` run on a device whose vault does not
+        // exist yet, and the sequence below would create one — with a brand-new
+        // account identity the joiner could never replace, because the identity
+        // a vault belongs to is decided when it is created. Each `pair` step
+        // opens exactly what it needs, which for two of them is nothing.
+        "pair" => {
+            let cmd = pair::parse(rest)?;
+            let dir = vault_dir();
+            std::fs::create_dir_all(&dir).ok();
+            for line in pair::run(&dir, &cmd).await? {
+                println!("{line}");
+            }
+            return Ok(());
+        }
+        // Answered without opening anything for the same reason, in the other
+        // direction: this subcommand *creates* the vault, from an identity it
+        // has not fetched yet. Falling through to the open below would mint a
+        // root and an identity of its own first, and the account a vault
         // belongs to is decided when it is created — so the recovery would
         // then have nothing left to join.
         "recover" => {
@@ -352,22 +378,23 @@ async fn run(sub: &str, rest: &[String]) -> Result<(), Box<dyn std::error::Error
     // token against the core's clock rather than the host's — which the
     // workspace lint bans reading directly.
     //
-    // The one part of the plan that cannot wait until after the open is
-    // `adopt_pairing`: the identity a vault belongs to is decided when it is
-    // created, so a payload handed over afterwards has nothing left to join.
-    // It needs no token and no clock, so reading it here costs nothing.
+    // `None`: this open never adopts a pairing. Joining an account happens in
+    // `sunrise pair accept`, which is dispatched above and opens its own core
+    // with the material a completed exchange produced. There used to be an
+    // environment variable read here instead, and it cannot survive #105 —
+    // see [`sunrise_cli::pair`].
     let mut env = livesync::SyncEnv::from_process_env();
-    let pre_open = livesync::SyncPlan {
-        adopt_pairing: livesync::plan_from_env(&env).adopt_pairing,
-        ..livesync::SyncPlan::default()
-    };
-    let (core, open_log) =
-        livesync::open_with_plan(dir, env!("CARGO_PKG_VERSION"), root, &pre_open).await?;
+    let (core, open_log) = livesync::open_with_plan(
+        dir,
+        env!("CARGO_PKG_VERSION"),
+        root,
+        &livesync::SyncPlan::default(),
+        None,
+    )
+    .await?;
 
-    // Then the real plan. Every subcommand honours the pairing-file vars —
-    // `SUNRISE_EXPORT_PAIRING_FILE` is documented as acting "on startup" — but
-    // only `sync` starts a driver: opening one for a command that exits
-    // milliseconds later would just churn the relay.
+    // Then the real plan. Only `sync` starts a driver: opening one for a
+    // command that exits milliseconds later would just churn the relay.
     if sub != "sync" {
         env.url = None;
     }
@@ -600,11 +627,12 @@ async fn dispatch(
                 }
             };
             let target = resolve_device(core, prefix).await?;
-            core.submit(Command::RevokeDevice {
-                device_id: EntityRef::new(EntityKind::Device, target),
-                reason,
-            })
-            .await?;
+            let outcome = core
+                .submit(Command::RevokeDevice {
+                    device_id: EntityRef::new(EntityKind::Device, target),
+                    reason,
+                })
+                .await?;
 
             // The two-state disclosure `docs/03-crypto/key-rotation.md`
             // §Revocation asks for, and issue #160. These are different
@@ -614,7 +642,22 @@ async fn dispatch(
             // only "revoked" would let a user with no network believe a stolen
             // laptop had been cut off from the server, which it has not.
             println!("Revoked {} locally.", hex16(&target));
-            println!("  - every Stream key rotated, and the account identity with it");
+            // Not "every Stream key rotated" unconditionally: that was a claim
+            // this command could not always make. A vault row whose stream id
+            // is malformed names no stream to rotate, and the revoked device
+            // goes on holding whatever key it was last given for it.
+            if outcome.unrotated_streams.is_empty() {
+                println!("  - every Stream key rotated, and the account identity with it");
+            } else {
+                println!("  - the account identity rotated, and every Stream key BUT these:");
+                for raw in &outcome.unrotated_streams {
+                    println!("      {raw}  (not a 16-byte stream id; nothing to rotate)");
+                }
+                println!(
+                    "    that device may still read them. This is a corrupt row in the \
+                     local vault, not something the revocation can retry."
+                );
+            }
             println!("  - that device cannot certify itself back in under a new id");
             let pending = core.relay_revocation_pending(&target)?;
             if pending {
@@ -655,6 +698,21 @@ async fn dispatch(
                             "this device can seal a recovery code"
                         } else {
                             "this device cannot seal a recovery code"
+                        }
+                    );
+                    // The line above and this one look alike and answer
+                    // different questions: that one is `ID_D_priv` and what
+                    // this device can read back, this is `ID_S_priv` and what
+                    // it can say. A device added by pairing is a full member
+                    // that can admit nobody, and it should not have to discover
+                    // that from a failed `pair offer`.
+                    println!(
+                        "pairing   {}",
+                        if st.can_sponsor {
+                            "this device can add another device"
+                        } else {
+                            "this device was added by pairing and cannot add another; \
+                             run `sunrise pair` on the device the account was created on"
                         }
                     );
                     Ok(())

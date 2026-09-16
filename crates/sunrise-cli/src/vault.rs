@@ -49,11 +49,16 @@
 //! # Sharing a root on purpose
 //!
 //! Two vaults that *should* share a root — one account on two devices — is
-//! pairing, and pairing over the wire is a later slice. [`ENV_VAULT_ROOT`] is
-//! the stand-in, in exactly the spirit of `SUNRISE_PAIRING_FILE`: an
-//! explicit, documented dev affordance that says "use this root", replacing an
-//! implicit constant that said it for you. It is also the escape hatch for a
-//! vault made before this existed — see [`VaultError::PreMultiAccount`].
+//! pairing, and [`crate::pair`] is how it is done: `sunrise pair accept` calls
+//! [`adopt`] with the root that arrived inside a pairing grant, which is the
+//! one path here that keys a directory with a root it did not generate.
+//!
+//! [`ENV_VAULT_ROOT`] is not that. It is an explicit, documented dev affordance
+//! that says "use this root" — replacing an implicit constant that said it for
+//! you — and it makes two vaults share an at-rest key without making them one
+//! *account*: each still mints its own identity, so neither can read the
+//! other's ops. It is also the escape hatch for a vault made before this
+//! existed — see [`VaultError::PreMultiAccount`].
 
 use std::path::{Path, PathBuf};
 
@@ -313,6 +318,48 @@ pub fn open_or_create(
     write_line(&vault_dir.join(VAULT_ID_FILE), &id)?;
     register(keystore, &id, vault_dir)?;
     Ok(root)
+}
+
+/// Key a **new** vault directory with a root this machine did not generate.
+///
+/// The one path that does not mint. `sunrise pair accept` has just been handed
+/// the account's root inside a pairing grant, and that root is what makes the
+/// new directory a second *device* rather than a second account: the SQLCipher
+/// key is a KDF of it, and every op the account ever sealed was sealed under
+/// keys wrapped by it.
+///
+/// Refuses a directory that already holds a vault, for the reason
+/// [`open_or_create`] refuses one with no `vault-id`: writing a different key
+/// over an existing database turns every subsequent read into a SQLCipher
+/// failure with nothing attached to explain it. A device joins an account when
+/// its vault is *created*, so there is no second chance to get this right.
+///
+/// # Errors
+/// [`VaultError::PreMultiAccount`] for a directory that already holds a vault,
+/// and I/O failures writing the key, the marker or the registry.
+pub fn adopt(
+    vault_dir: &Path,
+    keystore: &Path,
+    root: [u8; ROOT_LEN],
+    rng: &dyn Rng,
+) -> Result<(), VaultError> {
+    if read_vault_id(vault_dir)?.is_some() || vault_dir.join(VAULT_DB_FILE).exists() {
+        return Err(VaultError::PreMultiAccount {
+            dir: vault_dir.to_path_buf(),
+        });
+    }
+    let mut id_bytes = [0u8; ID_LEN];
+    rng.fill_bytes(&mut id_bytes);
+    let id = to_hex(&id_bytes);
+    // Key first, marker second, for the reason `open_or_create` gives: the
+    // other order leaves a vault naming a key that was never written, which is
+    // indistinguishable from a lost key. The vault *id* is still minted here
+    // and is still local — it names the keystore entry, not the account, and
+    // two devices on one account have different ones.
+    write_private(&key_path(keystore, &id), &to_hex(&root))?;
+    write_line(&vault_dir.join(VAULT_ID_FILE), &id)?;
+    register(keystore, &id, vault_dir)?;
+    Ok(())
 }
 
 /// The vaults this keystore has keys for, in registration order.

@@ -45,7 +45,7 @@ private final class UpdaterChannelDelegate: NSObject, SPUUpdaterDelegate {
 ///
 /// macOS only. `apps/apple/macOS/` is compiled into the Mac target alone, which
 /// is why nothing here needs an `#if os(macOS)` and why the iOS target does not
-/// link Sparkle at all — ADR-0038 records that iOS has no direct-download
+/// link Sparkle at all — ADR-0039 records that iOS has no direct-download
 /// channel to update over.
 @MainActor
 enum SoftwareUpdate {

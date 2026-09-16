@@ -24,7 +24,7 @@ final class PhoneLayoutUITests: SunriseUITestCase {
     func testTheLastSidebarSectionScrollsClearOfTheFloatingTabBar() throws {
         createVault()
 
-        app.tabBars.buttons["Browse"].tap()
+        activate(app.tabBars.buttons["Browse"], named: "the Browse tab")
         XCTAssertTrue(
             app.navigationBars["Browse"].waitForExistence(timeout: 10),
             "Browse is on screen"
@@ -50,7 +50,7 @@ final class PhoneLayoutUITests: SunriseUITestCase {
     func testTheCalendarToolbarFitsAnIPhone() throws {
         createVault()
 
-        app.tabBars.buttons["Calendar"].tap()
+        activate(app.tabBars.buttons["Calendar"], named: "the Calendar tab")
 
         // The chevrons rather than the **Today** between them, which shares a
         // name with the tab bar's first tab and so matches two elements — a

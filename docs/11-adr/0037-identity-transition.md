@@ -77,6 +77,35 @@ The split is the decision. Everything else follows from it.
    therefore holds no key above the one it was cut at. An HLC is a claim; an
    epoch is a key you either hold or do not. The HLC components break ties
    between honest concurrent rotations, which is all they are asked to do.
+
+   Two things this rests on that are not stated in the sentence, and that an
+   adversarial reading finds first:
+
+   - **The honest rotation must sit *above* the shared epoch, not at it.** If
+     the transition that a revocation drives were sealed under the epoch the
+     departing device still holds, both rows would carry the same `meta_epoch`
+     and the decision would fall to `hlc_physical_ms` — which is attacker-chosen
+     within `MAX_DRIFT_MS`, and which the revoked device can therefore win.
+     What prevents that is an ordering across two transactions:
+     `revoke_device` rotates every stream (the vault-meta stream included) and
+     commits, and only then calls `rotate_identity`, so the transition is sealed
+     at E+1 while the excluded device holds nothing above E. Nothing in the type
+     system says so, and the comment in `rotate_identity` asserted the opposite
+     until this was checked, so
+     `a_revocations_transition_is_sealed_above_the_epoch_the_cut_device_holds`
+     pins it.
+   - **A row's `meta_epoch` is not a free claim, even though an envelope's
+     `epoch` field is.** `sunrise_core::engine`'s `DEFERRED_TOTAL_CAP` says
+     "`epoch` is attacker-chosen", and it is — on the *deferral* path, which is
+     reached because no key at that `(stream, epoch)` is held, so nothing has
+     been opened. A row in `identity_transitions` is written only after the
+     envelope opened under a key this replica holds at that exact epoch. The
+     two statements are about the same field and different facts.
+
+   What this does **not** claim: a revoked device's *writes* are bounded. They
+   are not (ADR-0034, and `Engine::apply_remote`'s step 2 says so in terms). It
+   can go on emitting ops, including transitions, at every epoch it holds. The
+   claim is only that none of them outranks a rotation minted after its cut.
 5. **Signatures are verified in the fold, not at apply.** `prev_sig` can only be
    checked against a predecessor the verifier has already established, and a
    replica may hold a transition two links ahead of what it knows. That op is
@@ -144,25 +173,92 @@ already know who it trusts; that is what makes `prev_sig` mean anything.
   an honest device looks like between applying a rotation and receiving its
   roster cert. `core.identity.not_in_roster` discloses it and nothing gates on
   it, for ADR-0032's reason: the two are indistinguishable inside the vault.
-- **`ID_S_priv` still travels in `PairingPayload`**, so a revoked device can
-  still self-certify — until the next rotation, which is now certain and
-  automatic. The residual gap is bounded rather than open. Closing it entirely
-  means the sponsor issuing the joining device's cert, which needs a second
-  message the CLI's file-drop pairing and the one-shot UniFFI seam do not have.
-  ADR-0032 alternative 2's over-block does **not** apply to that change as
-  scoped — there would be no sponsor countersignature and no sponsor binding on
-  the cert, so revoking a sponsor locks nobody out.
+- **`ID_S_priv` no longer travels in `PairingPayload`, and this ADR is now the
+  defence in depth rather than the whole defence.** When this was written the
+  key still travelled, so a revoked device could self-certify and the rotation
+  was what made the cert worthless. That was a bound, not a fix, and it bought
+  one revocation at a time: the device paired *after* a rotation held the new
+  `ID_S_priv`, so revoking it replayed the trick one identity along.
+
+  Pairing is a three-message exchange now — the sponsor issues the joining
+  device's cert, because it cannot sign one for keys the joiner has not minted
+  yet ([`../03-crypto/pairing-and-onboarding.md`](../03-crypto/pairing-and-onboarding.md)
+  §Flow). A device admitted by pairing holds `ID_S_pub` and cannot produce a
+  certificate for anything. Item 1 of §What would force revisiting this
+  happened, and it is what turns #105 from bounded into closed.
+
+  ADR-0032 alternative 2's over-block does **not** apply, and the distinction is
+  the reason this shape is acceptable where that one was not. Alternative 2 was
+  sponsor-*countersigned* certs: a second signature on the cert, checked by
+  every verifier, so revoking a device invalidates every device it ever
+  sponsored — and down a chain of pairings, devices the user never associated
+  with it. What was built is sponsor-*issued*: byte for byte the same
+  `DeviceCert` shape, one signature, the identity's, no issuer field and no
+  sponsor binding anywhere. A verifier cannot tell which device held
+  `ID_S_priv` when the cert was signed, and does not need to. **Revoking a
+  sponsor locks nobody out.** The sponsor is a gate at issue time and leaves no
+  trace on the artifact.
+
+- **The per-device share carries `ID_S_pub`, not `ID_S_priv`.** It carried the
+  secret when this ADR was written, and that would have undone the change above
+  at the first revocation after any pairing: the device pairing had withheld a
+  signing key from would be handed one by the rotation. A rotation moves
+  `ID_S_priv` to nobody — except the share addressed to the emitting device,
+  which minted the successor and already holds the outgoing key. The share is
+  still the roster signal and is still bound by `shares_digest`; it is no longer
+  a way to distribute a capability.
+
+- **A rotation can only be performed by the device that created the account**,
+  because signing a transition needs the outgoing `ID_S_priv`.
+  `Command::RotateIdentity` refuses elsewhere by name; `Command::RevokeDevice`
+  completes the revocation without rotating and logs
+  `core.identity.rotation_unavailable`. Refusing the whole revocation would be
+  worse — the device being revoked is often the one the user lost, and the
+  creator may be the one they lost — and what is given up is small, because a
+  revoked device that was itself paired has no certificate-issuing capability
+  for the rotation to have retired. The case that still needs a rotation is
+  revoking the creator, and it has to be run from the creator. That asymmetry is
+  the real cost of closing #105 and it is recorded here rather than discovered.
 - **The device list gained `current`**, which is not the negation of `revoked`
   and must not be rendered as one.
-- **A truncated chain fails closed.** `MAX_TRANSITION_CHAIN` is a termination
-  guarantee, not a budget; past it the head reads as a superseded identity and
-  nothing is sealed to anybody, rather than admitting a device it should not.
+- **The fold bounds work, not chain length, and that is a correction to this
+  ADR.** As accepted, the walk stopped after `MAX_TRANSITION_CHAIN = 64` links
+  and the note here called a truncated chain a fail-closed outcome. It is not an
+  outcome an account can leave. Any holder of `ID_S_priv` — every paired device,
+  and every device that ever was one — reaches 64 by rotating, and past it the
+  head is pinned: later transitions are rows the walk never reaches, so no
+  rotation takes effect, so no *revocation* takes effect, because a revocation
+  is a rotation. Nothing recovers from it and nothing reports it; the head is a
+  real identity with a real set of current devices under it.
+
+  Length never needed a bound. The visited set is already a termination
+  guarantee — each step adds a `to_identity_id` no step has added before, and
+  that column is the table's primary key — so the walk cannot outlast the table
+  whatever the table contains. What needed bounding was **work**, and it is now
+  bounded where it is spent: `MAX_SIBLING_CANDIDATES` rows verified per link in
+  the fold, `MAX_ROSTER_ENTRIES` devices per transition refused at ingest on
+  length before any cert is decoded, and `MAX_SIBLINGS_PER_PREDECESSOR` rows
+  stored per predecessor — the same number the fold will verify, so a stored row
+  is never one the walk could not reach.
+
+  The sibling cap needs one thing to not become a suppression tool of its own: a
+  row that the fold will certainly reject must not be able to occupy a
+  predecessor's place. So `prev_sig` is checked at ingest whenever this replica
+  has already established the predecessor, in addition to the fold's check,
+  which stands unchanged for the case the ADR's item 5 describes — a transition
+  two links ahead of what this replica knows. A member can still write competing
+  siblings; what it can no longer write is a sibling that is not a candidate.
+  See `docs/03-crypto/key-rotation.md` §Verification.
 
 ## What would force revisiting this
 
-1. **`ID_S_priv` leaving `PairingPayload`.** It removes the capability this ADR
-   bounds rather than removes, and would make the rotation-on-revocation a
-   defence in depth rather than the whole defence.
+1. ~~**`ID_S_priv` leaving `PairingPayload`.**~~ **Done.** It removed the
+   capability this ADR bounded, and rotation-on-revocation is now defence in
+   depth rather than the whole defence. See §Consequences. What it left behind
+   is a new asymmetry — only the account's creator can rotate — which is the
+   thing to watch: an account whose creator is lost can revoke but cannot move
+   its identity, and the way out of that is a recovery-code restore rather than
+   anything in this ADR.
 2. **A relay-side write bound** ([#80](https://github.com/justin13888/Sunrise/issues/80)).
    A revoked device that cannot upload cannot publish a cert, which bounds the
    bypass before the fold ever sees it.

@@ -71,6 +71,11 @@ async fn a_command_lowers_into_the_core_and_the_result_comes_back() {
     assert!(out.entity.to_str().starts_with("tsk_"));
     assert_eq!(out.op_id.len(), 32, "op id is 16 bytes of hex");
     assert!(out.soft_violations.is_empty());
+    // Both "it must not vanish" fields cross the seam, and both are empty for
+    // a command that neither schedules nor revokes. Asserted here because the
+    // seam is where a field added to `CommandResult` and forgotten in
+    // `CommandOutcome` would otherwise be lost in silence.
+    assert!(out.unrotated_streams.is_empty());
 
     let CoreQueryResult::Tasks { tasks } = core.query(CoreQuery::Inbox).await.expect("inbox")
     else {
@@ -1703,12 +1708,24 @@ async fn a_pairing_carries_the_vault_root_to_a_second_device() {
     old_device.confirm(true).expect("confirm");
     assert_eq!(new_device.step(), PairingStep::Confirmed);
 
-    // The existing device seals *its own* payload — the identity keys, every
-    // Stream key and the root — and none of it crosses the seam in the clear.
+    // Three messages after the SAS, and the direction alternates. The offer
+    // carries no secret; the grant carries the whole account.
+    let offer = existing
+        .send_pairing_offer(old_device.clone())
+        .expect("seal the offer");
+    let request = new_device
+        .request_device_cert(
+            offer,
+            "a new laptop".into(),
+            "macos".into(),
+            vec![0x71; 32],
+            vec![0x72; 32],
+        )
+        .expect("mint device keys and ask for a cert");
     let sealed = existing
-        .send_pairing_payload(old_device.clone())
-        .expect("seal the payload");
-    let bundle = new_device.open_pairing_payload(sealed).expect("open");
+        .send_pairing_grant(old_device.clone(), request)
+        .expect("issue the cert and seal the grant");
+    let bundle = new_device.open_pairing_grant(sealed).expect("open");
     assert_eq!(bundle.vault_root.len(), 32);
     assert!(
         !bundle.payload_bytes.is_empty(),
@@ -1758,7 +1775,7 @@ async fn rejecting_the_sas_ends_the_pairing() {
     ));
     assert_eq!(old_device.step(), PairingStep::Finished);
     assert!(matches!(
-        old_device.seal_pairing_payload(vec![1u8; 32]),
+        old_device.seal_pairing_offer(vec![1u8; 32]),
         Err(BindingError::Pairing(_))
     ));
 }
@@ -1776,7 +1793,11 @@ async fn the_payload_cannot_move_before_the_sas_is_confirmed() {
 
     assert!(matches!(new_device.sas(), Err(BindingError::Pairing(_))));
     assert!(matches!(
-        old_device.seal_pairing_payload(vec![1u8; 32]),
+        old_device.seal_pairing_offer(vec![1u8; 32]),
+        Err(BindingError::Pairing(_))
+    ));
+    assert!(matches!(
+        old_device.seal_pairing_grant(vec![1u8; 32]),
         Err(BindingError::Pairing(_))
     ));
     assert!(matches!(
@@ -1818,11 +1839,31 @@ async fn each_side_can_only_do_its_own_half() {
     let old_device = DevicePairing::accept(new_device.qr_payload().expect("qr")).expect("accept");
 
     assert!(matches!(
-        new_device.seal_pairing_payload(vec![1u8; 32]),
+        new_device.seal_pairing_offer(vec![1u8; 32]),
         Err(BindingError::Pairing(_))
     ));
     assert!(matches!(
-        old_device.open_pairing_payload("AAAA".into()),
+        new_device.seal_pairing_grant(vec![1u8; 32]),
+        Err(BindingError::Pairing(_))
+    ));
+    assert!(matches!(
+        old_device.open_pairing_grant("AAAA".into()),
+        Err(BindingError::Pairing(_))
+    ));
+    // ...and the middle leg is the joiner's alone, which is new: a sponsor that
+    // could mint the joiner's keys is the design #105 rejected.
+    assert!(matches!(
+        old_device.request_device_cert(
+            "AAAA".into(),
+            "x".into(),
+            "y".into(),
+            vec![0u8; 32],
+            vec![0u8; 32]
+        ),
+        Err(BindingError::Pairing(_))
+    ));
+    assert!(matches!(
+        new_device.open_cert_request("AAAA".into()),
         Err(BindingError::Pairing(_))
     ));
 }

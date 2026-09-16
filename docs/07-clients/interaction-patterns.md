@@ -124,8 +124,8 @@ first difference; the other two are set out below.
 
 **Calendar block → Task is No in both columns, and what is missing is the two
 modifiers, not a layout that could hold them.** A Block is not a drag
-source: `BlockChip` (`CalendarView.swift:358-457`) carries a tap
-(`:407`), a move gesture (`:408`) and a context menu (`:410`), and no
+source: `BlockChip` (`CalendarView.swift:417-516`) carries a tap
+(`:466`), a move gesture (`:467`) and a context menu (`:469`), and no
 `.draggable` — the only `.draggable` in the whole tree is the task row's
 (`TaskRowView.swift:74`). A task row is not a drop target for one either:
 `TaskListView.swift:192` is a `dropDestination` that reorders and does nothing
@@ -138,53 +138,69 @@ a Block is bound to a Task from the grid side, by dropping the task onto it.
 
 **The iOS cell for *Task → Calendar block* is No: both ends ship, and no screen
 in the shell presents them together.** The drag source (`TaskRowView.swift:74`)
-and the grid's drop target (`CalendarView.swift:221`, into `accept(items:at:)`
-at `:312`) are shared, unguarded and compiled into `SunriseiOS` — this cell
+and the grid's drop target (`CalendarView.swift:280`, into `accept(items:at:)`
+at `:371`) are shared, unguarded and compiled into `SunriseiOS` — this cell
 fails on reach, not on code. `TaskRowView` renders only inside `TaskListView`
 (`:172`) and `DailyBriefBody` (`DailyBriefView.swift:82`); the grid renders on
-iOS only at `VaultTabs.swift:72`, its own tab, and `:228`, a pushed destination
+iOS only at `VaultTabs.swift:79`, its own tab, and `:287`, a pushed destination
 that replaces the list on the same stack. The tab is not the boundary and it
-would be wrong to say it is: `pushed(destination:)` (`VaultTabs.swift:212`) is
-attached to the Today and the Browse stacks alike (`:136`, `:144`), so the grid
+would be wrong to say it is: `pushed(destination:)` (`VaultTabs.swift:268`) is
+attached to the Today and the Browse stacks alike (`:164`, `:175`), so the grid
 can be pushed onto the very stack a task list is on — it just arrives *instead
 of* the list, not beside it. Three things the tree establishes: no iOS screen
 shows a task row and the grid together, no `Tab` carries a `dropDestination`,
 and nothing configures spring-loading. Nothing in the tree shows a path that
 completes the gesture, and that is what the **No** records.
 
-**The one path this file could not settle has now been run, and it does not
-open.** The question [#72](https://github.com/justin13888/Sunrise/issues/72)
-asked was whether a drag held across a tab switch bridges the two ends, which
-no reading of the tree can answer. `SunriseiOSUITests/DragAcrossTabsUITests`
-answers the half a test harness can reach: it lifts a task row on Today, drags
-it onto the **Calendar** tab and holds it there for two seconds — about four
-times what iOS gives a spring-loaded control — and the tab does not change. The
-tab bar does not spring-load a drag, so the **one-handed** gesture ends where
-it started, and there is no point in the app at which the grid is under the
-finger holding the row.
+**The third of those three is now a test rather than a claim.**
+`SunriseTests/TabDropTargetTests.swift` reads every Swift source under
+`apps/apple/iOS/` — the shell, and only the shell, since four views under
+`Sunrise/` are drop targets on purpose — and fails if any of them writes a
+`dropDestination`, an `onDrop`, a `springLoadingBehavior` or a
+`UISpringLoadedInteraction`. A companion test asserts the shape it is reading,
+so it cannot go green by finding a file that has moved. The commit that gives a
+tab a drop target is the commit that reds this cell.
+
+It replaced a two-second simulator drag, and the reason is worth recording.
+`SunriseiOSUITests/DragAcrossTabsUITests` used to lift a task row on Today,
+drag it onto the **Calendar** tab and hold it there, asserting that the tab did
+not change. It failed the `ios-app` job on a pull request that touched five
+markdown files, then passed a re-run of the same commit
+([#215](https://github.com/justin13888/Sunrise/issues/215)). A negative
+assertion that can fail spuriously can pass spuriously too: if the long-press
+never lifted the row, nothing was ever dragged anywhere and "the tab did not
+change" is satisfied by the gesture having failed to start. Twenty-six minutes
+of CI were buying a **No** that rested on the absence of an event the test
+could not show had happened.
+
+So what [#72](https://github.com/justin13888/Sunrise/issues/72) asked — what a
+*held* drag does as it crosses the bar — is recorded here as **not claimed**
+rather than as measured. What is claimed, and asserted, is the thing the
+verdict actually needs: nothing in this app builds a path for such a drag to
+complete along.
 
 The **two-handed** gesture — hold the row with one finger, tap a tab with the
-other — is still unmeasured, and deliberately recorded as unmeasured rather
-than assumed either way. XCUITest drives one gesture at a time and offers no
-API for two independent simultaneous touches, so the harness that runs on every
-build cannot express it; settling it would take a person with a device, and a
-result nothing in CI would then hold in place. The verdict stays **No** on the
-rule this table already applies: a completable path has to be *shown*, not left
-open. What would overturn it is no longer a grep or a simulator run but a
+other — is unmeasured for a different and permanent reason. XCUITest drives one
+gesture at a time and offers no API for two independent simultaneous touches,
+so the harness that runs on every build cannot express it; settling it would
+take a person with a device, and a result nothing in CI would then hold in
+place. The verdict stays **No** on the rule this table already applies: a
+completable path has to be *shown*, not left open. What would overturn it is a
 built path — a drop destination on the tab itself, spring-loading configured,
-or a screen that shows a list and the grid together.
+or a screen that shows a list and the grid together — and the first two of
+those three are what the test above watches for.
 
 **The other way out would be a second window, and that one the tree does
 close.** It is also what separates this cell from *File → Task*. A second
 Sunrise window would put a list beside the grid, but this app cannot vend one:
-`iOS/SunriseiOSApp.swift:23-24` declares a single `WindowGroup`, and multiple
+`iOS/SunriseiOSApp.swift:24-26` declares a single `WindowGroup`, and multiple
 windows on iPadOS are gated on `UIApplicationSupportsMultipleScenes` inside
 `UIApplicationSceneManifest`, which nothing here sets. The `SunriseiOS` target
 has no checked-in plist at all — its Info.plist is generated
-(`project.yml:192-203`, `GENERATE_INFOPLIST_FILE: YES` at `:181`) from three
+(`project.yml:359-368`, `GENERATE_INFOPLIST_FILE: YES` at `:346`) from three
 `properties` (`CFBundleURLTypes` and the two version keys) and three
 `INFOPLIST_KEY_` settings (`UILaunchScreen_Generation`, and the two
-`UISupportedInterfaceOrientations`, `:182-190`). Neither key appears in any of
+`UISupportedInterfaceOrientations`, `:347-355`). Neither key appears in any of
 them, or anywhere in `apps/apple`; absent, `UIApplicationSupportsMultipleScenes`
 takes its default of `NO`, so iPadOS grants the app one scene and there is no
 second window to drag into. *File → Task* is qualified to the iPad for the
@@ -232,7 +248,8 @@ These run via local OS APIs (deep links into the app for desktop; native action 
 **macOS and iOS are both implemented today**, and not as two implementations:
 the categories, the task category's three buttons and the response delegate
 are one shared file
-(`apps/apple/Sunrise/Notifications/NotificationCenterClient.swift:60-105`)
+(`apps/apple/Sunrise/Notifications/NotificationCenterClient.swift:88-113`
+for the category and its buttons, `:235-264` for the delegate)
 compiled into both products. The iOS column carries SHOULDs rather than MUSTs
 ([ADR-0028](../11-adr/0028-ios-is-a-v1-client.md)). Android and Web remain
 [deferred clients](./parity-matrix.md) and carry no MUSTs at all.

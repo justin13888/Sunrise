@@ -76,7 +76,7 @@ pub use engine::{Engine, EngineError};
 pub use events::{
     AttachmentFetch, AttachmentFetchOutcome, AttachmentFetchState, DomainEvent, SyncStatus,
 };
-pub use keychain::{KeySource, Keychain, KeychainError, SuccessorPublics};
+pub use keychain::{IdentitySigningKey, KeySource, Keychain, KeychainError, SuccessorPublics};
 pub use queries::{
     ActionableTask, ContextRow, DeviceRow, FocusPlanRow, FocusSessionRow, Query, QueryResult,
     StreamRow,

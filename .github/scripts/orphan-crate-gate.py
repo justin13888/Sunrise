@@ -80,6 +80,12 @@ EXEMPT: dict[str, str] = {
     # dev-dependency of sunrise-crypto. Dev edges are not traversed (see above),
     # so this needs saying out loud rather than being silently reachable.
     "sunrise-crypto-test-vectors": "test fixture, dev-dependency of sunrise-crypto only",
+    # The `SUNRISE_FUZZ_SEED` reader (#119). One parser, one fallback rule and
+    # one announcement, shared by every randomised harness in the workspace —
+    # the property tests reach it as a dev-dependency and `sunrise-e2e` as a
+    # normal one, and `sunrise-e2e` is itself exempt above. Nothing a user runs
+    # can reach it, and if a shipping crate ever did that would be the bug.
+    "sunrise-test-seed": "test fixture, the workspace's SUNRISE_FUZZ_SEED reader",
 }
 
 # Temporary. A real orphan with an owner and an issue number. The gate reports

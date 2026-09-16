@@ -8,7 +8,7 @@
 //! materializes a remote entity into a Stream has to know the Stream row is
 //! there first — which is why it is `pub(super)` here rather than duplicated.
 
-use super::ids::{blob16, decode_unknowns, encode_unknowns, ms_to_ts, require_kind};
+use super::ids::{blob16, decode_unknowns, encode_unknowns, ms_to_ts, require_writable_stream};
 use super::lww::LwwStamp;
 use super::task::read_task;
 use super::{Engine, EngineError, META_STREAM};
@@ -33,6 +33,9 @@ impl Engine {
         d: StreamDraft,
     ) -> Result<CommandResult, EngineError> {
         d.validate()?;
+        if let Some(parent) = d.parent_id {
+            require_writable_stream(parent)?;
+        }
         let now_ms = self.clock.now_ms();
         let stream_id = self.fresh_id(EntityKind::Stream, now_ms);
         let last_key = last_stream_sort_order(db.conn())?;
@@ -61,13 +64,15 @@ impl Engine {
 
         let op_id = self.fresh_op_id(now_ms);
         let inner_op = encode_inner_op(&InnerOp::StreamCreate(stream.clone()))?;
-        // Stream lifecycle ops route to the vault-meta log, not the new Stream.
-        let seq = self.next_seq(db, &META_STREAM)?;
-        let lww = self.lww_stamp(seq);
         let stream_clone = stream.clone();
-        db.with_tx(|tx| -> rusqlite::Result<()> {
+        // Stream lifecycle ops route to the vault-meta log, not the new Stream.
+        // `meta_slot` is what makes the epoch/seq order safe; see `#214`.
+        let seq = db.with_tx(|tx| -> rusqlite::Result<u64> {
+            let slot = self.meta_slot(tx, now_ms)?;
+            let seq = slot.seq;
+            let lww = slot.lww;
             insert_stream_row(tx, &stream_clone, &lww)?;
-            self.ops_insert(
+            self.ops_insert_at(
                 tx,
                 &op_id,
                 &META_STREAM,
@@ -81,8 +86,10 @@ impl Engine {
                 None,
                 now_ms,
                 &[],
+                slot.epoch,
+                &slot.key,
             )?;
-            Ok(())
+            Ok(seq)
         })?;
 
         Ok(CommandResult::new(stream_id, None, op_id, seq))
@@ -94,7 +101,10 @@ impl Engine {
         id: EntityRef,
         patch: StreamPatch,
     ) -> Result<CommandResult, EngineError> {
-        require_kind(id, EntityKind::Stream)?;
+        require_writable_stream(id)?;
+        if let Some(Some(parent)) = patch.parent_id {
+            require_writable_stream(parent)?;
+        }
         patch.validate()?;
         let now_ms = self.clock.now_ms();
         let mut stream = read_stream(db.conn(), id.bytes())?
@@ -145,12 +155,13 @@ impl Engine {
 
         let op_id = self.fresh_op_id(now_ms);
         let inner_op = encode_inner_op(&InnerOp::StreamUpdate(stream.clone()))?;
-        let seq = self.next_seq(db, &META_STREAM)?;
-        let lww = self.lww_stamp(seq);
         let stream_clone = stream.clone();
-        db.with_tx(|tx| -> rusqlite::Result<()> {
+        let seq = db.with_tx(|tx| -> rusqlite::Result<u64> {
+            let slot = self.meta_slot(tx, now_ms)?;
+            let seq = slot.seq;
+            let lww = slot.lww;
             update_stream_row(tx, &stream_clone, &lww)?;
-            self.ops_insert(
+            self.ops_insert_at(
                 tx,
                 &op_id,
                 &META_STREAM,
@@ -164,8 +175,10 @@ impl Engine {
                 None,
                 now_ms,
                 &[],
+                slot.epoch,
+                &slot.key,
             )?;
-            Ok(())
+            Ok(seq)
         })?;
 
         Ok(CommandResult::new(id, None, op_id, seq))
@@ -176,13 +189,14 @@ impl Engine {
         db: &mut Db,
         id: EntityRef,
     ) -> Result<CommandResult, EngineError> {
-        require_kind(id, EntityKind::Stream)?;
-        // Compared against the Inbox's own id, not against sixteen zero bytes:
-        // those are the vault-meta stream now, and a guard that names the wrong
-        // constant is a guard that protects the wrong thing.
-        if id.bytes() == &INBOX_STREAM_BYTES || id.bytes() == &META_STREAM {
+        // The vault-meta half of this guard is now the shared one — naming
+        // that stream at all is refused, deletion included. What stays here is
+        // the Inbox, which is a perfectly ordinary Stream in every other
+        // respect and reserved against deletion alone.
+        require_writable_stream(id)?;
+        if id.bytes() == &INBOX_STREAM_BYTES {
             return Err(EngineError::Invalid(
-                "cannot delete the inbox or vault-meta stream".into(),
+                "cannot delete the inbox stream".into(),
             ));
         }
         let now_ms = self.clock.now_ms();
@@ -192,12 +206,13 @@ impl Engine {
         stream.updated_at = ms_to_ts(now_ms as i64);
         let op_id = self.fresh_op_id(now_ms);
         let inner_op = encode_inner_op(&InnerOp::StreamDelete(stream.clone()))?;
-        let seq = self.next_seq(db, &META_STREAM)?;
-        let lww = self.lww_stamp(seq);
         let stream_clone = stream.clone();
-        db.with_tx(|tx| -> rusqlite::Result<()> {
+        let seq = db.with_tx(|tx| -> rusqlite::Result<u64> {
+            let slot = self.meta_slot(tx, now_ms)?;
+            let seq = slot.seq;
+            let lww = slot.lww;
             update_stream_row(tx, &stream_clone, &lww)?;
-            self.ops_insert(
+            self.ops_insert_at(
                 tx,
                 &op_id,
                 &META_STREAM,
@@ -211,8 +226,10 @@ impl Engine {
                 None,
                 now_ms,
                 &[],
+                slot.epoch,
+                &slot.key,
             )?;
-            Ok(())
+            Ok(seq)
         })?;
         Ok(CommandResult::new(id, None, op_id, seq))
     }

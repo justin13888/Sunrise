@@ -23,7 +23,7 @@ Everybody has their own way to stay organized — Sunrise gives you simple, well
 
 Sunrise is split into a shared, deterministic **Rust core** and thin **client apps**. The core is isolated so it can be unit-tested deterministically in isolation; clients stay focused on presentation.
 
-- **Rust core** (`crates/`): a Cargo workspace of 23 crates covering domain, crypto, sync, storage, the sync relay server, the CLI, and the FFI seam. CI fails if any crate is unreachable from a shipping binary.
+- **Rust core** (`crates/`): a Cargo workspace of 24 crates covering domain, crypto, sync, storage, the sync relay server, the CLI, and the FFI seam. CI fails if any crate is unreachable from a shipping binary.
 - **Clients**: the `sunrise` CLI and the SwiftUI apps in `apps/apple`, which link the core through UniFFI (`crates/sunrise-core-bindings`). `apps/apple/Sunrise/` compiles into both products; `macOS/` and `iOS/` hold only the surfaces that do not cross — the menu bar, the global hotkey and the borderless capture panel on one side, the tab shell on the other. Both are built, linted `--strict` and tested in CI. Run either with `mise run macos-run` / `mise run ios-run`. `apps/web` is a deferred PWA stub. `packages/sunrise-ui-tokens` compiles the design tokens from TOML into CSS, TypeScript, Swift and Rust — both Apple targets compile the Swift one, so a stream's colour is now decided in one place for every client ([ADR-0029](docs/11-adr/0029-design-token-pipeline.md)).
 
 ### Project structure
@@ -198,31 +198,47 @@ cargo test -p sunrise-e2e     # relay convergence, pairing, four chaos scenarios
 
 #### 4. Live sync demo (server + two vaults)
 
-`sunrise` wires live sync through four optional env vars: `SUNRISE_SYNC_URL` starts the sync driver, `SUNRISE_EXPORT_PAIRING_FILE` / `SUNRISE_PAIRING_FILE` perform the dev two-file **pairing-payload** exchange that makes a second vault a second *device* on one account, and `SUNRISE_VAULT_ROOT` supplies a vault's at-rest key outright. All four unset = fully offline, with each vault on its own key.
+`sunrise` wires live sync through two optional env vars: `SUNRISE_SYNC_URL` starts the sync driver and `SUNRISE_VAULT_ROOT` supplies a vault's at-rest key outright. Both unset = fully offline, with each vault on its own key. Making a second vault a second *device* is `sunrise pair`, a real command rather than a variable.
 
-The **payload** is what makes this a demo of two *devices* rather than two accounts, and since [ADR-0024](docs/11-adr/0024-key-hierarchy.md) nothing else does. Sharing a vault root no longer suffices: each vault mints its own account identity and its Stream keys are random rather than derived, so two vaults on one root are two accounts holding the same at-rest key and neither can read the other's ops. The payload carries the identity and every Stream key, and it can only be adopted by a vault *being created* — the identity a vault belongs to is decided when it is created. So the order below matters: A must export before B first opens, and B's directory must not exist yet. Every vault otherwise gets its own random root, minted on first open and kept in the keystore (`SUNRISE_KEYSTORE`, default `$XDG_DATA_HOME/sunrise/keys`) — `SUNRISE_VAULT` names separate accounts, not separate folders.
+**Pairing** is what makes this a demo of two *devices* rather than two accounts, and since [ADR-0024](docs/11-adr/0024-key-hierarchy.md) nothing else does. Sharing a vault root no longer suffices: each vault mints its own account identity and its Stream keys are random rather than derived, so two vaults on one root are two accounts holding the same at-rest key and neither can read the other's ops.
+
+It takes three messages and four commands, because the account's Ed25519 signing key does **not** travel ([#105](https://github.com/justin13888/Sunrise/issues/105)). A `DeviceCert` names only its subject and carries only the account's signature, so any device holding that key could mint a valid certificate for any device id it invented — which is how a *revoked* device used to rejoin. The device holding the vault issues the joining device's certificate instead, and it cannot sign one for keys that device has not minted yet. Hence the round trip. The consequence is deliberate: **a device added by pairing cannot add another**, and neither can a device you revoke.
+
+B's directory must not exist yet: the account a vault belongs to is decided when it is created. Every vault otherwise gets its own random root, minted on first open and kept in the keystore (`SUNRISE_KEYSTORE`, default `$XDG_DATA_HOME/sunrise/keys`) — `SUNRISE_VAULT` names separate accounts, not separate folders.
 
 ```bash
 # Terminal 0 — run the self-host relay:
 cargo run -p sunrise-server
 # → "sunrise-server listening on 127.0.0.1:8443" (plain HTTP, in-memory store)
 
-# Terminal 1 — vault A writes something and exports its pairing payload:
-SUNRISE_VAULT=/tmp/vault-a \
-SUNRISE_SYNC_URL=http://127.0.0.1:8443 \
-SUNRISE_EXPORT_PAIRING_FILE=/tmp/a.pairing \
-cargo run -p sunrise-cli -- capture 'Written on A'
+# Terminal 1 — vault A writes something, then offers to add a device:
+SUNRISE_VAULT=/tmp/vault-a cargo run -p sunrise-cli -- capture 'Written on A'
+SUNRISE_VAULT=/tmp/vault-a cargo run -p sunrise-cli -- pair offer --out /tmp/offer.cbor
 
-# Terminal 2 — vault B joins A's account by adopting that payload:
-SUNRISE_VAULT=/tmp/vault-b \
-SUNRISE_SYNC_URL=http://127.0.0.1:8443 \
-SUNRISE_PAIRING_FILE=/tmp/a.pairing \
-cargo run -p sunrise-cli -- today
+# Terminal 2 — vault B mints its own device keys and asks to be certified:
+SUNRISE_VAULT=/tmp/vault-b cargo run -p sunrise-cli -- \
+  pair request --offer /tmp/offer.cbor --out /tmp/request.cbor
+
+# Terminal 1 — A certifies those keys and hands over the vault.
+#              This file carries your vault key; the first two did not.
+SUNRISE_VAULT=/tmp/vault-a cargo run -p sunrise-cli -- \
+  pair issue --request /tmp/request.cbor --out /tmp/grant.cbor
+
+# Terminal 2 — B adopts the certificate and opens its vault for the first time:
+SUNRISE_VAULT=/tmp/vault-b cargo run -p sunrise-cli -- \
+  pair accept --response /tmp/grant.cbor
+
+# Both are now devices on one account. Sync them:
+SUNRISE_VAULT=/tmp/vault-a SUNRISE_SYNC_URL=http://127.0.0.1:8443 \
+  cargo run -p sunrise-cli -- sync --once
+SUNRISE_VAULT=/tmp/vault-b SUNRISE_SYNC_URL=http://127.0.0.1:8443 \
+  cargo run -p sunrise-cli -- sync --once
+SUNRISE_VAULT=/tmp/vault-b cargo run -p sunrise-cli -- today
 ```
 
 > Upgrading from a build before per-vault keys? Every vault was written under one constant then, so this build refuses such a vault rather than guessing it — and the refusal quotes the old root, which opens it once so the work can be moved. `sunrise vaults` lists what this machine holds keys for.
 
-The payload exchange is one-directional and one-shot: A exports, B joins on the open that creates it. A vault that already exists ignores the file — there is no identity left to decide — so if B was created first, delete `/tmp/vault-b` and run it again. `sunrise sync --once` drains the outbox and exits, bounded — a scheduled job that hangs because the relay is down is worse than one that fails. The same flow is proven headlessly by `cargo test -p sunrise-cli --test live_sync` and, more thoroughly (offline catch-up, LWW conflicts, routine dedup), by:
+Each step prints the next one, so the sequence is discoverable from the first command. `pair request` parks B's freshly minted device keys in `/tmp/vault-b/pending-pairing` (mode 0600) because its two steps are two processes; `pair accept` consumes and deletes them. If B's directory already holds a vault the exchange refuses it — there is no account left to decide — so delete `/tmp/vault-b` and start again. The old `SUNRISE_EXPORT_PAIRING_FILE` / `SUNRISE_PAIRING_FILE` variables are **gone**: the single file they moved was the whole account including the signing key, which is exactly what stopped travelling. `sunrise sync --once` drains the outbox and exits, bounded — a scheduled job that hangs because the relay is down is worse than one that fails. The same flow is proven headlessly by `cargo test -p sunrise-cli --test live_sync` and, more thoroughly (offline catch-up, LWW conflicts, routine dedup), by:
 
 ```bash
 cargo test -p sunrise-e2e --test two_core_relay_convergence -- --nocapture

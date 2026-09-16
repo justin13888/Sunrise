@@ -32,9 +32,9 @@
 //! [`AttachError::BytesNotHere`] rather than pretending, so a client can say so.
 //!
 //! "Chosen not to fetch" is a decision with a way out of it, which is the part
-//! issue #227 reported missing. [`Core::fetch_attachment`] in
-//! [`crate::blob_fetch`] asks for one named attachment whatever its size, and
-//! is what a client's "Download" button calls.
+//! issue #227 reported missing. [`Core::fetch_attachment`], in this crate's
+//! private `blob_fetch` module, asks for one named attachment whatever its
+//! size, and is what a client's "Download" button calls.
 
 use crate::commands::Command;
 use crate::core::{Core, CoreError};

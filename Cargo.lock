@@ -2770,6 +2770,7 @@ dependencies = [
  "sunrise-pairing",
  "sunrise-storage",
  "sunrise-sync",
+ "sunrise-test-seed",
  "sunrise-wire-protocol",
  "tempfile",
  "thiserror 1.0.69",
@@ -2825,6 +2826,7 @@ dependencies = [
  "sunrise-crypto-test-vectors",
  "sunrise-error",
  "sunrise-id",
+ "sunrise-test-seed",
  "thiserror 1.0.69",
  "x25519-dalek",
  "zeroize",
@@ -2848,6 +2850,7 @@ dependencies = [
  "sunrise-cbor",
  "sunrise-error",
  "sunrise-id",
+ "sunrise-test-seed",
  "thiserror 1.0.69",
 ]
 
@@ -2875,6 +2878,7 @@ dependencies = [
  "sunrise-relay-client",
  "sunrise-server",
  "sunrise-sync",
+ "sunrise-test-seed",
  "sunrise-wire-protocol",
  "tempfile",
  "tokio",
@@ -2939,6 +2943,7 @@ dependencies = [
  "parking_lot",
  "proptest",
  "serde_json",
+ "sunrise-test-seed",
  "thiserror 1.0.69",
  "tracing",
  "tracing-subscriber",
@@ -3071,6 +3076,13 @@ dependencies = [
  "sunrise-wire-protocol",
  "thiserror 1.0.69",
  "tokio",
+]
+
+[[package]]
+name = "sunrise-test-seed"
+version = "0.1.0"
+dependencies = [
+ "proptest",
 ]
 
 [[package]]

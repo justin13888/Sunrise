@@ -11,7 +11,7 @@ status: accepted
 | This spec says | The tree today |
 |---|---|
 | `device_id = ULID()`, rendered `"dev_" \|\| crockford_base32(…)` | `device_id = BLAKE3.derive_key("sunrise.device_id.v1", D_S_pub)[..16]` — `device_id_from_pub` in `crates/sunrise-core/src/keychain/device.rs`. No ULID, no timestamp prefix, no `dev_` prefix. The relay mints a *separate* id for its own `devices` row (`Store::register_device` → `mint_id`, bare Crockford base-32, no prefix). |
-| `vault_root = BLAKE3.derive_key("sunrise.vault_root.v1", unlock_secret \|\| device_salt)`, one per device | The vault root is **32 random bytes per account**, minted once and stored: `apps/macos/Sunrise/Identity/VaultRootStore.swift` writes it to the login Keychain; the CLI writes `<keystore>/<id>.key` at mode 0600 (`crates/sunrise-cli/src/vault.rs`). There is no `device.toml`, no `device_salt`, and **no Argon2id anywhere on the unlock path** — `argon2` is a dependency of `sunrise-crypto` for the recovery blob alone. The `Unlock::{Passphrase, DevicePaired, RecoveryCode}` variants in `crates/sunrise-core/src/unlock.rs` all carry an already-materialized `VaultRootKey`; no caller derives one. |
+| `vault_root = BLAKE3.derive_key("sunrise.vault_root.v1", unlock_secret \|\| device_salt)`, one per device | The vault root is **32 random bytes per account**, minted once and stored: `apps/apple/Sunrise/Identity/VaultRootStore.swift` writes it to the login Keychain; the CLI writes `<keystore>/<id>.key` at mode 0600 (`crates/sunrise-cli/src/vault.rs`). There is no `device.toml`, no `device_salt`, and **no Argon2id anywhere on the unlock path** — `argon2` is a dependency of `sunrise-crypto` for the recovery blob alone. The `Unlock::{Passphrase, DevicePaired, RecoveryCode}` variants in `crates/sunrise-core/src/unlock.rs` all carry an already-materialized `VaultRootKey`; no caller derives one. |
 | Path switch (keystore ⇄ passphrase) re-wraps every Stream key | Not implemented. There is no second unlock path to switch to, and no `path_switch_in_progress` marker. |
 | Public-key publication and the identity fingerprint | `POST /api/v1/accounts` requires and stores `identity_signing_pub` / `identity_dh_pub` (`crates/sunrise-server/src/api/accounts.rs` — an empty value for either is a `400 VALIDATION_INVALID`), and clients now send real keys. `AccountCreateRequest` has one producer, `sunrise bootstrap`, whose `bootstrap_account` (`crates/sunrise-cli/src/main.rs`) fills both fields from `Core::identity_signing_pub` / `identity_dh_pub` — the account identity keypair [ADR-0024](../11-adr/0024-key-hierarchy.md) added, which `LocalKeychain` holds and persists in the `identity` table. `crates/sunrise-e2e/tests/recovery_blob_round_trip.rs` drives that request end to end and asserts the account and the device register, so the route accepts it. What remains missing is the other half: there is still no identity-key-bundle lookup and no fingerprint UI, so a key is published but nothing reads one back. |
 
@@ -19,7 +19,25 @@ What has closed, and where to look:
 
 - **DeviceCerts are identity-signed.** `DeviceCert::issue` takes an `&IdentitySigningKeyPair`, `verify_binding` checks in constant time that the cert's `identity_id` is the one derived from the `ID_S_pub` it verified under, and a device becomes known to a replica by publishing that cert as a `device_cert` op — self-authenticating, so `Command::TrustDevice` is gone rather than replaced.
 - **Stream keys are generated, not derived.** 32 random bytes per `(stream_id, epoch)`, wrapped under the vault root in `stream_keys`, keyed by `(stream_id, epoch, key_id)` so two devices minting the same epoch concurrently both keep their key. `Keychain::open` reads that table; nothing derives on the read path. A vault written before migration `0017` is adopted once on open, its pre-hierarchy keys recomputed and filed at epoch 1 with `source = 'legacy'`.
-- **The identity is an anchor with keys.** `ID_S_priv` and `ID_D_priv` are minted at account creation, wrapped under the vault root in the `identity` row, and carried to each new device by the pairing payload. `ID_D_priv` opens the identity-sealed half of every `key_envelope`, which is what makes [`recovery.md`](./recovery.md) restore readable content. The identity is **replaceable**: a rotation mints a successor and retires the predecessor, so the anchor that does not move is `genesis_identity_id` rather than the identity in force. See [`key-rotation.md`](./key-rotation.md) §Identity rotation and [ADR-0037](../11-adr/0037-identity-transition.md).
+- **The identity is an anchor with keys, and they live on one device.** `ID_S_priv` and `ID_D_priv` are minted at account creation and wrapped under the vault root in the `identity` row of the device that created it. **Neither travels to another device.** `ID_D_priv` opens the identity-sealed half of every `key_envelope`, which is what makes [`recovery.md`](./recovery.md) restore readable content, and it stopped travelling in [#76](https://github.com/justin13888/Sunrise/issues/76); `ID_S_priv` signs every `DeviceCert`, and it stopped travelling in [#105](https://github.com/justin13888/Sunrise/issues/105). The identity is **replaceable**: a rotation mints a successor and retires the predecessor, so the anchor that does not move is `genesis_identity_id` rather than the identity in force. See [`key-rotation.md`](./key-rotation.md) §Identity rotation and [ADR-0037](../11-adr/0037-identity-transition.md).
+
+### Who holds `ID_S_priv`, and what follows
+
+One device per account: the one it was created on, or one restored from the recovery code. Every device admitted by pairing holds `ID_S_pub` and nothing more — `Keychain`'s `IdentitySigningKey` is `Held` on the first and `PublicOnly` on the rest, and at rest the difference is an empty `identity.id_s_priv_wrapped`.
+
+This is not a convenience. A `DeviceCert` names only its *subject* — `device_id`, `d_s_pub`, `d_d_pub`, `identity_id` — and carries one signature, the identity's. So a device holding `ID_S_priv` can mint a genuinely valid cert for **any device id it invents**, including one the revocation register has never heard of, and there is no narrower check available: both signatures on such a cert belong to the party producing it, so nothing about it attributes it to the device that signed.
+
+Three operations therefore work on the account's creator and nowhere else, and each returns `KeychainError::IdentitySigningKeyAbsent` on any other device:
+
+| Operation | Why it needs `ID_S_priv` |
+|---|---|
+| Sponsoring a pairing (`Keychain::issue_pairing_grant`) | The joining device's `DeviceCert` is signed here. |
+| Rotating the identity (`Keychain::sign_transition`) | A transition's `prev_sig` is the *outgoing* identity's statement that it hands over. |
+| Sealing a recovery blob (`Keychain::seal_recovery_blob`) | The blob restores both private halves or it is not a recovery. |
+
+The cost is stated where a user meets it: `sunrise identity status` prints a `pairing` line, the Apple clients disable "Add a device…" and say why, and `Engine::revoke_device` logs `core.identity.rotation_unavailable` when a revocation cannot rotate. The benefit is the one thing revocation could not previously buy: a device you removed cannot let itself back in, and that stays true for the second device you remove and the third.
+
+A rotation moves the key to nobody. `Keychain::seal_successor_device_share` seals the successor's `ID_S_pub` to each survivor — the share is a roster signal, not a capability — except the one addressed to the emitting device, which minted the successor and already holds the outgoing key. Without that rule the first revocation after any pairing would hand the paired device the key its pairing withheld.
 
 ## Identity
 
@@ -27,7 +45,7 @@ A user has **exactly one** Identity. The identity is the cryptographic anchor: l
 
 Two keypairs:
 
-- **Identity signing key** (Ed25519) — `ID_S_pub` (32 B), `ID_S_priv` (32 B seed).
+- **Identity signing key** (Ed25519) — `ID_S_pub` (32 B), `ID_S_priv` (32 B seed). Held by one device; see §Who holds `ID_S_priv`.
 - **Identity DH key** (X25519) — `ID_D_pub` (32 B), `ID_D_priv` (32 B).
 
 The two private halves are independent (NOT derived from each other or a shared seed), to keep the algorithms separable for any future rotation.
@@ -78,11 +96,27 @@ DeviceCertBody = {
 }
 
 DeviceCert = {
-    body: DeviceCertBody,
-    sig:  bstr .size 64,         ; Ed25519_sign(ID_S_priv,
-                                  ;   "sunrise.device_cert.v1" || BLAKE3(canonical_cbor(body), 32))
+    1: bstr,                     ; body_bytes = the encoded DeviceCertBody
+    2: bstr .size 64,            ; Ed25519_sign(ID_S_priv,
+                                  ;   "sunrise.device_cert.v1" || BLAKE3(body_bytes, 32))
 }
 ```
+
+**The body travels as a byte string, not as a nested map, and the signature
+covers those bytes.** A verifier MUST hash the `body_bytes` it received. It MUST
+NOT parse the body and re-encode it to reconstruct the signature input: any
+asymmetry between a decoder and an encoder — key order, non-minimal integers, an
+unknown field dropped on parse — is otherwise a verification gap, because two
+different byte strings then satisfy one signature while `roster_digest` and the
+`devices.cert_blob` column continue to treat them as different certs. This is
+the same construction COSE uses for its protected header.
+
+A reader MUST refuse trailing bytes both after the outer map and inside
+`body_bytes`, so that "these bytes" and "this cert" name the same thing.
+
+Canonicity of the body's interior is deliberately **not** enforced, here or
+anywhere else in the format. It no longer needs to be: a non-canonical body is
+simply a different byte string, signed on its own merits or not at all.
 
 Verification of a device's authority to act as part of an identity requires:
 

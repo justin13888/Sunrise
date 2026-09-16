@@ -46,8 +46,6 @@ fn run(vault: &Path, args: &[&str]) -> Output {
         // Keep the relay out of it: subcommands are one-shot and offline.
         .env_remove("SUNRISE_SYNC_URL")
         .env_remove("SUNRISE_VAULT_ROOT")
-        .env_remove("SUNRISE_EXPORT_PAIRING_FILE")
-        .env_remove("SUNRISE_PAIRING_FILE")
         .output()
         .expect("run sunrise")
 }
@@ -190,10 +188,12 @@ fn repeated_runs_reacquire_the_vault_lock() {
     assert_eq!(stdout(&run(dir.path(), &["inbox"])).lines().count(), 5);
 }
 
-/// `docs/07-clients/tui.md` §Capture from anywhere names `sunrise focus next`
-/// as a first-class surface. The picks must be the *core's* ranking, not a
-/// re-sort in the CLI: "what should I do next" has to give the same answer in
-/// the terminal and in the TUI, or one of them is lying.
+/// `docs/07-clients/parity-matrix.md` makes Focus mode (`next`, `focus <id>`)
+/// a CLI MUST. The TUI spec that first named `sunrise focus next` as a
+/// first-class surface went with the TUI under ADR-0019; the requirement did
+/// not. The picks must be the *core's* ranking, not a re-sort in the CLI:
+/// "what should I do next" has to give the same answer in every client, or one
+/// of them is lying.
 #[test]
 fn next_ranks_by_leverage_and_focus_next_opens_a_session() {
     let dir = tempfile::tempdir().unwrap();
@@ -295,6 +295,7 @@ async fn edit_moves_a_task_between_streams_and_tags_it() {
             "0.1.0+test",
             root_of(&vault),
             &SyncPlan::default(),
+            None,
         )
         .await
         .expect("open the vault");
@@ -650,8 +651,6 @@ fn a_pre_multi_account_vault_is_refused_but_the_quoted_root_opens_it() {
             )
             .env("SUNRISE_KEYSTORE", keystore(dir.path()))
             .env_remove("SUNRISE_SYNC_URL")
-            .env_remove("SUNRISE_EXPORT_PAIRING_FILE")
-            .env_remove("SUNRISE_PAIRING_FILE")
             .output()
             .expect("run sunrise")
     };
@@ -694,8 +693,6 @@ fn an_explicit_root_opens_a_vault_with_no_keystore_at_all() {
             .env("SUNRISE_VAULT_ROOT", &hex)
             .env("SUNRISE_KEYSTORE", keystore(dir.path()))
             .env_remove("SUNRISE_SYNC_URL")
-            .env_remove("SUNRISE_EXPORT_PAIRING_FILE")
-            .env_remove("SUNRISE_PAIRING_FILE")
             .output()
             .expect("run sunrise")
     };
@@ -912,6 +909,7 @@ async fn context_lists_the_tasks_carrying_it_across_streams() {
             "0.1.0+test",
             root_of(&vault),
             &SyncPlan::default(),
+            None,
         )
         .await
         .expect("open the vault");
@@ -988,101 +986,211 @@ fn id_of(o: &Output) -> String {
         .to_string()
 }
 
-/// `SUNRISE_EXPORT_PAIRING_FILE` is documented as writing this device's pairing
-/// payload "on startup", for every subcommand.
+/// **The CLI's whole pairing, against real files.**
 ///
-/// Regression: `run` used to open the vault with `SyncPlan::default()` and
-/// never build one from the environment, so the binary ignored all three
-/// pairing/relay variables. The unit tests for `plan_from_env` passed the whole
-/// time — nothing called it.
+/// Four commands across two vault directories, in the order a user runs them
+/// and with the files moved between them by nothing more than a path. This is
+/// the driver with no channel — the reason the protocol had to be
+/// transport-agnostic — so if the three messages work here they work anywhere.
+///
+/// It replaces `SUNRISE_EXPORT_PAIRING_FILE` and `SUNRISE_PAIRING_FILE`, which
+/// could not survive #105: they moved one file carrying the whole account
+/// including `ID_S_priv`, and withholding that key is what stops a revoked
+/// device certifying itself back in.
 #[test]
-fn a_subcommand_exports_this_devices_pairing_payload_when_asked() {
-    let dir = tempfile::tempdir().unwrap();
-    let payload = dir.path().join("device.pairing");
+fn the_four_pair_commands_make_a_second_vault_a_second_device() {
+    let sponsor = tempfile::tempdir().unwrap();
+    let joiner = tempfile::tempdir().unwrap();
+    let files = tempfile::tempdir().unwrap();
+    let offer = files.path().join("offer.cbor");
+    let request = files.path().join("request.cbor");
+    let grant = files.path().join("grant.cbor");
+    let (o, r, g) = (
+        offer.to_str().unwrap(),
+        request.to_str().unwrap(),
+        grant.to_str().unwrap(),
+    );
 
-    // Run under a permissive umask, so 0600 is a property of the write and not
-    // of the environment the test happened to inherit. Under umask 077 this
-    // assertion passes with the fix reverted, which is what it did before.
-    #[cfg(unix)]
-    let mut cmd = {
-        let mut c = Command::new("/bin/sh");
-        c.arg("-c").arg("umask 0; exec \"$0\" \"$@\"").arg(bin());
-        c
-    };
-    #[cfg(not(unix))]
-    let mut cmd = Command::new(bin());
+    // The sponsor has a vault with something in it, so the grant carries Stream
+    // keys rather than an empty map.
+    assert!(run(sponsor.path(), &["capture", "written before pairing"])
+        .status
+        .success());
 
-    let out = cmd
-        .args(["inbox"])
-        .env("SUNRISE_VAULT", dir.path())
-        .env("SUNRISE_KEYSTORE", keystore(dir.path()))
-        .env_remove("SUNRISE_VAULT_ROOT")
-        .env("SUNRISE_EXPORT_PAIRING_FILE", &payload)
-        .env_remove("SUNRISE_SYNC_URL")
-        .env_remove("SUNRISE_PAIRING_FILE")
-        .output()
-        .expect("run sunrise");
+    // 1. The offer.
+    let out = run(sponsor.path(), &["pair", "offer", "--out", o]);
+    assert!(out.status.success(), "pair offer failed: {out:?}");
+    assert!(
+        stdout(&out).contains("pair request"),
+        "each step says what to run next, or the user has to guess"
+    );
+    assert!(
+        !std::fs::read(&offer)
+            .expect("the offer was written")
+            .is_empty(),
+        "an empty offer is not an offer"
+    );
 
-    assert!(out.status.success(), "inbox failed: {out:?}");
-    let bytes = std::fs::read(&payload).expect("the payload must have been written");
-    assert!(!bytes.is_empty(), "an empty payload is not a payload");
-    // The payload is the whole account in the clear — `ID_S_priv`, the vault
-    // root and every Stream key — so it must not land at the process umask,
-    // which under the `umask 0` above would leave it 0666. (`ID_D_priv` is not
-    // among them: it never leaves the recovery blob, which is what makes a
-    // revoked device unable to open the identity copy of an envelope.)
+    // 2. The request, on a directory with no vault in it yet.
+    let out = run(
+        joiner.path(),
+        &["pair", "request", "--offer", o, "--out", r],
+    );
+    assert!(out.status.success(), "pair request failed: {out:?}");
+    assert!(
+        !joiner.path().join("vault.db").exists(),
+        "asking for a certificate must not create a vault: the account a vault belongs to is \
+         decided when it is created, and a vault created here could never join"
+    );
+    assert!(
+        joiner.path().join(sunrise_cli::pair::PENDING_FILE).exists(),
+        "the minted device keys are parked for `pair accept`, which is a second process"
+    );
+
+    // 3. The grant.
+    let out = run(
+        sponsor.path(),
+        &["pair", "issue", "--request", r, "--out", g],
+    );
+    assert!(out.status.success(), "pair issue failed: {out:?}");
+
+    // The grant is the one file worth stealing — the vault root and every
+    // Stream key — and it is the *third*, not the first. Under the old
+    // affordance the first file a vault wrote unprompted was the whole account.
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(&payload).unwrap().permissions().mode();
+        let mode = std::fs::metadata(&grant).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600, "mode was {:o}", mode & 0o777);
+        let pending = std::fs::metadata(joiner.path().join(sunrise_cli::pair::PENDING_FILE))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(
+            pending & 0o777,
+            0o600,
+            "the parked D_S_priv is a secret too, mode was {:o}",
+            pending & 0o777
+        );
     }
-    // stdout stays the contract: the demo banner goes to stderr.
+
+    // 4. Accept, which is the joiner's first open.
+    let out = run(joiner.path(), &["pair", "accept", "--response", g]);
+    assert!(out.status.success(), "pair accept failed: {out:?}");
+    assert!(stdout(&out).contains("joined the account"));
     assert!(
-        !stdout(&out).contains("exported pairing payload"),
-        "the startup banner must not pollute stdout"
+        !joiner.path().join(sunrise_cli::pair::PENDING_FILE).exists(),
+        "the parked device keys are consumed, so the secret does not outlive the pairing"
+    );
+
+    // The proof that it is one account and not two: both vaults name the same
+    // account identity. Two vaults that each minted their own would not — which
+    // is exactly what a shared vault root alone produces since ADR-0024.
+    let account_of = |dir: &std::path::Path| -> String {
+        stdout(&run(dir, &["identity", "status"]))
+            .lines()
+            .find_map(|l| l.strip_prefix("account").map(|v| v.trim().to_string()))
+            .unwrap_or_default()
+    };
+    let joined = account_of(joiner.path());
+    assert!(!joined.is_empty(), "the joiner reports an account identity");
+    assert_eq!(
+        joined,
+        account_of(sponsor.path()),
+        "both vaults must name the same account identity"
+    );
+
+    // ...and the joiner knows it cannot speak *for* that account, which is the
+    // asymmetry #105 introduced rather than a defect in the pairing.
+    let status = stdout(&run(joiner.path(), &["identity", "status"]));
+    assert!(
+        status.contains("speaks for the account"),
+        "a paired device is still current under the identity, got {status:?}"
     );
 }
 
-/// A pairing payload named in the environment is adopted at startup, so the
-/// two-replica walkthrough works from the binary and not only from the
-/// library.
+/// A device added by pairing holds the account's public identity and no signing
+/// key, so it cannot certify a third device. It says so rather than producing a
+/// grant nobody can use.
 ///
-/// It replaces the old cert-file exchange: since ADR-0024 two vaults sharing a
-/// root are two separate accounts, and joining one means adopting its identity
-/// and Stream keys when the vault is created.
+/// This is the cost of #105 stated where a user meets it, and the reason it is
+/// acceptable: the same absence is what stops a *revoked* device minting itself
+/// a fresh device id and rejoining.
 #[test]
-fn a_subcommand_adopts_a_pairing_payload_when_asked() {
-    let peer = tempfile::tempdir().unwrap();
-    let peer_payload = peer.path().join("peer.pairing");
-    let out = Command::new(bin())
-        .args(["inbox"])
-        .env("SUNRISE_VAULT", peer.path())
-        .env("SUNRISE_KEYSTORE", keystore(peer.path()))
-        .env_remove("SUNRISE_VAULT_ROOT")
-        .env("SUNRISE_EXPORT_PAIRING_FILE", &peer_payload)
-        .env_remove("SUNRISE_SYNC_URL")
-        .output()
-        .expect("run sunrise");
-    assert!(out.status.success(), "peer setup failed: {out:?}");
+fn a_vault_added_by_pairing_refuses_to_sponsor_another() {
+    let sponsor = tempfile::tempdir().unwrap();
+    let joiner = tempfile::tempdir().unwrap();
+    let files = tempfile::tempdir().unwrap();
+    let offer = files.path().join("offer.cbor");
+    let request = files.path().join("request.cbor");
+    let grant = files.path().join("grant.cbor");
+    let (o, r, g) = (
+        offer.to_str().unwrap(),
+        request.to_str().unwrap(),
+        grant.to_str().unwrap(),
+    );
 
-    let dir = tempfile::tempdir().unwrap();
-    let out = Command::new(bin())
-        .args(["inbox"])
-        .env("SUNRISE_VAULT", dir.path())
-        .env("SUNRISE_KEYSTORE", keystore(dir.path()))
-        .env_remove("SUNRISE_VAULT_ROOT")
-        .env("SUNRISE_PAIRING_FILE", &peer_payload)
-        .env_remove("SUNRISE_SYNC_URL")
-        .env_remove("SUNRISE_EXPORT_PAIRING_FILE")
-        .output()
-        .expect("run sunrise");
+    assert!(run(sponsor.path(), &["pair", "offer", "--out", o])
+        .status
+        .success());
+    assert!(run(
+        joiner.path(),
+        &["pair", "request", "--offer", o, "--out", r]
+    )
+    .status
+    .success());
+    assert!(run(
+        sponsor.path(),
+        &["pair", "issue", "--request", r, "--out", g]
+    )
+    .status
+    .success());
+    assert!(run(joiner.path(), &["pair", "accept", "--response", g])
+        .status
+        .success());
 
-    assert!(out.status.success(), "adoption failed: {out:?}");
-    let banner = String::from_utf8_lossy(&out.stderr);
+    let second = files.path().join("second-offer.cbor");
+    let out = run(
+        joiner.path(),
+        &["pair", "offer", "--out", second.to_str().unwrap()],
+    );
     assert!(
-        banner.contains("adopted pairing payload"),
-        "the pairing payload was not adopted, stderr was {banner:?}"
+        !out.status.success(),
+        "a paired vault must refuse to sponsor"
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("added by pairing"),
+        "the refusal must explain itself, stderr was {err:?}"
+    );
+    assert!(
+        !second.exists(),
+        "and must not leave a half-written offer behind"
+    );
+}
+
+/// `pair accept` with nothing parked is a refusal that names the missing step,
+/// not a panic and not a vault keyed by somebody else's root.
+#[test]
+fn accepting_without_having_asked_says_which_step_was_skipped() {
+    let dir = tempfile::tempdir().unwrap();
+    let files = tempfile::tempdir().unwrap();
+    let fake = files.path().join("grant.cbor");
+    std::fs::write(&fake, b"not a grant").unwrap();
+
+    let out = run(
+        dir.path(),
+        &["pair", "accept", "--response", fake.to_str().unwrap()],
+    );
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("pair request"),
+        "the error must name the step that was skipped, stderr was {err:?}"
+    );
+    assert!(
+        !dir.path().join("vault.db").exists(),
+        "a failed accept must not leave a vault behind"
     );
 }
 
@@ -1185,8 +1293,6 @@ fn ical_import_reads_stdin() {
         .env("SUNRISE_KEYSTORE", keystore(dir.path()))
         .env_remove("SUNRISE_VAULT_ROOT")
         .env_remove("SUNRISE_SYNC_URL")
-        .env_remove("SUNRISE_EXPORT_PAIRING_FILE")
-        .env_remove("SUNRISE_PAIRING_FILE")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -1358,6 +1464,7 @@ async fn streams_move_reorders_the_list_and_persists_it() {
             "0.1.0+test",
             root_of(&vault),
             &SyncPlan::default(),
+            None,
         )
         .await
         .expect("open the vault");

@@ -186,8 +186,8 @@ impl Core {
     /// This is the route past `AUTO_FETCH_MAX_BYTES` that
     /// `docs/02-domain/attachments.md` §Lazy fetch's "Download" button needs.
     /// It returns when the chunks are on this device, when a client calls
-    /// [`Core::cancel_attachment_fetch`], or when the relay has refused
-    /// [`MAX_FETCH_ATTEMPTS`] times — not on a timer, because the caller
+    /// [`Core::cancel_attachment_fetch`], or when the relay has refused it
+    /// `MAX_FETCH_ATTEMPTS` times — not on a timer, because the caller
     /// already has the better instrument: a Cancel button the user is looking
     /// at.
     ///
