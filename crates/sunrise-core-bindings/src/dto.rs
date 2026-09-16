@@ -42,7 +42,7 @@ use sunrise_domain::{
     StreamReviewCadence, StreamTrend, SunriseTime, Task, TaskState, TaskTemplate, TimeOfDayRange,
     Trends, UnblockCascade, WeekBucket, Weekday, WeeklyReview,
 };
-use sunrise_id::EntityRef;
+use sunrise_id::{EntityKind, EntityRef};
 
 /// Monday-first, matching how the domain orders a weekday set.
 const ALL_WEEKDAYS: [Weekday; 7] = [
@@ -2415,7 +2415,20 @@ impl From<&ContextRow> for ContextListRow {
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct DeviceListRow {
     /// Device id, lowercase hex.
+    ///
+    /// The form a user reads and a CLI resolves a prefix against. **Not** the
+    /// form `CoreCommand::RevokeDevice` takes — see [`Self::device_ref`], which
+    /// is here because a client that could only list devices in hex could not
+    /// revoke one without reimplementing Crockford base32 in Swift.
     pub device_id: String,
+    /// The same device as an `EntityRef` string, `dev_…`.
+    ///
+    /// What `CoreCommand::RevokeDevice` wants, so a device list can act on a
+    /// row it is showing. Both forms are carried rather than one converted,
+    /// because the two are read by different audiences: the hex is what
+    /// `sunrise devices` prints and what a user retypes a prefix of, and this
+    /// is an opaque token a client passes straight back.
+    pub device_ref: String,
     /// Human-readable nickname.
     pub nickname: String,
     /// Platform string.
@@ -2458,6 +2471,7 @@ impl From<&DeviceRow> for DeviceListRow {
         } = d;
         Self {
             device_id: hex16(device_id),
+            device_ref: EntityRef::new(EntityKind::Device, *device_id).to_str(),
             nickname: nickname.clone(),
             platform: platform.clone(),
             revoked: *revoked,

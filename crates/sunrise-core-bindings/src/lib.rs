@@ -826,6 +826,35 @@ impl SunriseCore {
         self.inner.holds_identity_key()
     }
 
+    /// Whether a revocation of `device` is still owed to the relay.
+    ///
+    /// The other half of what a client must say after `RevokeDevice`, and the
+    /// half a user actually asked for. The vault half is committed the moment
+    /// the command returns; the relay half is a durable intent that needs a
+    /// session, so a client that reported only the first would let someone with
+    /// no network believe a stolen laptop had been cut off from the server
+    /// ([#160](https://github.com/justin13888/Sunrise/issues/160)).
+    ///
+    /// `sunrise device revoke` has printed both since #160. This is what lets
+    /// the Apple device list do the same rather than reintroducing the
+    /// disclosure failure on a second client.
+    ///
+    /// # Errors
+    /// [`BindingError::BadId`] when `device` is not a `dev_` reference, and
+    /// [`BindingError::Core`] on a storage failure.
+    pub fn relay_revocation_pending(
+        &self,
+        device: sunrise_id::EntityRef,
+    ) -> Result<bool, BindingError> {
+        if device.kind() != sunrise_id::EntityKind::Device {
+            return Err(BindingError::BadId {
+                id: device.to_str(),
+                cause: "expected a device reference".into(),
+            });
+        }
+        Ok(self.inner.relay_revocation_pending(device.bytes())?)
+    }
+
     /// Seal this account's identity keys into a recovery blob under a
     /// caller-supplied 32-byte seed.
     ///

@@ -3,10 +3,10 @@ import Foundation
 /// Every view model an open vault needs, built once against one bridge.
 ///
 /// Extracted so the two shells are only a *layout* apart. `VaultWindow` on
-/// macOS and `VaultTabs` on iOS present the same eleven models in a sidebar
+/// macOS and `VaultTabs` on iOS present the same twelve models in a sidebar
 /// and in a tab bar respectively; without this they would each declare the
-/// same eleven `@State` properties and the same eleven constructions, and the
-/// day a twelfth model arrived one of them would quietly not get it.
+/// same twelve `@State` properties and the same twelve constructions, and the
+/// day a thirteenth model arrived one of them would quietly not get it.
 ///
 /// A class rather than a struct of `@State`s: the models are reference types
 /// with their own observation, the shells hold this in a single `@State`, and
@@ -26,6 +26,9 @@ final class VaultModels {
     let morning: MorningSummaryModel
     let evening: EndOfDayPlanModel
     let undo: UndoModel
+    /// What has access to this account, and the three signals about it that
+    /// reached no user before #144.
+    let devices: DeviceListModel
 
     /// Per-device and vault-independent, so they are built here too rather
     /// than by each shell: settings, the signed-in account, the sync banner
@@ -51,6 +54,7 @@ final class VaultModels {
         morning = MorningSummaryModel(bridge: bridge)
         evening = EndOfDayPlanModel(bridge: bridge)
         undo = UndoModel(bridge: bridge)
+        devices = DeviceListModel(bridge: bridge)
     }
 }
 

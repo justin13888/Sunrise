@@ -2193,6 +2193,24 @@ async fn every_device_row_carries_the_readmission_signal() {
         !me.admitted_after_revocation,
         "a vault that founded its own account revoked nothing before it existed"
     );
+    // The row carries an id `RevokeDevice` will actually take. Without this a
+    // client could list its devices and revoke none of them: `device_id` is
+    // hex and the command wants an `EntityRef`, and converting between them in
+    // Swift means reimplementing Crockford base32 against a Rust encoder.
+    assert!(me.device_ref.starts_with("dev_"), "got {:?}", me.device_ref);
+    let parsed = sunrise_id::EntityRef::parse_any(&me.device_ref)
+        .expect("the row's `device_ref` is what `RevokeDevice` parses");
+    assert_eq!(parsed.kind(), sunrise_id::EntityKind::Device);
+    assert_eq!(
+        parsed.bytes().iter().fold(String::new(), |mut acc, b| {
+            use std::fmt::Write as _;
+            let _ = write!(acc, "{b:02x}");
+            acc
+        }),
+        me.device_id,
+        "the two forms must name the same device, or a client would revoke \
+         whatever the other one points at"
+    );
 }
 
 // ---- recovery (#181) ------------------------------------------------------
