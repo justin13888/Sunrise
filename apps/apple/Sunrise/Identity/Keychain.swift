@@ -44,6 +44,25 @@ struct KeychainItem: Sendable {
     /// defaulted: whether a secret may travel in a backup is a decision each
     /// caller has to take, and a default is how one gets taken by accident.
     let accessibility: KeychainAccessibility
+    /// Which keychain the item is addressed to. Required for the same reason
+    /// `accessibility` is, and with sharper teeth: the two domains are two
+    /// different stores on macOS, so a defaulted one is how an item silently
+    /// stops being where the last build put it. ``KeychainMigration`` is what
+    /// moves an existing item between them.
+    let domain: KeychainDomain
+
+    /// The `kSecClass`, service, account and domain every query below starts
+    /// from. Collected in one place so the domain cannot be applied to three
+    /// of the four operations.
+    private var baseQuery: [String: Any] {
+        var query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account
+        ]
+        domain.apply(to: &query)
+        return query
+    }
 
     /// The stored bytes, or `nil` when there is no such item.
     ///
@@ -52,13 +71,9 @@ struct KeychainItem: Sendable {
     /// key exists and cannot be reached right now. Treating the second as the
     /// first would generate a new root and orphan the existing vault.
     func read() throws -> Data? {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne
-        ]
+        var query = baseQuery
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
         var item: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &item)
         switch status {
@@ -74,11 +89,7 @@ struct KeychainItem: Sendable {
 
     /// Store `data`, replacing any existing value.
     func write(_ data: Data) throws {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account
-        ]
+        let query = baseQuery
         // The protection class rides along on the update, not only on the
         // insert: `SecItemUpdate` changes exactly the attributes it is handed,
         // so an item added by an older build would otherwise keep that build's
@@ -113,11 +124,7 @@ struct KeychainItem: Sendable {
     /// still uses: it accepts the attribute on add, stores nothing, and
     /// reports nothing back. There is no class there to raise or lower.
     func upgradeAccessibilityIfNeeded() throws {
-        let match: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account
-        ]
+        let match = baseQuery
         var query = match
         query[kSecReturnAttributes as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
@@ -152,12 +159,7 @@ struct KeychainItem: Sendable {
 
     /// Remove the item. Succeeds when there is nothing to remove.
     func delete() throws {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account
-        ]
-        let status = SecItemDelete(query as CFDictionary)
+        let status = SecItemDelete(baseQuery as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else {
             throw KeychainError.unexpected(status)
         }
@@ -176,6 +178,17 @@ enum KeychainError: Error, Equatable {
     /// `unexpected` because the secret is readable and the *guarantee* is
     /// what failed, which is what a support reader needs to be told.
     case accessibilityNotRaised(OSStatus)
+    /// A ``KeychainMigration`` found a secret already sitting at its
+    /// destination whose bytes are **not** the source's, so two different
+    /// secrets claim one `(service, account)` and nothing here can tell which
+    /// one the vault was sealed with. Carries no status code because no
+    /// `Security.framework` call failed: both reads succeeded and disagreed.
+    ///
+    /// This is the one migration failure that refuses the load. Every other
+    /// one falls back to the source item, which is still readable and still
+    /// correct — locking a user out over a destination problem would be a
+    /// strictly worse trade than the one ``accessibilityNotRaised(_:)`` takes.
+    case migrationUnverified
 }
 
 extension KeychainError: LocalizedError {
@@ -194,6 +207,10 @@ extension KeychainError: LocalizedError {
                 + "class and the Keychain would not change it: "
                 + (SecCopyErrorMessageString(status, nil) as String?
                     ?? "Keychain error \(status).")
+        case .migrationUnverified:
+            "Two different secrets are stored under the same Keychain name, so "
+                + "this app cannot tell which one belongs to your vault. "
+                + "Nothing has been deleted."
         }
     }
 }

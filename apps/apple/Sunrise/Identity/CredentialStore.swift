@@ -99,12 +99,23 @@ struct KeychainCredentialStore: CredentialStore {
     static let accessibility = KeychainAccessibility.afterFirstUnlockThisDeviceOnly
 
     private let item: KeychainItem
+    private let migration: KeychainMigration
 
     init(account: String = "default") {
         item = KeychainItem(
             service: Self.service,
             account: account,
-            accessibility: Self.accessibility
+            accessibility: Self.accessibility,
+            domain: KeychainDomain.current
+        )
+        migration = KeychainMigration(
+            source: KeychainItem(
+                service: Self.service,
+                account: account,
+                accessibility: Self.accessibility,
+                domain: .login
+            ),
+            destination: item
         )
     }
 
@@ -121,6 +132,11 @@ struct KeychainCredentialStore: CredentialStore {
         // failure for a session — unlike the vault root, nothing is lost —
         // and it is strictly better than handing back a token that is still in
         // the backup-bearing class.
+        //
+        // The move between keychains comes first, for the reason
+        // `KeychainVaultRootStore.load` gives: the class only starts meaning
+        // anything once the item is in a keychain that implements one.
+        try migration.run()
         try item.upgradeAccessibilityIfNeeded()
         guard let data = try item.read() else { return nil }
         // A token written by an older build that cannot be decoded is treated

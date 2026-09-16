@@ -41,16 +41,34 @@ struct KeychainVaultRootStore: VaultRootStore {
     static let accessibility = KeychainAccessibility.afterFirstUnlockThisDeviceOnly
 
     private let item: KeychainItem
+    private let migration: KeychainMigration
 
     init(vaultName: String = "default") {
         item = KeychainItem(
             service: Self.service,
             account: vaultName,
-            accessibility: Self.accessibility
+            accessibility: Self.accessibility,
+            domain: KeychainDomain.current
+        )
+        migration = KeychainMigration(
+            source: KeychainItem(
+                service: Self.service,
+                account: vaultName,
+                accessibility: Self.accessibility,
+                domain: .login
+            ),
+            destination: item
         )
     }
 
     func load() throws -> Data? {
+        // The order of these two is load-bearing: move the item to the keychain
+        // this build addresses, *then* raise the class it is stored under.
+        // Raising first would raise the class of an item that is about to be
+        // replaced by a copy, and on the login keychain the raise is inert
+        // anyway — the class only starts meaning something once the item has
+        // arrived somewhere that implements one.
+        try migration.run()
         // Before the read, because an installation that predates the class
         // above still holds its root under the older one and nothing else on
         // this path would ever rewrite it.

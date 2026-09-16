@@ -68,6 +68,7 @@ struct KeychainRelayDeviceIDStore: RelayDeviceIDStore {
     static let accessibility = KeychainAccessibility.afterFirstUnlockThisDeviceOnly
 
     private let item: KeychainItem
+    private let migration: KeychainMigration
 
     /// Per vault, like `KeychainVaultRootStore`: two vaults are two accounts at
     /// the relay and therefore two device rows.
@@ -75,11 +76,27 @@ struct KeychainRelayDeviceIDStore: RelayDeviceIDStore {
         item = KeychainItem(
             service: Self.service,
             account: vaultName,
-            accessibility: Self.accessibility
+            accessibility: Self.accessibility,
+            domain: KeychainDomain.current
+        )
+        migration = KeychainMigration(
+            source: KeychainItem(
+                service: Self.service,
+                account: vaultName,
+                accessibility: Self.accessibility,
+                domain: .login
+            ),
+            destination: item
         )
     }
 
     func load() throws -> String? {
+        // In this store's own `load`, not chained to the vault root's, because
+        // the two know nothing about each other — and they do not need to. The
+        // pairing invariant argued on the type is about loss and restore, and a
+        // migration that never leaves zero readable copies cannot lose either
+        // half while the other survives.
+        try migration.run()
         // As `KeychainVaultRootStore.load` does: nothing on the ordinary path
         // ever rewrites this item, so an id recorded by a build that used a
         // weaker class would keep it for the life of the installation.
