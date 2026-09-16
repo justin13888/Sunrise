@@ -242,4 +242,30 @@ mod tests {
         assert!(!rendered.contains("super-secret-bearer"), "{rendered}");
         assert!(rendered.contains("set: true"), "{rendered}");
     }
+
+    /// `seen` reports the version, and the version is a count rather than a flag.
+    ///
+    /// A consumer compares this against the version it last acted on to decide
+    /// whether a renewal is still outstanding, so a `seen` pinned to any
+    /// constant makes every write after the first invisible to that comparison
+    /// — which is the failure `TokenWatch` exists to prevent, and which no test
+    /// here had pinned.
+    #[test]
+    fn a_watch_reports_the_version_it_is_looking_at() {
+        let s = TokenSource::new(None);
+        let w = s.watch();
+        assert_eq!(w.seen(), 0, "a fresh watch has observed no write");
+        s.set(Some("first".into()));
+        s.set(Some("second".into()));
+        assert_eq!(
+            w.seen(),
+            2,
+            "two writes, counted, not collapsed to 'changed'"
+        );
+        assert_eq!(
+            w.seen(),
+            s.version(),
+            "the watch and its source must agree on which write is current"
+        );
+    }
 }
