@@ -29,7 +29,7 @@ Codes are stable across versions; new codes can be added but never repurposed.
 ### Registry
 
 - The single source of truth is the TOML manifest at `crates/sunrise-error/codes.toml`.
-- The Rust enum at `crates/sunrise-error/src/codes.rs` and the TypeScript enum at `packages/sunrise-error-ts/src/codes.ts` are **generated** mirrors. Hand-editing either generated file is a CI failure.
+- The Rust enum at `crates/sunrise-error/src/codes.rs` mirrors that manifest. It is *intended* to be generated; until the build script lands it is hand-maintained, and `crates/sunrise-error/tests/manifest_in_sync.rs` is what holds the two together. The TypeScript mirror this section used to place at `packages/sunrise-error-ts` does not exist — nothing in TypeScript reads the registry yet.
 - Codes are added at minor-version boundaries; never reused, never renamed.
 - Adding a code requires updating the manifest. CI checks that ids are monotonically increasing and never re-used.
 - Ids 203 (`AUTH_QUOTA_EXCEEDED`) and 300 (`STORAGE_QUOTA_EXCEEDED`) were removed under ADR-0027 (self-host first), which takes per-account quotas out of v1; nothing ever emitted either. Both ids are **burned** — never re-issued under another name — which is why the auth block continues at 204 (`AUTH_DEVICE_SIG_INVALID`) and the storage block at 304.

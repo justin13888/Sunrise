@@ -405,6 +405,24 @@ description = "Reject a doc comment mangled into a shape rustdoc misreads (the C
 # library Python over every tracked `.rs`, in under a second.
 run = ".github/scripts/doc-comment-gate.py"
 
+[tasks.citations]
+description = "Reject a backticked path:line citation that points at nothing (the CI gate, run locally)"
+# This repository cites its own source in inline code spans —
+# `crates/sunrise-sync/src/backoff.rs:31-63` — close to a thousand of them, and
+# nothing checked one. `docs-links` and `doc-comments` both *blank* inline code
+# before they read a line, deliberately, so a document about markdown is not
+# read as containing it; a code span is therefore exactly the shape those two
+# agree to ignore and exactly the shape a path is cited in. A moved file rots
+# every citation to it in silence, and a `:199` rots without the file moving.
+# Three anchors: the repository root, the citing file's own directory (the
+# resolution imported from `docs-link-gate.py`, so the two gates cannot
+# disagree about where `../x.md` points), and the crate root for a file under
+# `crates/<name>/`. A `../` path has one reading and a dangling one fails; a
+# bare filename has as many readings as there are directories, so it is
+# declined, counted and listable with `--list-unanchored` rather than guessed
+# at. The extension set is closed, or `task.update` reads as a path.
+run = ".github/scripts/citation-gate.py"
+
 # --- Apple clients (Swift / UniFFI) ---
 #
 # `--manifest-path` arguments in this file are an input to a test in another
@@ -946,6 +964,44 @@ description = "Assert the kynos waiver gate's exit-code contract (fast, synthesi
 # which is the only thing that steers the gate — it takes no arguments. The
 # feature set it reads has already changed shape once under it.
 run = "python3 .github/scripts/test_kynos_waiver_gate.py"
+
+[tasks.citation-gate-test]
+description = "Assert the citation gate's exit-code and discrimination contract (fast, synthesised repos)"
+# A few seconds: it synthesises git repositories in a temp directory, so it
+# never reads this tree. Half of it is the near-misses — `Vec<u8>`,
+# `cargo test --workspace`, a prose filename — because a gate that fires on
+# everything is as useless as one that fires on nothing, and the two halves fail
+# in opposite directions from the same edit to the regex.
+run = "python3 .github/scripts/test_citation_gate.py"
+
+[tasks.doc-comment-gate-test]
+description = "Assert the doc comment gate's exit-code contract (fast, synthesised crates)"
+# The gate's own --self-test runs scan_text over six string literals and reaches
+# nothing else: not the listing, not the 50-file floor that says "the scan is
+# broken" rather than "the tree is clean", not the exit codes those produce.
+run = "python3 .github/scripts/test_doc_comment_gate.py"
+
+[tasks.docs-link-gate-test]
+description = "Assert the docs link gate's exit-code contract (fast, synthesised repos)"
+# The gate's own --self-test is an excellent test of `slugify` and no test at
+# all of `check()`, which was exercised only by this repository's own 1,239
+# links — a fixture that changes every week and can only prove the gate green.
+run = "python3 .github/scripts/test_docs_link_gate.py"
+
+[tasks.observability-catalog-gate-test]
+description = "Assert the observability catalogue gate's exit-code contract (fast, synthesised docs)"
+# This gate reads its extraction command out of the document and runs it, which
+# is a second surface that can rot: a marker that loses its `grep` line, a path
+# that stops being a directory, a provenance ref that names no commit. The
+# gate's own self-test reaches none of those routes.
+run = "python3 .github/scripts/test_observability_catalog_gate.py"
+
+[tasks.proptest-persistence-gate-test]
+description = "Assert the proptest persistence gate's exit-code contract (fast, synthesised crates)"
+# Three of the five codes this gate emits — ignored, untracked and flat — are
+# decided by the filesystem and the index rather than by the source text, so the
+# gate's own self-test cannot reach them from a string literal.
+run = "python3 .github/scripts/test_proptest_persistence_gate.py"
 
 # --- Release artifacts ---
 #

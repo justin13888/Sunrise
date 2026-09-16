@@ -18,7 +18,7 @@ you beyond pushing the tag.
 **iOS is a different runbook and does not exist yet.** The `ios-release` job
 uploads to App Store Connect and no-ops, visibly, until six further secrets and
 an App Store Connect app record exist.
-[ADR-0038](../11-adr/0039-ios-distribution.md) §Decision 5 is that list.
+[ADR-0039](../11-adr/0039-ios-distribution.md) §Decision 5 is that list.
 
 **Why this shape:** [ADR-0031](../11-adr/0031-macos-distribution.md). The short
 version is that the app is not sandboxed
@@ -464,7 +464,7 @@ correct behaviour and it is why the file name says `UNSIGNED`.
   not the App Store, and what that forced.
 - [ADR-0038](../11-adr/0038-macos-update-feed.md) — the update feed, and why
   its EdDSA key is subordinate to the Developer ID certificate.
-- [ADR-0038](../11-adr/0039-ios-distribution.md) — iOS, which this runbook does
+- [ADR-0039](../11-adr/0039-ios-distribution.md) — iOS, which this runbook does
   not cover, and the six secrets it will need.
 - [ADR-0027](../11-adr/0027-v1-self-host-first.md) — self-host-first, which is
   half of the argument.

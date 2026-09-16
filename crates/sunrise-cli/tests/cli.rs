@@ -188,10 +188,12 @@ fn repeated_runs_reacquire_the_vault_lock() {
     assert_eq!(stdout(&run(dir.path(), &["inbox"])).lines().count(), 5);
 }
 
-/// `docs/07-clients/tui.md` §Capture from anywhere names `sunrise focus next`
-/// as a first-class surface. The picks must be the *core's* ranking, not a
-/// re-sort in the CLI: "what should I do next" has to give the same answer in
-/// the terminal and in the TUI, or one of them is lying.
+/// `docs/07-clients/parity-matrix.md` makes Focus mode (`next`, `focus <id>`)
+/// a CLI MUST. The TUI spec that first named `sunrise focus next` as a
+/// first-class surface went with the TUI under ADR-0019; the requirement did
+/// not. The picks must be the *core's* ranking, not a re-sort in the CLI:
+/// "what should I do next" has to give the same answer in every client, or one
+/// of them is lying.
 #[test]
 fn next_ranks_by_leverage_and_focus_next_opens_a_session() {
     let dir = tempfile::tempdir().unwrap();

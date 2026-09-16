@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail when a markdown link or heading anchor in this repository resolves to nothing.
+"""Fail when a markdown link resolves to nothing, or names an ADR it does not link to.
 
 Why this gate exists
 --------------------
@@ -26,6 +26,9 @@ Scope
 (`[label]: ./path.md`), across every `.md` file git tracks — not only `docs/`,
 since `README.md`, `AGENTS.md` and the crate-level markdown carry links too.
 
+**Also in, on a wider file set: whether a link's label agrees with its target.**
+See below; that rule reads `.rs` and `.yml` as well.
+
 **Out, and deliberately:**
 
 * Anything with a scheme (`http:`, `https:`, `mailto:`) or a protocol-relative
@@ -49,6 +52,43 @@ satisfy a link that is dead for every reader on github.com, and the comparison
 is exact-case, so `./ReadMe.md` for `README.md` fails here exactly as it fails
 on a Linux runner and on github.com — rather than passing on a case-insensitive
 macOS checkout and failing in CI.
+
+A label that disagrees with its target
+-------------------------------------
+
+A cross-reference has two halves, and a renumbering breaks the agreement
+between them while leaving the target perfectly resolvable. When ADR-0039 was
+added beside ADR-0038, six links ended up reading `[ADR-0038]` and pointing at
+`0039-ios-distribution.md` — in `releasing.md` twice, in `overview.md`, in
+ADR-0028, in ADR-0038 itself, and in a `release.yml` job comment. Every gate in
+this repository was green: this one because the file exists, `citation-gate.py`
+because a markdown link is not a code span. Neither asked whether the link says
+what it does.
+
+So: **a link whose visible text matches `ADR-<digits>` and whose target names
+`<digits>-*.md` must agree on the number.** Both halves are required, which is
+what makes the rule safe on the 1,348 links it has to stay quiet on — a label
+with no ADR number, or a target that is an anchor, a README or a third-party
+URL, has nothing to compare and is not a finding. A label naming several ADRs
+passes if any of them is the one linked.
+
+This is the one rule here that reads an **external** URL. Resolution cannot —
+that would mean a network call and a red build for someone else's outage — but
+`https://github.com/…/docs/11-adr/0039-x.md` names its ADR in the last path
+segment, and comparing that against the label is free and offline.
+
+It is also the one rule that reads past markdown: `.rs` doc comments and `.yml`
+cite ADRs in the same shape, and `release.yml` carried one of the six. Those two
+file types are scanned as **raw text** for `[label](target)` pairs — resolution
+is *not* extended to them, because what a relative link in a YAML comment is
+relative to is not a question with an answer. The extractor is loose enough to
+match `a[0](b)`; what keeps the rule off code is the rule itself, which needs an
+ADR number on both sides before it compares anything.
+
+What it does **not** check is a bare `ADR-0038` in prose with no link at all.
+There is no second half to disagree with, so there is nothing mechanical to
+decide — the four in `release.yml` and the one in `apps/apple/project.yml` were
+found by reading and fixed by hand.
 
 GitHub's slug rules, which are the whole difficulty
 ---------------------------------------------------
@@ -501,6 +541,77 @@ def scan_text(text: str) -> tuple[set[str], list[Link], list[Unparsed]]:
     return slugs, links, unparsed
 
 
+# An ADR cross-reference has two halves that can disagree: the visible label and
+# the file it points at. `ADR-0038` in a label, `0039-ios-distribution.md` in a
+# target. Four digits, because every ADR in this repository is numbered that way.
+ADR_IN_LABEL = re.compile(r"ADR[\s\u2010-\u2015-]?(\d{4})", re.IGNORECASE)
+ADR_IN_TARGET = re.compile(r"(?:^|/)(\d{4})-[^/]*\.md$")
+# `[label](target)` for the file types this gate does not otherwise parse. The
+# label may wrap, so newlines are allowed inside it and its length is bounded --
+# an ADR label is a few words, and an unbounded match could pair a stray `[`
+# with a `](` paragraphs away.
+BRACKET_LINK = re.compile(r"\[(?P<label>[^\[\]]{0,200}?)\]\((?P<target>[^()\s]+)\)", re.DOTALL)
+
+
+def adr_label_numbers(label: str) -> list[str]:
+    """Every ADR number the visible text of a link claims."""
+    return [number for number in ADR_IN_LABEL.findall(label)]
+
+
+def adr_target_number(destination: str) -> str | None:
+    """The ADR number the target names, from its filename.
+
+    The fragment is dropped first, so `./0039-x.md#decision` answers `0039`.
+    Works on an absolute URL as readily as on a relative path, because the
+    answer is in the last path segment either way -- which is why this rule,
+    unlike the rest of this gate, has something to say about an external link.
+    """
+    found = ADR_IN_TARGET.search(destination.split("#", 1)[0])
+    return found.group(1) if found else None
+
+
+def adr_disagreement(label: str, destination: str) -> tuple[str, str] | None:
+    """`(claimed, actual)` when a link names one ADR and points at another.
+
+    `None` whenever the question does not arise: no ADR number in the label, no
+    ADR file in the target, or the two agree. A label naming several ADRs
+    passes if any of them is the one linked, which is the only reading of
+    `[ADR-0038 and ADR-0039](./0039-x.md)` that is not a guess.
+    """
+    actual = adr_target_number(destination)
+    if actual is None:
+        return None
+    claimed = adr_label_numbers(label)
+    if not claimed or actual in claimed:
+        return None
+    return (claimed[0], actual)
+
+
+def resolve_relative(citing: str, destination: str) -> str | None:
+    """Where a relative destination written in `citing` points, or None.
+
+    A leading `/` is repository-absolute; anything else joins against the
+    citing file's own directory, which is what a markdown renderer does and
+    what github.com does when a reader clicks. `None` means the result climbs
+    out of the repository, which is a broken link rather than a path.
+
+    Named rather than inlined because `citation-gate.py` imports it: that gate
+    resolves a backticked `../03-crypto/recovery.md` by the same convention
+    this one resolves `[a](../03-crypto/recovery.md)`, and two implementations
+    of "where does that point" can disagree — on the day they do, one of the
+    two gates is wrong about the same tree and neither says so.
+    """
+    joined = (
+        destination[1:]
+        if destination.startswith("/")
+        else posixpath.join(posixpath.dirname(citing), destination)
+    )
+    resolved = posixpath.normpath(joined)
+    if resolved == ".." or resolved.startswith("../"):
+        return None
+    return resolved
+
+
 def git_tracked(root: str) -> list[str]:
     """Every path git tracks, which is what "this file exists" has to mean.
 
@@ -551,6 +662,8 @@ def check(root: str) -> int:
     broken = 0
     total = 0
     unreadable = 0
+    mislabelled = 0
+    adr_checked = 0
 
     for name in files:
         for note in unparsed[name]:
@@ -563,6 +676,20 @@ def check(root: str) -> int:
         for link in links[name]:
             total += 1
             dest = link.dest
+
+            # Before the scheme test below, deliberately: an `https://` link to
+            # a file in this repository still names an ADR in its last path
+            # segment, and comparing that against the label needs no network.
+            adr_checked += 1
+            disagreement = adr_disagreement(link.text, dest)
+            if disagreement is not None:
+                claimed, actual = disagreement
+                print(
+                    f"::error file={name},line={link.line}::docs-links: [{link.text}]({dest}) "
+                    f"says ADR-{claimed} and links to ADR-{actual}."
+                )
+                mislabelled += 1
+
             if not dest or dest.startswith("//") or SCHEME.match(dest):
                 continue
 
@@ -572,9 +699,8 @@ def check(root: str) -> int:
             where = f"::error file={name},line={link.line}::docs-links: [{link.text}]({dest})"
 
             if target:
-                joined = target[1:] if target.startswith("/") else posixpath.join(posixpath.dirname(name), target)
-                resolved = posixpath.normpath(joined)
-                if resolved == ".." or resolved.startswith("../"):
+                resolved = resolve_relative(name, target)
+                if resolved is None:
                     print(f"{where} escapes the repository.")
                     broken += 1
                     continue
@@ -600,11 +726,55 @@ def check(root: str) -> int:
                 print(f"{where} has no heading {place} slugging to `{fragment}`.")
                 broken += 1
 
+    # The ADR rule, and only the ADR rule, reaches beyond markdown: `release.yml`
+    # carries one of these links in a job comment and `.rs` doc comments cite
+    # ADRs the same way. Resolution is *not* extended to them -- that would mean
+    # deciding what a relative link in a YAML comment is relative to -- so this
+    # pass reads raw text with `BRACKET_LINK` rather than parsing the file.
+    # Nothing is masked, and nothing needs to be. `BRACKET_LINK` is loose enough
+    # to match `a[0](b)` -- an index followed by a call -- and that is fine,
+    # because what keeps this off code is the *rule*: it needs an ADR number in
+    # the label and an ADR-numbered `.md` file in the target before there is
+    # anything to compare. An example in a fenced block carrying a real ADR
+    # link should agree with itself anyway.
+    for name in sorted(
+        name
+        for name in tracked
+        if name.endswith((".rs", ".yml", ".yaml")) and not name.startswith("legacy/")
+    ):
+        try:
+            with open(posixpath.join(root, name), encoding="utf-8") as handle:
+                text = handle.read()
+        except (OSError, UnicodeDecodeError) as error:
+            print(f"::error::docs-links: could not read {name}: {error}")
+            return 2
+        for match in BRACKET_LINK.finditer(text):
+            adr_checked += 1
+            disagreement = adr_disagreement(match.group("label"), match.group("target"))
+            if disagreement is None:
+                continue
+            claimed, actual = disagreement
+            line = text.count("\n", 0, match.start()) + 1
+            label = " ".join(match.group("label").split())
+            print(
+                f"::error file={name},line={line}::docs-links: [{label}]({match.group('target')}) "
+                f"says ADR-{claimed} and links to ADR-{actual}."
+            )
+            mislabelled += 1
+
     print(f"docs-links: {total} links across {len(files)} markdown files.")
+    print(f"docs-links: {adr_checked} link(s) checked for a label that disagrees with its target.")
     if unreadable:
         print(f"docs-links: {unreadable} link-shaped construct(s) could not be read and were not checked.")
     if broken:
         print(f"::error::docs-links: {broken} link(s) resolve to nothing.")
+    if mislabelled:
+        print(
+            f"::error::docs-links: {mislabelled} link(s) name one ADR and point at another. "
+            "A renumbering leaves the target resolving and the label wrong, so nothing else "
+            "here catches it."
+        )
+    if broken or mislabelled:
         return 1
     print("OK: docs-links clean.")
     return 0
@@ -715,6 +885,48 @@ def slug_categories_match_github_slugger() -> bool:
     return False
 
 
+# `(label, target, expected)` for the ADR agreement rule. Most of these must
+# come back `None`: the rule has 1,348 links to stay quiet on and six to catch,
+# so the cases that must NOT fire are the ones carrying the weight.
+ADR_CASES: tuple[tuple[str, str, tuple[str, str] | None], ...] = (
+    # The live defect: a renumbering moved the file and left the label.
+    ("ADR-0038", "./0039-ios-distribution.md", ("0038", "0039")),
+    ("ADR-0038", "../11-adr/0039-ios-distribution.md", ("0038", "0039")),
+    # An absolute URL still names the ADR in its last path segment, and
+    # comparing that against the label needs no network -- which is why this
+    # one rule has something to say about a link the rest of the gate skips.
+    ("ADR-0038", "https://github.com/o/r/blob/v1/docs/11-adr/0039-x.md", ("0038", "0039")),
+    # Markup around the number, and a lower-case spelling.
+    ("**ADR-0038**", "./0039-x.md", ("0038", "0039")),
+    ("adr-0039", "./0039-ios-distribution.md", None),
+    # Agreement, with and without a fragment.
+    ("ADR-0039", "./0039-ios-distribution.md", None),
+    ("ADR-0039", "./0039-ios-distribution.md#decision", None),
+    # Nothing to compare. Each of these is a real shape in this repository and
+    # a false positive here would be worse than the defect the rule is for.
+    ("ADR-0038", "./README.md", None),
+    ("ADR-0038", "#some-heading", None),
+    ("ADR-0038", "https://example.invalid/adr", None),
+    ("the iOS decision", "./0039-ios-distribution.md", None),
+    ("0013_baseline.sql", "../04-storage/migrations.md", None),
+    # A label naming several: linking to any one of them is not a mistake.
+    ("ADR-0038 and ADR-0039", "./0039-x.md", None),
+    ("ADR-0037 and ADR-0038", "./0039-x.md", ("0037", "0039")),
+)
+
+# The raw-text pass over `.rs` and `.yml`. The last line matters: `a[0](b)` is
+# an index followed by a call, and `BRACKET_LINK` *does* match it. The
+# extractor is deliberately loose; what keeps the rule off code is the rule,
+# which needs an ADR number in the label and an ADR-numbered `.md` in the
+# target before it has anything to compare.
+BRACKET_FIXTURE = """# A comment mentioning [ADR-0038](./0039-ios-distribution.md).
+/// and a doc comment citing [ADR-0039](../../docs/11-adr/0039-x.md)
+/// with a label that [wraps
+/// across lines, ADR-0038](./0039-x.md)
+let indexed_then_called = a[0](b);
+"""
+
+
 def self_test() -> int:
     failures = 0
 
@@ -767,9 +979,38 @@ def self_test() -> int:
         )
         failures += 1
 
+    for label, target, expected in ADR_CASES:
+        actual = adr_disagreement(label, target)
+        if actual != expected:
+            print(
+                f"::error::docs-links self-test: [{label}]({target}) gave {actual}, "
+                f"expected {expected}"
+            )
+            failures += 1
+
+    # The raw-text extractor the `.rs`/`.yml` pass uses. Three links, one of
+    # them wrapped, and `a[0](b)` is not one.
+    found = [
+        (" ".join(m.group("label").split()), m.group("target"))
+        for m in BRACKET_LINK.finditer(BRACKET_FIXTURE)
+    ]
+    expected_links = [
+        ("ADR-0038", "./0039-ios-distribution.md"),
+        ("ADR-0039", "../../docs/11-adr/0039-x.md"),
+        ("wraps /// across lines, ADR-0038", "./0039-x.md"),
+        ("0", "b"),  # `a[0](b)`, which the rule below has nothing to say about
+    ]
+    if found != expected_links:
+        print(f"::error::docs-links self-test: bracket fixture yielded {found}")
+        failures += 1
+    caught = [(l, t) for l, t in found if adr_disagreement(l, t)]
+    if len(caught) != 2:
+        print(f"::error::docs-links self-test: bracket fixture caught {caught}, expected the two mislabelled")
+        failures += 1
+
     if failures:
         return 1
-    print(f"OK: docs-links self-test clean ({len(SLUG_CASES) + 7} cases).")
+    print(f"OK: docs-links self-test clean ({len(SLUG_CASES) + len(ADR_CASES) + 9} cases).")
     return 0
 
 
