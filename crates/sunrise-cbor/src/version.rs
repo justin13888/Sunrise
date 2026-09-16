@@ -151,4 +151,14 @@ pub const CRYPTO_SUITE_V: u16 = 2;
 /// of blobs whose chunks are sealed locally and not yet committed upstream.
 /// The queue is a table rather than a direct call for the reason 0020's is:
 /// attaching a file has to work offline.
-pub const STORAGE_V: u16 = 24;
+///
+/// `25` is migration `0025_blob_fetch_requests.sql`, the other half of that
+/// route (issue #227). 24 made a blob *reachable*; the 10 MiB auto-fetch
+/// threshold in `docs/02-domain/attachments.md` §Lazy fetch then decided which
+/// blobs were actually reached, and nothing carried the rest — an attachment
+/// over the threshold was unreachable on every device but the one that sealed
+/// it. `blob_fetches` is the durable record of "the user pressed Download on
+/// this one", read by the sync driver, which holds the transport, and it
+/// carries the document's `partial` cache state for a transfer the user
+/// cancelled.
+pub const STORAGE_V: u16 = 25;

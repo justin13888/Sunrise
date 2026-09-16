@@ -148,11 +148,20 @@ pub(crate) const MAX_UPLOAD_ATTEMPTS: u32 = 10;
 ///
 /// `docs/02-domain/attachments.md` §Lazy fetch: "Default auto-fetch threshold:
 /// 10 MiB. Smaller attachments fetch silently on first view." Anything larger
-/// is specified to wait for a Download button, which is a client surface that
-/// does not exist yet — so today a larger attachment is simply not fetched, and
-/// `Core::attachment_bytes` keeps reporting `BytesNotHere`, which is the same
-/// answer it gave before this module existed.
-pub(crate) const AUTO_FETCH_MAX_BYTES: u64 = 10 * 1024 * 1024;
+/// waits for the Download button in the next sentence of that section, which is
+/// [`Core::fetch_attachment`] and [`crate::blob_fetch`].
+///
+/// This is therefore a bound on what happens **unasked**, and on nothing else.
+/// It was the whole story until issue #227, when it was also the only story:
+/// with no on-demand route, a larger attachment was permanently unreadable on
+/// every device but the one that sealed it. `Core::attachment_bytes` still
+/// reports `BytesNotHere` for one whose bytes have not been asked for — but
+/// that is now a state with a way out of it rather than a verdict.
+///
+/// Public because it is the number a client draws its placeholder decision
+/// from, and because `crates/sunrise-e2e` proves the over-threshold path
+/// against it rather than against a copy.
+pub const AUTO_FETCH_MAX_BYTES: u64 = 10 * 1024 * 1024;
 
 /// How many live attachment rows one fetch drain examines.
 ///
