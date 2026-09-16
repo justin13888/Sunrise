@@ -125,7 +125,7 @@ Attachments are not pre-fetched on sync. Each device pulls on first view, decryp
   v1, and it is *shared* rather than macOS-only:
   `apps/apple/Sunrise/Views/AttachmentsView.swift` and
   `apps/apple/Sunrise/Tasks/AttachmentsModel.swift` compile into both targets
-  (`apps/apple/project.yml:75`, `:169`) and are reached from the task editor on
+  (`apps/apple/project.yml:78`, `:169`) and are reached from the task editor on
   each (`apps/apple/Sunrise/Views/TaskEditorView.swift:93`).
 - Web in private-browsing mode cannot persist large attachment caches; falls back to per-session memory cache.
 
