@@ -1545,6 +1545,31 @@ fn devices_lists_this_device_as_current() {
     );
 }
 
+/// The device listing carries the sole-copy-of-`ID_D_priv` disclosure, which
+/// until #144 was stated in `docs/03-crypto/*` and nowhere a user could see.
+///
+/// It goes under the device list rather than beside `identity status` because
+/// that is the surface answering "what has access to this account", and this is
+/// the other half of the same question: what happens if one of these goes.
+#[test]
+fn devices_discloses_that_this_vault_holds_the_account_identity_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let listing = stdout(&run(dir.path(), &["devices"]));
+    assert!(
+        listing.contains("holds the account identity key"),
+        "a vault that created its own account must say so, got {listing:?}"
+    );
+    assert!(
+        listing.contains("no recovery feature added later can retrieve it"),
+        "and say what losing it costs, which is the part a user cannot infer, \
+         got {listing:?}"
+    );
+    assert!(
+        listing.contains("sunrise bootstrap"),
+        "and name the one command that makes a second copy, got {listing:?}"
+    );
+}
+
 /// `identity status` names the account by its **genesis**, not by the key in
 /// force, and reports zero rotations on a fresh vault.
 #[test]

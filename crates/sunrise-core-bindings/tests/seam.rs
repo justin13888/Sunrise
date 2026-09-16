@@ -2165,6 +2165,36 @@ async fn importing_into_something_that_is_not_a_stream_is_refused() {
     assert!(matches!(err, BindingError::BadId { .. }), "got {err:?}");
 }
 
+/// The second of #144's signals reaches a client: every device row carries
+/// whether that device turned up **after** this vault had recorded a
+/// revocation.
+///
+/// What the truth of the field means is `sunrise-core`'s to assert and it does,
+/// four ways. What is checked here is the half only this crate can break: the
+/// column is read by `query_device_list`, survives `DeviceListRow::from`, and
+/// arrives on the `uniffi::Record` a Swift device list renders. A field dropped
+/// in that lowering would compile, pass every core test, and silently show a
+/// user nothing — which is the exact failure mode #144 is about.
+#[tokio::test(flavor = "multi_thread")]
+async fn every_device_row_carries_the_readmission_signal() {
+    let (_dir, core) = open_core().await;
+    let CoreQueryResult::Devices { devices } = core
+        .query(CoreQuery::DeviceList)
+        .await
+        .expect("device list")
+    else {
+        panic!("expected Devices")
+    };
+    let me = devices
+        .iter()
+        .find(|d| d.device_id == core.device_id())
+        .expect("this vault lists its own device");
+    assert!(
+        !me.admitted_after_revocation,
+        "a vault that founded its own account revoked nothing before it existed"
+    );
+}
+
 // ---- recovery (#181) ------------------------------------------------------
 
 /// The signal that had reached no client: until a blob is sealed, a vault the

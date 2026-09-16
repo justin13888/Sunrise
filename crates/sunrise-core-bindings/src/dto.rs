@@ -2431,6 +2431,19 @@ pub struct DeviceListRow {
     /// on this account" rather than as an accusation — an honest device that
     /// has not yet applied a rotation looks the same for a moment.
     pub current: bool,
+    /// This device id was first seen **after** this vault had already recorded
+    /// a revocation.
+    ///
+    /// `core.device.admitted_after_revocation` made durable, so it reaches the
+    /// device list instead of only an operator's NDJSON
+    /// ([#144](https://github.com/justin13888/Sunrise/issues/144)). Also not an
+    /// accusation: the ordinary cause is pairing a new device in an account
+    /// that revoked something earlier. The case it exists for is a revoked
+    /// *creator* certifying a fresh id after a revocation that could not rotate
+    /// the identity, which reads `revoked: false, current: true` and is
+    /// otherwise indistinguishable from any other member. Word it as "joined
+    /// after a device was removed".
+    pub admitted_after_revocation: bool,
 }
 
 impl From<&DeviceRow> for DeviceListRow {
@@ -2441,6 +2454,7 @@ impl From<&DeviceRow> for DeviceListRow {
             platform,
             revoked,
             current,
+            admitted_after_revocation,
         } = d;
         Self {
             device_id: hex16(device_id),
@@ -2448,6 +2462,7 @@ impl From<&DeviceRow> for DeviceListRow {
             platform: platform.clone(),
             revoked: *revoked,
             current: *current,
+            admitted_after_revocation: *admitted_after_revocation,
         }
     }
 }

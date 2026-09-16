@@ -168,6 +168,21 @@ device that was offline across the rotation.
    A revoked device that cannot upload cannot publish a cert either, which
    bounds the bypass without any vault-side check — but only for the relay's
    own accounts, and only while the device stays off every other transport.
-3. **A user-visible device list.** Alternative 2's over-block and this ADR's
-   disclosure are both decisions about who tells the user what; a surface that
-   shows "these devices joined after you revoked one" changes the balance.
+3. ~~**A user-visible device list.**~~ **Done** ([#144](https://github.com/justin13888/Sunrise/issues/144)).
+   Alternative 2's over-block and this ADR's disclosure are both decisions about
+   who tells the user what, and the disclosure now reaches one: the readmission
+   predicate is written to `devices.admitted_after_revocation` when the
+   certificate applies and rendered on every client's device list, worded as
+   "joined after a device was removed" rather than as an accusation. That does
+   **not** reopen the decision — nothing gates on the column and no replica
+   derives standing from it — but it removes the ground this ADR's disclosure
+   stood on uneasily, that an event nobody but an operator could see was a
+   disclosure at all.
+
+   It is a column rather than a query because the predicate is about the moment
+   the cert applied: `devices.created_at_ms` comes out of the certificate body
+   and is chosen by the very party the signal is about, and the revocation
+   register is last-writer-wins on the revoked id, so nothing that survives can
+   reconstruct "had this account revoked anything yet". It is therefore
+   replica-local in exactly the way the log line was, and two replicas that
+   applied the revocation and the certificate in different orders disagree.

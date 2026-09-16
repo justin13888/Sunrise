@@ -610,6 +610,15 @@ async fn dispatch(
                     // can separate the two.
                     marks.push("not active on this account");
                 }
+                if d.admitted_after_revocation {
+                    // The third state, and the only one that is invisible in
+                    // the two above when the revocation could not rotate the
+                    // identity: the fresh id is then certified under the
+                    // identity in force and reads `revoked: no, current: yes`.
+                    // Worded as an event rather than a verdict, because the
+                    // ordinary cause is an honest pairing (#144).
+                    marks.push("joined after a device was removed");
+                }
                 let suffix = if marks.is_empty() {
                     String::new()
                 } else {
@@ -621,6 +630,26 @@ async fn dispatch(
                     d.nickname,
                     d.platform
                 );
+            }
+            // The other half of what a device list is for: not only "what has
+            // access" but "what happens if this one goes". `ID_D_priv` lives on
+            // the device that created the account and on one restored from the
+            // recovery code, and nowhere else; the consequence of losing it is
+            // permanent and no recovery feature added later can undo it, so it
+            // belongs under the list rather than in a document
+            // (`docs/03-crypto/recovery.md`, #144).
+            //
+            // Printed only when it is true. A device that does not hold the key
+            // has nothing to be careful about here, and a line saying so on
+            // every listing is how a warning stops being read.
+            if core.holds_identity_key() {
+                println!();
+                println!(
+                    "This device holds the account identity key. A sealed recovery code is \n\
+                     its only other copy: without one, losing this vault destroys the key \n\
+                     permanently and no recovery feature added later can retrieve it."
+                );
+                println!("  - `sunrise bootstrap` seals that second copy");
             }
             Ok(())
         }

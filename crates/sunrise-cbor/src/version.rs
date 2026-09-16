@@ -202,4 +202,12 @@ pub const CRYPTO_SUITE_V: u16 = 5;
 /// this one", read by the sync driver, which holds the transport, and it
 /// carries the document's `partial` cache state for a transfer the user
 /// cancelled.
-pub const STORAGE_V: u16 = 25;
+/// `26` is migration `0026_device_admitted_after_revocation.sql`, which keeps a
+/// signal the core had and only logged (issue #144). `DeviceCertPublish`
+/// already recognises a device id this vault has never seen arriving in an
+/// account that has revoked something, and emitted
+/// `core.device.admitted_after_revocation` about it; the column is the same
+/// answer written down, because the predicate is about the moment the cert
+/// applied and nothing else in the schema can reconstruct that afterwards. It
+/// feeds the device list on every client rather than an operator's NDJSON.
+pub const STORAGE_V: u16 = 26;

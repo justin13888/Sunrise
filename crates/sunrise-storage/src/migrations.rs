@@ -97,6 +97,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "blob_fetch_requests",
         sql: include_str!("../migrations/0025_blob_fetch_requests.sql"),
     },
+    Migration {
+        id: 26,
+        name: "device_admitted_after_revocation",
+        sql: include_str!("../migrations/0026_device_admitted_after_revocation.sql"),
+    },
 ];
 
 /// Current storage version (= last migration id).
