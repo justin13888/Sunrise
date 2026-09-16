@@ -866,8 +866,18 @@ set -euo pipefail
 #
 # cargo-mutants copies the source tree per job and runs a full cargo build and
 # test inside each copy. Measured at `-j1` on this workspace: **604 MB peak
-# RSS**, about one `cargo build`, and roughly 1.8 s per mutant on
-# `sunrise-sync`. Every extra job is another tree on disk and another rustc
+# RSS**, about one `cargo build`, and **roughly 3.1 s per mutant on
+# `sunrise-sync`** — 135 mutants in 7 minutes, a full pass at `1d4b484`.
+#
+# This line used to say 1.8 s. That was the original measurement, it was never
+# re-taken, and docs/10-cross-cutting/testing.md §"Cost, measured" now carries
+# the pass that supersedes it. Read the new figure as this crate's and nothing
+# else's: per-mutant cost does not transfer between crates and spans a factor
+# of eight across the four scoped ones, from `sunrise-crypto`'s ~1.9 s to
+# `sunrise-core`'s ~15.4 s. Deriving one crate's cost from another's is how the
+# CI job's timeout came to be set from the wrong crate.
+#
+# Every extra job is another tree on disk and another rustc
 # resident — which on a laptop with an Xcode DerivedData directory beside it is
 # how the machine falls over rather than how the run gets faster.
 #
