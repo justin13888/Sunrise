@@ -1,19 +1,19 @@
 {
-    "_comment": "Mutation-coverage floors per crate, compared by .github/scripts/mutants-gate.py. The floor ratchets: a run may hold or improve it and may not fall below it. `target_caught_pct` is what docs/10-cross-cutting/testing.md requires for release sign-off, and it is the destination rather than the floor \u2014 a gate that failed from day one would be switched off in a week. Record a new floor with `mise run mutants-baseline --expect-shards sunrise-sync=1` locally, naming the crates and shard counts the run actually covered, or `mutants-gate.py <outcomes...> --update --expect-shards sunrise-domain=6,sunrise-core=4,sunrise-crypto=2,sunrise-sync=1` from a nightly's artifacts, in a commit that says what was added to earn it. The shard counts are not optional: `--update` banks whatever it is handed, so without them one shard of a crate becomes that crate's floor. Pass `--allow-partial` instead only when a floor covering just what ran is what you actually want. Every crate the run scores must appear here: the gate fails on a crate it measured and has no floor for, because a crate scored against nothing is a crate it is not protecting. `sunrise-domain` and `sunrise-core` are deliberately absent rather than seeded with a placeholder \u2014 a full pass over them is hours, so their floors are recorded from the first nightly run's artifacts, and until then the gate says so out loud.",
+    "_comment": "Mutation-coverage floors per crate, compared by .github/scripts/mutants-gate.py. The floor ratchets: a run may hold or improve it and may not fall below it. `target_caught_pct` is what docs/10-cross-cutting/testing.md requires for release sign-off, and it is the destination rather than the floor \u2014 a gate that failed from day one would be switched off in a week. Record a new floor with `mise run mutants-baseline --expect-shards sunrise-sync=1` locally, naming the crates and shard counts the run actually covered, or `mutants-gate.py <outcomes...> --update --expect-shards sunrise-domain=6,sunrise-core=4,sunrise-crypto=2,sunrise-sync=1` from a nightly's artifacts, in a commit that says what was added to earn it. The shard counts are not optional: `--update` banks whatever it is handed, so without them one shard of a crate becomes that crate's floor. Pass `--allow-partial` instead only when a floor covering just what ran is what you actually want. Every crate the run scores must appear here: the gate fails on a crate it measured and has no floor for, because a crate scored against nothing is a crate it is not protecting. `sunrise-domain` and `sunrise-core` are deliberately absent rather than seeded with a placeholder \u2014 a full pass over them is hours, so their floors are recorded from the first nightly run's artifacts, and until then the gate says so out loud. Provenance of the two floors recorded here, because a floor that cannot be compared with the one it replaced is a number without a claim. Both were measured on 2026-09-16 at 1d4b484, single-shard and local, by `mise run mutants-baseline --expect-shards sunrise-sync=1,sunrise-crypto=1`. Neither is a like-for-like improvement on its predecessor. `sunrise-crypto` went 78.43% -> 85.47% over a population that grew 296 -> 519 mutants as the crate did, and #96's six device-certificate width mutants -- the four field-width match guards and both `nickname.len() > 64` checks -- are confirmed caught in this run. `sunrise-sync` went 27.17% -> 48.36%, and most of that is not a test improvement at all: the old figure was measured without `--all-features`, which left all 94 of `src/sse.rs`'s mutants compiled out and therefore scored missed, so it described a build configuration. Same tree, feature on, before any test was added: 36.89%. See #193 and docs/10-cross-cutting/testing.md \u00a7Features. The remaining 11.5 points are three tests added with it. `sunrise-sync`'s one timeout (`TokenSource::set` replaced with `()`) sits in the denominator and not the numerator, which is why the rate is 48.36% and not the 48.76% that scoring it as caught would give.",
     "crates": {
         "sunrise-crypto": {
-            "caught": 200,
-            "caught_pct": 78.43,
-            "missed": 55,
+            "caught": 394,
+            "caught_pct": 85.47,
+            "missed": 67,
             "timeout": 0,
-            "unviable": 41
+            "unviable": 58
         },
         "sunrise-sync": {
-            "caught": 25,
-            "caught_pct": 27.17,
-            "missed": 66,
+            "caught": 59,
+            "caught_pct": 48.36,
+            "missed": 62,
             "timeout": 1,
-            "unviable": 2
+            "unviable": 13
         }
     },
     "schema_version": 1,
