@@ -239,7 +239,7 @@ would otherwise start under-reporting with nothing to say so.
 
 ### Cost, measured
 
-| Crate | mutants | `cargo test -p`, rebuilt |
+| Crate | mutants | `cargo test -p`, rebuilt (2026-09-07) |
 |---|---:|---:|
 | `sunrise-domain` | 1 356 | 4.9 s |
 | `sunrise-core` | 1 259 | 14.0 s |
@@ -255,9 +255,10 @@ cargo mutants --list -p <crate> --all-features | wc -l
 
 The left column was re-taken at `1d4b484`; it had drifted on every row, by 28%
 on `sunrise-core`, which had just gained `src/blob_fetch.rs`. The right column
-is the original measurement and was **not** re-taken with it — the two columns
-are from different commits, and the right one is a cost estimate rather than a
-number anything checks.
+is the original measurement, taken 2026-09-07, and was **not** re-taken with it
+— which is why its heading carries that date. The two columns are from
+different commits, and the right one is a cost estimate rather than a number
+anything checks.
 
 `--all-features` matters and is not decoration: see §Features above. It makes
 no difference to three of these four crates, which have no features at all.
