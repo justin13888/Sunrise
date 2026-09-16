@@ -136,10 +136,12 @@ a bump paid for with a lint suppression buys a compiler and sells a guarantee.
   checkout actually resolves. That last comparison also proves the
   toolchain-file override takes effect at all — an assumption the `rust`,
   `macos-app` and `ios-app` jobs already depended on and none of them tested.
-  It sits inside the `rust` job rather than in a job of its own so that it runs
-  on both matrix legs (the override is per-directory and per-machine, and macOS
-  is where the iOS slices are added to it) and costs no second toolchain
-  download. It fails closed: a value that cannot be read is a failure, not a
+  It sits with the Rust gate's other steps rather than in a job of its own so
+  that it runs for every caller of them (the override is per-directory and
+  per-machine, so each platform has to resolve it itself) and costs no second
+  toolchain download. Those steps have since moved into the composite action
+  `.github/actions/rust-checks/action.yml`, which the `rust` and `rust-macos`
+  jobs both call; the assertion is unchanged. It fails closed: a value that cannot be read is a failure, not a
   skipped comparison.
 * **The `Dockerfile`'s `ARG RUST_VERSION` moves to 1.91.1**
   (`rust:1.91.1-slim-bookworm` is published) and the three CI comments naming

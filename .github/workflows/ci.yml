@@ -25,159 +25,62 @@ env:
   RUSTFLAGS: "-D warnings"
 
 jobs:
+  # The Rust gate runs twice, as two jobs naming one composite action, rather
+  # than as the two-leg matrix this used to be. The names below are
+  # byte-identical to the legs they replace because both are required status
+  # checks in the `Protect master` ruleset, and the mechanism that keeps the
+  # macOS one off the pull-request path only works on a whole job. See the
+  # header of .github/actions/rust-checks/action.yml for why.
+  #
+  # `timeout-minutes` is a literal per job, not `${{ matrix.timeout }}`: the
+  # legs never cost the same — macOS minutes bill at 10x, so the expensive one
+  # gets the *tighter* cap rather than inheriting a ceiling sized for the
+  # slower-but-cheaper one — and two jobs can simply say so.
   rust:
-    name: Rust (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    # Per leg, not one value for both, because the legs do not cost the same:
-    # macOS minutes bill at 10x, so the expensive leg gets the *tighter* cap
-    # rather than inheriting a ceiling sized for the slower-but-cheaper one.
-    # `timeout-minutes` takes an expression, and the `mutants` job below
-    # already carries per-entry matrix keys, so this costs one key.
-    timeout-minutes: ${{ matrix.timeout }}
-    strategy:
-      fail-fast: false
-      matrix:
-        # Each leg is ~2.4x the slowest of the twelve runs that still had real
-        # steps before CI was billing-blocked: 18m26s on ubuntu-latest, 14m46s
-        # on macos-latest. No `rust` cache entry has ever existed, so those
-        # observations are cold runs and the multiple is over a cold build.
-        #
-        # Ten minutes were added to each leg when the `fuzz/` clippy and rustdoc
-        # steps landed (#167). That is a second cargo workspace with a target
-        # directory of its own, so on a cold cache it rebuilds the shared
-        # dependency graph once more; the cache entry added below is what keeps
-        # it from doing so on every run, and the ceiling covers the run where
-        # it does.
-        include:
-          - { os: ubuntu-latest, timeout: 55 }
-          - { os: macos-latest, timeout: 45 }
+    name: Rust (ubuntu-latest)
+    runs-on: ubuntu-latest
+    # ~2.4x the slowest cold observation (18m26s), plus the ten minutes the
+    # `fuzz/` clippy and rustdoc steps added (#167): a second cargo workspace
+    # with a target directory of its own, which on a cold cache rebuilds the
+    # shared dependency graph once more. Warm, this job runs in about 5m20s.
+    timeout-minutes: 55
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-      # First, and before the cache is restored, because it is the cheapest
-      # failure in the file and everything after it assumes the answer.
-      #
-      # Installing `stable` above is deliberately not what gets asserted: every
-      # `rustc` below runs inside the checkout, where rust-toolchain.toml
-      # overrides the directory and rustup installs the pinned toolchain on
-      # first use. That override is the mechanism this job, `macos-app` and
-      # `ios-app` all depend on and none of them used to test. It lives here
-      # rather than in a job of its own so it runs on **both** matrix legs —
-      # the override is per-directory and per-machine, and macOS is where the
-      # iOS slices are added to it — and so it costs no second toolchain
-      # download.
-      - name: The four places that name the toolchain all name one version
-        # `rust-toolchain.toml` decides what CI and developers compile with;
-        # `rust-version` decides which MSRV-gated lints clippy applies and what
-        # a reader takes as the floor; the `Dockerfile`'s `ARG RUST_VERSION` is
-        # the compiler for every published server image, because
-        # `release.yml`'s image job passes only `VERSION` and `VCS_REF` as
-        # build-args and so takes that default. Drift between any two of them
-        # is silent, and it is the state this repository was in before
-        # ADR-0026, where five files disagreed about why 1.88 was pinned.
-        # ADR-0026 requires the three file literals byte-identical and the
-        # `rustc` a checkout resolves to match them, so equality is the whole
-        # check — there is nothing to parse loosely. Fail closed: an
-        # unreadable value is a failure, not a skipped comparison. The
-        # Dockerfile pattern excludes space, `#` and `"` deliberately: a value
-        # carrying a trailing comment or quotes then matches nothing and is
-        # reported as unreadable, rather than being captured verbatim and
-        # reported as a version disagreement it is not.
-        run: |
-          set -euo pipefail
-          channel=$(sed -n 's/^channel *= *"\(.*\)"$/\1/p' rust-toolchain.toml)
-          rust_version=$(sed -n 's/^rust-version *= *"\(.*\)"$/\1/p' Cargo.toml)
-          docker_version=$(sed -n 's/^ARG RUST_VERSION=\([^ #"]*\)$/\1/p' Dockerfile)
-          actual=$(rustc --version | cut -d' ' -f2)
-          echo "rust-toolchain.toml channel   : ${channel:-<none>}"
-          echo "Cargo.toml rust-version       : ${rust_version:-<none>}"
-          echo "Dockerfile ARG RUST_VERSION   : ${docker_version:-<none>}"
-          echo "rustc in the checkout         : ${actual:-<none>}"
-          for pair in "rust-toolchain.toml:$channel" "Cargo.toml:$rust_version" "Dockerfile:$docker_version" "rustc:$actual"; do
-            if [ -z "${pair#*:}" ]; then
-              echo "::error::msrv: could not read the pinned version from ${pair%%:*}"
-              exit 1
-            fi
-          done
-          if [ "$channel" != "$rust_version" ] || [ "$channel" != "$docker_version" ] || [ "$channel" != "$actual" ]; then
-            echo "::error::msrv: the toolchain pin disagrees with itself — rust-toolchain.toml=${channel}, Cargo.toml=${rust_version}, Dockerfile=${docker_version}, rustc=${actual}; ADR-0026 requires one version in all four"
-            exit 1
-          fi
-      - uses: Swatinem/rust-cache@v2
-        with:
-          # Two cargo workspaces, two target directories. `fuzz/` is its own
-          # workspace root (see `fuzz/Cargo.toml`) and the clippy and rustdoc
-          # steps below build it, so without this line each of those steps pays
-          # a cold build of the shared dependency graph on every run.
-          workspaces: |
-            .
-            fuzz
-      - name: cargo fmt
-        run: cargo fmt --all -- --check
-      - name: cargo clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
-      # `fuzz/` is a separate workspace, so the `--workspace` command above
-      # cannot reach it and the six harnesses were the one corner of the tree
-      # that was formatted and linted by nothing (#167). They decide what a
-      # fuzzer explores, which is what makes an unused branch or a `let _ =`
-      # swallowing a result worth catching here rather than in review.
-      #
-      # This runs on the pinned stable, not the nightly the `fuzz` job installs:
-      # nightly is needed for `-Zsanitizer=address` under `cargo fuzz run`, and
-      # for nothing else. The root `clippy.toml` still applies — its lookup
-      # walks up out of `fuzz/` — so the determinism deny-list binds here too.
-      - name: cargo clippy (fuzz)
-        run: cargo clippy --manifest-path fuzz/Cargo.toml --all-targets -- -D warnings
-      # `--all-targets` is what runs the log-field gate
-      # (`crates/sunrise-log/tests/event_catalog.rs`) against a complete build
-      # rather than a partial one. That gate's file set is the dep-info rustc
-      # wrote beside each artefact, so it can only see what has been compiled,
-      # and `crates/sunrise-sync/src/sse.rs` (feature-gated off by default) and
-      # `crates/sunrise-server/src/api/testing.rs` (`#[cfg(test)]`) are compiled
-      # by no plain `cargo build --workspace`. This command compiles every
-      # target before running a test, so the records exist by the time the gate
-      # reads them; narrowing it would turn that gate red here (#153).
-      # `mise run log-fields` is the same ordering for one gate, run locally.
-      - name: cargo test
-        run: cargo test --workspace --all-targets
-      # One run again. This was two, with `--exclude sunrise-server` and a
-      # `--skip relative_uri` filter, to contain the 18 doctests kynos 0.1.0's
-      # route macros generated out of English prose. The kynos pin now carries
-      # the upstream fix, so there is nothing left to contain and no crate is
-      # excluded from doctest coverage.
-      - name: cargo doc-test
-        run: cargo test --workspace --doc
-      # A step in this job rather than a gate job of its own, because rustdoc
-      # needs the same dependency graph `cargo test` above just compiled and
-      # this job's cache is already warm — standing it up separately would pay
-      # a cold workspace build for a check that runs in about a minute here.
-      #
-      # `cargo build`, `cargo clippy` and `cargo test` are all blind to a broken
-      # intra-doc link: it renders as literal text for exactly the reader the
-      # comment was written for, and nothing goes red. Forty-eight such errors
-      # were standing on master when this step was added.
-      # `--document-private-items` documents the private half of every crate, so
-      # a link inside a private item is checked rather than skipped, and it
-      # turns on `rustdoc::private_intra_doc_links` — the lint for a *public*
-      # comment pointing somewhere a public reader cannot follow. `--no-deps`
-      # keeps the verdict about this workspace. `mise run rust-doc` is this
-      # command verbatim -- keep them in step.
-      - name: cargo doc
-        env:
-          RUSTDOCFLAGS: "-D warnings"
-        run: cargo doc --workspace --no-deps --document-private-items
-      # The fuzz half of the same gate (#167). Each harness's module comment is
-      # where the property that target asserts is written down, and an
-      # unresolved `[`link`]` in one renders as literal text for the only
-      # reader it has. Every `[[bin]]` in `fuzz/Cargo.toml` carried `doc =
-      # false` until #167, which would have made this step document nothing and
-      # pass — the manifest now turns `doc` on and says why.
-      - name: cargo doc (fuzz)
-        env:
-          RUSTDOCFLAGS: "-D warnings"
-        run: cargo doc --no-deps --document-private-items --manifest-path fuzz/Cargo.toml
+      - uses: ./.github/actions/rust-checks
+
+  rust-macos:
+    name: Rust (macos-latest)
+    runs-on: macos-latest
+    # ~2.4x the slowest cold observation (14m46s), plus the same ten minutes.
+    timeout-minutes: 45
+    # Off the pull-request path, and this is the single largest thing in this
+    # file that was blocking one. GitHub caps this account at five concurrent
+    # macOS jobs; every run launched three of them and spent a median 41.5
+    # macOS-minutes, so under two runs fit at once and the p90 wait for a macOS
+    # job to *start* was 56 minutes against a p90 execution time of 25.6. The
+    # worst observed waits — 118 to 137 minutes — all began with four or five
+    # macOS jobs already running.
+    #
+    # This leg is the cheapest of the three to give up, because it duplicates
+    # the ubuntu one almost exactly. `crates/` contains no `cfg(target_os)` at
+    # all and nine `cfg(unix)` sites, and `cfg(unix)` is true on Linux too — so
+    # there is no source path this leg compiles that the ubuntu leg does not.
+    # What it still earns is the behaviour underneath the source: APFS
+    # case-insensitivity and timestamp granularity, Keychain, SQLite locking,
+    # and whatever a dependency does differently on Darwin. That is worth a run
+    # a day and a run per merge, which is what this condition leaves.
+    #
+    # `skipped`, not absent: a job skipped by a job-level `if:` reports a check
+    # run GitHub counts as successful, so the required context is still
+    # satisfied on every pull request. The cost of that is honest and worth
+    # writing down — this required check can now only go red after a merge.
+    if: >-
+      github.event_name == 'schedule'
+      || github.event_name == 'workflow_dispatch'
+      || (github.event_name == 'push' && github.ref == 'refs/heads/master')
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/rust-checks
 
   macos-app:
     name: macOS app (xcframework + SwiftLint + XCTest)
