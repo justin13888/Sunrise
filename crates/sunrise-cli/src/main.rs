@@ -41,7 +41,9 @@
 use sunrise_cbor::version::{CRYPTO_SUITE_V, DOC_SCHEMA_V, WIRE_PROTO_V};
 use sunrise_cli::{livesync, login, pair, vault};
 use sunrise_core::commands::FocusStartDraft;
-use sunrise_core::{Command, Core, Query, QueryResult, RevokeReason, SystemRng};
+use sunrise_core::{
+    AttachmentFetchState, Command, Core, Query, QueryResult, RevokeReason, SystemRng,
+};
 use sunrise_domain::routine_rows;
 use sunrise_id::{EntityKind, EntityRef};
 
@@ -72,6 +74,18 @@ USAGE:
     sunrise contexts             list contexts with task counts
     sunrise context <id|name>    list the tasks carrying one context
     sunrise routines             list routines with cadence and streak
+
+  attachments
+    sunrise attachments <task-id>
+                                 list a task's attachments, marking which are
+                                 on this device
+    sunrise attachment get <attachment-id> [path]
+                                 download one attachment's bytes on demand,
+                                 whatever its size, and write them to `path`
+                                 or to stdout
+    sunrise attachment cancel <attachment-id>
+                                 stop a download this vault has outstanding and
+                                 mark it partial; `get` restarts it from byte 0
 
   review and reporting
     sunrise review               print this week's review summary
@@ -393,9 +407,17 @@ async fn run(sub: &str, rest: &[String]) -> Result<(), Box<dyn std::error::Error
     )
     .await?;
 
-    // Then the real plan. Only `sync` starts a driver: opening one for a
+    // Then the real plan. Almost nothing starts a driver: opening one for a
     // command that exits milliseconds later would just churn the relay.
-    if sub != "sync" {
+    //
+    // `attachment` is the second verb that needs one, and it needs one for the
+    // reason `sunrise_core::blob_fetch` explains — the transport belongs to the
+    // driver task, so a download with no driver is a request nothing can
+    // service. The core answers that case rather than hanging on it, so a
+    // `sunrise attachment get` with no `SUNRISE_SYNC_URL` reports it instead of
+    // waiting; an attachment whose bytes are already here still works offline,
+    // because locality is checked before the relay is.
+    if !matches!(sub, "sync" | "attachment") {
         env.url = None;
     }
     let plan = livesync::plan_from_env(
@@ -847,6 +869,8 @@ async fn dispatch(
         "review" => review(core).await,
         "export" => export(core, rest).await,
         "ical" => ical(core, rest).await,
+        "attachments" => attachments(core, rest).await,
+        "attachment" => attachment(core, rest).await,
         "sync" => sync_once(core, rest).await,
         other => Err(format!("unknown subcommand {other:?}; try `sunrise help`").into()),
     }
@@ -866,6 +890,136 @@ enum Archived {
     Include,
     /// New input (`sunrise edit`'s `#stream` / `@context`): live rows only.
     Exclude,
+}
+
+/// How long `attachment get` waits before handing the request back to the next
+/// session.
+///
+/// Ten times `sync --once`'s deadline, because they are waiting for different
+/// things: that one drains an outbox of small ops, and this one may be moving
+/// 100 MB. `Core::fetch_attachment` itself has no deadline — a GUI caller holds
+/// a Cancel button and a person — so the CLI supplies its own, and supplies it
+/// as a *report* rather than a failure: the request row is durable, so a
+/// download that outlasts this is still a download, and the next
+/// `sunrise sync --once` finishes it.
+const DOWNLOAD_DEADLINE: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// `attachments <task-id>` — one task's attachments and where their bytes are.
+///
+/// The CLI had no attachment surface at all before this, which made the
+/// download verb below unusable on its own terms: a subcommand that takes an
+/// attachment id needs a subcommand that prints one.
+async fn attachments(core: &Core, rest: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    #![allow(clippy::print_stdout)]
+    let raw = rest.first().ok_or("usage: attachments <task-id>")?;
+    let task = EntityRef::parse(raw, EntityKind::Task)
+        .map_err(|e| format!("not a task id: {raw} ({e})"))?;
+    let QueryResult::Attachments(rows) = core.query(Query::TaskAttachments(task)).await? else {
+        return Err("unexpected query result".into());
+    };
+    for att in rows {
+        println!(
+            "{}  {:<32} {:>10}  {}",
+            att.id.to_str(),
+            att.filename,
+            att.size_bytes,
+            where_the_bytes_are(core, &att)?
+        );
+    }
+    Ok(())
+}
+
+/// The state column of `sunrise attachments`, in the vocabulary the user acts
+/// on rather than the vocabulary the schema uses.
+///
+/// "here" is the only one that needs no further action, and the other three
+/// each name the next step: `get` it, wait for it, or `get` it again.
+fn where_the_bytes_are(
+    core: &Core,
+    att: &sunrise_domain::Attachment,
+) -> Result<&'static str, Box<dyn std::error::Error>> {
+    if core.attachment_is_local(att)? {
+        return Ok("here");
+    }
+    Ok(match core.attachment_fetch_state(att.id)? {
+        AttachmentFetchState::Requested => "downloading",
+        AttachmentFetchState::Partial => "partial (interrupted; `attachment get` restarts it)",
+        AttachmentFetchState::Idle if att.is_fetchable() => {
+            "not here (`attachment get` fetches it)"
+        }
+        // No `ciphertext_hash`, so this replica cannot name the blob on the
+        // relay and no amount of asking will produce it. Said plainly rather
+        // than offered as a button that cannot work.
+        AttachmentFetchState::Idle => "not here, and never uploaded",
+    })
+}
+
+/// `attachment get|cancel <attachment-id> [path]`.
+async fn attachment(core: &Core, rest: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    match rest.first().map(String::as_str) {
+        Some("get") => attachment_get(core, &rest[1..]).await,
+        Some("cancel") => attachment_cancel(core, &rest[1..]),
+        _ => Err("usage: attachment get <attachment-id> [path] | attachment cancel <id>".into()),
+    }
+}
+
+/// `attachment get <attachment-id> [path]` — the CLI's Download button.
+///
+/// The bytes go to `path`, or to stdout when none is given, so
+/// `sunrise attachment get att_… > scan.png` works the way `ical export`
+/// already does. Written with `write_all` rather than printed: this is the one
+/// output in the CLI that is not text.
+async fn attachment_get(core: &Core, rest: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    // stdout carries the bytes, so the note about them goes to stderr — that is
+    // what keeps `sunrise attachment get att_… > scan.png` a valid file.
+    #![allow(clippy::print_stderr)]
+    use std::io::Write as _;
+    let raw = rest
+        .first()
+        .ok_or("usage: attachment get <attachment-id> [path]")?;
+    let id = EntityRef::parse(raw, EntityKind::Attachment)
+        .map_err(|e| format!("not an attachment id: {raw} ({e})"))?;
+
+    match tokio::time::timeout(DOWNLOAD_DEADLINE, core.fetch_attachment(id)).await {
+        Ok(r) => r?,
+        // Not an error. The row is durable and still says what this device
+        // wants, so the honest report is that the work outlived the command.
+        Err(_) => {
+            return Err(format!(
+                "the download did not finish within {}s. The request stands: \
+                 `sunrise sync --once` will finish it",
+                DOWNLOAD_DEADLINE.as_secs()
+            )
+            .into())
+        }
+    }
+
+    let bytes = core.attachment_bytes(id).await?;
+    match rest.get(1) {
+        Some(path) => {
+            std::fs::write(path, &bytes).map_err(|e| format!("{path}: {e}"))?;
+            eprintln!("{} bytes written to {path}", bytes.len());
+        }
+        None => std::io::stdout().write_all(&bytes)?,
+    }
+    Ok(())
+}
+
+/// `attachment cancel <attachment-id>` — stop a download this vault has
+/// outstanding.
+///
+/// Useful across processes rather than within one: a `get` interrupted at the
+/// terminal leaves its request standing, which is deliberate — the next session
+/// finishes it — and this is how to say that was not what you wanted.
+fn attachment_cancel(core: &Core, rest: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    // A confirmation, not data: nothing should be piping this.
+    #![allow(clippy::print_stderr)]
+    let raw = rest.first().ok_or("usage: attachment cancel <id>")?;
+    let id = EntityRef::parse(raw, EntityKind::Attachment)
+        .map_err(|e| format!("not an attachment id: {raw} ({e})"))?;
+    core.cancel_attachment_fetch(id)?;
+    eprintln!("{}  download cancelled; marked partial", id.to_str());
+    Ok(())
 }
 
 /// Readable phrasing for an unresolved capture / annotate token.

@@ -1703,3 +1703,104 @@ fn usage_documents_the_device_and_identity_commands() {
         assert!(text.contains(needle), "usage must name `{needle}`");
     }
 }
+
+/// The CLI half of issue #227: an attachment surface at all, and a Download
+/// verb on it.
+///
+/// Before this, `sunrise-cli` reached no attachment command — the parity matrix
+/// recorded the pane as Apple-only — so the on-demand fetch would have shipped
+/// as an Apple feature with a core that could serve two clients. The listing is
+/// tested with it because it is what makes the verb usable: a subcommand that
+/// takes an attachment id is unreachable without one that prints one.
+///
+/// The offline half is the one worth asserting in a *process* test. The CLI
+/// starts no driver for any verb but `sync` and this one, and a download with
+/// no relay configured has nothing that could ever service it — so it has to
+/// report that and exit, rather than inherit `fetch_attachment`'s deliberate
+/// absence of a deadline and hang a terminal.
+#[tokio::test]
+async fn attachments_are_listed_and_fetched_by_the_cli() {
+    use sunrise_cli::livesync::{open_with_plan, SyncPlan};
+    use sunrise_core::Command as CoreCommand;
+    use sunrise_domain::TaskDraft;
+
+    let dir = tempfile::tempdir().unwrap();
+    let vault = dir.path().to_path_buf();
+    let bytes = b"%PDF-1.7 the signed lease".to_vec();
+
+    // The CLI cannot attach — `AttachFile` has no verb, and the file importer
+    // is the Apple pane — so the fixture is built in-process, as the other
+    // tests here build the entities the CLI reads but does not mint.
+    let (task, att) = {
+        let (core, _) = open_with_plan(
+            vault.clone(),
+            "0.1.0+test",
+            root_of(&vault),
+            &SyncPlan::default(),
+            None,
+        )
+        .await
+        .expect("open the vault");
+        let task = core
+            .submit(CoreCommand::CreateTask(TaskDraft {
+                title: "Countersign the lease".into(),
+                ..Default::default()
+            }))
+            .await
+            .expect("create the task")
+            .entity;
+        let att = core
+            .attach_file(task, "lease.pdf".into(), "application/pdf".into(), &bytes)
+            .await
+            .expect("attach");
+        core.shutdown().await;
+        (task.to_str(), att)
+    };
+
+    let listed = stdout(&run(dir.path(), &["attachments", &task]));
+    assert!(
+        listed.contains(&att.id.to_str()) && listed.contains("lease.pdf"),
+        "the listing must name the attachment it is about: {listed}"
+    );
+    assert!(
+        listed.contains("here"),
+        "the device that sealed it holds every chunk: {listed}"
+    );
+
+    // A local attachment needs no relay, because locality is checked before
+    // one is asked for.
+    let out = dir.path().join("out.pdf");
+    let got = run(
+        dir.path(),
+        &[
+            "attachment",
+            "get",
+            &att.id.to_str(),
+            &out.to_string_lossy(),
+        ],
+    );
+    assert!(
+        got.status.success(),
+        "{}",
+        String::from_utf8_lossy(&got.stderr)
+    );
+    assert_eq!(std::fs::read(&out).expect("the written file"), bytes);
+
+    // Exactly what a replica that synced the metadata and not the chunks looks
+    // like — and the state the Download verb exists for.
+    std::fs::remove_dir_all(vault.join("blobs")).expect("drop the chunks");
+
+    let listed = stdout(&run(dir.path(), &["attachments", &task]));
+    assert!(
+        listed.contains("not here"),
+        "the listing must say the bytes are elsewhere: {listed}"
+    );
+
+    let refused = run(dir.path(), &["attachment", "get", &att.id.to_str()]);
+    assert!(!refused.status.success());
+    let why = String::from_utf8_lossy(&refused.stderr);
+    assert!(
+        why.contains("no sync session"),
+        "a download with no relay must say so rather than wait: {why}"
+    );
+}
