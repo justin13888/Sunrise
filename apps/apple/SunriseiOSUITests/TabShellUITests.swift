@@ -25,9 +25,7 @@ final class TabShellUITests: SunriseUITestCase {
         createVault()
 
         for tab in ["Today", "Calendar", "Browse", "Focus"] {
-            let button = app.tabBars.buttons[tab]
-            XCTAssertTrue(button.waitForExistence(timeout: 10), "\(tab) is in the tab bar")
-            button.tap()
+            activate(app.tabBars.buttons[tab], named: "the \(tab) tab")
             XCTAssertTrue(
                 waitUntil(timeout: 10) { self.app.state == .runningForeground },
                 "\(tab) rendered without taking the app down"
@@ -46,17 +44,15 @@ final class TabShellUITests: SunriseUITestCase {
     func testTheScreensWithoutATabAreReachableFromTheMenu() throws {
         createVault()
 
-        app.tabBars.buttons["Browse"].tap()
+        activate(app.tabBars.buttons["Browse"], named: "the Browse tab")
         for row in ["Morning", "Evening", "Routines", "Review"] {
-            app.buttons["more"].tap()
-            let item = app.buttons[row].firstMatch
-            XCTAssertTrue(item.waitForExistence(timeout: 10), "\(row) is in the menu")
-            item.tap()
+            activate(app.buttons["more"], named: "Browse's More menu")
+            activate(app.buttons[row].firstMatch, named: "\(row) in the More menu")
             XCTAssertTrue(
                 app.navigationBars[row].waitForExistence(timeout: 10),
                 "\(row) pushed and titled itself"
             )
-            app.navigationBars.buttons.firstMatch.tap()
+            activate(app.navigationBars.buttons.firstMatch, named: "the back button on \(row)")
             XCTAssertTrue(
                 app.navigationBars["Browse"].waitForExistence(timeout: 10),
                 "back returned to Browse"
@@ -108,14 +104,18 @@ final class TabShellUITests: SunriseUITestCase {
         // way out has to exist and has to work.
         let done = app.buttons["capture.done"]
         XCTAssertTrue(done.waitForExistence(timeout: 5), "the keyboard offers Done")
-        done.tap()
+        activate(done, named: "the keyboard's Done button", timeout: 5)
 
+        // The claim of this test, and the reason the message is spelled out
+        // here rather than left to `activate`'s default: a tab bar that is
+        // present but not hittable is the keyboard still covering it, which is
+        // the exact defect this test exists for.
         let browse = app.tabBars.buttons["Browse"]
         XCTAssertTrue(
             waitUntil(timeout: 10) { browse.isHittable },
             "the keyboard is no longer covering the tab bar"
         )
-        browse.tap()
+        activate(browse, named: "the Browse tab")
         XCTAssertTrue(
             app.navigationBars["Browse"].waitForExistence(timeout: 10),
             "the tab switched"
@@ -133,14 +133,11 @@ final class TabShellUITests: SunriseUITestCase {
     func testTheCaptureSheetCommitsFromAScreenWithNoBar() throws {
         createVault()
 
-        app.tabBars.buttons["Calendar"].tap()
-        let open = app.buttons["capture"]
-        XCTAssertTrue(open.waitForExistence(timeout: 10), "Calendar offers Capture")
-        open.tap()
+        activate(app.tabBars.buttons["Calendar"], named: "the Calendar tab")
+        activate(app.buttons["capture"], named: "Calendar's Capture button")
 
         let field = app.textFields["quick-capture.field"]
-        XCTAssertTrue(field.waitForExistence(timeout: 10), "the sheet presented its field")
-        field.tap()
+        activate(field, named: "the capture sheet's field")
         field.typeText("Book the ferry")
 
         let add = app.buttons["quick-capture.add"]
@@ -148,7 +145,7 @@ final class TabShellUITests: SunriseUITestCase {
             waitUntil(timeout: 10) { add.isEnabled },
             "the capture preview enables Add"
         )
-        add.tap()
+        activate(add, named: "the capture sheet's Add button")
 
         // Matched as any descendant rather than as a `staticText`: the label is
         // a `Label`, and which element type SwiftUI folds that into is not a
@@ -161,22 +158,23 @@ final class TabShellUITests: SunriseUITestCase {
 
         // Cancel takes the sheet and its keyboard away together, which is what
         // makes the tab bar tappable again.
-        app.buttons["quick-capture.cancel"].tap()
+        activate(app.buttons["quick-capture.cancel"], named: "the capture sheet's Cancel button")
 
+        // Spelled out for the same reason as above: "present but not hittable"
+        // is the sheet still over it, which is what this line asserts against.
         let browse = app.tabBars.buttons["Browse"]
         XCTAssertTrue(
             waitUntil(timeout: 10) { browse.isHittable },
             "dismissing the sheet freed the tab bar"
         )
-        browse.tap()
+        activate(browse, named: "the Browse tab")
         // The cell, not the identifier's own element. The row is a `Label`,
         // and on iOS SwiftUI splits that into an image and a static text which
         // both inherit the identifier — so the query is ambiguous, and the
         // image it resolves to first is not hittable on its own. The thing a
         // finger lands on is the row.
         let inbox = app.cells.containing(.staticText, identifier: "sidebar.inbox").firstMatch
-        XCTAssertTrue(inbox.waitForExistence(timeout: 10), "the Inbox is in Browse")
-        inbox.tap()
+        activate(inbox, named: "the Inbox row in Browse")
 
         XCTAssertTrue(
             app.staticTexts["Book the ferry"].waitForExistence(timeout: 10),
@@ -200,14 +198,12 @@ final class TabShellUITests: SunriseUITestCase {
 final class SidebarAddButtonTests: SunriseUITestCase {
     func testTheAddControlsCarryNamesAndNotOnlyIdentifiers() throws {
         createVault()
-        app.tabBars.buttons["Browse"].tap()
+        activate(app.tabBars.buttons["Browse"], named: "the Browse tab")
 
         // On iOS the two actions are a toolbar menu rather than a bottom bar:
         // the space under an iPhone list belongs to the tab bar. Open it, then
         // assert on the items inside.
-        let add = app.buttons["sidebar.add"]
-        XCTAssertTrue(add.waitForExistence(timeout: 10), "Browse offers an Add menu")
-        add.tap()
+        activate(app.buttons["sidebar.add"], named: "Browse's Add menu")
 
         for name in ["New stream", "New context"] {
             XCTAssertTrue(

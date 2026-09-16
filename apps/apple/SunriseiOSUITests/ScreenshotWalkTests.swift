@@ -47,12 +47,7 @@ final class ScreenshotWalkTests: SunriseUITestCase {
         // apart from the others, and selecting it leaves a keyboard up that
         // would sit over the next screenshot.
         for (index, tab) in ["Today", "Calendar", "Browse", "Focus", "Search"].enumerated() {
-            let button = app.tabBars.buttons[tab]
-            guard button.waitForExistence(timeout: 10) else {
-                XCTFail("\(tab) is in the tab bar")
-                continue
-            }
-            button.tap()
+            activate(app.tabBars.buttons[tab], named: "the \(tab) tab")
             _ = waitUntil(timeout: 5) { self.app.state == .runningForeground }
             shot(String(format: "%02d-tab-%@", index + 10, tab.lowercased()))
         }
@@ -65,18 +60,13 @@ final class ScreenshotWalkTests: SunriseUITestCase {
     /// them onto Browse's stack from its toolbar menu, and that is the only
     /// way to them — which is exactly why they are worth photographing.
     private func walkTheMenuDestinations() {
-        app.tabBars.buttons["Browse"].tap()
+        activate(app.tabBars.buttons["Browse"], named: "the Browse tab")
         for (index, row) in ["Morning", "Evening", "Routines", "Review"].enumerated() {
-            app.buttons["more"].tap()
-            let item = app.buttons[row].firstMatch
-            guard item.waitForExistence(timeout: 10) else {
-                XCTFail("\(row) is in the More menu")
-                continue
-            }
-            item.tap()
+            activate(app.buttons["more"], named: "Browse's More menu")
+            activate(app.buttons[row].firstMatch, named: "\(row) in the More menu")
             _ = app.navigationBars[row].waitForExistence(timeout: 10)
             shot(String(format: "%02d-more-%@", index + 20, row.lowercased()))
-            app.navigationBars.buttons.firstMatch.tap()
+            activate(app.navigationBars.buttons.firstMatch, named: "the back button on \(row)")
         }
     }
 
@@ -84,13 +74,8 @@ final class ScreenshotWalkTests: SunriseUITestCase {
     /// reached from the toolbar button every screen without an inline bar
     /// carries.
     private func walkCaptureSheet() {
-        app.tabBars.buttons["Calendar"].tap()
-        let button = app.buttons["capture"]
-        guard button.waitForExistence(timeout: 10) else {
-            XCTFail("Calendar offers a capture button")
-            return
-        }
-        button.tap()
+        activate(app.tabBars.buttons["Calendar"], named: "the Calendar tab")
+        activate(app.buttons["capture"], named: "Calendar's Capture button")
         _ = app.textFields["capture.field"].waitForExistence(timeout: 10)
         shot("30-capture-sheet")
     }

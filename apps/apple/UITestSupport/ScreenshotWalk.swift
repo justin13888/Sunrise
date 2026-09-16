@@ -66,8 +66,12 @@ extension SunriseUITestCase {
     func dismissKeyboard() {
         #if !os(macOS)
         let done = app.buttons["capture.done"]
+        // The existence check stays a condition rather than becoming an
+        // assertion: a simulator with a hardware keyboard raises no software
+        // keyboard, so there is nothing to dismiss and nothing to fail about.
+        // Past it the button is there, and then it has to be pressable.
         if done.waitForExistence(timeout: 2) {
-            done.tap()
+            activate(done, named: "the keyboard's Done button")
         }
         #endif
     }

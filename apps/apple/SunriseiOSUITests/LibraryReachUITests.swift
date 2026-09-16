@@ -14,9 +14,7 @@ final class LibraryReachUITests: SunriseUITestCase {
     func testTheSavedViewsMenuIsOnTheListToolbarAndOffersToSaveThisView() throws {
         createVault()
 
-        let menu = app.buttons["saved-views"]
-        XCTAssertTrue(menu.waitForExistence(timeout: 10), "Today's toolbar offers Views")
-        menu.tap()
+        activate(app.buttons["saved-views"], named: "Today's Views menu")
 
         // By name rather than by identifier, for the reason
         // `SidebarAddButtonTests` gives: a control findable only by identifier
@@ -31,8 +29,13 @@ final class LibraryReachUITests: SunriseUITestCase {
     func testASavedViewRoundTripsThroughTheMenu() throws {
         createVault()
 
-        app.buttons["saved-views"].tap()
-        app.buttons["Save this view…"].tap()
+        // Both of these were unguarded `tap()`s, and that is what made this
+        // test the one CI caught: a menu item pressed before the menu's
+        // presentation animation settles is pressed at nothing, and the
+        // failure then surfaces four lines down on a sheet that never came.
+        // `activate` waits for both halves and names which one was missing.
+        activate(app.buttons["saved-views"], named: "Today's Views menu")
+        activate(app.buttons["Save this view…"], named: "the menu's Save this view… item")
 
         // `firstMatch` on the type rather than by name: the sheet has exactly
         // one field, and which of a `TextField`'s two strings — its title or
@@ -40,15 +43,13 @@ final class LibraryReachUITests: SunriseUITestCase {
         // a promise worth resting a test on.
         let name = app.textFields.firstMatch
         XCTAssertTrue(name.waitForExistence(timeout: 10), "the sheet asks for a name")
-        name.tap()
+        activate(name, named: "the sheet's name field")
         name.typeText("mornings")
-        app.buttons["Save"].tap()
+        activate(app.buttons["Save"], named: "the sheet's Save button")
 
         // The store is a file `sunrise` also reads, so this is a real write
         // and not a list held in the view.
-        let menu = app.buttons["saved-views"]
-        XCTAssertTrue(waitUntil(timeout: 10) { menu.isHittable }, "the sheet closed")
-        menu.tap()
+        activate(app.buttons["saved-views"], named: "Today's Views menu, once the sheet closed")
         XCTAssertTrue(
             app.descendants(matching: .any)
                 .matching(NSPredicate(format: "label BEGINSWITH %@", "mornings"))
@@ -62,11 +63,8 @@ final class LibraryReachUITests: SunriseUITestCase {
     /// File menu items land on a phone.
     func testTheCalendarImportAndExportAreInTheOverflowMenu() throws {
         createVault()
-        app.tabBars.buttons["Browse"].tap()
-
-        let more = app.buttons["more"]
-        XCTAssertTrue(more.waitForExistence(timeout: 10), "Browse offers the More menu")
-        more.tap()
+        activate(app.tabBars.buttons["Browse"], named: "the Browse tab")
+        activate(app.buttons["more"], named: "Browse's More menu")
 
         for name in ["Import calendar…", "Export calendar"] {
             XCTAssertTrue(
