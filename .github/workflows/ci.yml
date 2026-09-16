@@ -430,7 +430,23 @@ jobs:
     # ~15.4 s, about 81 minutes, where domain's 226 at ~5.3 s is about 20. A
     # hosted runner is slower than the laptop these came from, so 120 leaves
     # core's shard roughly 50% headroom and every other shard several times
-    # over. If core's shard count rises, this can come down with it.
+    # over.
+    #
+    # That headroom rests on an assumption nothing here measures, so state it:
+    # it holds only while `ubuntu-latest` is under ~1.5x the laptop's per-mutant
+    # cost. At exactly 1.5x core's largest shard is 121 minutes and this job
+    # times out; every other shard survives a much worse ratio. Nobody has
+    # timed a shard on a runner, because the matrix has never completed one —
+    # so the ratio is unrecorded rather than measured and generous.
+    #
+    # The lever if it turns out to be wrong is `sunrise-core`'s shard count,
+    # not this number: the longest shard is the only one near the ceiling, and
+    # splitting core further shortens it proportionally while raising
+    # `timeout-minutes` only lets a bad ratio cost more. And the failure is
+    # cheap while it lasts — `sunrise-core` has no recorded floor, so a shard
+    # that times out spends runner minutes and gates nothing.
+    #
+    # If core's shard count rises, this can come down with it.
     timeout-minutes: 120
     # Nightly and on demand, never on a pull request. The four scoped crates
     # generate ~2,500 mutants and each one is an incremental rebuild plus a
