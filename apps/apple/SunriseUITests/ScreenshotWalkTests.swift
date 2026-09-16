@@ -46,12 +46,10 @@ final class ScreenshotWalkTests: SunriseUITestCase {
             "calendar", "focus", "routines", "review", "evening"
         ]
         for (index, name) in destinations.enumerated() {
-            let row = app.descendants(matching: .any)["sidebar.\(name)"]
-            guard row.waitForExistence(timeout: 10) else {
-                XCTFail("\(name) is in the sidebar")
-                continue
-            }
-            activate(row)
+            activate(
+                app.descendants(matching: .any)["sidebar.\(name)"],
+                named: "the \(name) row in the sidebar"
+            )
             // A poll rather than a sleep: every one of these is a round trip
             // through the core, and a fixed wait would be either flaky or
             // slow. There is nothing specific to wait *for* — the walk does
