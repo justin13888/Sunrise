@@ -66,8 +66,11 @@ struct CoreBridgeTests {
         let vault = try await TestVault()
         let changes = await vault.bridge.changes(window: .milliseconds(20))
 
+        // Past the prime: `changes()` opens with an empty batch that means
+        // "re-read", and the claim here is about a write actually being
+        // announced.
         let observed = Task { () -> ChangeBatch? in
-            for await batch in changes { return batch }
+            for await batch in changes where !batch.touched.isEmpty { return batch }
             return nil
         }
 
@@ -75,6 +78,41 @@ struct CoreBridgeTests {
         let batch = try #require(await observed.value)
         #expect(batch.touched.contains(outcome.entity))
         #expect(batch.isComplete)
+        await vault.bridge.shutdown()
+    }
+
+    /// **A feed that is opened late still reports what it missed.**
+    ///
+    /// `changes()` subscribes on its first caller, so there is always a window
+    /// between a write landing and a screen attaching — at launch, on a tab
+    /// the user has not opened yet, and in any test that starts `follow()` as
+    /// a task and writes immediately. `Core::changes()` is a `tokio`
+    /// broadcast: a receiver created after a send does not get it, and no
+    /// timeout makes a missed event arrive. The prime is what covers that
+    /// window, and this is the interleaving it exists for — the write is
+    /// complete before anything subscribes.
+    @Test
+    func aStreamOpenedAfterAWriteStillAsksForARepaint() async throws {
+        let vault = try await TestVault()
+        let outcome = try await vault.bridge.submit(.createTask(draft: draft("Already here")))
+
+        let changes = await vault.bridge.changes(window: .milliseconds(20))
+        // Bounded, because the way this fails is that nothing ever arrives:
+        // an unbounded wait would hang the suite instead of failing it.
+        let batch = try #require(
+            await Self.firstBatch(of: changes),
+            "a stream opened after the write said nothing at all"
+        )
+        #expect(
+            batch.touched.isEmpty && !batch.isComplete,
+            "a late subscriber is told to re-read rather than told nothing"
+        )
+        // And the re-read it is being told to do finds the write.
+        guard case let .tasks(tasks) = try await vault.bridge.query(.inbox) else {
+            Issue.record("expected a task list")
+            return
+        }
+        #expect(tasks.map(\.id) == [outcome.entity])
         await vault.bridge.shutdown()
     }
 
@@ -116,9 +154,11 @@ struct CoreBridgeTests {
         let staying = await vault.bridge.changes(window: .milliseconds(20))
 
         let stayingSaw = Task { await Self.touched(in: staying) }
-        // A view that appears, repaints once and disappears.
+        // A view that appears, repaints once on a real write and disappears.
+        // Past the prime for the reason above: an empty opening batch is not
+        // the repaint this is about.
         let departed = Task { () -> ChangeBatch? in
-            for await batch in leaving { return batch }
+            for await batch in leaving where !batch.touched.isEmpty { return batch }
             return nil
         }
 
@@ -135,6 +175,25 @@ struct CoreBridgeTests {
             touched.contains(second.entity),
             "the surviving screen stopped repainting when its neighbour went away"
         )
+    }
+
+    /// The first batch a stream produces, or `nil` if it produces none inside
+    /// `within`. A feed defect shows up as silence, and silence is a hang
+    /// unless something bounds it.
+    private static func firstBatch(
+        of stream: AsyncStream<ChangeBatch>,
+        within: Duration = .seconds(3)
+    ) async -> ChangeBatch? {
+        let reader = Task { () -> ChangeBatch? in
+            for await batch in stream { return batch }
+            return nil
+        }
+        let timeout = Task {
+            try? await Task.sleep(for: within)
+            reader.cancel()
+        }
+        defer { timeout.cancel() }
+        return await reader.value
     }
 
     /// Everything a stream reported, across however many batches it took. The

@@ -248,3 +248,52 @@ struct ChangeBroadcastTests {
         #expect(await drain(broadcast.subscribe()) == [.closed])
     }
 }
+
+/// `primed()` is what makes a lazily-opened subscription safe to open late.
+struct PrimedChangeStreamTests {
+    /// The prime arrives with nothing behind it, so a screen re-reads before
+    /// anything has happened rather than after the first thing it missed.
+    @Test
+    func aPrimedStreamOpensWithARepaintNobodyPublished() async {
+        let broadcast = ChangeBroadcast()
+        let stream = await broadcast.subscribe()
+            .coalesced(window: .milliseconds(5))
+            .primed()
+        var iterator = stream.makeAsyncIterator()
+
+        let prime = await iterator.next()
+        #expect(prime?.touched.isEmpty == true)
+        #expect(
+            prime?.isComplete == false,
+            "an empty batch that claimed completeness would say 'nothing changed'"
+        )
+        #expect(prime?.isClosed == false)
+        await broadcast.finish()
+    }
+
+    /// And it is a prefix, not a replacement: everything published afterwards
+    /// still arrives, in order.
+    @Test
+    func thePrimeDoesNotSwallowWhatFollows() async {
+        let broadcast = ChangeBroadcast()
+        let stream = await broadcast.subscribe()
+            .coalesced(window: .milliseconds(5))
+            .primed()
+
+        let collected = Task { () -> [ChangeBatch] in
+            var batches: [ChangeBatch] = []
+            for await batch in stream { batches.append(batch) }
+            return batches
+        }
+        // The prime is yielded from a task of its own, so give it the hop it
+        // needs before publishing — otherwise this asserts on scheduling.
+        try? await Task.sleep(for: .milliseconds(50))
+        await broadcast.publish(.entity("tsk_a"))
+        try? await Task.sleep(for: .milliseconds(50))
+        await broadcast.finish()
+
+        let batches = await collected.value
+        #expect(batches.first?.touched.isEmpty == true, "the prime comes first")
+        #expect(batches.contains { $0.touched == ["tsk_a"] })
+    }
+}
