@@ -446,9 +446,18 @@ jobs:
       matrix:
         # Sharded by crate rather than one shard-space across the workspace,
         # because the gate scores per crate and a shard that straddles two
-        # crates makes a partial denominator. Shard counts are proportional to
-        # mutant count: sunrise-domain 1352, sunrise-core 740,
-        # sunrise-crypto 296, sunrise-sync 94.
+        # crates makes a partial denominator. Populations, re-counted at
+        # `1d4b484` with `cargo mutants --list -p <crate> --all-features`:
+        # sunrise-domain 1356, sunrise-core 1259, sunrise-crypto 519,
+        # sunrise-sync 135. The figures here were 1352/740/296/94 and had
+        # drifted with the crates.
+        #
+        # Shard counts are not proportional to those populations, and should
+        # not be: per-mutant cost spans a factor of eight across the four, so
+        # the population is not the cost. The table above is what they balance
+        # against — sunrise-core at 4 shards is 315 mutants at ~15.4 s, the
+        # longest shard at about 81 minutes, where sunrise-domain at 6 is 226
+        # at ~5.3 s, about 20.
         #
         # `--shard k/n` is zero-based: cargo-mutants requires k < n and rejects
         # n/n outright ("shard k must be less than n"). So a crate split n ways
