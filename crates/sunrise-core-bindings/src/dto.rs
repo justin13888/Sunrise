@@ -2543,11 +2543,11 @@ pub struct CommandOutcome {
     /// `true` means this device's own standing is the problem: the account has
     /// revoked it, and a revoked device's revocations of third parties are
     /// stored and skipped on every replica (ADR-0041). The target stays
-    /// current everywhere, it keeps receiving new keys, and the relay is
-    /// deliberately not told either. A client must not print "removed" over
-    /// this — it is the same disclosure rule as `unrotatedStreams`, at the
-    /// other end of the scale: that one says the removal was incomplete, this
-    /// one says there was none. `false` for every other command.
+    /// current everywhere, it keeps receiving new keys, and the relay's half
+    /// is deliberately not queued for it. A client must not print "removed"
+    /// over this — it is the same disclosure rule as `unrotatedStreams`, at
+    /// the other end of the scale: that one says the removal was incomplete,
+    /// this one says there was none. `false` for every other command.
     pub revocation_gated: bool,
 }
 

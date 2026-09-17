@@ -165,7 +165,7 @@ struct DeviceListSection: View {
                     This \(Platform.deviceName) has itself been removed from \
                     the account, so the account discards its removals of other \
                     devices. \(done.nickname) is still current everywhere and \
-                    still receives new keys, and the relay was not told either.
+                    still receives new keys, and this removal tells the relay nothing.
                     """
                 )
                 Text(

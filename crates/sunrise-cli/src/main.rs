@@ -707,7 +707,7 @@ async fn dispatch(
                      discards its revocations of other devices."
                 );
                 println!("  - {} is still a current device", hex16(&target));
-                println!("  - the relay was not told, because there is nothing to tell it");
+                println!("  - this revocation tells the relay nothing");
                 println!(
                     "  - the op is kept, not dropped: revoke from a device the account \
                      still trusts, or see `sunrise devices` for which those are"

@@ -84,8 +84,8 @@ final class DeviceListModel {
         /// rotated, and the op is kept and re-judged whenever another
         /// revocation lands. It is a claim the view must not make: the target
         /// is still current on every replica, it still receives new keys, and
-        /// the relay was deliberately not told either. Same disclosure rule as
-        /// ``unrotatedStreams`` at the other end of the scale.
+        /// this revocation queues no relay intent of its own. Same disclosure
+        /// rule as ``unrotatedStreams`` at the other end of the scale.
         let gated: Bool
 
         /// Read straight off what the command returned.
