@@ -158,8 +158,43 @@ struct KeychainCredentialStore: CredentialStore {
     /// remedy is a Sign out button rendered in a state the user cannot reach.
     /// See `KeychainItem.writeAcrossDomains`, including why the migration's own
     /// write must not do this.
+    ///
+    /// **A refused other-domain delete is not a failed save, and this is where
+    /// that is decided.** `writeAcrossDomains` writes first and cleans up
+    /// second, so it can throw with the token already stored; it says which
+    /// case that is by raising `KeychainError.writtenButOtherDomainRefused`,
+    /// and only that case. This method is the boundary that owns the question
+    /// "was the token stored", because `save` returns `Void` and a throw out of
+    /// it is the only answer its callers get. Answering "no" when the bytes are
+    /// on disk is what made a dismissed Keychain prompt cost a session: the
+    /// renewal path keeps its stale credential and signs the user out at
+    /// expiry, deleting the good token on the way; the sign-in path reports a
+    /// failure for a login that succeeded. Both are `AccountModel`'s reading of
+    /// a throw, and both are correct readings of the wrong signal.
+    ///
+    /// So the caveat is dropped here rather than carried. It has nowhere to go:
+    /// `CredentialStore.save` is `Void`, and widening it to carry a partial
+    /// success is the shape #255 is proposing for the sign-out path, across a
+    /// protocol with more than one conformer. What is lost by dropping it is
+    /// named in `KeychainItem.writeAcrossDomains`: the stale copy survives, and
+    /// the next load's migration refuses it with `.migrationUnverified`. That
+    /// state is the refused delete's doing, not this `catch`'s — it exists
+    /// identically whether this line rethrows or not — and rethrowing adds the
+    /// lost session on top of it.
+    ///
+    /// **Untestable on every configuration this repository builds**, for the
+    /// reason `KeychainItem.meansTheOtherStoreWasUnreachable` declares: the
+    /// other domain's refusal here is always the missing-entitlement one, which
+    /// is swallowed before it can reach this `catch`. What *is* pinned is the
+    /// discrimination this rests on —
+    /// `aWriteRefusedInItsOwnDomainIsNotReportedAsAPartialSuccess` fails if a
+    /// write that stored nothing is labelled as one that stored something.
     func save(_ credentials: StoredCredentials) throws {
-        try item.writeAcrossDomains(try JSONEncoder().encode(credentials))
+        do {
+            try item.writeAcrossDomains(try JSONEncoder().encode(credentials))
+        } catch let error as KeychainError {
+            guard case .writtenButOtherDomainRefused = error else { throw error }
+        }
     }
 
     /// Across both domains. Signing out has to reach the refresh token

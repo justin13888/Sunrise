@@ -258,9 +258,36 @@ struct KeychainItem: Sendable {
     /// ``meansTheOtherStoreWasUnreachable(_:)``'s two statuses are — the
     /// missing-entitlement refusal an unentitled build gets, and not-found —
     /// and anything else is raised, because a store that refused on its own
-    /// terms may still be holding the stale copy this method exists to remove.
-    /// Leaving it there is the ``KeychainError/migrationUnverified`` loop
-    /// above, arriving through the swallow instead of through a missing delete.
+    /// terms may still hold the stale copy this method exists to remove.
+    ///
+    /// **It is raised as ``KeychainError/writtenButOtherDomainRefused(_:)``,
+    /// and the distinct case is the repair.** Raising the other domain's status
+    /// was right; raising it as a bare ``KeychainError/unexpected(_:)`` was not,
+    /// because by then ``write(_:)`` has already succeeded, and a throw out of a
+    /// write reads to every caller as "nothing was stored". On an entitled Mac
+    /// with the other keychain locked or a prompt dismissed, that misreading
+    /// cost the session twice: a silent renewal whose fresh token landed kept
+    /// the *stale* credential in memory and signed the user out at expiry, the
+    /// sign-out's `try? clear()` deleting the good token just written; and a
+    /// sign-in cleared the credential and failed the state *while the token was
+    /// stored*, so the next launch found no source, answered with the
+    /// destination's, and signed in a user told sign-in had failed. Both land on
+    /// this method's own motivating path: the two-copy state it exists to
+    /// collapse is exactly when the delete has something to refuse.
+    ///
+    /// **What the case does not buy, said rather than left to be found.** The
+    /// stale copy survives, so the next load's
+    /// ``KeychainMigration/migrate(before:)`` finds destination and source
+    /// unequal and raises ``KeychainError/migrationUnverified``, which
+    /// ``KeychainMigration/loadMigratingIfNeeded()`` keeps outside its `do` and
+    /// lets through — the silent signed-out state, one launch later. The refused
+    /// delete creates that whether this throws or not, and the two outcomes
+    /// above are strictly worse, losing the session *now* and the good copy with
+    /// it. Closing it means teaching the migration that a just-written
+    /// destination is authoritative: its verify step, not this method. Writing
+    /// the fresh bytes into the other domain so the copies agree was rejected —
+    /// every status reaching this line, a locked keychain, a denied prompt, an
+    /// I/O failure, refuses a *write* there too.
     ///
     /// **This half is untested by construction, and saying so is the point.**
     /// The cross-domain delete's own effect — the other domain's copy being
@@ -291,7 +318,14 @@ struct KeychainItem: Sendable {
     func writeAcrossDomains(_ data: Data) throws {
         try write(data)
         guard KeychainDomain.domainsAreDistinctStores else { return }
-        try deleteInOtherDomain()
+        do {
+            try deleteInOtherDomain()
+        } catch let error as KeychainError {
+            // Only a status is re-labelled: an error this method has not
+            // accounted for must not be asserted to mean the write survived.
+            guard case let .unexpected(status) = error else { throw error }
+            throw KeychainError.writtenButOtherDomainRefused(status)
+        }
     }
 
     /// Raise an existing item to `accessibility`, if it is not there already.
@@ -432,6 +466,15 @@ enum KeychainError: Error, Equatable {
     /// `unexpected` because the secret is readable and the *guarantee* is
     /// what failed, which is what a support reader needs to be told.
     case accessibilityNotRaised(OSStatus)
+    /// ``KeychainItem/writeAcrossDomains(_:)`` **stored the bytes** and then
+    /// could not take away the copy in the other keychain, which refused on its
+    /// own terms. Carries that domain's status. Distinct from `unexpected`
+    /// because the two say opposite things about the one question a `save`'s
+    /// caller asks — `unexpected` out of a write means nothing was stored, this
+    /// one means the write *succeeded* and the cleanup did not. See
+    /// ``KeychainItem/writeAcrossDomains(_:)`` for the two sessions the missing
+    /// distinction cost.
+    case writtenButOtherDomainRefused(OSStatus)
     /// A ``KeychainMigration`` found a secret already sitting at its
     /// destination whose bytes are **not** the source's, so two different
     /// secrets claim one `(service, account)` and nothing here can tell which
@@ -459,6 +502,13 @@ extension KeychainError: LocalizedError {
             // credential raises its class on the same path.
             "This secret is stored under an older, weaker Keychain protection "
                 + "class and the Keychain would not change it: "
+                + (SecCopyErrorMessageString(status, nil) as String?
+                    ?? "Keychain error \(status).")
+        case let .writtenButOtherDomainRefused(status):
+            // Leads with what *was* stored: every other message here describes
+            // something that did not happen, and this one does not.
+            "This secret was saved, but an older copy of it in your other "
+                + "keychain could not be removed: "
                 + (SecCopyErrorMessageString(status, nil) as String?
                     ?? "Keychain error \(status).")
         case .migrationUnverified:
