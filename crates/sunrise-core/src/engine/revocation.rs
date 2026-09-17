@@ -473,11 +473,12 @@ impl Engine {
     /// the op id is not needed and the target is.
     ///
     /// Before the walk it builds `revokers_all` — who has revoked whom, over
-    /// the **whole ledger** — and skips a row whose sender appears in it as a
-    /// revoked device. The order above still decides the register, because a
-    /// later row overwrites an earlier one; it no longer decides the gate.
-    /// Every replica holding the same ops reaches the same register, whatever
-    /// order the ops arrived in.
+    /// the **whole ledger** — discounts from it every revoker the ledger
+    /// itself shows expelled by a third party, and skips a row whose sender
+    /// survives in what is left. The order above still decides the register,
+    /// because a later row overwrites an earlier one; it no longer decides the
+    /// gate. Every replica holding the same ops reaches the same register,
+    /// whatever order the ops arrived in.
     ///
     /// # Why the gate reads the whole ledger and not the prefix
     ///
@@ -546,13 +547,65 @@ impl Engine {
     /// device the account has already expelled costs the device that expelled
     /// it the ability to revoke third parties, for good.
     ///
-    /// What it does **not** cost, because the difference decides the remedy:
-    /// revocation is not gated on `ID_S_priv` anywhere, so identity rotation
-    /// and pairing sponsorship are untouched, and every other current device
-    /// in the account can still revoke anyone. The remedy is a third current
-    /// device. The lockout is total only in a two-device account, where there
-    /// is no third — and there the survivor has nothing left to revoke but
-    /// itself, which [`Self::revoke_device`] refuses anyway.
+    /// **What it does not cost, stated as the bound rather than as a hope.**
+    /// This paragraph claimed that every other current device in the account
+    /// still revokes whoever it likes, and for one revision of this function
+    /// that was false: the revoker map was built from every row while only the
+    /// walk judged one, so a revoked device reached *every* current device
+    /// with one gated op each and gated the whole account out of revoking
+    /// anything. The discount pass is what makes the claim true again, and
+    /// what it is now true of is this:
+    ///
+    /// A revoked device X can enter the revoker set of a device V only when V
+    /// is the **only** device that has revoked X. That follows from the
+    /// discount and not from good behaviour: X is revoked, so some device O
+    /// revoked it; X survives in V's set only when no row revokes X from a
+    /// sender other than V; so O is V, and O is X's sole revoker. Two
+    /// consequences a reader can rely on. A device X merely *named* is
+    /// untouched, because it did not revoke X. And a second device that also
+    /// revoked X is untouched, because each of the two is then a revoker of X
+    /// other than the other. So the cost is the mutual pair and nothing
+    /// wider — the two devices in the relationship, and no third.
+    ///
+    /// The rest of the remedy is unchanged: revocation is not gated on
+    /// `ID_S_priv` anywhere, so identity rotation and pairing sponsorship are
+    /// untouched, and any current device outside the pair still revokes
+    /// whoever it likes. The lockout is total only in a two-device account,
+    /// where there is no third — and there the survivor has nothing left to
+    /// revoke but itself, which [`Self::revoke_device`] refuses anyway.
+    ///
+    /// # What the discount gives up: rehabilitation by a third party
+    ///
+    /// The discount asks its question of the **ledger** — has anybody other
+    /// than V expelled S? — and not of the register, because asking the
+    /// register is the wider form ADR-0041 §Alternatives (h) prices, which
+    /// reopens the bypass above with the arrow reversed. The price of asking
+    /// the ledger is a named consequence rather than a surprise, and its
+    /// condition is exactly that question answered yes.
+    ///
+    /// *Shape one, and only half of it is new.* O revokes X; a third party P
+    /// then revokes O. X was already off the revoked list, because a revoked
+    /// device's revocations are unwound whatever date they carry — that is the
+    /// retroactivity above and it predates the discount. What the discount
+    /// adds is that X is no longer *gated* either, so X revokes third parties
+    /// again. Pinned by
+    /// `the_discount_rehabilitates_a_device_whose_sole_revoker_a_third_party_revokes`.
+    ///
+    /// *Shape two, which is the hole.* Extend that by one link — O revokes X,
+    /// P revokes O, Q revokes P — and Q's row gates P's, so O's revocation of
+    /// X stands and **X is on the revoked list while being ungated**, which is
+    /// the pair of facts this gate exists to keep apart. It costs three
+    /// revocations arranged in a chain, and X can author none of the two that
+    /// matter: a device authors only rows whose sender is itself, and every
+    /// discount of S from V's set needs a row from a sender that is not V, so
+    /// X can never discount anything out of its own set. It is a state an
+    /// account can arrive at, not one an attacker can construct. Pinned by
+    /// `the_discount_leaves_a_revoked_device_revoking_when_a_chain_revokes_its_revoker`.
+    ///
+    /// What would close it is the same thing that would close the lockout: an
+    /// un-revoke op, so the account can say which of the two readings of a
+    /// revoked revoker it meant
+    /// ([#241](https://github.com/justin13888/Sunrise/issues/241)).
     ///
     /// It is recorded rather than repaired because no ledger-only rule can do
     /// better. After a mutual revocation the two devices are symmetric in the

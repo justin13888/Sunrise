@@ -98,7 +98,10 @@ Every `device_revoke` op is **stored whatever its sender's standing**, in
 `device_revoke_ops` (migration 0027), and the register is recomputed from it
 each time one lands. Before the walk the fold builds `revokers_all` — for each
 device, the set of *other* devices the ledger records as having revoked it,
-over every row and not over any part of one. It then walks the ledger in one
+over every row and not over any part of one — and then makes a **second pass
+over that frozen map, discounting `s` from `v`'s set when the ledger holds a
+row revoking `s` whose sender is not `v`**. Both passes read the row set and
+neither reads the walk. It then walks the ledger in one
 canonical total order — `(op_hlc_ms, op_hlc_logical, sender, revoked_device_id)`,
 the order the register's LWW comparator already used, extended by the one
 column that makes it total — and:
@@ -107,8 +110,9 @@ column that makes it total — and:
   well as at ingest, because the fold is the sole author of the register and a
   rule enforced only on the way in would be absent for every row already in the
   ledger.
-- **skips a row whose sender the ledger revokes anywhere — unless the only
-  party to have revoked it is the device that row is about.**
+- **skips a row whose sender survives in the discounted map as a revoked
+  device — unless the only party to have revoked it is the device that row is
+  about.**
 - otherwise lands it, later overwriting earlier, which is the LWW register
   written as the fold it always was.
 
@@ -161,6 +165,17 @@ rather than of delivery order, which is corollary 3's requirement — if anythin
 more obviously so, because the answer no longer depends on where in the walk a
 row sits. `a_revoked_device_cannot_revoke_a_third_party_however_it_dates_the_op`
 is the test.
+
+**And the discount is what stops that set from being a weapon of its own.**
+Building from every row while only the walk judges one means a row the walk
+*gates* has already seated its sender in its target's set — so a revoked device
+named each remaining device in one ordinary op apiece, every op correctly gated
+and revoking nobody, and gated the whole account out of revoking anything for
+good. The second pass above removes exactly the claims the ledger itself shows
+disowned, and `sender != v` is what keeps it from becoming §Alternatives (h)'s
+wider form. §Alternatives (i) is the argument;
+`a_gated_revocation_does_not_seat_its_sender_in_its_targets_revoker_set` is the
+test, and §"What a user sees" item 4 states the bound and the residual.
 
 **The gate reads no clock at all — not this device's, and not the op's.**
 `is_revoked`'s doc explains at length why comparing a stored `cut_ms` against
@@ -275,13 +290,56 @@ there are four visible consequences:
    device the account has already expelled therefore costs the device that
    expelled it its third-party administrative capability, for good.
 
-   **The remedy is a third current device**, and the reason there is one is
-   that the loss is narrow. Revocation is not gated on `ID_S_priv` anywhere:
-   identity rotation and pairing sponsorship are untouched, and every other
-   current device in the account still revokes whoever it likes. The lockout
+   **The remedy is a third current device**, and the bound that makes one
+   enough is the discount pass §Decision 1 carries. For one revision it was
+   not enough: the revoker map was built from every row while only the walk
+   judged one, so a row the walk gated still seated its sender in its target's
+   set, and a revoked device reached every current device with one ordinary op
+   apiece. The claim in this paragraph was false for as long as that lasted,
+   and it is worth saying so rather than quietly restoring it.
+
+   What it is true of now: **a revoked device X can enter the revoker set of a
+   device V only when V is the only device that has revoked X.** X is revoked,
+   so some device O revoked it; X survives the discount in V's set only when
+   no row revokes X from a sender other than V; so O is V. Two things follow
+   that a reader can rely on. A device X merely *named* is untouched, because
+   it never revoked X — that is the case
+   `a_gated_revocation_does_not_seat_its_sender_in_its_targets_revoker_set`
+   asserts. And a second device that also revoked X is untouched, because each
+   of the two is then a revoker of X other than the other. So the lockout
+   costs the two devices in the relationship and no third.
+
+   The rest of the remedy is unchanged: revocation is not gated on `ID_S_priv`
+   anywhere, identity rotation and pairing sponsorship are untouched, and any
+   current device outside the pair still revokes whoever it likes. The lockout
    is total only in a two-device account, where there is no third device to
    ask — and there the survivor has nothing left to revoke but itself, which
    `Command::RevokeDevice` refuses anyway.
+
+   **What the discount gives up, with its condition.** It asks its question of
+   the ledger — has anybody other than V expelled S? — and not of the
+   register, because asking the register is §Alternatives (h)'s wider form.
+   The condition for the residual is that question answered yes, and it has
+   two shapes.
+
+   *Rehabilitation, of which only half is new.* O revokes X; a third party P
+   then revokes O. X was already off the revoked list, because a revoked
+   device's revocations are unwound whatever date they carry — that is
+   §Decision 1's retroactivity and it predates the discount. What the discount
+   adds is that X is no longer *gated*, so it revokes third parties again.
+   `the_discount_rehabilitates_a_device_whose_sole_revoker_a_third_party_revokes`
+   pins it.
+
+   *The chain, which is the hole.* One link further — O revokes X, P revokes
+   O, Q revokes P — and Q's row gates P's, so O's revocation of X stands and X
+   is **on the revoked list while being ungated**, which is the pair of facts
+   this gate exists to keep apart. It costs three revocations in a chain, and
+   X can author none of the two that matter: a device authors only rows whose
+   sender is itself, and every discount of S from V's set needs a row from a
+   sender that is not V, so X can never discount anything out of its own set.
+   It is a state an account can arrive at, not one an attacker constructs.
+   `the_discount_leaves_a_revoked_device_revoking_when_a_chain_revokes_its_revoker`
+   pins it.
 
    It is recorded rather than repaired because no ledger-only rule can do
    better. After a mutual revocation the two devices are symmetric in the
@@ -379,9 +437,38 @@ too, and not only its monotonicity one.
 The narrower variant — discount `s` from `v`'s revoker set only when `s` is
 revoked by somebody other than `v` — converges and does not reopen the hole. It
 also never fires in the case item 4 is about, because there X's only revoker
-*is* O. It is a real improvement for a three-party variant and no help for this
-one, so it is deferred to #241's un-revoke rather than shipped alone. Rejected
-for now.
+*is* O. It was deferred to #241's un-revoke on the reading that it was no help
+for item 4 and only an improvement for a three-party variant. **It is taken, in
+§Decision 1.** See (i).
+
+**(i) Taking the narrower discount after all, because item 4 was not what it
+was for.** The deferral above priced this rule against the mutual pair, where
+it correctly does nothing. What it is actually for is the case the deferral did
+not look at: the revoker map is built from every row and only the walk judges
+one, so a row the walk *gates* still seats its sender in its target's set. A
+device the account had expelled therefore named each remaining device in one
+ordinary op apiece — every op gated, revoking nobody — and gated the whole
+account out of revoking anything, permanently, for the price of N ordinary ops
+and no crafted stamp at all. That is strictly worse than anything item 4
+describes, and nothing else in the option set closes it: building the map only
+from the rows the walk lands is §Decision 1's prefix rule and its back-dating
+bypass, a fixpoint is what (f) declines as non-monotone, and refusing to store
+a row from an already-revoked sender is delivery-order dependent, which ADR-0034
+corollary 3 forbids.
+
+`sender != v` is the whole of why this is not (h)'s wider form: X's only revoker
+is O, and no row revokes O from a sender other than X, so nothing is discounted
+and the mutual pair's lockout is preserved exactly. It is a second pass over the
+frozen first map rather than a fixpoint — no entry's fate depends on another
+entry's — so the register stays a pure function of the ledger's row set and
+corollary 3 still holds.
+
+What it does not close is above, in §"What a user sees" item 4, with its
+condition: a device whose sole revoker a third party revokes is rehabilitated,
+and with a three-link chain a device that is still on the revoked list revokes
+third parties anyway. Both are narrower than what it closes and neither is
+reachable by the revoked device alone. #241's un-revoke is still what would
+settle the question the discount has to guess at. Taken.
 
 ## Consequences
 

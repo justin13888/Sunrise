@@ -6839,11 +6839,21 @@ fn a_revocation_written_before_the_senders_own_cut_is_unwound_when_the_sender_is
 /// because revocation has no inverse
 /// ([#241](https://github.com/justin13888/Sunrise/issues/241)).
 ///
-/// What it costs is *third-party* revocation and nothing more. Revocation is
-/// not gated on `ID_S_priv` anywhere, so identity rotation and pairing
-/// sponsorship are untouched, and the last two lines here are the remedy: any
-/// other current device still revokes whoever it likes. The lockout is total
-/// only in a two-device account, where there is no third device to ask.
+/// What it costs is *third-party* revocation, and it costs it to the two
+/// devices in the relationship and to nobody else. That bound was asserted
+/// here through `et` — a device neither of them ever named — which is exactly
+/// the device the bound is least interesting about, while `ed`, the device
+/// **both** of them named, went unchecked. It was also, for one revision of
+/// the fold, false of `ed`: each gated op seated its sender in `ed`'s revoker
+/// set, so being named by a device the account had expelled cost `ed` its own
+/// ability to revoke. The discount pass closed that and the assertion on `ed`
+/// is here so the bound is pinned where it can fail.
+///
+/// Revocation is not gated on `ID_S_priv` anywhere either, so identity
+/// rotation and pairing sponsorship are untouched, and the last lines here are
+/// the remedy: any current device outside the pair still revokes whoever it
+/// likes. The lockout is total only in a two-device account, where there is no
+/// third device to ask.
 ///
 /// It is recorded rather than repaired because no ledger-only rule can do
 /// better: after a mutual revocation the two devices are symmetric in the
