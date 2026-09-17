@@ -55,7 +55,17 @@ the code rather than from the issue:
   is SQL and calls nothing, and the caller is the early return in
   `backfill_key_envelopes`
   (`crates/sunrise-core/src/engine/oplog.rs:399-401#backfill_key_envelopes`).
-  Nothing in the apply path consults it.
+  The apply path does reach that early return, and inside a single
+  transaction: `apply_remote_all` opens one
+  (`crates/sunrise-core/src/engine/sync.rs:539#apply_remote_all`), routes a
+  control op into `apply_control_op`
+  (`crates/sunrise-core/src/engine/sync.rs:571#apply_remote_all`), and a
+  published device cert carries it on into `backfill_key_envelopes`
+  (`crates/sunrise-core/src/engine/sync.rs:1290#apply_control_op`). What no
+  read of the register decides is whether an op **applies**; it decides which
+  device is sealed key material, and that is this whole decision in one
+  sentence. An earlier draft of this bullet said nothing in the apply path
+  consulted the register at all, which the call chain above falsifies.
 - `apply_remote_all` says so at step b
   (`crates/sunrise-core/src/engine/sync.rs:464-465#apply_remote_all`): *"A
   revoked device's row is found here like any other, and its op is applied like
