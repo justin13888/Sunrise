@@ -753,9 +753,19 @@ def classify(span: Span, citing: str, root: str, tree: Tree) -> tuple[str, Findi
 
     if target is None:
         if any(candidate in tree.dirs for candidate in candidates):
-            if first_line is None:
-                return "checked", None
-            return broken(f"cites a line, but `{path}` is a directory.")
+            if first_line is not None:
+                return broken(f"cites a line, but `{path}` is a directory.")
+            if symbol is not None:
+                # A directory declares nothing, so there is no reading under
+                # which this citation is correct and no document this verdict
+                # can red-line unfairly. Passing it silently would be worse
+                # than the non-Rust decline beside it: that one takes the
+                # whole span out of the count, while this one used to report
+                # the citation as *checked* with the suffix never looked at —
+                # an unverified `#symbol` counted as a verified one, which is
+                # the single thing this suffix exists to prevent.
+                return broken(f"names `{symbol}`, but `{path}` is a directory.")
+            return "checked", None
         if (citing, path) in ALLOWED:
             return "checked", None
         return broken("names no file git tracks.")
@@ -983,6 +993,7 @@ FIXTURE_TRACKED = [
     "crates/sunrise-cli/tests/cli.rs",
     "tests/chaos/README.md",
     "schemas/generated.json/kept.json",
+    "crates/sunrise-cli/src/nested.rs/inner.rs",
 ]
 
 
@@ -1090,7 +1101,16 @@ def self_test() -> int:
         print("::error::citations self-test: the crate anchor did not claim `src/main.rs`")
         failures += 1
 
-    for body in ("Cargo.toml", "docs/03-crypto/recovery.md", "schemas/generated.json"):
+    # `crates/sunrise-cli/src/nested.rs` is a directory whose name ends in a
+    # recognised extension, which is the only way the branch above is reached.
+    # Cited bare it stays clean, because that is the rule for a directory path
+    # and this change widened nothing.
+    for body in (
+        "Cargo.toml",
+        "docs/03-crypto/recovery.md",
+        "schemas/generated.json",
+        "crates/sunrise-cli/src/nested.rs",
+    ):
         if finding_for(body) is not None:
             print(f"::error::citations self-test: `{body}` resolves, but was reported broken")
             failures += 1
@@ -1099,6 +1119,8 @@ def self_test() -> int:
     for body, fragment in (
         ("docs/gone.md", "names no file"),
         ("schemas/generated.json:12", "is a directory"),
+        ("crates/sunrise-cli/src/nested.rs#thing", "is a directory"),
+        ("crates/sunrise-cli/src/nested.rs:3#thing", "is a directory"),
         ("Cargo.toml:0", "line 0"),
         ("Cargo.toml:50-40", "empty range"),
     ):
@@ -1212,7 +1234,7 @@ def self_test() -> int:
 
     if failures:
         return 1
-    print("OK: citations self-test clean (74 cases).")
+    print("OK: citations self-test clean (77 cases).")
     return 0
 
 

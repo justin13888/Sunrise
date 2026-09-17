@@ -912,13 +912,58 @@ class Symbols(GateCase):
         self.write("docs/a.md", "See `docs/gone.md#heading`.\n")
         self.assert_code(self.run_gate(), CLEAN, "OK: citations clean.", "0 anchored citation(s)")
 
-    def test_a_suffix_on_a_directory_is_not_a_crash(self):
-        # A directory has no symbols and `symbol_span` is never reached: the
-        # directory branch answers first. Pinned because a suffix added to
-        # the wrong span is exactly the shape that finds an unguarded path.
+    def test_a_suffix_on_a_non_rust_directory_is_declined_for_its_extension(self):
+        # This case used to be named for the directory branch and never
+        # reached it: `json` is not `rs`, so the non-Rust decline answers two
+        # statements into `classify`, before the path is resolved at all. The
+        # assertion that says so is the count -- a decline takes the span out
+        # of the anchored total, where the directory branch would have
+        # reported it as checked.
         self.write("schemas/bundle.json/part.json", "{}\n")
         self.write("docs/a.md", "See `schemas/bundle.json#thing`.\n")
-        self.assert_code(self.run_gate(), CLEAN, "OK: citations clean.")
+        self.assert_code(
+            self.run_gate(), CLEAN, "OK: citations clean.", "0 anchored citation(s)"
+        )
+
+    def test_a_symbol_on_a_rust_named_directory_fails(self):
+        # The branch the case above was named for, reached the only way it
+        # can be: a tracked directory whose own name ends in `.rs`. A
+        # directory declares nothing, so there is no reading under which this
+        # citation is correct -- which is why it is a failure and not a
+        # decline, and why no correct document can be red-lined by it.
+        #
+        # It used to be a silent clean pass, counted as an anchored, checked
+        # citation for a symbol no resolver was ever consulted about. That is
+        # exactly the unverified suffix the feature exists to prevent.
+        self.write("crates/c/src/mod.rs/inner.rs", "pub fn anything() {}\n")
+        self.write("docs/a.md", "See `crates/c/src/mod.rs#anything`.\n")
+        self.assert_code(
+            self.run_gate(),
+            DANGLING,
+            "names `anything`, but `crates/c/src/mod.rs` is a directory.",
+        )
+
+    def test_a_line_and_a_symbol_on_a_directory_still_reports_the_line(self):
+        # Both are true of the citation and the line is the older verdict, so
+        # it keeps precedence. Pinned so the message does not drift when
+        # somebody reorders the branch.
+        self.write("crates/c/src/mod.rs/inner.rs", "pub fn anything() {}\n")
+        self.write("docs/a.md", "See `crates/c/src/mod.rs:5#anything`.\n")
+        self.assert_code(
+            self.run_gate(),
+            DANGLING,
+            "cites a line, but `crates/c/src/mod.rs` is a directory.",
+        )
+
+    def test_a_bare_directory_path_is_still_clean(self):
+        # The rule the change above had to leave alone. A directory cited
+        # with neither a line nor a symbol resolves exactly as it did before
+        # the suffix existed.
+        self.write("crates/c/src/mod.rs/inner.rs", "pub fn anything() {}\n")
+        self.write("docs/a.md", "See `crates/c/src/mod.rs`.\n")
+        self.assert_code(
+            self.run_gate(), CLEAN, "OK: citations clean.", "1 anchored citation(s)"
+        )
 
 
 class Allowlist(GateCase):
