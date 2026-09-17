@@ -245,5 +245,39 @@ struct KeychainMigrationFallbackTests {
         #expect(try twin.read() == nil, "the reachable copy must be gone even so")
         #expect(try addressed.readAcrossDomains() == nil, "and a load must no longer find it")
     }
+
+    /// A cross-domain write that stored **nothing** must not claim it stored
+    /// something.
+    ///
+    /// `writtenButOtherDomainRefused` is the one error out of
+    /// `writeAcrossDomains` that asserts the bytes are on disk, and
+    /// `KeychainCredentialStore.save` acts on that assertion by not rethrowing
+    /// it. So the discrimination carries a session: label a write that failed
+    /// in its *own* domain as the partial success, and `save` reports a token
+    /// as persisted while the Keychain holds none of it — the same class of
+    /// defect as the one the case exists to repair, pointing the other way.
+    ///
+    /// Addressed at the domain this build cannot mutate, so `write(_:)` is
+    /// refused and the other-domain delete is never reached. That is the same
+    /// refusal `theUnreachableDomainRefusesMutationsAndAnswersReadsAsEmpty`
+    /// measures on `SecItemUpdate` and `SecItemAdd`.
+    @Test
+    func aWriteRefusedInItsOwnDomainIsNotReportedAsAPartialSuccess() throws {
+        let addressed = KeychainItem(
+            service: "dev.sunrise.Sunrise.tests.\(UUID().uuidString).own-domain-write",
+            account: "credentials",
+            accessibility: .afterFirstUnlockThisDeviceOnly,
+            domain: .dataProtection
+        )
+
+        let raised = #expect(throws: KeychainError.self) {
+            try addressed.writeAcrossDomains(secret)
+        }
+        #expect(
+            raised == .unexpected(errSecMissingEntitlement),
+            "the write itself refused, so nothing may be claimed to have been written"
+        )
+        #expect(try addressed.readAcrossDomains() == nil, "and nothing was stored anywhere")
+    }
 }
 #endif
