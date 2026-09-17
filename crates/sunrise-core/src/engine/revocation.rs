@@ -634,6 +634,36 @@ impl Engine {
     /// `a_mutual_pair_locks_both_devices_out_of_third_party_revocation` pins
     /// the behaviour so it stays deliberate.
     ///
+    /// # Why `sender` is the row's author, and where that is enforced
+    ///
+    /// Everything above that turns on `sender != v` — the discount's rule, the
+    /// walk's exception, and the twice-stated "a device authors only rows whose
+    /// sender is itself" that bounds both residuals — needs `sender` to be the
+    /// *authenticated* device and not a value the op chose. Neither this
+    /// function nor `apply_device_revoke` checks that, and neither could: the
+    /// column is written from `env.device_id`
+    /// (`crates/sunrise-core/src/engine/sync.rs:745`), and what binds that id to
+    /// a key lives in the sync path and in `sunrise-crypto`. Cited rather than
+    /// assumed, because it is the load-bearing bound of this whole function and
+    /// it is enforced in another module:
+    ///
+    /// - `crates/sunrise-core/src/engine/sync.rs:211-217` resolves the signing
+    ///   key **by** `env.device_id` — the cert stored under that id, or, for a
+    ///   device publishing its first cert,
+    ///   [`Self::self_authenticating_signer`].
+    /// - `crates/sunrise-core/src/engine/sync.rs:221` verifies the envelope
+    ///   under that key before the op is decrypted or applied, and
+    ///   `crates/sunrise-crypto/src/op_envelope.rs:491-497` is the check
+    ///   itself: an Ed25519 verify over the envelope's own signed bytes.
+    /// - `crates/sunrise-core/src/engine/sync.rs:375` closes the
+    ///   self-authenticating half, refusing a published cert whose
+    ///   `body.device_id` is not `env.device_id` — so a device cannot present
+    ///   another device's cert and author rows under its id.
+    ///
+    /// A sender that could forge the column would be gated by nobody and could
+    /// discount anything out of anybody's set, which is every bound above at
+    /// once.
+    ///
     /// # Recoverability: a cut correction does **not** un-skip a revocation
     ///
     /// Nothing is discarded — a skipped op is still in the ledger, so there is
@@ -755,6 +785,13 @@ impl Engine {
         // The mutual pair's lockout is preserved exactly, which is also why
         // this fires in none of the cases §"What a user sees" item 4 is
         // about.
+        //
+        // All of which holds only because `sender` is the device the sync path
+        // authenticated and not a field the op filled in. This function's doc
+        // §"Why `sender` is the row's author" cites where that is enforced —
+        // in `crates/sunrise-core/src/engine/sync.rs` and
+        // `crates/sunrise-crypto/src/op_envelope.rs`, with lines — so the
+        // citation gate fails here if either check moves.
         //
         // It reads `revokers_all` and never itself, so it is a second pass
         // over a frozen map and not a fixpoint — no entry's fate depends on
