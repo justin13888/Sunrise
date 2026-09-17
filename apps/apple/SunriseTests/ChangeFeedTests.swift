@@ -271,8 +271,26 @@ struct PrimedChangeStreamTests {
         await broadcast.finish()
     }
 
-    /// And it is a prefix, not a replacement: everything published afterwards
-    /// still arrives, in order.
+    /// And it is a prefix, not a replacement: what is published afterwards
+    /// still arrives behind it.
+    ///
+    /// **No sleeps, and none are needed.** `primed()` yields the prime as its
+    /// first act and only *then* begins consuming upstream, so nothing can
+    /// overtake it however the tasks are scheduled. Every stream in the chain
+    /// buffers unbounded — `subscribe()` says so outright, `coalesced()` and
+    /// `primed()` take `AsyncStream`'s default — so a batch yielded before the
+    /// collector starts iterating is held rather than dropped, and `finish()`
+    /// delivers what is buffered before it ends the stream. `coalesced()` in
+    /// turn refuses to let upstream ending swallow an open window — it flushes
+    /// the batch before finishing its own stream — which is what carries
+    /// `tsk_a` past the `finish()` below. Both assertions therefore hold on
+    /// every interleaving, and a sleep would only be a flake waiting for a
+    /// loaded runner.
+    ///
+    /// Ordering *between* post-prime batches is not claimed here, because one
+    /// published item cannot pin it and separating two into two batches needs a
+    /// pause longer than the coalescing window — a sleep again.
+    /// ``ChangeCoalescingTests/aPauseEndsTheWindow()`` is where that is pinned.
     @Test
     func thePrimeDoesNotSwallowWhatFollows() async {
         let broadcast = ChangeBroadcast()
@@ -285,11 +303,7 @@ struct PrimedChangeStreamTests {
             for await batch in stream { batches.append(batch) }
             return batches
         }
-        // The prime is yielded from a task of its own, so give it the hop it
-        // needs before publishing — otherwise this asserts on scheduling.
-        try? await Task.sleep(for: .milliseconds(50))
         await broadcast.publish(.entity("tsk_a"))
-        try? await Task.sleep(for: .milliseconds(50))
         await broadcast.finish()
 
         let batches = await collected.value
