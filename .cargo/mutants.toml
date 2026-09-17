@@ -7,8 +7,9 @@
 # `docs/10-cross-cutting/testing.md` §Mutation testing scopes this to
 # `sunrise-core`, `sunrise-crypto`, `sunrise-sync` and `sunrise-domain`, and to
 # release candidates rather than pull requests. The scoping is a cost decision
-# and it is the right one: those four crates alone generate ~2,500 mutants, and
-# each one is an incremental rebuild plus a test run.
+# and it is the right one: those four crates alone generate 3,269 mutants — the
+# sum of the four populations the campaign recorded below — and each one is an
+# incremental rebuild plus a test run.
 #
 # Run it with `mise run mutants <crate>`, never bare — the task pins `--jobs 1`
 # for a reason recorded there.

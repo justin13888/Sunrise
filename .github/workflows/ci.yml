@@ -490,8 +490,9 @@ jobs:
     # If core's shard count rises, this can come down with it.
     timeout-minutes: 120
     # Nightly and on demand, never on a pull request. The four scoped crates
-    # generate ~2,500 mutants and each one is an incremental rebuild plus a
-    # test run; a full pass is hours, which is exactly why
+    # generate 3,269 mutants — the sum of the four populations recorded on
+    # the matrix below — and each one is an incremental rebuild plus a test
+    # run; a full pass is hours, which is exactly why
     # docs/10-cross-cutting/testing.md scopes this to release candidates rather
     # than to every commit.
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
