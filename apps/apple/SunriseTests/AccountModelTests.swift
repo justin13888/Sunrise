@@ -242,6 +242,7 @@ struct AccountModelTests {
         #expect(account.accessToken == nil)
         #expect(store.stored != nil, "the token is still there — that is what is disclosed")
         #expect(account.signOutIncomplete != nil)
+        #expect(store.clearCount == 1, "the attempt is counted even though it was refused")
     }
 
     /// The harm itself, driven end to end: the refusal leaves the credential
