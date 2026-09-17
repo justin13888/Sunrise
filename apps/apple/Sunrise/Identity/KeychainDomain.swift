@@ -1,5 +1,6 @@
 import Foundation
 import Security
+import Synchronization
 
 /// Which of Apple's two keychain implementations an item is addressed to.
 ///
@@ -55,12 +56,32 @@ enum KeychainDomain: Sendable, Equatable {
     /// for one item, find them equal, verify them against each other and then
     /// delete the only copy — which is precisely the "looks exactly like a lost
     /// vault" failure the migration exists to prevent, caused by the migration.
+    ///
+    /// `targetEnvironment(macCatalyst)` is in the condition because `os(macOS)`
+    /// is **false** for Catalyst, which is a process running on macOS where
+    /// both keychain implementations exist. `apps/apple/project.yml` declares
+    /// no Catalyst target today, so leaving it out would be latent rather than
+    /// live — but the claim above is about the operating system, and a Catalyst
+    /// build taking the `false` branch would short-circuit to a read of the
+    /// wrong store, which is the shape this guard exists to prevent.
     static var domainsAreDistinctStores: Bool {
-        #if os(macOS)
+        #if os(macOS) || targetEnvironment(macCatalyst)
         true
         #else
         false
         #endif
+    }
+
+    /// The domain this one is not.
+    ///
+    /// Only meaningful where ``domainsAreDistinctStores`` is `true`; every
+    /// caller here checks that first, because where there is one keychain the
+    /// "other" domain is a second name for the same store.
+    var other: KeychainDomain {
+        switch self {
+        case .login: .dataProtection
+        case .dataProtection: .login
+        }
     }
 
     /// The domain this process stores its secrets in, asked once.
@@ -75,11 +96,32 @@ enum KeychainDomain: Sendable, Equatable {
     /// user's, which is what makes writing it on every cold launch acceptable.
     static let probeService = "dev.sunrise.Sunrise.keychain-domain-probe"
 
+    /// The protection class the probe writes its byte under.
+    ///
+    /// The **stores'** class, not the platform default, and that is the whole
+    /// point of naming it: a probe that writes under `WhenUnlocked` answers
+    /// "can this binary reach the data-protection keychain at all", while the
+    /// three stores then write under
+    /// `…AfterFirstUnlockThisDeviceOnly`. Those are not the same question, and
+    /// the one worth asking is the one the stores will actually ask.
+    /// `theProbeTestsTheClassTheStoresWriteUnder` pins that this stays equal to
+    /// all three stores' `accessibility`.
+    static let probeAccessibility = KeychainAccessibility.afterFirstUnlockThisDeviceOnly
+
+    /// How many times ``probe()`` has run in this process.
+    ///
+    /// Exists so a test can pin that ``current`` is memoised — asserting
+    /// `current == probe()` would pass identically with no memoisation at all,
+    /// because the probe is deterministic within a process. Counting the calls
+    /// is the only thing that tells the two apart.
+    static let probeRuns = Atomic<Int>(0)
+
     /// Ask the platform rather than assume from `#if os(…)`.
     ///
     /// Adds one fixed, **non-secret** byte under ``probeService`` with a random
-    /// account, in `.dataProtection`; keeps the status; deletes whatever it
-    /// wrote; and answers `.dataProtection` only on `errSecSuccess`.
+    /// account, in `.dataProtection` and under ``probeAccessibility``; keeps
+    /// the status; deletes whatever it wrote; and answers `.dataProtection`
+    /// only on `errSecSuccess`.
     ///
     /// A compile-time constant was the obvious alternative and is wrong:
     /// "macOS cannot reach the data-protection keychain" is a fact about the
@@ -96,11 +138,13 @@ enum KeychainDomain: Sendable, Equatable {
     /// the load over, while a refused *domain* would leave a secret the app
     /// cannot see at all.
     static func probe() -> KeychainDomain {
+        probeRuns.add(1, ordering: .relaxed)
         let account = UUID().uuidString
         var insert: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: probeService,
             kSecAttrAccount as String: account,
+            kSecAttrAccessible as String: probeAccessibility.attribute,
             kSecValueData as String: Data([0])
         ]
         Self.dataProtection.apply(to: &insert)
