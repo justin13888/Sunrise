@@ -81,7 +81,7 @@ struct CoreBridgeTests {
         await vault.bridge.shutdown()
     }
 
-    /// **A feed that is opened late still reports what it missed.**
+    /// **A feed that is opened late is told to re-read.**
     ///
     /// `changes()` subscribes on its first caller, so there is always a window
     /// between a write landing and a screen attaching — at launch, on a tab
@@ -91,6 +91,13 @@ struct CoreBridgeTests {
     /// timeout makes a missed event arrive. The prime is what covers that
     /// window, and this is the interleaving it exists for — the write is
     /// complete before anything subscribes.
+    ///
+    /// So what arrives says nothing about the missed write, and never will:
+    /// the batch below is empty and incomplete, which is an instruction to
+    /// re-read rather than a report. The entity is recovered by the query that
+    /// instruction provokes, which is the second half of this test. `primed()`
+    /// puts it the same way — "a missed event does not arrive late, it does
+    /// not arrive".
     @Test
     func aStreamOpenedAfterAWriteStillAsksForARepaint() async throws {
         let vault = try await TestVault()
