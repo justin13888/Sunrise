@@ -260,8 +260,16 @@ is the original measurement, taken 2026-09-07, and was **not** re-taken with it
 different commits, and the right one is a cost estimate rather than a number
 anything checks.
 
-`--all-features` matters and is not decoration: see §Features above. It makes
-no difference to three of these four crates, which have no features at all.
+`--all-features` changes nothing about this command's output. `--list` returns
+an identical population with and without it for all four crates today: three
+have no features at all, and it makes no difference to `sunrise-sync` either,
+because discovery mutates the *source file* and ignores the gate — which is
+§Features' whole mechanism, a gated module mutated and then not built. The
+§Features table above is the measurement: both of its rows are the same
+135-mutant population, and `.cargo/mutants.toml` records `sunrise-sync` at 135
+either way. The flag rides in this command only so the listing invocation
+matches the campaign invocation, which is where it is load-bearing — see
+§Features above.
 
 `--list` parses the crate and prints one line per mutant **without building
 anything**, so all four counts take seconds. The right column is
