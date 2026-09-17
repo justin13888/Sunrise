@@ -325,11 +325,26 @@ does is not:
 - `KeychainDomain` — `.login` and `.dataProtection`, and a memoised
   `probe()` that adds one fixed non-secret byte under a probe-only service in
   `.dataProtection`, keeps the status, deletes whatever it wrote, and answers
-  `.dataProtection` only on `errSecSuccess`. It **never throws**: it fails open
-  to the weaker-but-reachable keychain, deliberately the opposite direction
-  from the accessibility raise, because a refused raise leaves a readable
-  secret whose guarantee is wrong while a refused domain would leave a secret
-  the app cannot see at all.
+  `.dataProtection` only on `errSecSuccess`. The byte goes in under
+  `…AfterFirstUnlockThisDeviceOnly`, the class all three stores write under
+  rather than the platform default, because "can this binary reach that
+  keychain at all" and "can it store a secret there the way this app stores
+  secrets" are different questions and only the second decides where a vault
+  root ends up. It **never throws**: it fails open to the weaker-but-reachable
+  keychain, deliberately the opposite direction from the accessibility raise,
+  because a refused raise leaves a readable secret whose guarantee is wrong
+  while a refused domain would leave a secret the app cannot see at all.
+- Failing open is right *before* a migration and wrong *after* one, so a `load`
+  that finds nothing at the resolved domain **reads the other domain before
+  reporting nothing** (`KeychainItem.readAcrossDomains`). Once an item has
+  moved, a single transient `SecItemAdd` failure at launch would otherwise make
+  the app read an empty login keychain and present the lost-vault screen to a
+  user whose vault is intact. The second read can only turn a `nil` into bytes:
+  a refusal from the other domain is swallowed, because on an unsigned Mac a
+  `.dataProtection` query answers `errSecMissingEntitlement` and propagating
+  that would lock every genuine first run out. `clear` deletes across both
+  domains for the same reason — whatever a read can reach, a clear removes, or
+  signing out would leave a live refresh token where the next launch looks.
 - `KeychainMigration` — five resumable steps holding one invariant: **a
   readable copy exists at every instant.** Read the destination, read the
   source, write the destination, read it back and compare byte-for-byte, and
@@ -339,7 +354,10 @@ does is not:
   `(service, account)` — and falls back to the source item for every other
   Security status, because locking a user out over a *destination* problem
   while the secret is perfectly readable where it has always been is a worse
-  trade than the raise takes.
+  trade than the raise takes. That fallback's value is **what `load` answers
+  with**: `KeychainMigration.loadMigratingIfNeeded` is the single step all three
+  stores call, and a caller that discarded it and read the destination instead
+  would see nothing and report the lost vault the fallback exists to prevent.
 - Each of the three stores migrates **its own** item inside its own `load`.
   There is no launch-time pass over all three: the OIDC credential is keyed per
   account and the other two per vault, so "all three" is not one set.
