@@ -119,8 +119,6 @@ final class AccountModel {
     /// stamps it into a claim and the relay refuses a token whose claim names
     /// a different device, so one lifted off this Mac is useless elsewhere.
     func signIn(issuer: String, clientID: String, deviceID: String, nowMs: UInt64) async {
-        // A warning about the previous sign-out must not sit under a new session.
-        signOutIncomplete = nil
         guard !issuer.trimmed.isEmpty, !clientID.trimmed.isEmpty else {
             state = .failed(AccountError.notConfigured.localizedDescription)
             return
@@ -135,6 +133,13 @@ final class AccountModel {
                 nowMs: nowMs
             )
             try store.save(fresh)
+            // A warning about the previous sign-out must not sit under a new
+            // session — and this is the line that ends it: `save` has just
+            // overwritten the credential the warning is about. Clearing on
+            // entry instead would also fire on the `guard` above and the
+            // `catch` below, neither of which establishes a session; there the
+            // old credential is still stored and the warning is still true.
+            signOutIncomplete = nil
             credentials = fresh
             publish()
         } catch {
