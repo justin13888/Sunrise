@@ -1277,6 +1277,11 @@ mod tests {
     /// A transport with no signer sends no binding at all, which is the
     /// self-host `NullVerifier` deployment rather than an omission: sending an
     /// empty or partial one would be refused where an absent one is accepted.
+    ///
+    /// Both signing paths, because they carry the decision separately. The
+    /// byte-body one was reached by no test at all: it is a bare `return` with
+    /// no `Result` around it, so nothing above would have noticed it returning
+    /// a partial binding on the unauthenticated path.
     #[test]
     fn an_unsigned_transport_sends_no_binding_headers() {
         let t = SseTransport::connect("http://127.0.0.1:1");
@@ -1284,5 +1289,320 @@ mod tests {
             .binding("GET", "/api/v1/sync/events", None)
             .expect("no binding is not an error")
             .is_empty());
+        assert!(t
+            .binding_bytes("PUT", "/api/v1/blobs/up-1/0", b"sealed-chunk-bytes")
+            .is_empty());
+    }
+
+    // ---- the buffer half: `take_event` needs no socket ----
+
+    /// A transport whose receive buffer has been filled directly.
+    ///
+    /// [`SseTransport::take_event`] reads and drains `self.buf` and touches
+    /// nothing else, so the buffer is its whole input. This module is a child
+    /// of `sse`, which is what lets a test fill a field production code keeps
+    /// private — and why these cases live here rather than under `tests/`.
+    fn buffered(bytes: &[u8]) -> SseTransport {
+        let mut t = SseTransport::connect("http://127.0.0.1:1");
+        t.buf = bytes.to_vec();
+        t
+    }
+
+    /// A terminated event yields its `id` and its `data`, and the bytes it was
+    /// made of — separator included — leave the buffer.
+    ///
+    /// The separator is the load-bearing part: an event reported but not fully
+    /// drained leaves its own terminator at the head of the buffer, and the
+    /// next read finds an empty event nobody sent.
+    #[test]
+    fn a_complete_event_yields_its_id_and_data_and_drains_the_buffer() {
+        let mut t = buffered(b"id: 42\ndata: {\"kind\":\"gap\"}\n\n");
+        let (id, data) = t.take_event().expect("a terminated event");
+        assert_eq!(id.as_deref(), Some("42"));
+        assert_eq!(data, "{\"kind\":\"gap\"}");
+        assert!(
+            t.buf.is_empty(),
+            "the event and its blank line are both consumed, not just the event"
+        );
+    }
+
+    /// An event that has not arrived whole is not an event, and none of it is
+    /// consumed: the rest of it is still coming.
+    ///
+    /// A single newline is not the separator. SSE ends an event with a blank
+    /// line, which is two bytes, and treating one of them as the boundary
+    /// would cut every multi-line event in half.
+    #[test]
+    fn a_partial_event_is_left_in_the_buffer_untouched() {
+        let head = b"id: 42\ndata: {\"kind\"";
+        let mut t = buffered(head);
+        assert!(t.take_event().is_none(), "the event has not terminated");
+        assert_eq!(
+            t.buf, head,
+            "nothing is consumed until the blank line lands"
+        );
+
+        let mut t = buffered(b"data: {}\n");
+        assert!(t.take_event().is_none(), "one newline is not a blank line");
+    }
+
+    /// Two events that arrived in one read come out one at a time, in order.
+    #[test]
+    fn two_buffered_events_come_out_one_at_a_time_in_order() {
+        let mut t = buffered(b"id: 1\ndata: one\n\nid: 2\ndata: two\n\n");
+        let (id, data) = t.take_event().expect("the first event");
+        assert_eq!((id.as_deref(), data.as_str()), (Some("1"), "one"));
+        let (id, data) = t.take_event().expect("the second event");
+        assert_eq!((id.as_deref(), data.as_str()), (Some("2"), "two"));
+        assert!(t.take_event().is_none(), "and then the buffer is empty");
+    }
+
+    /// A keep-alive comment is consumed and reported as an event with no data,
+    /// not as "nothing arrived".
+    ///
+    /// The distinction keeps [`SseTransport::recv_frame`]'s drain loop moving:
+    /// `None` means "the buffer holds no terminated event" and sends it back to
+    /// the socket, so a comment reported as `None` would leave the event behind
+    /// it unread until the next chunk happened to arrive.
+    #[test]
+    fn a_keep_alive_comment_is_consumed_rather_than_reported_as_nothing() {
+        let mut t = buffered(b": keep-alive\n\nid: 7\ndata: after\n\n");
+        let (id, data) = t.take_event().expect("the comment is a terminated event");
+        assert!(id.is_none(), "a comment carries no id");
+        assert!(data.is_empty(), "and nothing for the driver");
+        let (id, data) = t.take_event().expect("the event behind it");
+        assert_eq!(id.as_deref(), Some("7"));
+        assert_eq!(data, "after");
+    }
+
+    // ---- the mapping half: `frame_for` needs no socket either ----
+
+    /// An `ops` event hands the driver the relay's bytes, byte for byte.
+    ///
+    /// The module documentation claims exactly this — what the driver applies
+    /// is what the relay stored — and it is why this direction is a base64
+    /// decode rather than a re-encoding. A re-encoding that happened to
+    /// round-trip today would break the first time either side reordered a map
+    /// key, and every signature over those bytes with it.
+    #[test]
+    fn an_ops_event_carries_the_relay_s_frame_verbatim() {
+        use base64::Engine as _;
+        let stored: &[u8] = b"\x01\x02\x03 whatever the publisher sent";
+        let event = serde_json::json!({
+            "kind": "ops",
+            "frame": base64::engine::general_purpose::STANDARD.encode(stored),
+        });
+        let frame = SseTransport::frame_for(&event)
+            .expect("a well-formed ops event")
+            .expect("an ops event is a frame");
+        assert_eq!(frame, stored);
+    }
+
+    /// An `ops` event with nothing to decode is a malformed exchange, not an
+    /// empty frame the driver would then try to apply.
+    #[test]
+    fn an_ops_event_with_no_frame_is_a_protocol_error() {
+        let err = SseTransport::frame_for(&serde_json::json!({"kind": "ops"}))
+            .expect_err("there is nothing to decode");
+        assert!(
+            matches!(&err, TransportError::Protocol(m) if m.contains("no frame")),
+            "{err}"
+        );
+    }
+
+    /// `caught_up` becomes the `StreamUpdate` the driver waits on, naming the
+    /// stream that finished replaying.
+    #[test]
+    fn a_caught_up_event_becomes_a_stream_update_naming_its_stream() {
+        let event = serde_json::json!({
+            "kind": "caught_up",
+            "stream_id": "ab".repeat(16),
+        });
+        let frame = SseTransport::frame_for(&event)
+            .expect("a well-formed caught_up event")
+            .expect("caught_up is a frame");
+        let (head, payload) = super::decode_frame(&frame).expect("a decodable frame");
+        assert_eq!(head.msg_kind, super::MsgKind::StreamUpdate);
+        let parsed = super::CaughtUpPayload::decode(&payload).expect("a CaughtUpPayload");
+        assert_eq!(parsed.stream_id, [0xabu8; 16]);
+    }
+
+    /// A `gap` becomes a coded error frame rather than a disconnection: the
+    /// driver answers a cursor gap by resubscribing, which it can only do if it
+    /// is told which condition it hit.
+    #[test]
+    fn a_gap_event_becomes_a_coded_error_frame_carrying_its_reason() {
+        for (event, reason) in [
+            (
+                serde_json::json!({"kind": "gap", "reason": "cursor behind retention"}),
+                "cursor behind retention",
+            ),
+            (serde_json::json!({"kind": "gap"}), "cursor gap"),
+        ] {
+            let frame = SseTransport::frame_for(&event)
+                .expect("a well-formed gap event")
+                .expect("a gap is a frame");
+            let (head, payload) = super::decode_frame(&frame).expect("a decodable frame");
+            assert_eq!(head.msg_kind, super::MsgKind::Error);
+            let parsed = super::ErrorPayload::decode(&payload).expect("an ErrorPayload");
+            assert_eq!(parsed.code, sunrise_error::ErrorCode::SyncCursorGap);
+            assert_eq!(parsed.reason, reason);
+        }
+    }
+
+    /// A `closed` event becomes the *recoverable* close, so a driver that reads
+    /// one refreshes its credential rather than treating the session as revoked.
+    #[test]
+    fn a_closed_event_becomes_a_recoverable_close() {
+        for (event, reason) in [
+            (
+                serde_json::json!({"kind": "closed", "reason": "token expired"}),
+                "token expired",
+            ),
+            (serde_json::json!({"kind": "closed"}), "session closed"),
+        ] {
+            let frame = SseTransport::frame_for(&event)
+                .expect("a well-formed closed event")
+                .expect("a close is a frame");
+            let (head, payload) = super::decode_frame(&frame).expect("a decodable frame");
+            assert_eq!(head.msg_kind, super::MsgKind::Close);
+            let parsed = super::ClosePayload::decode(&payload).expect("a ClosePayload");
+            assert_eq!(parsed.code, sunrise_error::ErrorCode::AuthTokenExpired);
+            assert_eq!(parsed.reason, reason);
+        }
+    }
+
+    /// An event kind this build has never heard of is dropped, not fatal.
+    ///
+    /// The relay is allowed to grow event kinds without every client being
+    /// upgraded first; a client that tore the stream down over one would make
+    /// the forward compatibility the stream is versioned for unusable.
+    #[test]
+    fn an_event_kind_this_build_does_not_know_is_dropped_rather_than_fatal() {
+        for event in [
+            serde_json::json!({"kind": "from_the_future"}),
+            serde_json::json!({}),
+        ] {
+            assert!(
+                SseTransport::frame_for(&event)
+                    .expect("an unknown kind is not an error")
+                    .is_none(),
+                "nothing reaches the driver for {event}"
+            );
+        }
+    }
+
+    // ---- the reply readers ----
+
+    /// The relay's own `Date` is read back when it is readable and never
+    /// invented when it is not: it is the only server clock a *refused* request
+    /// carries, and a fabricated one would make the skew advice a guess.
+    #[test]
+    fn the_server_s_date_is_read_back_and_never_invented() {
+        let mut headers = hyper::HeaderMap::new();
+        headers.insert(hyper::header::DATE, DATE.parse().expect("a header value"));
+        assert_eq!(super::server_date(&headers).as_deref(), Some(DATE));
+
+        assert!(super::server_date(&hyper::HeaderMap::new()).is_none());
+
+        let mut headers = hyper::HeaderMap::new();
+        headers.insert(
+            hyper::header::DATE,
+            hyper::header::HeaderValue::from_bytes(&[0xff, 0xfe]).expect("a header value"),
+        );
+        assert!(
+            super::server_date(&headers).is_none(),
+            "an unreadable Date degrades the advice rather than the diagnosis"
+        );
+    }
+
+    /// The advisory reply fields are total: absent or wrongly typed reads as
+    /// the type's zero, because a relay that omits a capability bitfield should
+    /// not sink a session that does not use it.
+    #[test]
+    fn the_reply_field_readers_return_the_value_or_a_zero() {
+        let reply = serde_json::json!({
+            "server_app_v": "1.2.3",
+            "capabilities": 9,
+            "wire_proto": 7,
+            "text": "not a number",
+        });
+        assert_eq!(super::field_str(&reply, "server_app_v"), "1.2.3");
+        assert_eq!(super::field_str(&reply, "absent"), "");
+        assert_eq!(
+            super::field_str(&reply, "capabilities"),
+            "",
+            "a number is not a string"
+        );
+        assert_eq!(super::field_u64(&reply, "capabilities"), 9);
+        assert_eq!(super::field_u64(&reply, "absent"), 0);
+        assert_eq!(super::field_u64(&reply, "text"), 0);
+        assert_eq!(super::field_u32(&reply, "wire_proto").expect("a u32"), 7);
+    }
+
+    /// A negotiated version that does not fit a `u32` is refused rather than
+    /// truncated. The whole point of the handshake is that both sides agree on
+    /// the value, and a wrapped one is a number neither of them said.
+    #[test]
+    fn a_negotiated_version_too_large_for_a_u32_is_refused() {
+        let reply = serde_json::json!({"wire_proto": u64::from(u32::MAX) + 1});
+        let err = super::field_u32(&reply, "wire_proto").expect_err("it does not fit");
+        assert!(
+            matches!(&err, TransportError::Protocol(m) if m.contains("wire_proto")),
+            "{err}"
+        );
+    }
+
+    /// A cursor goes up as the hex device id and the sequence already applied.
+    #[test]
+    fn a_cursor_is_sent_as_a_hex_device_id_and_its_applied_sequence() {
+        let entry = super::CursorEntry {
+            device_id: [0x7bu8; 16],
+            last_applied_seq: 42,
+        };
+        assert_eq!(
+            super::cursor_json(&entry),
+            serde_json::json!({"device_id": "7b".repeat(16), "last_applied_seq": 42})
+        );
+    }
+
+    /// A stream id is sixteen bytes of hex; anything else is a malformed event
+    /// rather than an id of zeroes that would then address the wrong stream.
+    #[test]
+    fn a_stream_id_is_parsed_from_hex_and_anything_else_is_refused() {
+        let id = serde_json::json!("0f".repeat(16));
+        assert_eq!(
+            super::parse_id(Some(&id)).expect("a stream id"),
+            [0x0fu8; 16]
+        );
+        assert!(super::parse_id(None).is_err(), "an event with no stream id");
+        assert!(
+            super::parse_id(Some(&serde_json::json!("0f0f"))).is_err(),
+            "a stream id of the wrong length"
+        );
+        assert!(
+            super::parse_id(Some(&serde_json::json!(16))).is_err(),
+            "a stream id that is not a string"
+        );
+    }
+
+    /// A status carrying no typed code still lands in the right family, so a
+    /// storage outage and a rejected operation do not read alike to a driver
+    /// deciding whether to retry.
+    #[test]
+    fn a_status_with_no_typed_code_still_maps_to_the_right_family() {
+        let t = SseTransport::connect("http://127.0.0.1:1");
+        assert_eq!(
+            code_of(&t.refuse(&reply(503, b"", None))),
+            "RELAY_STORAGE_UNAVAILABLE"
+        );
+        assert_eq!(
+            code_of(&t.refuse(&reply(403, b"", None))),
+            "AUTH_TOKEN_INVALID"
+        );
+        assert_eq!(
+            code_of(&t.refuse(&reply(400, b"", None))),
+            "SYNC_OP_INVALID"
+        );
     }
 }
