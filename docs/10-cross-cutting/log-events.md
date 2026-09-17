@@ -100,6 +100,7 @@ See [`logging.md`](./logging.md) for the record schema and grammar, and
 | `sync.session.closed` | info | Session ended; `result` distinguishes a clean shutdown from a drop. |
 | `sync.session.error` | warn | Connect or start failed; `err_code`, `cause`. Answers "why is my client not syncing". |
 | `sync.session.off` | info | No relay configured; running offline. |
+| `sync.credential.marked_at_connect` | debug | A renewal that landed while the driver was disconnected was carried by this connect's own credential read, so the driver consumed it instead of re-announcing it; `from_v`, `to_v` are the renewal-handle versions it moved between. Its absence beside a `sync.session.closed`/`sync.backoff` pair is how an operator tells "this connect swallowed a renewal" from "no renewal happened". |
 | `sync.credential.renewed` | debug | A renewed bearer is being sent to the relay in a `0x12 RefreshToken` frame, on the live session. |
 | `sync.credential.renewed.deferred` | debug | A renewal landed but the relay did not negotiate `SrvTokenRefresh`; the new bearer waits for the next reconnect. |
 | `sync.credential.accepted` | debug | The relay acknowledged the refreshed bearer (`0x13`); `expires_at_ms` is the deadline the relay adopted, which is authoritative over the client's own reading of `exp`. |

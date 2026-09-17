@@ -585,6 +585,11 @@ pub(crate) async fn run(
     // One watch handle for the driver's life, so a renewal that lands between
     // two sessions — or while a session is busy — is still observed.
     let mut renewals = credential.watch();
+    // The version the previous attempt consumed, so the event below fires on a
+    // connect that actually brought the handle forward rather than on every
+    // reconnect. A fresh watch is already current, so starting from the
+    // source's version keeps the first connect quiet unless a write beat it.
+    let mut marked_at_last_connect = credential.version();
     while !shared.is_shutdown() {
         // Connect (cancellable by shutdown).
         let connect_fut = factory();
@@ -602,7 +607,23 @@ pub(crate) async fn run(
         // rather than in band. What the move bought is the size of the window:
         // it used to span the dial, the handshake and the subscribe, and is
         // now the few instructions between these two statements.
-        let _ = mark_renewals_current(&mut renewals);
+        let marked = mark_renewals_current(&mut renewals);
+        if marked != marked_at_last_connect {
+            // The one credential transition in this file that used to be
+            // silent, and the one that suppresses the other three: when this
+            // fires, `sync.credential.renewed` will not, because the pump has
+            // nothing left pending. Without it a swallowed renewal and a
+            // session in which no renewal ever happened produce identical
+            // logs. Emitted only when the handle actually moved, so a steady
+            // reconnect loop does not carry one per attempt.
+            tracing::debug!(
+                ev = "sync.credential.marked_at_connect",
+                from_v = marked_at_last_connect,
+                to_v = marked,
+                "connect carried a renewal from the offline window; not re-announcing it"
+            );
+        }
+        marked_at_last_connect = marked;
         let connected = tokio::select! {
             biased;
             () = shared.shutdown_notified() => break,
