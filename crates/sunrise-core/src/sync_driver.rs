@@ -2886,10 +2886,18 @@ mod tests {
     /// given the new bearer in the `Authorization` header by the time the pump
     /// starts, and a lagging handle would spend a round trip re-presenting it.
     ///
-    /// The seam is tested directly rather than through the driver: reaching it
-    /// end to end needs a close, a jittered backoff and a write landing inside
-    /// it, and the assertion would fail for timing reasons rather than for the
-    /// proposition it holds.
+    /// # What this test is, and is not
+    ///
+    /// It calls the seam directly. It builds no `Core`, opens no session and
+    /// constructs no factory, so it does **not** pin the placement — proposition
+    /// for proposition it is `credential.rs`'s
+    /// `a_handle_that_missed_a_write_is_brought_current` asserted again here,
+    /// where the seam's production caller lives, so that the extracted helper
+    /// has a local test as well as a local caller.
+    ///
+    /// The placement itself — that the seam is called once per connect attempt
+    /// and *after* the factory rather than inside `session` — is pinned by the
+    /// two driver-level tests below it, which do drive `run`.
     #[tokio::test]
     async fn a_renewal_that_landed_between_sessions_is_not_re_announced() {
         let credential = TokenSource::new(Some("first-token".into()));

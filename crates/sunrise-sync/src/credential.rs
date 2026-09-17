@@ -195,8 +195,11 @@ impl TokenWatch {
     /// again would be work the relay does not need, because the connect
     /// already carried them.
     ///
-    /// The returned version is the one consumed, so a caller can log or assert
-    /// on how far the handle was moved.
+    /// The returned version is the one consumed, so a caller can say how far
+    /// the handle was moved. The sync driver does: it compares the return
+    /// against the previous attempt's and emits
+    /// `sync.credential.marked_at_connect` when a connect actually brought the
+    /// handle forward, which is the only trace a consumed renewal leaves.
     pub fn mark_current(&mut self) -> u64 {
         *self.0.borrow_and_update()
     }
