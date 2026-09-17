@@ -196,13 +196,25 @@ struct KeychainMigration: Sendable {
     /// outside the `do`, so its one refusal is never in reach of this `catch`.
     ///
     /// Untested by construction, and it is worth saying why rather than leaving
-    /// the gap to be re-discovered: no configuration this repository builds can
-    /// make either destination step throw. A `.dataProtection` query answers
-    /// `errSecItemNotFound`, the login keychain reports no `kSecAttrAccessible`
-    /// to disagree with and accepts every update, and `SecItemCopyMatching`
-    /// always hands back `CFData`. Reaching it needs an entitled, signed build —
-    /// or a fault-injection seam inside ``KeychainItem``, which would be a
-    /// second implementation of `Security.framework` to get wrong.
+    /// the gap to be re-discovered — but not for the reason an earlier revision
+    /// of this comment gave. It said no configuration this repository builds can
+    /// make either destination step throw, and that is too strong. It holds for
+    /// the *ordinary* statuses, which is all that was measured: a
+    /// `.dataProtection` query answers `errSecItemNotFound`, the login keychain
+    /// reports no `kSecAttrAccessible` to disagree with and accepts every
+    /// update, and a successful `SecItemCopyMatching` always hands back
+    /// `CFData`. It does not hold for a *locked* login keychain or a denied
+    /// prompt, which make that same query return a hard status on an ad-hoc
+    /// build — so the arm is reachable here after all, through a lock or a
+    /// denial landing between ``run(before:)``'s reads and either of the two
+    /// destination calls below.
+    ///
+    /// The conclusion survives the premise: what no test in this repository can
+    /// do is *arrange* that race, because locking the login keychain in the
+    /// middle of a case is not something this suite can drive. So the arm still
+    /// executes in no test. Closing it needs an entitled, signed build — or a
+    /// fault-injection seam inside ``KeychainItem``, which would be a second
+    /// implementation of `Security.framework` to get wrong.
     ///
     /// - Returns: the secret, or `nil` when nothing anywhere holds one.
     func loadMigratingIfNeeded() throws -> Data? {
