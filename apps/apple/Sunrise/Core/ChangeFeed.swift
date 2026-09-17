@@ -148,6 +148,16 @@ actor ChangeBroadcast {
     /// precisely because nothing counted them.
     var consumerCount: Int { consumers.count }
 
+    /// Whether the feed has ended. Read by ``CoreBridge/changes(window:)`` to
+    /// decide whether a prime would be a lie.
+    ///
+    /// Safe to act on in the only direction that matters, because the flag is
+    /// **sticky** and goes false to true and never back: reading `true` means
+    /// suppressing the prime is right, and reading `false` means the prime was
+    /// emitted before the close and the consumer gets the close batch behind
+    /// it.
+    var isClosed: Bool { hasClosed }
+
     /// A stream of everything published from now on, with a lifetime of its
     /// own: ending it detaches this consumer and disturbs no other.
     func subscribe() -> AsyncStream<CoreChange> {
@@ -276,11 +286,11 @@ extension AsyncStream where Element == ChangeBatch {
     /// arrive.
     ///
     /// Ordering the two the other way is what fixes it, and doing it here
-    /// rather than in each of the thirteen `follow()` implementations is
+    /// rather than in each of the fourteen `follow()` implementations is
     /// deliberate: the trap is a property of a lazily-subscribed feed, so the
     /// feed is where it should be answered. A consumer that only ever calls
     /// `refresh()` on a batch is now correct with no ordering discipline of
-    /// its own, and a fourteenth model cannot get it wrong.
+    /// its own, and a fifteenth model cannot get it wrong.
     ///
     /// `isComplete` is `false` on the prime, which is the truth: `touched` is
     /// empty and is *not* the whole story, so the consumer must re-run every

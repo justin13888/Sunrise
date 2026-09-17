@@ -116,6 +116,37 @@ struct CoreBridgeTests {
         await vault.bridge.shutdown()
     }
 
+    /// **A stream opened onto a closed vault is closed, not primed.**
+    ///
+    /// The prime is an instruction to re-read, and after `shutdown()` there is
+    /// nothing left to read it with: `Core.query` returns `CoreError.Closed`,
+    /// `CoreBridge.query` does not guard on that, and a model such as
+    /// `TaskListModel` paints the throw. So a feed opened during teardown —
+    /// a tab appearing as the window goes away, a `follow()` task starting
+    /// late — put "core is closed" on screen. Every one of the fourteen
+    /// `follow()` loops guards on `isClosed` and would have returned at once;
+    /// it was the prime sitting in front of the close batch that made them all
+    /// re-read first.
+    ///
+    /// Bounded through the same helper as the test above, because the way this
+    /// fails is that nothing arrives — an unbounded wait would hang the suite
+    /// instead of failing it.
+    @Test
+    func aStreamOpenedAfterShutdownIsClosedRatherThanPrimed() async throws {
+        let vault = try await TestVault()
+        await vault.bridge.shutdown()
+
+        let changes = await vault.bridge.changes(window: .milliseconds(20))
+        let batch = try #require(
+            await Self.firstBatch(of: changes),
+            "a stream onto a closed vault must still say something, and say it is closed"
+        )
+        #expect(
+            batch.isClosed,
+            "the first batch was a prime, so every screen re-read a core that refuses reads"
+        )
+    }
+
     /// **The regression test for the feed the whole app shares.**
     ///
     /// Every screen model calls `changes()`. This method used to cancel the
