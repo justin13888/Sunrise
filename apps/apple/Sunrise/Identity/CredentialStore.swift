@@ -145,8 +145,21 @@ struct KeychainCredentialStore: CredentialStore {
         return try? JSONDecoder().decode(StoredCredentials.self, from: data)
     }
 
+    /// Across both domains, as `clear` is, and for the sharper half of the same
+    /// reason. `load` reads the other keychain before reporting nothing, so a
+    /// save that wrote only this one would leave two tokens under one
+    /// `(service, account)`. This store is the one where that happens with **no
+    /// user action at all**: `refreshIfNeeded` renews at 75% of the token's
+    /// life, so a single launch whose probe failed open writes the fresh token
+    /// to the login keychain while the stale one stays in the data-protection
+    /// one, and every later launch with a correct probe reads two secrets that
+    /// disagree, raises `.migrationUnverified`, and is signed out by
+    /// `AccountModel.restore()`'s `try?` without a word — a loop whose only
+    /// remedy is a Sign out button rendered in a state the user cannot reach.
+    /// See `KeychainItem.writeAcrossDomains`, including why the migration's own
+    /// write must not do this.
     func save(_ credentials: StoredCredentials) throws {
-        try item.write(try JSONEncoder().encode(credentials))
+        try item.writeAcrossDomains(try JSONEncoder().encode(credentials))
     }
 
     /// Across both domains. Signing out has to reach the refresh token

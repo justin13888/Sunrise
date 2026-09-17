@@ -113,11 +113,22 @@ struct KeychainItem: Sendable {
     ///
     /// **The second read can only turn a `nil` into bytes.** It never turns a
     /// success into a failure and never turns a `nil` into a throw: a refusal
-    /// from the other domain is swallowed, because on an unsigned Mac a
-    /// `.dataProtection` query answers `errSecMissingEntitlement` and letting
-    /// that propagate would lock every genuine first run out of the app. The
-    /// *first* read keeps ``read()``'s contract in full — a refusal there is
+    /// from the other domain is swallowed, because it is the domain this build
+    /// did **not** resolve to, so a refusal there means there was nothing of
+    /// ours to find — and letting it propagate would fail a genuine first run.
+    /// The *first* read keeps ``read()``'s contract in full: a refusal there is
     /// still "a key may exist and cannot be reached" and still throws.
+    ///
+    /// The entitlement is **not** what the `try?` is defending against, and an
+    /// earlier revision of this comment said it was. Measured on the ad-hoc Mac
+    /// this repository builds, and pinned by
+    /// `theUnreachableDomainRefusesMutationsAndAnswersReadsAsEmpty`: a
+    /// `.dataProtection` **query** answers `errSecItemNotFound` (-25300), not
+    /// `errSecMissingEntitlement`. The -34018 refusal lands on the *mutating*
+    /// calls — `SecItemAdd`, `SecItemUpdate` and `SecItemDelete`. So the swallow
+    /// here earns its keep on the entitled Mac, where the other store can be
+    /// locked or can refuse a prompt while this one answers, rather than on the
+    /// unsigned one, where the second read simply finds nothing.
     func readAcrossDomains() throws -> Data? {
         if let data = try read() { return data }
         guard KeychainDomain.domainsAreDistinctStores else { return nil }
@@ -145,6 +156,46 @@ struct KeychainItem: Sendable {
         insert[kSecAttrAccessible as String] = accessibility.attribute
         let added = SecItemAdd(insert as CFDictionary, nil)
         guard added == errSecSuccess else { throw KeychainError.unexpected(added) }
+    }
+
+    /// ``write(_:)``, and then the same item in the other domain removed.
+    ///
+    /// The third side of the symmetry ``readAcrossDomains()`` opened and
+    /// ``deleteAcrossDomains()`` closed halfway. Once a `load` can *find* a
+    /// secret in the other domain, a `save` that only writes this one leaves
+    /// two copies under one `(service, account)` and no rule about which is
+    /// current — and the next launch whose ``KeychainDomain/probe()`` answers
+    /// correctly walks into ``KeychainMigration``'s one refusal:
+    /// ``KeychainError/migrationUnverified``, two different secrets claiming one
+    /// name, with no way out that the user can reach.
+    ///
+    /// The steady state that motivates it needs no user action. An entitled Mac
+    /// holds its token in `.dataProtection`; one launch's probe fails open to
+    /// `.login` — the premise the whole fallback is built on — the cross-domain
+    /// read finds the token and the session restores; then a background renewal
+    /// writes the *fresh* token to `.login` while the stale one sits in
+    /// `.dataProtection`. Every later launch with a correct probe compares the
+    /// two, disagrees, and signs the user out in silence.
+    ///
+    /// Write first, then delete, for ``KeychainMigration``'s invariant: a
+    /// readable copy exists at every instant. The other domain's failure is
+    /// swallowed for ``readAcrossDomains()``'s reason — it is the domain this
+    /// build did not resolve to, so a refusal there means there was nothing of
+    /// ours to remove. This domain's write keeps ``write(_:)``'s contract and
+    /// still throws, and nothing is deleted unless it succeeded.
+    ///
+    /// **Deliberately not folded into ``write(_:)``.**
+    /// ``KeychainMigration/migrate(before:)`` writes its destination and only
+    /// then deletes its source, and for the credential store the source *is*
+    /// this item in the other domain. A `write` that deleted the other domain
+    /// would remove the source before the verify step had confirmed the
+    /// destination, turning the five-step invariant into the data loss it was
+    /// written to prevent. The migration keeps the plain ``write(_:)``; the
+    /// stores, whose save is the last word on what the secret is, call this.
+    func writeAcrossDomains(_ data: Data) throws {
+        try write(data)
+        guard KeychainDomain.domainsAreDistinctStores else { return }
+        try? inOtherDomain.delete()
     }
 
     /// Raise an existing item to `accessibility`, if it is not there already.
@@ -211,13 +262,33 @@ struct KeychainItem: Sendable {
     /// launch will look for it. Whatever a read can reach, a clear removes.
     ///
     /// Symmetrically with ``readAcrossDomains()``, the other domain's failure
-    /// is swallowed — it is the domain this build cannot address, so a refusal
-    /// there means there was nothing of ours to remove. This domain's delete
-    /// keeps ``delete()``'s contract and still throws.
+    /// is swallowed — it is the domain this build did not resolve to, so a
+    /// refusal there means there was nothing of ours to remove. This domain's
+    /// delete keeps ``delete()``'s contract and still throws.
+    ///
+    /// **Both are attempted, and only then is this domain's status raised.**
+    /// An earlier revision put `try delete()` on its own line ahead of the
+    /// cross-domain half, so a refusal here skipped the other domain entirely
+    /// and left behind the one copy ``readAcrossDomains()`` can still find —
+    /// with `AccountModel.signOut()` swallowing the throw, a user told they
+    /// are signed out while a live refresh token waits where the next launch
+    /// looks. That is not a hypothetical ordering: on the ad-hoc Mac a
+    /// `.dataProtection`-addressed delete answers `errSecMissingEntitlement`
+    /// (-34018), so the *whole* cross-domain clear was a no-op for exactly the
+    /// item that needed it. This gains no new way to throw: the error raised is
+    /// this domain's and only this domain's, which is what ``clear()``'s
+    /// callers already handle.
     func deleteAcrossDomains() throws {
-        try delete()
-        guard KeychainDomain.domainsAreDistinctStores else { return }
-        try? inOtherDomain.delete()
+        var thisDomainFailure: (any Error)?
+        do {
+            try delete()
+        } catch {
+            thisDomainFailure = error
+        }
+        if KeychainDomain.domainsAreDistinctStores {
+            try? inOtherDomain.delete()
+        }
+        if let thisDomainFailure { throw thisDomainFailure }
     }
 }
 
