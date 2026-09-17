@@ -94,7 +94,7 @@ Revocation today is a **register plus a read bound**:
   comparison in the path, and `is_revoked`'s own doc explains at length why a
   correct comparison is indistinguishable from presence and an incorrect one
   collapses to a bare wall clock after a restart, which `HlcClock::peek` makes
-  easy to reach (`crates/sunrise-core/src/config.rs:71-79`).
+  easy to reach (`crates/sunrise-core/src/config.rs:71-79#peek`).
 - Nothing bounds writes. `Command::RevokeDevice` makes no request of the relay,
   and cannot: `DELETE /api/v1/devices/{device_id}` names the **relay's** ULID for
   a device, minted at registration, while a vault knows only its own 16-byte
