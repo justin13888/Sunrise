@@ -428,23 +428,43 @@ jobs:
     # partial sample and projects to roughly 5.4 hours whole. That is what sets
     # this ceiling, not `sunrise-domain`: core's largest shard is 315 mutants at
     # ~15.4 s, about 81 minutes, where domain's 226 at ~5.3 s is about 20. A
-    # hosted runner is slower than the laptop these came from, so 120 leaves
-    # core's shard roughly 50% headroom and every other shard several times
-    # over.
+    # hosted runner is slower than the laptop these came from, and 120 is set
+    # to absorb that — but by how much is not derivable from what is written
+    # here, because two terms under it are unmeasured. State both.
     #
-    # That headroom rests on an assumption nothing here measures, so state it:
-    # it holds only while `ubuntu-latest` is under ~1.5x the laptop's per-mutant
-    # cost. At exactly 1.5x core's largest shard is 121 minutes and this job
-    # times out; every other shard survives a much worse ratio. Nobody has
-    # timed a shard on a runner, because the matrix has never completed one —
-    # so the ratio is unrecorded rather than measured and generous.
+    # The first is the runner ratio. 81 minutes holds at the laptop's
+    # per-mutant cost; `ubuntu-latest` is slower by a factor nobody has
+    # written down. At 1.5x, core's largest shard is 121 minutes of mutants
+    # alone and this job times out; every other shard survives a much worse
+    # ratio. Nobody has timed a shard on a runner, because the matrix has
+    # never completed one — so the ratio is unrecorded rather than measured
+    # and generous.
+    #
+    # The second is that `315 x 15.4 s` is a shard's whole cost. It is not: it
+    # is mutant time only. Every `cargo mutants` invocation first builds and
+    # tests the tree unmutated as its baseline, and `.cargo/mutants.toml`
+    # records in this same tree that the first build in a fresh tree compiles
+    # SQLCipher from source through `rusqlite`'s `bundled-sqlcipher` — which
+    # `crates/sunrise-core/Cargo.toml` pulls. On top of that every shard pays
+    # `actions/checkout`, the toolchain action, a `Swatinem/rust-cache` that
+    # is cold on a nightly, and the cargo-mutants install. None of that is in
+    # the arithmetic above.
+    #
+    # So ~1.5x is an **upper bound** on the runner ratio this job can absorb,
+    # not the break-even. The break-even is lower by however long that fixed
+    # cost runs, and since no shard has ever completed at any revision,
+    # nothing here measures it. No corrected figure is offered: a second
+    # number derived from the same missing measurement is exactly what this
+    # comment exists to stop.
     #
     # The lever if it turns out to be wrong is `sunrise-core`'s shard count,
     # not this number: the longest shard is the only one near the ceiling, and
-    # splitting core further shortens it proportionally while raising
-    # `timeout-minutes` only lets a bad ratio cost more. And the failure is
-    # cheap while it lasts — `sunrise-core` has no recorded floor, so a shard
-    # that times out spends runner minutes and gates nothing.
+    # raising `timeout-minutes` only lets a bad ratio cost more. Splitting
+    # core further does shorten the longest shard, but **sub**-proportionally
+    # — each new shard pays another baseline build — and total runner minutes
+    # rise with every split. And the failure is cheap while it lasts —
+    # `sunrise-core` has no recorded floor, so a shard that times out spends
+    # runner minutes and gates nothing.
     #
     # If core's shard count rises, this can come down with it.
     timeout-minutes: 120
