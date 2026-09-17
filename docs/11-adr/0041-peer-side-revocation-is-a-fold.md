@@ -330,6 +330,19 @@ there are four visible consequences:
    `the_discount_rehabilitates_a_device_whose_sole_revoker_a_third_party_revokes`
    pins it.
 
+   **P is not required to be a bystander**, which is the reading a threat model
+   has to take. One attacker holding two devices the account revoked together
+   reaches this with a single op: O revoked X1 and X2; X1 revokes O; the mutual
+   exception lands it; O goes out, which both unwinds O's revocation of X2 and
+   discounts O out of X2's set; and X2 then revokes the rest of the account.
+   The remedy is the mutual pair's and no better — a device X2 reaches revokes
+   it back and is left revoked itself, so what the account needs is a current
+   device the attacker never reached.
+   `the_discount_lets_one_of_two_devices_revoked_together_ungate_the_other`
+   pins it. It is narrower than what the discount closes — that cost one op
+   from *one* revoked device and was permanent and account-wide — but it is
+   not nothing, and #241's un-revoke is what would settle it.
+
    *The chain, which is the hole.* One link further — O revokes X, P revokes
    O, Q revokes P — and Q's row gates P's, so O's revocation of X stands and X
    is **on the revoked list while being ungated**, which is the pair of facts
@@ -337,7 +350,8 @@ there are four visible consequences:
    X can author none of the two that matter: a device authors only rows whose
    sender is itself, and every discount of S from V's set needs a row from a
    sender that is not V, so X can never discount anything out of its own set.
-   It is a state an account can arrive at, not one an attacker constructs.
+   The rows that rehabilitate X are written by other devices — honest ones, or
+   a second device the same attacker holds.
    `the_discount_leaves_a_revoked_device_revoking_when_a_chain_revokes_its_revoker`
    pins it.
 
@@ -466,9 +480,12 @@ corollary 3 still holds.
 What it does not close is above, in §"What a user sees" item 4, with its
 condition: a device whose sole revoker a third party revokes is rehabilitated,
 and with a three-link chain a device that is still on the revoked list revokes
-third parties anyway. Both are narrower than what it closes and neither is
-reachable by the revoked device alone. #241's un-revoke is still what would
-settle the question the discount has to guess at. Taken.
+third parties anyway. Both are narrower than what it closes — that cost one op
+from one revoked device, was permanent, and reached the whole account — and
+neither is reachable by a revoked device out of its own rows. Neither is out of
+an attacker's reach either, where the attacker holds a second device the same
+revoker expelled. #241's un-revoke is still what would settle the question the
+discount has to guess at. Taken.
 
 ## Consequences
 

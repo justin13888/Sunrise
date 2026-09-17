@@ -500,7 +500,12 @@ impl Engine {
     ///
     /// A set built from every row is not a number an attacker can move, and
     /// it closes the no-history case too, because `revokers_all[X]` holds X's
-    /// own revoker by construction. It reads no clock of any kind — not the
+    /// own revoker by construction. The discount below is the one thing that
+    /// takes an entry back out of that set, and X can never be the reason:
+    /// discounting X's revoker needs a row whose sender is neither X nor that
+    /// revoker, and a device authors only rows whose sender is itself. So the
+    /// gate the walk applies is weaker than this set and still not one X can
+    /// move. It reads no clock of any kind — not the
     /// op's and not this device's, the latter being the read
     /// [`Self::is_revoked`] documents at length as unsound, because a fresh
     /// [`crate::config::MonotonicHlc`] after a restart collapses it to a bare
@@ -591,6 +596,16 @@ impl Engine {
     /// again. Pinned by
     /// `the_discount_rehabilitates_a_device_whose_sole_revoker_a_third_party_revokes`.
     ///
+    /// **P does not have to be a bystander, and this is the shape a threat
+    /// model has to carry.** One attacker holding two devices the account
+    /// revoked together reaches it with a single op: O revoked X1 and X2, X1
+    /// revokes O, the mutual exception lands that, O goes out, and O going out
+    /// both unwinds its revocation of X2 (decision 1, predating the discount)
+    /// and discounts O out of X2's set (the discount). X2 then revokes the
+    /// rest of the account. The remedy is the mutual pair's and no better: a
+    /// device X2 reaches revokes it back and is left revoked itself. Pinned by
+    /// `the_discount_lets_one_of_two_devices_revoked_together_ungate_the_other`.
+    ///
     /// *Shape two, which is the hole.* Extend that by one link — O revokes X,
     /// P revokes O, Q revokes P — and Q's row gates P's, so O's revocation of
     /// X stands and **X is on the revoked list while being ungated**, which is
@@ -598,8 +613,9 @@ impl Engine {
     /// revocations arranged in a chain, and X can author none of the two that
     /// matter: a device authors only rows whose sender is itself, and every
     /// discount of S from V's set needs a row from a sender that is not V, so
-    /// X can never discount anything out of its own set. It is a state an
-    /// account can arrive at, not one an attacker can construct. Pinned by
+    /// X can never discount anything out of its own set — the rows that
+    /// rehabilitate it are written by other devices, whether honest ones or a
+    /// second device the same attacker holds. Pinned by
     /// `the_discount_leaves_a_revoked_device_revoking_when_a_chain_revokes_its_revoker`.
     ///
     /// What would close it is the same thing that would close the lockout: an
@@ -672,6 +688,9 @@ impl Engine {
         // delivery order, which is what ADR-0034 corollary 3 requires; if
         // anything it is more obviously so, because it no longer depends on
         // where in the walk a row sits.
+        //
+        // This is the map the discount below reads and the walk does not. The
+        // walk reads what the discount leaves.
         //
         // `s != v` here for the same reason the walk skips a self-naming row
         // below: a device cannot revoke itself, so it cannot enter its own

@@ -7034,6 +7034,85 @@ fn the_discount_rehabilitates_a_device_whose_sole_revoker_a_third_party_revokes(
     );
 }
 
+/// **What the discount gives up (1a): one attacker holding two revoked
+/// devices reaches shape (1) with a single op, and the "third party" is its
+/// own second device.**
+///
+/// The sharpest reading of the condition above, and the one a threat model
+/// has to carry, because "a third party revokes O" sounds like a bystander
+/// and nothing requires it to be one. O revokes both X1 and X2 — one
+/// administrative act against a pair of devices one person holds. X1 then
+/// revokes O. The mutual exception lands both of those, so X1 and O are out;
+/// and O being out unwinds O's *other* revocation, so X2 comes off the list.
+/// That half is decision 1's retroactivity and predates the discount, which
+/// is why the register up to here is what it was before the discount existed.
+///
+/// What the discount adds is the assertion after it: X1's row discounts O out
+/// of X2's revoker set, because X1 is a sender other than X2 — so X2 is
+/// ungated as well as unrevoked, and revokes the rest of the account.
+///
+/// The remedy is the mutual pair's remedy and no better: a device X2 reaches
+/// may revoke X2 back, which re-gates X2 and leaves that device revoked as
+/// well, because the exception lands X2's op too. What the account needs is
+/// still a current device the attacker never reached.
+///
+/// Pinned separately from the general statement of shape (1) because the cost
+/// is one op from a device the account has already expelled, and the
+/// precondition — two devices revoked by a single revoker — is an ordinary
+/// thing for an account to do.
+#[test]
+fn the_discount_lets_one_of_two_devices_revoked_together_ungate_the_other() {
+    let ex1 = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let ex2 = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eo = engine_seeded(ROOT, [3u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let et = engine_seeded(ROOT, [5u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let er = engine_seeded(ROOT, [4u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut db = db_root(ROOT);
+    let (x1_id, x2_id) = (ex1.keychain.device_id(), ex2.keychain.device_id());
+    let (o_id, t_id) = (eo.keychain.device_id(), et.keychain.device_id());
+
+    // O expels both of the attacker's devices.
+    revoke(&er, &mut db, &eo, x1_id, T0);
+    revoke(&er, &mut db, &eo, x2_id, T0 + 10_000);
+    assert!(er.is_revoked(db.conn(), &x1_id).unwrap());
+    assert!(er.is_revoked(db.conn(), &x2_id).unwrap());
+
+    // One op from X1. The register half of this predates the discount: the
+    // mutual exception puts O out, and O being out unwinds its revocation of
+    // X2.
+    revoke(&er, &mut db, &ex1, o_id, T0 + 20_000);
+    assert!(er.is_revoked(db.conn(), &o_id).unwrap());
+    assert!(er.is_revoked(db.conn(), &x1_id).unwrap());
+    assert_eq!(
+        revocation_row(&db, &x2_id),
+        None,
+        "O's other revocation is unwound with O, which is decision 1"
+    );
+
+    // And this is the discount's half: X2 is ungated too, so the attacker's
+    // surviving device now revokes the account.
+    revoke(&er, &mut db, &ex2, t_id, T0 + 30_000);
+    assert!(
+        er.is_revoked(db.conn(), &t_id).unwrap(),
+        "X1's row discounts O out of X2's set, so X2 revokes third parties"
+    );
+
+    // What is left is the mutual pair again, with the same cost: T revokes X2
+    // back and re-gates it, and stays revoked itself.
+    revoke(&er, &mut db, &et, x2_id, T0 + 40_000);
+    assert!(er.is_revoked(db.conn(), &x2_id).unwrap());
+    assert!(
+        er.is_revoked(db.conn(), &t_id).unwrap(),
+        "and T stays out: the pair converges on both revocations"
+    );
+    revoke(&er, &mut db, &ex2, o_id, T0 + 50_000);
+    assert_eq!(
+        revocation_row(&db, &o_id).map(|r| r.2),
+        Some(x1_id.to_vec()),
+        "X2 is gated again, so its second attempt on O does not move the row"
+    );
+}
+
 /// **What the discount gives up (2): a device that is still on the revoked
 /// list revokes third parties, when a chain revokes its revoker's revoker.**
 ///
@@ -7047,8 +7126,9 @@ fn the_discount_rehabilitates_a_device_whose_sole_revoker_a_third_party_revokes(
 /// of X's set, so X is ungated. Neither discount can be written by X, because
 /// a device authors only rows whose sender is itself and every discount of S
 /// from V's set needs a row from a sender that is not V. So X cannot reach
-/// this state alone; it is a state an account can arrive at, not one an
-/// attacker can construct.
+/// this state alone — though "not alone" is a weaker bound than it sounds,
+/// and `the_discount_lets_one_of_two_devices_revoked_together_ungate_the_other`
+/// is where that is asserted.
 ///
 /// Recorded in ADR-0041 §"What a user sees" item 4 with the bound that
 /// replaces the one the poisoning defect refuted.
