@@ -21,8 +21,8 @@ import Testing
 /// a query answers `errSecItemNotFound` like any empty keychain. That is what
 /// makes the second half of this suite buildable — a cross-domain read
 /// observed returning bytes, a cross-domain delete observed running after its
-/// own domain has refused, and the `?? migrated` term isolated from both by
-/// giving the destination a service of its own.
+/// own domain has refused, and the rescued-bytes `return migrated` isolated
+/// from both by giving the destination a service of its own.
 ///
 /// Mac-only by necessity, not by choice. On iOS the data-protection keychain is
 /// the only keychain and every call to it succeeds, so there is no refusal to
@@ -85,14 +85,25 @@ struct KeychainMigrationFallbackTests {
     /// other case here rests on and the one the source used to state wrongly.
     ///
     /// The claim was that an unsigned Mac answers a `.dataProtection` *query*
-    /// with `errSecMissingEntitlement`. It does not, and it never could have —
-    /// if a query returned a hard status, the first bare `try` in
-    /// `readAcrossDomains()` would throw and the two cases above would fail. A
-    /// query answers `errSecItemNotFound`; the -34018 refusal is on the three
-    /// *mutating* calls. That split is what makes the cases below buildable at
-    /// all: it is why a cross-domain read can be observed returning bytes, and
-    /// why a cross-domain delete can be observed running after its own domain
-    /// has already refused.
+    /// with `errSecMissingEntitlement`. It does not: the first assertion below
+    /// settles that directly. A query answers `errSecItemNotFound`, and the
+    /// -34018 refusal is on the three *mutating* calls.
+    ///
+    /// An earlier revision argued the same conclusion a second way, and that
+    /// argument was wrong: it said a hard status on a query would make "the two
+    /// cases above" fail. It would not. Both of those go through a fallback arm
+    /// that answers with the *source's* bytes whatever the destination raised,
+    /// so they stay green either way, and the argument was protected by exactly
+    /// the greenness it appealed to. The cases that really would fail are the
+    /// three below, which read a `.dataProtection`-addressed item outside any
+    /// fallback: `theRescuedBytesAloneAnswerWhenNeitherDomainHoldsTheDestination`,
+    /// `aSecretInTheOtherDomainIsFoundByTheSecondRead` and
+    /// `aRefusalOnThisDomainDoesNotSpareTheCopyInTheOther`.
+    ///
+    /// That split is what makes those cases buildable at all: it is why a
+    /// cross-domain read can be observed returning bytes, and why a
+    /// cross-domain delete can be observed running after its own domain has
+    /// already refused.
     @Test
     func theUnreachableDomainRefusesMutationsAndAnswersReadsAsEmpty() {
         let service = "dev.sunrise.Sunrise.tests.\(UUID().uuidString).statuses"
@@ -116,11 +127,25 @@ struct KeychainMigrationFallbackTests {
             .afterFirstUnlockThisDeviceOnly.attribute
         insert[kSecValueData as String] = Data([0])
         #expect(SecItemAdd(insert as CFDictionary, nil) == errSecMissingEntitlement)
+
+        // The third mutating call. Decision 19, `KeychainItem.readAcrossDomains`
+        // and `docs/07-clients/desktop.md` all name the update alongside the add
+        // and the delete; until this line only two of the three were pinned. It
+        // is the interesting one of the three, because an update against an
+        // item that is not there would answer `errSecItemNotFound` on a keychain
+        // this build *can* reach — so the refusal is what separates
+        // "unreachable" from "empty".
+        let attributes = [kSecValueData as String: Data([1])] as CFDictionary
+        #expect(
+            SecItemUpdate(query as CFDictionary, attributes) == errSecMissingEntitlement,
+            "an update is refused, not answered with not-found"
+        )
+
         #expect(SecItemDelete(query as CFDictionary) == errSecMissingEntitlement)
     }
 
     /// Two **services**, so `readAcrossDomains()` can answer nothing in either
-    /// domain and `?? migrated` is the only term left that can supply the
+    /// domain and `return migrated` is the only line left that can supply the
     /// secret.
     private func twoServicePair() -> (source: KeychainItem, destination: KeychainItem) {
         let run = UUID().uuidString
@@ -135,15 +160,19 @@ struct KeychainMigrationFallbackTests {
         return (item("source", .login), item("destination", .dataProtection))
     }
 
-    /// The `?? migrated` term on its own, with the cross-domain read taken out
-    /// of the picture.
+    /// The rescued-bytes `return migrated` on its own, with the cross-domain
+    /// read taken out of the picture.
     ///
-    /// The two cases above reach this line, but they cannot *isolate* it: they
-    /// share one service across the two domains, so `readAcrossDomains()` finds
-    /// the source through its other-domain read and answers before the `??` is
-    /// ever consulted. Deleting `?? migrated` leaves them both green. A separate
-    /// service for the destination makes both of its reads answer nothing, so
-    /// the only path to `secret` is the value the fallback arm rescued.
+    /// Exactly one case above reaches this line —
+    /// `aLoadWhoseDestinationCannotBeReachedStillAnswersWithTheSecret`. The
+    /// other calls `run()` directly and never enters the composed step. And the
+    /// one that does reach it cannot *isolate* it: it shares one service across
+    /// the two domains, so `readAcrossDomains()` finds the source through its
+    /// other-domain read and returns before the last line. Turning that
+    /// `return migrated` into `return nil` leaves both of them green. A separate
+    /// service for the destination makes both of the destination's reads answer
+    /// nothing, so the only path to `secret` is the value the fallback arm
+    /// rescued.
     ///
     /// This is the case an earlier note said no buildable configuration could
     /// produce — on the grounds that it needs a destination that fails writes

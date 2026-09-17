@@ -368,9 +368,12 @@ struct KeychainDomainTests {
                 kSecMatchLimit as String: kSecMatchLimitAll
             ]
             domain.apply(to: &query)
-            // "not found" on the keychain this build can reach, and a refusal
-            // on the one it cannot — either way nothing of the probe's is
-            // findable, which is the whole claim.
+            // Deliberately weaker than `== errSecItemNotFound`, which is
+            // what both domains answer today — a *query* is answered rather
+            // than refused on every configuration this repository builds, which
+            // `theUnreachableDomainRefusesMutationsAndAnswersReadsAsEmpty`
+            // measures. The claim here is only that nothing of the probe's is
+            // findable, and that one survives an entitlement landing.
             #expect(SecItemCopyMatching(query as CFDictionary, nil) != errSecSuccess)
         }
     }
@@ -475,13 +478,20 @@ struct KeychainDomainTests {
 
     /// `writeAcrossDomains` must never delete the item it has just written.
     ///
-    /// The whole method is a swallowed delete of the *other* domain's copy, and
-    /// on every Apple platform but macOS there is no other domain — `.login`
-    /// and `.dataProtection` are two names for one store, so an unguarded
-    /// delete would remove the secret one line after storing it. That is the
-    /// same trap `sourceAndDestinationAreOneItem` exists for, and this is the
-    /// case that fails on iOS if the guard is ever dropped. On the Mac it pins
-    /// the other half: the write still lands when the other domain refuses.
+    /// The method's second half deletes the *other* domain's copy, and on every
+    /// Apple platform but macOS there is no other domain — `.login` and
+    /// `.dataProtection` are two names for one store, so an unguarded delete
+    /// would remove the secret one line after storing it. That is the same trap
+    /// `sourceAndDestinationAreOneItem` exists for, and this is the case that
+    /// fails on iOS if the guard is ever dropped.
+    ///
+    /// On the Mac it pins a second property, and one that only became a
+    /// property once the blanket `try?` there was narrowed: the other domain's
+    /// refusal is the missing-entitlement status, which
+    /// `meansTheOtherStoreWasUnreachable` swallows, so the write still lands.
+    /// Drop that status from the predicate and this case fails. What it does
+    /// **not** pin is the delete's own effect — `KeychainItem` declares why no
+    /// configuration this repository builds can observe that.
     @Test
     func aCrossDomainWriteKeepsWhatItJustWrote() throws {
         let item = KeychainItem(
