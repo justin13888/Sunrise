@@ -97,6 +97,28 @@ pub type ConnectFuture = Pin<Box<dyn Future<Output = Result<BoxTransport, Transp
 /// A factory that opens a fresh transport on every call. Called once per
 /// connect attempt (initial connect and every reconnect after a drop), so it
 /// must be able to produce a brand-new connection each time.
+///
+/// # Precondition: read the credential in the closure body
+///
+/// A factory that presents a bearer must read it from its [`TokenSource`]
+/// **synchronously, in the closure's own body** — not inside the
+/// [`ConnectFuture`] it returns, and not once when the factory is built.
+///
+/// This is a precondition of the driver, not a suggestion. `run` marks its
+/// renewal handle current the instant this closure returns, taking whatever
+/// the closure read as what the attempt will present. A factory that fixed
+/// its bearer earlier has that renewal consumed by a connect which did not
+/// carry it, and the relay is then never told: not in band, because the pump
+/// has nothing pending, and not on the next reconnect either, because that
+/// attempt marks the handle current too.
+///
+/// The two factories that ship satisfy it — `sunrise_cli::livesync::ws_factory`
+/// and `sunrise_core_bindings::ws_factory` both call [`TokenSource::get`] in
+/// the closure body. The test harnesses do not, and cannot break it: the
+/// in-process harness in this file's `tests` module and the three factories in
+/// `sunrise-e2e` present no renewable bearer at all, so there is nothing for
+/// the handle to consume. Each says so in its own documentation. A harness
+/// that grows one must read it here, per attempt, like the shipped two.
 pub type TransportFactory = Arc<dyn Fn() -> ConnectFuture + Send + Sync>;
 
 /// Default anti-entropy interval: how often a live session re-subscribes with
@@ -712,14 +734,18 @@ fn next_backoff_delay(backoff: &mut Backoff, jitter_unit: f64) -> Duration {
 /// Bring the driver's renewal handle forward to the credential this connect
 /// read, and return the version it consumed.
 ///
-/// Called once per connect attempt, immediately after the factory has read the
-/// token and long before the handshake, because that read is the moment this
-/// attempt's bearer is fixed: the factory calls `TokenSource::get` in its own
-/// body, per attempt, so the connect presents whatever renewals had landed by
-/// then. Bringing the handle forward there — and no later — marks exactly what
-/// the attempt carries and nothing else, so a write landing during the dial,
-/// the handshake or the session itself still reaches the relay in band as a
-/// `0x12 RefreshToken` instead of waiting for the next reconnect.
+/// Called once per connect attempt, immediately after the factory returned and
+/// long before the handshake, because that return is the moment this attempt's
+/// bearer is fixed — *provided the factory read the credential in its own
+/// body*. That is a precondition, not an observation: it is stated on
+/// [`TransportFactory`], and the two shipped factories
+/// (`sunrise_cli::livesync::ws_factory` and `sunrise_core_bindings::ws_factory`)
+/// meet it while every test harness in the tree presents no renewable bearer
+/// at all and so cannot violate it. Bringing the handle forward here — and no
+/// later — marks what such an attempt carries and little else, so a write
+/// landing during the dial, the handshake or the session itself still reaches
+/// the relay in band as a `0x12 RefreshToken` instead of waiting for the next
+/// reconnect.
 ///
 /// An attempt that then fails to connect has still advanced the handle, which
 /// is sound: the next attempt re-reads the credential and so carries at least
