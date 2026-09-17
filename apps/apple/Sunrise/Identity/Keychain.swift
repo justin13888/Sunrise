@@ -289,10 +289,17 @@ struct KeychainItem: Sendable {
     /// I/O failure, refuses a *write* there too.
     ///
     /// **This half is untested by construction, and saying so is the point.**
-    /// Two of the six are here: the raise below, and the cross-domain delete's
+    /// Two of the seven are here: the raise below, and the cross-domain delete's
     /// own effect — the other domain's copy being removed — observable in no
-    /// configuration this repository builds. Both wait on *reach*, which only an
-    /// Apple team supplies, and not on a lock arriving mid-case. The raise needs
+    /// configuration this repository builds. They do **not** share a blocker, and
+    /// an earlier revision said they did. The delete effect waits on *reach*
+    /// alone: a reaching build plants a copy, addresses the item away from it,
+    /// and watches the delete take it. The raise waits on reach **and** on the
+    /// other store refusing on its own terms — it is constructed only in the
+    /// `catch` below, which `deleteInOtherDomain()` enters only when
+    /// ``meansTheOtherStoreWasUnreachable(_:)`` answers `false`, so the raise
+    /// executing *implies* that arm executing and inherits its blocker whole.
+    /// The raise needs
     /// ``write(_:)`` to **succeed** first, so on an ad-hoc Mac the item's own domain
     /// has to be `.login` and the other is then necessarily `.dataProtection`, whose
     /// mutations answer `errSecMissingEntitlement` unconditionally — swallowed by

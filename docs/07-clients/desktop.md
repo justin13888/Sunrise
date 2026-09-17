@@ -412,7 +412,9 @@ does is not:
   1. `writeAcrossDomains`'s raise of `writtenButOtherDomainRefused`. Every
      other-domain delete this repository can build either succeeds or is
      refused with the missing-entitlement status, which is swallowed before it
-     reaches the re-label.
+     reaches the re-label. Its second precondition is item 3: the raise is
+     constructed only inside the `catch` that `deleteInOtherDomain()` enters
+     when `meansTheOtherStoreWasUnreachable` answers *false*.
   2. The same method's cross-domain **delete effect**, the other domain's copy
      actually being removed. Nothing this suite can stage puts a copy where the
      delete would find it and still lets the delete run: an item addressed at
@@ -427,18 +429,34 @@ does is not:
      when both deletes refuse. The one case that reaches the other-domain arm
      has that delete *succeed*, so inverting the tie-break leaves it green.
   5. `KeychainCredentialStore.save`'s `catch`, which the swallowed
-     missing-entitlement refusal never reaches.
+     missing-entitlement refusal never reaches. Reached only through item 1's
+     raise, so it carries item 1's preconditions and item 3's with them.
   6. `KeychainMigration.loadMigratingIfNeeded`'s destination-step throw, which
      needs a lock or a denial landing between the source reads and either of
      the two destination calls.
 
-  **The set splits three and three, and the halves are closed by different
-  people.** Items **1, 2 and 5** wait on *reach* — the domain that has to
-  misbehave is the one this build cannot address at all, and only an Apple team
-  supplies it. Items **3, 4 and 6** wait on a lock or a denied prompt arriving
-  **in the middle of a running case**, which no entitlement supplies.
+  **The set does not split in two, and an earlier revision of this page said it
+  did.** It splits three ways, because two of the items wait on *both* blockers
+  rather than on one:
 
-  The reach half, item by item:
+  - **Reach only — item 2.** Its path is a write that succeeds, a cross-domain
+    delete that also *succeeds*, and the other domain's copy then gone. No
+    refusal is wanted anywhere; what is missing is only a build that can plant a
+    copy in the domain this one cannot write into.
+  - **Reach *and* a mid-case refusal — items 1 and 5.**
+    `writtenButOtherDomainRefused` is constructed at exactly one site, inside
+    `writeAcrossDomains`'s `catch` on `deleteInOtherDomain()`. That `catch` is
+    entered only when `deleteInOtherDomain()` rethrows, and it rethrows only
+    when `meansTheOtherStoreWasUnreachable` answers *false* — which is item 3.
+    So **item 1 executing implies item 3 executing**, and item 5, reachable only
+    through item 1's raise, implies both. They inherit item 3's blocker whole,
+    on top of their own.
+  - **A mid-case refusal only — items 3, 4, 6 and 7.** Reach supplies no part of
+    these: the hard statuses they wait for are already produced by the ad-hoc
+    build this repository makes. What is missing is the lock or the denied
+    prompt landing *while a case runs*.
+
+  Why 1 and 5 need reach at all, item by item:
 
   - **1** needs `write` to *succeed* before the cross-domain delete is even
     attempted, so on an ad-hoc Mac the item's own domain has to be `.login` and
@@ -450,8 +468,8 @@ does is not:
     reached.
   - **2** needs a copy planted in the domain this build cannot write into, by
     the same mechanism.
-  - **5** is reached *only* through 1's raise, so it inherits 1's blocker
-    exactly.
+  - **5** is reached *only* through 1's raise, so it inherits 1's blockers
+    exactly — both of them.
 
   Both keychains are distinct stores on any Mac, entitled or not —
   `domainsAreDistinctStores` is a compile-time `os(macOS)` value
@@ -569,19 +587,28 @@ effect, and `KeychainCredentialStore.save`'s `catch`. There is no assertion to
 correct for any of the three, because no case in this suite claims anything
 about what they do; none has executed on any platform this repository builds
 for, which is why they sit in the untestable set rather than in a gap someone
-forgot to fill. An entitled build is the first one that can arrange any of
-them, by the mechanism that set gives. Item 2 wants a copy planted in
-`.dataProtection`, the item addressed at `.login`, and the other domain's copy
-asserted gone after the write. Items 1 and 5 want the mirror — the item
-addressed at `.dataProtection`, so that the delete's refusal comes from
-`.login` rather than from the domain whose only answer is the swallowed one —
-and then `writeAcrossDomains` asserted to have kept what it wrote, and `save`
-asserted to treat the raise as the success it is. The distinction is worth
-carrying into the work: the five are expectations that change their answer, and
-the three are new coverage for effects the code performs and nothing anywhere
-observes.
+forgot to fill.
 
-The remaining **three of the six — items 3, 4 and 6 — gain no test from an
+**Only one of the three is writable the day a team lands**, and an earlier
+revision of this page promised all three of them to the entitlement. That one
+is item 2: plant a copy in `.dataProtection`, address the item at `.login`, and
+assert the other domain's copy gone after the write. It wants reach and nothing
+else, because every step of it *succeeds*.
+
+Items 1 and 5 want the mirror — the item addressed at `.dataProtection`, so
+that the delete's refusal comes from `.login` rather than from the domain whose
+only answer is the swallowed one — and then `writeAcrossDomains` asserted to
+have kept what it wrote, and `save` asserted to treat the raise as the success
+it is. But that refusal from `.login` is a *second* blocker rather than a
+detail of the first: it is `meansTheOtherStoreWasUnreachable` answering false,
+which is item 3 of the set. So 1 and 5 need the team **and** the mid-case lock
+or denied prompt items 3, 4, 6 and 7 wait on, and an entitlement on its own
+buys neither of them a test. The distinction is worth carrying into the work:
+the five are expectations that change their answer, item 2 is new coverage an
+entitlement unblocks outright, and items 1 and 5 are new coverage it only half
+unblocks.
+
+The remaining **four of the seven — items 3, 4, 6 and 7 — gain no test from an
 entitlement** and stay declared. They wait on a lock or a denied prompt landing
 mid-case, which an Apple team does not supply; reach was never what blocked
 them.

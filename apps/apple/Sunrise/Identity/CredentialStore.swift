@@ -189,10 +189,15 @@ struct KeychainCredentialStore: CredentialStore {
     /// 1's blocker exactly: the raise needs the write to succeed in its own
     /// domain, which on an ad-hoc Mac makes the other domain `.dataProtection`,
     /// whose refusal is the missing-entitlement one and is swallowed before it
-    /// can reach here. What it waits on is *reach* — only a build that reaches
-    /// both keychains can address the item at `.dataProtection` and so put a
-    /// refusable `.login` on the far side of the delete — and not a lock
-    /// arriving mid-case, which is what items 3, 4 and 6 of that set wait on.
+    /// can reach here. What it waits on is *reach* **and then a refusal** — only
+    /// a build that reaches both keychains can address the item at
+    /// `.dataProtection` and so put a refusable `.login` on the far side of the
+    /// delete, and that delete must then actually refuse. The refusal is
+    /// `KeychainItem.meansTheOtherStoreWasUnreachable` answering `false`, which
+    /// is item 3 of that set: this catch is reached only through item 1's raise,
+    /// and that raise is constructed only where item 3's `false` arm has already
+    /// run. So this inherits **both** blockers, and an earlier revision of this
+    /// paragraph said it inherited only the first.
     /// Saying the refusal here is *always* the missing-entitlement one would be
     /// too strong: on such a build it is whatever `.login` answers. What *is*
     /// pinned is the discrimination this rests on —
