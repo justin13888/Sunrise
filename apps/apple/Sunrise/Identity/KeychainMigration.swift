@@ -268,7 +268,25 @@ struct KeychainMigration: Sendable {
     ///
     /// - Returns: the secret, or `nil` when nothing anywhere holds one.
     func loadMigratingIfNeeded() throws -> Data? {
-        let migrated = try run()
+        try loadMigratingIfNeeded(before: { _ in })
+    }
+
+    /// ``loadMigratingIfNeeded()`` with ``run(before:)``'s step hook forwarded,
+    /// so a case can stage a change between two steps and then observe what the
+    /// two destination calls *after* `run()` returns do with what `run()`
+    /// rescued.
+    ///
+    /// The vanished-destination route is not reachable without it: it needs the
+    /// destination row present at `.readDestination` and gone by `.verify`,
+    /// which no single-threaded arrangement of real Keychain items produces.
+    /// This forwards a hook the type already exposes — ``Step``'s own comment
+    /// says it is visible "so a test can inject a failure at each one and then
+    /// resume the real call against the real partial keychain state" — rather
+    /// than adding a seam inside ``KeychainItem``, which would be a second
+    /// implementation of `Security.framework` to get wrong. Nothing here makes
+    /// `Security.framework` answer anything it would not otherwise answer.
+    func loadMigratingIfNeeded(before: (Step) throws -> Void) throws -> Data? {
+        let migrated = try run(before: before)
         do {
             try destination.upgradeAccessibilityIfNeeded()
             if let atDestination = try destination.readAcrossDomains() { return atDestination }

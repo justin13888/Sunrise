@@ -64,4 +64,27 @@ struct KeychainMigrationVerifyTests {
         let migration = KeychainMigration(source: pair.source, destination: pair.destination)
         #expect(throws: KeychainError.migrationUnverified) { try migration.run() }
     }
+
+    /// The same route as the case above, walked at the boundary the stores
+    /// actually call. `run()` answers the source's bytes through its fallback
+    /// arm; `loadMigratingIfNeeded` is not a forwarder — it then makes two
+    /// further *throwing* destination calls and holds a `catch` of its own, and
+    /// `KeychainMigration.swift` records that an earlier revision lost the
+    /// rescued bytes in exactly that gap. Nothing pinned that they survive those
+    /// two calls on this route, so a change to either step could re-introduce
+    /// the `.keychainUnavailable` lock this repair exists to prevent while every
+    /// `run()`-level case above stayed green.
+    @Test
+    func theVanishedDestinationStillAnswersTheSourcesBytesThroughTheLoad() throws {
+        let pair = scratchPair()
+        defer { try? pair.source.delete(); try? pair.destination.delete() }
+        try pair.source.write(secret)
+
+        let migration = KeychainMigration(source: pair.source, destination: pair.destination)
+        let answered = try migration.loadMigratingIfNeeded { step in
+            if step == .verify { try? pair.destination.delete() }
+        }
+        #expect(answered == secret, "the rescued bytes survive both destination calls")
+        #expect(try pair.source.read() == secret, "and step 4 must not have run")
+    }
 }
