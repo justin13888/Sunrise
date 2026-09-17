@@ -316,6 +316,55 @@ struct AccountModelTests {
         #expect(account.signOutIncomplete == nil)
     }
 
+    /// A sign-in that never established a session has not replaced the
+    /// credential the disclosure is about, so the disclosure is still true.
+    /// Clearing it on entry to `signIn()` destroyed it on both of these paths
+    /// and left the user with a stored refresh token and no indication of it.
+    @Test
+    func aSignInRefusedBeforeItStartedLeavesTheWarningStanding() async {
+        let store = StubCredentialStore(
+            value: credentials(accessToken: "access-old"),
+            clearFailure: KeychainError.unexpected(errSecInteractionNotAllowed)
+        )
+        let account = model(store: store)
+        account.signOut()
+        #expect(account.signOutIncomplete != nil)
+
+        await account.signIn(issuer: "  ", clientID: "", deviceID: "abcd", nowMs: 0)
+
+        #expect(account.state == .failed(AccountError.notConfigured.localizedDescription))
+        #expect(store.stored != nil, "the credential the warning is about is still stored")
+        #expect(
+            account.signOutIncomplete != nil,
+            "a sign-in that never started leaves the stored credential, and the warning about it"
+        )
+    }
+
+    @Test
+    func aSignInThatFailedLeavesTheWarningStanding() async {
+        let store = StubCredentialStore(
+            value: credentials(accessToken: "access-old"),
+            clearFailure: KeychainError.unexpected(errSecInteractionNotAllowed)
+        )
+        let account = model(store: store, driver: StubLoginDriver(failure: StubLoginError()))
+        account.signOut()
+        #expect(account.signOutIncomplete != nil)
+
+        await account.signIn(
+            issuer: "https://issuer.example",
+            clientID: "client",
+            deviceID: "abcd",
+            nowMs: 0
+        )
+
+        #expect(account.state == .failed("the issuer refused"))
+        #expect(store.stored != nil, "the credential the warning is about is still stored")
+        #expect(
+            account.signOutIncomplete != nil,
+            "the issuer refusing does not make the surviving refresh token go away"
+        )
+    }
+
     /// A struct carrying a live bearer and a refresh token ends up in the
     /// first log line anyone writes while debugging, unless it cannot.
     @Test
