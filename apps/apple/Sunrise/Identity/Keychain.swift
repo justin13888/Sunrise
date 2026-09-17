@@ -100,6 +100,51 @@ struct KeychainItem: Sendable {
         )
     }
 
+    /// Whether a mutation the *other* domain refused means that store was
+    /// **unreachable from this build**, and so says nothing at all about
+    /// whether a copy of ours survives in it.
+    ///
+    /// Exactly two statuses qualify, and both are established in this tree
+    /// rather than recalled. `errSecMissingEntitlement` is what a
+    /// `.dataProtection`-addressed mutation answers on every build this
+    /// repository can sign — measured, and pinned for `SecItemAdd`,
+    /// `SecItemUpdate` and `SecItemDelete` alike by
+    /// `theUnreachableDomainRefusesMutationsAndAnswersReadsAsEmpty`.
+    /// `errSecItemNotFound` is the store answering that there was nothing of
+    /// ours there; ``delete()`` already absorbs it before it can become an
+    /// error, so it is named here for the contract rather than because a throw
+    /// can carry it today.
+    ///
+    /// Everything else is raised. A locked keychain, a denied prompt or an I/O
+    /// failure is the other store refusing *on its own terms* — it was reached
+    /// well enough to say no, and a copy of ours may be sitting in it.
+    private static func meansTheOtherStoreWasUnreachable(_ status: OSStatus) -> Bool {
+        status == errSecMissingEntitlement || status == errSecItemNotFound
+    }
+
+    /// ``delete()`` in the other domain, with only
+    /// ``meansTheOtherStoreWasUnreachable(_:)``'s two statuses swallowed.
+    ///
+    /// The blanket `try?` this replaces rested on a premise this same type
+    /// refutes in ``readAcrossDomains()``: that a refusal in the domain this
+    /// build did not resolve to means there was nothing of ours to remove. The
+    /// cross-domain path exists precisely because the other store *can be
+    /// locked or refuse a prompt while this one answers*, and both cannot be
+    /// true. On an entitled Mac with a locked login keychain the swallowed
+    /// delete leaves the one copy ``readAcrossDomains()`` is then guaranteed to
+    /// find: a sign-out that reports success while a live refresh token waits
+    /// where the next launch looks, and a token renewal that leaves the two
+    /// copies behind ``KeychainError/migrationUnverified``.
+    private func deleteInOtherDomain() throws {
+        do {
+            try inOtherDomain.delete()
+        } catch let error as KeychainError {
+            guard case let .unexpected(status) = error,
+                  Self.meansTheOtherStoreWasUnreachable(status)
+            else { throw error }
+        }
+    }
+
     /// ``read()``, and — only when this domain holds nothing — a look in the
     /// other one before answering `nil`.
     ///
@@ -113,9 +158,23 @@ struct KeychainItem: Sendable {
     ///
     /// **The second read can only turn a `nil` into bytes.** It never turns a
     /// success into a failure and never turns a `nil` into a throw: a refusal
-    /// from the other domain is swallowed, because it is the domain this build
-    /// did **not** resolve to, so a refusal there means there was nothing of
-    /// ours to find — and letting it propagate would fail a genuine first run.
+    /// from the other domain is swallowed. Here — and *only* here — the swallow
+    /// stays blanket, which is the one place this type still differs from its
+    /// two cross-domain mutations. The reason is not the one an earlier
+    /// revision gave: it is **not** that a refusal in the unresolved domain
+    /// means there was nothing of ours to find, a premise the paragraph below
+    /// refutes and ``deleteInOtherDomain()`` has retired. It is that a refused
+    /// *read* has changed nothing, so swallowing it answers the `nil` this
+    /// method would have answered before the fallback existed, while raising it
+    /// would turn a genuine first run — nothing anywhere, refused on the way
+    /// past — into "a key may exist and cannot be reached".
+    ///
+    /// So the trade deliberately runs the other way from the mutations'. A
+    /// swallowed *delete* leaves a live secret in a store a later launch can
+    /// still read, which is a failure that outlives the call; a swallowed read
+    /// leaves this method answering the `nil` it would have answered before the
+    /// fallback existed, which is at worst a retry next launch.
+    ///
     /// The *first* read keeps ``read()``'s contract in full: a refusal there is
     /// still "a key may exist and cannot be reached" and still throws.
     ///
@@ -126,9 +185,10 @@ struct KeychainItem: Sendable {
     /// `.dataProtection` **query** answers `errSecItemNotFound` (-25300), not
     /// `errSecMissingEntitlement`. The -34018 refusal lands on the *mutating*
     /// calls — `SecItemAdd`, `SecItemUpdate` and `SecItemDelete`. So the swallow
-    /// here earns its keep on the entitled Mac, where the other store can be
-    /// locked or can refuse a prompt while this one answers, rather than on the
-    /// unsigned one, where the second read simply finds nothing.
+    /// here is only ever *exercised* on the entitled Mac, where the other store
+    /// can be locked or can refuse a prompt while this one answers; on the
+    /// unsigned one no read is refused and the second read simply finds
+    /// nothing.
     func readAcrossDomains() throws -> Data? {
         if let data = try read() { return data }
         guard KeychainDomain.domainsAreDistinctStores else { return nil }
@@ -178,11 +238,35 @@ struct KeychainItem: Sendable {
     /// two, disagrees, and signs the user out in silence.
     ///
     /// Write first, then delete, for ``KeychainMigration``'s invariant: a
-    /// readable copy exists at every instant. The other domain's failure is
-    /// swallowed for ``readAcrossDomains()``'s reason — it is the domain this
-    /// build did not resolve to, so a refusal there means there was nothing of
-    /// ours to remove. This domain's write keeps ``write(_:)``'s contract and
-    /// still throws, and nothing is deleted unless it succeeded.
+    /// readable copy exists at every instant. This domain's write keeps
+    /// ``write(_:)``'s contract and still throws, and nothing is deleted unless
+    /// it succeeded.
+    ///
+    /// The other domain's failure is **not** blanket-swallowed. Only
+    /// ``meansTheOtherStoreWasUnreachable(_:)``'s two statuses are — the
+    /// missing-entitlement refusal an unentitled build gets, and not-found —
+    /// and anything else is raised, because a store that refused on its own
+    /// terms may still be holding the stale copy this method exists to remove.
+    /// Leaving it there is the ``KeychainError/migrationUnverified`` loop
+    /// above, arriving through the swallow instead of through a missing delete.
+    ///
+    /// **This half is untested by construction, and saying so is the point.**
+    /// The cross-domain delete's own effect — the other domain's copy being
+    /// removed — is observable in no configuration this repository builds. On
+    /// macOS a copy cannot be planted in the unreachable domain in the first
+    /// place, and an item addressed *there* throws out of ``write(_:)`` before
+    /// the delete is ever reached; on iOS the guard below short-circuits.
+    /// ``deleteAcrossDomains()`` solved the same problem by inverting which
+    /// domain the item is addressed in — its own delete is refused while the
+    /// other domain's succeeds — and that inversion cannot work here, because
+    /// the inverted item's *write* fails first. What
+    /// `aCrossDomainWriteKeepsWhatItJustWrote` does pin is the two properties
+    /// that are reachable: the write survives on macOS when the other domain
+    /// refuses, and the delete is guarded on iOS where the two domains are one
+    /// store. Closing the rest needs an entitled, signed build — not a
+    /// fault-injection seam inside the type that holds the vault root, which
+    /// this change has now rejected three times for one reason: it would be a
+    /// second implementation of `Security.framework` to get wrong.
     ///
     /// **Deliberately not folded into ``write(_:)``.**
     /// ``KeychainMigration/migrate(before:)`` writes its destination and only
@@ -195,7 +279,7 @@ struct KeychainItem: Sendable {
     func writeAcrossDomains(_ data: Data) throws {
         try write(data)
         guard KeychainDomain.domainsAreDistinctStores else { return }
-        try? inOtherDomain.delete()
+        try deleteInOtherDomain()
     }
 
     /// Raise an existing item to `accessibility`, if it is not there already.
@@ -261,10 +345,14 @@ struct KeychainItem: Sendable {
     /// refresh token, or a "forgotten" vault root, readable where the next
     /// launch will look for it. Whatever a read can reach, a clear removes.
     ///
-    /// Symmetrically with ``readAcrossDomains()``, the other domain's failure
-    /// is swallowed — it is the domain this build did not resolve to, so a
-    /// refusal there means there was nothing of ours to remove. This domain's
-    /// delete keeps ``delete()``'s contract and still throws.
+    /// The other domain's failure is **not** blanket-swallowed. Only
+    /// ``meansTheOtherStoreWasUnreachable(_:)``'s two statuses are, and
+    /// anything else is raised: a store that was reached well enough to refuse
+    /// on its own terms may still be holding the copy a `clear` is supposed to
+    /// take away, and reporting that as success is the failure this method
+    /// exists to prevent. This domain's delete keeps ``delete()``'s contract
+    /// and still throws, and when both refuse it is this domain's status that
+    /// is raised — the one ``clear()``'s callers were already written against.
     ///
     /// **Both are attempted, and only then is this domain's status raised.**
     /// An earlier revision put `try delete()` on its own line ahead of the
@@ -275,20 +363,39 @@ struct KeychainItem: Sendable {
     /// looks. That is not a hypothetical ordering: on the ad-hoc Mac a
     /// `.dataProtection`-addressed delete answers `errSecMissingEntitlement`
     /// (-34018), so the *whole* cross-domain clear was a no-op for exactly the
-    /// item that needed it. This gains no new way to throw: the error raised is
-    /// this domain's and only this domain's, which is what ``clear()``'s
-    /// callers already handle.
+    /// item that needed it.
+    ///
+    /// **Decision 13's promise, narrowed rather than broken.** That promise was
+    /// that `clear()` would gain no new way to throw, and this comment used to
+    /// keep it by raising this domain's status and only this domain's. It still
+    /// holds on every configuration this repository builds: there, the other
+    /// domain's refusal is the missing-entitlement one, which is swallowed. It
+    /// gains exactly one new throw, on an entitled Mac whose other keychain is
+    /// locked or refuses a prompt — a real failure that was previously reported
+    /// to the user as a successful sign-out. `AccountModel.signOut()` swallows
+    /// the throw with a `try?` of its own, so raising it here does not by
+    /// itself reach the user; that is tracked separately.
     func deleteAcrossDomains() throws {
-        var thisDomainFailure: (any Error)?
+        // Named for what it is rather than for which domain produced it: since
+        // the other domain's refusal became raisable, either delete can be the
+        // one that fills it.
+        var failureToRaise: (any Error)?
         do {
             try delete()
         } catch {
-            thisDomainFailure = error
+            failureToRaise = error
         }
         if KeychainDomain.domainsAreDistinctStores {
-            try? inOtherDomain.delete()
+            do {
+                try deleteInOtherDomain()
+            } catch {
+                // This domain's status wins when both refuse: it is the one
+                // `clear()`'s callers were written against, and the other
+                // domain's is the case this only just started raising.
+                failureToRaise = failureToRaise ?? error
+            }
         }
-        if let thisDomainFailure { throw thisDomainFailure }
+        if let failureToRaise { throw failureToRaise }
     }
 }
 

@@ -339,10 +339,13 @@ does is not:
   reporting nothing** (`KeychainItem.readAcrossDomains`). Once an item has
   moved, a single transient `SecItemAdd` failure at launch would otherwise make
   the app read an empty login keychain and present the lost-vault screen to a
-  user whose vault is intact. The second read can only turn a `nil` into bytes:
-  a refusal from the other domain is swallowed, because it is the domain this
-  build did *not* resolve to, so a refusal there means there was nothing of ours
-  to find and propagating it would fail a genuine first run.
+  user whose vault is intact. The second read can only turn a `nil` into bytes,
+  and a refusal from the other domain is swallowed there — the *read* is the one
+  place that swallow is still blanket. Not because a refusal in the unresolved
+  domain means there was nothing of ours to find: that premise is retired, see
+  the two mutations below. Because a refused read has changed nothing, so
+  swallowing it answers the `nil` the method would have answered without the
+  fallback at all, while propagating it would fail a genuine first run.
 
   **The entitlement is not what that `try?` defends against**, and an earlier
   revision of this page said it was. Measured on the same ad-hoc Mac as the
@@ -358,6 +361,20 @@ does is not:
   status is raised: the delete is itself refused on the domain this build cannot
   address, so stopping at the first failure would skip the one copy that was
   reachable and make the whole cross-domain clear a no-op.
+
+  The two cross-domain **mutations** swallow only the statuses that mean the
+  other store was *unreachable* — the missing-entitlement refusal an unentitled
+  build gets, and not-found — and raise anything else. A store that was reached
+  well enough to refuse on its own terms, a locked keychain or a denied prompt,
+  may still be holding the copy the mutation was supposed to remove, and
+  reporting that as success is the failure the cross-domain half exists to
+  prevent: on an entitled Mac a swallowed delete leaves a refresh token behind a
+  Sign out the user was told had worked, and a swallowed cross-domain write
+  leaves the two copies that produce `.migrationUnverified` on every later
+  launch. This is behaviourally inert on everything this repository builds,
+  where the other domain's refusal *is* the missing-entitlement one; it adds one
+  throw on an entitled Mac whose other keychain is locked, which is a real
+  failure previously reported as success.
 
   The **credential** store also `save`s across both, and it is the only one that
   needs to. Its token is rewritten with no user action — `refreshIfNeeded`
