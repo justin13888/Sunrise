@@ -634,6 +634,59 @@ class Symbols(GateCase):
         self.write("docs/a.md", "See `crates/c/src/lib.rs:1#wanted`.\n")
         self.assert_code(self.run_gate(), CLEAN, "OK: citations clean.")
 
+    def test_a_doc_comment_above_a_split_attribute_is_inside_the_item(self):
+        # rustfmt splits an attribute too wide for the line limit, and its
+        # last line is `)]` -- neither a `///` nor a `#[`. A start walk that
+        # stopped there put the item's whole doc comment outside its own span
+        # and reported a correct citation of that doc as broken, on four real
+        # files in this repository. Both edges are asserted: the doc is in,
+        # and the blank line above it is still out.
+        self.write(
+            "crates/c/src/lib.rs",
+            "pub const OTHER: u8 = 0;\n"                # 1
+            "\n"                                        # 2
+            "/// Doc above the item.\n"                  # 3
+            "#[derive(\n"                               # 4
+            "    Debug, Clone, Copy, PartialEq, Eq,\n"   # 5
+            ")]\n"                                      # 6
+            "pub struct Wanted {\n"                     # 7
+            "    pub field: u8,\n"                      # 8
+            "}\n",                                      # 9
+        )
+        self.write("docs/a.md", "See `crates/c/src/lib.rs:3#Wanted`.\n")
+        self.assert_code(self.run_gate(), CLEAN, "OK: citations clean.")
+
+        self.write("docs/b.md", "See `crates/c/src/lib.rs:2#Wanted`.\n")
+        self.assert_code(
+            self.run_gate(),
+            DANGLING,
+            "cites line 2, but `Wanted` in `crates/c/src/lib.rs` spans 3-9.",
+        )
+
+    def test_an_array_close_above_an_item_is_not_read_as_an_attribute(self):
+        # The guard on the case above. `];` closes a `static` initialiser and
+        # is not an attribute, so the walk must leave the span where it is
+        # rather than climbing into the item above -- a span that swallowed
+        # its neighbour would pass a citation that belongs to neither.
+        self.write(
+            "crates/c/src/lib.rs",
+            "pub static LIST: [u8; 2] = [\n"   # 1
+            "    1, 2,\n"                      # 2
+            "];\n"                             # 3
+            "pub fn wanted() -> u8 {\n"        # 4
+            "    0\n"                          # 5
+            "}\n",                             # 6
+        )
+        self.write("docs/a.md", "See `crates/c/src/lib.rs:4#wanted`.\n")
+        self.assert_code(self.run_gate(), CLEAN, "OK: citations clean.")
+
+        self.write("docs/b.md", "See `crates/c/src/lib.rs:1#wanted`.\n")
+        self.assert_code(
+            self.run_gate(),
+            DANGLING,
+            "cites line 1, but `wanted` in `crates/c/src/lib.rs` spans 4-6.",
+        )
+
     def test_a_symbol_that_does_not_contain_the_cited_line_fails(self):
         self.rust()
         self.write("docs/a.md", "See `crates/c/src/lib.rs:10#wanted`.\n")

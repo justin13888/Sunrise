@@ -487,6 +487,37 @@ def line_count(path: str) -> int:
     return data.count(b"\n") + (0 if data.endswith(b"\n") else 1)
 
 
+def attribute_opener(lines: list[str], index: int) -> int | None:
+    """The `#[` that opens the attribute whose closing bracket is on `index`.
+
+    rustfmt splits an attribute wider than the line limit across several
+    lines, and the last of them is `)]` or `]` alone — a line that starts with
+    neither `///` nor `#[`. `symbol_span`'s upward run stops there unless
+    something walks it back to the attribute's own opening line, and a run
+    that stops there excludes the item's whole doc comment from its span, so
+    the gate reports `broken` for a citation that is genuinely inside the item
+    it names. Four items in this tree sit directly under such an attribute and
+    all four carry the doc comment a citation would want to name.
+
+    The climb is deliberately timid, because the alternative to a narrow span
+    is a span that swallows the item above. It gives up — returning `None`,
+    which leaves the walk exactly where it was — on a blank line, on any `//`
+    comment, and on a line ending in `{`, `}` or `;`, none of which rustfmt
+    writes inside an attribute. A line that merely ends in `]` with no `#[`
+    above it inside those bounds, such as the close of a `static` array
+    initialiser, is therefore not mistaken for an attribute.
+    """
+    if not lines[index].strip().endswith("]"):
+        return None
+    for cursor in range(index, -1, -1):
+        probe = lines[cursor].strip()
+        if probe.startswith("#["):
+            return cursor
+        if not probe or probe.startswith("//") or probe.endswith(("{", "}", ";")):
+            return None
+    return None
+
+
 def symbol_span(path: str, name: str) -> list[tuple[int, int]]:
     """Every span in a Rust file that declares `name`, doc comment included.
 
@@ -501,9 +532,13 @@ def symbol_span(path: str, name: str) -> list[tuple[int, int]]:
     and `#[…]` attributes above the declaration, so
     `tests.rs:6388#a_revoked_devices_ops_still_apply_at_the_replica` — a
     citation of the test's *doc*, which is where this repository puts its
-    reasoning — is inside its own symbol. A multi-line attribute breaks the
-    run and truncates the span, which can only report a citation that is
-    inside; the author then sees a red check rather than a silent pass.
+    reasoning — is inside its own symbol. An attribute rustfmt had to split
+    across lines is followed back to its own `#[` by `attribute_opener`, so
+    the run survives it; without that step the closing `)]` ends the walk and
+    the item's whole doc comment falls outside its span, which red-lines a
+    correct citation. That direction is the dangerous one, and the walk is
+    still line-based: a start it cannot resolve leaves the span narrower than
+    the item, never wider.
 
     A span **ends** at the first line that is exactly this declaration's indent
     followed by `}` — rustfmt guarantees an item's closing brace sits alone at
@@ -535,7 +570,10 @@ def symbol_span(path: str, name: str) -> list[tuple[int, int]]:
             if above.startswith("///") or above.startswith("#["):
                 start -= 1
                 continue
-            break
+            opener = attribute_opener(lines, start - 1)
+            if opener is None:
+                break
+            start = opener
 
         closing = found.group("indent") + "}"
         end = len(lines)
@@ -916,6 +954,21 @@ impl T for u8 {
         2
     }
 }
+
+/// Doc above an attribute rustfmt had to split.
+#[derive(
+    Debug, Clone,
+)]
+pub struct Split {
+    pub field: u8,
+}
+
+pub static LIST: [u8; 2] = [
+    1, 2,
+];
+pub fn after_an_array() -> u8 {
+    0
+}
 """
 
 # A tree with one crate, so anchor 3 has something to resolve against, a
@@ -1115,11 +1168,39 @@ def self_test() -> int:
 
         # No suffix: byte-for-byte the behaviour of every citation in the tree
         # before this suffix existed. If this moves, the widening was not one.
-        for line, want in ((4, True), (23, True), (24, False)):
+        for line, want in ((4, True), (38, True), (39, False)):
             _, found = symbol_verdict(f"{main}:{line}")
             if (found is None) != want:
                 print(f"::error::citations self-test: `{main}:{line}` reported {found}, expected {'clean' if want else 'out of range'}")
                 failures += 1
+
+        # An attribute rustfmt split across lines does not sever the item
+        # from its doc comment. Lines 25-28 are the doc, the attribute's `#[`
+        # and its closing `)]`; a walk that stopped at the `)]` would report
+        # every one of them outside `Split`, which is this gate red-lining a
+        # correct document.
+        for line in (25, 26, 28, 29):
+            _, found = symbol_verdict(f"{main}:{line}#Split")
+            if found is not None:
+                print(f"::error::citations self-test: `{main}:{line}#Split` reported {found}, expected clean")
+                failures += 1
+        _, found = symbol_verdict(f"{main}:24#Split")
+        if found is None or "spans 25-31" not in found.message:
+            print(f"::error::citations self-test: `{main}:24#Split` reported {found}, expected a span miss")
+            failures += 1
+
+        # And the climb back to a `#[` stays timid. Line 35 closes a `static`
+        # array, not an attribute, so the item below it starts at its own doc
+        # run and the array is outside -- the span must not swallow the item
+        # above just because a line ends in a bracket.
+        _, found = symbol_verdict(f"{main}:36#after_an_array")
+        if found is not None:
+            print(f"::error::citations self-test: `{main}:36#after_an_array` reported {found}, expected clean")
+            failures += 1
+        _, found = symbol_verdict(f"{main}:33#after_an_array")
+        if found is None or "spans 36-38" not in found.message:
+            print(f"::error::citations self-test: `{main}:33#after_an_array` reported {found}, expected a span miss")
+            failures += 1
 
         # A symbol on a target that is not Rust is declined, not failed. The
         # gate has no resolver for one and `docs/x.md#heading` is a fragment.
@@ -1131,7 +1212,7 @@ def self_test() -> int:
 
     if failures:
         return 1
-    print("OK: citations self-test clean (67 cases).")
+    print("OK: citations self-test clean (74 cases).")
     return 0
 
 
