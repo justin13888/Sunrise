@@ -376,6 +376,44 @@ does is not:
   throw on an entitled Mac whose other keychain is locked, which is a real
   failure previously reported as success.
 
+  The **write** raises it as a case of its own,
+  `KeychainError.writtenButOtherDomainRefused`, and the distinction is
+  load-bearing rather than tidy. `writeAcrossDomains` writes before it cleans
+  up, so it can throw with the secret already stored, while a throwing write is
+  read by every caller as "nothing was stored". Raised as a bare `unexpected`,
+  that misreading cost a session twice on an entitled Mac: a silent renewal
+  whose fresh token landed left the stale credential in memory and signed the
+  user out at expiry — the sign-out then deleting the token that *had* been
+  written — and a sign-in reported as failed for a login that had succeeded,
+  with the next launch signing the user in anyway. `KeychainCredentialStore.save`
+  is the boundary that resolves it: it is the thing whose `Void` return answers
+  "was the token stored", so it treats that one case as the success it is and
+  rethrows everything else. The caveat is dropped rather than carried because
+  `save` has nowhere to carry it — widening the `CredentialStore` protocol to
+  disclose a partial success is the shape #255 proposes for the sign-out path.
+
+  What that does **not** fix, and is worth having written down: the stale copy
+  survives, so the next `load`'s migration compares a destination holding the
+  fresh bytes against a source holding the stale ones and refuses with
+  `.migrationUnverified` — the silent signed-out state, one launch later. The
+  refused delete creates that state whether `save` rethrows or not; rethrowing
+  only adds the lost session on top of it. Closing it means teaching
+  `KeychainMigration` that a just-written destination is authoritative, which is
+  a change to the verify step and not to either cross-domain mutation.
+
+  Two lines here are **declared untestable** rather than left to be
+  re-discovered, on the same rule the rest of this page follows.
+  `meansTheOtherStoreWasUnreachable` returning *false* — the raise itself —
+  executes in no test: every other-domain delete this repository can build
+  either succeeds or is refused with the missing-entitlement status, so the
+  predicate is only ever asked about a status it answers `true` to. And the
+  cross-domain clear's tie-break, that this domain's status wins when both
+  deletes refuse, is pinned by nothing: the one case that reaches the
+  other-domain arm has that delete *succeed*, so inverting the tie-break leaves
+  it green. Both need the other keychain locked, or a prompt denied, in the
+  middle of a case — which needs an entitled, signed build, not a
+  fault-injection seam inside the type that holds the vault root.
+
   The **credential** store also `save`s across both, and it is the only one that
   needs to. Its token is rewritten with no user action — `refreshIfNeeded`
   renews at 75% of the token's life — so one launch whose probe failed open
