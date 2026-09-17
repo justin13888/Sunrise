@@ -219,8 +219,12 @@ struct KeychainItem: Sendable {
     /// rather than refused: `.dataProtection` returns `errSecItemNotFound`
     /// (pinned by `theUnreachableDomainRefusesMutationsAndAnswersReadsAsEmpty`),
     /// `.login` answers cleanly, and on iOS the guard below short-circuits
-    /// before the `try?` is reached. So it absorbs nothing, and replacing `try?`
-    /// with `try` leaves the whole suite green. It joins items 3, 4 and 6 on the
+    /// before the `try?` is reached. So it absorbs nothing. **Measured, not
+    /// inferred:** on 2026-09-17 the `try?` was replaced with `try` and
+    /// `mise run macos-app` run on the result — 586 passed, 0 failed, 0 skipped.
+    /// The mutation survives. That is the macOS suite; on iOS the guard above
+    /// short-circuits before the line, so there is nothing there to measure.
+    /// It joins items 3, 4 and 6 on the
     /// refusal side: it needs the other store to refuse a read on its own terms
     /// while a case is running. Reach supplies no part of it.
     func readAcrossDomains() throws -> Data? {
@@ -454,8 +458,10 @@ struct KeychainItem: Sendable {
     /// **The tie-break below executes in no test**, and this declares it — one of the
     /// seven. The `??` needs *both* deletes to refuse, and the one case reaching the
     /// other-domain arm, `aRefusalOnThisDomainDoesNotSpareTheCopyInTheOther`, has that
-    /// delete *succeed* — so inverting the tie-break, or replacing the `??` with a plain
-    /// assignment, leaves it green. It asserts that *a* ``KeychainError`` is raised, not
+    /// delete *succeed*. **Measured, not inferred:** on 2026-09-17 the `??` was
+    /// replaced with a plain `failureToRaise = error` and `mise run macos-app`
+    /// run on the result — 586 passed, 0 failed, 0 skipped. The mutation
+    /// survives on the macOS suite. It asserts that *a* ``KeychainError`` is raised, not
     /// which. Both refusing at once needs the locked keychain
     /// ``meansTheOtherStoreWasUnreachable(_:)`` records this suite cannot produce
     /// mid-case, which no entitlement supplies either.

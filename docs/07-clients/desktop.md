@@ -434,7 +434,10 @@ does is not:
      `else { throw error }` arm is never reached.
   4. The cross-domain clear's **tie-break**, that this domain's status wins
      when both deletes refuse. The one case that reaches the other-domain arm
-     has that delete *succeed*, so inverting the tie-break leaves it green.
+     has that delete *succeed*. Measured rather than inferred: on 2026-09-17
+     the `??` was replaced with a plain `failureToRaise = error` and
+     `mise run macos-app` run on the result — 586 passed, 0 failed, 0 skipped,
+     so the mutation survives.
   5. `KeychainCredentialStore.save`'s `catch`, which the swallowed
      missing-entitlement refusal never reaches. Reached only through item 1's
      raise, so it carries item 1's preconditions and item 3's with them.
@@ -454,10 +457,23 @@ does is not:
      this build reaches answers that read rather than refusing it:
      `.dataProtection` returns `errSecItemNotFound`, `.login` answers cleanly,
      and on iOS the `domainsAreDistinctStores` guard short-circuits before the
-     `try?`. So it swallows nothing, and replacing `try?` with `try` leaves the
-     whole suite green. It stays blanket for the reason `readAcrossDomains`
+     `try?`. So it swallows nothing. Measured rather than inferred: on
+     2026-09-17 the `try?` was replaced with `try` and `mise run macos-app` run
+     on the result — 586 passed, 0 failed, 0 skipped, so the mutation survives.
+     It stays blanket for the reason `readAcrossDomains`
      records — a refused *read* has changed nothing, and raising it would turn
      a genuine first run into "a key may exist and cannot be reached".
+
+  **Where those two measurements come from, and what does not supply them.** Both
+  were taken by hand in a worktree on 2026-09-17: the one-line mutation applied,
+  `mise run macos-app` run, the result read off `out/test-results/macos.xcresult`,
+  and the mutation reverted. **No gate checks either of them.** The repository's
+  `Mutation coverage` and `Mutation coverage gate` jobs are
+  `schedule || workflow_dispatch` only, so no pull request can make them report,
+  and both are pointed at the Rust crates — `cargo-mutants` never sees a Swift
+  file. So these two sentences are a dated local observation and are written to
+  read as one. If either line's surroundings change, the measurement is stale and
+  has to be retaken; nothing will fail to tell you so.
 
   **The set does not split in two, and an earlier revision of this page said it
   did.** It splits three ways, because two of the items wait on *both* blockers
