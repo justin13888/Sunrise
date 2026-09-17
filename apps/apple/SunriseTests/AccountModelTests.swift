@@ -366,6 +366,53 @@ struct AccountModelTests {
         )
     }
 
+    /// The pairing `AccountView` renders on, pinned at the model level because
+    /// nothing exercises that view at any level.
+    ///
+    /// The row is shown when — and only when — `signOutIncomplete` is non-`nil`
+    /// **and** `state` is `.signedOut` or `.failed`. The conjunction is load
+    /// bearing rather than pedantic: the property alone does not imply those
+    /// two states, because `restore()` reloads a survivor and `publish()` moves
+    /// to `.signedIn` without touching it. That combination is real and is the
+    /// one the view must not render, since the row's text asserts the user is
+    /// signed out. Clearing the property there instead would hide the
+    /// readmission the disclosure exists to report, so the guard is the view's
+    /// and this test is what makes a change to the state machine visible.
+    @Test
+    func theDisclosureIsPairedWithTheStatesWhoseTextItMatches() async {
+        let store = StubCredentialStore(
+            value: credentials(accessToken: "access-old"),
+            clearFailure: KeychainError.unexpected(errSecInteractionNotAllowed)
+        )
+        let account = model(store: store, driver: StubLoginDriver(failure: StubLoginError()))
+        account.restore()
+        #expect(account.state == .signedIn(expiresAtMs: 4_000))
+        #expect(account.signOutIncomplete == nil, "nothing to disclose yet")
+
+        account.signOut()
+        #expect(account.state == .signedOut)
+        #expect(account.signOutIncomplete != nil, "shown: signed out, and the token stayed")
+
+        await account.signIn(
+            issuer: "https://issuer.example",
+            clientID: "client",
+            deviceID: "abcd",
+            nowMs: 0
+        )
+        #expect(account.state == .failed("the issuer refused"))
+        #expect(account.signOutIncomplete != nil, "shown: the sign-in failed, the token stayed")
+
+        account.restore()
+        #expect(account.state == .signedIn(expiresAtMs: 4_000))
+        #expect(
+            account.signOutIncomplete != nil,
+            "NOT shown: the property survives, but the row's own text would now be false"
+        )
+
+        account.dismissSignOutIncomplete()
+        #expect(account.signOutIncomplete == nil, "nothing to disclose once acknowledged")
+    }
+
     /// A struct carrying a live bearer and a refresh token ends up in the
     /// first log line anyone writes while debugging, unless it cannot.
     @Test
