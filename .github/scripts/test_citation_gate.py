@@ -755,6 +755,122 @@ class Symbols(GateCase):
         self.write("docs/a.md", "See `crates/c/src/lib.rs:4#twice`.\n")
         self.assert_code(self.run_gate(), DANGLING, "spans 2-2, 6-8.")
 
+    # ---- the start walk's remaining shapes, recorded as they answer today ----
+    #
+    # The five cases below are characterisation, not specification. Each one
+    # is a shape `symbol_span`'s line-based start walk gets wrong, none is
+    # reached by a citation in this repository today, and each says which
+    # direction it errs in. They are here because the walk shipped pinned for
+    # exactly one attribute shape, and the shape it was not pinned for was a
+    # live defect on four files. A shape nobody wrote a case for is a shape
+    # nobody measured.
+
+    def test_a_blank_line_between_the_doc_and_the_item_cuts_the_doc_out(self):
+        # rustc attaches this doc comment to `wanted` across the blank line;
+        # the walk does not, so a citation of the doc is reported broken.
+        # False FAILURE, the dangerous direction. Latent: no occurrence of
+        # this shape in the tree. Fixing it means letting the run cross a
+        # blank line, which also lets it cross into whatever sits above.
+        self.write(
+            "crates/c/src/lib.rs",
+            "/// Doc.\n"            # 1
+            "\n"                    # 2
+            "pub fn wanted() {\n"   # 3
+            "    ()\n"              # 4
+            "}\n",                  # 5
+        )
+        self.write("docs/a.md", "See `crates/c/src/lib.rs:1#wanted`.\n")
+        self.assert_code(
+            self.run_gate(),
+            DANGLING,
+            "cites line 1, but `wanted` in `crates/c/src/lib.rs` spans 3-5.",
+        )
+
+    def test_an_ordinary_comment_inside_the_doc_run_truncates_the_span(self):
+        # A `//` line between two `///` lines ends the run, so every doc line
+        # above it is outside the item. False FAILURE again, same direction
+        # and same remedy as above. Latent: no occurrence in the tree.
+        self.write(
+            "crates/c/src/lib.rs",
+            "/// Doc line one.\n"     # 1
+            "// An ordinary note.\n"  # 2
+            "/// Doc line two.\n"     # 3
+            "pub fn wanted() {\n"     # 4
+            "    ()\n"                # 5
+            "}\n",                    # 6
+        )
+        self.write("docs/a.md", "See `crates/c/src/lib.rs:1#wanted`.\n")
+        self.assert_code(
+            self.run_gate(),
+            DANGLING,
+            "cites line 1, but `wanted` in `crates/c/src/lib.rs` spans 3-6.",
+        )
+
+    def test_a_generic_impl_block_is_not_found(self):
+        # `SYMBOL_DECL` wants whitespace between the keyword and the name, and
+        # `impl<'a> Foo<'a>` puts the lifetimes there. The gate then says the
+        # file does not declare `Foo`, which is a false FAILURE whenever the
+        # type is not also declared in the same file. Latent: the tree has
+        # generic impl blocks, and no citation names one.
+        self.write(
+            "crates/c/src/lib.rs",
+            "pub struct Other;\n"     # 1
+            "impl<'a> Foo<'a> {\n"    # 2
+            "    fn f(&self) {}\n"    # 3
+            "}\n",                    # 4
+        )
+        self.write("docs/a.md", "See `crates/c/src/lib.rs:2#Foo`.\n")
+        self.assert_code(
+            self.run_gate(),
+            DANGLING,
+            "names `Foo`, which `crates/c/src/lib.rs` does not declare.",
+        )
+
+    def test_a_macro_rules_declaration_is_not_found(self):
+        # `macro_rules!` is not in `SYMBOL_DECL`'s alternation and the `!`
+        # would not match its whitespace either way. False FAILURE, and
+        # unreachable rather than merely latent: this repository declares no
+        # macro this way, so nothing can cite one until something does.
+        self.write(
+            "crates/c/src/lib.rs",
+            "/// Doc.\n"                 # 1
+            "macro_rules! wanted {\n"    # 2
+            "    () => {};\n"            # 3
+            "}\n",                       # 4
+        )
+        self.write("docs/a.md", "See `crates/c/src/lib.rs:2#wanted`.\n")
+        self.assert_code(
+            self.run_gate(),
+            DANGLING,
+            "names `wanted`, which `crates/c/src/lib.rs` does not declare.",
+        )
+
+    def test_a_declaration_inside_a_raw_string_widens_the_span(self):
+        # The walk reads lines, not Rust, so a declaration written inside a
+        # raw string literal is found and contributes a phantom span. This is
+        # the one shape here that errs the safe way: containment is tested
+        # against the union, so a phantom can only make a citation pass that
+        # would otherwise fail. Pinned as the union, both spans named, so that
+        # a later narrowing of `symbol_span` is felt here rather than in a
+        # document going red.
+        self.write(
+            "crates/c/src/lib.rs",
+            '/// Doc.\n'                        # 1
+            'pub const SRC: &str = r#"\n'       # 2
+            'pub fn wanted() -> u8 { 0 }\n'     # 3
+            '"#;\n'                             # 4
+            '\n'                                # 5
+            '/// Real doc.\n'                   # 6
+            'pub fn wanted() -> u8 {\n'         # 7
+            '    0\n'                           # 8
+            '}\n',                              # 9
+        )
+        self.write("docs/a.md", "See `crates/c/src/lib.rs:3#wanted`.\n")
+        self.assert_code(self.run_gate(), CLEAN, "OK: citations clean.")
+
+        self.write("docs/b.md", "See `crates/c/src/lib.rs:5#wanted`.\n")
+        self.assert_code(self.run_gate(), DANGLING, "spans 3-3, 6-9.")
+
     def test_a_citation_with_no_suffix_is_unchanged(self):
         # The widening, asserted as a widening. Every citation in this
         # repository is this shape, and all three verdicts it can reach have
