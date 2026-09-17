@@ -385,8 +385,22 @@ struct AccountView: View {
                     .disabled(!settings.canSignIn)
             }
         }
-        if let message = account.signOutIncomplete {
-            SignOutIncompleteRow(message: message, account: account)
+        switch account.state {
+        case .signedOut, .failed:
+            if let message = account.signOutIncomplete {
+                SignOutIncompleteRow(message: message, account: account)
+            }
+        case .signedIn, .awaitingBrowser:
+            // Guarded at the render site rather than cleared in `publish()`.
+            // Under `.signedIn` the row's own text is false — it would claim
+            // "Signed out on this Mac" directly beneath "Signed in — expires …"
+            // and predict a re-admission that has already happened, which is
+            // reachable because `restore()` reloads the survivor and
+            // `publish()` sets `.signedIn` without touching the disclosure.
+            // Clearing it there would be worse: it would hide exactly the
+            // readmission this change exists to disclose. `.awaitingBrowser`
+            // is transient with the browser in front.
+            EmptyView()
         }
     }
 
