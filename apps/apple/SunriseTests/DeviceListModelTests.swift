@@ -176,6 +176,18 @@ struct DeviceListModelTests {
     /// `sunrise-core`'s `revoke_device_reports_that_the_fold_discarded_its_own_op`
     /// asserts the field is set; this asserts it is carried, which is the line
     /// on this side that can be dropped.
+    ///
+    /// **`relayPending` is `false`, and that is the only value this state has.**
+    /// A synthetic outcome can be handed anything, so it has to be handed what
+    /// the account would actually produce or the case is named for a state
+    /// that cannot occur. `relayPending` is not a field of the outcome: it is
+    /// read off the bridge by ``DeviceListModel/revoke(_:reason:)``, and
+    /// `Core::relay_revocation_pending` answers it from a row in
+    /// `relay_revocation_intents` — a queued intent that **will** be sent. A
+    /// gated revocation queues none, which the cited Rust test asserts in the
+    /// same breath as the flag, and which is what "the relay was deliberately
+    /// not told" above means. The second assertion below holds the fixture
+    /// to it.
     @Test
     func theDisclosureSaysWhenTheAccountDiscardedTheRemoval() {
         let outcome = CommandOutcome(
@@ -190,13 +202,20 @@ struct DeviceListModelTests {
         let disclosure = DeviceListModel.Revocation(
             nickname: "Old laptop",
             outcome: outcome,
-            relayPending: true
+            relayPending: false
         )
         #expect(
             disclosure.gated,
             """
             a client that dropped this would print "Removed Old laptop" over a \
             device that is still current on every replica
+            """
+        )
+        #expect(
+            !disclosure.relayPending,
+            """
+            a gated revocation queues no relay intent, so a pending flag here \
+            would promise a cut that nothing is going to send
             """
         )
     }
