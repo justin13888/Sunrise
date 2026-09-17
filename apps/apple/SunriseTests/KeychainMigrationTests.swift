@@ -75,6 +75,29 @@ struct KeychainMigrationTests {
         #expect(try pair.source.read() == nil, "step 4 must remove the old copy")
     }
 
+    /// Step 0. The first thing `run` does is a read, so a kill here cannot have
+    /// changed anything — which is the case worth pinning, because "cannot have
+    /// changed anything" is an assertion about the *order* of the five steps
+    /// and not a tautology.
+    @Test
+    func anInterruptionBeforeReadingTheDestinationChangesNothing() throws {
+        let pair = scratchPair()
+        defer { pair.removeBoth() }
+        try pair.source.write(secret)
+
+        #expect(throws: Interrupted.self) {
+            try pair.migration.run { step in
+                if step == .readDestination { throw Interrupted() }
+            }
+        }
+        #expect(try pair.source.read() == secret)
+        #expect(try pair.destination.read() == nil)
+
+        #expect(try pair.migration.run() == secret)
+        #expect(try pair.destination.read() == secret)
+        #expect(try pair.source.read() == nil)
+    }
+
     /// Step 1. Nothing has been written, so the source is the only copy and
     /// the next launch restarts from the top.
     @Test
