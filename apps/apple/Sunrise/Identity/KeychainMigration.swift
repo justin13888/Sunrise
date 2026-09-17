@@ -220,9 +220,16 @@ struct KeychainMigration: Sendable {
     /// The conclusion survives the premise: what no test in this repository can
     /// do is *arrange* that race, because locking the login keychain — or
     /// forcing a denied prompt — part-way through a running case is not
-    /// something this suite can drive. It holds the keychain unlocked for its
-    /// whole run by construction. So the arm still executes in no test, and it
-    /// is one of the seven lines this change declares untestable, listed
+    /// something this suite can drive. Not, as an earlier revision of this
+    /// comment claimed, because the suite "holds the keychain unlocked for its
+    /// whole run by construction": it holds nothing and makes no keychain-state
+    /// call at all, it inherits the host login session's unlocked keychain, and
+    /// that is a property of the machine rather than of the suite. The mechanism
+    /// is stated once, on ``KeychainItem/deleteAcrossDomains()`` — the lock's
+    /// smallest scope is the machine's default keychain, which every
+    /// unserialized suite here writes to concurrently, and getting back out of
+    /// it needs a password no case has. So the arm still executes in no test,
+    /// and it is one of the seven lines this change declares untestable, listed
     /// together in `docs/07-clients/desktop.md`, where it is item 6.
     ///
     /// **Item 6 is one item with three branches, and each is declared here**

@@ -186,7 +186,7 @@ struct KeychainCredentialStore: CredentialStore {
     /// seven listed in `docs/07-clients/desktop.md`, where it is item 5. It is
     /// reached only through `KeychainItem.writeAcrossDomains`'s raise of
     /// `writtenButOtherDomainRefused`, item 1 of that set, so it inherits item
-    /// 1's blocker exactly: the raise needs the write to succeed in its own
+    /// 1's blockers exactly: the raise needs the write to succeed in its own
     /// domain, which on an ad-hoc Mac makes the other domain `.dataProtection`,
     /// whose refusal is the missing-entitlement one and is swallowed before it
     /// can reach here. What it waits on is *reach* **and then a refusal** — only
@@ -197,7 +197,9 @@ struct KeychainCredentialStore: CredentialStore {
     /// is item 3 of that set: this catch is reached only through item 1's raise,
     /// and that raise is constructed only where item 3's `false` arm has already
     /// run. So this inherits **both** blockers, and an earlier revision of this
-    /// paragraph said it inherited only the first.
+    /// paragraph said it inherited only the first. Item 3's own blocker — the
+    /// refusal having to arrive *mid-case* — is stated as a mechanism on
+    /// `KeychainItem.deleteAcrossDomains`, which items 4, 6 and 7 share.
     /// Saying the refusal here is *always* the missing-entitlement one would be
     /// too strong: on such a build it is whatever `.login` answers. What *is*
     /// pinned is the discrimination this rests on —

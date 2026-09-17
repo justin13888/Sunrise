@@ -119,17 +119,30 @@ struct KeychainItem: Sendable {
     /// failure is the other store refusing *on its own terms* — it was reached
     /// well enough to say no, and a copy of ours may be sitting in it.
     ///
-    /// **The `false` answer executes in no test**, declared here on the method
-    /// that owns it; it is one of seven, listed in `docs/07-clients/desktop.md`.
-    /// Every other-domain delete this repository builds either *succeeds*, as
+    /// **The `false` answer is pinned directly** by
+    /// `KeychainUnreachableStatusTests`, which asks this predicate about a
+    /// locked keychain, a denied prompt, a cancelled prompt and an I/O failure
+    /// and requires `false` for each. That is possible because the method is a
+    /// pure `OSStatus -> Bool` making no `Security.framework` call; it was
+    /// unpinned only because it was `private`, which `@testable import` does not
+    /// reach past. Widening it to `internal` observes a decision the production
+    /// path takes and cannot make `Security.framework` answer anything it would
+    /// not — the ground on which `probeRuns` and `probeInsertQuery` were widened.
+    ///
+    /// **What executes in no test is the predicate being *asked* that question
+    /// mid-case**, declared here on the method that owns it; it is item 3 of the
+    /// seven listed in `docs/07-clients/desktop.md`. Every other-domain delete
+    /// this repository builds either *succeeds*, as
     /// `aRefusalOnThisDomainDoesNotSpareTheCopyInTheOther`'s does, so never asks
-    /// this, or is refused with `errSecMissingEntitlement` — so the predicate is
-    /// only ever asked about a status it answers `true` to, which is what
-    /// `aCrossDomainWriteKeepsWhatItJustWrote` pins. The `false` needs the other
-    /// keychain locked or a prompt denied *while a case runs*: a hard status the
-    /// ad-hoc build already produces, that no entitlement supplies and that this
-    /// suite — holding the keychain unlocked throughout — cannot arrange.
-    private static func meansTheOtherStoreWasUnreachable(_ status: OSStatus) -> Bool {
+    /// this, or is refused with `errSecMissingEntitlement` — so inside a
+    /// *running* cross-domain delete the predicate is only ever asked about a
+    /// status it answers `true` to, which is what
+    /// `aCrossDomainWriteKeepsWhatItJustWrote` pins, and
+    /// ``deleteInOtherDomain()``'s re-raise is never reached. Getting there needs
+    /// the other keychain locked or a prompt denied *while a case runs*: a hard
+    /// status the ad-hoc build already produces, that no entitlement supplies,
+    /// and that this suite cannot arrange — ``deleteAcrossDomains()`` states why.
+    static func meansTheOtherStoreWasUnreachable(_ status: OSStatus) -> Bool {
         status == errSecMissingEntitlement || status == errSecItemNotFound
     }
 
@@ -309,8 +322,7 @@ struct KeychainItem: Sendable {
     /// `catch` below, which `deleteInOtherDomain()` enters only when
     /// ``meansTheOtherStoreWasUnreachable(_:)`` answers `false`, so the raise
     /// executing *implies* that arm executing and inherits its blocker whole.
-    /// The raise needs
-    /// ``write(_:)`` to **succeed** first, so on an ad-hoc Mac the item's own domain
+    /// The raise needs ``write(_:)`` to **succeed** first, so on an ad-hoc Mac the item's own domain
     /// has to be `.login` and the other is then necessarily `.dataProtection`, whose
     /// mutations answer `errSecMissingEntitlement` unconditionally — swallowed by
     /// ``meansTheOtherStoreWasUnreachable(_:)`` before the re-label. Inverting which
@@ -447,6 +459,17 @@ struct KeychainItem: Sendable {
     /// which. Both refusing at once needs the locked keychain
     /// ``meansTheOtherStoreWasUnreachable(_:)`` records this suite cannot produce
     /// mid-case, which no entitlement supplies either.
+    ///
+    /// **Why this suite cannot produce it**, on a mechanism rather than the
+    /// premise an earlier revision asserted in five places — that the suite
+    /// "holds the keychain unlocked by construction". It holds nothing: it makes
+    /// no keychain-state call of any kind, and inherits whatever the host login
+    /// session already unlocked. What blocks a lock is that its smallest scope is
+    /// the *machine's* default keychain, which five files in this target are
+    /// writing `.login` items to with only one suite serialized, and that getting
+    /// back out of it without a UI prompt needs a password no case here has.
+    /// `docs/07-clients/desktop.md` states it in full, with the SDK's own
+    /// deprecation and platform annotations.
     func deleteAcrossDomains() throws {
         // Named for what it is rather than for which domain produced it: since
         // the other domain's refusal became raisable, either delete can be the

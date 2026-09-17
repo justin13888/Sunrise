@@ -404,7 +404,7 @@ does is not:
   **Seven lines are declared untestable** rather than left to be re-discovered,
   on the same rule the rest of this page follows. Three of them are in the pair
   of cross-domain mutations described above (1, 2 and 4), one is in the
-  predicate both of those consult (3), one is in the `save` that consumes the
+  re-raise both of those consult (3), one is in the `save` that consumes the
   write (5), one is in `loadMigratingIfNeeded` (6), and one is in the
   cross-domain **read** (7). This is the whole set and the only count of it,
   since an earlier revision of this page named two of the seven here while a
@@ -421,11 +421,17 @@ does is not:
      delete would find it and still lets the delete run: an item addressed at
      the domain this build cannot reach throws out of `write` first, and on iOS
      the guard short-circuits.
-  3. `meansTheOtherStoreWasUnreachable` returning *false* — a status that is
-     neither the missing-entitlement refusal nor not-found. The predicate is
-     only consulted when an other-domain delete throws, and every such delete
-     this suite can make throw throws one of those two, so the `false` arm is
-     never asked for.
+  3. `deleteInOtherDomain`'s re-raise — `meansTheOtherStoreWasUnreachable`
+     answering *false* **inside a running cross-domain delete**, for a status
+     that is neither the missing-entitlement refusal nor not-found. The
+     predicate's `false` answer is itself no longer undeclared: it is `internal`
+     now, and `KeychainUnreachableStatusTests` asserts it directly for a locked
+     keychain, a denied prompt, a cancelled prompt and an I/O failure, which
+     pins the decision the production path takes. What still executes in no test
+     is the predicate being *asked* that question mid-case: it is consulted only
+     when an other-domain delete throws, and every such delete this suite can
+     make throw throws one of the two statuses it answers `true` to, so the
+     `else { throw error }` arm is never reached.
   4. The cross-domain clear's **tie-break**, that this domain's status wins
      when both deletes refuse. The one case that reaches the other-domain arm
      has that delete *succeed*, so inverting the tie-break leaves it green.
@@ -503,13 +509,42 @@ does is not:
   `.dataProtection`, address the item at `.login`, and watch the delete take
   that copy away.
 
-  **For 3, 4 and 6 an entitled, signed build is the wrong answer** — which is
-  what this page used to say and, for those three, said wrongly. A locked login
+  **For 3, 4, 6 and 7 an entitled, signed build is the wrong answer** — which is
+  what this page used to say and, for those items, said wrongly. A locked login
   keychain or a denied prompt already returns a hard status on the ad-hoc build
-  this repository produces, so the statuses those three lines wait for are
-  reachable here today; what no suite here can drive is the lock or the denial
-  arriving mid-case, because the suite holds the keychain unlocked for its
-  whole run by construction. An entitlement supplies no part of that.
+  this repository produces, so the statuses those lines wait for are reachable
+  here today; what no suite here can drive is the lock or the denial arriving
+  mid-case. An entitlement supplies no part of that.
+
+  **Why the suite cannot drive it — the mechanism, in place of the premise this
+  page used to give.** The premise was that "the suite holds the keychain
+  unlocked for its whole run by construction". It is false, and it was asserted
+  in five places and evidenced in none: the suite performs no keychain-state
+  call of any kind — it never creates, opens, locks, unlocks or queries the
+  status of a keychain — so it holds nothing. It inherits whatever the host
+  login session already unlocked, which is a property of the machine asserted
+  as a property of the suite. Two things are true instead, and both can be
+  checked against the SDK and this target:
+
+  - `SecKeychainLock`, `SecKeychainUnlock` and
+    `SecKeychainSetUserInteractionAllowed` *are* still declared in the macOS
+    SDK, but as `API_DEPRECATED("SecKeychain is deprecated", macos(10.2,
+    10.10))` and `API_UNAVAILABLE(ios, watchos, tvos, macCatalyst)`.
+    `SunriseTests/` compiles into the iOS app as well as the Mac one, so a case
+    calling them could only ever run in half the targets it is built into.
+  - The lock has **no scope smaller than the machine**. Its target is the
+    default login keychain — the one running the CI job and the developer's own
+    session. Five files in this target write real `.login` items, and the only
+    `.serialized` suite anywhere is serialized for probe-service contention
+    rather than for locking, so a lock taken by one case races every other case
+    in the same process. Getting back out of it without a UI prompt needs the
+    keychain's password, which no case here has, so a case that failed between
+    lock and unlock would leave the runner's login keychain locked for the rest
+    of the job.
+
+  So a spike that locks the keychain to close these items is rejected on the
+  second of those rather than the first: it is a machine-global mutation staged
+  inside the suite that guards the vault root.
 
   What puts 3 and 4 on this side of the line rather than with 1 is that
   `deleteAcrossDomains` stores its first failure and *continues* rather than
