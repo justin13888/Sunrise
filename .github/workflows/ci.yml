@@ -863,6 +863,43 @@ jobs:
       - name: Exit-code contract
         run: python3 .github/scripts/test_mutants_gate.py
 
+  mutants-flags-gate:
+    name: Mutation flag gate
+    runs-on: ubuntu-latest
+    # Reads two text files. No toolchain, no cargo, no network past the
+    # checkout.
+    timeout-minutes: 5
+    # Deliberately without an `if:`, like the contract job above and unlike
+    # the `mutants` matrix. `--all-features` is written in three places —
+    # the `mutants` task in mise.toml, the `mutants` matrix in this file,
+    # and prose in docs/10-cross-cutting/testing.md §Features — and until
+    # now nothing kept them in step. The divergence this guards against
+    # gets introduced in a pull request, so it has to be caught in one:
+    # the matrix that would notice it for real is `schedule ||
+    # workflow_dispatch` and would not report until the next morning at
+    # 04:00, by which time a floor has already been compared against a
+    # population that was measured differently.
+    steps:
+      - uses: actions/checkout@v4
+      - name: Every cargo-mutants invocation carries --all-features
+        run: python3 .github/scripts/mutants-flags-gate.py
+
+  mutants-flags-gate-contract:
+    name: Mutation flag gate contract
+    runs-on: ubuntu-latest
+    # One Python script over two files it synthesises itself. Seconds.
+    timeout-minutes: 5
+    # The gate above reads this repository; this reads fixtures. Both are
+    # needed and neither substitutes for the other: the gate passing says
+    # the tree is in step, and says nothing about whether the gate would
+    # notice if it were not. The only way to watch it go red is to hand it
+    # two files that disagree, and the two files it reads in anger are
+    # ones nobody wants edited to find out.
+    steps:
+      - uses: actions/checkout@v4
+      - name: Exit-code contract
+        run: python3 .github/scripts/test_mutants_flags_gate.py
+
   core-filesystem-gate-contract:
     name: Core filesystem gate contract
     runs-on: ubuntu-latest

@@ -237,6 +237,28 @@ today, so the flag is a no-op for the other three. It is passed unconditionally
 anyway, because the failure it prevents is silent: the next feature-gated module
 would otherwise start under-reporting with nothing to say so.
 
+That leaves the rule written in three places — the `mutants` task in
+`mise.toml`, the `mutants` matrix in `.github/workflows/ci.yml`, and the
+sentence in bold at the top of this section — with nothing keeping them in step.
+`.github/scripts/mutants-flags-gate.py` now enforces the two executable copies:
+it joins shell continuations, ignores commented-out commands and prose about the
+flag, and fails unless every `cargo mutants` invocation in both files carries
+`--all-features`. It fails separately, with a different exit code, when it finds
+no invocation at all in one of the files, because a gate reporting green on a
+matrix that no longer runs cargo-mutants is reporting on nothing.
+`.github/scripts/test_mutants_flags_gate.py` asserts that contract against
+synthesised files, so watching the gate go red never requires editing the two
+real ones. Both run as `Mutation flag gate` and `Mutation flag gate contract`,
+on every pull request rather than on the nightly — the divergence is introduced
+in a pull request, and the `mutants` matrix that would eventually notice it does
+not report until 04:00 the next morning, by which time a floor has already been
+compared against a differently-measured population.
+
+What it deliberately does not check is this paragraph and the one above it.
+Asserting a sentence checks the wording, not the rule, so the prose copy stays a
+copy; the gate names this file in its failure output instead, so whoever is
+changing the flags is told the third copy exists.
+
 ### Cost, measured
 
 | Crate | mutants | `cargo test -p`, rebuilt (2026-09-07) |
@@ -347,7 +369,32 @@ described: `.github/scripts/test_mutants_gate.py` synthesises its own outcomes
 files and checks the code for every route in about a second. `mise run
 mutants-gate-test` locally, and the `Mutation gate contract` job in CI, which
 carries no schedule condition and so runs on every push, pull request and
-nightly alike — the only part of mutation testing that does not wait for 04:00.
+nightly alike. It is one of three such jobs — `Mutation flag gate` and `Mutation
+flag gate contract`, above under §Features, are the others — and between them
+they are the whole of mutation testing that does not wait for 04:00. What they
+have in common is that none of them runs a mutant: they check the parts of the
+campaign that are text, which is why they can report in seconds on a pull
+request while the measurement itself cannot.
+
+A floor also has to say what produced it. `malformed()` in
+`.github/scripts/mutants-gate.py` requires every crate carrying a `caught_pct`
+to carry a `provenance` object with a non-empty `sha`, `date` and `command`, and
+`--update` writes all three from the run it is banking — one change rather than
+two, because the update path replaces each crate entry wholesale, so a
+`provenance` added by hand would not survive the next `mise run
+mutants-baseline`. When `git rev-parse HEAD` cannot answer, `--update` refuses to
+record rather than banking a blank: an empty string has the right shape and says
+nothing, which is the placeholder `mutants/baseline.json`'s own rule rejects, and
+refusing is recoverable because the outcomes are still on disk.
+
+That check is structural, and the distinction matters more here than it looks.
+It establishes that a floor says where it came from. It cannot establish that
+what it says is true — whether the named revision carried the tests the floor
+beside it is worth, and whether a percentage quoted in prose was computed by the
+rule it names, are both decidable only by re-running the campaign at that
+revision, which is the work a recorded floor exists to avoid. Both of those
+defects have occurred in this repository's own baseline, and neither is
+something any check here can catch.
 
 **≥ 90 % caught is the release sign-off requirement, and the baseline is what
 climbs toward it.** The two are deliberately separate. A gate that failed from

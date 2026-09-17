@@ -1069,6 +1069,25 @@ description = "Assert the mutation gate's exit-code contract (fast, no mutants)"
 # run nobody waits for.
 run = "python3 .github/scripts/test_mutants_gate.py"
 
+[tasks.mutants-flags-gate]
+description = "Assert every cargo-mutants invocation carries --all-features"
+# Reads mise.toml and .github/workflows/ci.yml as text and never invokes
+# cargo. `--all-features` is stated in three places — the `mutants` task
+# below, the `mutants` matrix in ci.yml, and prose in
+# docs/10-cross-cutting/testing.md §Features — and nothing kept them in
+# step. An invocation that loses it mutates modules behind non-default
+# features without compiling them, so those mutants score MISSED and are
+# indistinguishable downstream from a real test gap; that is what made
+# sunrise-sync's floor read 27.17% instead of 36.89%.
+run = "python3 .github/scripts/mutants-flags-gate.py"
+
+[tasks.mutants-flags-gate-test]
+description = "Assert the flag gate's exit-code contract (fast, no cargo)"
+# Runs in under a second: it synthesises a mise.toml and a ci.yml in a
+# temp directory and points the gate at those, so the only way to see the
+# gate go red is never to edit the real files to find out.
+run = "python3 .github/scripts/test_mutants_flags_gate.py"
+
 [tasks.core-filesystem-gate-test]
 description = "Assert the core filesystem gate still reports (fast, no cargo)"
 # Runs in about a second: it synthesises a `crates/sunrise-core/src` in a temp
