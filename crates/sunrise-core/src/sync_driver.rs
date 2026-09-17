@@ -590,9 +590,18 @@ pub(crate) async fn run(
         let connect_fut = factory();
         // The factory has just read the credential, so this attempt carries
         // every renewal that landed while the driver was disconnected. Bring
-        // the handle forward to exactly what it read and no further, and the
-        // pump's renewal arm below fires only for writes made after this
-        // connect.
+        // the handle forward to what it read, and the pump's renewal arm below
+        // fires only for writes made after this connect.
+        //
+        // This NARROWS the window; it does not close it. The factory's read
+        // and the mark below are two operations on two cells with no lock
+        // spanning them, and `TokenSource::set` is called from other threads —
+        // the FFI seam in `sunrise-core-bindings` and the CLI's login flow. A
+        // `set` that completes wholly between the two is consumed here without
+        // having been carried, so it reaches the relay on the next reconnect
+        // rather than in band. What the move bought is the size of the window:
+        // it used to span the dial, the handshake and the subscribe, and is
+        // now the few instructions between these two statements.
         let _ = mark_renewals_current(&mut renewals);
         let connected = tokio::select! {
             biased;
@@ -747,15 +756,20 @@ fn next_backoff_delay(backoff: &mut Backoff, jitter_unit: f64) -> Duration {
 /// the relay in band as a `0x12 RefreshToken` instead of waiting for the next
 /// reconnect.
 ///
+/// The residual, stated because the call site reads like a proof and is not
+/// one: the factory's read and this mark are two operations on two cells with
+/// nothing ordering them, and `TokenSource::set` is called from other threads.
+/// A `set` completing between them is consumed here without having been
+/// carried, and rides the next reconnect instead of the live session. The move
+/// shrank that window from "the dial, the handshake and the subscribe" to a
+/// few instructions; it did not remove it.
+///
 /// An attempt that then fails to connect has still advanced the handle, which
 /// is sound: the next attempt re-reads the credential and so carries at least
 /// as much as this one would have.
 ///
 /// Split out of [`run`] for the same reason [`next_backoff_delay`] is split
-/// out of [`backoff_sleep`]: reaching it through the driver costs a real
-/// connect, a handshake and a backoff, so the one proposition it carries —
-/// that a renewal from the offline window is consumed rather than re-announced
-/// — is pinned here instead.
+/// out of [`backoff_sleep`]: it gives the placement a name a test can call.
 fn mark_renewals_current(renewals: &mut TokenWatch) -> u64 {
     renewals.mark_current()
 }
