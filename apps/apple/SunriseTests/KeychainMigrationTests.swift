@@ -453,4 +453,51 @@ struct KeychainDomainTests {
         #expect(KeychainDomain.probeAccessibility == KeychainCredentialStore.accessibility)
         #expect(KeychainDomain.probeAccessibility == KeychainRelayDeviceIDStore.accessibility)
     }
+
+    /// …and the probe must actually *submit* that class, which the case above
+    /// cannot see. It compares a constant against three other constants, so a
+    /// `probe()` that named a different class, or that dropped the domain key
+    /// and asked the login keychain — making the answer always
+    /// `.dataProtection` and sending every vault root to the wrong store —
+    /// leaves it green. This reads the dictionary the probe hands `SecItemAdd`.
+    @Test
+    func theProbeSubmitsTheClassAndTheDomainItClaimsTo() {
+        let account = UUID().uuidString
+        let insert = KeychainDomain.probeInsertQuery(account: account)
+
+        #expect(insert[kSecAttrAccessible as String] as? String
+            == KeychainDomain.probeAccessibility.attribute as String)
+        #expect(insert[kSecUseDataProtectionKeychain as String] as? Bool == true)
+        #expect(insert[kSecAttrService as String] as? String == KeychainDomain.probeService)
+        #expect(insert[kSecAttrAccount as String] as? String == account)
+        #expect(insert[kSecValueData as String] as? Data == Data([0]), "one fixed non-secret byte")
+    }
+
+    /// `writeAcrossDomains` must never delete the item it has just written.
+    ///
+    /// The whole method is a swallowed delete of the *other* domain's copy, and
+    /// on every Apple platform but macOS there is no other domain — `.login`
+    /// and `.dataProtection` are two names for one store, so an unguarded
+    /// delete would remove the secret one line after storing it. That is the
+    /// same trap `sourceAndDestinationAreOneItem` exists for, and this is the
+    /// case that fails on iOS if the guard is ever dropped. On the Mac it pins
+    /// the other half: the write still lands when the other domain refuses.
+    @Test
+    func aCrossDomainWriteKeepsWhatItJustWrote() throws {
+        let item = KeychainItem(
+            service: "dev.sunrise.Sunrise.tests.\(UUID().uuidString).cross-write",
+            account: "credentials",
+            accessibility: .afterFirstUnlockThisDeviceOnly,
+            domain: KeychainDomain.current
+        )
+        defer { try? item.delete() }
+
+        let secret = Data(repeating: 4, count: 32)
+        try item.writeAcrossDomains(secret)
+        #expect(try item.read() == secret)
+
+        let renewed = Data(repeating: 5, count: 32)
+        try item.writeAcrossDomains(renewed)
+        #expect(try item.read() == renewed, "and a rewrite must replace, not remove")
+    }
 }

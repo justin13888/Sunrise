@@ -140,15 +140,7 @@ enum KeychainDomain: Sendable, Equatable {
     static func probe() -> KeychainDomain {
         probeRuns.add(1, ordering: .relaxed)
         let account = UUID().uuidString
-        var insert: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: probeService,
-            kSecAttrAccount as String: account,
-            kSecAttrAccessible as String: probeAccessibility.attribute,
-            kSecValueData as String: Data([0])
-        ]
-        Self.dataProtection.apply(to: &insert)
-        let status = SecItemAdd(insert as CFDictionary, nil)
+        let status = SecItemAdd(probeInsertQuery(account: account) as CFDictionary, nil)
 
         // Deleted under both domains rather than only the one it was offered
         // to. On a platform where the two are one store the add landed under
@@ -165,5 +157,31 @@ enum KeychainDomain: Sendable, Equatable {
         }
 
         return status == errSecSuccess ? .dataProtection : .login
+    }
+
+    /// The exact dictionary ``probe()`` hands to `SecItemAdd`.
+    ///
+    /// Split out so a test can assert what the probe *submits*, rather than what
+    /// ``probeAccessibility`` happens to equal.
+    /// `theProbeTestsTheClassTheStoresWriteUnder` compares that constant against
+    /// the three stores and would pass unchanged if the probe named a different
+    /// class here, or dropped the domain key and asked the login keychain —
+    /// which would make the answer always `.dataProtection` and send every vault
+    /// root to the store this build cannot reach.
+    ///
+    /// Behaviour cannot stand in for it: the add is refused on the ad-hoc Mac
+    /// whatever class it names, succeeds on iOS whatever class it names, and the
+    /// probe deletes whatever it wrote either way. ``probe()`` is the one call
+    /// site, so what this returns is what the probe does.
+    static func probeInsertQuery(account: String) -> [String: Any] {
+        var insert: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: probeService,
+            kSecAttrAccount as String: account,
+            kSecAttrAccessible as String: probeAccessibility.attribute,
+            kSecValueData as String: Data([0])
+        ]
+        Self.dataProtection.apply(to: &insert)
+        return insert
     }
 }
