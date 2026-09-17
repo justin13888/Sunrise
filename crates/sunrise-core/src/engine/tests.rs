@@ -876,6 +876,90 @@ mod testutil {
     /// The register is a fold over these, so "stored and skipped" and "never
     /// arrived" look identical in `device_revocations` and are told apart only
     /// here.
+    /// The `ev` names of every event emitted while `f` runs, in order.
+    ///
+    /// Hand-rolled rather than borrowed from `sunrise-log`'s capture target:
+    /// this crate depends on `tracing` and not on `tracing-subscriber`, and a
+    /// dev-dependency on either to read one field would be a workspace change
+    /// for a test. Only the `ev` field is kept, which is the only part of a
+    /// log line this repository treats as a contract —
+    /// `crates/sunrise-log/tests/event_catalog.rs` is the gate on that name.
+    ///
+    /// The inert dispatcher is not optional and not tidiness. `tracing` caches
+    /// an `Interest` per callsite, and while exactly one `Dispatch` is
+    /// registered process-wide the fast path computes it from *the registering
+    /// thread's* default subscriber, which in a test binary is whichever
+    /// neighbour reached the callsite first and usually has none. The interest
+    /// is then cached as `never`, the macro is skipped, and the capture sees
+    /// nothing at all. A second dispatcher that is never dropped keeps the
+    /// count above one so every rebuild reads the registry instead. The same
+    /// defect and the same remedy are documented at length on
+    /// `sunrise-log`'s `pin_interest_cache`.
+    pub(super) fn events_emitted_by(f: impl FnOnce()) -> Vec<String> {
+        use std::sync::OnceLock;
+        use tracing::field::{Field, Visit};
+
+        /// Registered once and never dropped; see above.
+        static INTEREST_PIN: OnceLock<tracing::Dispatch> = OnceLock::new();
+
+        struct Inert;
+        impl tracing::Subscriber for Inert {
+            fn enabled(&self, _m: &tracing::Metadata<'_>) -> bool {
+                false
+            }
+            fn new_span(&self, _s: &tracing::span::Attributes<'_>) -> tracing::Id {
+                tracing::Id::from_u64(1)
+            }
+            fn record(&self, _s: &tracing::Id, _v: &tracing::span::Record<'_>) {}
+            fn record_follows_from(&self, _s: &tracing::Id, _f: &tracing::Id) {}
+            fn event(&self, _e: &tracing::Event<'_>) {}
+            fn enter(&self, _s: &tracing::Id) {}
+            fn exit(&self, _s: &tracing::Id) {}
+        }
+
+        struct EvVisitor(Option<String>);
+        impl Visit for EvVisitor {
+            fn record_str(&mut self, field: &Field, value: &str) {
+                if field.name() == "ev" {
+                    self.0 = Some(value.to_owned());
+                }
+            }
+            fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+                if field.name() == "ev" && self.0.is_none() {
+                    self.0 = Some(format!("{value:?}").trim_matches('"').to_owned());
+                }
+            }
+        }
+
+        struct EvCapture(Arc<PLMutex<Vec<String>>>);
+        impl tracing::Subscriber for EvCapture {
+            fn enabled(&self, _m: &tracing::Metadata<'_>) -> bool {
+                true
+            }
+            fn new_span(&self, _s: &tracing::span::Attributes<'_>) -> tracing::Id {
+                tracing::Id::from_u64(1)
+            }
+            fn record(&self, _s: &tracing::Id, _v: &tracing::span::Record<'_>) {}
+            fn record_follows_from(&self, _s: &tracing::Id, _f: &tracing::Id) {}
+            fn event(&self, event: &tracing::Event<'_>) {
+                let mut visitor = EvVisitor(None);
+                event.record(&mut visitor);
+                if let Some(ev) = visitor.0 {
+                    self.0.lock().push(ev);
+                }
+            }
+            fn enter(&self, _s: &tracing::Id) {}
+            fn exit(&self, _s: &tracing::Id) {}
+        }
+
+        INTEREST_PIN.get_or_init(|| tracing::Dispatch::new(Inert));
+        let seen = Arc::new(PLMutex::new(Vec::new()));
+        let dispatch = tracing::Dispatch::new(EvCapture(Arc::clone(&seen)));
+        tracing::dispatcher::with_default(&dispatch, f);
+        let taken = seen.lock().clone();
+        taken
+    }
+
     pub(super) fn ledger_rows(db: &Db) -> i64 {
         db.conn()
             .query_row("SELECT count(*) FROM device_revoke_ops", [], |r| r.get(0))
@@ -6514,6 +6598,54 @@ fn a_revoked_device_cannot_revoke_another_device() {
     assert!(revocation_row(&db, &c_id).is_some());
 }
 
+/// **And it cannot get around that by dating the op earlier.**
+///
+/// The test above puts A's op *after* its own cut, which is the polite case.
+/// The sort key is A's to choose, and choosing is free: [`Hlc`] bounds only
+/// the future through `MAX_DRIFT_MS`, a reading in the past is ordinary and
+/// `crates/sunrise-core/src/engine/sync.rs` says so, and nothing ties an op's
+/// HLC to that sender's own `seq` or to any earlier stamp it sent.
+///
+/// So while the gate judged a sender against the **prefix** of the walk, the
+/// whole of ADR-0041 was one subtraction away from being bypassed: date the op
+/// a millisecond below your own cut, sort first, and land. Iterating the
+/// remaining device ids then revokes the account, which is precisely the
+/// outcome #82 is about and which §Alternatives (f) rejects a rival design for
+/// admitting. Judging the sender against the whole ledger is what closes it,
+/// and this is the assertion that a date cannot reopen it.
+#[test]
+fn a_revoked_device_cannot_revoke_a_third_party_however_it_dates_the_op() {
+    let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let ec = engine_seeded(ROOT, [3u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let er = engine_seeded(ROOT, [4u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut db = db_root(ROOT);
+    let (a_id, c_id) = (ea.keychain.device_id(), ec.keychain.device_id());
+
+    // B revokes A: the ordinary administrative action.
+    revoke(&er, &mut db, &eb, a_id, T0);
+    assert!(er.is_revoked(db.conn(), &a_id).unwrap());
+
+    // A answers by reaching for C one millisecond *below* its own cut, which
+    // is the entire attack.
+    revoke(&er, &mut db, &ea, c_id, T0 - 1);
+
+    assert_eq!(
+        revocation_row(&db, &c_id),
+        None,
+        "an expelled device must not expel a third party by back-dating the op"
+    );
+    assert!(
+        er.is_revoked(db.conn(), &a_id).unwrap(),
+        "and A is still out: its op did not move its own cut either"
+    );
+    assert_eq!(
+        ledger_rows(&db),
+        2,
+        "the refused op is stored and only its effect is refused"
+    );
+}
+
 /// **The skip does not depend on which of the two ops arrived first.**
 ///
 /// This is the property ADR-0034 corollary 3 demands of any peer-side
@@ -6635,15 +6767,31 @@ fn a_gate_on_the_sender_does_not_let_a_back_dated_revocation_silence_its_target(
     assert!(er.is_revoked(db.conn(), &b_id).unwrap());
 }
 
-/// A revoked device's revocations from **before** its own cut still stand.
+/// A revoked device's revocations from **before** its own cut are unwound.
 ///
-/// Revocation is not retroactive anywhere else in this module — a cert issued
-/// under a superseded identity still identifies its device, and filtering it
-/// once made revocation retroactive over work done honestly months earlier —
-/// and the fold keeps that property by construction: the prefix of the order is
-/// what decides, so an op that sorts below its sender's cut is folded.
+/// This test asserted the opposite until ADR-0041 §Decision 1 was rewritten,
+/// and the inversion is the point of it rather than an accident of one. The
+/// old property — revocation is not retroactive, so a revoked device's earlier
+/// revocations still stand — reads well and was *the vulnerability*, because
+/// "earlier" is not a fact the ledger holds. The cut is the op's own HLC, and
+/// an HLC is whatever its sender wrote: `MAX_DRIFT_MS` bounds only the future,
+/// a reading in the past is ordinary, and nothing ties an op's stamp to that
+/// sender's `seq` or to any earlier stamp it sent. So nothing distinguishes an
+/// honestly-earlier revocation from one a revoked device back-dated a minute
+/// ago, and a gate that believed the first believed the second — which is the
+/// whole account, one small integer at a time. See
+/// `a_revoked_device_cannot_revoke_a_third_party_however_it_dates_the_op`.
+///
+/// So non-retroactivity is retired here deliberately, for this op family only.
+/// Revocation stays non-retroactive everywhere else in this module — a cert
+/// issued under a superseded identity still identifies its device — and this
+/// family is the exception because its effect can be re-derived, which is the
+/// same scoping argument ADR-0041 makes for gating control ops and not entity
+/// ops. What is lost is an administrative act by a device the account has
+/// expelled: a thing a human can simply do again from a device the account
+/// still trusts, and a thing they would want to look at again anyway.
 #[test]
-fn a_revocation_written_before_the_senders_own_cut_still_stands() {
+fn a_revocation_written_before_the_senders_own_cut_is_unwound_when_the_sender_is_revoked() {
     let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
     let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
     let ec = engine_seeded(ROOT, [3u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
@@ -6651,14 +6799,69 @@ fn a_revocation_written_before_the_senders_own_cut_still_stands() {
     let mut db = db_root(ROOT);
     let (a_id, c_id) = (ea.keychain.device_id(), ec.keychain.device_id());
 
-    // A retires C honestly, long before anything happens to A.
+    // A retires C, apparently long before anything happens to A.
     revoke(&er, &mut db, &ea, c_id, T0);
+    assert!(
+        revocation_row(&db, &c_id).is_some(),
+        "before it knows better, this replica believes A's op"
+    );
     // A is itself revoked a minute later.
     revoke(&er, &mut db, &eb, a_id, T0 + 60_000);
 
+    assert_eq!(
+        revocation_row(&db, &c_id),
+        None,
+        "a revoked device's revocations do not stand, whatever date they carry"
+    );
     assert!(
-        revocation_row(&db, &c_id).is_some(),
-        "work done while a device was a member survives its later revocation"
+        er.is_revoked(db.conn(), &a_id).unwrap(),
+        "and A itself is out"
+    );
+
+    // The remedy, which is what makes the loss tolerable: anyone the account
+    // still trusts revokes C again.
+    revoke(&er, &mut db, &eb, c_id, T0 + 120_000);
+    assert!(er.is_revoked(db.conn(), &c_id).unwrap());
+}
+
+/// **A revocation that stops being believed says so.**
+///
+/// The one outcome of this design a user could be surprised by: a device that
+/// was on the revoked list is on it no longer, because the fold learned that
+/// whoever revoked it had itself been revoked. Judging the sender over the
+/// whole ledger rather than over a prefix makes that routine rather than
+/// exotic — it now happens whenever a revocation arrives *after* an op its
+/// author back-dated — so the branch is worth an assertion rather than a
+/// reading of the source.
+///
+/// It is a log line and not a returned value because the register it is about
+/// is not the one the caller asked to change: `revoke_device` reports on its
+/// own op through `CommandResult`, and the device list is what shows the rest.
+/// `core.device.revocation_unwound` is catalogued in
+/// `docs/10-cross-cutting/log-events.md`.
+#[test]
+fn a_revocation_the_fold_stops_believing_is_announced() {
+    let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let ec = engine_seeded(ROOT, [3u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let er = engine_seeded(ROOT, [4u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut db = db_root(ROOT);
+    let (a_id, c_id) = (ea.keychain.device_id(), ec.keychain.device_id());
+
+    // A revokes C, and this replica believes it.
+    revoke(&er, &mut db, &ea, c_id, T0);
+    assert!(er.is_revoked(db.conn(), &c_id).unwrap());
+
+    // Then it learns A was itself revoked, and C comes back off the list.
+    let events = events_emitted_by(|| revoke(&er, &mut db, &eb, a_id, T0 + 60_000));
+
+    assert_eq!(revocation_row(&db, &c_id), None);
+    assert!(
+        events
+            .iter()
+            .any(|ev| ev == "core.device.revocation_unwound"),
+        "a device quietly leaving the revoked list is the one surprise this \
+         design owes a user; got {events:?}"
     );
 }
 

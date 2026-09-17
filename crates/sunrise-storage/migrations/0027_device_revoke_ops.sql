@@ -31,9 +31,11 @@
 -- With every `device_revoke` op kept, the register stops being a running
 -- upsert and becomes a **fold** over this table in one canonical order —
 -- `(op_hlc_ms, op_hlc_logical, sender, revoked_device_id)`, the register's own
--- LWW comparator extended by the one column that makes it total. A row whose
--- sender is already revoked by the prefix
--- of that order is stored and skipped; everything else lands. The result is a
+-- LWW comparator extended by the one column that makes it total. The order
+-- decides the register; what decides the *gate* is a set built from the whole
+-- table, because the sort key is the sender's own to choose. A row whose
+-- sender this table revokes anywhere is stored and skipped; everything else
+-- lands. The result is a
 -- pure function of the op set, so two replicas holding the same ops hold the
 -- same register whatever order the ops arrived in, and the fold is recomputed
 -- from here each time one lands.

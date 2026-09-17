@@ -423,24 +423,64 @@ impl Engine {
     /// `crates/sunrise-storage/migrations/0027_device_revoke_ops.sql` for why
     /// the op id is not needed and the target is.
     ///
-    /// The fold carries the set of devices the prefix has
-    /// revoked, and skips a row whose sender is in that set. Every replica
-    /// holding the same ops walks the same sequence and reaches the same
-    /// register, whatever order the ops arrived in.
+    /// Before the walk it builds `revokers_all` — who has revoked whom, over
+    /// the **whole ledger** — and skips a row whose sender appears in it as a
+    /// revoked device. The order above still decides the register, because a
+    /// later row overwrites an earlier one; it no longer decides the gate.
+    /// Every replica holding the same ops reaches the same register, whatever
+    /// order the ops arrived in.
     ///
-    /// # What "already revoked" means here, and why it is not a clock read
+    /// # Why the gate reads the whole ledger and not the prefix
     ///
-    /// The prefix *is* the comparison. A sender is skipped exactly when some
-    /// revocation of it sorts below the op it wrote, which compares two op
-    /// stamps and never this device's own HLC — the read [`Self::is_revoked`]
-    /// documents at length as unsound, because a fresh [`crate::config::MonotonicHlc`]
-    /// after a restart collapses it to a bare wall clock. Two recorded stamps
-    /// have no such failure mode: they are the same two numbers on every
-    /// replica.
+    /// Because the sort key is the sender's to choose, and judging the sender
+    /// against a prefix of it made the gate a number an attacker picks.
+    /// [`Hlc`] bounds only the future — `MAX_DRIFT_MS` — and a stamp in the
+    /// past is ordinary, which `crates/sunrise-core/src/engine/sync.rs` says
+    /// outright. Nothing ties an op's HLC to that sender's own `seq`, to its
+    /// meta epoch, or to any earlier stamp it sent, and the local path could
+    /// not carry the `seq` even if the rule wanted it: `apply_control_op` runs
+    /// before `ensure_stream_epoch` while `next_seq_tx` must run after it, for
+    /// the reason [`Self::revoke_device`] gives. So a revoked device dated its
+    /// `device_revoke` ops below its own cut, they sorted first, the prefix
+    /// had not yet revoked their sender, and they landed — and iterating the
+    /// remaining device ids revoked the whole account for the price of
+    /// choosing a small integer. That is the outcome ADR-0041 exists to
+    /// prevent and the one its §Alternatives (f) rejects a rival design for
+    /// admitting.
     ///
-    /// It also keeps revocation non-retroactive, which the rest of this module
-    /// insists on: a revoked device's revocations from *before* its own cut
-    /// still stand, because they sort below it.
+    /// A set built from every row is not a number an attacker can move, and
+    /// it closes the no-history case too, because `revokers_all[X]` holds X's
+    /// own revoker by construction. It reads no clock of any kind — not the
+    /// op's and not this device's, the latter being the read
+    /// [`Self::is_revoked`] documents at length as unsound, because a fresh
+    /// [`crate::config::MonotonicHlc`] after a restart collapses it to a bare
+    /// wall clock. It asks a set question instead: has anybody other than the
+    /// device this row names revoked this row's sender? And it stays a pure
+    /// function of the ledger's row set rather than of delivery order, which
+    /// is what
+    /// [ADR-0034](../../../../docs/11-adr/0034-revocation-bounds-reads-not-writes.md)
+    /// corollary 3 requires; if anything more obviously so, because it no
+    /// longer depends on where in the walk a row sits.
+    ///
+    /// # What this gives up: revocation here **is** retroactive
+    ///
+    /// A revoked device's revocations from *before* its own cut no longer
+    /// stand. That is deliberate and it is the price of the paragraph above:
+    /// "before its own cut" is a number the sender picks, and nothing in the
+    /// ledger distinguishes an honestly-earlier revocation from a back-dated
+    /// one. Preserving the distinction needs evidence the ledger does not
+    /// carry, and a rule that preserved it only for senders with history is
+    /// evaded by a sender that files none.
+    ///
+    /// Revocation is not retroactive anywhere else in this module — a cert
+    /// issued under a superseded identity still identifies its device — and
+    /// this family is the exception because its effect can be re-derived,
+    /// which is the same scoping argument ADR-0041 makes for gating control
+    /// ops and not entity ops. The consequence is that
+    /// `core.device.revocation_unwound` below is routinely reachable rather
+    /// than exotic: a revocation this replica already believed stops being
+    /// believed when it learns its author had been revoked. That is the
+    /// correct signal and it is why it is said out loud.
     ///
     /// # Recoverability
     ///
@@ -475,14 +515,46 @@ impl Engine {
             .collect::<rusqlite::Result<Vec<_>>>()?;
         drop(stmt);
 
+        // Who has revoked whom, over the **whole ledger** — every revoker and
+        // not only the one currently winning the register, and every row and
+        // not only the ones sorting below the row being judged.
+        //
+        // Reading the whole ledger rather than the prefix is what closes the
+        // bypass. The sort key is entirely the sender's to choose: `Hlc`
+        // bounds only the future (`MAX_DRIFT_MS`), a stamp in the past is
+        // ordinary and `sync.rs` says so, and nothing ties an op's HLC to that
+        // sender's own `seq` or to any earlier stamp it sent. Against a prefix
+        // a revoked device simply dated its `device_revoke` ops below its own
+        // cut: they sorted first, the prefix had not yet revoked their sender,
+        // and they landed. Iterating the other device ids then revoked the
+        // whole account for the price of choosing a small integer — the exact
+        // outcome ADR-0041 exists to prevent, and the one its §Alternatives
+        // (f) rejects a rival design for admitting.
+        //
+        // A set built from every row is not a number an attacker can move.
+        // It is also still a pure function of the ledger's row set and not of
+        // delivery order, which is what ADR-0034 corollary 3 requires; if
+        // anything it is more obviously so, because it no longer depends on
+        // where in the walk a row sits.
+        //
+        // `s != v` here for the same reason the walk skips a self-naming row
+        // below: a device cannot revoke itself, so it cannot enter its own
+        // revoker set and gate everything it goes on to write.
+        let mut revokers_all: std::collections::BTreeMap<Vec<u8>, BTreeSet<Vec<u8>>> =
+            std::collections::BTreeMap::new();
+        for row in &rows {
+            if row.sender == row.revoked {
+                continue;
+            }
+            revokers_all
+                .entry(row.revoked.clone())
+                .or_default()
+                .insert(row.sender.clone());
+        }
+
         // Ascending, so a later row simply overwrites an earlier one: that is
         // the LWW register, written as the fold it always was.
         let mut register: std::collections::BTreeMap<Vec<u8>, RevokeLedgerRow> =
-            std::collections::BTreeMap::new();
-        // Who has revoked whom, across the prefix — every revoker and not only
-        // the one currently winning the register. See the gate below for the
-        // case where those differ.
-        let mut revokers: std::collections::BTreeMap<Vec<u8>, BTreeSet<Vec<u8>>> =
             std::collections::BTreeMap::new();
         let mut skipped = Vec::new();
         for row in rows {
@@ -495,15 +567,15 @@ impl Engine {
             }
             // **The gate, and its one exception.**
             //
-            // A row is skipped when the prefix has revoked its sender — but
-            // not when the *only* party to have revoked it is the very device
-            // this row is about. Without that exception two devices revoking
-            // each other would stop converging on both revocations: whichever
-            // op sorted first would silence the other, and an HLC sorts first
-            // by being dated earlier, which is free. A stolen laptop would
-            // simply back-date its revocation of the owner's Mac and the Mac's
-            // answer would never land — an easier takeover than the one this
-            // fold exists to stop.
+            // A row is skipped when the ledger anywhere revokes its sender —
+            // but not when the *only* party to have revoked it is the very
+            // device this row is about. Without that exception two devices
+            // revoking each other would stop converging on both revocations:
+            // whichever op sorted first would silence the other, and an HLC
+            // sorts first by being dated earlier, which is free. A stolen
+            // laptop would simply back-date its revocation of the owner's Mac
+            // and the Mac's answer would never land — an easier takeover than
+            // the one this fold exists to stop.
             //
             // So "B says A is out" is not on its own a reason to disbelieve "A
             // says B is out"; the two claims are symmetric and the safe
@@ -511,7 +583,7 @@ impl Engine {
             // devices end up revoked. It becomes a reason the moment A reaches
             // for a *third* party, or the moment anyone other than B has also
             // revoked A. Both are this condition.
-            let gated = revokers
+            let gated = revokers_all
                 .get(&row.sender)
                 .is_some_and(|who| who.iter().any(|r| *r != row.revoked));
             if gated {
@@ -522,10 +594,6 @@ impl Engine {
                 });
                 continue;
             }
-            revokers
-                .entry(row.revoked.clone())
-                .or_default()
-                .insert(row.sender.clone());
             register.insert(row.revoked.clone(), row);
         }
 

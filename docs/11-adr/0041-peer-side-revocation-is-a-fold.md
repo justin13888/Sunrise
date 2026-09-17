@@ -96,18 +96,25 @@ Two gates, and a shape.
 
 Every `device_revoke` op is **stored whatever its sender's standing**, in
 `device_revoke_ops` (migration 0027), and the register is recomputed from it
-each time one lands. The fold walks the ledger in one canonical total order —
-`(op_hlc_ms, op_hlc_logical, sender)`, the order the register's LWW comparator
-already used — carrying the register built from the prefix, and:
+each time one lands. Before the walk the fold builds `revokers_all` — for each
+device, the set of *other* devices the ledger records as having revoked it,
+over every row and not over any part of one. It then walks the ledger in one
+canonical total order — `(op_hlc_ms, op_hlc_logical, sender, revoked_device_id)`,
+the order the register's LWW comparator already used, extended by the one
+column that makes it total — and:
 
 - **skips a row naming its own sender.** Unchanged, and now held in the fold as
   well as at ingest, because the fold is the sole author of the register and a
   rule enforced only on the way in would be absent for every row already in the
   ledger.
-- **skips a row whose sender the prefix has revoked — unless the only party to
-  have revoked it is the device that row is about.**
+- **skips a row whose sender the ledger revokes anywhere — unless the only
+  party to have revoked it is the device that row is about.**
 - otherwise lands it, later overwriting earlier, which is the LWW register
   written as the fold it always was.
+
+The order decides the register and no longer decides the gate. That separation
+is the whole of this decision's security content, and §"The gate reads the
+whole ledger" below is why.
 
 This is the "stored but never folded" idiom the engine already has for a
 transition signed by a stranger
@@ -131,16 +138,62 @@ party, or the moment anyone other than B has also revoked A. Both are the one
 condition. `a_gate_on_the_sender_does_not_let_a_back_dated_revocation_silence_its_target`
 is the test that would have caught the bare rule; it did, during this change.
 
-**The comparison is between two op stamps and never a clock read.**
+#### The gate reads the whole ledger, because the sort key is the sender's
+
+An earlier draft of this decision judged a sender against the **prefix** of the
+walk: a row was skipped when some revocation of its sender sorted below it. That
+is one subtraction away from no gate at all. The sort key is the op's HLC, the
+HLC is whatever its sender wrote, and nothing bounds it downwards — `Hlc`'s
+`MAX_DRIFT_MS` bounds only the future, `crates/sunrise-core/src/engine/sync.rs`
+says outright that a reading in the past is fine and common, and nothing ties an
+op's stamp to that sender's own `seq`, to its meta epoch, or to any earlier
+stamp it sent. So a revoked device dated its `device_revoke` ops a millisecond
+below its own cut, they sorted first, the prefix had not yet revoked their
+sender, and they landed. Iterating the remaining device ids revoked the whole
+account — the exact outcome §Alternatives (f) rejects a rival design for
+admitting, and the one #82 exists to stop.
+
+Judging the sender over the whole ledger closes it, and closes it completely: a
+set built from every row is not a number an attacker can pick, and
+`revokers_all[X]` holds X's own revoker by construction, so there is no
+no-history corner either. It is still a pure function of the ledger's row set
+rather than of delivery order, which is corollary 3's requirement — if anything
+more obviously so, because the answer no longer depends on where in the walk a
+row sits. `a_revoked_device_cannot_revoke_a_third_party_however_it_dates_the_op`
+is the test.
+
+**The gate reads no clock at all — not this device's, and not the op's.**
 `is_revoked`'s doc explains at length why comparing a stored `cut_ms` against
 this device's own HLC is unsound — `MonotonicHlc` is not persisted, so after a
-restart the reading is 0 and the test collapses to a bare wall clock. The prefix
-has no such failure mode: it is the same two recorded numbers on every replica.
+restart the reading is 0 and the test collapses to a bare wall clock. This gate
+does not compare times; it asks a set question about who revoked whom, and the
+answer is the same on every replica holding the same ops.
 
-It also keeps revocation **non-retroactive**, which the rest of the module
-insists on. A revoked device's revocations from before its own cut still stand,
-because they sort below it
-(`a_revocation_written_before_the_senders_own_cut_still_stands`).
+#### What that gives up: revocation here **is** retroactive
+
+An earlier draft of this decision also claimed revocation stays
+**non-retroactive** — a revoked device's revocations from before its own cut
+still stand, because they sort below it. That property is retired, deliberately
+and for this op family only, because it *was* the vulnerability. "Before its own
+cut" is not a fact the ledger holds: the cut and the op stamp are both numbers
+the same sender chose, and nothing distinguishes an honestly-earlier revocation
+from one back-dated a minute ago. A rule that preserved the distinction only for
+senders with prior history is evaded by a sender that files none.
+
+So a revoked device's revocations are unwound whatever date they carry
+(`a_revocation_written_before_the_senders_own_cut_is_unwound_when_the_sender_is_revoked`).
+Revocation stays non-retroactive everywhere else in the module — a cert issued
+under a superseded identity still identifies its device — and this family is the
+exception for the same reason §3 gives for scoping the gate to control ops: its
+effect can be re-derived, and a task edit's cannot. What is lost is an
+administrative act by a device the account has expelled, which a human can do
+again from a device the account still trusts.
+
+The visible consequence is that `core.device.revocation_unwound` is a routine
+signal rather than an exotic one: a revocation this replica already believed
+stops being believed the moment it learns its author had been revoked. That is
+the correct thing to say out loud, and
+`a_revocation_the_fold_stops_believing_is_announced` pins that it is said.
 
 ### 2. A revoked device's third-party `key_envelope` claim is not recorded
 
@@ -188,9 +241,10 @@ there are three visible consequences:
    `core.device.revoke_refused` with `reason = "revoked_sender"`, for an
    operator reading NDJSON.
 2. **A revocation can disappear, and says so.** A re-fold can *remove* a row: a
-   revocation of S arriving now can skip rows S wrote later, so a device S had
-   revoked becomes current again. That is the fold being a pure function of the
-   op set rather than a ratchet. It emits
+   revocation of S arriving now skips every row S wrote — whenever S dated them
+   — so a device S had revoked becomes current again. That is the fold being a
+   pure function of the op set rather than a ratchet, and since the gate reads
+   the whole ledger it is a routine outcome rather than a corner. It emits
    `core.device.revocation_unwound`, because a device list that quietly changed
    back is the one outcome of this design a user could be surprised by. **The
    remedy is to revoke that device again, from a device the account still
@@ -198,9 +252,10 @@ there are three visible consequences:
 3. **A cut correction does not recover a skipped revocation.** #82 offers two
    honest options — re-request the op, or accept the loss and say so where a
    user can see it — and this takes the second, because the first is not even
-   needed: the op was never discarded, it is simply still gated. The cut *is*
-   the op's own HLC, so a correction sorts after the op it would rescue and
-   cannot reach back past it.
+   needed: the op was never discarded, it is simply still gated. Correcting a
+   cut appends a second revocation of the same sender by the same party, which
+   changes which row wins the register and changes nothing about who has
+   revoked whom — so the gate answers the same question the same way.
    `a_cut_correction_does_not_re_fold_a_skipped_revocation` pins it.
 
    This is tolerable **here and would not be tolerable for a task edit**, and
@@ -257,6 +312,35 @@ gate against the *ungated* register instead terminates and is exploitable — a
 revoked device could file a back-dated revocation of an honest device purely to
 strip that device's own administrative acts out of the result. Rejected.
 
+**(g) Order the ledger by the sender's own `seq` instead of by the op's HLC.**
+The natural answer once §Decision 1's prefix rule is seen to be bypassable, and
+the one a review of this change preferred: carry the sender's per-`(stream,
+device)` `seq` into `device_revoke_ops` and refuse a row whose HLC inverts
+against a lower-`seq` op from that sender. It is priced here because it is the
+option a reader will reach for, and it fails twice.
+
+*Not reachable.* The `seq` is in hand on the remote path, but not on the local
+one. `revoke_device` must run `apply_control_op` before `ensure_stream_epoch`,
+because the register has to be written before anything can mint a key that
+would otherwise be sealed to the device being revoked; and `next_seq_tx` must
+run *after* `ensure_stream_epoch`, because resolving the epoch can emit
+`key_envelope` ops into the meta stream that each take a `seq`, and a number
+read beforehand is already spent by the time this op reaches the log. That is
+the `60ee61d` bug, and `ops`' `UNIQUE(stream_id, device_id, seq)` is what
+catches it. The ordering is a security property with a test on it, not an
+accident of writing.
+
+*And ineffective even if it were.* The ledger holds `device_revoke` ops and
+nothing else, so a sender that has never filed one has no lower-`seq` row for a
+later op to invert against. The attacker's adaptation is to file none —
+the first revocation a compromised device ever writes is the one that takes the
+account. Widening the anchor to `ops` would answer that and is forbidden: `ops`
+is a per-replica set, so a gate reading it is delivery-order-dependent, which is
+what ADR-0034 corollary 3 exists to keep out.
+
+Judging `revokers` over the whole ledger, which §Decision 1 takes, closes the
+same hole with no schema column, no wire change and no `seq`. Rejected.
+
 ## Consequences
 
 - **`key-rotation.md` §Revocation gains the write bound it did not have**, and
@@ -269,6 +353,12 @@ strip that device's own administrative acts out of the result. Rejected.
   and is not the relay's alone; an op skipped under a cut that later moves is
   kept and stays gated, and the remedy is to make the act again; a self-naming
   `device_revoke` is still refused, now in the fold as well as at ingest.
+- **Revocation is retroactive inside this one op family**, and nowhere else. A
+  revoked device's revocations are unwound whatever date they carry, so
+  `core.device.revocation_unwound` is a routine signal rather than an exotic
+  one. That is the price of the gate not resting on a number the sender picks;
+  §Decision 1 is the argument and `key-rotation.md` §"What converges, and what
+  does not" is where a reader of the crypto docs meets it.
 - **The register is rewritten on every `device_revoke`.** `DELETE` plus one
   `INSERT` per surviving row, inside the transaction that is already open. The
   ledger is bounded by the number of revocation ops an account ever makes, which
