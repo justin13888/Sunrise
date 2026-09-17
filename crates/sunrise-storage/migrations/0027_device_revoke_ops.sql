@@ -90,7 +90,35 @@ CREATE TABLE device_revoke_ops (
     PRIMARY KEY (op_hlc_ms, op_hlc_logical, sender, revoked_device_id)
 );
 
--- Seed from the register, so an upgraded vault folds to what it already holds.
+-- Seed from the register, which is the only record of these ops this vault has.
+--
+-- What the seed preserves is the fold's **input**, not its output. These rows
+-- are the ops the register's surviving winners imply; the next `device_revoke`
+-- folds them under a gate that judges the whole ledger, so an upgraded vault
+-- does **not** necessarily fold to what it already holds. It does whenever the
+-- seeded register holds no chain of revocations. It does not the moment it
+-- holds one, and the sequence that produces one is ordinary rather than
+-- adversarial: retire an old laptop from the desktop, and months later retire
+-- the desktop from the phone.
+--
+-- Traced. The register `{C revoked by A, A revoked by B}` seeds `A -> C` and
+-- `B -> A`. At the next `device_revoke` the fold builds `revokers_all[C] =
+-- {A}` and `revokers_all[A] = {B}`; `B` is not `C`, so nothing discounts `B`
+-- out of `A`'s set and row `A -> C` is **gated**. C drops off the register: it
+-- re-enters the recipient set `emit_key_envelopes` builds and the survivor
+-- roster `rotate_identity` builds — both anti-join `device_revocations` — and
+-- it shows current in the device list again.
+--
+-- That behaviour is correct and deliberate. It is the retroactivity ADR-0041
+-- §Decision 1 adopts for this one op family, because "before its own cut" is a
+-- number the sender picks, and it is pinned by
+-- `a_revocation_written_before_the_senders_own_cut_is_unwound_when_the_sender_is_revoked`.
+-- What is worth stating at the seed is the upgrade's share of it: the unwind
+-- can land on a vault that has believed the revocation for months, it lands at
+-- the next `device_revoke` rather than at migration time, and
+-- `core.device.revocation_unwound` is the only signal that it happened. The
+-- remedy is this family's usual one — revoke the device again from one the
+-- account still trusts.
 --
 -- The ops that lost an LWW contest before this migration are not recoverable —
 -- they were never written down, which is the defect — so the ledger starts as
