@@ -63,6 +63,25 @@ struct KeychainMigration: Sendable {
         case deleteSource
     }
 
+    /// What the ``run(before:)`` hook's error comes back as.
+    ///
+    /// The hook stands in for the process being killed, so its error must
+    /// escape the fallback below — otherwise the test would observe the
+    /// fallback's answer while believing it observed a partial keychain state.
+    /// Wrapping it **at the throw site** is what makes that exemption
+    /// structural rather than accidental: the catch is on ``KeychainError``,
+    /// and before this the exemption held only because the tests happened to
+    /// raise a type of their own. The next case to throw
+    /// ``KeychainError/unexpected(_:)`` from the hook — the natural way to pin
+    /// what a `Security` failure at a given step does — would have been
+    /// swallowed, silently.
+    struct Interruption: Error {
+        /// The step the hook refused to let happen.
+        let step: Step
+        /// What the hook raised.
+        let cause: any Error
+    }
+
     /// Whether the two items are two names for one piece of storage.
     ///
     /// The case that makes this load-bearing rather than defensive: on every
@@ -87,20 +106,28 @@ struct KeychainMigration: Sendable {
     /// Carry out whatever part of the migration is still outstanding, and
     /// answer with the secret if either side holds one.
     ///
+    /// The returned value is **not** discardable, and that is deliberate: the
+    /// fallback arm below answers with the secret still readable in the
+    /// *source*, so a caller that discards it and reads the destination
+    /// instead sees nothing and reports a lost vault. See
+    /// ``loadMigratingIfNeeded()``, which is what every store calls.
+    ///
     /// - Parameter before: called with each ``Step`` immediately before it is
     ///   taken. A production caller passes nothing; a test throws from it to
-    ///   kill the migration at a chosen point. An error raised here is **not**
-    ///   a Keychain failure and is not caught by the fallback below — that is
-    ///   what lets the test observe the real partial state.
+    ///   kill the migration at a chosen point. Whatever it raises comes back
+    ///   wrapped in an ``Interruption``, which is not a ``KeychainError`` and
+    ///   so cannot be caught by the fallback below — that is what lets the
+    ///   test observe the real partial state, structurally rather than by the
+    ///   test's error type happening to be distinct.
     /// - Returns: the secret, or `nil` when neither side holds one.
     /// - Throws: ``KeychainError/migrationUnverified`` when the destination
-    ///   holds bytes that are not the source's; whatever `before` raises;
-    ///   and whatever reading the *source* raises, which is the pre-existing
-    ///   "a key may exist and cannot be reached" failure this must not soften.
-    @discardableResult
+    ///   holds bytes that are not the source's; an ``Interruption`` wrapping
+    ///   whatever `before` raises; and whatever reading the *source* raises,
+    ///   which is the pre-existing "a key may exist and cannot be reached"
+    ///   failure this must not soften.
     func run(before: (Step) throws -> Void = { _ in }) throws -> Data? {
         guard !sourceAndDestinationAreOneItem else {
-            try before(.readDestination)
+            try interrupting(.readDestination, before)
             return try destination.read()
         }
         do {
@@ -112,15 +139,55 @@ struct KeychainMigration: Sendable {
             // app keeps working on the old location and tries again next
             // launch. The raise that follows this call is what still refuses to
             // hand back a secret under a weaker class than the build claims.
+            //
+            // This value is the whole point of the arm, and
+            // `loadMigratingIfNeeded()` is what consumes it. Discarding it and
+            // reading the destination instead — which is what every caller did
+            // before — dropped the secret this line had just rescued.
             return try source.read()
         }
     }
 
+    /// Everything a store's `load` does with a migration, in the one order
+    /// that is correct.
+    ///
+    /// One function rather than the same three lines in
+    /// ``KeychainVaultRootStore``, ``KeychainCredentialStore`` and
+    /// ``KeychainRelayDeviceIDStore``, because the order is load-bearing in
+    /// two directions and three copies is three chances to get it wrong:
+    ///
+    /// 1. **Migrate, then raise.** Raising the class of an item about to be
+    ///    replaced by a copy does nothing, and raising one that does not exist
+    ///    yet hides the migration's failure.
+    /// 2. **Answer with the destination, then with whatever ``run(before:)``
+    ///    returned.** On a destination failure the fallback arm hands back the
+    ///    bytes still readable in the *source*, and the destination read below
+    ///    finds nothing; dropping that value drops the vault root, signs the
+    ///    user out and un-binds the relay device id, while the secret sits
+    ///    perfectly readable where the last build left it.
+    /// 3. **Read across domains.** See ``KeychainItem/readAcrossDomains()``.
+    ///
+    /// - Returns: the secret, or `nil` when nothing anywhere holds one.
+    func loadMigratingIfNeeded() throws -> Data? {
+        let migrated = try run()
+        try destination.upgradeAccessibilityIfNeeded()
+        return try destination.readAcrossDomains() ?? migrated
+    }
+
+    /// Call the hook, and turn anything it raises into an ``Interruption``.
+    private func interrupting(_ step: Step, _ before: (Step) throws -> Void) throws {
+        do {
+            try before(step)
+        } catch {
+            throw Interruption(step: step, cause: error)
+        }
+    }
+
     private func migrate(before: (Step) throws -> Void) throws -> Data? {
-        try before(.readDestination)
+        try interrupting(.readDestination, before)
         let alreadyThere = try destination.read()
 
-        try before(.readSource)
+        try interrupting(.readSource, before)
         guard let fromSource = try source.read() else {
             // Nothing left to move: either the destination already holds it and
             // step 4 completed, or this is first run and nobody holds anything.
@@ -128,16 +195,16 @@ struct KeychainMigration: Sendable {
         }
 
         if alreadyThere == nil {
-            try before(.writeDestination)
+            try interrupting(.writeDestination, before)
             try destination.write(fromSource)
         }
 
-        try before(.verify)
+        try interrupting(.verify, before)
         guard let verified = try destination.read(), verified == fromSource else {
             throw KeychainError.migrationUnverified
         }
 
-        try before(.deleteSource)
+        try interrupting(.deleteSource, before)
         try source.delete()
         return verified
     }

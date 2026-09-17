@@ -96,12 +96,12 @@ struct KeychainRelayDeviceIDStore: RelayDeviceIDStore {
         // pairing invariant argued on the type is about loss and restore, and a
         // migration that never leaves zero readable copies cannot lose either
         // half while the other survives.
-        try migration.run()
-        // As `KeychainVaultRootStore.load` does: nothing on the ordinary path
-        // ever rewrites this item, so an id recorded by a build that used a
-        // weaker class would keep it for the life of the installation.
-        try item.upgradeAccessibilityIfNeeded()
-        guard let data = try item.read(),
+        //
+        // As `KeychainVaultRootStore.load` does, through the same shared step:
+        // nothing on the ordinary path ever rewrites this item, so an id
+        // recorded by a build that used a weaker class would keep it for the
+        // life of the installation.
+        guard let data = try migration.loadMigratingIfNeeded(),
               let id = String(data: data, encoding: .utf8)?.trimmed,
               !id.isEmpty
         else { return nil }
@@ -114,7 +114,9 @@ struct KeychainRelayDeviceIDStore: RelayDeviceIDStore {
         try item.write(Data(trimmed.utf8))
     }
 
-    func clear() throws { try item.delete() }
+    /// Across both domains, so the id and the `D_S_priv` it names stay a pair:
+    /// an id `load` could still find is one this device is still bound by.
+    func clear() throws { try item.deleteAcrossDomains() }
 }
 
 enum RelayDeviceIDError: Error, Equatable {

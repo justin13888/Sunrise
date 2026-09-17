@@ -12,13 +12,17 @@ import Testing
 /// Every case here runs `.login` → `.login` between two different services.
 /// That is deliberate and it is the limit of what this machine can prove: no
 /// build this repository can make reaches the data-protection keychain, so a
-/// genuinely *cross-domain* migration cannot be exercised. What these cases do
+/// *successful* cross-domain migration cannot be exercised. What these cases do
 /// prove is the part that is not about domains at all — the resume rule, the
 /// order of write-before-delete, and the terminal state after an interruption
-/// at each of the five steps.
+/// at each of the five steps. `KeychainMigrationFallbackTests` takes the other
+/// half: what a destination that genuinely refuses costs the user.
 struct KeychainMigrationTests {
     /// Thrown from the step hook to kill a migration the way a crash would,
-    /// leaving whatever the Keychain has actually been told so far.
+    /// leaving whatever the Keychain has actually been told so far. It comes
+    /// back wrapped in a `KeychainMigration.Interruption`, which is what keeps
+    /// it out of the fallback — see
+    /// `aKeychainFailureRaisedByTheHookIsNotSwallowedByTheFallback`.
     private struct Interrupted: Error {}
 
     private struct Pair {
@@ -85,7 +89,7 @@ struct KeychainMigrationTests {
         defer { pair.removeBoth() }
         try pair.source.write(secret)
 
-        #expect(throws: Interrupted.self) {
+        #expect(throws: KeychainMigration.Interruption.self) {
             try pair.migration.run { step in
                 if step == .readDestination { throw Interrupted() }
             }
@@ -106,7 +110,7 @@ struct KeychainMigrationTests {
         defer { pair.removeBoth() }
         try pair.source.write(secret)
 
-        #expect(throws: Interrupted.self) {
+        #expect(throws: KeychainMigration.Interruption.self) {
             try pair.migration.run { step in
                 if step == .readSource { throw Interrupted() }
             }
@@ -127,7 +131,7 @@ struct KeychainMigrationTests {
         defer { pair.removeBoth() }
         try pair.source.write(secret)
 
-        #expect(throws: Interrupted.self) {
+        #expect(throws: KeychainMigration.Interruption.self) {
             try pair.migration.run { step in
                 if step == .writeDestination { throw Interrupted() }
             }
@@ -149,7 +153,7 @@ struct KeychainMigrationTests {
         defer { pair.removeBoth() }
         try pair.source.write(secret)
 
-        #expect(throws: Interrupted.self) {
+        #expect(throws: KeychainMigration.Interruption.self) {
             try pair.migration.run { step in
                 if step == .verify { throw Interrupted() }
             }
@@ -170,7 +174,7 @@ struct KeychainMigrationTests {
         defer { pair.removeBoth() }
         try pair.source.write(secret)
 
-        #expect(throws: Interrupted.self) {
+        #expect(throws: KeychainMigration.Interruption.self) {
             try pair.migration.run { step in
                 if step == .deleteSource { throw Interrupted() }
             }
@@ -240,6 +244,11 @@ struct KeychainMigrationTests {
     /// account)`, the two domains. On macOS those are two keychains and the
     /// migration is real work; everywhere else there is one keychain and it
     /// must be a no-op.
+    ///
+    /// The answer is pinned as a **value** per platform rather than as
+    /// `== !KeychainDomain.domainsAreDistinctStores`, which is what this case
+    /// used to say and which would hold however that flag were wired — it
+    /// restated the implementation instead of constraining it.
     @Test
     func oneNameInTwoDomainsIsOneItemOnlyWhereThePlatformHasOneKeychain() {
         func item(_ domain: KeychainDomain) -> KeychainItem {
@@ -251,10 +260,67 @@ struct KeychainMigrationTests {
             )
         }
         let migration = KeychainMigration(source: item(.login), destination: item(.dataProtection))
-        #expect(migration.sourceAndDestinationAreOneItem == !KeychainDomain.domainsAreDistinctStores)
+        #if os(macOS) || targetEnvironment(macCatalyst)
+        #expect(!migration.sourceAndDestinationAreOneItem, "two keychains, so this is real work")
+        #else
+        #expect(migration.sourceAndDestinationAreOneItem, "one keychain, so this must be a no-op")
+        #endif
+    }
+
+    /// The step hook's exemption from the fallback has to be **structural**.
+    ///
+    /// The hook stands in for the process dying, so what it raises must reach
+    /// the caller. Before `Interruption` the catch was on `KeychainError` and
+    /// the exemption held only because the tests happened to raise a type of
+    /// their own: a case throwing a `KeychainError` from the hook — the
+    /// natural way to pin what a `Security` failure at a given step does —
+    /// would have been swallowed, returned the source's bytes, and let the
+    /// case assert against the fallback while believing it had observed a
+    /// partial keychain state. This is that case, and it must not be swallowed.
+    @Test
+    func aKeychainFailureRaisedByTheHookIsNotSwallowedByTheFallback() throws {
+        let pair = scratchPair()
+        defer { pair.removeBoth() }
+        try pair.source.write(secret)
+
+        let interruption = #expect(throws: KeychainMigration.Interruption.self) {
+            try pair.migration.run { step in
+                if step == .writeDestination { throw KeychainError.unexpected(errSecIO) }
+            }
+        }
+        #expect(interruption?.step == .writeDestination)
+        #expect(interruption?.cause as? KeychainError == .unexpected(errSecIO))
+        // The fallback would have answered `secret` and left exactly this
+        // state, so the assertion that separates the two is the throw above —
+        // these two only add that nothing was lost on the way out.
+        #expect(try pair.source.read() == secret)
+        #expect(try pair.destination.read() == nil)
+    }
+
+    /// The three steps every store's `load` runs, on the ordinary path.
+    @Test
+    func aLoadMigratesRaisesAndAnswersWithTheMovedSecret() throws {
+        let pair = scratchPair()
+        defer { pair.removeBoth() }
+        try pair.source.write(secret)
+
+        #expect(try pair.migration.loadMigratingIfNeeded() == secret)
+        #expect(try pair.destination.read() == secret)
+        #expect(try pair.source.read() == nil)
+    }
+
+    /// Nothing anywhere stays `nil` through the whole composed step, rather
+    /// than becoming an error — the distinction `KeychainItem.read` exists to
+    /// keep, because turning it into one generates a new root and orphans the
+    /// vault.
+    @Test
+    func aLoadWithNothingAnywhereAnswersNothing() throws {
+        let pair = scratchPair()
+        defer { pair.removeBoth() }
+
+        #expect(try pair.migration.loadMigratingIfNeeded() == nil)
     }
 }
-
 /// The two lines that choose where a secret is stored. Nothing below proves a
 /// cross-domain migration works — no build this machine can make reaches the
 /// data-protection keychain — but the probe's own answer is checkable, and so
@@ -325,9 +391,66 @@ struct KeychainDomainTests {
         #endif
     }
 
-    /// Memoised, and memoised on the probe rather than on a guess.
+    /// Memoised: asked any number of times, the probe runs **once**.
+    ///
+    /// `current == probe()` was what this case used to say, and it would pass
+    /// identically with no memoisation at all — the probe is deterministic
+    /// within a process, so equality cannot tell a cached answer from a
+    /// recomputed one. Counting the runs can. The equality is kept as the
+    /// second assertion, because "memoised on the probe rather than on a
+    /// guess" is the other half of the claim.
     @Test
-    func theMemoisedDomainIsTheProbesAnswer() {
-        #expect(KeychainDomain.current == KeychainDomain.probe())
+    func theMemoisedDomainRunsTheProbeExactlyOnce() {
+        // Force the `static let` to completion first: `swift_once` blocks every
+        // caller until the initialiser returns, so after this line no probe of
+        // `current`'s can still be in flight and the count is stable.
+        let answer = KeychainDomain.current
+        let runsBefore = KeychainDomain.probeRuns.load(ordering: .relaxed)
+        for _ in 0 ..< 8 { _ = KeychainDomain.current }
+        #expect(KeychainDomain.probeRuns.load(ordering: .relaxed) == runsBefore)
+
+        #expect(answer == KeychainDomain.probe())
+        #expect(
+            KeychainDomain.probeRuns.load(ordering: .relaxed) == runsBefore + 1,
+            "the counter must move when the probe really runs, or the assertion above proves nothing"
+        )
+    }
+
+    /// The `#if` behind `domainsAreDistinctStores`, pinned as a value.
+    ///
+    /// `KeychainMigration` deletes the source on the strength of this flag, so
+    /// a build where it is wrong deletes the only copy of a vault root. The
+    /// case is written against the platform directly rather than against the
+    /// flag, so flipping the flag's own condition fails here.
+    @Test
+    func theTwoDomainsAreTwoStoresOnTheMacAndNowhereElse() {
+        #if os(macOS) || targetEnvironment(macCatalyst)
+        #expect(KeychainDomain.domainsAreDistinctStores)
+        #else
+        #expect(!KeychainDomain.domainsAreDistinctStores)
+        #endif
+    }
+
+    /// `other` has to be an involution, because a cross-domain read that
+    /// answered with the domain it started in would silently be no fallback.
+    @Test
+    func theOtherDomainIsTheOneThisIsNot() {
+        #expect(KeychainDomain.login.other == .dataProtection)
+        #expect(KeychainDomain.dataProtection.other == .login)
+    }
+
+    /// The probe must test the reachability that actually matters.
+    ///
+    /// It writes its byte under the class the three stores write under, not
+    /// the platform default: "can this binary reach the data-protection
+    /// keychain at all" and "can it store a secret there the way this app
+    /// stores secrets" are different questions, and only the second one
+    /// decides where a vault root ends up. This pins that the answer stays in
+    /// step with all three stores.
+    @Test
+    func theProbeTestsTheClassTheStoresWriteUnder() {
+        #expect(KeychainDomain.probeAccessibility == KeychainVaultRootStore.accessibility)
+        #expect(KeychainDomain.probeAccessibility == KeychainCredentialStore.accessibility)
+        #expect(KeychainDomain.probeAccessibility == KeychainRelayDeviceIDStore.accessibility)
     }
 }

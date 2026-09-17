@@ -87,6 +87,43 @@ struct KeychainItem: Sendable {
         }
     }
 
+    /// The same secret, addressed to the keychain this one is *not* in.
+    ///
+    /// Only meaningful where ``KeychainDomain/domainsAreDistinctStores`` is
+    /// `true`; both callers check that first.
+    private var inOtherDomain: KeychainItem {
+        KeychainItem(
+            service: service,
+            account: account,
+            accessibility: accessibility,
+            domain: domain.other
+        )
+    }
+
+    /// ``read()``, and — only when this domain holds nothing — a look in the
+    /// other one before answering `nil`.
+    ///
+    /// This exists because ``KeychainDomain/probe()`` fails open, and failing
+    /// open is right *before* a migration and wrong *after* one. Before, a
+    /// wrong `.login` answer reads the keychain the item is still in. After,
+    /// the item has moved, and a single transient `SecItemAdd` failure at
+    /// launch makes the probe answer `.login`, the read find an empty login
+    /// keychain, and the app report a missing key — the "looks exactly like a
+    /// lost vault" screen, to a user whose vault is intact.
+    ///
+    /// **The second read can only turn a `nil` into bytes.** It never turns a
+    /// success into a failure and never turns a `nil` into a throw: a refusal
+    /// from the other domain is swallowed, because on an unsigned Mac a
+    /// `.dataProtection` query answers `errSecMissingEntitlement` and letting
+    /// that propagate would lock every genuine first run out of the app. The
+    /// *first* read keeps ``read()``'s contract in full — a refusal there is
+    /// still "a key may exist and cannot be reached" and still throws.
+    func readAcrossDomains() throws -> Data? {
+        if let data = try read() { return data }
+        guard KeychainDomain.domainsAreDistinctStores else { return nil }
+        return try? inOtherDomain.read()
+    }
+
     /// Store `data`, replacing any existing value.
     func write(_ data: Data) throws {
         let query = baseQuery
@@ -163,6 +200,24 @@ struct KeychainItem: Sendable {
         guard status == errSecSuccess || status == errSecItemNotFound else {
             throw KeychainError.unexpected(status)
         }
+    }
+
+    /// ``delete()``, and the same item in the other domain with it.
+    ///
+    /// The counterpart ``readAcrossDomains()`` requires, and the reason it is
+    /// not optional: once a `load` can *find* a secret in the other domain, a
+    /// `clear` that only removes this one would leave a signed-out session's
+    /// refresh token, or a "forgotten" vault root, readable where the next
+    /// launch will look for it. Whatever a read can reach, a clear removes.
+    ///
+    /// Symmetrically with ``readAcrossDomains()``, the other domain's failure
+    /// is swallowed — it is the domain this build cannot address, so a refusal
+    /// there means there was nothing of ours to remove. This domain's delete
+    /// keeps ``delete()``'s contract and still throws.
+    func deleteAcrossDomains() throws {
+        try delete()
+        guard KeychainDomain.domainsAreDistinctStores else { return }
+        try? inOtherDomain.delete()
     }
 }
 

@@ -135,10 +135,10 @@ struct KeychainCredentialStore: CredentialStore {
         //
         // The move between keychains comes first, for the reason
         // `KeychainVaultRootStore.load` gives: the class only starts meaning
-        // anything once the item is in a keychain that implements one.
-        try migration.run()
-        try item.upgradeAccessibilityIfNeeded()
-        guard let data = try item.read() else { return nil }
+        // anything once the item is in a keychain that implements one. That
+        // order, and the two answers a migration can give, are
+        // `KeychainMigration.loadMigratingIfNeeded`'s.
+        guard let data = try migration.loadMigratingIfNeeded() else { return nil }
         // A token written by an older build that cannot be decoded is treated
         // as absent: signing in again is cheap, and refusing to launch over a
         // stale token is not.
@@ -149,5 +149,8 @@ struct KeychainCredentialStore: CredentialStore {
         try item.write(try JSONEncoder().encode(credentials))
     }
 
-    func clear() throws { try item.delete() }
+    /// Across both domains. Signing out has to reach the refresh token
+    /// wherever `load` could have read it from — a token left in the other
+    /// keychain is a live session the user believes they ended.
+    func clear() throws { try item.deleteAcrossDomains() }
 }

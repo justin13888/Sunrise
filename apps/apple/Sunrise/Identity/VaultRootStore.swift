@@ -62,18 +62,13 @@ struct KeychainVaultRootStore: VaultRootStore {
     }
 
     func load() throws -> Data? {
-        // The order of these two is load-bearing: move the item to the keychain
-        // this build addresses, *then* raise the class it is stored under.
-        // Raising first would raise the class of an item that is about to be
-        // replaced by a copy, and on the login keychain the raise is inert
-        // anyway — the class only starts meaning something once the item has
-        // arrived somewhere that implements one.
-        try migration.run()
-        // Before the read, because an installation that predates the class
-        // above still holds its root under the older one and nothing else on
-        // this path would ever rewrite it.
-        try item.upgradeAccessibilityIfNeeded()
-        guard let data = try item.read() else { return nil }
+        // Migrate, raise, then read — and answer with what the migration
+        // returned when the destination holds nothing. All three orderings are
+        // load-bearing and all three are argued once, on
+        // `KeychainMigration.loadMigratingIfNeeded`, rather than three times
+        // here. `migration.destination` is `item`; they are built together
+        // above.
+        guard let data = try migration.loadMigratingIfNeeded() else { return nil }
         guard data.count == VaultRoot.byteCount else {
             throw VaultRootError.wrongLength(data.count)
         }
@@ -87,7 +82,9 @@ struct KeychainVaultRootStore: VaultRootStore {
         try item.write(root)
     }
 
-    func clear() throws { try item.delete() }
+    /// Across both domains, because `load` reads across both: a root this
+    /// store can still find is a root it has not forgotten.
+    func clear() throws { try item.deleteAcrossDomains() }
 }
 
 enum VaultRootError: Error, Equatable {
