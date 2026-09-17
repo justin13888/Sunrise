@@ -234,7 +234,7 @@ less. Two replicas disagreeing about one row cannot withhold a key from anybody.
 
 Nothing they typed is ever refused, and that is the point of the scope. What can
 be refused is an administrative act by a device the account has expelled, and
-there are three visible consequences:
+there are four visible consequences:
 
 1. **The attack produces no effect.** The device list is unchanged: the device
    the expelled one tried to revoke stays current. There is a `warn` line,
@@ -264,6 +264,33 @@ there are three visible consequences:
    again from a device that is still trusted, and it is an act they would want
    to look at again anyway. A sentence the user never typed twice cannot be
    re-typed.
+
+4. **A device that has been in a mutual revocation can no longer revoke
+   anybody else.** The mutual exception's cost, stated here because a user can
+   reach it: once X and O have revoked each other, each one's only revoker is
+   the other, so each is forgiven for revoking the other and gated for
+   revoking a *third* party. That reaches the honest device of the pair too,
+   and it is permanent, because revocation has no inverse
+   ([#241](https://github.com/justin13888/Sunrise/issues/241)). One op from a
+   device the account has already expelled therefore costs the device that
+   expelled it its third-party administrative capability, for good.
+
+   **The remedy is a third current device**, and the reason there is one is
+   that the loss is narrow. Revocation is not gated on `ID_S_priv` anywhere:
+   identity rotation and pairing sponsorship are untouched, and every other
+   current device in the account still revokes whoever it likes. The lockout
+   is total only in a two-device account, where there is no third device to
+   ask — and there the survivor has nothing left to revoke but itself, which
+   `Command::RevokeDevice` refuses anyway.
+
+   It is recorded rather than repaired because no ledger-only rule can do
+   better. After a mutual revocation the two devices are symmetric in the
+   ledger; nothing distinguishes the honest one from the compromised one, so
+   ungating both hands an attacker the account, and exempting from a device's
+   revoker set any revoker the final register revokes reopens §Decision 1's
+   bypass with the arrow reversed. §Alternatives (f) and (h) price both.
+   `a_mutual_pair_locks_both_devices_out_of_third_party_revocation` pins the
+   behaviour so that it stays deliberate.
 
 ## Alternatives considered
 
@@ -340,6 +367,21 @@ what ADR-0034 corollary 3 exists to keep out.
 
 Judging `revokers` over the whole ledger, which §Decision 1 takes, closes the
 same hole with no schema column, no wire change and no `seq`. Rejected.
+
+**(h) Discount from a device's revoker set any revoker the final register
+itself revokes.** The natural answer to §"What a user sees" item 4, and it
+**reopens §Decision 1's hole with the arrow reversed**: X, revoked by O, emits
+`device_revoke(O)`; the mutual exception lands it; the first pass's register
+revokes O; the second pass empties X's revoker set; X's third-party rows land.
+That is (f)'s stated exploit, so (f)'s exploitability objection rejects this
+too, and not only its monotonicity one.
+
+The narrower variant — discount `s` from `v`'s revoker set only when `s` is
+revoked by somebody other than `v` — converges and does not reopen the hole. It
+also never fires in the case item 4 is about, because there X's only revoker
+*is* O. It is a real improvement for a three-party variant and no help for this
+one, so it is deferred to #241's un-revoke rather than shipped alone. Rejected
+for now.
 
 ## Consequences
 

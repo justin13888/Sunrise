@@ -482,6 +482,40 @@ impl Engine {
     /// believed when it learns its author had been revoked. That is the
     /// correct signal and it is why it is said out loud.
     ///
+    /// # The mutual exception's cost: a permanent third-party lockout
+    ///
+    /// Stated here rather than left to be deduced from the gate, because it is
+    /// a behaviour a user can reach and not an implementation detail.
+    ///
+    /// After two devices have revoked each other, each one's revoker set holds
+    /// exactly one entry and it is the other. So each is forgiven for revoking
+    /// the other — that is the exception, and it is what makes the pair
+    /// converge on both revocations — and gated for revoking **anybody else**.
+    /// It reaches the honest device of the pair too, and it is permanent:
+    /// nothing in this tree deletes a `device_revocations` row and
+    /// [`Self::is_revoked`] is presence and nothing else. So one op from a
+    /// device the account has already expelled costs the device that expelled
+    /// it the ability to revoke third parties, for good.
+    ///
+    /// What it does **not** cost, because the difference decides the remedy:
+    /// revocation is not gated on `ID_S_priv` anywhere, so identity rotation
+    /// and pairing sponsorship are untouched, and every other current device
+    /// in the account can still revoke anyone. The remedy is a third current
+    /// device. The lockout is total only in a two-device account, where there
+    /// is no third — and there the survivor has nothing left to revoke but
+    /// itself, which [`Self::revoke_device`] refuses anyway.
+    ///
+    /// It is recorded rather than repaired because no ledger-only rule can do
+    /// better. After a mutual revocation the two devices are symmetric in the
+    /// ledger: nothing distinguishes the honest one from the compromised one,
+    /// so ungating both would hand an attacker the account. Exempting from a
+    /// device's revoker set any revoker the final register revokes reopens the
+    /// bypass above, with the arrow reversed. What would close it is an
+    /// un-revoke op, which this engine does not have
+    /// ([#241](https://github.com/justin13888/Sunrise/issues/241)).
+    /// `a_mutual_pair_locks_both_devices_out_of_third_party_revocation` pins
+    /// the behaviour so it stays deliberate.
+    ///
     /// # Recoverability
     ///
     /// Nothing is discarded, so nothing has to be re-requested. A cut is an LWW

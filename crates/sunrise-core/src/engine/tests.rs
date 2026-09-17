@@ -6824,6 +6824,76 @@ fn a_revocation_written_before_the_senders_own_cut_is_unwound_when_the_sender_is
     assert!(er.is_revoked(db.conn(), &c_id).unwrap());
 }
 
+/// **A mutual pair locks both devices out of revoking anybody else.**
+///
+/// Green before this test existed and green after, which is the point of it:
+/// the behaviour is deliberate and pinned, not accidental and undiscovered.
+///
+/// The mutual exception is what keeps two devices revoking each other
+/// converging on *both* revocations — see
+/// `a_gate_on_the_sender_does_not_let_a_back_dated_revocation_silence_its_target`
+/// for the takeover it prevents. Its cost is here. Once X and O have revoked
+/// each other, each one's revoker set holds exactly one entry and it is the
+/// other, so each is forgiven for revoking the other and gated for revoking
+/// anyone else — including the honest device of the pair, and permanently,
+/// because revocation has no inverse
+/// ([#241](https://github.com/justin13888/Sunrise/issues/241)).
+///
+/// What it costs is *third-party* revocation and nothing more. Revocation is
+/// not gated on `ID_S_priv` anywhere, so identity rotation and pairing
+/// sponsorship are untouched, and the last two lines here are the remedy: any
+/// other current device still revokes whoever it likes. The lockout is total
+/// only in a two-device account, where there is no third device to ask.
+///
+/// It is recorded rather than repaired because no ledger-only rule can do
+/// better: after a mutual revocation the two devices are symmetric in the
+/// ledger and nothing tells the honest one from the compromised one.
+#[test]
+fn a_mutual_pair_locks_both_devices_out_of_third_party_revocation() {
+    let ex = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eo = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let ed = engine_seeded(ROOT, [3u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let et = engine_seeded(ROOT, [5u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let er = engine_seeded(ROOT, [4u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut db = db_root(ROOT);
+    let (x_id, o_id) = (ex.keychain.device_id(), eo.keychain.device_id());
+    let d_id = ed.keychain.device_id();
+
+    // X is compromised and gets its revocation of O in first; O answers.
+    revoke(&er, &mut db, &ex, o_id, T0 + 10_000);
+    revoke(&er, &mut db, &eo, x_id, T0 + 20_000);
+    assert!(er.is_revoked(db.conn(), &x_id).unwrap());
+    assert!(
+        er.is_revoked(db.conn(), &o_id).unwrap(),
+        "the mutual exception is what puts both of them out"
+    );
+
+    // O now reaches for a third party, and is gated: its only revoker is X,
+    // and X is not the device this op names.
+    revoke(&er, &mut db, &eo, d_id, T0 + 30_000);
+    assert_eq!(
+        revocation_row(&db, &d_id),
+        None,
+        "the surviving half of a mutual pair cannot revoke a third party"
+    );
+    // And symmetrically, so this is a property of the pair and not of O.
+    revoke(&er, &mut db, &ex, d_id, T0 + 40_000);
+    assert_eq!(revocation_row(&db, &d_id), None);
+    assert_eq!(
+        ledger_rows(&db),
+        4,
+        "both refused ops are stored; only their effect is refused"
+    );
+
+    // The remedy, and the bound on the damage: any other current device in the
+    // account still revokes whoever it likes.
+    revoke(&er, &mut db, &et, d_id, T0 + 50_000);
+    assert!(
+        er.is_revoked(db.conn(), &d_id).unwrap(),
+        "a third current device is the way out, and a two-device account has none"
+    );
+}
+
 /// **A revocation that stops being believed says so.**
 ///
 /// The one outcome of this design a user could be surprised by: a device that
