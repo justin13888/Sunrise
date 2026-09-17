@@ -6854,10 +6854,11 @@ fn a_mutual_pair_locks_both_devices_out_of_third_party_revocation() {
     let eo = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
     let ed = engine_seeded(ROOT, [3u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
     let et = engine_seeded(ROOT, [5u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let ez = engine_seeded(ROOT, [6u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
     let er = engine_seeded(ROOT, [4u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
     let mut db = db_root(ROOT);
     let (x_id, o_id) = (ex.keychain.device_id(), eo.keychain.device_id());
-    let d_id = ed.keychain.device_id();
+    let (d_id, z_id) = (ed.keychain.device_id(), ez.keychain.device_id());
 
     // X is compromised and gets its revocation of O in first; O answers.
     revoke(&er, &mut db, &ex, o_id, T0 + 10_000);
@@ -6885,12 +6886,193 @@ fn a_mutual_pair_locks_both_devices_out_of_third_party_revocation() {
         "both refused ops are stored; only their effect is refused"
     );
 
+    // **D is the device the pair actually reached**, and it is the assertion
+    // this test was missing: two gated ops named it, and until the discount
+    // pass existed each of those ops seated its sender in D's revoker set, so
+    // D — which nobody has revoked — could revoke nothing. Both are
+    // discounted, because each of X and O is revoked by the other, who is not
+    // D.
+    revoke(&er, &mut db, &ed, z_id, T0 + 45_000);
+    assert!(
+        er.is_revoked(db.conn(), &z_id).unwrap(),
+        "being named by a gated op must not cost D its own ability to revoke"
+    );
+
     // The remedy, and the bound on the damage: any other current device in the
     // account still revokes whoever it likes.
     revoke(&er, &mut db, &et, d_id, T0 + 50_000);
     assert!(
         er.is_revoked(db.conn(), &d_id).unwrap(),
         "a third current device is the way out, and a two-device account has none"
+    );
+    assert_eq!(
+        revocation_row(&db, &z_id),
+        None,
+        "and D's own revocation goes with it, which is decision 1's unwinding \
+         and not this gate"
+    );
+}
+
+/// **A gated op must not seat its sender in the revoker set of the device it
+/// named.**
+///
+/// The hole the discount pass closes, asserted from the direction that makes
+/// it an account takeover rather than a curiosity. The revoker map is built
+/// from *every* row and only the walk judges one, so before the discount a row
+/// the walk threw away still left its sender sitting in its target's set — and
+/// one entry in that set gates the target against every third party, for good.
+///
+/// The cost to the attacker was N ordinary ops and nothing else. No crafted
+/// stamp, no back-dating, no id discovery: X already holds every `devices`
+/// row, a revoked device's ops are stored unconditionally, and its envelopes
+/// still verify. X names each remaining device once; every op is correctly
+/// gated and revokes nobody; and the account can never revoke a stolen device
+/// again on any replica.
+///
+/// So the second half here is the assertion that matters. P not being revoked
+/// was always true. P still being *able to revoke* is what was lost.
+#[test]
+fn a_gated_revocation_does_not_seat_its_sender_in_its_targets_revoker_set() {
+    let ex = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eo = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let ep = engine_seeded(ROOT, [3u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eq = engine_seeded(ROOT, [5u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let ed = engine_seeded(ROOT, [6u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let er = engine_seeded(ROOT, [4u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut db = db_root(ROOT);
+    let (x_id, p_id) = (ex.keychain.device_id(), ep.keychain.device_id());
+    let (q_id, d_id) = (eq.keychain.device_id(), ed.keychain.device_id());
+
+    // O expels X: the ordinary administrative action.
+    revoke(&er, &mut db, &eo, x_id, T0);
+    assert!(er.is_revoked(db.conn(), &x_id).unwrap());
+
+    // X answers by naming the devices that are left, one ordinary op each.
+    revoke(&er, &mut db, &ex, p_id, T0 + 10_000);
+    revoke(&er, &mut db, &ex, q_id, T0 + 20_000);
+    assert_eq!(revocation_row(&db, &p_id), None);
+    assert_eq!(revocation_row(&db, &q_id), None);
+    assert_eq!(
+        ledger_rows(&db),
+        3,
+        "the two refused ops are stored; only their effect is refused"
+    );
+
+    // And this is the whole of it: a device an expelled device merely *named*
+    // must still be able to expel a genuinely stolen one.
+    revoke(&er, &mut db, &ep, d_id, T0 + 30_000);
+    assert!(
+        er.is_revoked(db.conn(), &d_id).unwrap(),
+        "a gated op must not cost the device it named its own ability to revoke"
+    );
+    assert!(
+        er.is_revoked(db.conn(), &x_id).unwrap(),
+        "and X is still out: naming third parties did not move its own cut"
+    );
+}
+
+/// **What the discount gives up (1): a third party revoking the sole revoker
+/// returns its target to full standing.**
+///
+/// A known consequence, pinned so it stays deliberate. The discount asks of
+/// the *ledger* — has anybody other than V expelled S? — and not of the
+/// register, because asking the register is ADR-0041 §Alternatives (h)'s wider
+/// form, which reopens decision 1's hole with the arrow reversed.
+///
+/// The price of asking the ledger is here. O expels X; P then expels O. Two
+/// things follow, and only the second is new. Decision 1 already unwound O's
+/// revocation of X, because a revoked device's revocations are not believed
+/// whatever date they carry — so X was already off the revoked list before the
+/// discount existed. What the discount adds is that X is no longer *gated*
+/// either: P's row discounts O out of X's revoker set, and X revokes third
+/// parties again.
+///
+/// It costs two revocations in one chain rather than the one ordinary op the
+/// defect above cost, and the device doing the second of them is by
+/// construction not the attacker.
+/// [#241](https://github.com/justin13888/Sunrise/issues/241)'s un-revoke is
+/// what would let the account say which of the two readings it meant.
+#[test]
+fn the_discount_rehabilitates_a_device_whose_sole_revoker_a_third_party_revokes() {
+    let ex = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eo = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let ep = engine_seeded(ROOT, [3u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let et = engine_seeded(ROOT, [5u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let er = engine_seeded(ROOT, [4u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut db = db_root(ROOT);
+    let (x_id, o_id) = (ex.keychain.device_id(), eo.keychain.device_id());
+    let t_id = et.keychain.device_id();
+
+    revoke(&er, &mut db, &eo, x_id, T0);
+    assert!(er.is_revoked(db.conn(), &x_id).unwrap());
+
+    // P expels O, and X falls off the revoked list with it. That half is
+    // decision 1 and predates the discount entirely.
+    revoke(&er, &mut db, &ep, o_id, T0 + 10_000);
+    assert!(er.is_revoked(db.conn(), &o_id).unwrap());
+    assert_eq!(
+        revocation_row(&db, &x_id),
+        None,
+        "a revoked device's revocations stop being believed"
+    );
+
+    // This half is the discount's: X is ungated as well as unrevoked.
+    revoke(&er, &mut db, &ex, t_id, T0 + 20_000);
+    assert!(
+        er.is_revoked(db.conn(), &t_id).unwrap(),
+        "discounting O out of X's set hands X back third-party revocation"
+    );
+}
+
+/// **What the discount gives up (2): a device that is still on the revoked
+/// list revokes third parties, when a chain revokes its revoker's revoker.**
+///
+/// The sharper shape of the consequence above, and the one that is genuinely a
+/// hole rather than a re-reading: here X stays revoked *and* is ungated, which
+/// is the pair of facts the gate exists to keep apart.
+///
+/// It needs three revocations arranged in a chain — O expels X, P expels O, Q
+/// expels P — and it is the chain that does it. Q's row discounts P out of O's
+/// set, so O's revocation of X lands and X is revoked; P's row discounts O out
+/// of X's set, so X is ungated. Neither discount can be written by X, because
+/// a device authors only rows whose sender is itself and every discount of S
+/// from V's set needs a row from a sender that is not V. So X cannot reach
+/// this state alone; it is a state an account can arrive at, not one an
+/// attacker can construct.
+///
+/// Recorded in ADR-0041 §"What a user sees" item 4 with the bound that
+/// replaces the one the poisoning defect refuted.
+#[test]
+fn the_discount_leaves_a_revoked_device_revoking_when_a_chain_revokes_its_revoker() {
+    let ex = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eo = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let ep = engine_seeded(ROOT, [3u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eq = engine_seeded(ROOT, [5u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let et = engine_seeded(ROOT, [6u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let er = engine_seeded(ROOT, [4u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut db = db_root(ROOT);
+    let (x_id, o_id) = (ex.keychain.device_id(), eo.keychain.device_id());
+    let (p_id, t_id) = (ep.keychain.device_id(), et.keychain.device_id());
+
+    revoke(&er, &mut db, &eo, x_id, T0);
+    revoke(&er, &mut db, &ep, o_id, T0 + 10_000);
+    revoke(&er, &mut db, &eq, p_id, T0 + 20_000);
+
+    assert!(
+        er.is_revoked(db.conn(), &x_id).unwrap(),
+        "Q's row gates P's, so O's revocation of X stands and X is revoked"
+    );
+    assert!(er.is_revoked(db.conn(), &p_id).unwrap());
+    assert_eq!(
+        revocation_row(&db, &o_id),
+        None,
+        "and O is not revoked, because the device that expelled it was expelled"
+    );
+
+    revoke(&er, &mut db, &ex, t_id, T0 + 30_000);
+    assert!(
+        er.is_revoked(db.conn(), &t_id).unwrap(),
+        "the residual: X is on the revoked list and revokes a third party anyway"
     );
 }
 

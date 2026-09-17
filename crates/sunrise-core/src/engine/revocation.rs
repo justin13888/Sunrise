@@ -635,6 +635,67 @@ impl Engine {
                 .insert(row.sender.clone());
         }
 
+        // **The discount, and why there is a second pass at all.**
+        //
+        // The map above is built from every row, and the walk below is the
+        // only thing that judges one — so a row the walk *gates* has already
+        // seated its sender in its target's set. That was a hole the width of
+        // the account. A device the account had expelled names each remaining
+        // device in one ordinary op apiece; every op is correctly gated and
+        // revokes nobody; and every one of them leaves the expelled device
+        // sitting in its target's revoker set, which gates that target out of
+        // revoking anything, permanently and on every replica. No crafted
+        // stamp and no back-dating: N ordinary ops, and the account can never
+        // revoke a stolen device again.
+        //
+        // The rule that closes it: **discount `s` from `v`'s set when the
+        // ledger holds a row revoking `s` whose sender is not `v`**. Read it
+        // as "`s`'s claim on `v` is worth nothing once somebody other than
+        // `v` has expelled `s`" — the same question the gate asks, asked
+        // about the claim rather than about the op that carried it.
+        //
+        // `sender != v` is the whole of why this does not reopen §Decision
+        // 1's hole with the arrow reversed, which is the failure ADR-0041
+        // §Alternatives (h) prices for the *wider* form that discounts any
+        // revoker the register revokes. Under the wider form: X, revoked by
+        // O, emits `device_revoke(O)`; the mutual exception lands it; the
+        // register revokes O; X's set empties; X's third-party rows land.
+        // Here it cannot. X's only revoker is O, and no row revokes O from a
+        // sender other than X, so nothing is discounted and X stays gated.
+        // The mutual pair's lockout is preserved exactly, which is also why
+        // this fires in none of the cases §"What a user sees" item 4 is
+        // about.
+        //
+        // It reads `revokers_all` and never itself, so it is a second pass
+        // over a frozen map and not a fixpoint — no entry's fate depends on
+        // another entry's fate, and the fixpoint forms are what ADR-0041
+        // §Alternatives declines as non-monotone. It therefore stays a pure
+        // function of the ledger's row set, with no dependence on the walk or
+        // on delivery order, which is what
+        // [ADR-0034](../../../../docs/11-adr/0034-revocation-bounds-reads-not-writes.md)
+        // corollary 3 requires.
+        //
+        // What it does **not** close is recorded, with its condition, in
+        // ADR-0041 §"What a user sees" item 4 and pinned by
+        // `the_discount_rehabilitates_a_device_whose_sole_revoker_a_third_party_revokes`
+        // and
+        // `the_discount_leaves_a_revoked_device_revoking_when_a_chain_revokes_its_revoker`.
+        let revokers: std::collections::BTreeMap<Vec<u8>, BTreeSet<Vec<u8>>> = revokers_all
+            .iter()
+            .map(|(revoked, senders)| {
+                let kept = senders
+                    .iter()
+                    .filter(|sender| {
+                        !revokers_all
+                            .get(*sender)
+                            .is_some_and(|who| who.iter().any(|other| other != revoked))
+                    })
+                    .cloned()
+                    .collect();
+                (revoked.clone(), kept)
+            })
+            .collect();
+
         // Ascending, so a later row simply overwrites an earlier one: that is
         // the LWW register, written as the fold it always was.
         let mut register: std::collections::BTreeMap<Vec<u8>, RevokeLedgerRow> =
@@ -650,8 +711,9 @@ impl Engine {
             }
             // **The gate, and its one exception.**
             //
-            // A row is skipped when the ledger anywhere revokes its sender —
-            // but not when the *only* party to have revoked it is the very
+            // A row is skipped when the ledger anywhere revokes its sender,
+            // discounting revokers the discount pass above dropped — but not
+            // when the *only* party to have revoked it is the very
             // device this row is about. Without that exception two devices
             // revoking each other would stop converging on both revocations:
             // whichever op sorted first would silence the other, and an HLC
@@ -666,7 +728,7 @@ impl Engine {
             // devices end up revoked. It becomes a reason the moment A reaches
             // for a *third* party, or the moment anyone other than B has also
             // revoked A. Both are this condition.
-            let gated = revokers_all
+            let gated = revokers
                 .get(&row.sender)
                 .is_some_and(|who| who.iter().any(|r| *r != row.revoked));
             if gated {
