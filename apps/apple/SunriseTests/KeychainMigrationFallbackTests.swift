@@ -305,13 +305,15 @@ struct KeychainMigrationFallbackTests {
 }
 #endif
 
-/// Every `LocalizedError` arm in ``KeychainError``, asserted as the exact
+/// ``KeychainError``'s `LocalizedError` arms, each asserted as the exact
 /// sentence a user is shown.
 ///
-/// No other test in the target reads a `KeychainError`'s message: the only
-/// `errorDescription` and `localizedDescription` reads in `SunriseTests/`
-/// besides these belong to test-local stub errors and to `AccountError` and
-/// `PairingUIError`. So every arm not asserted here executes in no test at all.
+/// **This suite is the only thing standing between those sentences and a
+/// silent rewrite.** No other test in the target reads a `KeychainError`
+/// message: the other `errorDescription` and `localizedDescription` reads in
+/// `SunriseTests/` belong to test-local stub errors and to `AccountError` and
+/// `PairingUIError`. So an arm with no case here executes in no test at all,
+/// and a case added to the enum needs one added here.
 ///
 /// They are **not** part of the seven lines declared untestable in
 /// `docs/07-clients/desktop.md`. Those need a keychain state this machine cannot
