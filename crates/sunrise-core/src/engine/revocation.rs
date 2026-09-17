@@ -95,6 +95,18 @@ impl Engine {
     /// What no rotation could ever do: the revoked device keeps every key it
     /// already held, so it keeps everything it could already read. Rotation
     /// bounds forward exposure, never backward.
+    ///
+    /// # When the fold discards this command's own op
+    ///
+    /// It can: this device may itself have been revoked, and
+    /// [`Self::refold_device_revocations`] judges the sender of every row
+    /// including the one written a line ago. The command still succeeds, still
+    /// rotates and still returns `Ok` — the op is emitted and stored before
+    /// the fold decides, so an error after a committed transaction would be a
+    /// lie — but it says so, on [`CommandResult::revocation_gated`], and it
+    /// does **not** queue the relay's half. Telling the relay to cut a device
+    /// every replica still shows as current is the disclosure failure #160
+    /// fixed in the other direction.
     pub(super) fn revoke_device(
         &self,
         db: &mut Db,
@@ -129,6 +141,10 @@ impl Engine {
         // because it has to outlive the transaction and reach the caller: see
         // `CommandResult::unrotated_streams`.
         let mut unrotatable: Vec<Vec<u8>> = Vec::new();
+        // Whether the register believes this command. Hoisted for the same
+        // reason as `unrotatable`: it is read inside the transaction and has
+        // to reach the caller, on `CommandResult::revocation_gated`.
+        let mut effective = true;
         // There is deliberately **no** "this device is revoked, refuse the
         // command" guard here, though the fold in
         // [`Self::refold_device_revocations`] will skip most of what such a
@@ -171,6 +187,27 @@ impl Engine {
                 now_ms,
                 at_epoch,
             )?;
+
+            // **Did the fold believe it?** `apply_control_op` returns `Ok(())`
+            // whether the op was folded into the register or stored and
+            // skipped, so without this read the command cannot tell the two
+            // apart and neither can its caller. The predicate is the register
+            // itself, read after the fold has run: it is false exactly when
+            // this op was discarded *and* no earlier revocation of the target
+            // survives, which is "this command had no effect".
+            //
+            // Nothing is rolled back and no error is raised. The op has been
+            // emitted and stored by the time the fold decides, so returning
+            // `Err` after a committed transaction would be a lie, and rolling
+            // back would drop the user's act in silence and edge toward the
+            // local "refuse if revoked" guard ADR-0041 §Decision 3 refuses on
+            // purpose. What changes is what is *claimed*: see
+            // `CommandResult::revocation_gated`. The warn line the caller's
+            // operator sees is `core.device.revoke_refused` with
+            // `reason = "revoked_sender"`, emitted by
+            // [`Self::apply_device_revoke`] above — this path mints no event
+            // of its own, because the fact is the same fact.
+            effective = self.is_revoked(tx, &revoked)?;
 
             // The epoch every rotation op is sealed under: read before
             // anything is minted, so it is the epoch the departing devices and
@@ -215,12 +252,23 @@ impl Engine {
             // exists to prevent. `Core::drain_relay_revocations` makes the call
             // when a session is up, and until then this row is what remembers
             // that it is owed.
-            tx.execute(
-                "INSERT INTO relay_revocation_intents (device_id, created_at_ms)
-                 VALUES (?, ?)
-                 ON CONFLICT(device_id) DO NOTHING",
-                params![&revoked[..], now_ms],
-            )?;
+            //
+            // Guarded on the register, because the two halves of a revocation
+            // must not disagree about whether there is one. When the fold
+            // discards this op there is no cut on any replica, every device
+            // list goes on showing the target as current, and it goes on
+            // receiving new epochs — while an unguarded intent would drain
+            // into the relay's `DELETE` and have it 401 that device. That is
+            // the disclosure failure #160 fixed in the other direction, with
+            // the relay ahead of the register instead of behind it.
+            if effective {
+                tx.execute(
+                    "INSERT INTO relay_revocation_intents (device_id, created_at_ms)
+                     VALUES (?, ?)
+                     ON CONFLICT(device_id) DO NOTHING",
+                    params![&revoked[..], now_ms],
+                )?;
+            }
 
             // 2 + 3. Rotate everything, and seal each new epoch to every
             //        *unrevoked* device. One mechanism holds that, and the
@@ -332,7 +380,8 @@ impl Engine {
         }
 
         Ok(CommandResult::new(device_id, None, op_id, seq)
-            .with_unrotated_streams(unrotated_streams))
+            .with_unrotated_streams(unrotated_streams)
+            .with_revocation_gated(!effective))
     }
     /// Whether `device_id` is revoked: **is there a row**, and nothing else.
     ///

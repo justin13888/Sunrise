@@ -150,9 +150,36 @@ struct DeviceListSection: View {
 
     /// #144's third signal, and #160's disclosure beside it: what the last
     /// revocation did **not** achieve.
+    ///
+    /// The gated case replaces the whole report rather than appending to it.
+    /// Nothing was removed, so "Removed X" is the one sentence that must not
+    /// appear, and the rotation and relay lines below would all be answers to
+    /// a question the user no longer has.
     @ViewBuilder
     private var revocationDisclosure: some View {
-        if let done = model.lastRevocation {
+        if let done = model.lastRevocation, done.gated {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("\(done.nickname) was NOT removed.")
+                Text(
+                    """
+                    This \(Platform.deviceName) has itself been removed from \
+                    the account, so the account discards its removals of other \
+                    devices. \(done.nickname) is still current everywhere and \
+                    still receives new keys, and the relay was not told either.
+                    """
+                )
+                Text(
+                    """
+                    Remove it from a device the account still trusts. The \
+                    request is kept, not discarded, and is reconsidered \
+                    whenever another removal arrives.
+                    """
+                )
+                Button("Done") { model.dismissRevocation() }
+            }
+            .font(.caption)
+            .accessibilityIdentifier("devices.revocationGated")
+        } else if let done = model.lastRevocation {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Removed \(done.nickname) from this account.")
                 if done.unrotatedStreams.isEmpty {

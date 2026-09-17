@@ -9703,6 +9703,70 @@ fn an_ordinary_revocation_reports_no_unrotated_streams() {
         )
         .expect("revoke");
     assert!(out.unrotated_streams.is_empty());
+    assert!(
+        !out.revocation_gated,
+        "and an ordinary revocation is not reported as discarded"
+    );
+}
+
+/// **A revocation the fold discards is not reported as a success.**
+///
+/// `apply_control_op` returns `Ok(())` whether the op was folded into the
+/// register or stored and skipped, so until this read `revoke_device` could
+/// not tell the two apart and neither could its caller. The failure that
+/// followed was not a missing log line. With no `device_revocations` row,
+/// `emit_key_envelopes`' anti-join does not exclude the target, so the fresh
+/// epoch this command mints for every stream is sealed *to the device it
+/// claims to have revoked* — while the relay intent drained and the relay
+/// 401'd it. The user was told it worked, every device list went on showing
+/// the device as current, it kept receiving new keys, and the relay refused
+/// it. Three surfaces disagreeing about one act.
+///
+/// The op is still emitted, still stored, and still re-judged whenever another
+/// revocation lands, and the rotation still runs — the target is a recipient
+/// of the new epochs either way, the register saying it is current. What
+/// changes is the claim and the relay's half. `log-events.md`'s own
+/// `core.device.revoke_incomplete` row states the rule: an operator's NDJSON
+/// is not sufficient, the same facts must reach the caller.
+#[test]
+fn revoke_device_reports_that_the_fold_discarded_its_own_op() {
+    let ea = engine_random_keys(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eb = engine_random_keys(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let ec = engine_random_keys(ROOT, [3u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut dba = db_root(ROOT);
+    trust(&ea, &mut dba, &eb);
+    trust(&ea, &mut dba, &ec);
+    let (a_id, c_id) = (ea.keychain.device_id(), ec.keychain.device_id());
+
+    // This vault is itself revoked, by an op it has absorbed from B.
+    revoke(&ea, &mut dba, &eb, a_id, T0);
+    assert!(ea.is_revoked(dba.conn(), &a_id).unwrap());
+
+    // And it now tries to revoke C anyway, which is the whole scenario: a
+    // compromised device expelling the rest of the account.
+    let out = ea
+        .apply(
+            &mut dba,
+            Command::RevokeDevice {
+                device_id: EntityRef::new(EntityKind::Device, c_id),
+                reason: RevokeReason::Compromised,
+            },
+        )
+        .expect("the command still succeeds: the op is emitted before the fold judges it");
+
+    assert!(
+        out.revocation_gated,
+        "a command whose op the account discarded must not report a plain success"
+    );
+    assert!(
+        !ea.is_revoked(dba.conn(), &c_id).unwrap(),
+        "and nothing was actually revoked"
+    );
+    assert!(
+        !pending_relay_revocations(&dba).contains(&c_id),
+        "telling the relay to cut a device every replica still shows as current is \
+         the disclosure failure #160 fixed in the other direction"
+    );
 }
 
 /// The epoch separation the ordering argument rests on, asserted against the

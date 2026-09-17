@@ -2537,6 +2537,18 @@ pub struct CommandOutcome {
     /// gets through `relayRevocationPending` (#160), one level down. Empty for
     /// every other command and for almost every revocation.
     pub unrotated_streams: Vec<String>,
+    /// The fold **discarded** this `revokeDevice`'s own op, so nothing was
+    /// revoked.
+    ///
+    /// `true` means this device's own standing is the problem: the account has
+    /// revoked it, and a revoked device's revocations of third parties are
+    /// stored and skipped on every replica (ADR-0041). The target stays
+    /// current everywhere, it keeps receiving new keys, and the relay is
+    /// deliberately not told either. A client must not print "removed" over
+    /// this — it is the same disclosure rule as `unrotatedStreams`, at the
+    /// other end of the scale: that one says the removal was incomplete, this
+    /// one says there was none. `false` for every other command.
+    pub revocation_gated: bool,
 }
 
 impl From<&CommandResult> for CommandOutcome {
@@ -2548,6 +2560,7 @@ impl From<&CommandResult> for CommandOutcome {
             seq,
             soft_violations,
             unrotated_streams,
+            revocation_gated,
         } = r;
         Self {
             entity: *entity,
@@ -2556,6 +2569,7 @@ impl From<&CommandResult> for CommandOutcome {
             seq: *seq,
             soft_violations: soft_violations.iter().map(Constraint::from).collect(),
             unrotated_streams: unrotated_streams.clone(),
+            revocation_gated: *revocation_gated,
         }
     }
 }

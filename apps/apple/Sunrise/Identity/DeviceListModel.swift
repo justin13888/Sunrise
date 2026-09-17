@@ -25,6 +25,12 @@ import Foundation
 ///    rotate. The CLI has disclosed these since they existed; this is the half
 ///    that was deferred to this issue.
 ///
+/// A fourth landed later and belongs to the same question:
+/// ``Revocation/gated`` — the account discarded this vault's own revocation,
+/// because this vault has itself been revoked. It is the strongest form of
+/// "what you asked for did not happen", so the view says that instead of the
+/// removal report and not beside it.
+///
 /// Snapshots, refreshed off the change feed, because a view body cannot await
 /// an actor — the same shape every other model in this app uses.
 @MainActor
@@ -71,6 +77,16 @@ final class DeviceListModel {
         /// the next sync — which is the half a user pressing the button
         /// believes they are getting (#160).
         let relayPending: Bool
+        /// `true` when **nothing was removed**: this vault has itself been
+        /// revoked, so the account discards its revocations of other devices.
+        ///
+        /// Not a failure and not an error — the command succeeded, the keys
+        /// rotated, and the op is kept and re-judged whenever another
+        /// revocation lands. It is a claim the view must not make: the target
+        /// is still current on every replica, it still receives new keys, and
+        /// the relay was deliberately not told either. Same disclosure rule as
+        /// ``unrotatedStreams`` at the other end of the scale.
+        let gated: Bool
 
         /// Read straight off what the command returned.
         ///
@@ -85,6 +101,7 @@ final class DeviceListModel {
             self.nickname = nickname
             unrotatedStreams = outcome.unrotatedStreams
             self.relayPending = relayPending
+            gated = outcome.revocationGated
         }
     }
 

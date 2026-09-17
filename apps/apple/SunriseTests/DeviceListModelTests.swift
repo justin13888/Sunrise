@@ -143,7 +143,8 @@ struct DeviceListModelTests {
             opId: String(repeating: "0", count: 32),
             seq: 1,
             softViolations: [],
-            unrotatedStreams: ["00aabb", "00ccdd"]
+            unrotatedStreams: ["00aabb", "00ccdd"],
+            revocationGated: false
         )
         let disclosure = DeviceListModel.Revocation(
             nickname: "Old laptop",
@@ -158,6 +159,46 @@ struct DeviceListModelTests {
             """
         )
         #expect(disclosure.relayPending)
+        #expect(!disclosure.gated, "this removal happened; only its rotation was partial")
+    }
+
+    /// **The strongest form of "it did not happen" reaches the disclosure.**
+    ///
+    /// `revocationGated` means the account discarded this vault's own
+    /// `device_revoke` op, because this vault has itself been revoked and a
+    /// revoked device's revocations of third parties are stored and skipped on
+    /// every replica. Nothing was cut: the target stays current, keeps
+    /// receiving keys, and the relay was deliberately not told.
+    ///
+    /// Driven from a synthetic `CommandOutcome` for the same reason as the
+    /// test above — producing a real one needs a vault that has revoked the
+    /// device running the test, which this seam cannot build.
+    /// `sunrise-core`'s `revoke_device_reports_that_the_fold_discarded_its_own_op`
+    /// asserts the field is set; this asserts it is carried, which is the line
+    /// on this side that can be dropped.
+    @Test
+    func theDisclosureSaysWhenTheAccountDiscardedTheRemoval() {
+        let outcome = CommandOutcome(
+            entity: "dev_00000000000000000000000000",
+            state: nil,
+            opId: String(repeating: "0", count: 32),
+            seq: 1,
+            softViolations: [],
+            unrotatedStreams: [],
+            revocationGated: true
+        )
+        let disclosure = DeviceListModel.Revocation(
+            nickname: "Old laptop",
+            outcome: outcome,
+            relayPending: true
+        )
+        #expect(
+            disclosure.gated,
+            """
+            a client that dropped this would print "Removed Old laptop" over a \
+            device that is still current on every replica
+            """
+        )
     }
 
     /// The disclosure is dismissible and the error is too, so neither becomes
