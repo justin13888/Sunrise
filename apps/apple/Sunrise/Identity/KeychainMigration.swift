@@ -166,12 +166,56 @@ struct KeychainMigration: Sendable {
     ///    user out and un-binds the relay device id, while the secret sits
     ///    perfectly readable where the last build left it.
     /// 3. **Read across domains.** See ``KeychainItem/readAcrossDomains()``.
+    /// 4. **Keep the rescued bytes alive across both destination steps.** The
+    ///    value ``run(before:)`` handed back used to be reachable only through
+    ///    the `??`, with nothing between it and the two destination calls that
+    ///    can throw. So a destination that was *unreachable* or *malformed* —
+    ///    two of the three failure classes ``run(before:)``'s own fallback arm
+    ///    names — threw straight past the bytes it had just rescued, and only
+    ///    the third, a destination refusing *writes*, ever reached the caller.
+    ///    On an entitled Mac whose data-protection store is locked or refusing
+    ///    while the login keychain answers, that is the `.locked(…)` screen the
+    ///    fallback exists to prevent, shown to a user whose vault is intact.
+    ///
+    /// Two failures deliberately still propagate:
+    ///
+    /// - ``KeychainError/accessibilityNotRaised(_:)``. The item is readable and
+    ///   the *guarantee* is what failed, and refusing the load over it is the
+    ///   trade ``KeychainItem/upgradeAccessibilityIfNeeded()`` was written to
+    ///   take. A blanket `try?` there would let a secret out under a weaker
+    ///   class than this build claims, silently — a security downgrade that
+    ///   survives its own fix. Only the *lookup* half of that method raises
+    ///   ``KeychainError/unexpected(_:)``, and a lookup that cannot reach the
+    ///   destination is a destination failure like any other.
+    /// - Anything at all when `migrated` is `nil`. Substituting `nil` for an
+    ///   unreachable destination is precisely the "no item means first run"
+    ///   confusion ``KeychainItem/read()`` records: it would generate a new
+    ///   root and orphan the existing vault. Better a retry next launch.
+    ///
+    /// ``KeychainError/migrationUnverified`` needs no case here — `run()` is
+    /// outside the `do`, so its one refusal is never in reach of this `catch`.
+    ///
+    /// Untested by construction, and it is worth saying why rather than leaving
+    /// the gap to be re-discovered: no configuration this repository builds can
+    /// make either destination step throw. A `.dataProtection` query answers
+    /// `errSecItemNotFound`, the login keychain reports no `kSecAttrAccessible`
+    /// to disagree with and accepts every update, and `SecItemCopyMatching`
+    /// always hands back `CFData`. Reaching it needs an entitled, signed build —
+    /// or a fault-injection seam inside ``KeychainItem``, which would be a
+    /// second implementation of `Security.framework` to get wrong.
     ///
     /// - Returns: the secret, or `nil` when nothing anywhere holds one.
     func loadMigratingIfNeeded() throws -> Data? {
         let migrated = try run()
-        try destination.upgradeAccessibilityIfNeeded()
-        return try destination.readAcrossDomains() ?? migrated
+        do {
+            try destination.upgradeAccessibilityIfNeeded()
+            if let atDestination = try destination.readAcrossDomains() { return atDestination }
+            return migrated
+        } catch let error as KeychainError {
+            if case .accessibilityNotRaised = error { throw error }
+            guard let migrated else { throw error }
+            return migrated
+        }
     }
 
     /// Call the hook, and turn anything it raises into an ``Interruption``.
