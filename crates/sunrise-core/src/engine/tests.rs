@@ -10174,6 +10174,54 @@ fn two_revocations_in_one_millisecond_converge_on_the_logical_half() {
     );
 }
 
+/// **One sender, one HLC, two targets: two ledger rows and two revocations.**
+///
+/// The ledger's primary key decides this, and it is the reason
+/// `revoked_device_id` is in it. An HLC is monotonic per device only where
+/// `MonotonicHlc` stamps it — a *peer's* stamp is whatever that peer wrote,
+/// and nothing in the envelope ties it to that sender's `seq`, to its meta
+/// epoch, or to any earlier stamp it sent. So two `device_revoke` ops from one
+/// member at one `(physical, logical)` naming two different devices are two
+/// ops, they both reach `apply_device_revoke`, and they must be two rows.
+///
+/// Keyed on `(op_hlc_ms, op_hlc_logical, sender)` alone they were one:
+/// `INSERT OR IGNORE` kept whichever arrived first, so a replica that received
+/// them in the other order folded a different register and the two never
+/// reconciled. That is the divergence ADR-0034 corollary 3 forbids peer-side
+/// enforcement from reintroducing, asserted here rather than deduced from the
+/// schema.
+#[test]
+fn two_revocations_at_one_hlc_from_one_sender_are_two_ledger_rows() {
+    let clock = || Arc::new(FakeClock(PLMutex::new(T0)));
+    let sender = engine_seeded(ROOT, [1u8; 32], clock());
+    let first = engine_seeded(ROOT, [2u8; 32], clock());
+    let second = engine_seeded(ROOT, [3u8; 32], clock());
+    let er = engine_seeded(ROOT, [4u8; 32], clock());
+    let mut db = db_root(ROOT);
+    let (one, two) = (first.keychain.device_id(), second.keychain.device_id());
+
+    let at = Hlc {
+        physical_ms: T0,
+        logical: 5,
+    };
+    revoke_at(&er, &mut db, &sender, one, at);
+    revoke_at(&er, &mut db, &sender, two, at);
+
+    assert_eq!(
+        ledger_rows(&db),
+        2,
+        "two ops naming two devices must not collapse onto one ledger row"
+    );
+    assert!(
+        er.is_revoked(db.conn(), &one).unwrap(),
+        "the first target is revoked"
+    );
+    assert!(
+        er.is_revoked(db.conn(), &two).unwrap(),
+        "and so is the second: neither op is the other's duplicate"
+    );
+}
+
 /// A wall clock that steps **backwards** does not move the cut, because the
 /// cut is the op's HLC and `Hlc::send` takes `max(now, local)`.
 ///

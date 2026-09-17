@@ -711,6 +711,87 @@ fn a_v13_vaults_revocation_is_seeded_into_the_0027_ledger() {
     assert_eq!(logical, 0);
 }
 
+/// **Two revocations sharing a cut do not stop the vault opening.**
+///
+/// 0027's seed is a bare `INSERT ... SELECT` out of `device_revocations`, and
+/// `device_revocations` is keyed on `device_id` alone — so two of its rows may
+/// legitimately agree on `(cut_ms, cut_logical, revoked_by)`. Two ways in, both
+/// reachable: a peer emitting two `device_revoke` ops at one HLC before this
+/// vault upgrades, and 0017's own backfill, which gives every pre-0017
+/// `devices.revoked_at_ms` a logical of 0 under an empty `revoked_by` and so
+/// collides whenever two devices were retired in the same millisecond.
+///
+/// Keyed on `(op_hlc_ms, op_hlc_logical, sender)` the seed raised
+/// `SQLITE_CONSTRAINT`, `run_migrations` returned `DbError::Migration`, and
+/// **the vault did not open** — with migrations forward-only and no backout, a
+/// restore from backup replays the same failure. `revoked_device_id` in the key
+/// is what makes the seeded rows distinct by construction, and this is the
+/// assertion that says so about a real file rather than about the DDL.
+///
+/// The colliding rows are built into a temporary copy at run time. The
+/// committed fixture is not touched: regenerating one at the current version
+/// would silently disable every test in this module, which is what
+/// `the_committed_v13_fixture_is_a_sealed_vault_stamped_at_the_baseline`
+/// exists to catch.
+#[test]
+fn a_v17_vault_whose_revocations_share_a_cut_still_opens() {
+    /// Two devices retired in one millisecond by the same party, which is all
+    /// it takes.
+    const FIRST_RETIRED: [u8; 16] = [0xe1; 16];
+    const SECOND_RETIRED: [u8; 16] = [0xe2; 16];
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join(V17_FIXTURE);
+    fs::copy(fixture_dir().join(V17_FIXTURE), &path).expect("copy the v17 fixture");
+    {
+        let raw = Db::open_unmigrated(&path, &fixture_key()).expect("key the existing file");
+        for device in [FIRST_RETIRED, SECOND_RETIRED] {
+            raw.conn()
+                .execute(
+                    "INSERT INTO device_revocations
+                     (device_id, cut_ms, cut_logical, revoked_by, reason, recorded_at_ms)
+                     VALUES (?, ?, 0, ?, 'Retired', ?)",
+                    rusqlite::params![
+                        device.to_vec(),
+                        RETIRED_AT_MS,
+                        DEVICE_LAPTOP.to_vec(),
+                        RETIRED_AT_MS,
+                    ],
+                )
+                .expect("seed a colliding revocation");
+        }
+        raw.conn()
+            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+            .expect("checkpoint");
+    }
+
+    let db = Db::open(&path, &fixture_key())
+        .expect("two revocations at one cut must not stop the migration chain");
+    assert_eq!(stamped_storage_v(&db), u32::from(STORAGE_V));
+    assert_eq!(
+        row_count(&db, "device_revoke_ops"),
+        2,
+        "both revocations are seeded into the ledger; neither is dropped"
+    );
+    let targets: Vec<Vec<u8>> = {
+        let conn = db.conn();
+        let mut stmt = conn
+            .prepare("SELECT revoked_device_id FROM device_revoke_ops ORDER BY revoked_device_id")
+            .expect("prepare");
+        let rows = stmt
+            .query_map([], |r| r.get(0))
+            .expect("query")
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .expect("collect");
+        rows
+    };
+    assert_eq!(
+        targets,
+        vec![FIRST_RETIRED.to_vec(), SECOND_RETIRED.to_vec()],
+        "the two rows are told apart by the device each names"
+    );
+}
+
 /// The one deliberate loss in the chain, asserted as a loss.
 ///
 /// 0017 drops every pre-hierarchy `stream_keys` row because each wrapped a key

@@ -413,8 +413,17 @@ impl Engine {
     ///
     /// So the op is stored unconditionally and the register is derived. The
     /// fold walks `device_revoke_ops` in one canonical total order —
-    /// `(op_hlc_ms, op_hlc_logical, sender)`, the order the register's own LWW
-    /// comparator already used — carrying the set of devices the prefix has
+    /// `(op_hlc_ms, op_hlc_logical, sender, revoked_device_id)`, the order the
+    /// register's own LWW comparator already used, extended by the one column
+    /// that makes it total. The target is in the order because it is in the
+    /// table's primary key: the sender picks its own HLC, so two
+    /// `device_revoke` ops from one member at one stamp naming two targets are
+    /// two distinct rows, and without the fourth column the walk would leave
+    /// their relative order to SQLite. See
+    /// `crates/sunrise-storage/migrations/0027_device_revoke_ops.sql` for why
+    /// the op id is not needed and the target is.
+    ///
+    /// The fold carries the set of devices the prefix has
     /// revoked, and skips a row whose sender is in that set. Every replica
     /// holding the same ops walks the same sequence and reaches the same
     /// register, whatever order the ops arrived in.
@@ -449,7 +458,8 @@ impl Engine {
             "SELECT op_hlc_ms, op_hlc_logical, sender, revoked_device_id, reason,
                     recorded_at_ms
              FROM device_revoke_ops
-             ORDER BY op_hlc_ms ASC, op_hlc_logical ASC, sender ASC",
+             ORDER BY op_hlc_ms ASC, op_hlc_logical ASC, sender ASC,
+                      revoked_device_id ASC",
         )?;
         let rows: Vec<RevokeLedgerRow> = stmt
             .query_map([], |r| {

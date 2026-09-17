@@ -30,8 +30,9 @@
 --
 -- With every `device_revoke` op kept, the register stops being a running
 -- upsert and becomes a **fold** over this table in one canonical order —
--- `(op_hlc_ms, op_hlc_logical, sender)`, the same total order the register's
--- own LWW comparator uses. A row whose sender is already revoked by the prefix
+-- `(op_hlc_ms, op_hlc_logical, sender, revoked_device_id)`, the register's own
+-- LWW comparator extended by the one column that makes it total. A row whose
+-- sender is already revoked by the prefix
 -- of that order is stored and skipped; everything else lands. The result is a
 -- pure function of the op set, so two replicas holding the same ops hold the
 -- same register whatever order the ops arrived in, and the fold is recomputed
@@ -45,10 +46,29 @@
 -- [#82](https://github.com/justin13888/Sunrise/issues/82) defers, answered by
 -- keeping the op rather than by deciding what to do once it is gone.
 --
--- The order does not need the op id, and the primary key says why: an HLC is
--- monotonic per device, so one sender cannot stamp two ops with one reading.
--- `sender` breaks the remaining tie between two devices at the same instant,
--- exactly as `revoked_by` does in `device_revocations`.
+-- The order does not need the op id, and the primary key says why: these four
+-- columns are the op's whole identity **for this fold**. The fold reads the
+-- stamp, the sender and the target and nothing else, so two ops agreeing on
+-- all four fold identically whatever op ids carried them — an op id in the key
+-- would separate rows the fold cannot tell apart, and add an ordering column
+-- that never decides anything.
+--
+-- `revoked_device_id` is in the key because the *sender* chooses its own HLC.
+-- It is tempting to argue that an HLC is monotonic per device and so one
+-- sender cannot stamp two ops with one reading, but that is a property of this
+-- vault's own `MonotonicHlc` and not of a peer: nothing in the envelope ties a
+-- remote op's stamp to that sender's `seq`, to its meta epoch, or to any
+-- earlier stamp it sent. Two `device_revoke` ops from one member at one HLC
+-- naming two different targets are two ops, they both reach
+-- `apply_device_revoke`, and they must be two rows. Collapsed onto one key the
+-- live path's `INSERT OR IGNORE` would keep whichever arrived first, so two
+-- replicas that received them the other way round would fold different
+-- registers and never reconcile — the divergence ADR-0034 corollary 3 forbids
+-- and this table exists to avoid.
+--
+-- `sender` breaks the tie between two devices at the same instant, exactly as
+-- `revoked_by` does in `device_revocations`; `revoked_device_id` breaks the
+-- last one, between two targets from one sender at one instant.
 CREATE TABLE device_revoke_ops (
     op_hlc_ms          INTEGER NOT NULL,
     op_hlc_logical     INTEGER NOT NULL,
@@ -56,7 +76,7 @@ CREATE TABLE device_revoke_ops (
     revoked_device_id  BLOB NOT NULL,
     reason             TEXT NOT NULL,
     recorded_at_ms     INTEGER NOT NULL,
-    PRIMARY KEY (op_hlc_ms, op_hlc_logical, sender)
+    PRIMARY KEY (op_hlc_ms, op_hlc_logical, sender, revoked_device_id)
 );
 
 -- Seed from the register, so an upgraded vault folds to what it already holds.
@@ -71,6 +91,17 @@ CREATE TABLE device_revoke_ops (
 -- `devices.revoked_at_ms`, which names no sender. It is copied as-is: it
 -- matches no device id, so it is never gated, and inventing one would be
 -- claiming a fact this vault does not have.
+--
+-- A bare `INSERT` and not `INSERT OR IGNORE`, which the live path uses for a
+-- reason that does not apply here. `device_revocations` is keyed on
+-- `device_id`, so every row it holds carries a distinct `revoked_device_id`
+-- and the key above makes the seeded rows distinct by construction — two of
+-- them sharing `(cut_ms, cut_logical, revoked_by)` is ordinary and no longer a
+-- collision. 0017's own backfill produces exactly that shape, giving several
+-- devices `revoked_at_ms` at logical 0 under an empty `revoked_by`. There is
+-- nothing left for a no-op to swallow, and `docs/04-storage/migrations.md`
+-- §"Who provides the no-op" is why one is not written anyway: a migration that
+-- runs once states what it means and fails loudly if the vault disagrees.
 INSERT INTO device_revoke_ops
     (op_hlc_ms, op_hlc_logical, sender, revoked_device_id, reason, recorded_at_ms)
 SELECT cut_ms, cut_logical, revoked_by, device_id, reason, recorded_at_ms
