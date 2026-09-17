@@ -215,6 +215,7 @@ pub const CRYPTO_SUITE_V: u16 = 5;
 /// `device_revocations` from a running upsert into a fold (issue #82,
 /// ADR-0041). Keeping every `device_revoke` op is what lets a replica skip one
 /// whose sender the account had already revoked without the answer depending on
-/// which of the two ops it saw first, and what lets a skipped op be folded
-/// again if a corrected cut later makes it legitimate.
+/// which of the two ops it saw first, and what lets a skipped op be folded again
+/// when somebody revokes that sender's revoker and the gate stops reading the
+/// sender as revoked. A cut correction is not that: the gate reads no cut.
 pub const STORAGE_V: u16 = 27;

@@ -509,11 +509,29 @@ discount has to guess at. Taken.
   `INSERT` per surviving row, inside the transaction that is already open. The
   ledger is bounded by the number of revocation ops an account ever makes, which
   is a handful, and both are in the same order of magnitude as the device list.
-- **An upgraded vault folds to what it already held.** 0027 seeds the ledger
-  from the register. The ops that lost an LWW contest before the migration were
-  never written down — that is the defect — so the fold's input is a subset of
-  the true op set, which can only fail to skip a revocation it has no record of
-  and never invent one.
+- **An upgraded vault folds *from* what it already held, and not necessarily
+  back to it.** 0027 seeds the ledger from the register, and what the seed
+  preserves is the fold's **input**, not its output. It folds back to the same
+  register whenever the seeded one holds no chain of revocations; the moment it
+  holds one it does not, and the sequence that produces a chain is ordinary
+  rather than adversarial — retire an old laptop from the desktop, and months
+  later retire the desktop from the phone. `{C revoked by A, A revoked by B}`
+  seeds `A -> C` and `B -> A`; the fold builds `A`'s revoker set as `{B}`, `B`
+  is not `C`, so `A -> C` is gated and C shows current again at the next
+  `device_revoke`. That is §Decision 1's retroactivity reaching an upgraded
+  vault — a *removal*, landing at the next `device_revoke` rather than at
+  migration time, with `core.device.revocation_unwound` as the only signal and
+  this family's usual remedy. The trace is at the seed, in
+  `crates/sunrise-storage/migrations/0027_device_revoke_ops.sql`, and
+  `the_0027_seed_carries_a_chain_of_revocations_into_the_ledger` pins the shape
+  it hands over.
+- **Separately, the ops that lost an LWW contest before the migration are not
+  recoverable.** They were never written down — that is the defect — so the
+  ledger starts as the surviving register and grows from there. That is the
+  conservative direction: the fold's input is a subset of the true op set, so it
+  can only fail to skip a revocation it has no record of and never invent one.
+  It is not an argument that the output is preserved, which the bullet above
+  says it is not.
 
 ## What would force revisiting this
 

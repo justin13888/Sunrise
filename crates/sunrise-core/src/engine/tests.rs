@@ -6695,10 +6695,20 @@ fn the_register_is_the_same_whichever_order_the_two_revocations_arrive() {
 ///
 /// The question [#82](https://github.com/justin13888/Sunrise/issues/82) defers,
 /// answered with its second option and pinned here so the answer is asserted
-/// rather than assumed. The cut *is* the op's own HLC, so a correction sorts
-/// **after** the op it would rescue and cannot reach back past it: what gates a
-/// row is the prefix, and the prefix does not change when something is appended
-/// to the end of it.
+/// rather than assumed. **The gate reads no cut of any kind**: it is a
+/// set-membership test over the ledger's `(sender, revoked)` pairs, and an HLC
+/// decides only which row wins the register. Correcting a cut appends a second
+/// revocation of the same sender by the same party, which changes that winner
+/// and changes nothing about who has revoked whom — so the gate answers the
+/// same question the same way, whether the correction is dated **after** the op
+/// it would rescue or **before** it. Both directions are asserted below,
+/// because the backward one is the half a rule reading the walk's prefix would
+/// have answered differently, and it is the half that tells the two rules
+/// apart.
+///
+/// What *does* un-skip a row is the one thing that empties its sender's revoker
+/// set: somebody revoking that sender's revoker. A cut correction is not that,
+/// in either direction.
 ///
 /// That is acceptable here and would not be acceptable for a task edit, which
 /// is exactly why ADR-0041 scopes the gate to this op family. What is lost is
@@ -6720,13 +6730,29 @@ fn a_cut_correction_does_not_re_fold_a_skipped_revocation() {
     revoke(&er, &mut db, &ea, c_id, T0 + 60_000);
     assert_eq!(revocation_row(&db, &c_id), None);
 
-    // Correcting the cut forward changes what is sealed next and nothing about
-    // the prefix, so C stays current.
+    // Correcting the cut forward appends a second revocation of A by B. It
+    // changes which row wins A's entry in the register and nothing about who
+    // has revoked whom, so C stays off.
     revoke(&er, &mut db, &eb, a_id, T0 + 120_000);
     assert_eq!(
         revocation_row(&db, &c_id),
         None,
-        "a correction sorts after the op it would rescue, so it cannot rescue it"
+        "the gate reads no cut, so moving it forward does not un-skip the op"
+    );
+    // And backward, past the op it would rescue. This is the direction that
+    // tells this gate apart from one reading the walk's prefix: under a prefix
+    // rule A's op would now sort above B's newest cut and land.
+    revoke(&er, &mut db, &eb, a_id, T0 - 30_000);
+    assert_eq!(
+        ledger_rows(&db),
+        4,
+        "the back-dated correction is in the ledger, so the next assertion is \
+         about a row that exists"
+    );
+    assert_eq!(
+        revocation_row(&db, &c_id),
+        None,
+        "and moving it backward does not either, for the same reason"
     );
     assert!(
         er.is_revoked(db.conn(), &a_id).unwrap(),

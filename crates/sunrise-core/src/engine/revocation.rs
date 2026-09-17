@@ -790,8 +790,18 @@ impl Engine {
         // authenticated and not a field the op filled in. This function's doc
         // §"Why `sender` is the row's author" cites where that is enforced —
         // in `crates/sunrise-core/src/engine/sync.rs` and
-        // `crates/sunrise-crypto/src/op_envelope.rs`, with lines — so the
-        // citation gate fails here if either check moves.
+        // `crates/sunrise-crypto/src/op_envelope.rs`, with lines.
+        //
+        // Those citations are resolvable pointers, and not assertions about the
+        // checks. `.github/scripts/citation-gate.py`'s `classify` fails a
+        // `path:line` on two conditions only: the path names no file git
+        // tracks, or the file has fewer lines than the citation's last. A check
+        // that *moves within* its file leaves the citation green while it
+        // points somewhere else, and `sync.rs` is over a thousand lines — so
+        // what the gate buys here is that a reader always lands in the right
+        // file, and that deleting or shrinking either one goes red. Verifying
+        // that a citation names a claimed symbol is
+        // [#249](https://github.com/justin13888/Sunrise/issues/249).
         //
         // It reads `revokers_all` and never itself, so it is a second pass
         // over a frozen map and not a fixpoint — no entry's fate depends on
