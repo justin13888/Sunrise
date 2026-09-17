@@ -6701,10 +6701,24 @@ fn the_register_is_the_same_whichever_order_the_two_revocations_arrive() {
 /// revocation of the same sender by the same party, which changes that winner
 /// and changes nothing about who has revoked whom — so the gate answers the
 /// same question the same way, whether the correction is dated **after** the op
-/// it would rescue or **before** it. Both directions are asserted below,
-/// because the backward one is the half a rule reading the walk's prefix would
-/// have answered differently, and it is the half that tells the two rules
-/// apart.
+/// it would rescue or **before** it. Both directions are asserted below, and
+/// asserting both is the whole of what this test pins: the "either direction"
+/// half of that sentence, which is the half a reader has no other reason to
+/// believe.
+///
+/// What it does **not** do is tell the shipped whole-ledger rule apart from one
+/// reading the walk's prefix. Replay the prefix rule over this test's own four
+/// rows, ascending — `(T0-30s, B, A)`, `(T0, B, A)`, `(T0+60s, A, C)`,
+/// `(T0+120s, B, A)` — and it gates A's op too: the first two rows are ungated
+/// and seat `revokers[A] = {B}`, so by the third row `B != C` already holds and
+/// C stays off, which is the answer the shipped rule gives. That is structural
+/// and not an artefact of these constants: a revocation of the sender can only
+/// ever **add** to a prefix's gating set for that sender, never take a revoker
+/// out of it, so back-dating a correction can only make a prefix rule gate more
+/// readily and can never be the direction that separates the two rules. The
+/// direction that separates them is a cut sorting *above* the op with none
+/// below it, and that is pinned by
+/// `a_revoked_device_cannot_revoke_a_third_party_however_it_dates_the_op`.
 ///
 /// What *does* un-skip a row is the one thing that empties its sender's revoker
 /// set: somebody revoking that sender's revoker. A cut correction is not that,
@@ -6739,9 +6753,12 @@ fn a_cut_correction_does_not_re_fold_a_skipped_revocation() {
         None,
         "the gate reads no cut, so moving it forward does not un-skip the op"
     );
-    // And backward, past the op it would rescue. This is the direction that
-    // tells this gate apart from one reading the walk's prefix: under a prefix
-    // rule A's op would now sort above B's newest cut and land.
+    // And backward, past the op it would rescue. This half is here because the
+    // sentence above claims *either* direction, not because it discriminates: a
+    // prefix rule gates A's op here too, since the T0 cut already sits below it
+    // and a fourth row revoking A can only add to A's gating set. What does
+    // discriminate is a cut sorting above the op with none below it, in
+    // `a_revoked_device_cannot_revoke_a_third_party_however_it_dates_the_op`.
     revoke(&er, &mut db, &eb, a_id, T0 - 30_000);
     assert_eq!(
         ledger_rows(&db),
@@ -6752,7 +6769,9 @@ fn a_cut_correction_does_not_re_fold_a_skipped_revocation() {
     assert_eq!(
         revocation_row(&db, &c_id),
         None,
-        "and moving it backward does not either, for the same reason"
+        "and moving it backward does not either, for the same reason — which \
+         pins the sentence's either-direction half and not a difference from a \
+         prefix rule, since that gates this op as well"
     );
     assert!(
         er.is_revoked(db.conn(), &a_id).unwrap(),
