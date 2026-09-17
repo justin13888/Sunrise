@@ -932,8 +932,18 @@ set -euo pipefail
 #
 # cargo-mutants copies the source tree per job and runs a full cargo build and
 # test inside each copy. Measured at `-j1` on this workspace: **604 MB peak
-# RSS**, about one `cargo build`, and roughly 1.8 s per mutant on
-# `sunrise-sync`. Every extra job is another tree on disk and another rustc
+# RSS**, about one `cargo build`, and **roughly 3.1 s per mutant on
+# `sunrise-sync`** — 135 mutants in 7 minutes, a full pass at `1d4b484`.
+#
+# This line used to say 1.8 s. That was the original measurement, it was never
+# re-taken, and docs/10-cross-cutting/testing.md §"Cost, measured" now carries
+# the pass that supersedes it. Read the new figure as this crate's and nothing
+# else's: per-mutant cost does not transfer between crates and spans a factor
+# of eight across the four scoped ones, from `sunrise-crypto`'s ~1.9 s to
+# `sunrise-core`'s ~15.4 s. Deriving one crate's cost from another's is how the
+# CI job's timeout came to be set from the wrong crate.
+#
+# Every extra job is another tree on disk and another rustc
 # resident — which on a laptop with an Xcode DerivedData directory beside it is
 # how the machine falls over rather than how the run gets faster.
 #
@@ -964,7 +974,35 @@ mkdir -p "out/mutants/$slug"
 # needed it. Coverage is the gate's verdict, not this task's; any other exit
 # code is a real failure and is re-raised.
 rc=0
-cargo mutants -p "$usage_crate" --jobs 1 $shard_arg --output "out/mutants/$slug" || rc=$?
+# `--all-features`, and this line is the other one to read before changing it.
+#
+# cargo-mutants mutates the *source file*; cargo decides whether that file is
+# compiled. A module behind a non-default feature is mutated and then not
+# built, so the mutant changes nothing, the suite passes, and it is scored
+# MISSED — indistinguishable in the outcomes from a mutant a real test failed
+# to kill. That is not a coverage measurement at all: it is the feature flag
+# being reported as a test gap.
+#
+# Measured on this workspace at `1d4b484`, `sunrise-sync` without this flag:
+# **all 94 of its `src/sse.rs` mutants missed, 94 of 94**, while the crate's
+# own ten `sse` tests — including the one asserting every transport operation
+# carries a device binding — never compiled. Same tree, same 135-mutant
+# population, the flag the only difference:
+#
+#   without  26 caught, 104 missed, 1 timeout,  4 unviable  -> 19.85%
+#   with     45 caught,  76 missed, 1 timeout, 13 unviable  -> 36.89%
+#
+# The 17 points between those two lines were never a property of the tests.
+# See #193.
+#
+# Unconditional rather than a flag, because the failure it prevents is silent.
+# `sunrise-sync`'s `sse` is the only feature any of the four scoped crates has
+# today, so this is a no-op for the other three — and it stays a no-op until
+# someone adds a feature-gated module, which is exactly the moment the old
+# behaviour would have started under-reporting again with nothing to say so.
+# If a crate ever gains mutually exclusive features this fails the build
+# loudly, which is the right direction to fail in.
+cargo mutants -p "$usage_crate" --all-features --jobs 1 $shard_arg --output "out/mutants/$slug" || rc=$?
 case "$rc" in
   0 | 2 | 3) ;;
   *) exit "$rc" ;;

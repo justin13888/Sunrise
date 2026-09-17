@@ -250,4 +250,63 @@ mod tests {
         let got = b.recv_frame().await.unwrap();
         assert_eq!(got, Some(vec![1, 2, 3]));
     }
+
+    /// The frame-only defaults are a documented contract, not a placeholder.
+    ///
+    /// `LoopbackEnd` overrides `send_frame`, `recv_frame` and `close` and
+    /// nothing else, which is exactly the shape the trait's defaults exist
+    /// for. Each account-API method must answer [`TransportError::Unsupported`]
+    /// so its caller can leave the request queued for a transport that has one
+    /// — a default that silently returned `Ok` would erase the distinction
+    /// between "this transport cannot" and "this attempt failed", which is the
+    /// whole reason that variant is spelled out rather than folded into
+    /// `Unavailable`.
+    ///
+    /// `revoke_device` and `blob_finalize` are here for completeness: their
+    /// return types have no `Default`, so a mutant cannot rewrite them to `Ok`
+    /// and the type system already holds those two. The other three are not
+    /// held by anything else.
+    #[tokio::test]
+    async fn a_frame_only_transport_supports_no_account_api() {
+        let mut t = LoopbackEnd {
+            outbound: Arc::new(Mutex::new(Vec::new())),
+            inbound: Arc::new(Mutex::new(Vec::new())),
+            closed: false,
+        };
+        assert!(
+            matches!(
+                t.revoke_device([0u8; 16]).await,
+                Err(TransportError::Unsupported)
+            ),
+            "a loopback has no account API to revoke against"
+        );
+        assert!(
+            matches!(
+                t.blob_init(&[0u8; 16], 1, 1).await,
+                Err(TransportError::Unsupported)
+            ),
+            "an upload id a loopback minted would name a reservation no relay holds"
+        );
+        assert!(
+            matches!(
+                t.blob_put_chunk("upload", 0, &[0u8]).await,
+                Err(TransportError::Unsupported)
+            ),
+            "a chunk a loopback accepted would be a chunk nothing stored"
+        );
+        assert!(
+            matches!(
+                t.blob_finalize("upload", &[0u8; 32], &[[0u8; 32]]).await,
+                Err(TransportError::Unsupported)
+            ),
+            "a commit a loopback confirmed would be a commit no relay made"
+        );
+        assert!(
+            matches!(
+                t.blob_fetch(&[0u8; 16]).await,
+                Err(TransportError::Unsupported)
+            ),
+            "`Ok(None)` here would read as 'the relay does not hold it' about a relay that was never asked"
+        );
+    }
 }

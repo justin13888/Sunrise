@@ -196,21 +196,80 @@ the four either — the argument goes straight to `-p` — so
 `mise run mutants sunrise-storage` mutates an unscoped crate and the gate fails
 that run the same way.
 
+### Features
+
+**Every mutation run passes `--all-features`, and a run that does not is not a
+coverage measurement.**
+
+cargo-mutants mutates the *source file*. cargo decides whether that file is
+compiled. A module behind a non-default feature is therefore mutated and then
+not built: the mutant changes nothing, the suite passes, and the mutant is
+recorded MISSED — which in `outcomes.json` is the same value a mutant gets when
+a test genuinely failed to kill it. The two are indistinguishable downstream,
+so the gate scores the feature flag as though it were a test gap.
+
+This was not hypothetical. `sunrise-sync` puts its SSE + POST client transport
+behind a non-default `sse` feature, and neither `mise run mutants` nor `ci.yml`
+enabled it. At `1d4b484`, on one tree and one 135-mutant population, with the
+flag the only difference:
+
+| | caught | missed | timeout | unviable | caught_pct |
+|---|---:|---:|---:|---:|---:|
+| without `--all-features` | 26 | 104 | 1 | 4 | 19.85% |
+| with `--all-features` | 45 | 76 | 1 | 13 | 36.89% |
+
+All 94 of `src/sse.rs`'s mutants missed — 94 of 94 — while the crate's own ten
+`sse` tests, including the one asserting that every transport operation carries
+a device binding, never compiled. Seventeen points of the crate's score were a
+build configuration, and #193 read them as untested security code.
+
+Why it went unnoticed for so long is worth keeping, because it is the part that
+generalises. `cargo test --workspace` compiles `src/sse.rs` and runs all ten of
+those tests — `sunrise-cli`, `sunrise-e2e`, `sunrise-bench` and
+`sunrise-core-bindings` each depend on `sunrise-sync` with `features = ["sse"]`,
+and Cargo unifies features across a workspace build. cargo-mutants does not do a
+workspace build: it builds `-p sunrise-sync` alone, where nothing asks for the
+feature and the default is off. So the ordinary suite and the mutation run
+disagreed about which files existed, and only the mutation run was wrong.
+
+`sunrise-sync`'s `sse` is the only feature any of the four scoped crates has
+today, so the flag is a no-op for the other three. It is passed unconditionally
+anyway, because the failure it prevents is silent: the next feature-gated module
+would otherwise start under-reporting with nothing to say so.
+
 ### Cost, measured
 
-| Crate | mutants | `cargo test -p`, rebuilt |
+| Crate | mutants | `cargo test -p`, rebuilt (2026-09-07) |
 |---|---:|---:|
-| `sunrise-domain` | 1 349 | 4.9 s |
-| `sunrise-core` | 982 | 14.0 s |
-| `sunrise-crypto` | 349 | 2.7 s |
-| `sunrise-sync` | 97 | 1.2 s |
+| `sunrise-domain` | 1 356 | 4.9 s |
+| `sunrise-core` | 1 259 | 14.0 s |
+| `sunrise-crypto` | 519 | 2.7 s |
+| `sunrise-sync` | 135 | 1.2 s |
 
 Both columns are reproducible, and the left one is cheap enough that there is no
 excuse for it being wrong:
 
 ```
-cargo mutants --list -p <crate> | wc -l
+cargo mutants --list -p <crate> --all-features | wc -l
 ```
+
+The left column was re-taken at `1d4b484`; it had drifted on every row, by 28%
+on `sunrise-core`, which had just gained `src/blob_fetch.rs`. The right column
+is the original measurement, taken 2026-09-07, and was **not** re-taken with it
+— which is why its heading carries that date. The two columns are from
+different commits, and the right one is a cost estimate rather than a number
+anything checks.
+
+`--all-features` changes nothing about this command's output. `--list` returns
+an identical population with and without it for all four crates today: three
+have no features at all, and it makes no difference to `sunrise-sync` either,
+because discovery mutates the *source file* and ignores the gate — which is
+§Features' whole mechanism, a gated module mutated and then not built. The
+§Features table above is the measurement: both of its rows are the same
+135-mutant population, and `.cargo/mutants.toml` records `sunrise-sync` at 135
+either way. The flag rides in this command only so the listing invocation
+matches the campaign invocation, which is where it is load-bearing — see
+§Features above.
 
 `--list` parses the crate and prints one line per mutant **without building
 anything**, so all four counts take seconds. The right column is
@@ -223,9 +282,47 @@ An earlier version of this table gave the column no definition at all, which is
 why its numbers could not be checked and drifted by up to a third before anyone
 noticed.
 
-At `--jobs 1`: **604 MB peak RSS** — about one `cargo build` — and roughly
-1.8 s per mutant on `sunrise-sync`. (Those two are the original measurements and
-were not re-taken.) Each additional job is another copy of the source tree on
+At `--jobs 1`: **604 MB peak RSS** — about one `cargo build`. (That one is the
+original measurement and was not re-taken.)
+
+Per-mutant cost does **not** transfer between crates, and assuming it does was
+how this job's CI timeout came to be derived from the wrong crate. It spans a
+factor of eight. Full local passes at `--jobs 1`, 2026-09-16 at `1d4b484`:
+
+| Crate | mutants | wall | per mutant |
+|---|---:|---:|---:|
+| `sunrise-crypto` | 519 | 16 m | ~1.9 s |
+| `sunrise-sync` | 135 | 7 m | ~3.1 s |
+| `sunrise-domain` | 1 356 | 2 h | ~5.3 s |
+| `sunrise-core` | 1 259 | — | ~15.4 s |
+
+The right-hand column is the `wall` column divided by the `mutants` column —
+full-pass wall clock ÷ mutants. It is an average over a whole pass, not a
+marginal cost per additional mutant, so everything `cargo mutants` spends
+inside one invocation is already amortised into it, **the unmutated baseline
+build it runs once before any mutant included**. The three completed rows
+recompute from the table itself: 960 / 519 = 1.85, 420 / 135 = 3.11,
+7 200 / 1 356 = 5.31. The `wall` column is rounded to whole minutes, which is
+the whole of the gap between 1.85 and the 1.9 recorded beside it.
+
+That definition is what the column means anywhere it is reused. Multiplying it
+by a *shard's* mutant count charges that shard a baseline build already, and
+splitting a crate into more shards adds baseline builds this column does not
+price — which is why `.github/workflows/ci.yml`'s `mutants` timeout comment
+treats more shards as sub-proportional relief rather than free.
+
+`sunrise-core`'s row is a partial sample over its first 76 mutants — it is the
+one crate no local pass has run to completion — and projects to roughly 5.4
+hours whole. It is why `sunrise-core` is still the only scoped crate without a
+recorded floor. It is also the one row that cannot be recomputed here, because
+its `wall` cell is empty: nothing in this repository records whether 15.4 is
+the same full-pass average, taken over those 76 mutants, or a marginal rate
+read off `cargo mutants`' own output. The two differ by one baseline build's
+cost spread across 76 mutants — the average carries a 76th of it, the marginal
+rate carries none — so anything derived from 15.4 inherits that ambiguity
+until a completed pass records its wall clock.
+
+Each additional job is another copy of the source tree on
 disk and another resident rustc, which is why `mise run mutants` pins one and
 says so. A full pass over all four is hours, which is why it runs nightly and
 sharded rather than on a pull request.

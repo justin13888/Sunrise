@@ -99,8 +99,11 @@ impl TokenSource {
 
     /// A handle that resolves whenever the token is replaced.
     ///
-    /// Take one per consumer and keep it: it remembers which version that
-    /// consumer has acted on, which is what makes a write impossible to miss.
+    /// Take one per consumer and keep it: [`TokenWatch::changed`] remembers
+    /// which version it last woke that consumer for, which is what makes a
+    /// write impossible to miss. That memory is private to `changed` — it is
+    /// the receiver's own position in the channel, and nothing reads it out.
+    /// [`TokenWatch::seen`] does not: it reports the source.
     #[must_use]
     pub fn watch(&self) -> TokenWatch {
         TokenWatch(self.0.version.subscribe())
@@ -136,7 +139,22 @@ impl TokenWatch {
         *self.0.borrow_and_update()
     }
 
-    /// The version this handle has observed.
+    /// How many times the token has been replaced — the source's current
+    /// version, the same number [`TokenSource::version`] returns.
+    ///
+    /// Per-source, not per-handle, and the distinction matters because the
+    /// name suggests otherwise. This borrows the channel without marking it
+    /// seen, so it does not report where this handle's
+    /// [`TokenWatch::changed`] has got to, and it cannot lag behind the
+    /// source: `watch.seen() != source.version()` is false for every handle
+    /// at every moment, including one parked in `changed` with a write
+    /// pending. A guard written that way is dead code, not a staleness check.
+    ///
+    /// What it is for is comparing against a version the *consumer* is
+    /// holding — the one it last acted on, which only the consumer knows.
+    /// `seen() != my_last_version` is the live comparison, and it is why a
+    /// mutant pinning this to a constant is worth killing: it would make
+    /// every write after the first invisible to that consumer.
     #[must_use]
     pub fn seen(&self) -> u64 {
         *self.0.borrow()
@@ -241,5 +259,31 @@ mod tests {
         let rendered = format!("{s:?}");
         assert!(!rendered.contains("super-secret-bearer"), "{rendered}");
         assert!(rendered.contains("set: true"), "{rendered}");
+    }
+
+    /// `seen` reports the version, and the version is a count rather than a flag.
+    ///
+    /// A consumer compares this against the version it last acted on to decide
+    /// whether a renewal is still outstanding, so a `seen` pinned to any
+    /// constant makes every write after the first invisible to that comparison
+    /// — which is the failure `TokenWatch` exists to prevent, and which no test
+    /// here had pinned.
+    #[test]
+    fn a_watch_reports_the_version_it_is_looking_at() {
+        let s = TokenSource::new(None);
+        let w = s.watch();
+        assert_eq!(w.seen(), 0, "a fresh watch has observed no write");
+        s.set(Some("first".into()));
+        s.set(Some("second".into()));
+        assert_eq!(
+            w.seen(),
+            2,
+            "two writes, counted, not collapsed to 'changed'"
+        );
+        assert_eq!(
+            w.seen(),
+            s.version(),
+            "the watch and its source must agree on which write is current"
+        );
     }
 }
