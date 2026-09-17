@@ -121,9 +121,12 @@ tests are the half that cannot quietly stop being true.
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import os
 import pathlib
+import shlex
+import subprocess
 import sys
 
 # `summary` values cargo-mutants writes into outcomes.json.
@@ -131,6 +134,12 @@ CAUGHT = "CaughtMutant"
 MISSED = "MissedMutant"
 TIMEOUT = "Timeout"
 UNVIABLE = "Unviable"
+
+# What every recorded floor has to say about itself. Required by
+# `malformed()` and written by `--update` — one change, not two, because
+# the writer replaces each crate entry wholesale and a requirement without
+# a writer refuses the file the repository's own task produces.
+PROVENANCE_FIELDS = ("sha", "date", "command")
 
 
 class CannotRun(Exception):
@@ -166,8 +175,24 @@ def malformed(baseline: object) -> str | None:
     "coverage regressed". A typo in the floors would have been reported as
     a test regression, with a traceback where the crate names go.
 
+    A crate with a `caught_pct` must also carry a `provenance` object with
+    `sha`, `date` and `command`, each a non-empty string. A floor is a
+    standing constraint on every future run, and one that cannot say what
+    measured it cannot be compared with the one it replaced, re-taken, or
+    argued with. `--update` writes all three, so the requirement and the
+    writer are the same change; requiring it here without writing it there
+    would make `mise run mutants-baseline` emit a file this gate refuses.
+
     Structure only. Whether the numbers in it are the right numbers is not
-    something any check here can know.
+    something any check here can know. That limit is worth stating twice
+    now that provenance is required, because requiring it looks like more
+    than it is: this checks that a sha, a date and a command are *present
+    and well-formed*, and it cannot check that they are true. Whether the
+    named revision carried the tests the floor beside it is worth, and
+    whether a percentage quoted in prose was computed by the rule it names,
+    are both decidable only by re-running the campaign at that revision —
+    which is the work the floor exists to avoid. Those two defects are
+    real, they have both occurred here, and this gate does not catch them.
     """
     if not isinstance(baseline, dict):
         return f"top level is {type(baseline).__name__}, expected an object"
@@ -185,7 +210,58 @@ def malformed(baseline: object) -> str | None:
                                   or not isinstance(floor, (int, float))):
             return (f'"crates.{crate}.caught_pct" is '
                     f"{type(floor).__name__}, expected a number")
+        # Only a crate that carries a floor needs to say where the floor
+        # came from. An entry with no `caught_pct` constrains nothing, so
+        # there is nothing yet to account for.
+        if floor is None:
+            continue
+        origin = entry.get("provenance")
+        if not isinstance(origin, dict):
+            return (f'"crates.{crate}.provenance" is '
+                    f"{type(origin).__name__}, expected an object with "
+                    f"{', '.join(PROVENANCE_FIELDS)}")
+        for field in PROVENANCE_FIELDS:
+            value = origin.get(field)
+            if not isinstance(value, str) or not value.strip():
+                return (f'"crates.{crate}.provenance.{field}" is '
+                        f"{type(value).__name__}, expected a non-empty "
+                        "string")
     return None
+
+
+def provenance() -> dict[str, str]:
+    """What this run was, for the floors it is about to bank.
+
+    Raises `CannotRun` when the revision cannot be read. That is
+    deliberately fatal rather than an empty string: a floor whose `sha` is
+    `""` passes `malformed()`'s shape check while saying nothing, which is
+    the placeholder `mutants/baseline.json`'s own rule rejects. Refusing to
+    record is recoverable — the outcomes are still on disk — and a blank
+    provenance banked into the file is not.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True, text=True, check=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise CannotRun(
+            f"cannot read the revision to record against: {error}. "
+            "A floor with blank provenance is the placeholder "
+            "mutants/baseline.json's rule rejects, so nothing was written; "
+            "the outcomes files are untouched and this can be re-run."
+        ) from error
+    sha = result.stdout.strip()
+    if not sha:
+        raise CannotRun(
+            "`git rev-parse HEAD` printed nothing; refusing to record a "
+            "floor that cannot say which revision produced it."
+        )
+    return {
+        "sha": sha,
+        "date": datetime.date.today().isoformat(),
+        "command": shlex.join(sys.argv),
+    }
 
 
 def parse_expect_shards(spec: str) -> dict[str, int]:
@@ -476,13 +552,26 @@ def main() -> int:
             print(f"--allow-partial: recording from {len(args.outcomes)} "
                   "outcomes file(s) with no completeness check. These floors "
                   "describe what ran, not the crates.")
+        # Taken once, before anything is written, so every crate banked by
+        # one invocation names one revision — and so a failure to read it
+        # aborts before the file is touched rather than halfway through it.
+        try:
+            origin = provenance()
+        except CannotRun as error:
+            print(error, file=sys.stderr)
+            return 2
         for crate, bucket in sorted(counts.items()):
+            # Wholesale replacement, as before: an entry merged into would
+            # keep the previous run's counts beside this run's rate. That
+            # is why `provenance` has to be written here — a key added by
+            # hand does not survive the next `mise run mutants-baseline`.
             recorded[crate] = {
                 "caught": bucket[CAUGHT],
                 "missed": bucket[MISSED],
                 "timeout": bucket[TIMEOUT],
                 "unviable": bucket[UNVIABLE],
                 "caught_pct": caught_pct(bucket),
+                "provenance": dict(origin),
             }
         args.baseline.write_text(json.dumps(baseline, indent=4, sort_keys=True) + "\n")
         print(f"{args.baseline}: recorded {len(counts)} crate(s)")

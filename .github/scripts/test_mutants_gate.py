@@ -38,6 +38,7 @@ Run it with `mise run mutants-gate-test`, or directly.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import pathlib
 import subprocess
@@ -46,6 +47,9 @@ import tempfile
 import unittest
 
 GATE = pathlib.Path(__file__).resolve().parent / "mutants-gate.py"
+# `.github/scripts/` -> the repository root, for the one test that reads the
+# committed baseline rather than a fixture it made up.
+REPO = GATE.parent.parent.parent
 
 CAUGHT = "CaughtMutant"
 MISSED = "MissedMutant"
@@ -109,10 +113,26 @@ def outcomes_file(
     return path
 
 
-def baseline_file(path: pathlib.Path, crates: dict, target=None) -> pathlib.Path:
-    document: dict = {
-        "crates": {c: {"caught_pct": pct} for c, pct in crates.items()}
-    }
+# A floored crate must carry one of these or the gate refuses the file, so
+# every fixture below gets one by default. Tests that are *about* the
+# requirement pass `provenance=` explicitly to drop or corrupt it.
+SOME_PROVENANCE = {
+    "sha": "0123456789abcdef0123456789abcdef01234567",
+    "date": "2026-09-17",
+    "command": "mutants-gate.py out.json --update --expect-shards x=1",
+}
+
+
+def baseline_file(path: pathlib.Path, crates: dict, target=None,
+                  provenance=SOME_PROVENANCE) -> pathlib.Path:
+    entries = {}
+    for crate, pct in crates.items():
+        entry: dict = {"caught_pct": pct}
+        if provenance is not None:
+            entry["provenance"] = dict(provenance) if isinstance(
+                provenance, dict) else provenance
+        entries[crate] = entry
+    document: dict = {"crates": entries}
     if target is not None:
         document["target_caught_pct"] = target
     path.write_text(json.dumps(document))
@@ -193,10 +213,38 @@ class CrateAttribution(unittest.TestCase):
 
 
 class GateContract(unittest.TestCase):
-    """One temp directory per test; the gate always runs inside it."""
+    """One temp directory per test; the gate always runs inside it.
+
+    Each one is a directory *inside* a throwaway git repository, because
+    `--update` records the revision it is banking a floor against and
+    refuses to write when it cannot read one. One repository for the whole
+    file rather than one per test: `git init` plus an empty commit costs
+    more than every assertion here put together, and nothing in this file
+    depends on which revision it is — only that there is one.
+    `test_update_refuses_when_there_is_no_revision` opts out on purpose.
+    """
+
+    _repo: tempfile.TemporaryDirectory | None = None
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls._repo = tempfile.TemporaryDirectory()
+        root = cls._repo.name
+        run = lambda *a: subprocess.run(  # noqa: E731
+            a, cwd=root, capture_output=True, text=True, check=True)
+        run("git", "init", "--quiet")
+        run("git", "config", "user.email", "gate@example.invalid")
+        run("git", "config", "user.name", "gate")
+        run("git", "commit", "--quiet", "--allow-empty", "-m", "fixture")
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        if cls._repo is not None:
+            cls._repo.cleanup()
+            cls._repo = None
 
     def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory()
+        self._tmp = tempfile.TemporaryDirectory(dir=type(self)._repo.name)
         self.tmp = pathlib.Path(self._tmp.name)
         self.addCleanup(self._tmp.cleanup)
 
@@ -681,7 +729,8 @@ class GateContract(unittest.TestCase):
         recorded = json.loads(base.read_text())["crates"]["sunrise-sync"]
         self.assertEqual(
             sorted(recorded),
-            ["caught", "caught_pct", "missed", "timeout", "unviable"],
+            ["caught", "caught_pct", "missed", "provenance", "timeout",
+             "unviable"],
         )
         self.assertEqual(recorded["caught"], 1)
         self.assertEqual(recorded["caught_pct"], 100.0)
@@ -990,6 +1039,183 @@ class GateContract(unittest.TestCase):
             "--expect-shards", "sunrise-sync=2",
         )
         self.assert_code(result, 0, "66.67% vs floor 66.67% — ok", "2/2 shards")
+
+
+class FloorProvenance(unittest.TestCase):
+    """A recorded floor has to say what produced it.
+
+    The exit code is the contract, not the message: `ci.yml` and the
+    gate's own printed remedies branch on 2 meaning "nothing was scored"
+    rather than "coverage regressed", and a baseline this gate cannot use
+    is squarely the former.
+
+    The pairing is the point. `malformed()` requiring `provenance` and
+    `--update` writing it are one change: with only the first, the next
+    `mise run mutants-baseline` writes a file the gate then refuses,
+    because the update path replaces each crate entry wholesale.
+    `test_update_writes_provenance_the_validator_accepts` is what holds
+    the two halves together, and it would fail on either alone.
+    """
+
+    def setUp(self) -> None:
+        self._repo = tempfile.TemporaryDirectory()
+        self.tmp = pathlib.Path(self._repo.name)
+        self.addCleanup(self._repo.cleanup)
+        for args in (
+            ("git", "init", "--quiet"),
+            ("git", "config", "user.email", "gate@example.invalid"),
+            ("git", "config", "user.name", "gate"),
+            ("git", "commit", "--quiet", "--allow-empty", "-m", "fixture"),
+        ):
+            subprocess.run(args, cwd=self.tmp, capture_output=True,
+                           text=True, check=True)
+
+    def run_gate(self, *args: str, cwd=None) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [sys.executable, str(GATE), *args],
+            cwd=cwd or self.tmp, capture_output=True, text=True,
+        )
+
+    def assert_code(self, result, expected: int, *fragments: str) -> None:
+        output = result.stdout + result.stderr
+        self.assertEqual(
+            result.returncode, expected,
+            f"expected exit {expected}, got {result.returncode}\n{output}")
+        for fragment in fragments:
+            self.assertIn(fragment, output)
+
+    # --- 2: the baseline cannot be used ----------------------------------
+
+    def test_floor_without_provenance_is_2(self):
+        run = outcomes_file(self.tmp / "a.json", "sunrise-sync", caught=1)
+        base = baseline_file(
+            self.tmp / "base.json", {"sunrise-sync": 50.0}, provenance=None)
+        self.assert_code(
+            self.run_gate(str(run), "--baseline", str(base)),
+            2, "cannot use", "provenance", "expected an object")
+
+    def test_floor_with_non_object_provenance_is_2(self):
+        run = outcomes_file(self.tmp / "a.json", "sunrise-sync", caught=1)
+        base = baseline_file(
+            self.tmp / "base.json", {"sunrise-sync": 50.0},
+            provenance="1d4b484 on 2026-09-16")
+        self.assert_code(
+            self.run_gate(str(run), "--baseline", str(base)),
+            2, "cannot use", '"crates.sunrise-sync.provenance" is str')
+
+    def test_floor_with_a_missing_provenance_field_is_2(self):
+        run = outcomes_file(self.tmp / "a.json", "sunrise-sync", caught=1)
+        base = baseline_file(
+            self.tmp / "base.json", {"sunrise-sync": 50.0},
+            provenance={"sha": "1d4b484", "date": "2026-09-16"})
+        self.assert_code(
+            self.run_gate(str(run), "--baseline", str(base)),
+            2, "cannot use", "provenance.command")
+
+    def test_floor_with_a_blank_provenance_field_is_2(self):
+        # The case `git rev-parse` failing would have written if the writer
+        # recorded an empty string instead of refusing. A blank sha has the
+        # right shape and says nothing, which is the placeholder
+        # mutants/baseline.json's own rule rejects.
+        run = outcomes_file(self.tmp / "a.json", "sunrise-sync", caught=1)
+        base = baseline_file(
+            self.tmp / "base.json", {"sunrise-sync": 50.0},
+            provenance={"sha": "   ", "date": "2026-09-16", "command": "x"})
+        self.assert_code(
+            self.run_gate(str(run), "--baseline", str(base)),
+            2, "cannot use", "provenance.sha")
+
+    def test_crate_with_no_floor_needs_no_provenance(self):
+        # An entry carrying no `caught_pct` constrains nothing, so there is
+        # nothing to account for. This is the shape `sunrise-core` is in.
+        run = outcomes_file(self.tmp / "a.json", "sunrise-sync", caught=1)
+        base = self.tmp / "base.json"
+        base.write_text(json.dumps({"crates": {"sunrise-core": {}}}))
+        self.assert_code(
+            self.run_gate(str(run), "--baseline", str(base)),
+            1, "NO FLOOR RECORDED")
+
+    # --- 0: --update writes what the validator requires -------------------
+
+    def test_update_writes_provenance_the_validator_accepts(self):
+        run = outcomes_file(
+            self.tmp / "a.json", "sunrise-sync", caught=3, missed=1)
+        base = baseline_file(self.tmp / "base.json", {})
+        self.assert_code(
+            self.run_gate(
+                str(run), "--update", "--baseline", str(base),
+                "--expect-shards", "sunrise-sync=1"),
+            0, "recorded 1 crate(s)")
+        recorded = json.loads(base.read_text())["crates"]["sunrise-sync"]
+        origin = recorded["provenance"]
+        self.assertEqual(sorted(origin), ["command", "date", "sha"])
+        self.assertTrue(all(v.strip() for v in origin.values()))
+        head = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=self.tmp,
+            capture_output=True, text=True, check=True).stdout.strip()
+        self.assertEqual(origin["sha"], head)
+        self.assertIn("--expect-shards", origin["command"])
+
+        # The half that makes this one change rather than two: the file the
+        # writer just produced is a file the validator accepts. Fails if
+        # either the requirement or the write is dropped.
+        self.assert_code(
+            self.run_gate(str(run), "--baseline", str(base)),
+            0, "75.0% vs floor 75.0% — ok")
+
+    def test_update_with_allow_partial_writes_provenance_too(self):
+        # A partial floor is still a standing constraint, so it still has
+        # to say what produced it.
+        run = outcomes_file(self.tmp / "a.json", "sunrise-sync", caught=1)
+        base = baseline_file(self.tmp / "base.json", {})
+        self.assert_code(
+            self.run_gate(
+                str(run), "--update", "--allow-partial",
+                "--baseline", str(base)),
+            0, "no completeness check")
+        origin = json.loads(
+            base.read_text())["crates"]["sunrise-sync"]["provenance"]
+        self.assertEqual(sorted(origin), ["command", "date", "sha"])
+        self.assertIn("--allow-partial", origin["command"])
+
+    def test_update_refuses_when_there_is_no_revision(self):
+        # Outside any repository. Refusing is recoverable — the outcomes
+        # are still on disk — and a floor banked with a blank sha is not.
+        outside = tempfile.TemporaryDirectory()
+        self.addCleanup(outside.cleanup)
+        where = pathlib.Path(outside.name)
+        run = outcomes_file(where / "a.json", "sunrise-sync", caught=1)
+        base = baseline_file(where / "base.json", {})
+        self.assert_code(
+            self.run_gate(
+                str(run), "--update", "--baseline", str(base),
+                "--expect-shards", "sunrise-sync=1", cwd=where),
+            2, "revision")
+        # Nothing was written: the refusal is before the file is touched.
+        self.assertEqual(json.loads(base.read_text())["crates"], {})
+
+
+class ShippedBaselineIsUsable(unittest.TestCase):
+    """The baseline this repository actually ships passes its own validator.
+
+    Every other test here synthesises a fixture. This one reads
+    `mutants/baseline.json`, which is the file the nightly gate loads, and
+    is the check that would have caught adding `provenance` to the
+    validator without adding it to the committed floors.
+    """
+
+    def test_committed_baseline_is_well_formed(self):
+        baseline = REPO / "mutants" / "baseline.json"
+        document = json.loads(baseline.read_text())
+        sys.path.insert(0, str(GATE.parent))
+        try:
+            spec = importlib.util.spec_from_file_location(
+                "mutants_gate_under_test", GATE)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+        finally:
+            sys.path.pop(0)
+        self.assertIsNone(module.malformed(document))
 
 
 if __name__ == "__main__":
