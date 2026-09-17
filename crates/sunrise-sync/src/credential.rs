@@ -104,6 +104,9 @@ impl TokenSource {
     /// write impossible to miss. That memory is private to `changed` — it is
     /// the receiver's own position in the channel, and nothing reads it out.
     /// [`TokenWatch::seen`] does not: it reports the source.
+    /// [`TokenWatch::mark_current`] is the way to move that position — the one
+    /// operation that brings a handle forward to what the source has already
+    /// sent.
     #[must_use]
     pub fn watch(&self) -> TokenWatch {
         TokenWatch(self.0.version.subscribe())
@@ -158,6 +161,26 @@ impl TokenWatch {
     #[must_use]
     pub fn seen(&self) -> u64 {
         *self.0.borrow()
+    }
+
+    /// Bring this handle forward to whatever the source has already sent, and
+    /// return the version it consumed.
+    ///
+    /// After this, [`TokenWatch::changed`] waits for the next *write* rather
+    /// than resolving immediately for writes that landed earlier. This is the
+    /// per-handle operation [`TokenWatch::seen`] is not: `seen` reports where
+    /// the *source* is and moves nothing, while this moves *this* handle.
+    ///
+    /// It exists for a consumer that has just read the token by another route
+    /// and so is already holding the latest bearer — a sync session whose
+    /// connect read the credential after those writes landed. Announcing them
+    /// again would be work the relay does not need, because the connect
+    /// already carried them.
+    ///
+    /// The returned version is the one consumed, so a caller can log or assert
+    /// on how far the handle was moved.
+    pub fn mark_current(&mut self) -> u64 {
+        *self.0.borrow_and_update()
     }
 }
 
@@ -249,6 +272,45 @@ mod tests {
                 .is_err(),
             "no further write happened"
         );
+    }
+
+    /// A write that landed while this handle was not waiting is consumed
+    /// without waking anyone.
+    ///
+    /// This is the shape the sync driver relies on: writes land while the
+    /// client is disconnected, the next connect reads the token and so already
+    /// carries them, and the handle is brought forward rather than made to
+    /// re-announce what the connect delivered. Built on `borrow` instead of
+    /// `borrow_and_update` this leaves the handle where it was, and the wait
+    /// below resolves at once.
+    #[tokio::test]
+    async fn a_handle_that_missed_a_write_is_brought_current() {
+        let s = TokenSource::new(None);
+        let mut w = s.watch();
+        // The offline window: two writes, and nobody waiting on either.
+        s.set(Some("a".into()));
+        s.set(Some("b".into()));
+        assert_eq!(w.mark_current(), 2, "both writes are consumed, and counted");
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(200), w.changed())
+                .await
+                .is_err(),
+            "a renewal the connect already carried must not wake the pump"
+        );
+    }
+
+    /// And bringing a handle that is already current forward eats nothing.
+    ///
+    /// The opposite over-correction to the one above: a `mark_current` that
+    /// left the receiver marked *past* the sender would swallow the next real
+    /// renewal, which is the failure `TokenWatch` exists to prevent.
+    #[tokio::test]
+    async fn bringing_a_current_handle_forward_swallows_nothing() {
+        let s = TokenSource::new(None);
+        let mut w = s.watch();
+        assert_eq!(w.mark_current(), 0, "a fresh handle has nothing to consume");
+        s.set(Some("a".into()));
+        assert_eq!(w.changed().await, 1, "the next real write still arrives");
     }
 
     /// The token is a live credential and this type is reachable from

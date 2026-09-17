@@ -566,6 +566,12 @@ pub(crate) async fn run(
     while !shared.is_shutdown() {
         // Connect (cancellable by shutdown).
         let connect_fut = factory();
+        // The factory has just read the credential, so this attempt carries
+        // every renewal that landed while the driver was disconnected. Bring
+        // the handle forward to exactly what it read and no further, and the
+        // pump's renewal arm below fires only for writes made after this
+        // connect.
+        let _ = mark_renewals_current(&mut renewals);
         let connected = tokio::select! {
             biased;
             () = shared.shutdown_notified() => break,
@@ -703,6 +709,31 @@ fn next_backoff_delay(backoff: &mut Backoff, jitter_unit: f64) -> Duration {
     }
 }
 
+/// Bring the driver's renewal handle forward to the credential this connect
+/// read, and return the version it consumed.
+///
+/// Called once per connect attempt, immediately after the factory has read the
+/// token and long before the handshake, because that read is the moment this
+/// attempt's bearer is fixed: the factory calls `TokenSource::get` in its own
+/// body, per attempt, so the connect presents whatever renewals had landed by
+/// then. Bringing the handle forward there — and no later — marks exactly what
+/// the attempt carries and nothing else, so a write landing during the dial,
+/// the handshake or the session itself still reaches the relay in band as a
+/// `0x12 RefreshToken` instead of waiting for the next reconnect.
+///
+/// An attempt that then fails to connect has still advanced the handle, which
+/// is sound: the next attempt re-reads the credential and so carries at least
+/// as much as this one would have.
+///
+/// Split out of [`run`] for the same reason [`next_backoff_delay`] is split
+/// out of [`backoff_sleep`]: reaching it through the driver costs a real
+/// connect, a handshake and a backoff, so the one proposition it carries —
+/// that a renewal from the offline window is consumed rather than re-announced
+/// — is pinned here instead.
+fn mark_renewals_current(renewals: &mut TokenWatch) -> u64 {
+    renewals.mark_current()
+}
+
 /// Hello → HelloAck.
 ///
 /// `Ok(refresh_negotiated)` on success — whether the relay agreed
@@ -795,12 +826,6 @@ async fn session(
     let mut batch_counter: u64 = 0;
     let mut pending_sends: Vec<Vec<u8>> = Vec::new();
     let mut deadlines = Deadlines::new(schedule.resync_interval, schedule.clock);
-    // A renewal that landed while this client was disconnected is already in
-    // the credential the connect used, so it is marked seen rather than
-    // re-sent as a refresh the relay does not need.
-    if renewals.seen() != credential.version() {
-        let _ = renewals.changed().await;
-    }
 
     // Initial outbox drain (fresh session: everything unacked is (re)sent —
     // idempotent apply on the peer tolerates replays).
@@ -2028,8 +2053,8 @@ mod tests {
     //! scripts the protocol side.
 
     use super::{
-        drain_relay_revocations, BoxTransport, ConnectFuture, SyncConfig, TokenSource,
-        TransportFactory,
+        drain_relay_revocations, mark_renewals_current, BoxTransport, ConnectFuture, SyncConfig,
+        TokenSource, TransportFactory,
     };
     use crate::config::Clock;
     use crate::{Command, Core, CoreConfig, DomainEvent, Query, QueryResult, SystemRng, Unlock};
@@ -2789,6 +2814,40 @@ mod tests {
             "and without tearing the session down to do it"
         );
         core.shutdown().await;
+    }
+
+    /// A renewal that landed while the driver was disconnected is consumed by
+    /// the connect that carried it, not re-announced in band.
+    ///
+    /// The driver's one handle only ever falls behind between sessions: while
+    /// a session is up the pump consumes every write. The connect that ends
+    /// that gap reads the credential itself, so the relay has already been
+    /// given the new bearer in the `Authorization` header by the time the pump
+    /// starts, and a lagging handle would spend a round trip re-presenting it.
+    ///
+    /// The seam is tested directly rather than through the driver: reaching it
+    /// end to end needs a close, a jittered backoff and a write landing inside
+    /// it, and the assertion would fail for timing reasons rather than for the
+    /// proposition it holds.
+    #[tokio::test]
+    async fn a_renewal_that_landed_between_sessions_is_not_re_announced() {
+        let credential = TokenSource::new(Some("first-token".into()));
+        let mut renewals = credential.watch();
+        // The disconnected window: two renewals, no session to observe them.
+        credential.set(Some("second-token".into()));
+        credential.set(Some("third-token".into()));
+
+        assert_eq!(
+            mark_renewals_current(&mut renewals),
+            2,
+            "the connect carried both, so the handle is brought forward past both"
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), renewals.changed())
+                .await
+                .is_err(),
+            "the pump must not re-announce a bearer this connect already presented"
+        );
     }
 
     /// The credential a caller reaches through `Core` is the *same cell* the
