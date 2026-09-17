@@ -680,17 +680,35 @@ fn ops_run_end(
 /// rise as well as fall.
 ///
 /// What replaced that refusal is not a narrower refusal, it is **no refusal**.
-/// Nothing in the apply path consults the revocation register:
-/// [`Engine::is_revoked`] has no caller there, its one non-test caller being
-/// [`Engine::backfill_key_envelopes`] in this file, on the key-distribution
-/// side. [`Engine::apply_remote_all`]
-/// (`crates/sunrise-core/src/engine/sync.rs`) says so itself at its step b — a
-/// revoked device's row is found there like any other and its op is applied
-/// like any other — and ADR-0034
+/// The apply path does consult the revocation register, and this is where:
+/// [`Engine::apply_remote_all`] (`crates/sunrise-core/src/engine/sync.rs`)
+/// dispatches a control op into [`Engine::apply_control_op`], whose
+/// `DeviceCertPublish` arm calls [`Engine::backfill_key_envelopes`] in this
+/// file, and that function opens with [`Engine::is_revoked`] — a read of the
+/// register, inside the apply transaction, on remote input.
+///
+/// What that read decides is which stream keys a newly certified device is
+/// sealed: on a revoked one it returns early and seals none. What it does
+/// *not* decide is whether the op applies. The op row went in at the
+/// idempotence gate before the control op was dispatched, the `devices` row is
+/// written before the backfill is attempted, a backfill error is logged rather
+/// than raised, and this cursor advances over the delivery on every one of
+/// those answers. Admission is settled earlier and elsewhere: step b looks the
+/// sender up in `devices`, so a revoked device's row is found there like any
+/// other and its op is applied like any other. ADR-0034
 /// (`docs/11-adr/0034-revocation-bounds-reads-not-writes.md`) is where that
-/// was decided. So this function decides nothing and refuses nothing: it
-/// writes the end of the run already in the log, and every caller reaches it
-/// having inserted the op first.
+/// was decided — revocation bounds what a device may *read*, not whether what
+/// it writes lands. `a_revoked_devices_ops_still_apply_at_the_replica` holds
+/// the admission half, and
+/// `a_revoked_device_cert_through_apply_remote_seals_no_keys` walks the trace
+/// above from the envelope down to the early return.
+///
+/// So this function decides nothing and refuses nothing: it writes the end of
+/// the run already in the log, and both of its call sites reach it having put
+/// the op row in first — [`Engine::apply_remote_all`] at its step g, past an
+/// idempotence gate that returns early when the insert changed no row, and
+/// [`Engine::ops_insert_at`] at the tail of this device's own emit, after the
+/// op-log insert and the outbox enqueue.
 ///
 /// One refusal does survive, and it is not an op's. [`Engine::apply_control_op`]
 /// refuses a `device_revoke` that names its own sender — logging
