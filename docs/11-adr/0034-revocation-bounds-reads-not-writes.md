@@ -11,6 +11,19 @@ guarantee is stated, and the write bound is routed to the relay) and
 **Depends on:** [ADR-0024](./0024-key-hierarchy.md) — random wrapped stream keys
 are what make a read bound expressible at all.
 
+**Note, 2026-09-17 (citations only, at `e9a4c09`):** eight of the nine
+`path:line` citations below had rotted onto unrelated code — the decision did
+not move, the code under it did. They were repointed and now carry the symbol
+they mean, `path:line#symbol`, which
+[`.github/scripts/citation-gate.py`](../../.github/scripts/citation-gate.py)
+checks for containment, so the next drift is a red check rather than a silent
+lie ([#249](https://github.com/justin13888/Sunrise/issues/249)). Two further
+claims were corrected against the tree in the same pass: `Engine::is_revoked`
+has one non-test caller and not two, and `git grep refused_ops` returns hits
+rather than nothing — every one of them a sentence in this file, this one
+included, which is why the claim below is now written without a count. **No conclusion here
+changed**, and every one of them was re-read against the code first.
+
 ## Context
 
 ### The question, and why the tree answers it differently than the issue asks
@@ -27,20 +40,34 @@ refusal as a derived view.
 the code rather than from the issue:
 
 - There is **no `refused_ops` table and no refusal record anywhere** —
-  `git grep refused_ops` returns nothing across the whole tree.
-- `Engine::is_revoked` (`crates/sunrise-core/src/engine/sync.rs:581`) has exactly two
-  non-test callers, and both are on the **key-distribution** side:
-  `emit_key_envelopes`'s anti-join against `device_revocations`
-  (`crates/sunrise-core/src/engine/oplog.rs:280`) and the early return in
-  `backfill_key_envelopes` (`:381`). Nothing in the apply path consults it.
+  `git grep refused_ops` matches nothing outside this file: no migration, no
+  query, no type, no record. Every hit it returns is a sentence in this ADR
+  naming the thing in order to say it is gone, so the grep is not silent and
+  the claim it is offered for still holds. Deliberately not stated as a
+  number: the previous wording ("returns nothing across the whole tree") was
+  false the day it was written, and a count here is falsified by the next
+  sentence that mentions the table.
+- `Engine::is_revoked` (`crates/sunrise-core/src/engine/sync.rs:702#is_revoked`)
+  has exactly **one** non-test caller, plus one raw anti-join against the same
+  register, and both are on the **key-distribution** side: the anti-join is
+  `emit_key_envelopes`'s `NOT EXISTS` against `device_revocations`
+  (`crates/sunrise-core/src/engine/oplog.rs:294-300#emit_key_envelopes`), which
+  is SQL and calls nothing, and the caller is the early return in
+  `backfill_key_envelopes`
+  (`crates/sunrise-core/src/engine/oplog.rs:399-401#backfill_key_envelopes`).
+  Nothing in the apply path consults it.
 - `apply_remote_all` says so at step b
-  (`crates/sunrise-core/src/engine/sync.rs:359-361`): *"A revoked device's row is
-  found here like any other, and its op is applied like any other."*
-- `upsert_sync_cursor`'s doc (`crates/sunrise-core/src/engine/oplog.rs:575`) records
-  the removal directly: *"A refused op is **not** decided and does not appear
-  here. It was, briefly."*
+  (`crates/sunrise-core/src/engine/sync.rs:464-465#apply_remote_all`): *"A
+  revoked device's row is found here like any other, and its op is applied like
+  any other."*
+- `upsert_sync_cursor`'s doc
+  (`crates/sunrise-core/src/engine/oplog.rs#upsert_sync_cursor`) records the
+  removal directly: *"A refused op is **not** decided and does not appear here.
+  It was, briefly."* Cited without a line on purpose — that paragraph is being
+  rewritten, and a line number into it is a citation built to rot.
 - The test `a_revoked_devices_ops_still_apply_at_the_replica`
-  (`crates/sunrise-core/src/engine/tests.rs:5836`) revokes a device at a cut before
+  (`crates/sunrise-core/src/engine/tests.rs:6414#a_revoked_devices_ops_still_apply_at_the_replica`)
+  revokes a device at a cut before
   every op it writes — the strongest form of the premise — and asserts the op
   applies, materializes and is passed by the cursor.
 
@@ -56,8 +83,12 @@ not one of its three options.
 Revocation today is a **register plus a read bound**:
 
 - `device_revoke` writes `device_revocations`, an LWW register on the op's own
-  HLC with `revoked_by` as the tie-break, and a device may not move its own cut
-  (`crates/sunrise-core/src/engine/sync.rs:936-979`).
+  HLC with `revoked_by` as the tie-break
+  (`crates/sunrise-core/src/engine/sync.rs:1091-1101#apply_control_op`). A device
+  may not move its own cut: the register's one edit it never accepts from the
+  party it is about, refused before the write with a
+  `core.device.revoke_refused` warning
+  (`crates/sunrise-core/src/engine/sync.rs:1058-1075#apply_control_op`).
 - The cut's `(cut_ms, cut_logical)` decides **which** revocation wins when two
   race. The **presence of the row** is the whole read test — there is no clock
   comparison in the path, and `is_revoked`'s own doc explains at length why a
@@ -180,7 +211,8 @@ not, and that is what the relay bound is for.
   ([#105](https://github.com/justin13888/Sunrise/issues/105)); nothing here
   narrows that, and `key-rotation.md` already states it as unmitigated.
 - **No code changes.** The test doc at
-  `crates/sunrise-core/src/engine/tests.rs:5810` and `apply_remote_all`'s step b gain
+  `crates/sunrise-core/src/engine/tests.rs:6388#a_revoked_devices_ops_still_apply_at_the_replica`
+  and `apply_remote_all`'s step b gain
   a citation of this ADR in place of a bare issue number, so the next reader
   finds a decision rather than an open question.
 
