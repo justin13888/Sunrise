@@ -677,8 +677,37 @@ fn ops_run_end(
 /// A refused op is *not* decided and does not appear here. It was, briefly: an
 /// op refused for a revoked sender advanced this past it so the relay would
 /// stop resending. That made a reversible decision irreversible — the cut can
-/// rise as well as fall — so a refusal now leaves the cursor where it is and
-/// the op applies if it is resent under a corrected cut.
+/// rise as well as fall.
+///
+/// What replaced that refusal is not a narrower refusal, it is **no refusal**.
+/// Nothing in the apply path consults the revocation register:
+/// [`Engine::is_revoked`] has no caller there, its one non-test caller being
+/// [`Engine::backfill_key_envelopes`] in this file, on the key-distribution
+/// side. [`Engine::apply_remote_all`]
+/// (`crates/sunrise-core/src/engine/sync.rs`) says so itself at its step b — a
+/// revoked device's row is found there like any other and its op is applied
+/// like any other — and ADR-0034
+/// (`docs/11-adr/0034-revocation-bounds-reads-not-writes.md`) is where that
+/// was decided. So this function decides nothing and refuses nothing: it
+/// writes the end of the run already in the log, and every caller reaches it
+/// having inserted the op first.
+///
+/// One refusal does survive, and it is not an op's. [`Engine::apply_control_op`]
+/// refuses a `device_revoke` that names its own sender — logging
+/// `core.device.revoke_refused` with `reason = "self"` — and writes no register
+/// row. That refuses a *register write* rather than the delivery: the op row
+/// went in before the control op was dispatched, so this still runs afterwards
+/// and the cursor **advances past it**. A reader who greps `revoke_refused`
+/// arrives here expecting the opposite, which is why it is named, and why
+/// `a_self_refused_revoke_still_advances_the_cursor` holds both halves.
+///
+/// Nor would resending recover anything, here or anywhere. An op's id is
+/// derived from `(stream_id, device_id, seq)` by [`remote_op_id`], so a resent
+/// op carries the op log's same primary key, collides on insert, and
+/// [`Engine::apply_remote_all`] returns at its idempotence gate without
+/// re-running materialization or [`Engine::apply_control_op`] at all. That is
+/// `apply_remote_is_idempotent` for an entity op, and the tail of
+/// `a_self_refused_revoke_still_advances_the_cursor` for a control one.
 ///
 /// A high-water mark would be wrong, and used to be what this wrote. Ops do
 /// arrive out of order: a dropped frame followed by a later one leaves the log

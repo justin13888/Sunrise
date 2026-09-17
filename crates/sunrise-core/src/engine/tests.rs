@@ -6469,6 +6469,122 @@ fn a_revoked_devices_ops_still_apply_at_the_replica() {
     );
 }
 
+/// The one refusal that survives advances this replica's cursor anyway.
+///
+/// `apply_control_op` refuses a `device_revoke` that names its own sender —
+/// `core.device.revoke_refused`, `reason = "self"` — because the register is
+/// last-writer-wins and a device that can rewrite its own row can undo
+/// somebody else's revocation of it. What it refuses is the **register
+/// write**, not the delivery: the op row went in at `apply_remote_all`'s
+/// idempotence gate before the control op was dispatched, so
+/// `upsert_sync_cursor` still runs afterwards and the cursor moves past it.
+///
+/// That is the opposite of what `upsert_sync_cursor`'s doc claimed until
+/// [#253](https://github.com/justin13888/Sunrise/issues/253) — that a refusal
+/// leaves the cursor where it is and the op applies if it is resent. Only
+/// prose ever said so, which is how four other copies of the same claim
+/// reached #240's review uncorrected and this one outlived them, so this
+/// holds both halves: the register is untouched and the cursor advances.
+///
+/// `a_device_cannot_move_its_own_revocation_cut` covers the register half
+/// through `apply_control_op` directly. It cannot see this one, because that
+/// path has no envelope, no op row and therefore no cursor.
+#[test]
+fn a_self_refused_revoke_still_advances_the_cursor() {
+    let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut dba = db_root(ROOT);
+    let mut dbb = db_root(ROOT);
+    let a_id = ea.keychain.device_id();
+
+    // B has admitted A, so `apply_remote_all`'s step b finds the sender's row
+    // and the delivery is an ordinary one rather than a rejected stranger.
+    trust(&eb, &mut dbb, &ea);
+
+    // A seals a `device_revoke` naming **itself**. `Command::RevokeDevice`
+    // refuses that locally for an unrelated reason — rotating every key away
+    // from the only device holding them is not recoverable — so the op is
+    // built at the op-log seam instead, which is all a peer running older or
+    // hostile code has to do.
+    let inner = encode_inner_op(&InnerOp::DeviceRevoke(DeviceRevokePayload {
+        revoked_device_id: a_id,
+        reason_code: RevokeReason::Lost,
+    }))
+    .expect("encode the inner op");
+    let (seq, env) = dba
+        .with_tx(|tx| -> rusqlite::Result<(u64, Vec<u8>)> {
+            // The epoch first, then the seq: minting can emit `key_envelope`
+            // ops into this very stream, and each would spend a seq a number
+            // read beforehand had already claimed.
+            let (epoch, key) = ea.ensure_stream_epoch(tx, &META_STREAM, T0)?;
+            let seq = ea.next_seq_tx(tx, &META_STREAM)?;
+            let env = ea
+                .keychain
+                .seal_op_at(
+                    META_STREAM,
+                    seq,
+                    ea.hlc.send(),
+                    &inner,
+                    ea.rng.as_ref(),
+                    epoch,
+                    &key,
+                )
+                .expect("seal under A's own live meta epoch");
+            Ok((seq, env))
+        })
+        .unwrap();
+    assert_eq!(
+        seq, 1,
+        "the cursor is the contiguous prefix from seq 1, so this op has to be it"
+    );
+
+    let events = eb
+        .apply_remote_all(&mut dbb, &env)
+        .expect("a self-naming revoke is still a well-formed delivery");
+    assert!(events.is_empty(), "a control op materializes no entity");
+
+    // The register refused it.
+    assert_eq!(
+        revocation_row(&dbb, &a_id),
+        None,
+        "a device must not be able to write the register entry about itself"
+    );
+    assert!(
+        !eb.is_revoked(dbb.conn(), &a_id).unwrap(),
+        "and it is not revoked by its own op"
+    );
+
+    // And the cursor advanced past it regardless, which is the half nothing
+    // else in this suite holds.
+    assert_eq!(
+        cursor_for(&dbb, &META_STREAM, &a_id),
+        seq,
+        "the refusal is the register's, not the delivery's: the op row is in, \
+         so the cursor covers it"
+    );
+
+    // Resending recovers nothing. `remote_op_id` is derived from
+    // `(stream_id, device_id, seq)`, so the same bytes carry the same op-log
+    // primary key, collide on insert, and return at the idempotence gate
+    // without re-running `apply_control_op` at all.
+    assert!(
+        eb.apply_remote_all(&mut dbb, &env)
+            .expect("a resend is not an error")
+            .is_empty(),
+        "the second delivery is not re-evaluated"
+    );
+    assert_eq!(
+        revocation_row(&dbb, &a_id),
+        None,
+        "a resend does not get the register a second look"
+    );
+    assert_eq!(
+        cursor_for(&dbb, &META_STREAM, &a_id),
+        seq,
+        "and it moves nothing"
+    );
+}
+
 /// A device certified *after* an epoch was minted still receives that
 /// epoch's key.
 ///
