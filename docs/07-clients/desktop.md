@@ -402,11 +402,12 @@ does is not:
   a change to the verify step and not to either cross-domain mutation.
 
   **Six lines are declared untestable** rather than left to be re-discovered,
-  on the same rule the rest of this page follows. Four are in the pair of
-  cross-domain mutations described above and a fifth in the `save` that
-  consumes one of them; this is the whole set, and the only count of it, since
-  an earlier revision of this page named two of the six here while a second
-  record named five:
+  on the same rule the rest of this page follows. Three of them are in the pair
+  of cross-domain mutations described above (1, 2 and 4), one is in the
+  predicate both of those consult (3), one is in the `save` that consumes the
+  write (5), and one is in `loadMigratingIfNeeded` (6). This is the whole set
+  and the only count of it, since an earlier revision of this page named two of
+  the six here while a second record named five:
 
   1. `writeAcrossDomains`'s raise of `writtenButOtherDomainRefused`. Every
      other-domain delete this repository can build either succeeds or is
@@ -417,9 +418,11 @@ does is not:
      delete would find it and still lets the delete run: an item addressed at
      the domain this build cannot reach throws out of `write` first, and on iOS
      the guard short-circuits.
-  3. `meansTheOtherStoreWasUnreachable` returning *false* — the raise itself —
-     for the same reason as 1: the predicate is only ever asked about a status
-     it answers `true` to.
+  3. `meansTheOtherStoreWasUnreachable` returning *false* — a status that is
+     neither the missing-entitlement refusal nor not-found. The predicate is
+     only consulted when an other-domain delete throws, and every such delete
+     this suite can make throw throws one of those two, so the `false` arm is
+     never asked for.
   4. The cross-domain clear's **tie-break**, that this domain's status wins
      when both deletes refuse. The one case that reaches the other-domain arm
      has that delete *succeed*, so inverting the tie-break leaves it green.
@@ -429,31 +432,74 @@ does is not:
      needs a lock or a denial landing between the source reads and either of
      the two destination calls.
 
-  What **five** of the six need is the other keychain locked, or a prompt
-  denied, **in the middle of a running case** — and that is not an entitled,
-  signed build, which is what this page used to say and, for those five, said
-  wrongly. A locked login keychain or a denied prompt already returns a hard
-  status on the ad-hoc build this repository produces, so the statuses those
-  five lines wait for are reachable here today; what no suite here can drive is
-  the lock or the denial arriving mid-case, because the suite holds the
-  keychain unlocked for its whole run by construction. An entitlement supplies
-  no part of that, which is why 1, 3, 4, 5 and 6 are not waiting for one.
+  **The set splits three and three, and the halves are closed by different
+  people.** Items **1, 2 and 5** wait on *reach* — the domain that has to
+  misbehave is the one this build cannot address at all, and only an Apple team
+  supplies it. Items **3, 4 and 6** wait on a lock or a denied prompt arriving
+  **in the middle of a running case**, which no entitlement supplies.
 
-  **The second is the exception, and an entitled build is exactly what it
-  needs.** What blocks its delete effect is reach, not timing. Both keychains
-  are distinct stores on any Mac, entitled or not — `domainsAreDistinctStores`
-  is a compile-time `os(macOS)` value
-  (`apps/apple/Sunrise/Identity/KeychainDomain.swift:67-72`) — so a build that
-  reaches both can plant a copy in `.dataProtection`, address the item at
-  `.login`, and watch the delete take the other copy away. This build cannot,
-  because it cannot write into the domain it addresses the item away from: an
-  item addressed at the unreachable domain throws out of `write` before the
-  delete is ever reached. Reach is precisely what an Apple team supplies, so
-  that one line is executable there and nowhere here.
+  The reach half, item by item:
+
+  - **1** needs `write` to *succeed* before the cross-domain delete is even
+    attempted, so on an ad-hoc Mac the item's own domain has to be `.login` and
+    the other is then necessarily `.dataProtection` — whose mutations answer
+    `errSecMissingEntitlement` unconditionally, and
+    `meansTheOtherStoreWasUnreachable` swallows that before the re-label.
+    Addressing the item the other way round does not help: `try write(data)`
+    sits *outside* the `do`, so it throws first and the delete is never
+    reached.
+  - **2** needs a copy planted in the domain this build cannot write into, by
+    the same mechanism.
+  - **5** is reached *only* through 1's raise, so it inherits 1's blocker
+    exactly.
+
+  Both keychains are distinct stores on any Mac, entitled or not —
+  `domainsAreDistinctStores` is a compile-time `os(macOS)` value
+  (`apps/apple/Sunrise/Identity/KeychainDomain.swift:67-72`) — so what reach
+  changes is not that there are two stores but *which* of them a write can land
+  in, and therefore which one ends up on the far side of the cross-domain
+  delete. Today the write forces the item's own domain to be `.login`, which
+  pins the other domain to `.dataProtection` and its one swallowed status. A
+  build that reaches both can address the item at `.dataProtection` instead,
+  putting `.login` on the far side — a store that answers a delete on its own
+  terms rather than with the one status the re-label swallows. That is the
+  arrangement 1 and 5 need and this build cannot set up. Item 2 wants the mirror of it: plant a copy in
+  `.dataProtection`, address the item at `.login`, and watch the delete take
+  that copy away.
+
+  **For 3, 4 and 6 an entitled, signed build is the wrong answer** — which is
+  what this page used to say and, for those three, said wrongly. A locked login
+  keychain or a denied prompt already returns a hard status on the ad-hoc build
+  this repository produces, so the statuses those three lines wait for are
+  reachable here today; what no suite here can drive is the lock or the denial
+  arriving mid-case, because the suite holds the keychain unlocked for its
+  whole run by construction. An entitlement supplies no part of that.
+
+  What puts 3 and 4 on this side of the line rather than with 1 is that
+  `deleteAcrossDomains` stores its first failure and *continues* rather than
+  throwing: an item addressed at `.dataProtection` still reaches
+  `deleteInOtherDomain()` with `.login` as the other domain, and a locked login
+  keychain gives a hard status there on an ad-hoc build today. Item 1 has no
+  such route, because its write throws before its delete runs.
 
   Nor, for any of the six, is the answer a fault-injection seam inside the type
   that holds the vault root, rejected four times on this change for one reason:
   it would be a second implementation of `Security.framework` to get wrong.
+
+  **Separately, and not one of the six: `theProbeDeletesWhateverItWrote` is
+  vacuous on macOS.** That `KeychainMigrationTests` case asserts nothing under
+  `probeService` is findable in either domain once `probe()` has run — but on
+  this build the probe's `SecItemAdd` into `.dataProtection` is refused, so
+  nothing is ever written, and deleting or not deleting gives the same answer.
+  Removing the cleanup loop from `probe()` altogether leaves the case green on
+  every macOS run; it has teeth only on iOS, where the add succeeds. It is not
+  in the six, because it needs no keychain state this machine cannot produce —
+  it needs only to run on iOS, which it already does. The case carries a
+  one-clause marker; the declaration is recorded here in full because
+  `KeychainMigrationTests.swift` sits exactly on the 520-line `file_length`
+  ceiling `swiftlint --strict` enforces, so the marker had to be paid for by
+  tightening comment elsewhere in the same case, and raising that threshold is
+  what `KeychainMigrationFallbackTests` exists instead of.
 
   The **credential** store also `save`s across both, and it is the only one that
   needs to. Its token is rewritten with no user action — `refreshIfNeeded`
@@ -490,8 +536,9 @@ for explicitly and the tests pin, because a migration that missed it would
 verify that item against itself and then delete it.
 
 What is left for whoever holds an Apple team is the entitlements file,
-`DEVELOPMENT_TEAM`, turning the probe's answer over on macOS — **and six
-things in the suite: five test assertions to rewrite, and one test to write.**
+`DEVELOPMENT_TEAM`, turning the probe's answer over on macOS — **and eight
+things in the suite: five test assertions to rewrite, and three tests to
+write.**
 The *shipping* code needs no further change on this side; the suite does, and
 "no further code change is needed" said without that qualification is not
 exact. Five assertions encode the fact that this build reaches exactly one
@@ -503,7 +550,9 @@ domain, and each is a true statement today that a team makes false:
 - `aRefusalOnThisDomainDoesNotSpareTheCopyInTheOther`
 - `aWriteRefusedInItsOwnDomainIsNotReportedAsAPartialSuccess`
 
-The last four are in `KeychainMigrationFallbackTests`, which is `macOS`-only.
+The last four are in the `KeychainMigrationFallbackTests` suite, which is
+`macOS`-only — the `KeychainErrorMessageTests` suite sharing its file sits
+outside that gate on purpose and is not one of the five.
 Each of the five is **rewritten to assert the entitled behaviour** — not
 deleted, and not guarded by an availability check. Deleting them drops the
 coverage exactly when the path first runs for real, and four of the five are
@@ -513,17 +562,29 @@ expectations in `VaultRootStoreTests` flip with them and already say so where
 they sit; they are constants rather than assertions, and are not part of the
 five.)
 
-The sixth item is not a rewrite: it is a test that has to be **written**, for
-`writeAcrossDomains`'s cross-domain delete effect — item 2 in the untestable
-set above. There is no assertion to correct, because no case in this suite
-claims anything about that effect; the line has never executed on any platform
-this repository builds for, which is why it sits in the untestable set rather
-than in a gap someone forgot to fill. An entitled build is the first one able
-to run it, by the mechanism that set gives: plant a copy in `.dataProtection`,
-address the item at `.login`, perform the write, and assert the other domain's
-copy is gone. The distinction is worth carrying into the work — the five are
-expectations that change their answer, and the sixth is new coverage for a
-mutation the code performs and nothing anywhere observes.
+The other three are not rewrites: they are tests that have to be **written**,
+for items **1, 2 and 5** of the untestable set above — `writeAcrossDomains`'s
+raise of `writtenButOtherDomainRefused`, the same method's cross-domain delete
+effect, and `KeychainCredentialStore.save`'s `catch`. There is no assertion to
+correct for any of the three, because no case in this suite claims anything
+about what they do; none has executed on any platform this repository builds
+for, which is why they sit in the untestable set rather than in a gap someone
+forgot to fill. An entitled build is the first one that can arrange any of
+them, by the mechanism that set gives. Item 2 wants a copy planted in
+`.dataProtection`, the item addressed at `.login`, and the other domain's copy
+asserted gone after the write. Items 1 and 5 want the mirror — the item
+addressed at `.dataProtection`, so that the delete's refusal comes from
+`.login` rather than from the domain whose only answer is the swallowed one —
+and then `writeAcrossDomains` asserted to have kept what it wrote, and `save`
+asserted to treat the raise as the success it is. The distinction is worth
+carrying into the work: the five are expectations that change their answer, and
+the three are new coverage for effects the code performs and nothing anywhere
+observes.
+
+The remaining **three of the six — items 3, 4 and 6 — gain no test from an
+entitlement** and stay declared. They wait on a lock or a denied prompt landing
+mid-case, which an Apple team does not supply; reach was never what blocked
+them.
 
 The **hardened runtime**, which is a different setting, is on and has to be:
 Apple's notary service rejects a submission without it.

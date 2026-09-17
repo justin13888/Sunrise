@@ -291,21 +291,21 @@ struct KeychainItem: Sendable {
     /// **This half is untested by construction, and saying so is the point.**
     /// Two of the six are here: the raise below, and the cross-domain delete's
     /// own effect — the other domain's copy being removed — observable in no
-    /// configuration this repository builds. On macOS a copy cannot be planted
-    /// in the unreachable domain, and an item addressed *there* throws out of
-    /// ``write(_:)`` before the delete is reached; on iOS the guard below
-    /// short-circuits. ``deleteAcrossDomains()`` inverted which domain the item
-    /// is addressed in to solve the same problem — its own delete refused, the
-    /// other domain's succeeding — and that inversion cannot work here, because
-    /// the inverted item's *write* fails first. What
-    /// `aCrossDomainWriteKeepsWhatItJustWrote` does pin is the two reachable
-    /// properties: the write survives on macOS when the other domain refuses,
-    /// and the delete is guarded on iOS where the domains are one store. The raise
-    /// needs the other keychain locked or a prompt denied *while a case runs*, which
-    /// this suite cannot drive and no entitlement supplies; the delete's effect needs
-    /// a copy this suite cannot stage. Neither wants a fault-injection seam inside the
-    /// type that holds the vault root, rejected four times now: it would be a second
-    /// implementation of `Security.framework` to get wrong.
+    /// configuration this repository builds. Both wait on *reach*, which only an
+    /// Apple team supplies, and not on a lock arriving mid-case. The raise needs
+    /// ``write(_:)`` to **succeed** first, so on an ad-hoc Mac the item's own domain
+    /// has to be `.login` and the other is then necessarily `.dataProtection`, whose
+    /// mutations answer `errSecMissingEntitlement` unconditionally — swallowed by
+    /// ``meansTheOtherStoreWasUnreachable(_:)`` before the re-label. Inverting which
+    /// domain the item is addressed in, as ``deleteAcrossDomains()``'s case does, fails
+    /// here: `try write(data)` sits *outside* the `do`, so it throws first and the
+    /// delete is never reached. The delete's effect needs a copy planted in the domain
+    /// this build cannot write to; on iOS the guard below short-circuits. What
+    /// `aCrossDomainWriteKeepsWhatItJustWrote` does pin is the two reachable properties:
+    /// the write survives on macOS when the other domain refuses, and the delete is
+    /// guarded on iOS where the domains are one store. Neither wants a fault-injection
+    /// seam inside the type that holds the vault root, rejected four times now: it would
+    /// be a second implementation of `Security.framework` to get wrong.
     ///
     /// **Deliberately not folded into ``write(_:)``.**
     /// ``KeychainMigration/migrate(before:)`` writes its destination and only

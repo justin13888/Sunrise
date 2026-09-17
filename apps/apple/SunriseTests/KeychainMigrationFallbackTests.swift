@@ -304,3 +304,50 @@ struct KeychainMigrationFallbackTests {
     }
 }
 #endif
+
+/// The two `LocalizedError` arms the rest of this suite never reads.
+///
+/// `KeychainError.writtenButOtherDomainRefused` is constructed nowhere else in
+/// the suite, and `.migrationUnverified` is thrown and caught by case identity
+/// with its message never read — so both user-facing blocks executed in no test
+/// until these two cases.
+///
+/// They are **not** part of the six lines declared untestable in
+/// `docs/07-clients/desktop.md`. Those need a keychain state this machine cannot
+/// produce; a `switch` over an enum makes no `Security.framework` call at all,
+/// which is why these close here rather than joining the declared set.
+///
+/// Outside the `#if` above on purpose: the messages are platform-independent, and
+/// the Mac-only gate would have left them unexecuted on every iOS run. They sit in
+/// this file rather than `KeychainMigrationTests` because that file is exactly on
+/// the 520-line `file_length` ceiling `swiftlint --strict` enforces.
+struct KeychainErrorMessageTests {
+    /// Leads with what *was* saved. Every other message in the enum describes
+    /// something that did not happen and this one does not, so a user told only
+    /// that a removal failed would reasonably retype a secret already stored.
+    /// Asserting the whole string, not merely that it is non-`nil`: a non-`nil`
+    /// check passes against an empty string and against a reordered message.
+    @Test
+    func theRefusedOtherDomainMessageLeadsWithWhatWasSaved() {
+        let status = errSecUserCanceled
+        let reason = SecCopyErrorMessageString(status, nil) as String? ?? "Keychain error \(status)."
+        #expect(
+            KeychainError.writtenButOtherDomainRefused(status).errorDescription
+                == "This secret was saved, but an older copy of it in your other "
+                + "keychain could not be removed: " + reason
+        )
+    }
+
+    /// Says nothing was deleted, because nothing was. This is the one migration
+    /// failure that refuses the load rather than falling back to the source, and a
+    /// message that left the reassurance out would read to the user as data loss.
+    @Test
+    func theUnverifiedMigrationMessageSaysNothingWasDeleted() {
+        #expect(
+            KeychainError.migrationUnverified.errorDescription
+                == "Two different secrets are stored under the same Keychain name, so "
+                + "this app cannot tell which one belongs to your vault. "
+                + "Nothing has been deleted."
+        )
+    }
+}

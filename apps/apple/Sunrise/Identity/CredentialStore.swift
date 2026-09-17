@@ -182,11 +182,20 @@ struct KeychainCredentialStore: CredentialStore {
     /// identically whether this line rethrows or not — and rethrowing adds the
     /// lost session on top of it.
     ///
-    /// **Untestable on every configuration this repository builds**, for the
-    /// reason `KeychainItem.meansTheOtherStoreWasUnreachable` declares: the
-    /// other domain's refusal here is always the missing-entitlement one, which
-    /// is swallowed before it can reach this `catch`. What *is* pinned is the
-    /// discrimination this rests on —
+    /// **This `catch` executes in no test**, and this declares it — one of the
+    /// six listed in `docs/07-clients/desktop.md`, where it is item 5. It is
+    /// reached only through `KeychainItem.writeAcrossDomains`'s raise of
+    /// `writtenButOtherDomainRefused`, item 1 of that set, so it inherits item
+    /// 1's blocker exactly: the raise needs the write to succeed in its own
+    /// domain, which on an ad-hoc Mac makes the other domain `.dataProtection`,
+    /// whose refusal is the missing-entitlement one and is swallowed before it
+    /// can reach here. What it waits on is *reach* — only a build that reaches
+    /// both keychains can address the item at `.dataProtection` and so put a
+    /// refusable `.login` on the far side of the delete — and not a lock
+    /// arriving mid-case, which is what items 3, 4 and 6 of that set wait on.
+    /// Saying the refusal here is *always* the missing-entitlement one would be
+    /// too strong: on such a build it is whatever `.login` answers. What *is*
+    /// pinned is the discrimination this rests on —
     /// `aWriteRefusedInItsOwnDomainIsNotReportedAsAPartialSuccess` fails if a
     /// write that stored nothing is labelled as one that stored something.
     func save(_ credentials: StoredCredentials) throws {

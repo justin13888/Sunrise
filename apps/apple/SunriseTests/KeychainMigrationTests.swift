@@ -349,9 +349,12 @@ struct KeychainDomainTests {
         #expect(query[kSecUseDataProtectionKeychain as String] as? Bool == true)
     }
 
-    /// The probe writes a byte of its own to find out what this binary can
-    /// reach. Leaving it behind would put a Sunrise item a user did not ask
-    /// for in their Keychain on every cold launch.
+    /// The probe writes a byte of its own to find out what this binary can reach.
+    /// Leaving it behind would put a Sunrise item a user did not ask for in their
+    /// Keychain on every cold launch. **Teeth on iOS only**: on macOS the probe's
+    /// `SecItemAdd` is refused, so nothing is ever written and dropping `probe()`'s
+    /// cleanup loop leaves this green. Declared in `docs/07-clients/desktop.md`; the
+    /// assertion is not one of the five an entitlement flips.
     @Test
     func theProbeDeletesWhateverItWrote() {
         // Force the memoised probe to have *finished*, so the only one that can
@@ -368,12 +371,9 @@ struct KeychainDomainTests {
                 kSecMatchLimit as String: kSecMatchLimitAll
             ]
             domain.apply(to: &query)
-            // Deliberately weaker than `== errSecItemNotFound`, which is
-            // what both domains answer today — a *query* is answered rather
-            // than refused on every configuration this repository builds, which
-            // `theUnreachableDomainRefusesMutationsAndAnswersReadsAsEmpty`
-            // measures. The claim here is only that nothing of the probe's is
-            // findable, and that one survives an entitlement landing.
+            // Deliberately weaker than `== errSecItemNotFound`, which is what both
+            // domains answer today: a *query* is answered rather than refused wherever
+            // this builds, which `theUnreachableDomainRefusesMutationsAndAnswersReadsAsEmpty` measures.
             #expect(SecItemCopyMatching(query as CFDictionary, nil) != errSecSuccess)
         }
     }
