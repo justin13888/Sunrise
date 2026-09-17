@@ -153,11 +153,29 @@ impl TokenWatch {
     /// at every moment, including one parked in `changed` with a write
     /// pending. A guard written that way is dead code, not a staleness check.
     ///
+    /// # Nothing in this tree calls it
+    ///
+    /// Said plainly, because the paragraph below describes a usage pattern and
+    /// a reader is entitled to know whether anyone follows it. `seen` had one
+    /// non-test caller — the driver's dead staleness guard, whose predicate
+    /// was `x != x` precisely because both halves read the source — and
+    /// removing that guard left none. Its only callers now are its own test
+    /// and this doc.
+    ///
     /// What it is for is comparing against a version the *consumer* is
-    /// holding — the one it last acted on, which only the consumer knows.
-    /// `seen() != my_last_version` is the live comparison, and it is why a
-    /// mutant pinning this to a constant is worth killing: it would make
-    /// every write after the first invisible to that consumer.
+    /// holding — the one it last acted on, which only the consumer knows, and
+    /// which therefore cannot live in this type. A consumer that reads the
+    /// token by some other route, does work with it, and stores the version it
+    /// did that work for, asks `seen() != my_last_version` to find out whether
+    /// the token has moved on since. That is a real question and this is the
+    /// only method that answers it; it is simply not a question the sync
+    /// driver asks, because the driver waits on [`TokenWatch::changed`]
+    /// instead of polling, and brings its handle forward with
+    /// [`TokenWatch::mark_current`].
+    ///
+    /// The comparison it must never be used for is staleness of *this handle*:
+    /// `watch.seen() != source.version()` is false for every handle at every
+    /// moment. Use `mark_current` for that.
     #[must_use]
     pub fn seen(&self) -> u64 {
         *self.0.borrow()
