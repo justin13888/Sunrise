@@ -340,11 +340,35 @@ does is not:
   moved, a single transient `SecItemAdd` failure at launch would otherwise make
   the app read an empty login keychain and present the lost-vault screen to a
   user whose vault is intact. The second read can only turn a `nil` into bytes:
-  a refusal from the other domain is swallowed, because on an unsigned Mac a
-  `.dataProtection` query answers `errSecMissingEntitlement` and propagating
-  that would lock every genuine first run out. `clear` deletes across both
-  domains for the same reason — whatever a read can reach, a clear removes, or
-  signing out would leave a live refresh token where the next launch looks.
+  a refusal from the other domain is swallowed, because it is the domain this
+  build did *not* resolve to, so a refusal there means there was nothing of ours
+  to find and propagating it would fail a genuine first run.
+
+  **The entitlement is not what that `try?` defends against**, and an earlier
+  revision of this page said it was. Measured on the same ad-hoc Mac as the
+  three results above: a `.dataProtection` **query** answers
+  `errSecItemNotFound` (-25300). The -34018 refusal is on the *mutating* calls —
+  `SecItemAdd`, `SecItemUpdate` and `SecItemDelete`. The swallow earns its keep
+  on the entitled Mac, where one store can be locked or refuse a prompt while
+  the other answers; on the unsigned one the second read simply finds nothing.
+
+  All three stores `clear` across both domains, for that same rule — whatever a
+  read can reach, a clear removes, or signing out would leave a live refresh
+  token where the next launch looks. Both deletes are *attempted* before either
+  status is raised: the delete is itself refused on the domain this build cannot
+  address, so stopping at the first failure would skip the one copy that was
+  reachable and make the whole cross-domain clear a no-op.
+
+  The **credential** store also `save`s across both, and it is the only one that
+  needs to. Its token is rewritten with no user action — `refreshIfNeeded`
+  renews at 75% of the token's life — so one launch whose probe failed open
+  leaves a fresh token in one keychain and a stale one in the other, and every
+  later launch with a correct probe reads two secrets under one name, raises
+  `.migrationUnverified`, and is signed out in silence. The vault root and the
+  relay device id are written once and never rewritten on the ordinary path, so
+  neither can diverge that way. `KeychainMigration`'s own write is deliberately
+  exempt too: it deletes its source only after the verify step, and a write that
+  removed the other domain would take the source out from under it.
 - `KeychainMigration` — five resumable steps holding one invariant: **a
   readable copy exists at every instant.** Read the destination, read the
   source, write the destination, read it back and compare byte-for-byte, and
