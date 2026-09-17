@@ -401,8 +401,13 @@ struct AccountView: View {
 /// A file-scope view rather than another `@ViewBuilder` var on ``AccountView``
 /// because that type's body is the constrained one here, and because this reads
 /// the way ``DeviceListSection``'s revocation disclosure does — the fact, what
-/// it costs, and the one action that is honest about it. There is no retry
-/// button: the sign-out control is the retry, and it is already on this screen.
+/// it costs, and the actions that are honest about it.
+///
+/// It carries its own **Sign out** because the screen's other one does not
+/// reach here: ``AccountView/accountRow`` renders that button only in the
+/// `.signedIn` arm, and this row renders under `.signedOut` and `.failed`. A
+/// caption telling the user to sign out again with no control to do it with
+/// would be an instruction the app does not offer.
 private struct SignOutIncompleteRow: View {
     let message: String
     let account: AccountModel
@@ -417,11 +422,15 @@ private struct SignOutIncompleteRow: View {
             .foregroundStyle(.orange)
             Text(
                 "The refresh token is still in the Keychain, so the next launch will "
-                    + "sign you back in. Unlock your Keychain and sign out again."
+                    + "sign you back in. Unlock your Keychain, then Sign out here to "
+                    + "try removing it again."
             )
             .font(.caption)
             .foregroundStyle(.secondary)
-            Button("Dismiss") { account.dismissSignOutIncomplete() }
+            HStack(spacing: 12) {
+                Button("Sign out") { account.signOut() }
+                Button("Dismiss") { account.dismissSignOutIncomplete() }
+            }
         }
         .accessibilityIdentifier("account.signOutIncomplete")
     }
