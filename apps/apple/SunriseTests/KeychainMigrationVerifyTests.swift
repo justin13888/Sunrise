@@ -47,9 +47,13 @@ struct KeychainMigrationVerifyTests {
         #expect(try pair.source.read() == secret, "and step 4 must not have run")
     }
 
-    /// The other half of the same guard, asserted beside it so the two
-    /// conditions are pinned in one place: bytes that disagree are still the
-    /// one refusal.
+    /// The second of the two guards the split produced, asserted beside the
+    /// first so the pair reads together: bytes that disagree are still the one
+    /// refusal. Not the only pin on this condition —
+    /// `aDestinationHoldingDifferentBytesIsRefusedAndNothingIsDeleted` in
+    /// `KeychainMigrationTests` asserts the same throw and adds that neither
+    /// copy is deleted, which this case does not. Deleting that one as
+    /// redundant would lose those two survival assertions.
     @Test
     func aDestinationHoldingDifferentBytesIsStillRefused() throws {
         let pair = scratchPair()
