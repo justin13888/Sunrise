@@ -1,4 +1,5 @@
 import Foundation
+import Security
 
 /// Moves one secret from the keychain an older build wrote it to, into the one
 /// this build addresses — without ever leaving zero readable copies.
@@ -40,6 +41,11 @@ import Foundation
 /// source item, because locking a user out over a *destination* problem while
 /// the secret sits perfectly readable in the source is a strictly worse trade
 /// than the one the accessibility raise takes.
+///
+/// A destination that has *gone away* by step 3 is not that case and is not
+/// refused: it raises ``KeychainError/unexpected(_:)`` carrying
+/// `errSecItemNotFound`, which the fallback below absorbs like any other
+/// destination failure. `KeychainMigrationVerifyTests` pins it.
 ///
 /// Nothing on either side is also not an error: neither side holding anything
 /// is first run, and ``KeychainItem/read()`` records why turning that into an
@@ -121,7 +127,9 @@ struct KeychainMigration: Sendable {
     ///   test's error type happening to be distinct.
     /// - Returns: the secret, or `nil` when neither side holds one.
     /// - Throws: ``KeychainError/migrationUnverified`` when the destination
-    ///   holds bytes that are not the source's; an ``Interruption`` wrapping
+    ///   holds bytes that are not the source's; ``KeychainError/unexpected(_:)``
+    ///   carrying `errSecItemNotFound` when the destination no longer exists at
+    ///   all, which the fallback below absorbs; an ``Interruption`` wrapping
     ///   whatever `before` raises; and whatever reading the *source* raises,
     ///   which is the pre-existing "a key may exist and cannot be reached"
     ///   failure this must not soften.
@@ -262,9 +270,18 @@ struct KeychainMigration: Sendable {
         }
 
         try interrupting(.verify, before)
-        guard let verified = try destination.read(), verified == fromSource else {
-            throw KeychainError.migrationUnverified
+        // Two conditions, two answers, and collapsing them cost a session. A
+        // destination that is *gone* by step 3 — a concurrent `clear()` from a
+        // second process, or the row deleted in Keychain Access between step 0
+        // and here — holds no competing secret at all. Raising
+        // `migrationUnverified` for it locks the user out over a destination
+        // problem while the source is still perfectly readable, which is the one
+        // trade this type exists to refuse. `.unexpected` is absorbed by
+        // `run()`'s fallback arm, which answers with the source's bytes.
+        guard let verified = try destination.read() else {
+            throw KeychainError.unexpected(errSecItemNotFound)
         }
+        guard verified == fromSource else { throw KeychainError.migrationUnverified }
 
         try interrupting(.deleteSource, before)
         try source.delete()
