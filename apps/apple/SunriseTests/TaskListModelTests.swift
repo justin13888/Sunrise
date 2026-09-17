@@ -156,6 +156,40 @@ struct TaskListModelTests {
         await vault.bridge.shutdown()
     }
 
+    /// **The same claim with the race taken out — and the reason the test
+    /// above used to fail in CI without failing here.**
+    ///
+    /// Nothing orders `Task { await model.follow() }` against the `submit`
+    /// that follows it. On an idle machine `follow()` wins by a mile, because
+    /// the write is a transaction across the seam and the subscribe is two
+    /// actor hops; under a loaded runner it need not. When it loses, the
+    /// notification is published to nobody — `Core::changes()` is a `tokio`
+    /// broadcast and a receiver created after a send does not get it — and no
+    /// timeout recovers it, which is exactly the shape of the CI failure:
+    /// *condition never became true*, with the title still `nil`.
+    ///
+    /// So this forces the losing interleaving rather than waiting for it. The
+    /// write is finished before anything subscribes, and the list still has to
+    /// end up right — which it does because `changes()` opens with a prime
+    /// that says "re-read", not because the missed event turns up late.
+    @Test
+    func aWriteThatLandedBeforeTheScreenAttachedStillReachesTheList() async throws {
+        let vault = try await TestVault()
+        let model = TaskListModel(bridge: vault.bridge, kind: .inbox)
+        await model.refresh()
+        #expect(model.tasks.isEmpty)
+
+        // Complete, and unannounced to anyone: there is no subscriber yet.
+        _ = try await vault.bridge.submit(.createTask(draft: draft("Landed first")))
+
+        let following = Task { await model.follow() }
+        defer { following.cancel() }
+
+        try await until { model.tasks.count == 1 }
+        #expect(model.tasks.first?.title == "Landed first")
+        await vault.bridge.shutdown()
+    }
+
     /// A bare line captured on Today is *on* Today.
     ///
     /// It used to not be. A draft carries no stream, so the core files it in

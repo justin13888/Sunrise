@@ -424,9 +424,12 @@ struct ReminderSchedulerTests {
 
         let following = Task { await scheduler.follow(debounce: .milliseconds(10)) }
         defer { following.cancel() }
-        // `follow` has to reach `changes()` before the write, or there is no
-        // notification to receive. Two actor hops; this is generous.
-        try? await Task.sleep(for: .milliseconds(100))
+        // There used to be a 100 ms sleep here, to give `follow` time to reach
+        // `changes()` before the write — otherwise there was no notification
+        // to receive. That sleep was this race in a different costume, and it
+        // is gone because `changes()` now opens with a prime: a subscription
+        // that arrives after the write is told to re-read, so which of the two
+        // wins no longer decides anything.
 
         // The write a sync would have delivered — made behind the scheduler's
         // back, exactly as another device's op arrives.

@@ -692,6 +692,28 @@ async fn dispatch(
             // the relay half is a queued intent that needs a session. Printing
             // only "revoked" would let a user with no network believe a stolen
             // laptop had been cut off from the server, which it has not.
+            // Before any of it, because it makes the rest of the report moot.
+            // The fold judges the sender of every `device_revoke` row it
+            // holds, including the one this command has just written, and when
+            // this device is itself revoked the op is stored and skipped on
+            // every replica — so nothing was cut. The keys still rotated and
+            // the target is still a recipient of the new epochs, the register
+            // saying it is current, and the relay half was deliberately not
+            // queued. Printing "revoked" over that would be the same
+            // disclosure failure as printing it over a queued relay intent.
+            if outcome.revocation_gated {
+                println!(
+                    "NOT revoked: this device has itself been revoked, so the account \
+                     discards its revocations of other devices."
+                );
+                println!("  - {} is still a current device", hex16(&target));
+                println!("  - this revocation tells the relay nothing");
+                println!(
+                    "  - the op is kept, not dropped: revoke from a device the account \
+                     still trusts, or see `sunrise devices` for which those are"
+                );
+                return Ok(());
+            }
             println!("Revoked {} locally.", hex16(&target));
             // Not "every Stream key rotated" unconditionally: that was a claim
             // this command could not always make. A vault row whose stream id

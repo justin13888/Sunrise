@@ -143,7 +143,8 @@ struct DeviceListModelTests {
             opId: String(repeating: "0", count: 32),
             seq: 1,
             softViolations: [],
-            unrotatedStreams: ["00aabb", "00ccdd"]
+            unrotatedStreams: ["00aabb", "00ccdd"],
+            revocationGated: false
         )
         let disclosure = DeviceListModel.Revocation(
             nickname: "Old laptop",
@@ -158,6 +159,79 @@ struct DeviceListModelTests {
             """
         )
         #expect(disclosure.relayPending)
+        #expect(!disclosure.gated, "this removal happened; only its rotation was partial")
+    }
+
+    /// **The strongest form of "it did not happen" reaches the disclosure.**
+    ///
+    /// `revocationGated` means the account discarded this vault's own
+    /// `device_revoke` op, because this vault has itself been revoked and a
+    /// revoked device's revocations of third parties are stored and skipped on
+    /// every replica. Nothing was cut: the target stays current, keeps
+    /// receiving keys, and this revocation tells the relay nothing.
+    ///
+    /// Driven from a synthetic `CommandOutcome` for the same reason as the
+    /// test above — producing a real one needs a vault that has revoked the
+    /// device running the test, which this seam cannot build.
+    /// `sunrise-core`'s `revoke_device_reports_that_the_fold_discarded_its_own_op`
+    /// asserts the field is set; this asserts it is carried, which is the line
+    /// on this side that can be dropped.
+    ///
+    /// **`relayPending` is `false` because a gated revocation queues no
+    /// intent of its own**, which is the whole of what this case pins.
+    /// A synthetic outcome can be handed anything, so it has to be handed what
+    /// the account would actually produce or the case is named for a state
+    /// that cannot occur. `relayPending` is not a field of the outcome: it is
+    /// read off the bridge by ``DeviceListModel/revoke(_:reason:)``, and
+    /// `Core::relay_revocation_pending` answers it from a row in
+    /// `relay_revocation_intents` — a queued intent that **will** be sent.
+    /// The gated path inserts none, which the cited Rust test asserts in the
+    /// same breath as the flag, and which is what "this revocation tells the
+    /// relay nothing" above means. The second assertion below holds the
+    /// fixture to it.
+    ///
+    /// It is **not** the only value this state can hold, and this case does
+    /// not claim it is. The guard governs the insert and nothing else: it
+    /// deletes no row, and the fold that unwinds a register row leaves
+    /// `relay_revocation_intents` untouched — the only delete is the sync
+    /// driver's, on a `Revoked` or `Unknown` answer from the relay. So an
+    /// intent queued by an *earlier*, effective revocation of the same device
+    /// outlives that device unwinding back to current, and revoking it again
+    /// reads `gated` beside a `relayPending` that is `true`. That divergence,
+    /// its chain and its options are
+    /// [#257](https://github.com/justin13888/Sunrise/issues/257). It is not
+    /// repaired here: the repair would have the fold write into a table it
+    /// does not own.
+    @Test
+    func theDisclosureSaysWhenTheAccountDiscardedTheRemoval() {
+        let outcome = CommandOutcome(
+            entity: "dev_00000000000000000000000000",
+            state: nil,
+            opId: String(repeating: "0", count: 32),
+            seq: 1,
+            softViolations: [],
+            unrotatedStreams: [],
+            revocationGated: true
+        )
+        let disclosure = DeviceListModel.Revocation(
+            nickname: "Old laptop",
+            outcome: outcome,
+            relayPending: false
+        )
+        #expect(
+            disclosure.gated,
+            """
+            a client that dropped this would print "Removed Old laptop" over a \
+            device that is still current on every replica
+            """
+        )
+        #expect(
+            !disclosure.relayPending,
+            """
+            a gated revocation queues no relay intent of its own, so a flag \
+            this one had set would promise a cut it is not sending
+            """
+        )
     }
 
     /// The disclosure is dismissible and the error is too, so neither becomes

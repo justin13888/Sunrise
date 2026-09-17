@@ -248,3 +248,66 @@ struct ChangeBroadcastTests {
         #expect(await drain(broadcast.subscribe()) == [.closed])
     }
 }
+
+/// `primed()` is what makes a lazily-opened subscription safe to open late.
+struct PrimedChangeStreamTests {
+    /// The prime arrives with nothing behind it, so a screen re-reads before
+    /// anything has happened rather than after the first thing it missed.
+    @Test
+    func aPrimedStreamOpensWithARepaintNobodyPublished() async {
+        let broadcast = ChangeBroadcast()
+        let stream = await broadcast.subscribe()
+            .coalesced(window: .milliseconds(5))
+            .primed()
+        var iterator = stream.makeAsyncIterator()
+
+        let prime = await iterator.next()
+        #expect(prime?.touched.isEmpty == true)
+        #expect(
+            prime?.isComplete == false,
+            "an empty batch that claimed completeness would say 'nothing changed'"
+        )
+        #expect(prime?.isClosed == false)
+        await broadcast.finish()
+    }
+
+    /// And it is a prefix, not a replacement: what is published afterwards
+    /// still arrives behind it.
+    ///
+    /// **No sleeps, and none are needed.** `primed()` yields the prime as its
+    /// first act and only *then* begins consuming upstream, so nothing can
+    /// overtake it however the tasks are scheduled. Every stream in the chain
+    /// buffers unbounded — `subscribe()` says so outright, `coalesced()` and
+    /// `primed()` take `AsyncStream`'s default — so a batch yielded before the
+    /// collector starts iterating is held rather than dropped, and `finish()`
+    /// delivers what is buffered before it ends the stream. `coalesced()` in
+    /// turn refuses to let upstream ending swallow an open window — it flushes
+    /// the batch before finishing its own stream — which is what carries
+    /// `tsk_a` past the `finish()` below. Both assertions therefore hold on
+    /// every interleaving, and a sleep would only be a flake waiting for a
+    /// loaded runner.
+    ///
+    /// Ordering *between* post-prime batches is not claimed here, because one
+    /// published item cannot pin it and separating two into two batches needs a
+    /// pause longer than the coalescing window — a sleep again.
+    /// ``ChangeCoalescingTests/aPauseEndsTheWindow()`` is where that is pinned.
+    @Test
+    func thePrimeDoesNotSwallowWhatFollows() async {
+        let broadcast = ChangeBroadcast()
+        let stream = await broadcast.subscribe()
+            .coalesced(window: .milliseconds(5))
+            .primed()
+
+        let collected = Task { () -> [ChangeBatch] in
+            var batches: [ChangeBatch] = []
+            for await batch in stream { batches.append(batch) }
+            return batches
+        }
+        await broadcast.publish(.entity("tsk_a"))
+        await broadcast.finish()
+
+        let batches = await collected.value
+        #expect(batches.first?.touched.isEmpty == true, "the prime comes first")
+        #expect(batches.contains { $0.touched == ["tsk_a"] })
+    }
+}

@@ -326,9 +326,33 @@ actor CoreBridge {
     /// re-run every query on screen rather than patching the rows named. Every
     /// live consumer is told about a lag, not just the one that was subscribed
     /// first.
+    ///
+    /// **The first batch is always a prime** — empty `touched`, `isComplete`
+    /// false — and it is what makes the subscription safe to open late. The
+    /// subscription itself is established before this method returns; the
+    /// prime then tells the consumer to re-read, so anything written before it
+    /// subscribed is picked up by the query rather than waited for on a feed
+    /// that will never mention it. See ``primed()`` for what that closes.
+    /// **Except onto a vault that has already shut down**, where a prime would
+    /// be an instruction to re-read a core that will refuse the read.
+    /// `Core.query` returns `CoreError.Closed` once `shutdown()` has run,
+    /// nothing on this type guards a query on that, and a model such as
+    /// `TaskListModel` paints the throw — so a feed opened during teardown put
+    /// "core is closed" on screen. Every `follow()` loop guards on
+    /// `isClosed` and would otherwise have been correct; it was the prime in
+    /// front of the close batch that made them all re-read first.
+    ///
+    /// The flag is read after subscribing, not before, and that ordering is
+    /// what makes one read enough: `hasClosed` is sticky, so `true` means
+    /// suppressing is right, and `false` means the prime went out before the
+    /// close and the close batch is behind it. `primed()` itself is unchanged,
+    /// so the decision lives in one place and `PrimedChangeStreamTests` goes
+    /// on testing the extension in isolation.
     func changes(window: Duration = .milliseconds(50)) async -> AsyncStream<ChangeBatch> {
         startListening()
-        return await broadcast.subscribe().coalesced(window: window)
+        let batches = await broadcast.subscribe().coalesced(window: window)
+        let closed = await broadcast.isClosed
+        return closed ? batches : batches.primed()
     }
 
     /// Open the one FFI subscription, on the first screen that asks for it.

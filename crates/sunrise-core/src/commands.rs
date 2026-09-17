@@ -389,6 +389,26 @@ pub struct CommandResult {
     /// not ids; see `Keychain::rotation_set`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unrotated_streams: Vec<String>,
+    /// The fold **discarded** this `RevokeDevice`'s own op, so the account
+    /// records no revocation of the target.
+    ///
+    /// `false` for every command but `RevokeDevice`, and for almost every one
+    /// of those. `true` means this device's standing is the problem rather
+    /// than the target's: `device_revocations` is a fold over every
+    /// `device_revoke` op, and a row whose sender the ledger revokes anywhere
+    /// is stored and skipped (ADR-0041). The op is kept and the judgement is
+    /// re-taken whenever another revocation lands, so this is "not believed
+    /// yet" and not "thrown away".
+    ///
+    /// What the caller must not do is print "revoked". Nothing was cut: the
+    /// target stays current on every replica, it keeps receiving new epochs,
+    /// and the relay's half is deliberately not queued for it — the two
+    /// halves of a revocation are different guarantees and a user is entitled
+    /// to know which they have (issue #160). Same rule as
+    /// `unrotated_streams` above, at the other end of the scale: that one says
+    /// the revocation was incomplete, this one says there was none.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub revocation_gated: bool,
 }
 
 impl CommandResult {
@@ -407,6 +427,7 @@ impl CommandResult {
             seq,
             soft_violations: Vec::new(),
             unrotated_streams: Vec::new(),
+            revocation_gated: false,
         }
     }
 
@@ -414,6 +435,13 @@ impl CommandResult {
     #[must_use]
     pub fn with_unrotated_streams(mut self, v: Vec<String>) -> Self {
         self.unrotated_streams = v;
+        self
+    }
+
+    /// Record that the fold discarded this revocation's own op.
+    #[must_use]
+    pub const fn with_revocation_gated(mut self, v: bool) -> Self {
+        self.revocation_gated = v;
         self
     }
 

@@ -681,6 +681,205 @@ fn a_v13_vaults_revoked_device_becomes_a_device_revocations_row() {
     assert_eq!(reason, "Retired");
 }
 
+/// 0027 seeds its ledger from the register, so an upgraded vault folds *from*
+/// what it already holds rather than from an empty ledger.
+///
+/// Not necessarily *to* what it already holds. What the seed preserves is the
+/// fold's input and not its output: a seeded register holding a chain of
+/// revocations folds to less than it held, which
+/// `crates/sunrise-storage/migrations/0027_device_revoke_ops.sql` traces and
+/// `the_0027_seed_carries_a_chain_of_revocations_into_the_ledger` pins. This
+/// fixture's register holds one row, so here the two coincide.
+///
+/// The seeded sender is the empty blob — a pre-0017 `devices.revoked_at_ms`
+/// names nobody — and that is asserted rather than tolerated: the fold gates on
+/// "is this sender a revoked device", the empty blob matches no device id, and
+/// inventing one here would be the migration claiming a fact the vault does not
+/// have.
+#[test]
+fn a_v13_vaults_revocation_is_seeded_into_the_0027_ledger() {
+    let (_dir, db) = open_migrated(V13_FIXTURE);
+    assert!(table_exists(&db, "device_revoke_ops"));
+    let (sender, revoked, ms, logical): (Vec<u8>, Vec<u8>, i64, i64) = db
+        .conn()
+        .query_row(
+            "SELECT sender, revoked_device_id, op_hlc_ms, op_hlc_logical
+             FROM device_revoke_ops",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .expect("exactly one ledger row");
+    assert!(
+        sender.is_empty(),
+        "a carried-over revocation names no sender"
+    );
+    assert_eq!(revoked, DEVICE_RETIRED.to_vec());
+    assert_eq!(ms, RETIRED_AT_MS);
+    assert_eq!(logical, 0);
+}
+
+/// **Two revocations sharing a cut do not stop the vault opening.**
+///
+/// 0027's seed is a bare `INSERT ... SELECT` out of `device_revocations`, and
+/// `device_revocations` is keyed on `device_id` alone — so two of its rows may
+/// legitimately agree on `(cut_ms, cut_logical, revoked_by)`. Two ways in, both
+/// reachable: a peer emitting two `device_revoke` ops at one HLC before this
+/// vault upgrades, and 0017's own backfill, which gives every pre-0017
+/// `devices.revoked_at_ms` a logical of 0 under an empty `revoked_by` and so
+/// collides whenever two devices were retired in the same millisecond.
+///
+/// Keyed on `(op_hlc_ms, op_hlc_logical, sender)` the seed raised
+/// `SQLITE_CONSTRAINT`, `run_migrations` returned `DbError::Migration`, and
+/// **the vault did not open** — with migrations forward-only and no backout, a
+/// restore from backup replays the same failure. `revoked_device_id` in the key
+/// is what makes the seeded rows distinct by construction, and this is the
+/// assertion that says so about a real file rather than about the DDL.
+///
+/// The colliding rows are built into a temporary copy at run time. The
+/// committed fixture is not touched: regenerating one at the current version
+/// would silently disable every test in this module, which is what
+/// `the_committed_v13_fixture_is_a_sealed_vault_stamped_at_the_baseline`
+/// exists to catch.
+#[test]
+fn a_v17_vault_whose_revocations_share_a_cut_still_opens() {
+    /// Two devices retired in one millisecond by the same party, which is all
+    /// it takes.
+    const FIRST_RETIRED: [u8; 16] = [0xe1; 16];
+    const SECOND_RETIRED: [u8; 16] = [0xe2; 16];
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join(V17_FIXTURE);
+    fs::copy(fixture_dir().join(V17_FIXTURE), &path).expect("copy the v17 fixture");
+    {
+        let raw = Db::open_unmigrated(&path, &fixture_key()).expect("key the existing file");
+        for device in [FIRST_RETIRED, SECOND_RETIRED] {
+            raw.conn()
+                .execute(
+                    "INSERT INTO device_revocations
+                     (device_id, cut_ms, cut_logical, revoked_by, reason, recorded_at_ms)
+                     VALUES (?, ?, 0, ?, 'Retired', ?)",
+                    rusqlite::params![
+                        device.to_vec(),
+                        RETIRED_AT_MS,
+                        DEVICE_LAPTOP.to_vec(),
+                        RETIRED_AT_MS,
+                    ],
+                )
+                .expect("seed a colliding revocation");
+        }
+        raw.conn()
+            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+            .expect("checkpoint");
+    }
+
+    let db = Db::open(&path, &fixture_key())
+        .expect("two revocations at one cut must not stop the migration chain");
+    assert_eq!(stamped_storage_v(&db), u32::from(STORAGE_V));
+    assert_eq!(
+        row_count(&db, "device_revoke_ops"),
+        2,
+        "both revocations are seeded into the ledger; neither is dropped"
+    );
+    let targets: Vec<Vec<u8>> = {
+        let conn = db.conn();
+        let mut stmt = conn
+            .prepare("SELECT revoked_device_id FROM device_revoke_ops ORDER BY revoked_device_id")
+            .expect("prepare");
+        let rows = stmt
+            .query_map([], |r| r.get(0))
+            .expect("query")
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .expect("collect");
+        rows
+    };
+    assert_eq!(
+        targets,
+        vec![FIRST_RETIRED.to_vec(), SECOND_RETIRED.to_vec()],
+        "the two rows are told apart by the device each names"
+    );
+}
+
+/// **A chained register is seeded as a chain, and that is the case the seed's
+/// own reasoning turns on.**
+///
+/// `crates/sunrise-storage/migrations/0027_device_revoke_ops.sql` argues that
+/// what the seed preserves is the fold's **input** and not its output, and its
+/// worked trace is a register holding a chain: `{C revoked by A, A revoked by
+/// B}` seeds `A -> C` and `B -> A`, and at the next `device_revoke` the fold
+/// gates `A -> C` because `A`'s revoker set is `{B}` and `B` is not `C`, so C
+/// leaves the register. That argument is about *these two ledger rows*, and
+/// until this test nothing said they are what the seed produces — a seed that
+/// collapsed a chain, dropped the second row or lost a sender would have left
+/// the comment reasoning about a shape the migration no longer emits.
+///
+/// Only the seed is asserted here: the fold is `sunrise-core`'s and is pinned
+/// on its own side by
+/// `a_revocation_written_before_the_senders_own_cut_is_unwound_when_the_sender_is_revoked`.
+/// What this owns is that the migration hands that fold a chain.
+///
+/// Built into a temporary copy at run time, for the reason
+/// `a_v17_vault_whose_revocations_share_a_cut_still_opens` gives: the committed
+/// fixture is not touched.
+#[test]
+fn the_0027_seed_carries_a_chain_of_revocations_into_the_ledger() {
+    /// `{C revoked by A, A revoked by B}` — retire a laptop from the desktop,
+    /// and months later retire the desktop from the phone.
+    const CHAIN_C: [u8; 16] = [0xc1; 16];
+    const CHAIN_A: [u8; 16] = [0xa1; 16];
+    const CHAIN_B: [u8; 16] = [0xb1; 16];
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join(V17_FIXTURE);
+    fs::copy(fixture_dir().join(V17_FIXTURE), &path).expect("copy the v17 fixture");
+    {
+        let raw = Db::open_unmigrated(&path, &fixture_key()).expect("key the existing file");
+        for (revoked, revoker, cut) in [
+            (CHAIN_C, CHAIN_A, RETIRED_AT_MS),
+            (CHAIN_A, CHAIN_B, RETIRED_AT_MS + 1),
+        ] {
+            raw.conn()
+                .execute(
+                    "INSERT INTO device_revocations
+                     (device_id, cut_ms, cut_logical, revoked_by, reason, recorded_at_ms)
+                     VALUES (?, ?, 0, ?, 'Retired', ?)",
+                    rusqlite::params![revoked.to_vec(), cut, revoker.to_vec(), cut],
+                )
+                .expect("seed a link of the chain");
+        }
+        raw.conn()
+            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+            .expect("checkpoint");
+    }
+
+    let db = Db::open(&path, &fixture_key()).expect("a chained register must still migrate");
+    assert_eq!(stamped_storage_v(&db), u32::from(STORAGE_V));
+
+    let pairs: Vec<(Vec<u8>, Vec<u8>)> = {
+        let conn = db.conn();
+        let mut stmt = conn
+            .prepare(
+                "SELECT sender, revoked_device_id FROM device_revoke_ops
+                 ORDER BY revoked_device_id",
+            )
+            .expect("prepare");
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .expect("query")
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .expect("collect");
+        rows
+    };
+    assert_eq!(
+        pairs,
+        vec![
+            (CHAIN_B.to_vec(), CHAIN_A.to_vec()),
+            (CHAIN_A.to_vec(), CHAIN_C.to_vec()),
+        ],
+        "the seed hands the fold `B -> A` and `A -> C`: two rows, each keeping \
+         the sender that makes it a link"
+    );
+}
+
 /// The one deliberate loss in the chain, asserted as a loss.
 ///
 /// 0017 drops every pre-hierarchy `stream_keys` row because each wrapped a key
