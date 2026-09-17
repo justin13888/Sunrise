@@ -296,10 +296,31 @@ factor of eight. Full local passes at `--jobs 1`, 2026-09-16 at `1d4b484`:
 | `sunrise-domain` | 1 356 | 2 h | ~5.3 s |
 | `sunrise-core` | 1 259 | — | ~15.4 s |
 
+The right-hand column is the `wall` column divided by the `mutants` column —
+full-pass wall clock ÷ mutants. It is an average over a whole pass, not a
+marginal cost per additional mutant, so everything `cargo mutants` spends
+inside one invocation is already amortised into it, **the unmutated baseline
+build it runs once before any mutant included**. The three completed rows
+recompute from the table itself: 960 / 519 = 1.85, 420 / 135 = 3.11,
+7 200 / 1 356 = 5.31. The `wall` column is rounded to whole minutes, which is
+the whole of the gap between 1.85 and the 1.9 recorded beside it.
+
+That definition is what the column means anywhere it is reused. Multiplying it
+by a *shard's* mutant count charges that shard a baseline build already, and
+splitting a crate into more shards adds baseline builds this column does not
+price — which is why `.github/workflows/ci.yml`'s `mutants` timeout comment
+treats more shards as sub-proportional relief rather than free.
+
 `sunrise-core`'s row is a partial sample over its first 76 mutants — it is the
 one crate no local pass has run to completion — and projects to roughly 5.4
 hours whole. It is why `sunrise-core` is still the only scoped crate without a
-recorded floor.
+recorded floor. It is also the one row that cannot be recomputed here, because
+its `wall` cell is empty: nothing in this repository records whether 15.4 is
+the same full-pass average, taken over those 76 mutants, or a marginal rate
+read off `cargo mutants`' own output. The two differ by one baseline build's
+cost spread across 76 mutants — the average carries a 76th of it, the marginal
+rate carries none — so anything derived from 15.4 inherits that ambiguity
+until a completed pass records its wall clock.
 
 Each additional job is another copy of the source tree on
 disk and another resident rustc, which is why `mise run mutants` pins one and
