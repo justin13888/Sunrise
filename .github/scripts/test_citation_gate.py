@@ -585,6 +585,173 @@ class Extensions(GateCase):
             self.assertTrue(extension.islower() and extension.isalnum(), extension)
 
 
+class Symbols(GateCase):
+    """The optional `#symbol` suffix, both of its verdicts, and its silence.
+
+    The suffix exists because the check it sits beside cannot see the failure
+    that actually happens: a citation does not usually rot into a line that is
+    gone, it rots into a line that is still there and now says something else.
+    ADR-0034 is the measured case — eight of its nine `path:line` citations
+    landed on unrelated code inside about one release cycle and every one of
+    them was green here.
+
+    So the two halves below are both load-bearing, and they pull in opposite
+    directions exactly like the anchors do. A suffix that never fires buys
+    nothing; a suffix that fires on a citation which is *fine* turns a
+    widening into a breaking change, and the 1566 citations already in this
+    repository carry no suffix at all and must go on meaning what they meant.
+    `test_a_citation_with_no_suffix_is_unchanged` is the second half, and it
+    is the one to read first if this class ever goes red.
+    """
+
+    RUST = (
+        "/// Doc above the item.\n"           # 1
+        "#[allow(dead_code)]\n"               # 2
+        "pub(super) fn wanted(\n"             # 3
+        "    x: u8,\n"                        # 4
+        ") -> u8 {\n"                         # 5
+        "    x\n"                             # 6
+        "}\n"                                 # 7
+        "\n"                                  # 8
+        "fn elsewhere() -> u8 {\n"            # 9
+        "    0\n"                             # 10
+        "}\n"                                 # 11
+    )
+
+    def rust(self) -> None:
+        self.write("crates/c/src/lib.rs", self.RUST)
+
+    def test_a_symbol_that_contains_the_cited_line_passes(self):
+        self.rust()
+        self.write("docs/a.md", "See `crates/c/src/lib.rs:3#wanted`.\n")
+        self.assert_code(self.run_gate(), CLEAN, "OK: citations clean.", "1 anchored citation(s)")
+
+    def test_a_citation_of_the_symbols_own_doc_comment_is_inside_it(self):
+        # This repository keeps its reasoning in doc comments, so most
+        # citations worth making point at one. A span that stopped at the
+        # `fn` line would fail every one of them.
+        self.rust()
+        self.write("docs/a.md", "See `crates/c/src/lib.rs:1#wanted`.\n")
+        self.assert_code(self.run_gate(), CLEAN, "OK: citations clean.")
+
+    def test_a_symbol_that_does_not_contain_the_cited_line_fails(self):
+        self.rust()
+        self.write("docs/a.md", "See `crates/c/src/lib.rs:10#wanted`.\n")
+        self.assert_code(
+            self.run_gate(),
+            DANGLING,
+            "::error file=docs/a.md,line=1",
+            "cites line 10, but `wanted` in `crates/c/src/lib.rs` spans 1-7.",
+        )
+
+    def test_a_range_that_leaves_the_symbol_fails(self):
+        # Half in is out. A range is one citation and the sentence is about
+        # all of it.
+        self.rust()
+        self.write("docs/a.md", "See `crates/c/src/lib.rs:6-10#wanted`.\n")
+        self.assert_code(self.run_gate(), DANGLING, "cites lines 6-10, but `wanted`")
+
+    def test_a_symbol_the_file_does_not_declare_fails(self):
+        self.rust()
+        self.write("docs/a.md", "See `crates/c/src/lib.rs:3#renamed`.\n")
+        self.assert_code(
+            self.run_gate(),
+            DANGLING,
+            "names `renamed`, which `crates/c/src/lib.rs` does not declare.",
+        )
+
+    def test_a_line_less_citation_checks_only_that_the_symbol_is_there(self):
+        # The form for citing into a file somebody else is rewriting: it
+        # cannot rot into a wrong line because it names none, and it still
+        # fails when the item is renamed away.
+        self.rust()
+        self.write("docs/a.md", "See `crates/c/src/lib.rs#wanted`.\n")
+        self.assert_code(self.run_gate(), CLEAN, "OK: citations clean.", "1 anchored citation(s)")
+
+    def test_a_line_less_citation_of_a_missing_symbol_fails(self):
+        self.rust()
+        self.write("docs/a.md", "See `crates/c/src/lib.rs#renamed`.\n")
+        self.assert_code(self.run_gate(), DANGLING, "does not declare")
+
+    def test_a_name_declared_twice_is_one_target(self):
+        # A trait method and its impl are both `twice`. Taking the first
+        # declaration would fail a correct citation of the second, and a gate
+        # that fails a correct document is worse than one that passes a wrong
+        # one -- which is why `symbol_span` returns a list.
+        self.write(
+            "crates/c/src/lib.rs",
+            "trait T {\n"                    # 1
+            "    fn twice(&self) -> u8;\n"   # 2
+            "}\n"                            # 3
+            "\n"                             # 4
+            "impl T for u8 {\n"              # 5
+            "    fn twice(&self) -> u8 {\n"  # 6
+            "        2\n"                    # 7
+            "    }\n"                        # 8
+            "}\n",                           # 9
+        )
+        self.write("docs/a.md", "See `crates/c/src/lib.rs:2#twice` and `crates/c/src/lib.rs:7#twice`.\n")
+        self.assert_code(self.run_gate(), CLEAN, "OK: citations clean.", "2 anchored citation(s)")
+
+    def test_a_line_in_neither_declaration_names_both_spans(self):
+        self.write(
+            "crates/c/src/lib.rs",
+            "trait T {\n    fn twice(&self) -> u8;\n}\n\nimpl T for u8 {\n"
+            "    fn twice(&self) -> u8 {\n        2\n    }\n}\n",
+        )
+        self.write("docs/a.md", "See `crates/c/src/lib.rs:4#twice`.\n")
+        self.assert_code(self.run_gate(), DANGLING, "spans 2-2, 6-8.")
+
+    def test_a_citation_with_no_suffix_is_unchanged(self):
+        # The widening, asserted as a widening. Every citation in this
+        # repository is this shape, and all three verdicts it can reach have
+        # to be exactly what they were before `#symbol` existed.
+        self.rust()
+        self.write(
+            "docs/a.md",
+            "In range `crates/c/src/lib.rs:10`, whole file `crates/c/src/lib.rs`.\n",
+        )
+        self.assert_code(self.run_gate(), CLEAN, "OK: citations clean.", "2 anchored citation(s)")
+
+        self.write("docs/b.md", "Past the end `crates/c/src/lib.rs:12`.\n")
+        self.assert_code(
+            self.run_gate(),
+            DANGLING,
+            "cites line 12, but `crates/c/src/lib.rs` has 11 line(s).",
+        )
+
+    def test_a_suffix_on_a_target_that_is_not_rust_is_declined(self):
+        # `docs/x.md#heading` is a link fragment, and there is no resolver for
+        # a symbol outside Rust. It must not crash, must not fail, and must
+        # not be counted as checked -- the gate declines the whole span, which
+        # is what it did before the suffix existed too.
+        self.write("docs/b.md", "one\ntwo\n")
+        self.write("Cargo.toml", "[workspace]\n")
+        self.write(
+            "docs/a.md",
+            "See `docs/b.md#heading`, `docs/b.md:1#heading` and `Cargo.toml#package`.\n",
+        )
+        result = self.run_gate()
+        self.assert_code(result, CLEAN, "OK: citations clean.", "0 anchored citation(s)")
+        self.assertNotIn("path-like span(s) were NOT checked", result.stdout)
+
+    def test_a_non_rust_suffix_is_declined_even_when_the_path_is_dangling(self):
+        # The decline happens before resolution, so it is the suffix and not
+        # the file that takes the span out. Stated as its own case because the
+        # alternative reading -- "declined because it resolved" -- is wrong
+        # and would hide a real dangling path the day somebody writes one.
+        self.write("docs/a.md", "See `docs/gone.md#heading`.\n")
+        self.assert_code(self.run_gate(), CLEAN, "OK: citations clean.", "0 anchored citation(s)")
+
+    def test_a_suffix_on_a_directory_is_not_a_crash(self):
+        # A directory has no symbols and `symbol_span` is never reached: the
+        # directory branch answers first. Pinned because a suffix added to
+        # the wrong span is exactly the shape that finds an unguarded path.
+        self.write("schemas/bundle.json/part.json", "{}\n")
+        self.write("docs/a.md", "See `schemas/bundle.json#thing`.\n")
+        self.assert_code(self.run_gate(), CLEAN, "OK: citations clean.")
+
+
 class Allowlist(GateCase):
     """The escape hatch, and the two guards that keep it from rotting."""
 

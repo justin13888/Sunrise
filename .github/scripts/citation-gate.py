@@ -28,12 +28,12 @@ The rule
 --------
 
 A **citation** is an inline code span whose *entire* content is a repository
-path, optionally followed by `:LINE` or `:LINE-LINE`. Three conditions, each
-decidable without an opinion about prose:
+path, optionally followed by `:LINE` or `:LINE-LINE`, optionally followed by
+`#SYMBOL`. Three conditions, each decidable without an opinion about prose:
 
 1. The span content, after CommonMark's one-space strip, matches
-   `<path>(:<start>(-<end>)?)?` and holds nothing else — no spaces, no trailing
-   word, no section reference. `` `see crates/foo.rs` `` is not a citation.
+   `<path>(:<start>(-<end>)?)?(#<symbol>)?` and holds nothing else — no spaces,
+   no trailing word. `` `see crates/foo.rs` `` is not a citation.
 2. The final segment ends in one of the extensions in `EXTENSIONS` below, which
    is the closed set this repository's tracked files actually use. A *shape*
    rule instead of a list reads `task.update`, `Task.blocks` and `focus.end` as
@@ -42,6 +42,42 @@ decidable without an opinion about prose:
    while burying the residue that genuinely needs a person.
 3. The path is **claimed** by an anchor (below). An unclaimed path is not
    checked, and is counted and reported rather than dropped.
+
+The `#symbol` suffix
+--------------------
+
+A line number is the fastest-rotting thing a document can hold, and the check
+above cannot see it rot: a citation that slides onto the wrong line still names
+a line that exists, so the gate passes it and the sentence lies. ADR-0034 is the
+measured case — nine `path:line` citations, **eight** of them pointing at
+unrelated code inside roughly one release cycle, every one of them green here.
+
+So a citation may name the item it means:
+`` `crates/sunrise-core/src/engine/sync.rs:702#is_revoked` ``. When it does, and
+the target is Rust, `symbol_span` finds every declaration of that name in the
+file and the cited line must fall inside one of them. A renamed or deleted
+symbol fails, and so does a line that has drifted out of the symbol it was
+written for. Line-less `path#symbol` is admitted too, and checks only that the
+declaration is still there — which is what a citation into a file somebody else
+is rewriting this week should say.
+
+The suffix is **optional**, and that is load-bearing. Every anchored citation
+already in this repository parses and means exactly what it meant before this
+suffix existed — the grammar was widened, not changed, and no span in the tree
+carried a `#` for the widening to reach. A gate that turns a passing document
+red to add a check has not added a check, it has broken a build.
+
+What it does **not** buy: containment is not aboutness. A citation naming the
+wrong symbol, or the right symbol for the wrong reason, passes — ADR-0034's step
+b citation would have passed had it named `publish_own_cert`. The step from "the
+line exists" to "the line is inside the item named" is the whole of the
+available improvement, and it is a partial one: run against ADR-0034 as it stood
+before the repair, with each citation carrying the symbol the repair gives it,
+this catches **five** of the eight. The three it misses are the three whose line
+had drifted *within* the item it names — `:280` is still inside
+`emit_key_envelopes`, `:936-979` is still inside a 700-line `apply_control_op`,
+and `:381` is inside `backfill_key_envelopes`'s own doc run. Containment is a
+weaker test the larger the item, and nothing line-based fixes that.
 
 Anchors
 -------
@@ -123,7 +159,13 @@ Also out, each for a reason:
   and pulling them in would put this file's own prose under its own rule. Worth
   knowing; recorded here rather than left implied.
 * **Whether the cited line still says what the citing sentence claims.** No tool
-  decides that. This gate answers only "does that line exist".
+  decides that. Without a `#symbol` suffix this gate answers only "does that
+  line exist"; with one it also answers "is that line inside the item named",
+  which is strictly more and still strictly less than aboutness.
+* **A symbol suffix on a target that is not Rust.** There is no resolver for
+  one, and `docs/x.md#heading` is a link fragment rather than a declaration, so
+  the whole span is declined instead of guessed at. Recorded here because the
+  grammar admits it and the check does not.
 
 Usage: citation-gate.py [--root PATH] [--list-unanchored] [--self-test]
 Exit 0 clean, 1 on a dangling citation, 2 if the gate could not run at all.
@@ -138,6 +180,7 @@ import posixpath
 import re
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 
 
@@ -203,9 +246,33 @@ CITATION = re.compile(
         \. (?P<ext> [A-Za-z][A-Za-z0-9]{0,11} )
     )
     (?: : (?P<start>[0-9]{1,9}) (?: - (?P<end>[0-9]{1,9}) )? )?
+    (?: \# (?P<symbol> [A-Za-z_][A-Za-z0-9_]{0,127} ) )?
     $
     """,
     re.VERBOSE,
+)
+
+# The declaration of one named Rust item, at whatever indent it sits.
+#
+# Line-based on purpose: a Rust parser is a dependency this repository does not
+# have in CI, and the two questions asked here — "where does the item start"
+# and "where does it end" — are both answerable from rustfmt's own output,
+# which every file in the tree has been through. `{name}` is `re.escape`d by
+# `symbol_span`.
+#
+# `impl<'a> Foo` is not matched, and neither is a path-qualified `#Engine::f`
+# (the grammar above admits no `::`). Both are misses rather than false
+# failures: an unmatched suffix is reported as a symbol the file does not
+# declare, which is a red check somebody reads, not a silent pass.
+SYMBOL_DECL = (
+    r"^(?P<indent>[ \t]*)"
+    r"(?:pub(?:\([^)]*\))?[ \t]+)?"
+    r"(?:default[ \t]+)?"
+    r"(?:async[ \t]+)?"
+    r"(?:unsafe[ \t]+)?"
+    r"(?:const[ \t]+)?"
+    r"(?:fn|struct|enum|trait|impl|mod|type|static|union)[ \t]+"
+    r"{name}\b"
 )
 
 FENCE = re.compile(r"^[ \t]{0,3}(?P<char>`{3,}|~{3,})(?P<info>.*)$")
@@ -420,6 +487,81 @@ def line_count(path: str) -> int:
     return data.count(b"\n") + (0 if data.endswith(b"\n") else 1)
 
 
+def symbol_span(path: str, name: str) -> list[tuple[int, int]]:
+    """Every span in a Rust file that declares `name`, doc comment included.
+
+    Returns a list rather than the one span the first draft of this reached
+    for, because a name is declared more than once in a single file all over
+    this tree: a trait method and each `impl` of it, a `struct` and the `mod`
+    that shares its name. Taking the first would fail a citation into the
+    second, and a gate that fails a correct document is worse than one that
+    passes a wrong one. Containment is therefore tested against the union.
+
+    A span **starts** at the first line of the contiguous run of `///` lines
+    and `#[…]` attributes above the declaration, so
+    `tests.rs:6388#a_revoked_devices_ops_still_apply_at_the_replica` — a
+    citation of the test's *doc*, which is where this repository puts its
+    reasoning — is inside its own symbol. A multi-line attribute breaks the
+    run and truncates the span, which can only report a citation that is
+    inside; the author then sees a red check rather than a silent pass.
+
+    A span **ends** at the first line that is exactly this declaration's indent
+    followed by `}` — rustfmt guarantees an item's closing brace sits alone at
+    the item's own indent, and matching on that is far steadier than counting
+    braces through string literals and format specifiers. An item with no body
+    (`fn peek(&self) -> Hlc;`, `pub struct Unit;`, `type Alias = …;`) ends at
+    the first line ending in `;` before any `{`, and a one-line item whose
+    braces balance on the declaration ends there. A span whose close is never
+    found runs to the end of the file: over-broad, so it can only pass a
+    citation, never fail one.
+    """
+    try:
+        with open(path, "rb") as handle:
+            lines = handle.read().decode("utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+
+    declaration = re.compile(SYMBOL_DECL.format(name=re.escape(name)))
+    spans: list[tuple[int, int]] = []
+
+    for index, line in enumerate(lines):
+        found = declaration.match(line)
+        if not found:
+            continue
+
+        start = index
+        while start > 0:
+            above = lines[start - 1].strip()
+            if above.startswith("///") or above.startswith("#["):
+                start -= 1
+                continue
+            break
+
+        closing = found.group("indent") + "}"
+        end = len(lines)
+        opened = False
+        for cursor in range(index, len(lines)):
+            body = lines[cursor].rstrip()
+            if cursor > index and body == closing:
+                end = cursor + 1
+                break
+            if "{" in body:
+                # A whole item on its declaration line — `enum E { A, B }` —
+                # never reaches the closing-brace rule, because its brace
+                # never gets a line of its own.
+                if cursor == index and body.count("{") == body.count("}"):
+                    end = cursor + 1
+                    break
+                opened = True
+            if not opened and body.endswith(";"):
+                end = cursor + 1
+                break
+
+        spans.append((start + 1, end))
+
+    return spans
+
+
 def git_tracked(root: str) -> list[str]:
     """Every path git tracks, which is what "this file exists" has to mean.
 
@@ -538,6 +680,15 @@ def classify(span: Span, citing: str, root: str, tree: Tree) -> tuple[str, Findi
     if not match or match.group("ext").lower() not in EXTENSIONS:
         return "skip", None
 
+    symbol = match.group("symbol")
+    if symbol is not None and match.group("ext").lower() != "rs":
+        # `docs/x.md#heading` is a link fragment, not a declaration, and there
+        # is no resolver for a symbol outside Rust. Declining the whole span
+        # keeps such a citation exactly as unchecked as it is today rather
+        # than inventing a verdict for it — and, decisively, it cannot turn a
+        # document red for a suffix the gate never promised to read.
+        return "skip", None
+
     path = match.group("path")
     candidates, claimed, escapes = readings(citing, path, tree)
     if not claimed:
@@ -571,13 +722,24 @@ def classify(span: Span, citing: str, root: str, tree: Tree) -> tuple[str, Findi
             return "checked", None
         return broken("names no file git tracks.")
 
-    if first_line is None:
-        return "checked", None
+    if first_line is not None:
+        total = line_count(posixpath.join(root, target))
+        if last_line is not None and last_line > total:
+            where = f"line {last_line}" if end is None else f"lines {first_line}-{last_line}"
+            return broken(f"cites {where}, but `{target}` has {total} line(s).")
 
-    total = line_count(posixpath.join(root, target))
-    if last_line is not None and last_line > total:
-        where = f"line {last_line}" if end is None else f"lines {first_line}-{last_line}"
-        return broken(f"cites {where}, but `{target}` has {total} line(s).")
+    if symbol is not None:
+        spans = symbol_span(posixpath.join(root, target), symbol)
+        if not spans:
+            return broken(f"names `{symbol}`, which `{target}` does not declare.")
+        if first_line is not None and not any(
+            low <= first_line and (last_line or first_line) <= high for low, high in spans
+        ):
+            where = f"line {first_line}" if end is None else f"lines {first_line}-{last_line}"
+            spelled = ", ".join(f"{low}-{high}" for low, high in spans)
+            return broken(
+                f"cites {where}, but `{symbol}` in `{target}` spans {spelled}."
+            )
 
     return "checked", None
 
@@ -720,6 +882,42 @@ pub fn f() {
 }
 '''
 
+# The one fixture written to disk rather than held as a string, because
+# `symbol_span` reads a file and the rest of the self-test never does. Line
+# numbers are load-bearing and are named in the assertions below:
+#
+#   1-2   doc of `wanted`      3   its attribute     4  its `fn` line
+#   1-9   `wanted`'s span, doc and attribute included
+#   11-13 `other`               15-17 `trait T`        16 `twice`, `;`-ended
+#   19-23 `impl`                20-22 `twice` again, this one with a body
+#
+# `twice` appearing twice is the whole reason `symbol_span` returns a list.
+SYMBOL_FIXTURE = """\
+/// Doc line one.
+/// Doc line two.
+#[allow(dead_code)]
+pub(super) fn wanted(
+    x: u8,
+) -> u8 {
+    let _sql = "SELECT 1 FROM t";
+    x
+}
+
+fn other() -> u8 {
+    0
+}
+
+trait T {
+    fn twice(&self) -> u8;
+}
+
+impl T for u8 {
+    fn twice(&self) -> u8 {
+        2
+    }
+}
+"""
+
 # A tree with one crate, so anchor 3 has something to resolve against, a
 # top-level `tests/`, which is what makes anchors 1 and 3 disagree, and two
 # documents in different directories, which is what anchor 2 is about.
@@ -856,9 +1054,84 @@ def self_test() -> int:
             print(f"::error::citations self-test: `{body}` reported {found}, expected {fragment!r}")
             failures += 1
 
+    # The `#symbol` suffix. These are the only self-test cases that read a
+    # file, so they get a tree of their own rather than this repository's --
+    # the same reason the contract test beside this one synthesises its
+    # fixtures: a case that read the real tree would go red for whatever
+    # somebody edited this week instead of for a change to the rule.
+    with tempfile.TemporaryDirectory() as scratch:
+        fixture = pathlib.Path(scratch) / "crates" / "sunrise-cli" / "src"
+        fixture.mkdir(parents=True)
+        (fixture / "main.rs").write_text(SYMBOL_FIXTURE, encoding="utf-8")
+
+        def symbol_verdict(body: str) -> tuple[str, Finding | None]:
+            return classify(Span(line=1, body=body), "docs/03-crypto/recovery.md", scratch, tree)
+
+        main = "crates/sunrise-cli/src/main.rs"
+
+        # Inside the symbol: the declaration, its doc, and its closing brace.
+        # The doc line matters most -- this repository puts its reasoning in
+        # doc comments, so a citation of one must be inside its own item.
+        for line in (1, 3, 4, 9):
+            verdict_at, found = symbol_verdict(f"{main}:{line}#wanted")
+            if verdict_at != "checked" or found is not None:
+                print(f"::error::citations self-test: `{main}:{line}#wanted` reported {found}, expected clean")
+                failures += 1
+
+        # Outside it, which is the whole point of the suffix.
+        for line in (11, 12, 21):
+            _, found = symbol_verdict(f"{main}:{line}#wanted")
+            if found is None or "spans 1-9" not in found.message:
+                print(f"::error::citations self-test: `{main}:{line}#wanted` reported {found}, expected a span miss")
+                failures += 1
+
+        # A name declared twice is one citation target, not two: the trait
+        # method and its impl are both `twice`, and a line in either is in.
+        for line in (16, 20, 21):
+            _, found = symbol_verdict(f"{main}:{line}#twice")
+            if found is not None:
+                print(f"::error::citations self-test: `{main}:{line}#twice` reported {found}, expected clean")
+                failures += 1
+        _, found = symbol_verdict(f"{main}:12#twice")
+        if found is None or "16-16, 20-22" not in found.message:
+            print(f"::error::citations self-test: `{main}:12#twice` reported {found}, expected both spans named")
+            failures += 1
+
+        # Line-less: checks the declaration is still there and nothing else.
+        # This is the form a citation into a file somebody else is rewriting
+        # should take, so it has to work without a line to contain.
+        _, found = symbol_verdict(f"{main}#wanted")
+        if found is not None:
+            print(f"::error::citations self-test: `{main}#wanted` reported {found}, expected clean")
+            failures += 1
+        _, found = symbol_verdict(f"{main}#absent")
+        if found is None or "does not declare" not in found.message:
+            print(f"::error::citations self-test: `{main}#absent` reported {found}, expected a missing symbol")
+            failures += 1
+        _, found = symbol_verdict(f"{main}:4#absent")
+        if found is None or "does not declare" not in found.message:
+            print(f"::error::citations self-test: `{main}:4#absent` reported {found}, expected a missing symbol")
+            failures += 1
+
+        # No suffix: byte-for-byte the behaviour of every citation in the tree
+        # before this suffix existed. If this moves, the widening was not one.
+        for line, want in ((4, True), (23, True), (24, False)):
+            _, found = symbol_verdict(f"{main}:{line}")
+            if (found is None) != want:
+                print(f"::error::citations self-test: `{main}:{line}` reported {found}, expected {'clean' if want else 'out of range'}")
+                failures += 1
+
+        # A symbol on a target that is not Rust is declined, not failed. The
+        # gate has no resolver for one and `docs/x.md#heading` is a fragment.
+        for body in ("docs/03-crypto/recovery.md#heading", "docs/03-crypto/recovery.md:2#heading",
+                     "Cargo.toml#package", "docs/03-crypto/gone.md#heading"):
+            if symbol_verdict(body)[0] != "skip":
+                print(f"::error::citations self-test: `{body}` was not declined")
+                failures += 1
+
     if failures:
         return 1
-    print("OK: citations self-test clean (46 cases).")
+    print("OK: citations self-test clean (67 cases).")
     return 0
 
 
