@@ -40,13 +40,22 @@
 -- same register whatever order the ops arrived in, and the fold is recomputed
 -- from here each time one lands.
 --
--- It is also what makes the skip recoverable. A cut is an LWW register that
--- moves in both directions on purpose, and when it moves the fold runs again
--- over rows that were never discarded — so a revocation skipped under one cut
--- is folded under a corrected one, with nothing to re-request and no
--- dependence on relay retention. That is the question
--- [#82](https://github.com/justin13888/Sunrise/issues/82) defers, answered by
--- keeping the op rather than by deciding what to do once it is gone.
+-- Keeping the op is also what bounds the skip's cost, though it is worth
+-- being exact about what it does and does not buy. A skipped row is never
+-- discarded, so there is nothing to re-request and no dependence on relay
+-- retention — but nor is it un-skipped by correcting a cut. **The gate reads
+-- no cut**: it is a set question about who has revoked whom, and the HLC
+-- decides only which row wins the register. A correction appends another
+-- revocation of the same sender by the same party, so the gate answers the
+-- same way and the skipped row stays skipped
+-- (`a_cut_correction_does_not_re_fold_a_skipped_revocation`). What un-skips it
+-- is somebody revoking that sender's revoker, which its sender cannot author.
+-- So of the two options
+-- [#82](https://github.com/justin13888/Sunrise/issues/82) defers between —
+-- re-request the op, or accept the loss and say so — this table takes the
+-- second: the op is kept, the *effect* is lost, and the remedy is to revoke
+-- again from a device the account still trusts. ADR-0041 §"What a user sees"
+-- item 3 records it.
 --
 -- The order does not need the op id, and the primary key says why: these four
 -- columns are the op's whole identity **for this fold**. The fold reads the

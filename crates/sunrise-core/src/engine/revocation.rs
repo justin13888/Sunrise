@@ -634,14 +634,32 @@ impl Engine {
     /// `a_mutual_pair_locks_both_devices_out_of_third_party_revocation` pins
     /// the behaviour so it stays deliberate.
     ///
-    /// # Recoverability
+    /// # Recoverability: a cut correction does **not** un-skip a revocation
     ///
-    /// Nothing is discarded, so nothing has to be re-requested. A cut is an LWW
-    /// register that moves in both directions on purpose, and when a corrected
-    /// revocation moves one, this fold runs again over rows that were never
-    /// deleted — so an op skipped under the old cut is folded under the new one.
-    /// That is the question #82 defers, answered by keeping the op rather than
-    /// by choosing what to do once it is gone.
+    /// Nothing is discarded — a skipped op is still in the ledger, so there is
+    /// nothing to re-request — but the skip is not undone by correcting a cut
+    /// either, and the reason is the paragraphs above: **the gate reads no cut
+    /// of any kind**. `revokers_all`, the discount and the walk's condition are
+    /// built from `(sender, revoked)` pairs and nothing else; the HLC decides
+    /// only which row wins the register. Correcting a cut appends a second
+    /// revocation of the same sender by the same party, which changes that
+    /// winner and changes nothing about who has revoked whom — so the gate
+    /// answers the same question the same way, whether the correction is dated
+    /// after the op it would rescue or before it.
+    /// `a_cut_correction_does_not_re_fold_a_skipped_revocation` pins it.
+    ///
+    /// What *does* un-skip a row is the one thing that empties its sender's
+    /// revoker set: somebody revoking that sender's revoker, which is the
+    /// discount above. The row's own sender can never author it, for the reason
+    /// §"Shape two" gives — a device authors only rows whose sender is itself.
+    ///
+    /// So #82's two honest options — re-request the op, or accept the loss and
+    /// say so where a user can see it — are answered with the second, and the
+    /// remedy is the one the rest of this family already has: make the
+    /// revocation again from a device the account still trusts.
+    /// `core.device.revoke_refused` with `reason = "revoked_sender"` is where an
+    /// operator sees that one is needed. ADR-0041 §"What a user sees" item 3
+    /// records the same thing for a reader who starts from the decision.
     fn refold_device_revocations(
         &self,
         tx: &Transaction<'_>,
@@ -960,9 +978,11 @@ impl Engine {
             .iter()
             .any(|s| s.sender == sender[..] && s.hlc_ms == cut && s.hlc_logical == logical)
         {
-            // Not a refusal to record — the row above is still there,
-            // and a later cut correction re-folds it. What was refused
-            // is the *effect*.
+            // Not a refusal to record — the row above is still there, and a
+            // later revocation of this sender's revoker would re-fold it. What
+            // was refused is the *effect*, and correcting the cut does not give
+            // it back: the gate reads no cut. See
+            // [`Self::refold_device_revocations`] §Recoverability.
             tracing::warn!(
                 ev = "core.device.revoke_refused",
                 reason = "revoked_sender",
