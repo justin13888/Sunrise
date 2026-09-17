@@ -401,18 +401,44 @@ does is not:
   `KeychainMigration` that a just-written destination is authoritative, which is
   a change to the verify step and not to either cross-domain mutation.
 
-  Two lines here are **declared untestable** rather than left to be
-  re-discovered, on the same rule the rest of this page follows.
-  `meansTheOtherStoreWasUnreachable` returning *false* — the raise itself —
-  executes in no test: every other-domain delete this repository can build
-  either succeeds or is refused with the missing-entitlement status, so the
-  predicate is only ever asked about a status it answers `true` to. And the
-  cross-domain clear's tie-break, that this domain's status wins when both
-  deletes refuse, is pinned by nothing: the one case that reaches the
-  other-domain arm has that delete *succeed*, so inverting the tie-break leaves
-  it green. Both need the other keychain locked, or a prompt denied, in the
-  middle of a case — which needs an entitled, signed build, not a
-  fault-injection seam inside the type that holds the vault root.
+  **Six lines are declared untestable** rather than left to be re-discovered,
+  on the same rule the rest of this page follows. Four are in the pair of
+  cross-domain mutations described above and a fifth in the `save` that
+  consumes one of them; this is the whole set, and the only count of it, since
+  an earlier revision of this page named two of the six here while a second
+  record named five:
+
+  1. `writeAcrossDomains`'s raise of `writtenButOtherDomainRefused`. Every
+     other-domain delete this repository can build either succeeds or is
+     refused with the missing-entitlement status, which is swallowed before it
+     reaches the re-label.
+  2. The same method's cross-domain **delete effect**, the other domain's copy
+     actually being removed. Nothing this suite can stage puts a copy where the
+     delete would find it and still lets the delete run: an item addressed at
+     the domain this build cannot reach throws out of `write` first, and on iOS
+     the guard short-circuits.
+  3. `meansTheOtherStoreWasUnreachable` returning *false* — the raise itself —
+     for the same reason as 1: the predicate is only ever asked about a status
+     it answers `true` to.
+  4. The cross-domain clear's **tie-break**, that this domain's status wins
+     when both deletes refuse. The one case that reaches the other-domain arm
+     has that delete *succeed*, so inverting the tie-break leaves it green.
+  5. `KeychainCredentialStore.save`'s `catch`, which the swallowed
+     missing-entitlement refusal never reaches.
+  6. `KeychainMigration.loadMigratingIfNeeded`'s destination-step throw, which
+     needs a lock or a denial landing between the source reads and either of
+     the two destination calls.
+
+  What the set needs is the other keychain locked, or a prompt denied, **in the
+  middle of a running case** — and that is not an entitled, signed build, which
+  is what this page used to say. A locked login keychain or a denied prompt
+  already returns a hard status on the ad-hoc build this repository produces,
+  so the statuses these lines wait for are reachable here today; what no suite
+  here can drive is the lock or the denial arriving mid-case, because the suite
+  holds the keychain unlocked for its whole run by construction. Nor is the
+  answer a fault-injection seam inside the type that holds the vault root,
+  rejected four times on this change for one reason: it would be a second
+  implementation of `Security.framework` to get wrong.
 
   The **credential** store also `save`s across both, and it is the only one that
   needs to. Its token is rewritten with no user action — `refreshIfNeeded`
@@ -446,9 +472,31 @@ probe answers `.login` on an unsigned or ad-hoc-signed Mac, and iOS has only
 one keychain, so in both cases the migration's source and destination are two
 names for one stored item and it does nothing at all — a case the code checks
 for explicitly and the tests pin, because a migration that missed it would
-verify that item against itself and then delete it. What is left for whoever
-holds an Apple team is the entitlements file, `DEVELOPMENT_TEAM`, and turning
-the probe's answer over on macOS.
+verify that item against itself and then delete it.
+
+What is left for whoever holds an Apple team is the entitlements file,
+`DEVELOPMENT_TEAM`, turning the probe's answer over on macOS — **and five test
+assertions.** The *shipping* code needs no further change on this side; the
+suite does, and "no further code change is needed" said without that
+qualification is not exact. Five assertions encode the fact that this build
+reaches exactly one domain, and each is a true statement today that a team
+makes false:
+
+- `theProbeAnswersWhatThisBuildCanActuallyReach` — `KeychainMigrationTests`
+- `aDestinationThisBuildCannotReachFallsBackToTheSource`
+- `theUnreachableDomainRefusesMutationsAndAnswersReadsAsEmpty`
+- `aRefusalOnThisDomainDoesNotSpareTheCopyInTheOther`
+- `aWriteRefusedInItsOwnDomainIsNotReportedAsAPartialSuccess`
+
+The last four are in `KeychainMigrationFallbackTests`, which is `macOS`-only.
+Each of the five is **rewritten to assert the entitled behaviour** — not
+deleted, and not guarded by an availability check. Deleting them drops the
+coverage exactly when the path first runs for real, and four of the five are
+the only pins on their behaviour; guarding them leaves the entitled
+configuration asserting nothing. (The two platform-conditional accessibility
+expectations in `VaultRootStoreTests` flip with them and already say so where
+they sit; they are constants rather than assertions, and are not part of the
+five.)
 
 The **hardened runtime**, which is a different setting, is on and has to be:
 Apple's notary service rejects a submission without it.

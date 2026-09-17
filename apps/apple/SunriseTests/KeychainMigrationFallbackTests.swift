@@ -53,6 +53,12 @@ struct KeychainMigrationFallbackTests {
     /// the secret. This is the arm decision 3 chose over throwing, and the one
     /// whose value `load` has to consume — a caller that discards it and reads
     /// the destination instead sees nothing and reports a lost vault.
+    ///
+    /// Its last assertion is one of the **five** an entitlement turns false: with
+    /// a team the destination is reachable, the migration completes, and the
+    /// source is deleted. `KeychainMigrationTests`'
+    /// `theProbeAnswersWhatThisBuildCanActuallyReach` lists the five and what is
+    /// done with them.
     @Test
     func aDestinationThisBuildCannotReachFallsBackToTheSource() throws {
         let pair = crossDomainPair()
@@ -104,6 +110,12 @@ struct KeychainMigrationFallbackTests {
     /// cross-domain read can be observed returning bytes, and why a
     /// cross-domain delete can be observed running after its own domain has
     /// already refused.
+    ///
+    /// One of the **five** an entitlement turns false, and the one that is three
+    /// assertions rather than one: every `errSecMissingEntitlement` expectation
+    /// below flips. `KeychainMigrationTests`'
+    /// `theProbeAnswersWhatThisBuildCanActuallyReach` lists the five and what is
+    /// done with them.
     @Test
     func theUnreachableDomainRefusesMutationsAndAnswersReadsAsEmpty() {
         let service = "dev.sunrise.Sunrise.tests.\(UUID().uuidString).statuses"
@@ -225,6 +237,12 @@ struct KeychainMigrationFallbackTests {
     /// stop left the one copy a `load` can still find sitting in the keychain —
     /// a live refresh token behind a Sign out the user was told had worked.
     /// Both are attempted; the refusal is still raised afterwards.
+    ///
+    /// Its first assertion is one of the **five** an entitlement turns false: with
+    /// a team this domain's own delete succeeds and nothing is raised.
+    /// `KeychainMigrationTests`'
+    /// `theProbeAnswersWhatThisBuildCanActuallyReach` lists the five and what is
+    /// done with them.
     @Test
     func aRefusalOnThisDomainDoesNotSpareTheCopyInTheOther() throws {
         let service = "dev.sunrise.Sunrise.tests.\(UUID().uuidString).cross-delete"
@@ -261,6 +279,11 @@ struct KeychainMigrationFallbackTests {
     /// refused and the other-domain delete is never reached. That is the same
     /// refusal `theUnreachableDomainRefusesMutationsAndAnswersReadsAsEmpty`
     /// measures on `SecItemUpdate` and `SecItemAdd`.
+    ///
+    /// Its throws-expectation is one of the **five** an entitlement turns false:
+    /// with a team the write is not refused at all. `KeychainMigrationTests`'
+    /// `theProbeAnswersWhatThisBuildCanActuallyReach` lists the five and what is
+    /// done with them.
     @Test
     func aWriteRefusedInItsOwnDomainIsNotReportedAsAPartialSuccess() throws {
         let addressed = KeychainItem(

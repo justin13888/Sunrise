@@ -120,16 +120,15 @@ struct KeychainItem: Sendable {
     /// well enough to say no, and a copy of ours may be sitting in it.
     ///
     /// **The `false` answer executes in no test**, declared here on the method
-    /// that owns it as this branch declared the write's delete effect and the
-    /// load path's catch arm. Every other-domain delete this repository builds
-    /// either *succeeds*, as
+    /// that owns it; it is one of six, listed in `docs/07-clients/desktop.md`.
+    /// Every other-domain delete this repository builds either *succeeds*, as
     /// `aRefusalOnThisDomainDoesNotSpareTheCopyInTheOther`'s does, so never asks
     /// this, or is refused with `errSecMissingEntitlement` — so the predicate is
     /// only ever asked about a status it answers `true` to, which is what
     /// `aCrossDomainWriteKeepsWhatItJustWrote` pins. The `false` needs the other
-    /// keychain locked or a prompt denied mid-case, which
-    /// ``KeychainMigration/loadMigratingIfNeeded()`` records this suite cannot
-    /// arrange: an entitled, signed build, not a seam.
+    /// keychain locked or a prompt denied *while a case runs*: a hard status the
+    /// ad-hoc build already produces, that no entitlement supplies and that this
+    /// suite — holding the keychain unlocked throughout — cannot arrange.
     private static func meansTheOtherStoreWasUnreachable(_ status: OSStatus) -> Bool {
         status == errSecMissingEntitlement || status == errSecItemNotFound
     }
@@ -290,22 +289,23 @@ struct KeychainItem: Sendable {
     /// I/O failure, refuses a *write* there too.
     ///
     /// **This half is untested by construction, and saying so is the point.**
-    /// The cross-domain delete's own effect — the other domain's copy being
-    /// removed — is observable in no configuration this repository builds. On
-    /// macOS a copy cannot be planted in the unreachable domain in the first
-    /// place, and an item addressed *there* throws out of ``write(_:)`` before
-    /// the delete is ever reached; on iOS the guard below short-circuits.
-    /// ``deleteAcrossDomains()`` solved the same problem by inverting which
-    /// domain the item is addressed in — its own delete is refused while the
-    /// other domain's succeeds — and that inversion cannot work here, because
+    /// Two of the six are here: the raise below, and the cross-domain delete's
+    /// own effect — the other domain's copy being removed — observable in no
+    /// configuration this repository builds. On macOS a copy cannot be planted
+    /// in the unreachable domain, and an item addressed *there* throws out of
+    /// ``write(_:)`` before the delete is reached; on iOS the guard below
+    /// short-circuits. ``deleteAcrossDomains()`` inverted which domain the item
+    /// is addressed in to solve the same problem — its own delete refused, the
+    /// other domain's succeeding — and that inversion cannot work here, because
     /// the inverted item's *write* fails first. What
-    /// `aCrossDomainWriteKeepsWhatItJustWrote` does pin is the two properties
-    /// that are reachable: the write survives on macOS when the other domain
-    /// refuses, and the delete is guarded on iOS where the two domains are one
-    /// store. Closing the rest needs an entitled, signed build — not a
-    /// fault-injection seam inside the type that holds the vault root, which
-    /// this change has now rejected three times for one reason: it would be a
-    /// second implementation of `Security.framework` to get wrong.
+    /// `aCrossDomainWriteKeepsWhatItJustWrote` does pin is the two reachable
+    /// properties: the write survives on macOS when the other domain refuses,
+    /// and the delete is guarded on iOS where the domains are one store. The raise
+    /// needs the other keychain locked or a prompt denied *while a case runs*, which
+    /// this suite cannot drive and no entitlement supplies; the delete's effect needs
+    /// a copy this suite cannot stage. Neither wants a fault-injection seam inside the
+    /// type that holds the vault root, rejected four times now: it would be a second
+    /// implementation of `Security.framework` to get wrong.
     ///
     /// **Deliberately not folded into ``write(_:)``.**
     /// ``KeychainMigration/migrate(before:)`` writes its destination and only
@@ -422,14 +422,14 @@ struct KeychainItem: Sendable {
     /// the throw with a `try?` of its own, so raising it here does not by
     /// itself reach the user; that is tracked separately.
     ///
-    /// **The tie-break below executes in no test**, and this declares it. The
-    /// `??` needs *both* deletes to refuse, and the one case reaching the
-    /// other-domain arm, `aRefusalOnThisDomainDoesNotSpareTheCopyInTheOther`,
-    /// has that delete *succeed* — so inverting the tie-break, or replacing the
-    /// `??` with a plain assignment, leaves it green. It asserts that *a*
-    /// ``KeychainError`` is raised, not which. Both refusing at once needs the
-    /// locked keychain ``meansTheOtherStoreWasUnreachable(_:)`` records this
-    /// suite cannot produce: an entitled, signed build, not a seam.
+    /// **The tie-break below executes in no test**, and this declares it — one of the
+    /// six. The `??` needs *both* deletes to refuse, and the one case reaching the
+    /// other-domain arm, `aRefusalOnThisDomainDoesNotSpareTheCopyInTheOther`, has that
+    /// delete *succeed* — so inverting the tie-break, or replacing the `??` with a plain
+    /// assignment, leaves it green. It asserts that *a* ``KeychainError`` is raised, not
+    /// which. Both refusing at once needs the locked keychain
+    /// ``meansTheOtherStoreWasUnreachable(_:)`` records this suite cannot produce
+    /// mid-case, which no entitlement supplies either.
     func deleteAcrossDomains() throws {
         // Named for what it is rather than for which domain produced it: since
         // the other domain's refusal became raisable, either delete can be the

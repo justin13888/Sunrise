@@ -210,9 +210,15 @@ struct KeychainMigration: Sendable {
     /// destination calls below.
     ///
     /// The conclusion survives the premise: what no test in this repository can
-    /// do is *arrange* that race, because locking the login keychain in the
-    /// middle of a case is not something this suite can drive. So the arm still
-    /// executes in no test. Closing it needs an entitled, signed build — or a
+    /// do is *arrange* that race, because locking the login keychain — or
+    /// forcing a denied prompt — part-way through a running case is not
+    /// something this suite can drive. It holds the keychain unlocked for its
+    /// whole run by construction. So the arm still executes in no test, and it
+    /// is one of the six lines this change declares untestable, listed together
+    /// in `docs/07-clients/desktop.md`. What closes it is not an entitled,
+    /// signed build, which an earlier revision of this comment named: the hard
+    /// status is already reachable on the ad-hoc build this repository
+    /// produces, which is the paragraph above's whole point. Nor is it a
     /// fault-injection seam inside ``KeychainItem``, which would be a second
     /// implementation of `Security.framework` to get wrong.
     ///

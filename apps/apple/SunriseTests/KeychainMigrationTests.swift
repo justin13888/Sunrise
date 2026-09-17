@@ -378,13 +378,20 @@ struct KeychainDomainTests {
         }
     }
 
-    /// What the probe answers on the configurations this repository builds,
-    /// and the one assertion that would change the day an entitlement lands.
-    /// iOS has the data-protection keychain and nothing else. The Mac app is
-    /// ad-hoc signed with no `keychain-access-groups` entitlement, so
-    /// `SecItemAdd` with `kSecUseDataProtectionKeychain` returns
-    /// `errSecMissingEntitlement` and the probe falls open to the login
-    /// keychain — which is exactly why this change is behaviourally inert here.
+    /// What the probe answers on the configurations this repository builds, and **one
+    /// of five** assertions that change the day an entitlement lands — an earlier
+    /// revision of this line called it the only one. The other four are in
+    /// `KeychainMigrationFallbackTests`: `aDestinationThisBuildCannotReachFallsBackToTheSource`,
+    /// `theUnreachableDomainRefusesMutationsAndAnswersReadsAsEmpty`,
+    /// `aRefusalOnThisDomainDoesNotSpareTheCopyInTheOther` and
+    /// `aWriteRefusedInItsOwnDomainIsNotReportedAsAPartialSuccess`. All five are
+    /// **rewritten to assert the entitled behaviour**, not deleted and not guarded:
+    /// deleting drops the coverage exactly when the path first runs for real, guarding
+    /// leaves the entitled build asserting nothing. `docs/07-clients/desktop.md` names
+    /// the same five under its Apple-team handoff. iOS has the data-protection keychain
+    /// and nothing else; the Mac app is ad-hoc signed with no `keychain-access-groups`
+    /// entitlement, so `SecItemAdd` with `kSecUseDataProtectionKeychain` is refused and
+    /// the probe falls open to the login keychain — which is why this change is inert.
     @Test
     func theProbeAnswersWhatThisBuildCanActuallyReach() {
         #if os(iOS)
