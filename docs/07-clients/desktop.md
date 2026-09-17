@@ -401,13 +401,14 @@ does is not:
   `KeychainMigration` that a just-written destination is authoritative, which is
   a change to the verify step and not to either cross-domain mutation.
 
-  **Six lines are declared untestable** rather than left to be re-discovered,
+  **Seven lines are declared untestable** rather than left to be re-discovered,
   on the same rule the rest of this page follows. Three of them are in the pair
   of cross-domain mutations described above (1, 2 and 4), one is in the
   predicate both of those consult (3), one is in the `save` that consumes the
-  write (5), and one is in `loadMigratingIfNeeded` (6). This is the whole set
-  and the only count of it, since an earlier revision of this page named two of
-  the six here while a second record named five:
+  write (5), one is in `loadMigratingIfNeeded` (6), and one is in the
+  cross-domain **read** (7). This is the whole set and the only count of it,
+  since an earlier revision of this page named two of the seven here while a
+  second record named five:
 
   1. `writeAcrossDomains`'s raise of `writtenButOtherDomainRefused`. Every
      other-domain delete this repository can build either succeeds or is
@@ -433,7 +434,24 @@ does is not:
      raise, so it carries item 1's preconditions and item 3's with them.
   6. `KeychainMigration.loadMigratingIfNeeded`'s destination-step throw, which
      needs a lock or a denial landing between the source reads and either of
-     the two destination calls.
+     the two destination calls. This is **one item with three branches**, and
+     each is declared rather than folded into the line the `catch` starts on:
+     the `accessibilityNotRaised` rethrow, which needs
+     `upgradeAccessibilityIfNeeded` to reach its `SecItemUpdate` and be refused
+     — it returns early on both of this build's routes instead; the
+     `guard let migrated else` re-raise, which needs the `do` to throw with
+     nothing rescued from the source; and the `return migrated` rescue, which
+     needs it to throw with something rescued. The two fallback cases that call
+     this address their destination at `.dataProtection`, so neither enters the
+     `catch` at all.
+  7. `readAcrossDomains`'s `try?` around the other domain's read. Every shape
+     this build reaches answers that read rather than refusing it:
+     `.dataProtection` returns `errSecItemNotFound`, `.login` answers cleanly,
+     and on iOS the `domainsAreDistinctStores` guard short-circuits before the
+     `try?`. So it swallows nothing, and replacing `try?` with `try` leaves the
+     whole suite green. It stays blanket for the reason `readAcrossDomains`
+     records — a refused *read* has changed nothing, and raising it would turn
+     a genuine first run into "a key may exist and cannot be reached".
 
   **The set does not split in two, and an earlier revision of this page said it
   did.** It splits three ways, because two of the items wait on *both* blockers
@@ -500,18 +518,18 @@ does is not:
   keychain gives a hard status there on an ad-hoc build today. Item 1 has no
   such route, because its write throws before its delete runs.
 
-  Nor, for any of the six, is the answer a fault-injection seam inside the type
+  Nor, for any of the seven, is the answer a fault-injection seam inside the type
   that holds the vault root, rejected four times on this change for one reason:
   it would be a second implementation of `Security.framework` to get wrong.
 
-  **Separately, and not one of the six: `theProbeDeletesWhateverItWrote` is
+  **Separately, and not one of the seven: `theProbeDeletesWhateverItWrote` is
   vacuous on macOS.** That `KeychainMigrationTests` case asserts nothing under
   `probeService` is findable in either domain once `probe()` has run — but on
   this build the probe's `SecItemAdd` into `.dataProtection` is refused, so
   nothing is ever written, and deleting or not deleting gives the same answer.
   Removing the cleanup loop from `probe()` altogether leaves the case green on
   every macOS run; it has teeth only on iOS, where the add succeeds. It is not
-  in the six, because it needs no keychain state this machine cannot produce —
+  in the seven, because it needs no keychain state this machine cannot produce —
   it needs only to run on iOS, which it already does. The case carries a
   one-clause marker; the declaration is recorded here in full because
   `KeychainMigrationTests.swift` sits exactly on the 520-line `file_length`

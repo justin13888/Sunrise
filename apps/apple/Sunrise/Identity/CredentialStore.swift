@@ -183,7 +183,7 @@ struct KeychainCredentialStore: CredentialStore {
     /// lost session on top of it.
     ///
     /// **This `catch` executes in no test**, and this declares it — one of the
-    /// six listed in `docs/07-clients/desktop.md`, where it is item 5. It is
+    /// seven listed in `docs/07-clients/desktop.md`, where it is item 5. It is
     /// reached only through `KeychainItem.writeAcrossDomains`'s raise of
     /// `writtenButOtherDomainRefused`, item 1 of that set, so it inherits item
     /// 1's blocker exactly: the raise needs the write to succeed in its own

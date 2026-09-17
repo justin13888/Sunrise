@@ -312,7 +312,7 @@ struct KeychainMigrationFallbackTests {
 /// with its message never read — so both user-facing blocks executed in no test
 /// until these two cases.
 ///
-/// They are **not** part of the six lines declared untestable in
+/// They are **not** part of the seven lines declared untestable in
 /// `docs/07-clients/desktop.md`. Those need a keychain state this machine cannot
 /// produce; a `switch` over an enum makes no `Security.framework` call at all,
 /// which is why these close here rather than joining the declared set.

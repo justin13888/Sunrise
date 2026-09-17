@@ -222,11 +222,40 @@ struct KeychainMigration: Sendable {
     /// forcing a denied prompt — part-way through a running case is not
     /// something this suite can drive. It holds the keychain unlocked for its
     /// whole run by construction. So the arm still executes in no test, and it
-    /// is one of the six lines this change declares untestable, listed together
-    /// in `docs/07-clients/desktop.md`. What closes it is not an entitled,
-    /// signed build, which an earlier revision of this comment named: the hard
-    /// status is already reachable on the ad-hoc build this repository
-    /// produces, which is the paragraph above's whole point. Nor is it a
+    /// is one of the seven lines this change declares untestable, listed
+    /// together in `docs/07-clients/desktop.md`, where it is item 6.
+    ///
+    /// **Item 6 is one item with three branches, and each is declared here**
+    /// rather than left inside a single line-level claim — the set's own rule
+    /// is per line, and applying it to the `catch` as a whole was how three
+    /// behaviours came to be recorded as one:
+    ///
+    /// - `if case .accessibilityNotRaised = error { throw error }` needs
+    ///   ``KeychainItem/upgradeAccessibilityIfNeeded()`` to reach its
+    ///   `SecItemUpdate` and be refused. It cannot here: the lookup returns
+    ///   early on `errSecItemNotFound`, which is what a `.dataProtection`
+    ///   query answers on every build this repository makes, and on `.login`
+    ///   the file-based keychain reports no `kSecAttrAccessible` at all, so
+    ///   the second guard returns early too.
+    /// - `guard let migrated else { throw error }` needs the `do` to throw
+    ///   *and* `migrated` to be `nil`.
+    /// - `return migrated` needs the `do` to throw *and* `migrated` to be
+    ///   non-`nil`.
+    ///
+    /// The last two share the `do`'s throw, and it holds exactly two calls:
+    /// the accessibility raise, which cannot raise here for the reason above,
+    /// and ``KeychainItem/readAcrossDomains()``, whose only raising read is its
+    /// first — a `.login` read never refuses on this build, and a
+    /// `.dataProtection` read answers `errSecItemNotFound`, pinned by
+    /// `theUnreachableDomainRefusesMutationsAndAnswersReadsAsEmpty`.
+    /// `.malformedItem` is out of reach because `kSecReturnData` on a generic
+    /// password always yields `CFData`. Both fallback cases that call this
+    /// address their destination at `.dataProtection`, so neither enters the
+    /// `catch` at all. All three branches execute in no test, and none of them
+    /// is pinnable here. What closes them is not an entitled, signed build,
+    /// which an earlier revision of this comment named: the hard status is
+    /// already reachable on the ad-hoc build this repository produces, which is
+    /// the paragraph above's whole point. Nor are they closed by a
     /// fault-injection seam inside ``KeychainItem``, which would be a second
     /// implementation of `Security.framework` to get wrong.
     ///

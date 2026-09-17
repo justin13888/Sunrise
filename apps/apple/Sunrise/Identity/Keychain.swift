@@ -120,7 +120,7 @@ struct KeychainItem: Sendable {
     /// well enough to say no, and a copy of ours may be sitting in it.
     ///
     /// **The `false` answer executes in no test**, declared here on the method
-    /// that owns it; it is one of six, listed in `docs/07-clients/desktop.md`.
+    /// that owns it; it is one of seven, listed in `docs/07-clients/desktop.md`.
     /// Every other-domain delete this repository builds either *succeeds*, as
     /// `aRefusalOnThisDomainDoesNotSpareTheCopyInTheOther`'s does, so never asks
     /// this, or is refused with `errSecMissingEntitlement` — so the predicate is
@@ -200,6 +200,16 @@ struct KeychainItem: Sendable {
     /// can be locked or can refuse a prompt while this one answers; on the
     /// unsigned one no read is refused and the second read simply finds
     /// nothing.
+    ///
+    /// **This swallow executes in no test**, and this declares it — item 7. On
+    /// every build this repository makes the other domain's *read* is answered
+    /// rather than refused: `.dataProtection` returns `errSecItemNotFound`
+    /// (pinned by `theUnreachableDomainRefusesMutationsAndAnswersReadsAsEmpty`),
+    /// `.login` answers cleanly, and on iOS the guard below short-circuits
+    /// before the `try?` is reached. So it absorbs nothing, and replacing `try?`
+    /// with `try` leaves the whole suite green. It joins items 3, 4 and 6 on the
+    /// refusal side: it needs the other store to refuse a read on its own terms
+    /// while a case is running. Reach supplies no part of it.
     func readAcrossDomains() throws -> Data? {
         if let data = try read() { return data }
         guard KeychainDomain.domainsAreDistinctStores else { return nil }
@@ -430,7 +440,7 @@ struct KeychainItem: Sendable {
     /// itself reach the user; that is tracked separately.
     ///
     /// **The tie-break below executes in no test**, and this declares it — one of the
-    /// six. The `??` needs *both* deletes to refuse, and the one case reaching the
+    /// seven. The `??` needs *both* deletes to refuse, and the one case reaching the
     /// other-domain arm, `aRefusalOnThisDomainDoesNotSpareTheCopyInTheOther`, has that
     /// delete *succeed* — so inverting the tie-break, or replacing the `??` with a plain
     /// assignment, leaves it green. It asserts that *a* ``KeychainError`` is raised, not
