@@ -684,8 +684,9 @@ fn ops_run_end(
 /// [`Engine::apply_remote_all`] (`crates/sunrise-core/src/engine/sync.rs`)
 /// dispatches a control op into [`Engine::apply_control_op`], whose
 /// `DeviceCertPublish` arm calls [`Engine::backfill_key_envelopes`] in this
-/// file, and that function opens with [`Engine::is_revoked`] — a read of the
-/// register, inside the apply transaction, on remote input.
+/// file, and that function consults [`Engine::is_revoked`] before it seals
+/// anything — a read of the register, inside the apply transaction, on remote
+/// input.
 ///
 /// What that read decides is which stream keys a newly certified device is
 /// sealed: on a revoked one it returns early and seals none. What it does
@@ -710,10 +711,11 @@ fn ops_run_end(
 /// [`Engine::ops_insert_at`] at the tail of this device's own emit, after the
 /// op-log insert and the outbox enqueue.
 ///
-/// One refusal does survive, and it is not an op's. [`Engine::apply_control_op`]
-/// refuses a `device_revoke` that names its own sender — logging
-/// `core.device.revoke_refused` with `reason = "self"` — and writes no register
-/// row. That refuses a *register write* rather than the delivery: the op row
+/// One refusal does survive in the revocation machinery, and it is not an
+/// op's. [`Engine::apply_control_op`] refuses a `device_revoke` that names its
+/// own sender — logging `core.device.revoke_refused` with `reason = "self"`,
+/// which `sync.rs`'s `device_revoke` arm is the tree's one emitter of — and
+/// writes no register row. That refuses a *register write* rather than the delivery: the op row
 /// went in before the control op was dispatched, so this still runs afterwards
 /// and the cursor **advances past it**. A reader who greps `revoke_refused`
 /// arrives here expecting the opposite, which is why it is named, and why

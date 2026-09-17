@@ -6591,8 +6591,8 @@ fn a_self_refused_revoke_still_advances_the_cursor() {
 /// This walks the trace `upsert_sync_cursor`'s doc describes, as a delivery
 /// and end to end: `apply_remote_all` dispatches the control op into
 /// `apply_control_op`, whose `DeviceCertPublish` arm calls
-/// `backfill_key_envelopes`, which opens with `is_revoked` and returns
-/// early. Nothing else in this suite walks it. Every other
+/// `backfill_key_envelopes`, which consults `is_revoked` before sealing
+/// anything and returns early. Nothing else in this suite walks it. Every other
 /// `InnerOp::DeviceCertPublish` here — the `trust` and `trust_at` helpers,
 /// and the impostor-cert cases — calls `apply_control_op` directly inside a
 /// test transaction, so there is no envelope, no op row, and no cursor, and
