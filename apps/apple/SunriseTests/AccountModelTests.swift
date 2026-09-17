@@ -244,6 +244,41 @@ struct AccountModelTests {
         #expect(account.signOutIncomplete != nil)
     }
 
+    /// The harm itself, driven end to end: the refusal leaves the credential
+    /// in the Keychain, and the very next `restore()` — which runs from the
+    /// window and scene `.task` blocks, so on the next launch — reads it back
+    /// and signs the user into the session they deliberately ended. This is
+    /// the sequence the disclosure warns about; nothing else in the suite
+    /// executes it.
+    @Test
+    func theSurvivingCredentialSignsTheUserBackInOnTheNextRestore() {
+        let store = StubCredentialStore(
+            value: credentials(accessToken: "access-old"),
+            clearFailure: KeychainError.unexpected(errSecInteractionNotAllowed)
+        )
+        let account = model(store: store)
+        account.restore()
+
+        account.signOut()
+        #expect(account.state == .signedOut)
+        #expect(account.accessToken == nil)
+
+        account.restore()
+
+        #expect(
+            account.state == .signedIn(expiresAtMs: 4_000),
+            "the session the user ended is back — this is #255"
+        )
+        #expect(
+            account.accessToken == "access-old",
+            "and it is the same bearer, not a fresh one"
+        )
+        #expect(
+            account.signOutIncomplete != nil,
+            "the warning outlives the restore, so the view can still disclose it"
+        )
+    }
+
     @Test
     func aSignOutThatWorkedDisclosesNothing() {
         let store = StubCredentialStore(value: credentials(accessToken: "access-old"))
