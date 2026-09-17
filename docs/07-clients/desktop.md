@@ -534,13 +534,14 @@ does is not:
     calling them could only ever run in half the targets it is built into.
   - The lock has **no scope smaller than the machine**. Its target is the
     default login keychain — the one running the CI job and the developer's own
-    session. Five files in this target write real `.login` items, and the only
-    `.serialized` suite anywhere is serialized for probe-service contention
-    rather than for locking, so a lock taken by one case races every other case
-    in the same process. Getting back out of it without a UI prompt needs the
-    keychain's password, which no case here has, so a case that failed between
-    lock and unlock would leave the runner's login keychain locked for the rest
-    of the job.
+    session. Swift Testing parallelizes by default, and `.serialized` is a
+    `ParallelizationTrait` applied to the suite that carries it: it orders that
+    suite's own cases and constrains nothing outside it. So no trait available
+    here keeps a lock taken inside one case away from the cases running beside
+    it, several of which write real `.login` items. Getting back out of it
+    without a UI prompt needs the keychain's password, which no case here has,
+    so a case that failed between lock and unlock would leave the runner's
+    login keychain locked for the rest of the job.
 
   So a spike that locks the keychain to close these items is rejected on the
   second of those rather than the first: it is a machine-global mutation staged

@@ -465,9 +465,11 @@ struct KeychainItem: Sendable {
     /// "holds the keychain unlocked by construction". It holds nothing: it makes
     /// no keychain-state call of any kind, and inherits whatever the host login
     /// session already unlocked. What blocks a lock is that its smallest scope is
-    /// the *machine's* default keychain, which five files in this target are
-    /// writing `.login` items to with only one suite serialized, and that getting
-    /// back out of it without a UI prompt needs a password no case here has.
+    /// the *machine's* default keychain. Swift Testing parallelizes by default and
+    /// `.serialized` orders only the suite that carries it, so no trait here keeps
+    /// a lock away from the cases running beside it — several of which write real
+    /// `.login` items — and getting back out without a UI prompt needs a password
+    /// no case here has.
     /// `docs/07-clients/desktop.md` states it in full, with the SDK's own
     /// deprecation and platform annotations.
     func deleteAcrossDomains() throws {

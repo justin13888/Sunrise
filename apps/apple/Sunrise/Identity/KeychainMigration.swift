@@ -226,8 +226,8 @@ struct KeychainMigration: Sendable {
     /// call at all, it inherits the host login session's unlocked keychain, and
     /// that is a property of the machine rather than of the suite. The mechanism
     /// is stated once, on ``KeychainItem/deleteAcrossDomains()`` — the lock's
-    /// smallest scope is the machine's default keychain, which every
-    /// unserialized suite here writes to concurrently, and getting back out of
+    /// smallest scope is the machine's default keychain, no trait available here
+    /// keeps it away from the cases running beside it, and getting back out of
     /// it needs a password no case has. So the arm still executes in no test,
     /// and it is one of the seven lines this change declares untestable, listed
     /// together in `docs/07-clients/desktop.md`, where it is item 6.
