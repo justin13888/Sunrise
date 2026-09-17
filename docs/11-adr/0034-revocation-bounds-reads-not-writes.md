@@ -11,17 +11,24 @@ guarantee is stated, and the write bound is routed to the relay) and
 **Depends on:** [ADR-0024](./0024-key-hierarchy.md) — random wrapped stream keys
 are what make a read bound expressible at all.
 
-**Note, 2026-09-17 (citations only, at `e9a4c09`):** eight of the nine
-`path:line` citations below had rotted onto unrelated code — the decision did
-not move, the code under it did. They were repointed and now carry the symbol
-they mean, `path:line#symbol`, which
+**Note, 2026-09-17 (citations only, at `e9a4c09`):** this file carried nine
+code-span references at `e9a4c09`, and eight of them had rotted onto unrelated
+code — the decision did not move, the code under it did. Seven of the eight
+were `path:line` citations. The remaining one was a bare `` `:381` `` with no
+path at all, leaning on the sentence before it; the gate's grammar rejects that
+form as a citation and never counted it, so no amount of checking could have
+caught that one, and it now carries its path. Each of the nine was repointed,
+or left alone where it was already correct, and each now names the symbol it
+means, `path:line#symbol`, which
 [`.github/scripts/citation-gate.py`](../../.github/scripts/citation-gate.py)
 checks for containment, so the next drift is a red check rather than a silent
-lie ([#249](https://github.com/justin13888/Sunrise/issues/249)). Two further
-claims were corrected against the tree in the same pass: `Engine::is_revoked`
-has one non-test caller and not two, and `git grep refused_ops` returns hits
-rather than nothing — every one of them a sentence in this file, this one
-included, which is why the claim below is now written without a count. **No conclusion here
+lie ([#249](https://github.com/justin13888/Sunrise/issues/249)). Claims about
+the code were re-read against the code in the same pass: `Engine::is_revoked`
+has one non-test caller and not two; `git grep refused_ops` returns hits rather
+than nothing — every one of them a sentence in this file, this one included,
+which is why the claim below is now written without a count; and the apply path
+does reach the revocation register, by the chain the bullet below traces,
+though no read of it decides whether an op applies. **No conclusion here
 changed**, and every one of them was re-read against the code first.
 
 ## Context
