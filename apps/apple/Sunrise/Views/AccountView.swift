@@ -385,10 +385,44 @@ struct AccountView: View {
                     .disabled(!settings.canSignIn)
             }
         }
+        if let message = account.signOutIncomplete {
+            SignOutIncompleteRow(message: message, account: account)
+        }
     }
 
     private func expiry(_ ms: UInt64) -> String {
         let date = Date(timeIntervalSince1970: Double(ms) / 1000)
         return "expires \(date.formatted(date: .abbreviated, time: .shortened))"
+    }
+}
+
+/// What a sign-out could not do: the Keychain kept the credential.
+///
+/// A file-scope view rather than another `@ViewBuilder` var on ``AccountView``
+/// because that type's body is the constrained one here, and because this reads
+/// the way ``DeviceListSection``'s revocation disclosure does — the fact, what
+/// it costs, and the one action that is honest about it. There is no retry
+/// button: the sign-out control is the retry, and it is already on this screen.
+private struct SignOutIncompleteRow: View {
+    let message: String
+    let account: AccountModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label(
+                "Signed out on this \(Platform.deviceName), but the stored credential "
+                    + "could not be removed: \(message)",
+                systemImage: "exclamationmark.triangle"
+            )
+            .foregroundStyle(.orange)
+            Text(
+                "The refresh token is still in the Keychain, so the next launch will "
+                    + "sign you back in. Unlock your Keychain and sign out again."
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            Button("Dismiss") { account.dismissSignOutIncomplete() }
+        }
+        .accessibilityIdentifier("account.signOutIncomplete")
     }
 }

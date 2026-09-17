@@ -70,6 +70,17 @@ final class AccountModel {
     /// The bearer to present to the relay, or `nil` when signed out.
     private(set) var accessToken: String?
 
+    /// What the last sign-out could **not** do, until the user dismisses it.
+    ///
+    /// Non-`nil` means the local session ended and the stored credential did
+    /// not: the token is still in the Keychain, and the next launch's
+    /// ``restore()`` reads it back. Carried to the caller rather than logged,
+    /// because a log line is not a disclosure — the rule
+    /// `core.device.revoke_incomplete` states in
+    /// `docs/10-cross-cutting/log-events.md`, and the one
+    /// ``DeviceListModel/lastRevocation`` already follows in this app.
+    private(set) var signOutIncomplete: String?
+
     private let store: any CredentialStore
     private let makeDriver: @Sendable (String, String) -> any LoginDriver
     private let openURL: @Sendable (URL) -> Void
@@ -108,6 +119,8 @@ final class AccountModel {
     /// stamps it into a claim and the relay refuses a token whose claim names
     /// a different device, so one lifted off this Mac is useless elsewhere.
     func signIn(issuer: String, clientID: String, deviceID: String, nowMs: UInt64) async {
+        // A warning about the previous sign-out must not sit under a new session.
+        signOutIncomplete = nil
         guard !issuer.trimmed.isEmpty, !clientID.trimmed.isEmpty else {
             state = .failed(AccountError.notConfigured.localizedDescription)
             return
@@ -157,18 +170,48 @@ final class AccountModel {
             // again. Dropping it here would sign the user out early, every
             // time the network blinked.
             if current.hasExpired(nowMs: nowMs) {
-                state = .failed(error.localizedDescription)
+                // `signOut()` assigns `.signedOut` last, so the renewal error
+                // has to be written after it or it is never shown. It used to
+                // be written first, which made this assignment dead.
                 signOut()
+                state = .failed(error.localizedDescription)
             }
         }
     }
 
-    /// Forget the token, here and in the Keychain.
+    /// Forget the token, here and in the Keychain — and say so when the
+    /// Keychain will not let go of it.
+    ///
+    /// The local half is unconditional, deliberately. Refusing to drop the
+    /// in-memory bearer because the Keychain was locked would leave the user
+    /// holding a live session with no way out of it, which is worse than the
+    /// state this method exists to reach.
+    ///
+    /// The Keychain half can genuinely refuse. ``KeychainItem/delete()`` maps
+    /// `errSecItemNotFound` to success and throws for every other status, so
+    /// "nothing was there" never arrives here and a locked keychain
+    /// (`errSecInteractionNotAllowed`) or a dismissed prompt
+    /// (`errSecUserCanceled`) does. `try?` used to absorb it and present
+    /// `.signedOut` anyway: the refresh token survived, ``restore()`` read it
+    /// back on the next launch, and the user was signed in again on a session
+    /// they had deliberately ended — silently, and repeatably for as long as
+    /// the refusal held.
     func signOut() {
-        try? store.clear()
+        do {
+            try store.clear()
+            signOutIncomplete = nil
+        } catch {
+            signOutIncomplete = error.localizedDescription
+        }
         credentials = nil
         accessToken = nil
         state = .signedOut
+    }
+
+    /// Acknowledge ``signOutIncomplete``. The token it describes is still
+    /// stored; dismissing says the user has read that, not that it is gone.
+    func dismissSignOutIncomplete() {
+        signOutIncomplete = nil
     }
 
     private func publish() {

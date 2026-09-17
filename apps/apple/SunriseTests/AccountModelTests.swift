@@ -1,4 +1,5 @@
 import Foundation
+import Security
 import Testing
 
 @testable import Sunrise
@@ -7,14 +8,28 @@ final class StubCredentialStore: CredentialStore, @unchecked Sendable {
     private let lock = NSLock()
     private var value: StoredCredentials?
     private(set) var clearCount = 0
+    /// What `clear()` refuses with, standing in for a locked Keychain. The
+    /// value survives the refusal, which is the fact this is about.
+    private let clearFailure: (any Error)?
 
-    init(value: StoredCredentials? = nil) { self.value = value }
+    init(value: StoredCredentials? = nil, clearFailure: (any Error)? = nil) {
+        self.value = value
+        self.clearFailure = clearFailure
+    }
 
     var stored: StoredCredentials? { lock.withLock { value } }
 
     func load() throws -> StoredCredentials? { lock.withLock { value } }
     func save(_ credentials: StoredCredentials) throws { lock.withLock { value = credentials } }
-    func clear() throws { lock.withLock { value = nil; clearCount += 1 } }
+
+    /// `clearCount` counts attempts, so it still reads 1 after a refusal.
+    func clear() throws {
+        try lock.withLock {
+            clearCount += 1
+            if let clearFailure { throw clearFailure }
+            value = nil
+        }
+    }
 }
 
 struct StubLoginDriver: LoginDriver {
@@ -190,6 +205,10 @@ struct AccountModelTests {
 
         #expect(account.accessToken == nil)
         #expect(store.stored == nil)
+        #expect(
+            account.state == .failed("the issuer refused"),
+            "why the session ended was overwritten by the sign-out that followed it"
+        )
     }
 
     @Test
@@ -203,6 +222,63 @@ struct AccountModelTests {
         #expect(account.state == .signedOut)
         #expect(store.stored == nil)
         #expect(store.clearCount == 1)
+    }
+
+    /// The defect this pins: `try? store.clear()` presented `.signedOut` over a
+    /// refusal, the token survived in the Keychain, and `restore()` signed the
+    /// user back in on the next launch without a word.
+    @Test
+    func aRefusedClearIsDisclosedRatherThanSwallowed() {
+        let store = StubCredentialStore(
+            value: credentials(accessToken: "access-old"),
+            clearFailure: KeychainError.unexpected(errSecInteractionNotAllowed)
+        )
+        let account = model(store: store)
+        account.restore()
+
+        account.signOut()
+
+        #expect(account.state == .signedOut, "the local session ends regardless")
+        #expect(account.accessToken == nil)
+        #expect(store.stored != nil, "the token is still there — that is what is disclosed")
+        #expect(account.signOutIncomplete != nil)
+    }
+
+    @Test
+    func aSignOutThatWorkedDisclosesNothing() {
+        let store = StubCredentialStore(value: credentials(accessToken: "access-old"))
+        let account = model(store: store)
+        account.restore()
+
+        account.signOut()
+
+        #expect(account.signOutIncomplete == nil)
+    }
+
+    /// Dismissing says the user has read it, and a later sign-in clears it on
+    /// its own — neither leaves a stale warning under a live session.
+    @Test
+    func theDisclosureIsDismissedAndDoesNotOutliveTheNextSignIn() async {
+        let store = StubCredentialStore(
+            value: credentials(accessToken: "access-old"),
+            clearFailure: KeychainError.unexpected(errSecInteractionNotAllowed)
+        )
+        let account = model(store: store)
+        account.signOut()
+        #expect(account.signOutIncomplete != nil)
+
+        account.dismissSignOutIncomplete()
+        #expect(account.signOutIncomplete == nil)
+
+        account.signOut()
+        await account.signIn(
+            issuer: "https://issuer.example",
+            clientID: "client",
+            deviceID: "abcd",
+            nowMs: 0
+        )
+
+        #expect(account.signOutIncomplete == nil)
     }
 
     /// A struct carrying a live bearer and a refresh token ends up in the
