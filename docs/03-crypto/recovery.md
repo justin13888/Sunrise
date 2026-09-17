@@ -61,9 +61,11 @@ device's UID key, so an encrypted backup cannot re-key it for other hardware.
   writes the new item and verifies the read-back before it deletes the old one, is safe to
   interrupt at every step, and refuses rather than guesses when the destination already holds
   different bytes. `KeychainDomain.probe()` asks the platform which keychain this binary can
-  actually reach. On every build this repository can make the answer is the login keychain, so
-  none of it changes what a Mac does today — **this bullet is still exactly true**. What is
-  outstanding is the entitlement and the team that signs it.
+  actually reach. On every **Mac** build this repository can make the answer is the login
+  keychain, so none of it changes what a Mac does today — **this bullet is still exactly true**.
+  (On iOS it answers the data-protection keychain, because that is the only one iOS has; this
+  bullet is about the Mac, which is where the gap is.) What is outstanding is the entitlement
+  and the team that signs it.
 
 ## Recovery code
 

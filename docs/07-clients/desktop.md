@@ -211,8 +211,12 @@ document's intent, not yet implemented).
   the class, because the class only starts meaning anything once the item is
   somewhere that implements one. Which keychain that is comes from
   `KeychainDomain.probe()`, which asks the platform rather than assuming from
-  `#if os(…)`. On every build this repository can make the probe answers
-  `.login`, so both halves are inert today; see below.
+  `#if os(…)`. On every **Mac** build this repository can make the probe
+  answers `.login`, so both halves are inert on this platform today; see below.
+  On iOS it answers `.dataProtection` — the only keychain that platform has —
+  which `KeychainMigrationTests` pins, and there the migration is a no-op for
+  the other reason: one keychain means the source and destination name one
+  stored item.
 
   **The Mac does not honour the class**: without the App Sandbox or a
   keychain-access-group entitlement the app uses the file-based login keychain,
