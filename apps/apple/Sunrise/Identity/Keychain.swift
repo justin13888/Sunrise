@@ -118,6 +118,18 @@ struct KeychainItem: Sendable {
     /// Everything else is raised. A locked keychain, a denied prompt or an I/O
     /// failure is the other store refusing *on its own terms* — it was reached
     /// well enough to say no, and a copy of ours may be sitting in it.
+    ///
+    /// **The `false` answer executes in no test**, declared here on the method
+    /// that owns it as this branch declared the write's delete effect and the
+    /// load path's catch arm. Every other-domain delete this repository builds
+    /// either *succeeds*, as
+    /// `aRefusalOnThisDomainDoesNotSpareTheCopyInTheOther`'s does, so never asks
+    /// this, or is refused with `errSecMissingEntitlement` — so the predicate is
+    /// only ever asked about a status it answers `true` to, which is what
+    /// `aCrossDomainWriteKeepsWhatItJustWrote` pins. The `false` needs the other
+    /// keychain locked or a prompt denied mid-case, which
+    /// ``KeychainMigration/loadMigratingIfNeeded()`` records this suite cannot
+    /// arrange: an entitled, signed build, not a seam.
     private static func meansTheOtherStoreWasUnreachable(_ status: OSStatus) -> Bool {
         status == errSecMissingEntitlement || status == errSecItemNotFound
     }
@@ -375,6 +387,15 @@ struct KeychainItem: Sendable {
     /// to the user as a successful sign-out. `AccountModel.signOut()` swallows
     /// the throw with a `try?` of its own, so raising it here does not by
     /// itself reach the user; that is tracked separately.
+    ///
+    /// **The tie-break below executes in no test**, and this declares it. The
+    /// `??` needs *both* deletes to refuse, and the one case reaching the
+    /// other-domain arm, `aRefusalOnThisDomainDoesNotSpareTheCopyInTheOther`,
+    /// has that delete *succeed* — so inverting the tie-break, or replacing the
+    /// `??` with a plain assignment, leaves it green. It asserts that *a*
+    /// ``KeychainError`` is raised, not which. Both refusing at once needs the
+    /// locked keychain ``meansTheOtherStoreWasUnreachable(_:)`` records this
+    /// suite cannot produce: an entitled, signed build, not a seam.
     func deleteAcrossDomains() throws {
         // Named for what it is rather than for which domain produced it: since
         // the other domain's refusal became raisable, either delete can be the
