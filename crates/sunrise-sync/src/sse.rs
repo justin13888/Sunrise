@@ -1605,4 +1605,1079 @@ mod tests {
             "SYNC_OP_INVALID"
         );
     }
+
+    // ---- the network half: a loopback relay ----
+
+    /// A loopback HTTP/1.1 relay standing in for the real one.
+    ///
+    /// The transport's `events` field is a `hyper::body::Incoming`, and an
+    /// `Incoming` can only be produced by hyper from a real response — there is
+    /// nothing to fabricate and no seam to inject at. So the double is an
+    /// actual server on `127.0.0.1:0` that the transport dials, which also
+    /// makes every assertion below an assertion about what went **on the wire**
+    /// rather than about what a private method returned.
+    ///
+    /// It costs no new dependency: the workspace already pins `hyper` with
+    /// `server` on and `tokio` with `net`, both for other crates.
+    mod relay {
+        use http_body_util::BodyExt as _;
+        use hyper::body::{Bytes, Frame};
+        use hyper::service::service_fn;
+        use hyper::{Request, Response, StatusCode};
+        use hyper_util::rt::TokioIo;
+        use std::collections::VecDeque;
+        use std::convert::Infallible;
+        use std::future::Future as _;
+        use std::pin::Pin;
+        use std::sync::{Arc, Mutex};
+        use std::task::{Context, Poll};
+        use std::time::Duration;
+        use tokio::net::TcpListener;
+
+        /// How long the relay waits between the chunks of one response.
+        ///
+        /// Deliberately non-zero. Handing hyper every chunk at once lets the
+        /// client coalesce them into a single body frame, which would silently
+        /// turn a test about a *partial* event into a test about a whole one —
+        /// the buffer would never be non-empty when a chunk arrived, and the
+        /// frame-cap arithmetic that reads `self.buf.len()` would never be
+        /// exercised with anything but zero.
+        const CHUNK_GAP: Duration = Duration::from_millis(5);
+
+        /// One canned response, in the order the relay will hand them out.
+        #[derive(Debug, Clone)]
+        pub(super) struct Canned {
+            status: u16,
+            content_type: Option<&'static str>,
+            chunks: Vec<Bytes>,
+        }
+
+        impl Canned {
+            /// A whole JSON reply.
+            pub(super) fn json(status: u16, body: &str) -> Self {
+                Self {
+                    status,
+                    content_type: Some("application/json"),
+                    chunks: vec![Bytes::copy_from_slice(body.as_bytes())],
+                }
+            }
+
+            /// A reply with a status and nothing else.
+            pub(super) fn empty(status: u16) -> Self {
+                Self {
+                    status,
+                    content_type: None,
+                    chunks: Vec::new(),
+                }
+            }
+
+            /// A whole opaque byte reply, as the blob surface sends.
+            pub(super) fn bytes(status: u16, body: &[u8]) -> Self {
+                Self {
+                    status,
+                    content_type: Some("application/octet-stream"),
+                    chunks: vec![Bytes::copy_from_slice(body)],
+                }
+            }
+
+            /// An event stream delivered one chunk at a time.
+            pub(super) fn stream(chunks: Vec<Bytes>) -> Self {
+                Self {
+                    status: 200,
+                    content_type: Some("text/event-stream"),
+                    chunks,
+                }
+            }
+        }
+
+        /// One request exactly as it reached the relay.
+        #[derive(Debug, Clone)]
+        pub(super) struct Seen {
+            pub(super) method: String,
+            pub(super) path: String,
+            pub(super) body: Vec<u8>,
+            headers: Vec<(String, String)>,
+        }
+
+        impl Seen {
+            /// The value of `name`, which hyper has already lower-cased.
+            pub(super) fn header(&self, name: &str) -> Option<&str> {
+                self.headers
+                    .iter()
+                    .find(|(n, _)| n == name)
+                    .map(|(_, v)| v.as_str())
+            }
+        }
+
+        /// The body of a canned response: one HTTP chunk per element, spaced so
+        /// the client sees them as separate body frames.
+        #[derive(Debug)]
+        struct Chunks {
+            rest: VecDeque<Bytes>,
+            gap: Option<Pin<Box<tokio::time::Sleep>>>,
+        }
+
+        impl hyper::body::Body for Chunks {
+            type Data = Bytes;
+            type Error = Infallible;
+
+            fn poll_frame(
+                self: Pin<&mut Self>,
+                cx: &mut Context<'_>,
+            ) -> Poll<Option<Result<Frame<Bytes>, Infallible>>> {
+                let this = self.get_mut();
+                if let Some(gap) = this.gap.as_mut() {
+                    match gap.as_mut().poll(cx) {
+                        Poll::Pending => return Poll::Pending,
+                        Poll::Ready(()) => this.gap = None,
+                    }
+                }
+                let Some(next) = this.rest.pop_front() else {
+                    return Poll::Ready(None);
+                };
+                if !this.rest.is_empty() {
+                    this.gap = Some(Box::pin(tokio::time::sleep(CHUNK_GAP)));
+                }
+                Poll::Ready(Some(Ok(Frame::data(next))))
+            }
+        }
+
+        /// A running relay: where to dial it, and what it has been asked.
+        #[derive(Debug)]
+        pub(super) struct Relay {
+            pub(super) base: String,
+            seen: Arc<Mutex<Vec<Seen>>>,
+        }
+
+        impl Relay {
+            /// Every request the relay has answered, in order.
+            pub(super) fn seen(&self) -> Vec<Seen> {
+                self.seen
+                    .lock()
+                    .expect("the relay's record outlives every request")
+                    .clone()
+            }
+        }
+
+        /// Start a relay that answers `script` in order and records what it was
+        /// asked. A request past the end of the script gets a `500`, which
+        /// makes an unscripted call a visible failure rather than a hang.
+        pub(super) async fn start(script: Vec<Canned>) -> Relay {
+            let listener = TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("a loopback port");
+            let base = format!(
+                "http://{}",
+                listener.local_addr().expect("the bound address")
+            );
+            let seen = Arc::new(Mutex::new(Vec::new()));
+            let queue = Arc::new(Mutex::new(script.into_iter().collect::<VecDeque<_>>()));
+
+            let accepted = Arc::clone(&seen);
+            tokio::spawn(async move {
+                loop {
+                    let Ok((stream, _)) = listener.accept().await else {
+                        return;
+                    };
+                    let seen = Arc::clone(&accepted);
+                    let queue = Arc::clone(&queue);
+                    tokio::spawn(async move {
+                        let service = service_fn(move |req: Request<hyper::body::Incoming>| {
+                            let seen = Arc::clone(&seen);
+                            let queue = Arc::clone(&queue);
+                            async move {
+                                let method = req.method().to_string();
+                                let path = req.uri().path().to_owned();
+                                let headers = req
+                                    .headers()
+                                    .iter()
+                                    .map(|(n, v)| {
+                                        (
+                                            n.as_str().to_owned(),
+                                            v.to_str().unwrap_or_default().to_owned(),
+                                        )
+                                    })
+                                    .collect();
+                                let body = req
+                                    .into_body()
+                                    .collect()
+                                    .await
+                                    .map(|b| b.to_bytes().to_vec())
+                                    .unwrap_or_default();
+                                seen.lock().expect("the relay's record").push(Seen {
+                                    method,
+                                    path,
+                                    body,
+                                    headers,
+                                });
+                                let canned = queue
+                                    .lock()
+                                    .expect("the relay's script")
+                                    .pop_front()
+                                    .unwrap_or_else(|| Canned::empty(500));
+                                let mut reply = Response::builder()
+                                    .status(StatusCode::from_u16(canned.status).expect("a status"));
+                                if let Some(ct) = canned.content_type {
+                                    reply = reply.header(hyper::header::CONTENT_TYPE, ct);
+                                }
+                                Ok::<_, Infallible>(
+                                    reply
+                                        .body(Chunks {
+                                            rest: canned.chunks.into_iter().collect(),
+                                            gap: None,
+                                        })
+                                        .expect("a response"),
+                                )
+                            }
+                        });
+                        let _ = hyper::server::conn::http1::Builder::new()
+                            .serve_connection(TokioIo::new(stream), service)
+                            .await;
+                    });
+                }
+            });
+
+            Relay { base, seen }
+        }
+    }
+
+    /// The reply to `Hello` every relay-backed test below starts from.
+    const SESSION_OK: &str = r#"{"session_id":"sess-1","server_app_v":"9.9.9","wire_proto":1,"crypto_suite":1,"doc_schema_floor":3,"capabilities":5,"server_time_ms":1788134400000}"#;
+
+    /// The public half of the key [`signer`] signs with.
+    fn signing_pub() -> String {
+        let key = ed25519_dalek::SigningKey::from_bytes(&[3u8; 32]);
+        sunrise_http_sig::device_pub_b64(&key.verifying_key().to_bytes())
+    }
+
+    /// The signature and date a recorded request carried, having first asserted
+    /// that it named the device that signed it.
+    fn binding_of(seen: &relay::Seen) -> (String, String) {
+        assert_eq!(
+            seen.header("x-sunrise-device"),
+            Some("dev_01J8ZQ7X9K3M5N7P9R1T3V5W7Y"),
+            "{} {} must name the signing device",
+            seen.method,
+            seen.path
+        );
+        let signature = seen
+            .header("x-sunrise-device-sig")
+            .unwrap_or_else(|| panic!("{} {} must carry a signature", seen.method, seen.path));
+        let date = seen
+            .header("date")
+            .unwrap_or_else(|| panic!("{} {} must carry a date", seen.method, seen.path));
+        (signature.to_owned(), date.to_owned())
+    }
+
+    /// A JSON request's binding verifies against the value the relay parsed
+    /// back out of the body it was sent.
+    ///
+    /// ADR-0022 signs the canonical form of the request *value*, so re-parsing
+    /// the emitted body and canonicalizing that is exactly what the relay's own
+    /// verifier does — which is the property being asserted, rather than
+    /// "three headers are present".
+    fn assert_json_binding(seen: &relay::Seen) {
+        let value: Option<serde_json::Value> = if seen.body.is_empty() {
+            None
+        } else {
+            Some(serde_json::from_slice(&seen.body).expect("a JSON body"))
+        };
+        let (signature, date) = binding_of(seen);
+        sunrise_http_sig::verify(
+            &signing_pub(),
+            &signature,
+            &seen.method,
+            &seen.path,
+            &date,
+            value.as_ref(),
+            NOW_MS,
+        )
+        .unwrap_or_else(|e| panic!("{} {} must verify: {e}", seen.method, seen.path));
+    }
+
+    /// A byte-body request's binding verifies over the octets themselves: those
+    /// bytes already are the canonical form, and routing them through the value
+    /// verifier would canonicalize them twice.
+    fn assert_byte_binding(seen: &relay::Seen) {
+        let (signature, date) = binding_of(seen);
+        sunrise_http_sig::verify_canonical(
+            &signing_pub(),
+            &signature,
+            &seen.method,
+            &seen.path,
+            &date,
+            &seen.body,
+            NOW_MS,
+        )
+        .unwrap_or_else(|e| panic!("{} {} must verify: {e}", seen.method, seen.path));
+    }
+
+    /// A bound transport pointed at `relay`.
+    fn dial(relay: &relay::Relay) -> SseTransport {
+        SseTransport::connect(&relay.base).with_device_signer(signer(NOW_MS))
+    }
+
+    fn hello_frame() -> Vec<u8> {
+        let hello = super::Hello {
+            client_app_v: "1.4.2".to_owned(),
+            client_platform: "linux-x86_64".to_owned(),
+            wire_proto_supported: vec![1],
+            doc_schema_min: 1,
+            doc_schema_max: 2,
+            crypto_suite_supported: vec![1],
+            capabilities: 0,
+            trace: "01ARZ3NDEKTSV4RRFFQ69G5FAV".to_owned(),
+        };
+        let mut payload = Vec::new();
+        ciborium::ser::into_writer(&hello, &mut payload).expect("a serialisable Hello");
+        frame_of(super::MsgKind::Hello, &payload)
+    }
+
+    fn frame_of(kind: super::MsgKind, payload: &[u8]) -> Vec<u8> {
+        super::encode_frame(kind, super::FrameFlags::EMPTY, payload).expect("an encodable frame")
+    }
+
+    /// The frame cap, written out rather than read from the constant it pins.
+    ///
+    /// A test that sizes its own stream from [`MAX_EVENT_BYTES`] moves with it:
+    /// it would build an eight-byte stream against an eight-byte cap and pass,
+    /// which makes it a test of the comparison and of nothing else. Spelling
+    /// the number here is what lets the cases below say the cap is *this*
+    /// large.
+    const FRAME_CAP: usize = 8 * 1024 * 1024;
+
+    /// And the constant is that number. Eight mebibytes is the ceiling a relay
+    /// has to stay under for its events to be delivered at all, so moving it is
+    /// a protocol-visible act rather than an implementation detail.
+    #[test]
+    fn the_frame_cap_is_the_documented_eight_mebibytes() {
+        assert_eq!(super::MAX_EVENT_BYTES, FRAME_CAP);
+    }
+
+    /// [`SseTransport::recv_frame`], bounded.
+    ///
+    /// A read has no deadline of its own — in production the driver's own
+    /// supervision is what bounds it — so a relay that goes quiet mid-exchange
+    /// would hang the whole test binary rather than fail one test. Every read
+    /// below is answered by a scripted relay in milliseconds, so anything near
+    /// this deadline is a defect.
+    ///
+    /// It bounds *waiting*, not spinning. A defect that put the drain loop into
+    /// a cycle with no `await` in it would block the runtime thread outright,
+    /// and no timer running on that thread can fire to interrupt it; catching
+    /// that class needs a deadline outside the process. See the frame-cap cases
+    /// below for the part of this surface that is bounded by the code itself.
+    async fn next_frame(t: &mut SseTransport) -> Result<Option<Vec<u8>>, TransportError> {
+        tokio::time::timeout(std::time::Duration::from_secs(30), t.recv_frame())
+            .await
+            .expect("a read against a scripted relay must not hang")
+    }
+
+    /// Open a session against `relay` and swallow the `HelloAck`, so a test
+    /// about something else starts where that test left off.
+    async fn open_session(relay: &relay::Relay) -> SseTransport {
+        let mut t = dial(relay);
+        t.send_frame(hello_frame()).await.expect("a session opens");
+        next_frame(&mut t)
+            .await
+            .expect("the ack is waiting")
+            .expect("a HelloAck");
+        t
+    }
+
+    /// The handshake reaches the relay signed, and its reply becomes the
+    /// `HelloAck` the driver negotiated against.
+    #[tokio::test]
+    async fn hello_opens_a_session_and_its_reply_becomes_a_hello_ack() {
+        let relay = relay::start(vec![relay::Canned::json(200, SESSION_OK)]).await;
+        let mut t = dial(&relay);
+        t.send_frame(hello_frame()).await.expect("a session opens");
+
+        let (head, payload) = super::decode_frame(
+            &next_frame(&mut t)
+                .await
+                .expect("a reply is waiting")
+                .expect("a HelloAck"),
+        )
+        .expect("a decodable frame");
+        assert_eq!(head.msg_kind, super::MsgKind::HelloAck);
+        let ack: super::HelloAck =
+            ciborium::de::from_reader(&payload[..]).expect("a decodable HelloAck");
+        assert_eq!(ack.server_app_v, "9.9.9");
+        assert_eq!(ack.wire_proto, 1);
+        assert_eq!(ack.crypto_suite, 1);
+        assert_eq!(ack.doc_schema_floor, 3);
+        assert_eq!(ack.capabilities, 5);
+        assert_eq!(ack.server_time_ms, NOW_MS);
+
+        let seen = relay.seen();
+        assert_eq!(seen.len(), 1, "one request, and the reply came from it");
+        assert_eq!(seen[0].method, "POST");
+        assert_eq!(seen[0].path, "/api/v1/sync/session");
+        assert_json_binding(&seen[0]);
+        let sent: serde_json::Value = serde_json::from_slice(&seen[0].body).expect("a JSON body");
+        assert_eq!(sent["client_app_v"], "1.4.2");
+        assert_eq!(sent["wire_proto_supported"], serde_json::json!([1]));
+        assert_eq!(sent["trace"], "01ARZ3NDEKTSV4RRFFQ69G5FAV");
+    }
+
+    /// A relay that refuses an operation is reported as a refusal, with its own
+    /// code. Reading a refusal as a success is the failure mode worth pinning:
+    /// the driver would then wait on a session that was never opened.
+    #[tokio::test]
+    async fn a_refused_operation_is_reported_with_the_relay_s_own_code() {
+        let relay = relay::start(vec![relay::Canned::json(
+            503,
+            r#"{"code":"RELAY_STORAGE_UNAVAILABLE"}"#,
+        )])
+        .await;
+        let mut t = dial(&relay);
+        let err = t
+            .send_frame(hello_frame())
+            .await
+            .expect_err("the relay refused");
+        assert_eq!(code_of(&err), "RELAY_STORAGE_UNAVAILABLE");
+    }
+
+    /// A `Subscribe` restates the client's cursors, which drops both the open
+    /// stream and the resume point that went with it.
+    ///
+    /// The resume point is the load-bearing half. `Last-Event-ID` says "I
+    /// received everything up to here"; the cursors say "I have *applied*
+    /// everything up to here". They differ exactly when delivery succeeded and
+    /// application did not, which is precisely when the driver resubscribes —
+    /// so keeping the id would resume past the ops the cursors are asking for.
+    #[tokio::test]
+    async fn a_subscribe_drops_the_open_stream_and_its_resume_point() {
+        let relay = relay::start(vec![
+            relay::Canned::json(200, SESSION_OK),
+            relay::Canned::json(200, "{}"),
+        ])
+        .await;
+        let mut t = open_session(&relay).await;
+        t.last_event_id = Some("9".to_owned());
+        t.buf = b"id: 9\ndata: leftover\n\n".to_vec();
+
+        let payload = super::SubscribePayload {
+            streams: vec![sunrise_wire_protocol::SubscribeEntry {
+                cursors: vec![super::CursorEntry {
+                    device_id: [0x7bu8; 16],
+                    last_applied_seq: 42,
+                }],
+                stream_id: [0xabu8; 16],
+            }],
+        }
+        .encode()
+        .expect("an encodable subscribe");
+        t.send_frame(frame_of(super::MsgKind::Subscribe, &payload))
+            .await
+            .expect("the subscribe lands");
+
+        assert!(
+            t.last_event_id.is_none(),
+            "a restated cursor is the stricter statement, so the resume point goes"
+        );
+        assert!(t.buf.is_empty(), "and the stale stream's bytes with it");
+
+        let seen = relay.seen();
+        assert_eq!(seen[1].path, "/api/v1/sync/subscribe");
+        assert_json_binding(&seen[1]);
+        let sent: serde_json::Value = serde_json::from_slice(&seen[1].body).expect("a JSON body");
+        assert_eq!(sent["streams"][0]["stream_id"], "ab".repeat(16));
+        assert_eq!(
+            sent["streams"][0]["cursors"][0]["device_id"],
+            "7b".repeat(16)
+        );
+        assert_eq!(sent["streams"][0]["cursors"][0]["last_applied_seq"], 42);
+    }
+
+    /// A batch goes up as base64 and comes back acked with the relay's
+    /// first-seen time, which is what makes a re-send after a lost ack
+    /// idempotent rather than a second publication.
+    #[tokio::test]
+    async fn an_op_batch_is_published_and_acked_against_the_batch_that_sent_it() {
+        let relay = relay::start(vec![
+            relay::Canned::json(200, SESSION_OK),
+            relay::Canned::json(200, r#"{"server_first_seen_ms":1234}"#),
+        ])
+        .await;
+        let mut t = open_session(&relay).await;
+
+        let payload = super::OpBatchPayload {
+            ops: vec![b"one".to_vec(), b"two".to_vec()],
+            batch_id: 7,
+            stream_id: [0xabu8; 16],
+        }
+        .encode()
+        .expect("an encodable batch");
+        t.send_frame(frame_of(super::MsgKind::OpBatch, &payload))
+            .await
+            .expect("the batch is published");
+
+        let (head, payload) = super::decode_frame(
+            &next_frame(&mut t)
+                .await
+                .expect("an ack is waiting")
+                .expect("an Ack"),
+        )
+        .expect("a decodable frame");
+        assert_eq!(head.msg_kind, super::MsgKind::Ack);
+        let ack = super::AckPayload::decode(&payload).expect("an AckPayload");
+        assert_eq!(ack.batch_id, 7);
+        assert_eq!(ack.stream_id, [0xabu8; 16]);
+        assert_eq!(ack.server_first_seen_ms, 1234);
+
+        let seen = relay.seen();
+        assert_eq!(seen[1].path, "/api/v1/sync/ops");
+        assert_json_binding(&seen[1]);
+        let sent: serde_json::Value = serde_json::from_slice(&seen[1].body).expect("a JSON body");
+        assert_eq!(sent["batch_id"], 7);
+        assert_eq!(sent["ops"], serde_json::json!(["b25l", "dHdv"]));
+    }
+
+    /// A refreshed credential is acknowledged with the new deadline, so the
+    /// driver knows when to refresh again rather than waiting for a close.
+    #[tokio::test]
+    async fn a_token_refresh_is_acked_with_the_new_deadline() {
+        let relay = relay::start(vec![
+            relay::Canned::json(200, SESSION_OK),
+            relay::Canned::json(200, r#"{"expires_at_ms":1788138000000}"#),
+        ])
+        .await;
+        let mut t = open_session(&relay).await;
+
+        let payload = super::RefreshTokenPayload {
+            token: "the-new-bearer".to_owned(),
+        }
+        .encode()
+        .expect("an encodable refresh");
+        t.send_frame(frame_of(super::MsgKind::RefreshToken, &payload))
+            .await
+            .expect("the refresh lands");
+
+        let (head, payload) = super::decode_frame(
+            &next_frame(&mut t)
+                .await
+                .expect("an ack is waiting")
+                .expect("a RefreshTokenAck"),
+        )
+        .expect("a decodable frame");
+        assert_eq!(head.msg_kind, super::MsgKind::RefreshTokenAck);
+        let ack = super::RefreshTokenAckPayload::decode(&payload).expect("the ack payload");
+        assert_eq!(ack.expires_at_ms, 1_788_138_000_000);
+
+        let seen = relay.seen();
+        assert_eq!(seen[1].path, "/api/v1/sync/session/refresh");
+        assert_json_binding(&seen[1]);
+    }
+
+    /// A `Ping` is answered locally. The stream keeps itself alive with
+    /// comments, so a liveness probe costs no round trip — and a transport that
+    /// issued one would make the driver's ping interval a request rate.
+    #[tokio::test]
+    async fn a_ping_is_answered_locally_with_nothing_on_the_wire() {
+        let relay = relay::start(Vec::new()).await;
+        let mut t = SseTransport::connect(&relay.base);
+        t.send_frame(frame_of(super::MsgKind::Ping, &[]))
+            .await
+            .expect("a local answer");
+
+        let (head, _) = super::decode_frame(
+            &next_frame(&mut t)
+                .await
+                .expect("a reply is waiting")
+                .expect("a Pong"),
+        )
+        .expect("a decodable frame");
+        assert_eq!(head.msg_kind, super::MsgKind::Pong);
+        assert!(relay.seen().is_empty(), "and the relay was never asked");
+    }
+
+    /// A `Close` ends the session in both directions at once: nothing more goes
+    /// up, and the read side reports end of stream rather than reopening.
+    #[tokio::test]
+    async fn a_close_frame_ends_the_session_in_both_directions() {
+        let relay = relay::start(Vec::new()).await;
+        let close = super::ClosePayload {
+            code: sunrise_error::ErrorCode::AuthTokenExpired,
+            reason: "done".to_owned(),
+        }
+        .encode()
+        .expect("an encodable close");
+        let mut t = SseTransport::connect(&relay.base);
+        t.send_frame(frame_of(super::MsgKind::Close, &close))
+            .await
+            .expect("the close is local");
+
+        assert!(
+            matches!(
+                t.send_frame(frame_of(super::MsgKind::Close, &close)).await,
+                Err(TransportError::Cancelled)
+            ),
+            "a closed transport sends nothing more"
+        );
+        assert!(
+            next_frame(&mut t)
+                .await
+                .expect("a closed transport is not an error")
+                .is_none(),
+            "and reads as end of stream"
+        );
+        assert!(relay.seen().is_empty());
+    }
+
+    /// Closing the transport drops the stream and the half-event behind it.
+    ///
+    /// Keeping the buffer would hand a reopened stream the tail of the old
+    /// one's last event, which parses as neither.
+    #[tokio::test]
+    async fn closing_the_transport_drops_the_stream_and_its_buffer() {
+        let relay = relay::start(Vec::new()).await;
+        let mut t = SseTransport::connect(&relay.base);
+        t.buf = b"id: 1\ndata: half an ev".to_vec();
+
+        Transport::close(&mut t).await.expect("close succeeds");
+
+        assert!(t.buf.is_empty(), "the partial event goes with the stream");
+        assert!(
+            next_frame(&mut t).await.expect("not an error").is_none(),
+            "a closed transport reads as end of stream"
+        );
+        assert!(
+            matches!(
+                t.send_frame(hello_frame()).await,
+                Err(TransportError::Cancelled)
+            ),
+            "and refuses to send"
+        );
+        assert!(relay.seen().is_empty());
+    }
+
+    /// A frame kind that has no operation upstream is refused here rather than
+    /// turned into a request the relay would have to reject.
+    #[tokio::test]
+    async fn a_frame_with_no_upstream_operation_is_refused_before_it_is_sent() {
+        let relay = relay::start(Vec::new()).await;
+        let mut t = SseTransport::connect(&relay.base);
+        let err = t
+            .send_frame(frame_of(super::MsgKind::Pong, &[]))
+            .await
+            .expect_err("nothing carries a Pong upstream");
+        assert!(
+            matches!(&err, TransportError::Protocol(m) if m.contains("Pong")),
+            "{err}"
+        );
+        assert!(relay.seen().is_empty());
+    }
+
+    /// The stream is a bound route like every other, and its events become the
+    /// frames the driver already knows how to handle.
+    ///
+    /// It is the easiest binding to leave out, because it is the one request
+    /// with no body to sign over.
+    #[tokio::test]
+    async fn the_event_stream_is_opened_bound_and_its_events_become_frames() {
+        let event = format!(
+            "id: 7\ndata: {}\n\n",
+            serde_json::json!({"kind": "caught_up", "stream_id": "ab".repeat(16)})
+        );
+        let relay = relay::start(vec![
+            relay::Canned::json(200, SESSION_OK),
+            relay::Canned::stream(vec![hyper::body::Bytes::from(event)]),
+        ])
+        .await;
+        let mut t = open_session(&relay).await;
+
+        let (head, payload) = super::decode_frame(
+            &next_frame(&mut t)
+                .await
+                .expect("the stream opens")
+                .expect("an event became a frame"),
+        )
+        .expect("a decodable frame");
+        assert_eq!(head.msg_kind, super::MsgKind::StreamUpdate);
+        assert_eq!(
+            super::CaughtUpPayload::decode(&payload)
+                .expect("a CaughtUpPayload")
+                .stream_id,
+            [0xabu8; 16]
+        );
+        assert_eq!(
+            t.last_event_id.as_deref(),
+            Some("7"),
+            "the resume point advances with every id the stream carried"
+        );
+
+        let seen = relay.seen();
+        assert_eq!(seen[1].method, "GET");
+        assert_eq!(seen[1].path, "/api/v1/sync/events");
+        assert_eq!(seen[1].header("x-sunrise-session"), Some("sess-1"));
+        assert_eq!(seen[1].header("accept"), Some("text/event-stream"));
+        assert_json_binding(&seen[1]);
+    }
+
+    /// A stream that ends is a graceful end, and the reconnect resumes from the
+    /// last id rather than replaying what it already applied.
+    #[tokio::test]
+    async fn a_reopened_stream_resumes_from_the_last_id_it_saw() {
+        let event = |id: u32| {
+            hyper::body::Bytes::from(format!(
+                "id: {id}\ndata: {}\n\n",
+                serde_json::json!({"kind": "caught_up", "stream_id": "ab".repeat(16)})
+            ))
+        };
+        let relay = relay::start(vec![
+            relay::Canned::json(200, SESSION_OK),
+            relay::Canned::stream(vec![event(7)]),
+            relay::Canned::stream(vec![event(8)]),
+        ])
+        .await;
+        let mut t = open_session(&relay).await;
+
+        next_frame(&mut t)
+            .await
+            .expect("the stream opens")
+            .expect("a frame");
+        assert!(
+            next_frame(&mut t)
+                .await
+                .expect("a relay that closes the stream is not an error")
+                .is_none(),
+            "the driver's backoff decides whether to come back, not this layer"
+        );
+        next_frame(&mut t)
+            .await
+            .expect("the stream reopens")
+            .expect("a frame");
+
+        let seen = relay.seen();
+        assert_eq!(
+            seen[1].header("last-event-id"),
+            None,
+            "nothing to resume from yet"
+        );
+        assert_eq!(seen[2].header("last-event-id"), Some("7"));
+    }
+
+    /// A refused stream is reported as a refusal rather than opened, since
+    /// treating one as a successful open would leave the driver reading an
+    /// error document as events.
+    ///
+    /// It is classified from the **status alone**. This path deliberately does
+    /// not collect the body, so the typed code the relay put there — the thing
+    /// [`SseTransport::refuse`] exists to preserve everywhere else — does not
+    /// reach the status map, and a binding refused on this one route reads as
+    /// an expired bearer. The behaviour is pinned as it is rather than as it
+    /// should be: changing it is a production change, and this test is what
+    /// will notice when someone makes it.
+    #[tokio::test]
+    async fn a_refused_stream_is_reported_rather_than_opened() {
+        let relay = relay::start(vec![
+            relay::Canned::json(200, SESSION_OK),
+            relay::Canned::json(401, r#"{"code":"AUTH_DEVICE_SIG_INVALID"}"#),
+        ])
+        .await;
+        let mut t = open_session(&relay).await;
+        let err = t
+            .recv_frame()
+            .await
+            .expect_err("the relay refused the stream");
+        assert_eq!(code_of(&err), "AUTH_TOKEN_INVALID");
+    }
+
+    /// An event that arrives in two chunks is one event, and the frame cap does
+    /// not fire on the way.
+    ///
+    /// Both halves are deliberately larger than the square root of the cap, so
+    /// a cap check that multiplied the buffered length by the arriving one
+    /// instead of adding them would refuse this stream. That is the arithmetic
+    /// the check is made of, and it is invisible to any test whose chunks are
+    /// small.
+    #[tokio::test]
+    async fn an_event_split_across_chunks_is_reassembled_under_the_cap() {
+        let event = format!(
+            "id: 3\ndata: {}\n\n",
+            serde_json::json!({"kind": "gap", "reason": "x".repeat(8_000)})
+        );
+        let (head, tail) = event.as_bytes().split_at(event.len() / 2);
+        assert!(
+            head.len() * tail.len() > FRAME_CAP,
+            "the halves must be large enough to separate a product from a sum"
+        );
+        let relay = relay::start(vec![
+            relay::Canned::json(200, SESSION_OK),
+            relay::Canned::stream(vec![
+                hyper::body::Bytes::copy_from_slice(head),
+                hyper::body::Bytes::copy_from_slice(tail),
+            ]),
+        ])
+        .await;
+        let mut t = open_session(&relay).await;
+
+        let (head, payload) = super::decode_frame(
+            &next_frame(&mut t)
+                .await
+                .expect("the halves make one event")
+                .expect("a frame"),
+        )
+        .expect("a decodable frame");
+        assert_eq!(head.msg_kind, super::MsgKind::Error);
+        let parsed = super::ErrorPayload::decode(&payload).expect("an ErrorPayload");
+        assert_eq!(parsed.code, sunrise_error::ErrorCode::SyncCursorGap);
+        assert_eq!(parsed.reason.len(), 8_000);
+    }
+
+    /// A relay that never sends a blank line cannot grow this buffer without
+    /// bound: past the frame cap the stream is dropped and the condition named.
+    #[tokio::test]
+    async fn an_event_that_never_terminates_is_refused_at_the_frame_cap() {
+        let cap = FRAME_CAP;
+        let relay = relay::start(vec![
+            relay::Canned::json(200, SESSION_OK),
+            relay::Canned::stream(vec![
+                hyper::body::Bytes::from(vec![b'x'; cap - 4]),
+                hyper::body::Bytes::from(vec![b'x'; 8]),
+            ]),
+        ])
+        .await;
+        let mut t = open_session(&relay).await;
+
+        let err = next_frame(&mut t).await.expect_err("the cap fires");
+        assert!(
+            matches!(&err, TransportError::Protocol(m) if m.contains("frame cap")),
+            "{err}"
+        );
+        assert!(t.events.is_none(), "and the stream is dropped with it");
+    }
+
+    /// The cap is a ceiling, not a limit one byte lower: a stream that arrives
+    /// at exactly the cap is delivered.
+    ///
+    /// Written against a keep-alive so the whole eight mebibytes are a single
+    /// terminated event that yields nothing to the driver — the cap is the
+    /// subject here, not the parsing.
+    #[tokio::test]
+    async fn a_stream_arriving_at_exactly_the_cap_is_not_refused() {
+        let cap = FRAME_CAP;
+        let mut comment = Vec::with_capacity(cap);
+        comment.push(b':');
+        comment.extend(std::iter::repeat_n(b'x', cap - 3));
+        comment.extend_from_slice(b"\n\n");
+        assert_eq!(comment.len(), cap);
+        let (head, tail) = comment.split_at(cap - 4);
+
+        let relay = relay::start(vec![
+            relay::Canned::json(200, SESSION_OK),
+            relay::Canned::stream(vec![
+                hyper::body::Bytes::copy_from_slice(head),
+                hyper::body::Bytes::copy_from_slice(tail),
+            ]),
+        ])
+        .await;
+        let mut t = open_session(&relay).await;
+
+        assert!(
+            next_frame(&mut t)
+                .await
+                .expect("exactly the cap is under the cap")
+                .is_none(),
+            "a keep-alive carries no frame, and the stream then ends"
+        );
+    }
+
+    /// The three revocation outcomes are kept apart.
+    ///
+    /// "Revoked" and "no such row" are both terminal and are not the same
+    /// answer: the second one covers a device still being accepted under a row
+    /// from before `vault_device_id` existed, and reporting it as a revocation
+    /// would tell a user their lost device had been locked out when it had not.
+    #[tokio::test]
+    async fn a_revocation_keeps_revoked_unknown_and_refused_apart() {
+        let relay = relay::start(vec![
+            relay::Canned::empty(204),
+            relay::Canned::empty(404),
+            relay::Canned::json(500, r#"{"code":"RELAY_STORAGE_UNAVAILABLE"}"#),
+        ])
+        .await;
+        let mut t = dial(&relay);
+        let device = [0x11u8; 16];
+
+        assert_eq!(
+            t.revoke_device(device).await.expect("a revocation"),
+            crate::transport::RevokeOutcome::Revoked
+        );
+        assert_eq!(
+            t.revoke_device(device).await.expect("no such row"),
+            crate::transport::RevokeOutcome::Unknown
+        );
+        let err = t
+            .revoke_device(device)
+            .await
+            .expect_err("the relay would not");
+        assert_eq!(code_of(&err), "AUTH_DEVICE_REVOKE_FAILED");
+
+        let seen = relay.seen();
+        assert_eq!(seen[0].method, "DELETE");
+        assert_eq!(
+            seen[0].path,
+            format!(
+                "/api/v1/devices/by-vault-id/{}",
+                sunrise_id::crockford::encode_bytes(&device)
+            ),
+            "the route names the vault id, not the ULID the relay minted"
+        );
+        assert_json_binding(&seen[0]);
+    }
+
+    /// The whole attachment upload: an id from the relay, a signed chunk, and a
+    /// commit the caller can address the blob by.
+    #[tokio::test]
+    async fn a_blob_upload_signs_its_chunks_and_reads_back_the_commit() {
+        let relay = relay::start(vec![
+            relay::Canned::json(200, r#"{"upload_id":"up-1"}"#),
+            relay::Canned::empty(204),
+            relay::Canned::json(
+                200,
+                &format!(
+                    r#"{{"blob_id":"blb_{}","size_bytes":9,"chunk_count":1}}"#,
+                    "0f".repeat(16)
+                ),
+            ),
+        ])
+        .await;
+        let mut t = dial(&relay);
+
+        let upload = t
+            .blob_init(&[0xabu8; 16], 1, 9)
+            .await
+            .expect("an upload id");
+        assert_eq!(upload, "up-1");
+        t.blob_put_chunk(&upload, 0, b"sealed-chunk-bytes")
+            .await
+            .expect("the chunk lands");
+        let commit = t
+            .blob_finalize(&upload, &[0x22u8; 32], &[[0x33u8; 32]])
+            .await
+            .expect("a commit");
+        assert_eq!(commit.blob_id, [0x0fu8; 16]);
+        assert_eq!(commit.size_bytes, 9);
+        assert_eq!(commit.chunk_count, 1);
+
+        let seen = relay.seen();
+        assert_eq!(seen[0].path, "/api/v1/blobs/init");
+        assert_json_binding(&seen[0]);
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&seen[0].body).expect("JSON")
+                ["chunk_count"],
+            1
+        );
+        assert_eq!(seen[1].method, "PUT");
+        assert_eq!(seen[1].path, "/api/v1/blobs/up-1/0");
+        assert_eq!(seen[1].body, b"sealed-chunk-bytes");
+        assert_byte_binding(&seen[1]);
+        assert_eq!(seen[2].path, "/api/v1/blobs/finalize");
+        assert_json_binding(&seen[2]);
+    }
+
+    /// A fetch returns the ciphertext, and the relay's single 404 — "no such
+    /// blob", "not yours" and "not finished yet" answered alike, so the route
+    /// is not an oracle for whether another account holds a ciphertext — is
+    /// "not here, try later" rather than a failure.
+    #[tokio::test]
+    async fn a_blob_fetch_separates_the_bytes_from_the_deliberate_404() {
+        let relay = relay::start(vec![
+            relay::Canned::bytes(200, b"sealed"),
+            relay::Canned::empty(404),
+            relay::Canned::json(503, r#"{"code":"RELAY_STORAGE_UNAVAILABLE"}"#),
+        ])
+        .await;
+        let mut t = dial(&relay);
+        let blob = [0x0fu8; 16];
+
+        assert_eq!(
+            t.blob_fetch(&blob).await.expect("the bytes"),
+            Some(b"sealed".to_vec())
+        );
+        assert_eq!(
+            t.blob_fetch(&blob).await.expect("not an error"),
+            None,
+            "the deliberate 404 is not here, try later"
+        );
+        let err = t
+            .blob_fetch(&blob)
+            .await
+            .expect_err("an outage is not a 404");
+        assert_eq!(code_of(&err), "RELAY_STORAGE_UNAVAILABLE");
+
+        let seen = relay.seen();
+        assert_eq!(seen[0].method, "GET");
+        assert_eq!(
+            seen[0].path,
+            format!("/api/v1/blobs/blb_{}", "0f".repeat(16))
+        );
+        assert!(seen[0].body.is_empty(), "a bodiless GET sends no body");
+        assert_byte_binding(&seen[0]);
+    }
+
+    /// Every blob operation reports a refusal rather than a quiet success.
+    ///
+    /// The chunk `PUT` is the one that matters most: it returns `Ok(())` on
+    /// success, so a refusal read as success would leave `finalize` asking the
+    /// relay to commit chunks it never received.
+    #[tokio::test]
+    async fn every_blob_operation_reports_a_refusal_rather_than_a_quiet_success() {
+        let refused = relay::Canned::json(503, r#"{"code":"RELAY_STORAGE_UNAVAILABLE"}"#);
+        let relay = relay::start(vec![refused.clone(), refused.clone(), refused]).await;
+        let mut t = dial(&relay);
+
+        assert_eq!(
+            code_of(&t.blob_init(&[1u8; 16], 1, 9).await.expect_err("refused")),
+            "RELAY_STORAGE_UNAVAILABLE"
+        );
+        assert_eq!(
+            code_of(
+                &t.blob_put_chunk("up-1", 0, b"x")
+                    .await
+                    .expect_err("refused")
+            ),
+            "RELAY_STORAGE_UNAVAILABLE"
+        );
+        assert_eq!(
+            code_of(
+                &t.blob_finalize("up-1", &[2u8; 32], &[[3u8; 32]])
+                    .await
+                    .expect_err("refused")
+            ),
+            "RELAY_STORAGE_UNAVAILABLE"
+        );
+    }
+
+    /// A relay that answers an upload with no id at all is a malformed
+    /// exchange, not an upload under the empty string.
+    #[tokio::test]
+    async fn an_upload_the_relay_named_nothing_is_a_protocol_error() {
+        let relay = relay::start(vec![
+            relay::Canned::json(200, "{}"),
+            relay::Canned::json(200, r#"{"size_bytes":9}"#),
+        ])
+        .await;
+        let mut t = dial(&relay);
+
+        let err = t
+            .blob_init(&[1u8; 16], 1, 9)
+            .await
+            .expect_err("no upload id");
+        assert!(
+            matches!(&err, TransportError::Protocol(m) if m.contains("upload_id")),
+            "{err}"
+        );
+        let err = t
+            .blob_finalize("up-1", &[2u8; 32], &[[3u8; 32]])
+            .await
+            .expect_err("no blob id");
+        assert!(
+            matches!(&err, TransportError::Protocol(m) if m.contains("blob id")),
+            "{err}"
+        );
+    }
 }
