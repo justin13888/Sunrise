@@ -305,12 +305,13 @@ struct KeychainMigrationFallbackTests {
 }
 #endif
 
-/// The two `LocalizedError` arms the rest of this suite never reads.
+/// Every `LocalizedError` arm in ``KeychainError``, asserted as the exact
+/// sentence a user is shown.
 ///
-/// `KeychainError.writtenButOtherDomainRefused` is constructed nowhere else in
-/// the suite, and `.migrationUnverified` is thrown and caught by case identity
-/// with its message never read — so both user-facing blocks executed in no test
-/// until these two cases.
+/// No other test in the target reads a `KeychainError`'s message: the only
+/// `errorDescription` and `localizedDescription` reads in `SunriseTests/`
+/// besides these belong to test-local stub errors and to `AccountError` and
+/// `PairingUIError`. So every arm not asserted here executes in no test at all.
 ///
 /// They are **not** part of the seven lines declared untestable in
 /// `docs/07-clients/desktop.md`. Those need a keychain state this machine cannot
@@ -348,6 +349,43 @@ struct KeychainErrorMessageTests {
                 == "Two different secrets are stored under the same Keychain name, so "
                 + "this app cannot tell which one belongs to your vault. "
                 + "Nothing has been deleted."
+        )
+    }
+
+    /// The one arm carrying no status code, because no `Security.framework`
+    /// call failed: the item was returned and was not what was stored.
+    @Test
+    func theMalformedItemMessageNamesTheFormatAndCarriesNoStatus() {
+        #expect(
+            KeychainError.malformedItem.errorDescription
+                == "The Keychain item is not in the expected format."
+        )
+    }
+
+    /// `.unexpected` hands back the system's own sentence and adds nothing.
+    /// That is exactly what separates it from `.accessibilityNotRaised`, which
+    /// prefixes the same sentence with what the app was attempting — so a
+    /// prefix added here would make two distinct failures read alike.
+    @Test
+    func theUnexpectedStatusMessageIsTheSystemSentenceAlone() {
+        let status = errSecUserCanceled
+        let system = SecCopyErrorMessageString(status, nil) as String?
+        #expect(system != nil, "this fixture needs a status the system can name")
+        #expect(KeychainError.unexpected(status).errorDescription == system)
+    }
+
+    /// Says **"This secret"**, not "the vault key". The vault root was the first
+    /// caller and is no longer the only one — the OIDC credential raises its
+    /// protection class on the same path — so the wording was changed
+    /// deliberately and nothing else pins it.
+    @Test
+    func theAccessibilityNotRaisedMessageNamesTheSecretRatherThanTheVaultKey() {
+        let status = errSecUserCanceled
+        let reason = SecCopyErrorMessageString(status, nil) as String? ?? "Keychain error \(status)."
+        #expect(
+            KeychainError.accessibilityNotRaised(status).errorDescription
+                == "This secret is stored under an older, weaker Keychain protection "
+                + "class and the Keychain would not change it: " + reason
         )
     }
 }
