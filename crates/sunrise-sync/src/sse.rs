@@ -2137,6 +2137,70 @@ mod tests {
         assert_eq!(code_of(&err), "RELAY_STORAGE_UNAVAILABLE");
     }
 
+    /// Every route this transport reaches presents the bearer it was built
+    /// with.
+    ///
+    /// Three separate pieces of code attach it — [`SseTransport::call`] for the
+    /// JSON operations, [`SseTransport::call_bytes`] for the blob surface and
+    /// [`SseTransport::open_events`] for the stream — so this asserts once per
+    /// site rather than once for the transport. Nothing else that scores this
+    /// crate reaches them: the only other bearer-setting tests are in
+    /// `crates/sunrise-e2e`, which `mise.toml:1005`'s `cargo mutants -p
+    /// sunrise-sync` does not build and `.cargo/mutants.toml` excludes besides.
+    /// Deleting any one of the three bodies leaves the rest of this crate
+    /// green, and a transport that dropped the bearer would earn a `401` on
+    /// every route it makes.
+    #[tokio::test]
+    async fn every_route_presents_the_bearer_the_transport_was_built_with() {
+        let relay = relay::start(vec![
+            relay::Canned::json(200, SESSION_OK),
+            relay::Canned::stream(vec![half_read_stream()]),
+            relay::Canned::bytes(200, b"the ciphertext"),
+        ])
+        .await;
+        let mut t = SseTransport::connect_with_bearer(&relay.base, Some("the-bearer"))
+            .with_device_signer(signer(NOW_MS));
+
+        t.send_frame(hello_frame()).await.expect("a session opens");
+        next_frame(&mut t)
+            .await
+            .expect("the ack is waiting")
+            .expect("a HelloAck");
+        next_frame(&mut t)
+            .await
+            .expect("the stream opens")
+            .expect("an event became a frame");
+        assert_eq!(
+            t.blob_fetch(&[0x11u8; 16])
+                .await
+                .expect("the fetch succeeds"),
+            Some(b"the ciphertext".to_vec())
+        );
+
+        let seen = relay.seen();
+        assert_eq!(seen[0].path, "/api/v1/sync/session");
+        assert_eq!(
+            seen[0].header("authorization"),
+            Some("Bearer the-bearer"),
+            "the JSON operations"
+        );
+        assert_eq!(seen[1].path, "/api/v1/sync/events");
+        assert_eq!(
+            seen[1].header("authorization"),
+            Some("Bearer the-bearer"),
+            "the stream"
+        );
+        assert_eq!(
+            seen[2].path,
+            format!("/api/v1/blobs/blb_{}", "11".repeat(16))
+        );
+        assert_eq!(
+            seen[2].header("authorization"),
+            Some("Bearer the-bearer"),
+            "the blob surface"
+        );
+    }
+
     /// A `Subscribe` restates the client's cursors, which drops both the open
     /// stream and the resume point that went with it.
     ///
@@ -2247,6 +2311,12 @@ mod tests {
         let seen = relay.seen();
         assert_eq!(seen[1].path, "/api/v1/sync/ops");
         assert_json_binding(&seen[1]);
+        assert_eq!(
+            seen[1].header("x-sunrise-session"),
+            Some("sess-1"),
+            "every post-handshake operation names the session the handshake minted; \
+             the relay's SessionHeader extractor refuses one that does not"
+        );
         let sent: serde_json::Value = serde_json::from_slice(&seen[1].body).expect("a JSON body");
         assert_eq!(sent["batch_id"], 7);
         assert_eq!(sent["ops"], serde_json::json!(["b25l", "dHdv"]));
