@@ -30,11 +30,18 @@ rule:
   nightly runs.
 * `docs/10-cross-cutting/testing.md` — the prose that says the rule.
 
-Two of them are executable and this gate checks those two. Delete the flag
-from either and the other keeps passing, silently measuring a different
-population from the floor it is compared against — and the only thing that
-would notice is a human reading two files side by side, which is the
-arrangement that produced the 27.17% in the first place.
+Two of them are executable today and this gate checks every place one can
+be. Delete the flag from either and the other keeps passing, silently
+measuring a different population from the floor it is compared against —
+and the only thing that would notice is a human reading two files side by
+side, which is the arrangement that produced the 27.17% in the first
+place.
+
+What the gate reads is `mise.toml` plus every file under
+`.github/workflows/`, not two hard-coded names. Naming two files made a
+third executable copy — a matrix moved into a workflow of its own, a
+release job that measures something — invisible, while the gate went on
+reporting OK about the two it knew about.
 
 Why a separate script rather than `grep-gate.sh`
 ------------------------------------------------
@@ -75,12 +82,15 @@ Two exit codes, because they are two different pieces of news
 * **1 — an invocation is missing the flag.** The two places disagree, or
   both dropped it. The remedy is to put it back, in every place.
 * **2 — the gate could not run.** A file it reads is missing or
-  unreadable, or one of the two files holds no `cargo mutants` invocation
-  at all. That last one is the important case: if the CI matrix stops
-  invoking cargo-mutants and this script keeps reporting green, it is
-  reporting on nothing. A gate that cannot find what it checks must not
-  read as clean — the same argument `grep-gate.sh` opens with, and the
-  same two-code split `file-size-gate.py` and `mutants-gate.py` use.
+  unreadable, or *no* file it read holds a `cargo mutants` invocation at
+  all. That last one is judged over the union and not per file, because
+  moving the matrix from one workflow to another leaves a tree entirely
+  in step and would otherwise be reported as a broken gate. It is the
+  important case: if cargo-mutants stops being invoked anywhere and this
+  script keeps reporting green, it is reporting on nothing. A gate that
+  cannot find what it checks must not read as clean — the same argument
+  `grep-gate.sh` opens with, and the same two-code split
+  `file-size-gate.py` and `mutants-gate.py` use.
 
 Run it with `mise run mutants-flags-gate`, or directly. Its contract is
 asserted by `.github/scripts/test_mutants_flags_gate.py`.
@@ -102,6 +112,18 @@ PROSE_COPY = "docs/10-cross-cutting/testing.md (§Features)"
 # The start of an invocation. `cargo mutants`, allowing the run of spaces
 # a wrapped command can pick up.
 INVOCATION = re.compile(r"\bcargo\s+mutants\b")
+
+# The file that holds the local `mutants` task. Named literally rather
+# than globbed, so deleting it is a read error and an exit 2 rather than
+# a file that quietly stops being checked.
+DEFAULT_MISE = pathlib.Path("mise.toml")
+
+# Every workflow, not the one that happens to hold the matrix today. A
+# second executable copy in a workflow this gate did not name would be
+# invisible to it while the gate went on reporting OK, which is the
+# hazard the gate exists for.
+DEFAULT_WORKFLOW_DIR = pathlib.Path(".github/workflows")
+WORKFLOW_GLOBS = ("*.yml", "*.yaml")
 
 
 class CannotRun(Exception):
@@ -166,38 +188,62 @@ def invocations(path: pathlib.Path) -> list[tuple[int, str]]:
             if INVOCATION.search(line)]
 
 
+def default_paths() -> list[pathlib.Path]:
+    """Everything that can hold an executable invocation, not two names.
+
+    Hard-coding `mise.toml` and `.github/workflows/ci.yml` made a third
+    executable copy — a second workflow, a release job, a matrix moved to
+    a file of its own — invisible while the gate went on reporting OK on
+    the two it knew about. Globbing the workflow directory costs nothing
+    and removes the class.
+
+    `mise.toml` stays a literal name so that deleting it is a read error
+    rather than a file that silently stops being checked; the workflows
+    are a glob because which of them holds an invocation is not fixed.
+    """
+    return [DEFAULT_MISE] + sorted(
+        path
+        for pattern in WORKFLOW_GLOBS
+        for path in DEFAULT_WORKFLOW_DIR.glob(pattern)
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Check that every cargo-mutants invocation carries "
                     f"{REQUIRED_FLAG}.")
     parser.add_argument(
-        "--mise", type=pathlib.Path, default=pathlib.Path("mise.toml"),
-        help="the mise config holding the `mutants` task")
-    parser.add_argument(
-        "--workflow", type=pathlib.Path,
-        default=pathlib.Path(".github/workflows/ci.yml"),
-        help="the workflow holding the `mutants` matrix")
+        "paths", nargs="*", type=pathlib.Path,
+        help="files to check; defaults to mise.toml plus "
+             ".github/workflows/*.yml")
     args = parser.parse_args()
+
+    paths = args.paths or default_paths()
 
     checked = 0
     offenders: list[tuple[pathlib.Path, int, str]] = []
     try:
-        for path in (args.mise, args.workflow):
-            found = invocations(path)
-            if not found:
-                raise CannotRun(
-                    f"no `cargo mutants` invocation in {path}. This gate "
-                    "exists to keep two invocations in step; with one of "
-                    "them gone it is checking nothing, and reporting that "
-                    "as a pass would be worse than reporting nothing. If "
-                    "the invocation moved, point this gate at where it "
-                    "went; if it is genuinely gone, delete this gate in "
-                    "the same change."
-                )
-            for number, line in found:
+        for path in paths:
+            for number, line in invocations(path):
                 checked += 1
                 if REQUIRED_FLAG not in line:
                     offenders.append((path, number, line))
+        if not checked:
+            # Judged over the union rather than per file. Per file, moving
+            # the matrix from one workflow to another was an exit 2 on a
+            # tree that is entirely in step; over the union, the only thing
+            # that trips this is cargo-mutants no longer being invoked
+            # anywhere — which is the case that must never read as clean.
+            raise CannotRun(
+                "no `cargo mutants` invocation in any of "
+                f"{', '.join(str(path) for path in paths)}. This gate "
+                "exists to keep every invocation in step; with none of "
+                "them left it is checking nothing, and reporting that as "
+                "a pass would be worse than reporting nothing. If the "
+                "invocations moved, point this gate at where they went; "
+                "if they are genuinely gone, delete this gate in the "
+                "same change."
+            )
     except CannotRun as error:
         print(error, file=sys.stderr)
         return 2
@@ -222,7 +268,7 @@ def main() -> int:
         return 1
 
     print(f"OK: {checked} cargo-mutants invocation(s) carry {REQUIRED_FLAG} "
-          f"({args.mise}, {args.workflow})")
+          f"({', '.join(str(path) for path in paths)})")
     return 0
 
 
