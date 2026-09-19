@@ -247,6 +247,41 @@ struct ChangeBroadcastTests {
         await broadcast.finish()
         #expect(await drain(broadcast.subscribe()) == [.closed])
     }
+
+    /// **Subscribing and asking whether the feed was open is one hop.**
+    ///
+    /// `CoreBridge.changes()` needs both to decide whether a prime would be an
+    /// instruction to re-read a core that refuses reads. Taking them as two
+    /// awaits left a window: a `finish()` processed between them returned
+    /// `false` for a feed that had already closed, so the prime went out and
+    /// every `follow()` loop painted `CoreError.Closed`. The sticky-flag
+    /// argument does not cover it — stickiness orders the *batches*, and what
+    /// goes wrong is when the consumer's query runs.
+    ///
+    /// What is assertable without a scheduler hook is the contract: the flag
+    /// and the stream agree, on both sides of `finish()`, and they are handed
+    /// back together. Drop the `wasOpen` half and `CoreBridge` has to read the
+    /// flag separately again, which is the shape that raced.
+    @Test
+    func subscribeIfOpenAnswersBothHalvesTogether() async {
+        let live = ChangeBroadcast()
+        let (openStream, wasOpen) = await live.subscribeIfOpen()
+        #expect(wasOpen, "the feed had not closed, so a prime is honest")
+        await live.finish()
+        #expect(await drain(openStream) == [.closed])
+
+        let closed = ChangeBroadcast()
+        await closed.finish()
+        let (closedStream, stillOpen) = await closed.subscribeIfOpen()
+        #expect(
+            !stillOpen,
+            """
+            the feed had closed, and a prime would tell every screen to re-read \
+            a core that refuses reads
+            """
+        )
+        #expect(await drain(closedStream) == [.closed])
+    }
 }
 
 /// `primed()` is what makes a lazily-opened subscription safe to open late.

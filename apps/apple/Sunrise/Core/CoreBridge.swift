@@ -342,17 +342,22 @@ actor CoreBridge {
     /// `isClosed` and would otherwise have been correct; it was the prime in
     /// front of the close batch that made them all re-read first.
     ///
-    /// The flag is read after subscribing, not before, and that ordering is
-    /// what makes one read enough: `hasClosed` is sticky, so `true` means
-    /// suppressing is right, and `false` means the prime went out before the
-    /// close and the close batch is behind it. `primed()` itself is unchanged,
-    /// so the decision lives in one place and `PrimedChangeStreamTests` goes
-    /// on testing the extension in isolation.
+    /// Subscribing and reading the flag are **one** hop into
+    /// ``ChangeBroadcast``, not two. As two, a `finish()` processed between
+    /// them left the flag reading `false` after the close, so the prime went
+    /// out anyway and every `follow()` loop re-read a shut-down core — the
+    /// window was narrower than before and the symptom identical. The sticky
+    /// flag does not rescue that: stickiness orders the batches, and what goes
+    /// wrong is *when the consumer's query runs*, which is after the close
+    /// either way. ``ChangeBroadcast/subscribeIfOpen()`` answers both under
+    /// one isolation, so nothing can run between them. `primed()` itself is
+    /// unchanged, so the decision lives in one place and
+    /// `PrimedChangeStreamTests` goes on testing the extension in isolation.
     func changes(window: Duration = .milliseconds(50)) async -> AsyncStream<ChangeBatch> {
         startListening()
-        let batches = await broadcast.subscribe().coalesced(window: window)
-        let closed = await broadcast.isClosed
-        return closed ? batches : batches.primed()
+        let (raw, wasOpen) = await broadcast.subscribeIfOpen()
+        let batches = raw.coalesced(window: window)
+        return wasOpen ? batches.primed() : batches
     }
 
     /// Open the one FFI subscription, on the first screen that asks for it.

@@ -148,15 +148,32 @@ actor ChangeBroadcast {
     /// precisely because nothing counted them.
     var consumerCount: Int { consumers.count }
 
-    /// Whether the feed has ended. Read by ``CoreBridge/changes(window:)`` to
-    /// decide whether a prime would be a lie.
+    /// Whether the feed has ended.
     ///
-    /// Safe to act on in the only direction that matters, because the flag is
-    /// **sticky** and goes false to true and never back: reading `true` means
-    /// suppressing the prime is right, and reading `false` means the prime was
-    /// emitted before the close and the consumer gets the close batch behind
-    /// it.
+    /// Exposed for the tests that assert the flag itself. Nothing that has to
+    /// act on it reads it separately — see ``subscribeIfOpen()``.
     var isClosed: Bool { hasClosed }
+
+    /// Subscribe, and say in the same breath whether the feed was still open.
+    ///
+    /// ``CoreBridge/changes(window:)`` needs both, and taking them as two hops
+    /// into this actor was a race rather than a style point: a `finish()`
+    /// processed between the two left the second read returning `false`, so a
+    /// feed opened onto a vault that had just shut down was primed anyway —
+    /// every `follow()` loop then ran one `refresh()` against a closed core and
+    /// painted `CoreError.Closed`. That is the symptom
+    /// `aStreamOpenedAfterShutdownIsClosedRatherThanPrimed` exists to prevent,
+    /// surviving in a narrower window.
+    ///
+    /// One hop closes it because both values are read under the actor's own
+    /// isolation, so nothing can run between them. Note that the sticky-flag
+    /// argument does **not** rescue two hops: stickiness is about the order of
+    /// the batches, and the failure is about when the *consumer's query* runs,
+    /// which is after the close either way.
+    func subscribeIfOpen() -> (stream: AsyncStream<CoreChange>, wasOpen: Bool) {
+        let open = !hasClosed
+        return (subscribe(), open)
+    }
 
     /// A stream of everything published from now on, with a lifetime of its
     /// own: ending it detaches this consumer and disturbs no other.
