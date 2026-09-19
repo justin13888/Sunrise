@@ -296,6 +296,16 @@ LINE_FRAGMENT = re.compile(r"^L[0-9]{1,9}$")
 #   on it. It is not this pattern's business, and the distinction matters
 #   because the two used to be conflated here while a `SYMBOL_NAME` miss was
 #   in fact a silent skip that subtracted the checks the span already had.
+#
+# `impl` is **not** in the alternation, and its absence is load-bearing. An
+# `impl` block is a container, not the item a sentence is about: `#Engine`
+# resolved to lines 38-1628 of `sync.rs`, 97.7% of the file, so containment
+# against it was no stronger than the line-existence check the suffix exists
+# to improve on — while counting, in the gate's own output, as a checked
+# citation indistinguishable from a real one. Cite the `struct`, `enum` or
+# `trait`, or the `fn` inside the block. `mod` stays: a `mod` name is
+# routinely what a sentence is about, and a file-level `mod` block is bounded
+# by the thing it groups rather than by the file.
 SYMBOL_DECL = (
     r"^(?P<indent>[ \t]*)"
     r"(?:pub(?:\([^)]*\))?[ \t]+)?"
@@ -303,7 +313,7 @@ SYMBOL_DECL = (
     r"(?:async[ \t]+)?"
     r"(?:unsafe[ \t]+)?"
     r"(?:const[ \t]+)?"
-    r"(?:fn|struct|enum|trait|impl|mod|type|static|union)[ \t]+"
+    r"(?:fn|struct|enum|trait|mod|type|static|union)[ \t]+"
     r"{name}\b"
 )
 
@@ -1256,6 +1266,19 @@ def self_test() -> int:
                 print(f"::error::citations self-test: `{body}` reported {found}, expected {fragment!r}")
                 failures += 1
 
+        # `impl` is not in `SYMBOL_DECL`'s alternation: an `impl` block is a
+        # container, not the item a sentence is about, and containment against
+        # one spanned 97.7% of `sync.rs` while counting as a checked citation.
+        # The fixture's `impl T for u8` at 19-23 is what proves it. `#T` now
+        # resolves to the `trait T` at 15-17 and to that alone, so line 20 --
+        # inside the `impl` block and outside the trait -- is a miss. While
+        # `impl` was in the alternation the union covered 15-17 and 19-23 and
+        # this citation was clean.
+        _, found = symbol_verdict(f"{main}:20#T")
+        if found is None or "spans 15-17" not in found.message:
+            print(f"::error::citations self-test: `{main}:20#T` reported {found}, expected `impl` not to resolve")
+            failures += 1
+
         # A github.com permalink fragment is declined, not failed. It names a
         # line rather than an item, so there is nothing to resolve and no
         # reading under which a failure here would be right.
@@ -1311,7 +1334,7 @@ def self_test() -> int:
 
     if failures:
         return 1
-    print("OK: citations self-test clean (83 cases).")
+    print("OK: citations self-test clean (84 cases).")
     return 0
 
 

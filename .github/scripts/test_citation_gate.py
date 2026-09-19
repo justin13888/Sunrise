@@ -757,13 +757,21 @@ class Symbols(GateCase):
 
     # ---- the start walk's remaining shapes, recorded as they answer today ----
     #
-    # The five cases below are characterisation, not specification. Each one
+    # The four cases below are characterisation, not specification. Each one
     # is a shape `symbol_span`'s line-based start walk gets wrong, none is
     # reached by a citation in this repository today, and each says which
     # direction it errs in. They are here because the walk shipped pinned for
     # exactly one attribute shape, and the shape it was not pinned for was a
     # live defect on four files. A shape nobody wrote a case for is a shape
     # nobody measured.
+    #
+    # A fifth case used to sit here, for `impl<'a> Foo<'a>`, on the reading
+    # that the generic parameters were what `SYMBOL_DECL` could not match. It
+    # is not characterisation any more and it is not about the start walk:
+    # `impl` left the alternation deliberately, so `impl Foo` and
+    # `impl<'a> Foo<'a>` are now equally and intentionally unresolvable. The
+    # verdict is asserted by `test_an_impl_block_is_not_a_citation_target`,
+    # where the reason is stated correctly.
 
     def test_a_blank_line_between_the_doc_and_the_item_cuts_the_doc_out(self):
         # rustc attaches this doc comment to `wanted` across the blank line;
@@ -804,26 +812,6 @@ class Symbols(GateCase):
             self.run_gate(),
             DANGLING,
             "cites line 1, but `wanted` in `crates/c/src/lib.rs` spans 3-6.",
-        )
-
-    def test_a_generic_impl_block_is_not_found(self):
-        # `SYMBOL_DECL` wants whitespace between the keyword and the name, and
-        # `impl<'a> Foo<'a>` puts the lifetimes there. The gate then says the
-        # file does not declare `Foo`, which is a false FAILURE whenever the
-        # type is not also declared in the same file. Latent: the tree has
-        # generic impl blocks, and no citation names one.
-        self.write(
-            "crates/c/src/lib.rs",
-            "pub struct Other;\n"     # 1
-            "impl<'a> Foo<'a> {\n"    # 2
-            "    fn f(&self) {}\n"    # 3
-            "}\n",                    # 4
-        )
-        self.write("docs/a.md", "See `crates/c/src/lib.rs:2#Foo`.\n")
-        self.assert_code(
-            self.run_gate(),
-            DANGLING,
-            "names `Foo`, which `crates/c/src/lib.rs` does not declare.",
         )
 
     def test_a_macro_rules_declaration_is_not_found(self):
@@ -928,6 +916,77 @@ class Symbols(GateCase):
         result = self.run_gate()
         self.assert_code(result, CLEAN, "OK: citations clean.", "0 anchored citation(s)")
         self.assertNotIn("path-like span(s) were NOT checked", result.stdout)
+
+    def test_an_impl_block_is_not_a_citation_target(self):
+        # An `impl` block is a container, not the item a sentence is about.
+        # While `impl` was in `SYMBOL_DECL`'s alternation, `#Engine` resolved
+        # to 97.7% of `sync.rs` and containment against it was no stronger
+        # than the line-existence check the suffix exists to improve on --
+        # while counting, in this gate's own output, as a checked citation
+        # indistinguishable from a real one.
+        #
+        # Asserted from both sides: the `impl` name does not resolve, and a
+        # `fn` declared inside the block still does, so dropping the keyword
+        # cost the gate no real target.
+        self.write(
+            "crates/c/src/lib.rs",
+            "pub struct Other;\n"         # 1
+            "impl Wanted {\n"             # 2
+            "    pub fn inner(&self) {\n" # 3
+            "    }\n"                     # 4
+            "}\n",                        # 5
+        )
+        self.write("docs/a.md", "See `crates/c/src/lib.rs:2#Wanted`.\n")
+        self.assert_code(
+            self.run_gate(),
+            DANGLING,
+            "names `Wanted`, which `crates/c/src/lib.rs` does not declare.",
+        )
+
+        self.write("docs/a.md", "See `crates/c/src/lib.rs:3#inner`.\n")
+        self.assert_code(self.run_gate(), CLEAN, "OK: citations clean.")
+
+        # The generic form, which used to be recorded as a separate defect on
+        # the reading that the lifetimes were what the pattern could not
+        # match. With `impl` out of the alternation the two forms are the same
+        # case and the same deliberate verdict, and this asserts they stay
+        # that way rather than one of them quietly resolving again.
+        self.write(
+            "crates/c/src/lib.rs",
+            "pub struct Other;\n"         # 1
+            "impl<'a> Wanted<'a> {\n"     # 2
+            "    pub fn f(&self) {}\n"    # 3
+            "}\n",                        # 4
+        )
+        self.write("docs/a.md", "See `crates/c/src/lib.rs:2#Wanted`.\n")
+        self.assert_code(
+            self.run_gate(),
+            DANGLING,
+            "names `Wanted`, which `crates/c/src/lib.rs` does not declare.",
+        )
+
+    def test_a_mod_is_still_a_citation_target(self):
+        # The guard on the case above. `impl` left the alternation and `mod`
+        # did not: a `mod` name is routinely what a sentence is about, and a
+        # `mod` block is bounded by the thing it groups rather than by the
+        # file. Dropping both would have been the tidier edit and the wrong
+        # one.
+        self.write(
+            "crates/c/src/lib.rs",
+            "pub mod wanted {\n"          # 1
+            "    pub fn inner() {}\n"     # 2
+            "}\n"                         # 3
+            "pub fn outside() {}\n",      # 4
+        )
+        self.write("docs/a.md", "See `crates/c/src/lib.rs:2#wanted`.\n")
+        self.assert_code(self.run_gate(), CLEAN, "OK: citations clean.")
+
+        self.write("docs/b.md", "See `crates/c/src/lib.rs:4#wanted`.\n")
+        self.assert_code(
+            self.run_gate(),
+            DANGLING,
+            "cites line 4, but `wanted` in `crates/c/src/lib.rs` spans 1-3.",
+        )
 
     def test_a_citation_with_no_suffix_is_unchanged(self):
         # The widening, asserted as a widening. Every citation in this
