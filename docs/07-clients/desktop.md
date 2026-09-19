@@ -195,10 +195,22 @@ document's intent, not yet implemented).
   are **views**, and nothing schedules a notification for them.
 - **built — Keychain** holds the unlock material. Nothing else does. The
   account is **per vault**, so a second vault gets its own item rather than
-  overwriting the first. Three items, under three services, and **all three**
-  ask for `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`:
+  overwriting the first. Three items hold something of the user's, under three
+  services, and **all three** ask for
+  `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`:
   `dev.sunrise.Sunrise.vault-root`, `dev.sunrise.Sunrise.oidc-credentials` and
   `dev.sunrise.Sunrise.relay-device-id`.
+
+  A **fourth** service is written, and it is not one of those three.
+  `KeychainDomain.probe()` adds one fixed non-secret byte under
+  `dev.sunrise.Sunrise.keychain-domain-probe` on every cold launch to find out
+  which keychain this binary can reach, and deletes it again — sweeping the
+  whole service under both domains, so a probe killed before its cleanup is
+  reclaimed by the next one rather than leaving residue for the life of the
+  installation. It holds nothing of the user's and is never read back; that is
+  what makes writing to a user's keychain to answer a capability question
+  acceptable, and it is the reason the count above says "of the user's" rather
+  than "in total".
   An item an older build left in the weaker `…AfterFirstUnlock` is raised on
   the next load rather than left where it was, and a Keychain that refuses the
   raise fails the load rather than handing back a secret whose guarantee is not
@@ -214,7 +226,7 @@ document's intent, not yet implemented).
   `#if os(…)`. On every **Mac** build this repository can make the probe
   answers `.login`, so both halves are inert on this platform today; see below.
   On iOS it answers `.dataProtection` — the only keychain that platform has —
-  which `KeychainMigrationTests` pins, and there the migration is a no-op for
+  which `KeychainDomainTests` pins, and there the migration is a no-op for
   the other reason: one keychain means the source and destination name one
   stored item.
 
@@ -453,27 +465,47 @@ does is not:
      needs it to throw with something rescued. The two fallback cases that call
      this address their destination at `.dataProtection`, so neither enters the
      `catch` at all.
-  7. `readAcrossDomains`'s `try?` around the other domain's read. Every shape
-     this build reaches answers that read rather than refusing it:
-     `.dataProtection` returns `errSecItemNotFound`, `.login` answers cleanly,
-     and on iOS the `domainsAreDistinctStores` guard short-circuits before the
-     `try?`. So it swallows nothing. Measured rather than inferred: on
-     2026-09-17 the `try?` was replaced with `try` and `mise run macos-app` run
-     on the result — 586 passed, 0 failed, 0 skipped, so the mutation survives.
-     It stays blanket for the reason `readAcrossDomains`
-     records — a refused *read* has changed nothing, and raising it would turn
-     a genuine first run into "a key may exist and cannot be reached".
+  7. `readAcrossDomains`'s **raise** when the other domain refuses the read —
+     the `catch` that relabels the status as
+     `KeychainError.otherDomainUnreadable`. Every shape this build reaches
+     answers that read rather than refusing it: `.dataProtection` returns
+     `errSecItemNotFound`, `.login` answers cleanly, and on iOS the
+     `domainsAreDistinctStores` guard short-circuits before the `do` is entered,
+     so the `catch` is never entered either.
 
-  **Where those two measurements come from, and what does not supply them.** Both
-  were taken by hand in a worktree on 2026-09-17: the one-line mutation applied,
+     This item **replaced** an earlier one at the same line rather than leaving
+     the set at six, and the distinction matters to anyone auditing the count.
+     The line used to be a blanket `try?`, and that swallow was the single line
+     collapsing "the other keychain was reached and refused" into "absent" —
+     `nil` being the one answer `SessionModel` reads as absence, it reported a
+     vault root that exists and is momentarily unreadable as one that is gone,
+     and offered a two-machine pairing ceremony for a condition an unlock fixes.
+     Raising repaired that. It did not make the line *reachable*: what blocks it
+     is the other store refusing a read mid-case, which no configuration this
+     repository builds can produce, so the blocker carried over intact along
+     with the item's place in the three-way split below.
+
+     The measurement that used to sit here is **deleted rather than carried
+     forward**. It recorded that replacing the `try?` with `try` left the macOS
+     suite green — and that replacement is now the shipped code, so it would be
+     asserting a survivor for a mutant that no longer exists.
+
+  **Where item 4's measurement comes from, and what does not supply it.** It was
+  taken by hand in a worktree on 2026-09-17: the one-line mutation applied,
   `mise run macos-app` run, the result read off `out/test-results/macos.xcresult`,
-  and the mutation reverted. **No gate checks either of them.** The repository's
+  and the mutation reverted. **No gate checks it.** The repository's
   `Mutation coverage` and `Mutation coverage gate` jobs are
   `schedule || workflow_dispatch` only, so no pull request can make them report,
   and both are pointed at the Rust crates — `cargo-mutants` never sees a Swift
-  file. So these two sentences are a dated local observation and are written to
-  read as one. If either line's surroundings change, the measurement is stale and
-  has to be retaken; nothing will fail to tell you so.
+  file. So that sentence is a dated local observation and is written to read as
+  one. If the line's surroundings change, the measurement is stale and has to be
+  retaken; nothing will fail to tell you so.
+
+  It used to be one of **two**. Item 7 carried the other until the `try?` it
+  measured was replaced by the raise described above, at which point the
+  measurement's mutant became the shipped code and the sentence was deleted
+  rather than reworded. That is the failure mode this paragraph exists to warn
+  about, arriving on schedule.
 
   **The set does not split in two, and an earlier revision of this page said it
   did.** It splits three ways, because two of the items wait on *both* blockers
@@ -575,19 +607,29 @@ does is not:
   it would be a second implementation of `Security.framework` to get wrong.
 
   **Separately, and not one of the seven: `theProbeDeletesWhateverItWrote` is
-  vacuous on macOS.** That `KeychainMigrationTests` case asserts nothing under
+  vacuous on macOS.** That `KeychainDomainTests` case asserts nothing under
   `probeService` is findable in either domain once `probe()` has run — but on
   this build the probe's `SecItemAdd` into `.dataProtection` is refused, so
   nothing is ever written, and deleting or not deleting gives the same answer.
   Removing the cleanup loop from `probe()` altogether leaves the case green on
   every macOS run; it has teeth only on iOS, where the add succeeds. It is not
   in the seven, because it needs no keychain state this machine cannot produce —
-  it needs only to run on iOS, which it already does. The case carries a
-  one-clause marker; the declaration is recorded here in full because
-  `KeychainMigrationTests.swift` sits exactly on the 520-line `file_length`
-  ceiling `swiftlint --strict` enforces, so the marker had to be paid for by
-  tightening comment elsewhere in the same case, and raising that threshold is
-  what `KeychainMigrationFallbackTests` exists instead of.
+  it needs only to run on iOS, which it already does.
+
+  Worse than vacuous, it is a statement about the **machine**: it asks whether
+  anything at all sits under `probeService`, so a Sunrise app running beside the
+  suite, or a single orphan left by a probe whose process died between its
+  `SecItemAdd` and its cleanup, fails it on a tree that is green.
+  `aProbeReclaimsAnOrphanAnEarlierProbeLeftBehind` is the probe-level assertion
+  beside it and the one that actually pins the sweep: it plants an item under
+  `probeService` with an account no probe will mint again, runs `probe()`, and
+  requires it gone. Planting into `.login` is something every build here can do,
+  so unlike its neighbour it has teeth on both platforms. It is what made the
+  cleanup a sweep by *service* rather than by the account the probe just minted;
+  key it back and the planted orphan survives. Sweeping cannot invert the probe,
+  because the add's status is captured before any delete runs — a *fixed*
+  account would have inverted it, by making a second concurrent probe's add fail
+  with `errSecDuplicateItem` and answer `.login` on iOS.
 
   The **credential** store also `save`s across both, and it is the only one that
   needs to. Its token is rewritten with no user action — `refreshIfNeeded`
@@ -632,11 +674,24 @@ The *shipping* code needs no further change on this side; the suite does, and
 exact. Five assertions encode the fact that this build reaches exactly one
 domain, and each is a true statement today that a team makes false:
 
-- `theProbeAnswersWhatThisBuildCanActuallyReach` — `KeychainMigrationTests`
+- `theProbeAnswersWhatThisBuildCanActuallyReach` — `KeychainDomainTests`
 - `aDestinationThisBuildCannotReachFallsBackToTheSource`
 - `theUnreachableDomainRefusesMutationsAndAnswersReadsAsEmpty`
 - `aRefusalOnThisDomainDoesNotSpareTheCopyInTheOther`
 - `aWriteRefusedInItsOwnDomainIsNotReportedAsAPartialSuccess`
+
+One further case is on this handoff and is **not** one of the five, because it
+does not change its answer — it starts running.
+`theMigrationsDestinationWriteDoesNotTakeTheSourceWithIt` in
+`KeychainMigrationFallbackTests` is guarded with
+`.enabled(if: KeychainDomain.current == .dataProtection)` and skipped on every
+build this repository can make. It pins the one arrangement where
+`KeychainMigration`'s plain `write(_:)` matters: source and destination sharing
+a service and an account and differing only by domain, which is the shape all
+three stores build and which no `.login` → `.login` case can construct. Swap
+that write for `writeAcrossDomains(_:)` and the destination's cross-domain
+delete takes the source with it — and until an entitlement lands, nothing
+anywhere will say so.
 
 The last four are in the `KeychainMigrationFallbackTests` suite, which is
 `macOS`-only — the `KeychainErrorMessageTests` suite sharing its file sits
