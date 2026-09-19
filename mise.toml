@@ -973,6 +973,26 @@ mkdir -p "out/mutants/$slug"
 # broke, and the guidance it prints was unreachable in the only case that
 # needed it. Coverage is the gate's verdict, not this task's; any other exit
 # code is a real failure and is re-raised.
+
+# The revision this measurement is about to be taken at, captured BEFORE
+# the run and moved beside the outcomes after it. This is the whole of
+# what makes a recorded floor's `sha` and `date` mean the measurement
+# rather than the recording.
+#
+# They are not the same revision and the gap is the point. A sunrise-core
+# pass is about five hours and a sunrise-domain pass about two; the tests
+# that motivated the run get committed while it is going, and
+# `mutants-baseline` may not be run until the next day. A floor stamped
+# with HEAD at recording time names a revision that does not produce the
+# number beside it — verbatim the defect #246 section 2 cites.
+#
+# Captured first rather than after because HEAD can move under a run that
+# long, and the answer wanted is the tree that was mutated. cargo-mutants
+# renames an existing `mutants.out` out of the way, so the stamp waits
+# outside the output directory until the run has created it.
+staged_revision="out/mutants/$slug.revision.json"
+.github/scripts/mutants-gate.py --record-revision "$staged_revision"
+
 rc=0
 # `--all-features`, and this line is the other one to read before changing it.
 #
@@ -1007,6 +1027,7 @@ case "$rc" in
   0 | 2 | 3) ;;
   *) exit "$rc" ;;
 esac
+mv "$staged_revision" "out/mutants/$slug/mutants.out/revision.json"
 echo
 echo "surviving mutants: out/mutants/$slug/mutants.out/missed.txt"
 echo "score this run:    .github/scripts/mutants-gate.py out/mutants/$slug/mutants.out/outcomes.json"
@@ -1056,8 +1077,16 @@ echo "recording from:"
 for outcome in "${outcomes[@]}"; do
   echo "  $outcome"
 done
+# `--command` is what gets banked as each floor's `provenance.command`,
+# and it is this line rather than the one below it on purpose. The field
+# exists so a reader can reproduce the measurement, and nobody reproduces
+# a measurement by typing the gate's own argv; they type the task. Left
+# to default, the gate records `mutants-gate.py out/mutants/.../
+# outcomes.json --update --expect-shards ...`, which is the inside of the
+# recipe and not the recipe.
 .github/scripts/mutants-gate.py "${outcomes[@]}" --update \
-  --expect-shards "$usage_expect_shards"
+  --expect-shards "$usage_expect_shards" \
+  --command "mise run mutants-baseline --expect-shards $usage_expect_shards"
 """
 
 [tasks.mutants-gate-test]

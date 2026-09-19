@@ -792,6 +792,15 @@ jobs:
           # `create output parent directory ... No such file or directory`
           # before it measured a single mutant.
           mkdir -p out/mutants
+          # The revision this shard is measured at, captured before the
+          # run and moved beside the outcomes after it. `--update` reads
+          # it from there, so the floor a nightly's artifacts produce is
+          # stamped with the revision the mutants actually ran against
+          # rather than with whatever HEAD was when someone downloaded
+          # them. Thirteen shards write thirteen stamps and the gate
+          # refuses if they do not agree on a revision.
+          .github/scripts/mutants-gate.py \
+            --record-revision out/mutants/revision.json
           rc=0
           # `--all-features` for the reason mise.toml's `mutants` task spells
           # out at length: cargo-mutants mutates the source file, cargo decides
@@ -810,12 +819,21 @@ jobs:
             0 | 2 | 3) ;;
             *) exit "$rc" ;;
           esac
+          mv out/mutants/revision.json out/mutants/mutants.out/revision.json
       - name: Upload outcomes
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: mutants-${{ matrix.crate }}-${{ strategy.job-index }}
-          path: out/mutants/mutants.out/outcomes.json
+          # Both files, and they have to travel together: the gate looks
+          # for the revision stamp beside the outcomes it is reading, and
+          # an outcomes file that arrives alone is a measurement whose
+          # revision nobody recorded. Two paths under one directory make
+          # that directory the artifact root, so they land side by side
+          # again on download.
+          path: |
+            out/mutants/mutants.out/outcomes.json
+            out/mutants/mutants.out/revision.json
 
   mutants-gate:
     name: Mutation coverage gate
