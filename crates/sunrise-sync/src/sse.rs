@@ -1733,6 +1733,8 @@ mod tests {
             status: u16,
             content_type: Option<&'static str>,
             chunks: Vec<Bytes>,
+            /// End the body with an error rather than with its last chunk.
+            abort: bool,
         }
 
         impl Canned {
@@ -1742,6 +1744,7 @@ mod tests {
                     status,
                     content_type: Some("application/json"),
                     chunks: vec![Bytes::copy_from_slice(body.as_bytes())],
+                    abort: false,
                 }
             }
 
@@ -1751,6 +1754,7 @@ mod tests {
                     status,
                     content_type: None,
                     chunks: Vec::new(),
+                    abort: false,
                 }
             }
 
@@ -1760,6 +1764,7 @@ mod tests {
                     status,
                     content_type: Some("application/octet-stream"),
                     chunks: vec![Bytes::copy_from_slice(body)],
+                    abort: false,
                 }
             }
 
@@ -1769,6 +1774,24 @@ mod tests {
                     status: 200,
                     content_type: Some("text/event-stream"),
                     chunks,
+                    abort: false,
+                }
+            }
+
+            /// An event stream that fails part-way through its body.
+            ///
+            /// The relay answers `200`, writes `chunks`, and then errors
+            /// instead of ending the message — which is what a connection
+            /// broken mid-stream looks like to the client, and the only way
+            /// this double can reach `recv_frame`'s `Some(Err(e))` arm. A body
+            /// whose `Error` is `Infallible` forecloses that arm by
+            /// construction, which is why the error type here is not.
+            pub(super) fn stream_then_abort(chunks: Vec<Bytes>) -> Self {
+                Self {
+                    status: 200,
+                    content_type: Some("text/event-stream"),
+                    chunks,
+                    abort: true,
                 }
             }
         }
@@ -1798,16 +1821,21 @@ mod tests {
         struct Chunks {
             rest: VecDeque<Bytes>,
             gap: Option<Pin<Box<tokio::time::Sleep>>>,
+            abort: bool,
         }
 
         impl hyper::body::Body for Chunks {
             type Data = Bytes;
-            type Error = Infallible;
+            /// Not `Infallible`: a body that cannot fail forecloses the client's
+            /// mid-stream error arm by construction, and that arm is the one
+            /// that decides whether a broken connection is reported or read as
+            /// a graceful end of stream.
+            type Error = std::io::Error;
 
             fn poll_frame(
                 self: Pin<&mut Self>,
                 cx: &mut Context<'_>,
-            ) -> Poll<Option<Result<Frame<Bytes>, Infallible>>> {
+            ) -> Poll<Option<Result<Frame<Bytes>, std::io::Error>>> {
                 let this = self.get_mut();
                 if let Some(gap) = this.gap.as_mut() {
                     match gap.as_mut().poll(cx) {
@@ -1816,9 +1844,21 @@ mod tests {
                     }
                 }
                 let Some(next) = this.rest.pop_front() else {
+                    if this.abort {
+                        this.abort = false;
+                        return Poll::Ready(Some(Err(std::io::Error::other(
+                            "the relay dropped the body mid-stream",
+                        ))));
+                    }
                     return Poll::Ready(None);
                 };
-                if !this.rest.is_empty() {
+                // A gap after the last chunk too when an abort follows it: hyper
+                // polls a response body ahead of writing it, so an error offered
+                // in the same pass as the final chunk kills the connection
+                // before the head is flushed, and the client reports a failed
+                // *request* rather than a failed body. The gap makes the server
+                // flush what it has first.
+                if !this.rest.is_empty() || this.abort {
                     this.gap = Some(Box::pin(tokio::time::sleep(CHUNK_GAP)));
                 }
                 Poll::Ready(Some(Ok(Frame::data(next))))
@@ -1908,6 +1948,7 @@ mod tests {
                                         .body(Chunks {
                                             rest: canned.chunks.into_iter().collect(),
                                             gap: None,
+                                            abort: canned.abort,
                                         })
                                         .expect("a response"),
                                 )
@@ -2590,6 +2631,45 @@ mod tests {
             "and refuses to send"
         );
         assert_eq!(relay.seen().len(), 2, "closing asks the relay for nothing");
+    }
+
+    /// A stream that breaks mid-body is reported, not read as a graceful end.
+    ///
+    /// `recv_frame` has two arms for a stream that stops: `None` is the relay
+    /// closing the stream cleanly, which is not an error because the driver's
+    /// reconnect decides whether to come back, and `Some(Err(e))` is the
+    /// connection failing under it, which is. Collapsing the second onto the
+    /// first would have a client treat a broken relay as a caught-up one and
+    /// back off instead of retrying.
+    ///
+    /// Reaching it needs a double whose body can fail: with
+    /// `Chunks::Error = Infallible` the arm is unreachable by construction, and
+    /// a mutant that deletes it survives for that reason rather than because
+    /// nothing depends on it.
+    #[tokio::test]
+    async fn a_stream_that_breaks_mid_body_is_reported_rather_than_ended() {
+        let relay = relay::start(vec![
+            relay::Canned::json(200, SESSION_OK),
+            relay::Canned::stream_then_abort(vec![half_read_stream()]),
+        ])
+        .await;
+        let mut t = open_session(&relay).await;
+        next_frame(&mut t)
+            .await
+            .expect("the stream opens")
+            .expect("an event became a frame");
+
+        let err = next_frame(&mut t)
+            .await
+            .expect_err("a body that fails is not an end of stream");
+        assert!(
+            matches!(err, TransportError::Unavailable(_)),
+            "a broken connection is retryable, not a clean close: {err}"
+        );
+        assert!(
+            t.events.is_none(),
+            "the failed body is released so the next read reopens"
+        );
     }
 
     /// A frame kind that has no operation upstream is refused here rather than
