@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail when a backticked `path:line` citation in prose points at nothing.
+"""Fail when a backticked `path:line#symbol` citation in prose points at nothing.
 
 Why this gate exists
 --------------------
@@ -67,6 +67,33 @@ suffix existed — the grammar was widened, not changed, and no span in the tree
 carried a `#` for the widening to reach. A gate that turns a passing document
 red to add a check has not added a check, it has broken a build.
 
+**`path:line#symbol` is this repository's citation convention, and this
+docstring is where it is written down.** No ADR carries it: `docs/11-adr/`
+records architecture decisions and a lint grammar is not one. The two other
+places a maintainer meets this gate — `mise.toml`'s `citations` task and the
+`citations` job in `.github/workflows/ci.yml` — state the same rule in short,
+and point here. If the grammar changes, those three move together or the
+records lag the code, which is the exact defect this gate was built to catch.
+
+Three things the suffix deliberately does, each of them a decision rather than
+a detail:
+
+* **An unresolvable suffix fails; it never subtracts a check.** `#Engine::f`,
+  `#f()` and anything else that is not a bare Rust item name is reported, and
+  reported *after* the path and line checks have run on the same span. The
+  grammar therefore admits any non-space run after the `#` — if it did not,
+  such a span would fail to match `CITATION` altogether and be silently
+  dropped from the run, so writing the method in the natural Rust form would
+  make the build greener by checking strictly less.
+* **`#L702` is declined, not failed.** It is a github.com permalink fragment,
+  the one non-declaration `#` form a Rust-path span plausibly carries. There is
+  no item to resolve, so there is no reading under which failing it is right.
+* **An `impl` block is not a citation target.** `#Engine` once resolved to 38
+  through 1628 of `sync.rs` — 97.7% of the file — which is no stronger than the
+  line-existence check the suffix exists to improve on, while counting as a
+  checked citation in the gate's own output. Cite the `struct`, `enum` or
+  `trait`, or the `fn` inside the block. `mod` remains a legal target.
+
 What it does **not** buy: containment is not aboutness. A citation naming the
 wrong symbol, or the right symbol for the wrong reason, passes — ADR-0034's step
 b citation would have passed had it named `publish_own_cert`. The step from "the
@@ -123,8 +150,11 @@ than a re-reading of something that used to pass.
 A citation fails when no anchor resolves it, when an explicitly-relative path
 climbs out of the repository, when a cited line is past the end of the resolved
 file, when a range is empty (`:50-40`), when line 0 is cited, or when a line is
-cited on a directory. Every failure is reported with the citing file and its
-line; the gate exits 1 if any failed and 0 with a count when clean.
+cited on a directory. With a `#symbol` it also fails when the suffix is not a
+resolvable Rust item name, when the named item is not declared in the resolved
+file, when a `#symbol` is cited on a directory, and when the cited line falls
+outside every span of the named item. Every failure is reported with the citing
+file and its line; the gate exits 1 if any failed and 0 with a count when clean.
 
 What is deliberately not checked
 --------------------------------
@@ -162,10 +192,14 @@ Also out, each for a reason:
   decides that. Without a `#symbol` suffix this gate answers only "does that
   line exist"; with one it also answers "is that line inside the item named",
   which is strictly more and still strictly less than aboutness.
-* **A symbol suffix on a target that is not Rust.** There is no resolver for
-  one, and `docs/x.md#heading` is a link fragment rather than a declaration, so
-  the whole span is declined instead of guessed at. Recorded here because the
-  grammar admits it and the check does not.
+* **A symbol suffix on a target that is not Rust**, and **a `#L<digits>` line
+  fragment on any target.** There is no resolver for the first, and a heading
+  fragment on a markdown target is a link anchor rather than a declaration; the
+  second names a line rather than an item. Neither has a reading this gate could
+  fail without guessing. Both decline the whole span, which takes it out of the
+  anchored count rather than passing it as checked. Recorded here because the
+  grammar admits both and the check answers neither. Every *other* unresolvable
+  suffix is a failure, not a decline: see "The `#symbol` suffix" above.
 
 Usage: citation-gate.py [--root PATH] [--list-unanchored] [--self-test]
 Exit 0 clean, 1 on a dangling citation, 2 if the gate could not run at all.
