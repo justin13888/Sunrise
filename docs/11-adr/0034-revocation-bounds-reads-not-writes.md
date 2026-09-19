@@ -21,8 +21,14 @@ caught that one, and it now carries its path. Each of the nine was repointed,
 or left alone where it was already correct, and each now names the symbol it
 means, `path:line#symbol`, which
 [`.github/scripts/citation-gate.py`](../../.github/scripts/citation-gate.py)
-checks for containment, so the next drift is a red check rather than a silent
-lie ([#249](https://github.com/justin13888/Sunrise/issues/249)). Claims about
+checks for containment, so a line that drifts **out of the item it names** is a
+red check rather than a silent lie
+([#249](https://github.com/justin13888/Sunrise/issues/249)). Containment is not
+aboutness, and it gets weaker the larger the item: measured against the eight,
+the check catches five, and drift *within* a named item — three of these cite
+into `apply_control_op`, which is over seven hundred lines — stays green. That
+is a narrower hole than the line-existence check these citations rotted
+through, not the absence of one. Claims about
 the code were re-read against the code in the same pass: `Engine::is_revoked`
 has one non-test caller and not two; `git grep refused_ops` returns hits rather
 than nothing — every one of them a sentence in this file, this one included,
