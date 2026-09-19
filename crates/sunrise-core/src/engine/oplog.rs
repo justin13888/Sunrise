@@ -383,9 +383,7 @@ impl Engine {
     /// query uses, so this route cannot readmit a device the rotation just
     /// excluded. Without it, a revocation followed by the revoked device
     /// republishing its own cert would hand back everything the revocation had
-    /// just rotated away. Without that, a revocation followed by the revoked
-    /// device republishing its own cert would hand back everything the
-    /// revocation had just rotated away.
+    /// just rotated away.
     pub(super) fn backfill_key_envelopes(
         &self,
         tx: &Transaction<'_>,
@@ -676,9 +674,84 @@ fn ops_run_end(
 ///
 /// A refused op is *not* decided and does not appear here. It was, briefly: an
 /// op refused for a revoked sender advanced this past it so the relay would
-/// stop resending. That made a reversible decision irreversible — the cut can
-/// rise as well as fall — so a refusal now leaves the cursor where it is and
-/// the op applies if it is resent under a corrected cut.
+/// stop resending. The rationale that stood when that was removed was that it
+/// had turned a reversible decision irreversible — the cut, on the reading of
+/// the day, could rise as well as fall. That is set down as the reasoning the
+/// removal was argued from, not as a claim about what this tree can reverse:
+/// nothing below rests on it.
+///
+/// What replaced that refusal is not a narrower refusal, it is **no refusal**.
+/// The apply path does consult the revocation register, and this is where:
+/// [`Engine::apply_remote_all`] (`crates/sunrise-core/src/engine/sync.rs`)
+/// dispatches a control op into [`Engine::apply_control_op`], whose
+/// `DeviceCertPublish` arm calls [`Engine::backfill_key_envelopes`] in this
+/// file, and that function consults [`Engine::is_revoked`] before it seals
+/// anything — a read of the register, inside the apply transaction, on remote
+/// input.
+///
+/// What that read decides is which stream keys a newly certified device is
+/// sealed: on a revoked one it returns early and seals none. What it does
+/// *not* decide is whether the op applies. The op row went in at the
+/// idempotence gate before the control op was dispatched, the `devices` row is
+/// written before the backfill is attempted, a backfill error is logged rather
+/// than raised, and not one of those answers skips this function: it runs on
+/// the delivery like any other, and the op row it left behind counts toward
+/// the prefix like any other. Whether the number this writes actually moves is
+/// a question about the seqs *below* that op and never about the refusal — see
+/// the out-of-order paragraph at the end.
+/// `a_failed_backfill_is_logged_and_the_cert_delivery_still_applies` holds
+/// the backfill-error answer specifically: the error is logged, the cert
+/// stands, and this still runs.
+///
+/// Admission is settled at step b — by the `devices` lookup, or, for the
+/// `DeviceCertPublish` family this very trace delivers, by
+/// [`Engine::self_authenticating_signer`], which checks the envelope against
+/// the cert it carries because that op is what *creates* the row the lookup
+/// reads. In neither case is it settled by the register: a revoked device's
+/// row is found there like any other and its op is applied like any other.
+/// ADR-0034 (`docs/11-adr/0034-revocation-bounds-reads-not-writes.md`) is
+/// where that was decided — revocation bounds what a device may *read*, not
+/// whether what it writes lands.
+/// `a_revoked_devices_ops_still_apply_at_the_replica` holds the admission
+/// half, and `a_revoked_device_cert_through_apply_remote_seals_no_keys` walks
+/// the trace above from the envelope down to the early return.
+///
+/// So this function decides nothing and refuses nothing: it writes the end of
+/// the run already in the log, and both of its call sites reach it having put
+/// the op row in first — [`Engine::apply_remote_all`] at its step g, past an
+/// idempotence gate that returns early when the insert changed no row, and
+/// [`Engine::ops_insert_at`] at the tail of this device's own emit, after the
+/// op-log insert and the outbox enqueue. A local emit that fails never
+/// reaches this, by either of the two routes it can fail —
+/// `a_failed_local_emit_leaves_the_cursor_where_it_was` walks both, inside
+/// the transaction rather than after the rollback. Nor could it move the
+/// number if it did: the prefix is read out of `ops`, never off the op being
+/// written, so a row that is not in the log cannot be counted by it.
+///
+/// One refusal survives on the apply path, and it is not an op's.
+/// [`Engine::apply_control_op`] refuses a `device_revoke` that names its own
+/// sender — logging `core.device.revoke_refused` with `reason = "self"`, which
+/// `sync.rs`'s `device_revoke` arm is the tree's one emitter of — and writes
+/// no register row. Two more refusals live on the local command path rather
+/// than this one, and neither reaches an op or this function:
+/// [`Engine::revoke_device`] refuses a self-revocation, and refuses a target
+/// with no `devices` row. What is refused on the apply path is a *register
+/// write* rather than the delivery: the op row went in before the control op
+/// was dispatched, so this still runs afterwards and counts that op toward the
+/// prefix like any other. A reader who greps `revoke_refused` arrives here
+/// expecting the opposite, which is why it is named, and why
+/// `a_self_refused_revoke_still_advances_the_cursor` holds both halves — for a
+/// delivery at seq 1, where the contiguous prefix is that op alone.
+///
+/// Nor would resending recover anything, here or anywhere. An op's id is
+/// derived from `(stream_id, device_id, seq)` by [`remote_op_id`], so a resent
+/// op carries the op log's same primary key, collides on insert, and
+/// [`Engine::apply_remote_all`] returns at its idempotence gate without
+/// re-running materialization or [`Engine::apply_control_op`] at all. That is
+/// `apply_remote_is_idempotent` for an entity op, and the tail of
+/// `a_self_refused_revoke_still_advances_the_cursor` for a control one, which
+/// resends *different* payload bytes under the same `(stream, device, seq)`
+/// and observes that the control arm never sees them.
 ///
 /// A high-water mark would be wrong, and used to be what this wrote. Ops do
 /// arrive out of order: a dropped frame followed by a later one leaves the log
@@ -688,6 +761,13 @@ fn ops_run_end(
 /// noticed. That is silent data loss produced by the very mechanism meant to
 /// prevent it, so the cursor has to mean "I have everything through n", which
 /// is also how `CursorEntry.last_applied_seq` is read on the wire.
+///
+/// That meaning is what bounds every "the cursor advances" above.
+/// [`ops_run_end`] starts its run at seq 1, so an op delivered with a gap
+/// below it is in the log and outside the prefix: with the log holding `{2}`
+/// the `ELSE ?3 - 1` arm writes 0, and with it holding `{1, 3}` the run ends
+/// at 1. Refused or applied makes no difference to either, which is what
+/// `a_self_refused_revoke_out_of_order_leaves_the_cursor_short` pins.
 pub(super) fn upsert_sync_cursor(
     tx: &Transaction<'_>,
     stream_id: &[u8; 16],
