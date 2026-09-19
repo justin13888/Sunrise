@@ -3025,6 +3025,11 @@ mod tests {
             "the route names the vault id, not the ULID the relay minted"
         );
         assert_json_binding(&seen[0]);
+        assert_eq!(
+            seen[0].header("content-type"),
+            None,
+            "a `call` with no body advertises no media type either"
+        );
     }
 
     /// The whole attachment upload: an id from the relay, a signed chunk, and a
@@ -3073,8 +3078,18 @@ mod tests {
         assert_eq!(seen[1].path, "/api/v1/blobs/up-1/0");
         assert_eq!(seen[1].body, b"sealed-chunk-bytes");
         assert_byte_binding(&seen[1]);
+        assert_eq!(
+            seen[1].header("content-type"),
+            Some("application/octet-stream"),
+            "a chunk is opaque ciphertext, and says so"
+        );
         assert_eq!(seen[2].path, "/api/v1/blobs/finalize");
         assert_json_binding(&seen[2]);
+        assert_eq!(
+            seen[2].header("content-type"),
+            Some("application/json"),
+            "a request with a JSON body advertises one"
+        );
     }
 
     /// A commit the relay under-described still names its blob, and reads as
@@ -3168,6 +3183,12 @@ mod tests {
             format!("/api/v1/blobs/blb_{}", "0f".repeat(16))
         );
         assert!(seen[0].body.is_empty(), "a bodiless GET sends no body");
+        assert_eq!(
+            seen[0].header("content-type"),
+            None,
+            "and advertises no media type it is not sending, which is what \
+             `content_type: None` on `call_bytes` is for"
+        );
         assert_byte_binding(&seen[0]);
     }
 
