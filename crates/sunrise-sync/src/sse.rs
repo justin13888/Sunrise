@@ -2056,6 +2056,21 @@ mod tests {
             .expect("a read against a scripted relay must not hang")
     }
 
+    /// One stream chunk that leaves the transport mid-stream: a whole event the
+    /// client will take, followed by the beginning of a second it cannot.
+    ///
+    /// Reading it through [`next_frame`] puts all three pieces of stream state
+    /// into the only configuration where dropping them means anything —
+    /// `events` `Some`, `last_event_id` `Some("9")`, `buf` non-empty. A test
+    /// that sets those fields by hand instead leaves `events` `None`, and every
+    /// `self.events = None;` in this module stays deletable.
+    fn half_read_stream() -> hyper::body::Bytes {
+        hyper::body::Bytes::from(format!(
+            "id: 9\ndata: {}\n\ndata: half an ev",
+            serde_json::json!({"kind": "caught_up", "stream_id": "ab".repeat(16)})
+        ))
+    }
+
     /// Open a session against `relay` and swallow the `HelloAck`, so a test
     /// about something else starts where that test left off.
     async fn open_session(relay: &relay::Relay) -> SseTransport {
@@ -2130,16 +2145,31 @@ mod tests {
     /// everything up to here". They differ exactly when delivery succeeded and
     /// application did not, which is precisely when the driver resubscribes —
     /// so keeping the id would resume past the ops the cursors are asking for.
+    ///
+    /// The stream is opened **for real** before the `Subscribe`, rather than
+    /// the three fields being set by hand: with `events` already `None` on
+    /// entry, `self.events = None` is deletable and every assertion below still
+    /// holds. A client that kept the old body would go on reading events for a
+    /// stream set it no longer subscribes to, and never open the new one.
     #[tokio::test]
     async fn a_subscribe_drops_the_open_stream_and_its_resume_point() {
         let relay = relay::start(vec![
             relay::Canned::json(200, SESSION_OK),
+            relay::Canned::stream(vec![half_read_stream()]),
             relay::Canned::json(200, "{}"),
         ])
         .await;
         let mut t = open_session(&relay).await;
-        t.last_event_id = Some("9".to_owned());
-        t.buf = b"id: 9\ndata: leftover\n\n".to_vec();
+        next_frame(&mut t)
+            .await
+            .expect("the stream opens")
+            .expect("an event became a frame");
+        assert!(
+            t.events.is_some(),
+            "the stream is open before the subscribe"
+        );
+        assert_eq!(t.last_event_id.as_deref(), Some("9"));
+        assert!(!t.buf.is_empty(), "and half an event is still buffered");
 
         let payload = super::SubscribePayload {
             streams: vec![sunrise_wire_protocol::SubscribeEntry {
@@ -2157,15 +2187,19 @@ mod tests {
             .expect("the subscribe lands");
 
         assert!(
+            t.events.is_none(),
+            "the stream set changed, so the body opened against the old one goes"
+        );
+        assert!(
             t.last_event_id.is_none(),
             "a restated cursor is the stricter statement, so the resume point goes"
         );
         assert!(t.buf.is_empty(), "and the stale stream's bytes with it");
 
         let seen = relay.seen();
-        assert_eq!(seen[1].path, "/api/v1/sync/subscribe");
-        assert_json_binding(&seen[1]);
-        let sent: serde_json::Value = serde_json::from_slice(&seen[1].body).expect("a JSON body");
+        assert_eq!(seen[2].path, "/api/v1/sync/subscribe");
+        assert_json_binding(&seen[2]);
+        let sent: serde_json::Value = serde_json::from_slice(&seen[2].body).expect("a JSON body");
         assert_eq!(sent["streams"][0]["stream_id"], "ab".repeat(16));
         assert_eq!(
             sent["streams"][0]["cursors"][0]["device_id"],
@@ -2277,21 +2311,42 @@ mod tests {
     }
 
     /// A `Close` ends the session in both directions at once: nothing more goes
-    /// up, and the read side reports end of stream rather than reopening.
+    /// up, the open stream is dropped, and the read side reports end of stream
+    /// rather than reopening.
+    ///
+    /// The stream is opened first, so `self.events = None` in the `Close` arm
+    /// is executed with something to clear. `self.closed` alone satisfies the
+    /// end-of-stream assertion, so without an open body this case says nothing
+    /// about the body being released — and a `Close` that left it held would
+    /// keep the relay's connection alive for a session that is over.
     #[tokio::test]
     async fn a_close_frame_ends_the_session_in_both_directions() {
-        let relay = relay::start(Vec::new()).await;
+        let relay = relay::start(vec![
+            relay::Canned::json(200, SESSION_OK),
+            relay::Canned::stream(vec![half_read_stream()]),
+        ])
+        .await;
         let close = super::ClosePayload {
             code: sunrise_error::ErrorCode::AuthTokenExpired,
             reason: "done".to_owned(),
         }
         .encode()
         .expect("an encodable close");
-        let mut t = SseTransport::connect(&relay.base);
+        let mut t = open_session(&relay).await;
+        next_frame(&mut t)
+            .await
+            .expect("the stream opens")
+            .expect("an event became a frame");
+        assert!(t.events.is_some(), "the stream is open before the close");
+
         t.send_frame(frame_of(super::MsgKind::Close, &close))
             .await
             .expect("the close is local");
 
+        assert!(
+            t.events.is_none(),
+            "the session is over, so the body it was reading is released"
+        );
         assert!(
             matches!(
                 t.send_frame(frame_of(super::MsgKind::Close, &close)).await,
@@ -2306,21 +2361,36 @@ mod tests {
                 .is_none(),
             "and reads as end of stream"
         );
-        assert!(relay.seen().is_empty());
+        assert_eq!(
+            relay.seen().len(),
+            2,
+            "the close itself costs no request: the session and the stream are all of them"
+        );
     }
 
     /// Closing the transport drops the stream and the half-event behind it.
     ///
     /// Keeping the buffer would hand a reopened stream the tail of the old
-    /// one's last event, which parses as neither.
+    /// one's last event, which parses as neither — and keeping the body would
+    /// hold the relay's connection open past the close. Both need a stream that
+    /// is really open, which is why this dials one rather than assigning `buf`.
     #[tokio::test]
     async fn closing_the_transport_drops_the_stream_and_its_buffer() {
-        let relay = relay::start(Vec::new()).await;
-        let mut t = SseTransport::connect(&relay.base);
-        t.buf = b"id: 1\ndata: half an ev".to_vec();
+        let relay = relay::start(vec![
+            relay::Canned::json(200, SESSION_OK),
+            relay::Canned::stream(vec![half_read_stream()]),
+        ])
+        .await;
+        let mut t = open_session(&relay).await;
+        next_frame(&mut t)
+            .await
+            .expect("the stream opens")
+            .expect("an event became a frame");
+        assert!(t.events.is_some() && !t.buf.is_empty());
 
         Transport::close(&mut t).await.expect("close succeeds");
 
+        assert!(t.events.is_none(), "the stream goes");
         assert!(t.buf.is_empty(), "the partial event goes with the stream");
         assert!(
             next_frame(&mut t).await.expect("not an error").is_none(),
@@ -2333,7 +2403,7 @@ mod tests {
             ),
             "and refuses to send"
         );
-        assert!(relay.seen().is_empty());
+        assert_eq!(relay.seen().len(), 2, "closing asks the relay for nothing");
     }
 
     /// A frame kind that has no operation upstream is refused here rather than
