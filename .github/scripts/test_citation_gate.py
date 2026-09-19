@@ -1145,27 +1145,47 @@ class Symbols(GateCase):
             "names `Wanted`, which `crates/c/src/lib.rs` does not declare.",
         )
 
-    def test_a_mod_is_still_a_citation_target(self):
-        # The guard on the case above. `impl` left the alternation and `mod`
-        # did not: a `mod` name is routinely what a sentence is about, and a
-        # `mod` block is bounded by the thing it groups rather than by the
-        # file. Dropping both would have been the tidier edit and the wrong
-        # one.
+    def test_a_mod_is_not_a_citation_target(self):
+        # `mod` left the alternation for the reason `impl` did, and the
+        # measurement is worse rather than better: `mod tests` in
+        # `crates/sunrise-server/src/api/sync/suite.rs` spans lines 9 to 1720
+        # of a 1720-line file -- 99.5%, against `impl Engine`'s 97.7% -- and
+        # `mod tests` at the tail of a file is this repository's dominant
+        # idiom, not an edge shape. Containment against a span that size
+        # certifies nothing the line-existence check did not already certify,
+        # while counting in the gate's own output as a checked citation
+        # indistinguishable from a real one.
+        #
+        # The fixture is that shape in miniature: `mod tests` covering all but
+        # the first line. While `mod` resolved, a citation of ANY line in it
+        # came back clean, which is the property being removed.
         self.write(
             "crates/c/src/lib.rs",
-            "pub mod wanted {\n"          # 1
-            "    pub fn inner() {}\n"     # 2
-            "}\n"                         # 3
-            "pub fn outside() {}\n",      # 4
+            "pub fn outside() {}\n"       # 1
+            "#[cfg(test)]\n"              # 2
+            "mod tests {\n"               # 3
+            "    fn a() {}\n"             # 4
+            "    fn b() {}\n"             # 5
+            "}\n",                        # 6
         )
-        self.write("docs/a.md", "See `crates/c/src/lib.rs:2#wanted`.\n")
-        self.assert_code(self.run_gate(), CLEAN, "OK: citations clean.")
-
-        self.write("docs/b.md", "See `crates/c/src/lib.rs:4#wanted`.\n")
+        self.write("docs/a.md", "See `crates/c/src/lib.rs:4#tests`.\n")
         self.assert_code(
             self.run_gate(),
             DANGLING,
-            "cites line 4, but `wanted` in `crates/c/src/lib.rs` spans 1-3.",
+            "names `tests`, which `crates/c/src/lib.rs` does not declare.",
+        )
+
+        # Asserted from the other side too, so the removal is the keyword's
+        # and not the fixture's: an item declared inside the block is still a
+        # target, and still bounds the lines it actually covers.
+        self.write("docs/a.md", "See `crates/c/src/lib.rs:4#a`.\n")
+        self.assert_code(self.run_gate(), CLEAN, "OK: citations clean.")
+
+        self.write("docs/a.md", "See `crates/c/src/lib.rs:5#a`.\n")
+        self.assert_code(
+            self.run_gate(),
+            DANGLING,
+            "cites line 5, but `a` in `crates/c/src/lib.rs` spans 4-4.",
         )
 
     def test_the_suffix_grammar_has_no_length_bound(self):

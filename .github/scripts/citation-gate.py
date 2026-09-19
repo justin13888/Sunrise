@@ -93,11 +93,15 @@ a detail:
   failing it is right — but the path and line checks are not the suffix's to
   give away, and they run on the span exactly as they would with no `#`
   written at all. The same holds for a `#symbol` on a target that is not Rust.
-* **An `impl` block is not a citation target.** `#Engine` once resolved to 38
-  through 1628 of `sync.rs` — 97.7% of the file — which is no stronger than the
-  line-existence check the suffix exists to improve on, while counting as a
-  checked citation in the gate's own output. Cite the `struct`, `enum` or
-  `trait`, or the `fn` inside the block. `mod` remains a legal target.
+* **Neither an `impl` block nor a `mod` is a citation target.** A container is
+  not the item a sentence is about, and containment against one certifies
+  nothing the line-existence check did not already certify, while counting as
+  a checked citation in the gate's own output. Measured here: `impl Engine`
+  spanned 38 through 1628 of `sync.rs`, 97.7% of the file, and `mod tests` in
+  `crates/sunrise-server/src/api/sync/suite.rs` spans 9 through 1720 of 1720 —
+  99.5%, and `mod tests` at the tail of a file is this repository's dominant
+  idiom, not an edge shape. Cite the `struct`, `enum` or `trait`, or the `fn`
+  inside the block.
 
 What it does **not** buy: containment is not aboutness. A citation naming the
 wrong symbol, or the right symbol for the wrong reason, passes — ADR-0034's step
@@ -359,15 +363,27 @@ LINE_FRAGMENT = re.compile(r"^L[0-9]+(?:C[0-9]+)?(?:-L[0-9]+(?:C[0-9]+)?)?$")
 #   because the two used to be conflated here while a `SYMBOL_NAME` miss was
 #   in fact a silent skip that subtracted the checks the span already had.
 #
-# `impl` is **not** in the alternation, and its absence is load-bearing. An
-# `impl` block is a container, not the item a sentence is about: `#Engine`
-# resolved to lines 38-1628 of `sync.rs`, 97.7% of the file, so containment
-# against it was no stronger than the line-existence check the suffix exists
-# to improve on — while counting, in the gate's own output, as a checked
-# citation indistinguishable from a real one. Cite the `struct`, `enum` or
-# `trait`, or the `fn` inside the block. `mod` stays: a `mod` name is
-# routinely what a sentence is about, and a file-level `mod` block is bounded
-# by the thing it groups rather than by the file.
+# Neither `impl` nor `mod` is in the alternation, and both absences are the
+# same decision: a container is not the item a sentence is about, and
+# containment against one certifies nothing the line-existence check did not
+# already certify — while counting, in the gate's own output, as a checked
+# citation indistinguishable from a real one.
+#
+# Both were measured against this tree rather than argued:
+#
+# * `impl Engine` spanned lines 38-1628 of `sync.rs`, **97.7%** of the file.
+# * `mod tests` in `crates/sunrise-server/src/api/sync/suite.rs` spans 9-1720
+#   of a 1720-line file, **99.5%** — worse. Over all 379 `mod` declarations
+#   the tree tracks, 24 cover at least half their file and the top 22 are all
+#   `mod tests`, which is this repository's dominant idiom rather than an edge
+#   shape. `#tests` on that file certified line 20, line 900 and line 1719
+#   alike.
+#
+# Cite the `struct`, `enum` or `trait`, or the `fn` inside the block. The cost
+# is real and worth naming: a type cited as `#Type` in a file that only
+# `impl`s it is now a red check, and a module cited by its own name has no
+# target at all. Both spellings say less than they appear to, which is the
+# whole reason they went.
 SYMBOL_DECL = (
     r"^(?P<indent>[ \t]*)"
     r"(?:pub(?:\([^)]*\))?[ \t]+)?"
@@ -375,7 +391,7 @@ SYMBOL_DECL = (
     r"(?:async[ \t]+)?"
     r"(?:unsafe[ \t]+)?"
     r"(?:const[ \t]+)?"
-    r"(?:fn|struct|enum|trait|mod|type|static|union)[ \t]+"
+    r"(?:fn|struct|enum|trait|type|static|union)[ \t]+"
     r"{name}\b"
 )
 

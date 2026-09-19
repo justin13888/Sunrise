@@ -1322,9 +1322,10 @@ jobs:
         # permalink fragment — `#L702`, `#L702-L710` and the column forms —
         # and any `#symbol` on a non-`.rs` target are DECLINED rather than
         # failed, and what is declined is the SYMBOL check alone: the span
-        # keeps every other check and stays in the checked count.
-        # An `impl` block is not a legal target, because `#Engine` spanned
-        # 97.7% of `sync.rs` and so checked nothing.
+        # keeps every other check and stays in the checked count. Neither an
+        # `impl` block nor a `mod` is a legal target, because `#Engine`
+        # spanned 97.7% of `sync.rs` and `mod tests` in `api/sync/suite.rs`
+        # spans 99.5% of it, so neither checked anything.
         #
         # The full rule lives in the script's own module docstring, and
         # `mise.toml`'s `citations` task carries the same summary. All three
