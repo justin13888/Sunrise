@@ -69,6 +69,24 @@ use sunrise_wire_protocol::{
 /// frame, base64-encoded.
 const MAX_EVENT_BYTES: usize = 8 * 1024 * 1024;
 
+/// How long this client will wait for a *refusal's* problem document.
+///
+/// The document is read only after the response head has already arrived, so
+/// the connection is established and the body is one round trip away — a
+/// problem document is a few hundred bytes. Two seconds is generous against
+/// that and deliberately tight against the alternative: a relay, proxy or
+/// captive portal that answers non-2xx and then stalls the body would
+/// otherwise park [`SseTransport::open_events`] with no bound of its own. The
+/// sync driver does not supply one — its `tokio::select!` *cancels* the read
+/// rather than timing it out, which drops the refusal unreported and reopens
+/// the stream, so a stall becomes a silent retry loop instead of a session
+/// that ends and backs off.
+///
+/// Expiring is safe by construction: a refusal whose body did not arrive is
+/// still a refusal, and falls back to the status map — which is where this
+/// route was before it read the body at all.
+const REFUSAL_BODY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// SSE + `POST` client transport over `http://` / `https://`.
 pub struct SseTransport {
     client: Client<
@@ -395,15 +413,32 @@ impl SseTransport {
             //
             // A body that fails to arrive is not allowed to swallow the
             // refusal. An empty one falls back to the status map, which is
-            // where this route already was.
+            // where this route already was — and that is what makes both
+            // bounds below safe to apply: every way of not getting the
+            // document degrades to the reading this route already had.
+            //
+            // Capped at [`MAX_EVENT_BYTES`], which already bounds the success
+            // path in this same function, so a relay that answers a refusal
+            // with an unbounded body cannot make this client hold it. The peak
+            // is a multiple of the body across `collect` → `to_bytes` →
+            // `to_vec`, and `refuse` clones an arbitrarily long `code` twice
+            // more, so an uncapped read here is not one allocation.
+            //
+            // Deadlined at [`REFUSAL_BODY_TIMEOUT`], because a stall is not a
+            // failure the body reports: without a timer this await simply does
+            // not return, and the driver's only bound is cancelling the whole
+            // future, which discards the refusal rather than surfacing it.
             let status = response.status();
             let date = server_date(response.headers());
-            let bytes = response
-                .into_body()
-                .collect()
-                .await
-                .map(|b| b.to_bytes().to_vec())
-                .unwrap_or_default();
+            let bytes = tokio::time::timeout(
+                REFUSAL_BODY_TIMEOUT,
+                http_body_util::Limited::new(response.into_body(), MAX_EVENT_BYTES).collect(),
+            )
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .map(|b| b.to_bytes().to_vec())
+            .unwrap_or_default();
             return Err(self.refuse(&Reply {
                 status,
                 date,
@@ -1777,6 +1812,17 @@ mod tests {
         /// coalescing one.
         const CHUNK_GAP: Duration = Duration::from_millis(5);
 
+        /// How long a stalling response withholds the rest of its body.
+        ///
+        /// Long enough that nothing in this suite can outwait it, so a test
+        /// asserting a client-side deadline is asserting the *client's* timer
+        /// and not this one. It is a real timer rather than a bare
+        /// `Poll::Pending` because a body that returns `Pending` without
+        /// registering a waker is a body the runtime is entitled never to poll
+        /// again, and the stall would then be an artefact of this double rather
+        /// than of the relay it stands in for.
+        const STALL: Duration = Duration::from_secs(3_600);
+
         /// One canned response, in the order the relay will hand them out.
         #[derive(Debug, Clone)]
         pub(super) struct Canned {
@@ -1785,6 +1831,8 @@ mod tests {
             chunks: Vec<Bytes>,
             /// End the body with an error rather than with its last chunk.
             abort: bool,
+            /// Never end the body at all: write `chunks`, then hold.
+            stall: bool,
         }
 
         impl Canned {
@@ -1795,6 +1843,7 @@ mod tests {
                     content_type: Some("application/json"),
                     chunks: vec![Bytes::copy_from_slice(body.as_bytes())],
                     abort: false,
+                    stall: false,
                 }
             }
 
@@ -1805,6 +1854,7 @@ mod tests {
                     content_type: None,
                     chunks: Vec::new(),
                     abort: false,
+                    stall: false,
                 }
             }
 
@@ -1815,6 +1865,7 @@ mod tests {
                     content_type: Some("application/octet-stream"),
                     chunks: vec![Bytes::copy_from_slice(body)],
                     abort: false,
+                    stall: false,
                 }
             }
 
@@ -1825,6 +1876,27 @@ mod tests {
                     content_type: Some("text/event-stream"),
                     chunks,
                     abort: false,
+                    stall: false,
+                }
+            }
+
+            /// A reply whose body starts and then never finishes.
+            ///
+            /// The status line and headers reach the client — a chunk has to
+            /// be written for hyper to flush the head, which is why this takes
+            /// a prefix rather than nothing — and the rest of the body never
+            /// arrives. That is what a proxy, captive portal or relay holding a
+            /// connection open looks like from here, and the only shape that
+            /// exercises a *deadline* rather than an error: a stall is not a
+            /// failure the body reports, so without a timer the read does not
+            /// return at all.
+            pub(super) fn json_then_stall(status: u16, prefix: &str) -> Self {
+                Self {
+                    status,
+                    content_type: Some("application/json"),
+                    chunks: vec![Bytes::copy_from_slice(prefix.as_bytes())],
+                    abort: false,
+                    stall: true,
                 }
             }
 
@@ -1842,6 +1914,7 @@ mod tests {
                     content_type: Some("text/event-stream"),
                     chunks,
                     abort: true,
+                    stall: false,
                 }
             }
         }
@@ -1872,6 +1945,7 @@ mod tests {
             rest: VecDeque<Bytes>,
             gap: Option<Pin<Box<tokio::time::Sleep>>>,
             abort: bool,
+            stall: bool,
         }
 
         impl hyper::body::Body for Chunks {
@@ -1894,6 +1968,15 @@ mod tests {
                     }
                 }
                 let Some(next) = this.rest.pop_front() else {
+                    if this.stall {
+                        let held = this
+                            .gap
+                            .get_or_insert_with(|| Box::pin(tokio::time::sleep(STALL)));
+                        return match held.as_mut().poll(cx) {
+                            Poll::Pending => Poll::Pending,
+                            Poll::Ready(()) => Poll::Ready(None),
+                        };
+                    }
                     if this.abort {
                         this.abort = false;
                         return Poll::Ready(Some(Err(std::io::Error::other(
@@ -1999,6 +2082,7 @@ mod tests {
                                             rest: canned.chunks.into_iter().collect(),
                                             gap: None,
                                             abort: canned.abort,
+                                            stall: canned.stall,
                                         })
                                         .expect("a response"),
                                 )
@@ -2931,6 +3015,92 @@ mod tests {
             .await
             .expect_err("the relay refused the stream");
         assert_eq!(code_of(&err), "AUTH_TOKEN_INVALID");
+    }
+
+    /// A refusal whose body never finishes arriving is still a refusal.
+    ///
+    /// The relay answers `401`, writes the first few bytes of a problem
+    /// document, and then holds the connection. Before the read was deadlined
+    /// this await did not return: the driver's only bound is `tokio::select!`
+    /// **cancelling** the whole future, and cancellation is not a timeout — the
+    /// partial body and the refusal are both dropped, `events` is still `None`,
+    /// and the next iteration opens a brand-new stream. No error reaches the
+    /// driver, the session never ends and no backoff engages, so a stalling
+    /// relay becomes a silent retry loop driven by whatever else wakes the
+    /// driver.
+    ///
+    /// What comes back is the status map, which is where this route was before
+    /// it read the body at all — and the truncated `"code":"AUTH_DEV` that did
+    /// arrive is *not* read, because half a document is not a code.
+    #[tokio::test]
+    async fn a_refusal_whose_body_stalls_is_still_reported_as_a_refusal() {
+        let relay = relay::start(vec![
+            relay::Canned::json(200, SESSION_OK),
+            relay::Canned::json_then_stall(401, r#"{"code":"AUTH_DEV"#),
+        ])
+        .await;
+        let mut t = open_session(&relay).await;
+
+        let started = tokio::time::Instant::now();
+        let err = next_frame(&mut t)
+            .await
+            .expect_err("the relay refused the stream and then went quiet");
+        assert_eq!(
+            code_of(&err),
+            "AUTH_TOKEN_INVALID",
+            "a body that never arrived falls back to the status map"
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(20),
+            "the read is bounded by its own deadline, not by the test harness's"
+        );
+    }
+
+    /// A refusal document is read up to the frame cap and no further.
+    ///
+    /// Both sides of the boundary, because a cap that refused everything would
+    /// pass a test written only against the oversized half. At exactly
+    /// [`super::MAX_EVENT_BYTES`] the relay's own code still wins; one byte
+    /// past it the read is abandoned and the status map answers instead — which
+    /// is the same degrade every other unreadable refusal takes, so a relay
+    /// cannot make this client hold an unbounded body by refusing it.
+    #[tokio::test]
+    async fn a_refusal_document_past_the_frame_cap_is_abandoned_for_the_status_map() {
+        let document = |len: usize| {
+            let head = r#"{"code":"AUTH_DEVICE_SIG_INVALID","detail":""#;
+            let tail = r#""}"#;
+            format!("{head}{}{tail}", "x".repeat(len - head.len() - tail.len()))
+        };
+
+        let at_cap = document(FRAME_CAP);
+        assert_eq!(at_cap.len(), FRAME_CAP);
+        let relay = relay::start(vec![
+            relay::Canned::json(200, SESSION_OK),
+            relay::Canned::json(401, &at_cap),
+        ])
+        .await;
+        let mut t = open_session(&relay).await;
+        let err = next_frame(&mut t).await.expect_err("the relay refused");
+        assert_eq!(
+            code_of(&err),
+            "AUTH_DEVICE_SIG_INVALID",
+            "exactly the cap is under the cap, so the relay's own code wins"
+        );
+
+        let past_cap = document(FRAME_CAP + 1);
+        assert_eq!(past_cap.len(), FRAME_CAP + 1);
+        let relay = relay::start(vec![
+            relay::Canned::json(200, SESSION_OK),
+            relay::Canned::json(401, &past_cap),
+        ])
+        .await;
+        let mut t = open_session(&relay).await;
+        let err = next_frame(&mut t).await.expect_err("the relay refused");
+        assert_eq!(
+            code_of(&err),
+            "AUTH_TOKEN_INVALID",
+            "one byte past the cap is not read, so the status map answers"
+        );
     }
 
     /// An event that arrives in two chunks is one event, and the frame cap does
