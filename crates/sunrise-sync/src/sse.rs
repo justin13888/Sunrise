@@ -2403,6 +2403,54 @@ mod tests {
         );
     }
 
+    /// A transport built without one presents no `Authorization` at all, on
+    /// the same three routes.
+    ///
+    /// The negative half of the case above, and it is not redundant with it: a
+    /// header attached unconditionally — a `Bearer` built from an empty string,
+    /// a default, a `unwrap_or_default` where the `Option` is read — satisfies
+    /// every assertion there and is invisible to all of them. `connect` exists
+    /// for the self-host relay running `NullVerifier`, where the request that
+    /// carries a credential is the wrong request, so "no header" is the
+    /// contract rather than the absence of one.
+    #[tokio::test]
+    async fn a_transport_built_without_a_bearer_presents_none() {
+        let relay = relay::start(vec![
+            relay::Canned::json(200, SESSION_OK),
+            relay::Canned::stream(vec![half_read_stream()]),
+            relay::Canned::bytes(200, b"the ciphertext"),
+        ])
+        .await;
+        let mut t = SseTransport::connect(&relay.base).with_device_signer(signer(NOW_MS));
+
+        t.send_frame(hello_frame()).await.expect("a session opens");
+        next_frame(&mut t)
+            .await
+            .expect("the ack is waiting")
+            .expect("a HelloAck");
+        next_frame(&mut t)
+            .await
+            .expect("the stream opens")
+            .expect("an event became a frame");
+        assert_eq!(
+            t.blob_fetch(&[0x11u8; 16])
+                .await
+                .expect("the fetch succeeds"),
+            Some(b"the ciphertext".to_vec())
+        );
+
+        let seen = relay.seen();
+        assert_eq!(seen[0].path, "/api/v1/sync/session");
+        assert_eq!(seen[0].header("authorization"), None, "the JSON operations");
+        assert_eq!(seen[1].path, "/api/v1/sync/events");
+        assert_eq!(seen[1].header("authorization"), None, "the stream");
+        assert_eq!(
+            seen[2].path,
+            format!("/api/v1/blobs/blb_{}", "11".repeat(16))
+        );
+        assert_eq!(seen[2].header("authorization"), None, "the blob surface");
+    }
+
     /// A `Subscribe` restates the client's cursors, which drops both the open
     /// stream and the resume point that went with it.
     ///
@@ -2791,7 +2839,11 @@ mod tests {
             ),
             "and refuses to send"
         );
-        assert_eq!(relay.seen().len(), 2, "closing asks the relay for nothing");
+        assert_eq!(
+            relay.seen().len(),
+            2,
+            "the session and the stream open, and closing adds nothing to them"
+        );
     }
 
     /// A stream that breaks mid-body is reported, not read as a graceful end.
@@ -3030,6 +3082,24 @@ mod tests {
             .await
             .expect_err("the relay refused the stream");
         assert_eq!(code_of(&err), "AUTH_DEVICE_SIG_INVALID");
+
+        // And the advice rides with it. A refused *binding* is the one refusal
+        // whose code leaves the user nothing to do, so `refuse` appends what to
+        // do about it — and until `open_events` read the body this route could
+        // not reach that arm at all, because a refusal with no document never
+        // resolves to `AUTH_DEVICE_SIG_INVALID`. The skew branch is the
+        // deterministic one here: [`signer`] is fixed at [`NOW_MS`], a date in
+        // the past, and the relay's own `Date` is the wall clock, so the
+        // measured skew is always outside the tolerance.
+        let message = message_of(&err);
+        assert!(
+            message.contains("AUTH_DEVICE_SIG_INVALID"),
+            "the relay's own words come through: {message}"
+        );
+        assert!(
+            message.contains("set the system clock and retry"),
+            "and the user is told what to do about it: {message}"
+        );
     }
 
     /// And a refusal carrying no code at all still lands on the status map,
