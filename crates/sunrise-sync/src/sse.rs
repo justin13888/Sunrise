@@ -1636,12 +1636,14 @@ mod tests {
 
         /// How long the relay waits between the chunks of one response.
         ///
-        /// Deliberately non-zero. Handing hyper every chunk at once lets the
-        /// client coalesce them into a single body frame, which would silently
-        /// turn a test about a *partial* event into a test about a whole one —
-        /// the buffer would never be non-empty when a chunk arrived, and the
-        /// frame-cap arithmetic that reads `self.buf.len()` would never be
-        /// exercised with anything but zero.
+        /// A deterministic gap, so every chunk of a scripted response reaches
+        /// the client as a separate body frame no matter how the two ends are
+        /// scheduled, and reassembly is exercised across frames rather than
+        /// within one. The value is not load-bearing beyond being non-zero:
+        /// this relay writes one chunked-transfer chunk per [`Frame::data`] and
+        /// hyper's decoder yields one frame per chunk regardless of arrival
+        /// timing, so the gap removes a scheduling variable rather than a
+        /// coalescing one.
         const CHUNK_GAP: Duration = Duration::from_millis(5);
 
         /// One canned response, in the order the relay will hand them out.
