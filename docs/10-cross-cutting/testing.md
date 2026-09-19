@@ -423,8 +423,10 @@ two, because the update path replaces each crate entry wholesale, so a
 `provenance` added by hand would not survive the next `mise run
 mutants-baseline`.
 
-The three fields have fixed meanings, and they are fixed because the object is
-only comparable across floors if they are:
+Four fields, of which the first three are required of every floor carrying a
+`caught_pct` and `dirty` is required of a *stamp* rather than of a floor — see
+below. They have fixed meanings, and they are fixed because the object is only
+comparable across floors if they are:
 
 | Field | Means |
 |---|---|
@@ -453,6 +455,17 @@ file shipped before the stamp existed carry no `dirty` at all, and its absence
 means **unknown**, not clean: nobody can now establish whether those trees were
 modified, and writing `false` would be exactly the invention the requirement
 exists to stop.
+
+Which is why a `revision.json` stamp must carry it, and is refused with exit 2
+when it does not — the same refusal `sha` and `date` get, and not the leniency
+the baseline's own `dirty` gets. The two rules point the same way read forwards
+and backwards. A floor from before the stamp existed cannot answer the question
+and says so by omission; a stamp is written at the one moment the question is
+answerable, so a stamp that omits it is not an old floor, it is somebody who did
+not look. Defaulting that to `false` would bank a floor asserting a clean tree
+on nobody's authority, which is the invention again, one file along. The refusal
+above invites a hand-written stamp, so this is a thing to get wrong by following
+the instructions: `sha`, `date` and `dirty`, all three.
 
 `command` is the human-facing invocation because the field exists so a reader
 can re-run the measurement, and nobody re-runs one by typing the gate's argv.

@@ -1372,6 +1372,91 @@ class FloorProvenance(unittest.TestCase):
                 "--expect-shards", "sunrise-sync=1"),
             2, 'records no "date"')
 
+    def test_a_revision_stamp_with_no_dirty_flag_is_2(self):
+        # The stamp the gate's own refusal text tells a person to write
+        # by hand. Read as `false` — a missing key is falsy — it banked a
+        # floor saying the measured tree was clean, which nobody had
+        # asserted and nobody could check afterwards. Every other place
+        # in this design reads an absent `dirty` as *unknown*; a stamp is
+        # written at the one moment the question is answerable, so it is
+        # required there rather than defaulted.
+        run = outcomes_file(
+            self.tmp / "a.json", "sunrise-sync", caught=1,
+            revision={"sha": "b" * 40, "date": "2026-09-15"})
+        base = baseline_file(self.tmp / "base.json", {})
+        self.assert_code(
+            self.run_gate(
+                str(run), "--update", "--baseline", str(base),
+                "--expect-shards", "sunrise-sync=1"),
+            2, 'records no boolean "dirty"')
+        # Nothing banked: the refusal is before the file is touched.
+        self.assertEqual(json.loads(base.read_text())["crates"], {})
+
+    def test_a_revision_stamp_with_a_non_boolean_dirty_flag_is_2(self):
+        # The same trap the baseline's own `dirty` is typed against, one
+        # file upstream: `"false"` is a string, every string is truthy,
+        # and it reads as clean to a person and as dirty to the code.
+        run = outcomes_file(
+            self.tmp / "a.json", "sunrise-sync", caught=1,
+            revision={**MEASURED_AT, "dirty": "false"})
+        base = baseline_file(self.tmp / "base.json", {})
+        self.assert_code(
+            self.run_gate(
+                str(run), "--update", "--baseline", str(base),
+                "--expect-shards", "sunrise-sync=1"),
+            2, 'records no boolean "dirty"')
+
+    def test_one_dirty_shard_makes_the_whole_floor_dirty(self):
+        # `dirty` is the union across the shards, not the last one read.
+        # Thirteen shards measure one crate between them, so one of them
+        # seeing uncommitted changes is enough to make the floor they
+        # produce unreproducible at the revision beside it — and the
+        # single-shard case cannot tell a union from an overwrite.
+        first = outcomes_file(
+            self.tmp / "one" / "outcomes.json", "sunrise-sync", caught=1)
+        second = outcomes_file(
+            self.tmp / "two" / "outcomes.json", "sunrise-sync", caught=1,
+            revision={**MEASURED_AT, "dirty": True})
+        base = baseline_file(self.tmp / "base.json", {})
+        result = self.run_gate(
+            str(first), str(second), "--update", "--baseline", str(base),
+            "--expect-shards", "sunrise-sync=2")
+        self.assert_code(result, 0, "modified working tree")
+        origin = json.loads(
+            base.read_text())["crates"]["sunrise-sync"]["provenance"]
+        self.assertIs(origin["dirty"], True)
+
+    def test_clean_shards_together_stay_clean(self):
+        # The other direction of the same union, so that "always true"
+        # is not a way of passing the case above.
+        first = outcomes_file(
+            self.tmp / "one" / "outcomes.json", "sunrise-sync", caught=1)
+        second = outcomes_file(
+            self.tmp / "two" / "outcomes.json", "sunrise-sync", caught=1)
+        base = baseline_file(self.tmp / "base.json", {})
+        result = self.run_gate(
+            str(first), str(second), "--update", "--baseline", str(base),
+            "--expect-shards", "sunrise-sync=2")
+        self.assert_code(result, 0)
+        self.assertNotIn("modified working tree", result.stderr)
+        origin = json.loads(
+            base.read_text())["crates"]["sunrise-sync"]["provenance"]
+        self.assertIs(origin["dirty"], False)
+
+    def test_the_stamp_refusal_names_all_three_required_fields(self):
+        # The refusal invites a hand-written stamp, so it has to say what
+        # one contains. Naming two of three is how the `dirty`-less stamp
+        # got written in the first place.
+        run = outcomes_file(
+            self.tmp / "a.json", "sunrise-sync", caught=1, revision=None)
+        base = baseline_file(self.tmp / "base.json", {})
+        result = self.run_gate(
+            str(run), "--update", "--baseline", str(base),
+            "--expect-shards", "sunrise-sync=1")
+        self.assert_code(result, 2)
+        for field in ("sha", "date", "dirty"):
+            self.assertIn(f'"{field}"', result.stderr)
+
     def test_the_stamp_is_found_one_level_above_the_outcomes(self):
         # cargo-mutants always writes `mutants.out/` under the directory
         # it is handed, so the run directory the task created is one

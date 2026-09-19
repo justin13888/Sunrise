@@ -190,12 +190,22 @@ PROVENANCE_FIELDS = ("sha", "date", "command")
 # correlatable by anything.
 REVISION_FILENAME = "revision.json"
 
-# Optional, and typed when present. `--update` writes it for every floor
-# it banks; the floors recorded before measurement-time capture existed
-# carry no `dirty` at all, because whether those working trees were clean
-# is not something anybody can now establish, and writing `false` would
-# be the invention the provenance requirement exists to stop. Absent
-# means unknown, not clean.
+# Absent means unknown, not clean — everywhere, which takes saying twice
+# because the field appears in two files and they are not the same rule.
+#
+# In `mutants/baseline.json` it is optional and typed when present:
+# `--update` writes it for every floor it banks, and the floors recorded
+# before measurement-time capture existed carry no `dirty` at all,
+# because whether those working trees were clean is not something anybody
+# can now establish and writing `false` would be the invention the
+# provenance requirement exists to stop.
+#
+# In a `revision.json` stamp it is REQUIRED, for that same reason read
+# forwards. A stamp is written at the moment the question is answerable,
+# so a stamp that does not answer it is a stamp written by somebody who
+# did not look — and treating that as `false` banks a floor asserting a
+# clean tree on nobody's authority, which is the invention again, one
+# file along.
 DIRTY_FIELD = "dirty"
 
 
@@ -406,7 +416,9 @@ def measurement_revision(paths: list[pathlib.Path]) -> dict[str, object]:
     dates are ordinary; the earliest is the day the measurement began.
     `dirty` is true if any shard saw a modified tree, because one shard
     measuring something uncommitted is enough to make the whole floor
-    unreproducible at the named revision.
+    unreproducible at the named revision — and it is required of every
+    stamp rather than defaulted, so that "no shard saw a modified tree"
+    cannot be produced by no shard having been asked.
     """
     stamps: dict[str, list[dict]] = {}
     unstamped: list[pathlib.Path] = []
@@ -422,6 +434,8 @@ def measurement_revision(paths: list[pathlib.Path]) -> dict[str, object]:
                 f"cannot read {candidate}: {error}") from error
         sha = document.get("sha") if isinstance(document, dict) else None
         date = document.get("date") if isinstance(document, dict) else None
+        dirty = document.get(DIRTY_FIELD) if isinstance(document, dict) \
+            else None
         if not isinstance(sha, str) or not sha.strip():
             raise CannotRun(
                 f'{candidate} records no "sha"; it cannot say which '
@@ -430,6 +444,29 @@ def measurement_revision(paths: list[pathlib.Path]) -> dict[str, object]:
             raise CannotRun(
                 f'{candidate} records no "date"; it cannot say when the '
                 "outcomes beside it were measured.")
+        # Required of a stamp, exactly as `sha` and `date` are, and for
+        # the same reason. A missing key read as `false` is an assertion
+        # nobody made: the refusal text below invites a hand-written
+        # stamp, a hand-written stamp is the one that leaves this out,
+        # and the floor it produced said `"dirty": false` — the tree was
+        # clean — on the strength of nobody having looked. Absent means
+        # unknown wherever else this file reads it, and a stamp is not
+        # allowed to be the one place where it means clean.
+        if not isinstance(dirty, bool):
+            raise CannotRun(
+                f'{candidate} records no boolean "{DIRTY_FIELD}"; it '
+                "cannot say whether the tree it measured had uncommitted "
+                "changes.\n\n"
+                "A floor taken on a modified tree names a revision that "
+                "does not reproduce it, which is one of the two things "
+                "the provenance requirement exists to catch. Leaving the "
+                "key out does not make that question go away, it records "
+                f'"{DIRTY_FIELD}": false against a tree nobody looked '
+                "at.\n\n"
+                "`mise run mutants <crate>` writes this field. A stamp "
+                f'written by hand needs `"{DIRTY_FIELD}": true` or '
+                f'`"{DIRTY_FIELD}": false` in it, whichever `git status '
+                "--porcelain` said at the time the mutants ran.")
         stamps.setdefault(sha.strip(), []).append(document)
 
     if unstamped:
@@ -445,7 +482,10 @@ def measurement_revision(paths: list[pathlib.Path]) -> dict[str, object]:
             "\n"
             "Re-run the measurement with `mise run mutants <crate>`, which "
             "writes the\nstamp, or write one by hand beside each outcomes "
-            "file naming the revision\nthe numbers actually came from.")
+            "file naming the revision\nthe numbers actually came from. A "
+            f'hand-written one needs "sha", "date" and\n"{DIRTY_FIELD}" — '
+            "all three, because a stamp that leaves one out is a\nquestion "
+            "nobody answered rather than an answer.")
 
     if len(stamps) > 1:
         listing = "".join(
@@ -463,8 +503,10 @@ def measurement_revision(paths: list[pathlib.Path]) -> dict[str, object]:
     return {
         "sha": sha,
         "date": min(str(document["date"]).strip() for document in documents),
-        DIRTY_FIELD: any(
-            bool(document.get(DIRTY_FIELD)) for document in documents),
+        # Every document here carries a boolean `dirty`; the loop above
+        # refuses anything else. `any` is the union of what the shards
+        # saw, not a default for what they did not say.
+        DIRTY_FIELD: any(document[DIRTY_FIELD] for document in documents),
     }
 
 
