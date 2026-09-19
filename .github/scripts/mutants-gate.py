@@ -221,7 +221,8 @@ def crate_of(path: str) -> str | None:
     return None
 
 
-def malformed(baseline: object) -> str | None:
+def malformed(baseline: object, skip: object = (),
+              require_provenance: bool = True) -> str | None:
     """Say how a parsed baseline fails to be one, or None if it is fine.
 
     `mutants/baseline.json` is hand-edited every time a floor moves, so it
@@ -250,6 +251,19 @@ def malformed(baseline: object) -> str | None:
     are both decidable only by re-running the campaign at that revision —
     which is the work the floor exists to avoid. Those two defects are
     real, they have both occurred here, and this gate does not catch them.
+
+    `skip` and `require_provenance` exist for the bootstrap, and only for
+    it. A baseline written before provenance was required cannot be
+    re-recorded at all if this runs in full before `--update` gets to
+    write: every crate the run did not measure fails the check and the
+    write never happens, so the only way out of a legacy file is to hand
+    edit the one field the design says must never be hand-added — after a
+    measurement that costs hours. Reachable by reverting a floor-recording
+    commit, by `--update` against a baseline restored from an older ref,
+    or by running this script against a release branch's baseline. So
+    `--update` validates the shape of the entries it is not replacing,
+    without the provenance requirement, and the full check runs again on
+    the merged document before the verdict is returned.
     """
     if not isinstance(baseline, dict):
         return f"top level is {type(baseline).__name__}, expected an object"
@@ -257,6 +271,8 @@ def malformed(baseline: object) -> str | None:
     if not isinstance(crates, dict):
         return f'"crates" is {type(crates).__name__}, expected an object'
     for crate, entry in crates.items():
+        if crate in skip:
+            continue
         if not isinstance(entry, dict):
             return (f'"crates.{crate}" is {type(entry).__name__}, '
                     "expected an object")
@@ -270,7 +286,7 @@ def malformed(baseline: object) -> str | None:
         # Only a crate that carries a floor needs to say where the floor
         # came from. An entry with no `caught_pct` constrains nothing, so
         # there is nothing yet to account for.
-        if floor is None:
+        if floor is None or not require_provenance:
             continue
         origin = entry.get("provenance")
         if not isinstance(origin, dict):
@@ -776,7 +792,19 @@ def main() -> int:
     # Same exit as an unreadable one, for the same reason: a baseline the
     # gate cannot use is a run nobody scored, and the one thing it must not
     # do with that is return a verdict.
-    problem = malformed(baseline)
+    #
+    # `--update` is held to less here and to the same thing afterwards.
+    # The entries it is about to replace wholesale are not worth
+    # validating — whatever is wrong with them is about to be gone — and
+    # the provenance requirement is deferred to the merged document,
+    # because applying it now to a baseline written before provenance
+    # existed makes that file impossible to repair by re-recording, which
+    # is the only way the design allows it to be repaired at all.
+    problem = malformed(
+        baseline,
+        skip=set(counts) if args.update else (),
+        require_provenance=not args.update,
+    )
     if problem is not None:
         print(f"cannot use {args.baseline}: {problem}", file=sys.stderr)
         return 2
@@ -821,6 +849,27 @@ def main() -> int:
             }
         args.baseline.write_text(json.dumps(baseline, indent=4, sort_keys=True) + "\n")
         print(f"{args.baseline}: recorded {len(counts)} crate(s)")
+
+        # The deferred half. The write went in first on purpose: a
+        # legacy baseline is repaired one recorded crate at a time, and
+        # discarding the crate this run measured because a crate it did
+        # not measure is still unaccounted would make the repair
+        # impossible by the only route the design allows.
+        problem = malformed(baseline)
+        if problem is not None:
+            print(
+                f"\n{args.baseline} was written and is not yet a usable "
+                f"baseline: {problem}\n"
+                "\n"
+                "The crates this run measured are recorded. The rest date "
+                "from before a floor\nhad to say what produced it, and a "
+                "`provenance` added by hand does not survive\nthe next "
+                "`mise run mutants-baseline` — the update path replaces "
+                "each crate entry\nwholesale. Re-record them: measure each "
+                "one and run this again. Until then the\nnightly "
+                "`Mutation coverage gate` cannot read this file.",
+                file=sys.stderr)
+            return 2
         return 0
 
     failures = []

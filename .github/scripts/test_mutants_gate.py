@@ -1388,6 +1388,64 @@ class FloorProvenance(unittest.TestCase):
                 "--expect-shards", "sunrise-sync=1"),
             0, "recorded 1 crate(s)")
 
+    # --- the bootstrap: a baseline written before provenance existed -----
+
+    def test_update_can_re_record_a_crate_in_a_legacy_baseline(self):
+        # Reachable by reverting a floor-recording commit, by --update
+        # against a baseline restored from an older ref, or by running
+        # this script against a release branch's. With the full check
+        # running before the write, the entry `--update` is about to
+        # replace blocks its own replacement, and the only recovery is to
+        # hand-edit the one field the design says must never be
+        # hand-added — after a measurement that costs hours.
+        run = outcomes_file(self.tmp / "a.json", "sunrise-sync", caught=1)
+        base = baseline_file(
+            self.tmp / "base.json", {"sunrise-sync": 50.0}, provenance=None)
+        self.assert_code(
+            self.run_gate(
+                str(run), "--update", "--baseline", str(base),
+                "--expect-shards", "sunrise-sync=1"),
+            0, "recorded 1 crate(s)")
+        origin = json.loads(
+            base.read_text())["crates"]["sunrise-sync"]["provenance"]
+        self.assertEqual(origin["sha"], MEASURED_AT["sha"])
+
+    def test_a_legacy_crate_the_run_did_not_measure_is_reported_after(self):
+        # The deferred half. The crate that was measured is recorded —
+        # the repair proceeds one crate at a time — and the file is
+        # reported as not yet usable rather than as a clean write,
+        # because the nightly gate cannot read it until the rest are
+        # re-recorded too.
+        run = outcomes_file(self.tmp / "a.json", "sunrise-sync", caught=1)
+        base = baseline_file(
+            self.tmp / "base.json",
+            {"sunrise-sync": 50.0, "sunrise-crypto": 70.0}, provenance=None)
+        result = self.run_gate(
+            str(run), "--update", "--baseline", str(base),
+            "--expect-shards", "sunrise-sync=1")
+        self.assert_code(
+            result, 2, "recorded 1 crate(s)",
+            "not yet a usable baseline",
+            '"crates.sunrise-crypto.provenance"')
+        crates = json.loads(base.read_text())["crates"]
+        self.assertEqual(
+            crates["sunrise-sync"]["provenance"]["sha"], MEASURED_AT["sha"])
+        self.assertNotIn("provenance", crates["sunrise-crypto"])
+
+    def test_a_baseline_of_the_wrong_shape_still_blocks_update(self):
+        # The bootstrap relaxes the provenance requirement and nothing
+        # else. A `crates` value that is not an object is not a legacy
+        # file, it is a broken one, and merging into it would lose
+        # whatever is there.
+        run = outcomes_file(self.tmp / "a.json", "sunrise-sync", caught=1)
+        base = self.tmp / "base.json"
+        base.write_text(json.dumps({"crates": []}))
+        self.assert_code(
+            self.run_gate(
+                str(run), "--update", "--baseline", str(base),
+                "--expect-shards", "sunrise-sync=1"),
+            2, "cannot use", '"crates" is list')
+
     # --- --record-revision: where the stamp comes from -------------------
 
     def test_record_revision_writes_the_head_of_the_tree(self):
