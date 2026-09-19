@@ -160,6 +160,84 @@ class SelfTest(GateCase):
         result = self.run_gate()
         self.assertIn("OK: citations self-test clean", result.stdout)
 
+    def _mutated_gate(self, old: str, new: str) -> pathlib.Path:
+        """A copy of the gate with one rule broken, for the two cases below.
+
+        The mutation is asserted to have landed, so a refactor that moves the
+        text it edits fails here rather than silently leaving the gate intact
+        and the cases below passing for the wrong reason.
+        """
+        gate = rewritten_gate(self.tmp)
+        source = gate.read_text(encoding="utf-8")
+        self.assertIn(old, source, "the text this mutation edits has moved")
+        gate.write_text(source.replace(old, new, 1), encoding="utf-8")
+        return gate
+
+    # `impl` back in `SYMBOL_DECL`'s alternation. It is the reversal of a
+    # decision this change took, and exactly one self-test case asserts it, so
+    # the failure below is attributable rather than a wall of them.
+    IMPL_BACK = (
+        r'r"(?:fn|struct|enum|trait|type|static|union)[ \t]+"',
+        r'r"(?:fn|struct|enum|trait|type|static|union|impl)[ \t]+"',
+    )
+
+    def test_a_broken_rule_makes_the_self_test_exit_one(self):
+        # **The guard that gates every other rule, guarded.** Nothing else
+        # proves `self_test` can return anything but 0: the two cases above
+        # assert only the passing string, so a harness that had stopped
+        # detecting anything -- `wrong()` never firing, its argument inverted,
+        # the failure arm unreachable -- would look exactly the same from
+        # here, and every rule in this file would be resting on it.
+        #
+        # So: break one rule the self-test asserts, and require the harness to
+        # say so, with exit 1 and the message that case wrote.
+        gate = self._mutated_gate(*self.IMPL_BACK)
+        result = subprocess.run(
+            [sys.executable, str(gate), "--self-test"], capture_output=True, text=True
+        )
+        output = result.stdout + result.stderr
+        self.assertEqual(result.returncode, DANGLING, output)
+        self.assertIn("::error::citations self-test:", output)
+        self.assertIn("expected `impl` not to resolve", output)
+        self.assertNotIn("OK: citations self-test clean", output)
+
+    def test_a_failed_self_test_stops_the_gate_before_it_reads_a_tree(self):
+        # The self-test is a PRECONDITION, not a report. A gate whose rules
+        # have drifted must not go on to pronounce on a repository with them,
+        # because every verdict it printed would be computed by the rules it
+        # just failed to uphold.
+        self.write("docs/a.md", "See `crates/c/src/lib.rs`.\n")
+        gate = self._mutated_gate(*self.IMPL_BACK)
+        result = subprocess.run(
+            [sys.executable, str(gate), "--root", str(self.repo)],
+            capture_output=True,
+            text=True,
+            cwd=self.tmp,
+        )
+        output = result.stdout + result.stderr
+        self.assertEqual(result.returncode, DANGLING, output)
+        self.assertNotIn("anchored citation(s)", output)
+
+    def test_the_self_test_counts_every_case_it_ran(self):
+        # `wrong()` counts the cases, so the number is a measurement rather
+        # than a literal somebody has to remember to edit -- but it is a
+        # PRINT, and a print constrains nothing. Half the self-test could be
+        # deleted and the run would still say "OK" and exit 0.
+        #
+        # A floor, then, in the shape this file already uses for the
+        # allowlist: 100 is not a count anybody derived, it is a tripwire, and
+        # tripping it should be a conversation rather than a commit.
+        gate = rewritten_gate(self.tmp)
+        result = subprocess.run(
+            [sys.executable, str(gate), "--self-test"], capture_output=True, text=True
+        )
+        self.assertEqual(result.returncode, CLEAN, result.stdout + result.stderr)
+        found = re.search(r"self-test clean \((\d+) cases\)", result.stdout)
+        self.assertIsNotNone(found, f"the self-test's count line moved:\n{result.stdout}")
+        self.assertGreaterEqual(
+            int(found.group(1)), 100, "the self-test lost cases; restore them or say why"
+        )
+
     def test_the_shipped_allowlist_stays_small(self):
         # The list is the gate's one escape hatch and the thing most likely to
         # grow instead of the docs getting fixed. Twelve is not a limit anybody
