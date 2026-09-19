@@ -142,15 +142,30 @@ enum KeychainDomain: Sendable, Equatable {
         let account = UUID().uuidString
         let status = SecItemAdd(probeInsertQuery(account: account) as CFDictionary, nil)
 
-        // Deleted under both domains rather than only the one it was offered
-        // to. On a platform where the two are one store the add landed under
-        // the other name as well, and a probe that leaves residue in a
-        // developer's login keychain on every launch is not one worth having.
+        // Swept by **service**, and under both domains rather than only the one
+        // the add was offered to. On a platform where the two are one store the
+        // add landed under the other name as well, and a probe that leaves
+        // residue in a developer's login keychain on every launch is not one
+        // worth having.
+        //
+        // The service rather than the account this probe just minted, because
+        // keying the delete to that account left every *previous* probe's byte
+        // behind. A process killed between the add above and this loop —
+        // watchdog, jetsam, a developer stopping the debugger — orphaned its
+        // item permanently, and nothing ever reclaimed it. Sweeping the service
+        // makes each probe reclaim its predecessors' residue, and makes
+        // `theProbeDeletesWhateverItWrote` a statement about the probe rather
+        // than about whatever else has run on this machine.
+        //
+        // It cannot invert the probe the way a *fixed* account would: `status`
+        // is captured above, before any delete runs, so a concurrent probe
+        // sweeping this one's byte away changes no answer already taken. A
+        // fixed account would instead make a second concurrent probe's add
+        // fail with `errSecDuplicateItem` and answer `.login` on iOS.
         for domain in [Self.dataProtection, .login] {
             var delete: [String: Any] = [
                 kSecClass as String: kSecClassGenericPassword,
-                kSecAttrService as String: probeService,
-                kSecAttrAccount as String: account
+                kSecAttrService as String: probeService
             ]
             domain.apply(to: &delete)
             _ = SecItemDelete(delete as CFDictionary)
