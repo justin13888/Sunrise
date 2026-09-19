@@ -1168,6 +1168,44 @@ class Symbols(GateCase):
             "cites line 4, but `wanted` in `crates/c/src/lib.rs` spans 1-3.",
         )
 
+    def test_the_suffix_grammar_has_no_length_bound(self):
+        # A bound on the grammar side re-creates, at its own edge, the
+        # subtraction the grammar was widened to remove. While the group read
+        # `\S{1,128}`, a 129-character suffix and a bare trailing `#` failed
+        # `CITATION` outright, so the span was dropped from the run and lost
+        # the line check it already had -- the same defect as writing
+        # `#Engine::f`, reached by a different spelling.
+        #
+        # The length limit lives in `SYMBOL_NAME` instead, where overrunning
+        # it is a reported failure rather than a silent exit.
+        self.rust()
+        for suffix in ("a" * 129, "", "#"):
+            with self.subTest(suffix=suffix):
+                self.write("docs/a.md", f"See `crates/c/src/lib.rs:99#{suffix}`.\n")
+                self.assert_code(
+                    self.run_gate(),
+                    DANGLING,
+                    "cites line 99, but `crates/c/src/lib.rs` has 11 line(s).",
+                )
+
+        # 128 is inside `SYMBOL_NAME`, 129 is outside it, and the two verdicts
+        # differ in which question went unanswered -- never in whether the
+        # span was looked at.
+        self.write("docs/a.md", "See `crates/c/src/lib.rs:3#" + "a" * 128 + "`.\n")
+        self.assert_code(self.run_gate(), DANGLING, "does not declare")
+        self.write("docs/a.md", "See `crates/c/src/lib.rs:3#" + "a" * 129 + "`.\n")
+        self.assert_code(self.run_gate(), DANGLING, "is not a Rust item name")
+
+    def test_a_suffix_holding_whitespace_is_not_a_citation(self):
+        # The one shape that stays outside the grammar, and deliberately: a
+        # code span with a space in it is not a path. `docs/a.md and
+        # docs/b.md` is prose about two files, and admitting whitespace after
+        # the `#` would make the gate read it as one. There is no citation
+        # here to subtract a check from.
+        self.rust()
+        self.write("docs/a.md", "See `crates/c/src/lib.rs:99#two words`.\n")
+        self.assert_code(self.run_gate(), CLEAN, "OK: citations clean.")
+
     def test_a_citation_with_no_suffix_is_unchanged(self):
         # The widening, asserted as a widening. Every citation in this
         # repository is this shape, and all three verdicts it can reach have

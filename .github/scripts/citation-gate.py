@@ -287,7 +287,7 @@ CITATION = re.compile(
         \. (?P<ext> [A-Za-z][A-Za-z0-9]{0,11} )
     )
     (?: : (?P<start>[0-9]{1,9}) (?: - (?P<end>[0-9]{1,9}) )? )?
-    (?: \# (?P<symbol> \S{1,128} ) )?
+    (?: \# (?P<symbol> \S* ) )?
     $
     """,
     re.VERBOSE,
@@ -305,6 +305,18 @@ CITATION = re.compile(
 # had before the suffix was written. Appending a suffix in the natural Rust
 # form made the build greener by checking less. Now the span parses, the path
 # and line checks run as they always did, and the suffix itself is reported.
+#
+# `\S*` above carries no upper bound and no lower one, and both halves of that
+# are the same decision. A bound on the *grammar* side re-creates the very
+# subtraction this split exists to remove, at its own edge: while the group
+# read `\S{1,128}`, a 129-character suffix and a bare trailing `#` failed
+# `CITATION` outright and the span was dropped from the run with its path and
+# line checks. The length limit lives here instead, where overrunning it is a
+# reported failure rather than a silent exit -- this pattern admits 128
+# characters and anything longer is a `SYMBOL_NAME` miss. A suffix holding
+# whitespace stays outside the grammar, because a code span with a space in it
+# is not a path at all: `docs/a.md and docs/b.md` is prose, and the near-miss
+# cases in `self_test` pin it that way.
 SYMBOL_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
 
 # A github.com permalink fragment, which is the one non-declaration `#` form a
@@ -1381,17 +1393,40 @@ def self_test() -> int:
         # writing a method the way Rust writes it took the citation out of the
         # check it was already under. The third case is the subtraction stated
         # directly: the line verdict still wins, and still fires.
+        #
+        # The grammar carries no upper bound on the suffix and no lower one,
+        # and the last three cases are why. A 129-character run, a bare
+        # trailing `#` and a `##` each used to fail `CITATION` and vanish with
+        # the line check they had; each is now a reported failure, which is
+        # the same rule the `::` and `()` cases above state.
         for body, fragment in (
             (f"{main}:4#T::twice", "is not a Rust item name"),
             (f"{main}:4#twice()", "is not a Rust item name"),
             (f"{main}#T::twice", "is not a Rust item name"),
             (f"{main}:9999#T::twice", "line(s)."),
+            (f"{main}:4#" + "a" * 128, "does not declare"),
+            (f"{main}:4#" + "a" * 129, "is not a Rust item name"),
+            (f"{main}:9999#" + "a" * 129, "line(s)."),
+            (f"{main}:9999#", "line(s)."),
+            (f"{main}:9999##", "line(s)."),
+            (f"{main}:4#", "is not a Rust item name"),
+            (f"{main}:4##", "is not a Rust item name"),
         ):
             _, found = symbol_verdict(body)
             wrong(
                 found is None or fragment not in found.message,
                 f"`{body}` reported {found}, expected {fragment!r}",
             )
+
+        # A suffix holding whitespace is outside the grammar and stays there.
+        # A code span with a space in it is not a path -- `docs/a.md and
+        # docs/b.md` is prose, and the near-miss cases above pin it -- so the
+        # span is not a citation at all rather than a citation with an
+        # unreadable suffix.
+        wrong(
+            symbol_verdict(f"{main}:4#a b")[0] != "skip",
+            f"`{main}:4#a b` was read as a citation",
+        )
 
         # `impl` is not in `SYMBOL_DECL`'s alternation: an `impl` block is a
         # container, not the item a sentence is about, and containment against
