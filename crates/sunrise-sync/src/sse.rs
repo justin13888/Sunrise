@@ -1900,18 +1900,31 @@ mod tests {
                 }
             }
 
-            /// An event stream that fails part-way through its body.
+            /// A reply that fails part-way through its body.
             ///
-            /// The relay answers `200`, writes `chunks`, and then errors
+            /// The relay answers `status`, writes `chunks`, and then errors
             /// instead of ending the message — which is what a connection
-            /// broken mid-stream looks like to the client, and the only way
-            /// this double can reach `recv_frame`'s `Some(Err(e))` arm. A body
-            /// whose `Error` is `Infallible` forecloses that arm by
+            /// broken mid-body looks like to the client, and the only way this
+            /// double can reach a `Some(Err(e))` on a response body. A body
+            /// whose `Error` is `Infallible` forecloses those arms by
             /// construction, which is why the error type here is not.
-            pub(super) fn stream_then_abort(chunks: Vec<Bytes>) -> Self {
+            ///
+            /// The status is a parameter rather than a fixed `200` because two
+            /// different arms need this shape and they need it on opposite
+            /// sides of `is_success`: `recv_frame`'s mid-stream error arm on a
+            /// `200`, and `open_events`' failed-refusal-read fallback on a
+            /// `4xx`. Fixing the status at `200` left the second unreachable by
+            /// any script, which is a limit of the double rather than a
+            /// property of the code. The media type follows the status for the
+            /// same reason: a refusal carries a problem document, not a stream.
+            pub(super) fn stream_then_abort(status: u16, chunks: Vec<Bytes>) -> Self {
                 Self {
-                    status: 200,
-                    content_type: Some("text/event-stream"),
+                    status,
+                    content_type: Some(if (200..300).contains(&status) {
+                        "text/event-stream"
+                    } else {
+                        "application/json"
+                    }),
                     chunks,
                     abort: true,
                     stall: false,
@@ -2784,7 +2797,7 @@ mod tests {
     async fn a_stream_that_breaks_mid_body_is_reported_rather_than_ended() {
         let relay = relay::start(vec![
             relay::Canned::json(200, SESSION_OK),
-            relay::Canned::stream_then_abort(vec![half_read_stream()]),
+            relay::Canned::stream_then_abort(200, vec![half_read_stream()]),
         ])
         .await;
         let mut t = open_session(&relay).await;
@@ -3015,6 +3028,46 @@ mod tests {
             .await
             .expect_err("the relay refused the stream");
         assert_eq!(code_of(&err), "AUTH_TOKEN_INVALID");
+    }
+
+    /// A refusal whose body *fails* is still a refusal.
+    ///
+    /// The third way the document can fail to arrive, beside empty and
+    /// oversized, and the one no script could reach until the double could
+    /// pair a non-2xx status with a failing body. The relay answers `401`,
+    /// writes a **whole, valid** problem document naming
+    /// `AUTH_DEVICE_SIG_INVALID` and then breaks the connection instead of
+    /// ending the message: a failed read yields nothing, so what arrived is
+    /// discarded rather than parsed, the read does not swallow the refusal,
+    /// and the status map answers — the same degrade the empty and oversized
+    /// bodies take.
+    ///
+    /// The document is valid on purpose. A truncated one would land on
+    /// `AUTH_TOKEN_INVALID` whether the failed-read arm ran or the bytes were
+    /// simply unparseable, and the test would pass without reaching the arm it
+    /// names.
+    #[tokio::test]
+    async fn a_refusal_whose_body_fails_falls_back_to_the_status_map() {
+        let relay = relay::start(vec![
+            relay::Canned::json(200, SESSION_OK),
+            relay::Canned::stream_then_abort(
+                401,
+                vec![hyper::body::Bytes::from_static(
+                    br#"{"code":"AUTH_DEVICE_SIG_INVALID"}"#,
+                )],
+            ),
+        ])
+        .await;
+        let mut t = open_session(&relay).await;
+
+        let err = next_frame(&mut t)
+            .await
+            .expect_err("the relay refused the stream and then dropped the body");
+        assert_eq!(
+            code_of(&err),
+            "AUTH_TOKEN_INVALID",
+            "a refusal whose document failed is reported as a refusal, not as a broken read"
+        );
     }
 
     /// A refusal whose body never finishes arriving is still a refusal.
