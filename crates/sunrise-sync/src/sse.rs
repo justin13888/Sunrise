@@ -378,13 +378,28 @@ impl SseTransport {
             .await
             .map_err(|e| TransportError::Unavailable(e.to_string()))?;
         if !response.status().is_success() {
-            // The body is left unread rather than collected: a stream refusal
-            // is diagnosed from its status, its code and the relay's `Date`,
-            // and this path never had the body anyway.
+            // A stream refusal is diagnosed from its status, its code and the
+            // relay's `Date`, so the body is collected rather than dropped: the
+            // problem document is where the relay puts the typed code, and
+            // leaving it unread flattened every `401` on this one route back
+            // onto the status map — the exact defect [`SseTransport::refuse`]
+            // exists to prevent on the other six.
+            //
+            // A body that fails to arrive is not allowed to swallow the
+            // refusal. An empty one falls back to the status map, which is
+            // where this route already was.
+            let status = response.status();
+            let date = server_date(response.headers());
+            let bytes = response
+                .into_body()
+                .collect()
+                .await
+                .map(|b| b.to_bytes().to_vec())
+                .unwrap_or_default();
             return Err(self.refuse(&Reply {
-                status: response.status(),
-                date: server_date(response.headers()),
-                bytes: Vec::new(),
+                status,
+                date,
+                bytes,
             }));
         }
         self.events = Some(response.into_body());
@@ -2429,25 +2444,45 @@ mod tests {
 
     /// A refused stream is reported as a refusal rather than opened, since
     /// treating one as a successful open would leave the driver reading an
-    /// error document as events.
+    /// error document as events — and it is reported with the relay's *own*
+    /// code, like every other route.
     ///
-    /// It is classified from the **status alone**. This path deliberately does
-    /// not collect the body, so the typed code the relay put there — the thing
-    /// [`SseTransport::refuse`] exists to preserve everywhere else — does not
-    /// reach the status map, and a binding refused on this one route reads as
-    /// an expired bearer. The behaviour is pinned as it is rather than as it
-    /// should be: changing it is a production change, and this test is what
-    /// will notice when someone makes it.
+    /// This is the flattening [`SseTransport::refuse`] exists to prevent: a
+    /// client told "your signature is stale, fix your clock" heard "your bearer
+    /// is bad" and refreshed a token that was never the problem. The stream was
+    /// the one route still doing it, because it dropped the problem document
+    /// before `refuse` could read a code out of it.
+    ///
+    /// The read goes through [`next_frame`] like the other relay reads: a
+    /// refusal is answered by a relay whose script is exhausted by then, and an
+    /// unbounded read there would hang the whole test binary rather than fail
+    /// one test.
     #[tokio::test]
-    async fn a_refused_stream_is_reported_rather_than_opened() {
+    async fn a_refused_stream_is_reported_with_the_relay_s_own_code() {
         let relay = relay::start(vec![
             relay::Canned::json(200, SESSION_OK),
             relay::Canned::json(401, r#"{"code":"AUTH_DEVICE_SIG_INVALID"}"#),
         ])
         .await;
         let mut t = open_session(&relay).await;
-        let err = t
-            .recv_frame()
+        let err = next_frame(&mut t)
+            .await
+            .expect_err("the relay refused the stream");
+        assert_eq!(code_of(&err), "AUTH_DEVICE_SIG_INVALID");
+    }
+
+    /// And a refusal carrying no code at all still lands on the status map,
+    /// which is what keeps this client readable against a relay whose codes it
+    /// does not know.
+    #[tokio::test]
+    async fn a_refused_stream_with_no_document_falls_back_to_the_status_map() {
+        let relay = relay::start(vec![
+            relay::Canned::json(200, SESSION_OK),
+            relay::Canned::empty(401),
+        ])
+        .await;
+        let mut t = open_session(&relay).await;
+        let err = next_frame(&mut t)
             .await
             .expect_err("the relay refused the stream");
         assert_eq!(code_of(&err), "AUTH_TOKEN_INVALID");
