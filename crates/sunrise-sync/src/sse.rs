@@ -2358,6 +2358,122 @@ mod tests {
         assert_json_binding(&seen[1]);
     }
 
+    // ---- the three refusals a success path would swallow ----
+    //
+    // `Subscribe`, `OpBatch` and `RefreshToken` each guard their reply with
+    // `if !reply.status.is_success()`. Each guard is separate code and each
+    // survives separately: replacing any one of them with `false` turns a
+    // refusal into a success made out of a problem document, and the reply
+    // readers are total — `field_u64` answers `0` for a field that is not
+    // there — so nothing downstream notices.
+
+    /// A batch the relay refused is a refusal, never an ack.
+    ///
+    /// The load-bearing one of the three, and therefore written first. Without
+    /// the guard, the problem document is parsed as an ack: `field_u64` reads
+    /// the missing `server_first_seen_ms` as `0`, an `Ack` naming this batch
+    /// reaches the driver, and the outbox retires ops the relay never stored.
+    /// That is data loss rather than a retry — after the ack the driver has
+    /// nothing left to re-send.
+    #[tokio::test]
+    async fn an_op_batch_the_relay_refused_is_never_acked() {
+        let relay = relay::start(vec![
+            relay::Canned::json(200, SESSION_OK),
+            relay::Canned::json(409, r#"{"code":"SYNC_OP_INVALID"}"#),
+        ])
+        .await;
+        let mut t = open_session(&relay).await;
+
+        let payload = super::OpBatchPayload {
+            ops: vec![b"one".to_vec()],
+            batch_id: 7,
+            stream_id: [0xabu8; 16],
+        }
+        .encode()
+        .expect("an encodable batch");
+        let err = t
+            .send_frame(frame_of(super::MsgKind::OpBatch, &payload))
+            .await
+            .expect_err("the relay refused the batch");
+
+        assert_eq!(code_of(&err), "SYNC_OP_INVALID");
+        assert!(
+            t.inbound.is_empty(),
+            "a refused batch synthesizes no Ack, so the outbox keeps its ops"
+        );
+    }
+
+    /// A `Subscribe` the relay refused leaves the client subscribed to what it
+    /// was subscribed to.
+    ///
+    /// Without the guard the refusal reads as success, and the three pieces of
+    /// stream state are discarded for a stream set the relay never adopted: the
+    /// driver believes it is subscribed to streams that were refused, and the
+    /// resume point it would have needed to recover is gone.
+    #[tokio::test]
+    async fn a_subscribe_the_relay_refused_discards_no_resume_point() {
+        let relay = relay::start(vec![
+            relay::Canned::json(200, SESSION_OK),
+            relay::Canned::json(403, r#"{"code":"AUTH_DEVICE_REVOKED"}"#),
+        ])
+        .await;
+        let mut t = open_session(&relay).await;
+        t.last_event_id = Some("9".to_owned());
+
+        let payload = super::SubscribePayload {
+            streams: vec![sunrise_wire_protocol::SubscribeEntry {
+                cursors: Vec::new(),
+                stream_id: [0xabu8; 16],
+            }],
+        }
+        .encode()
+        .expect("an encodable subscribe");
+        let err = t
+            .send_frame(frame_of(super::MsgKind::Subscribe, &payload))
+            .await
+            .expect_err("the relay refused the subscribe");
+
+        assert_eq!(code_of(&err), "AUTH_DEVICE_REVOKED");
+        assert_eq!(
+            t.last_event_id.as_deref(),
+            Some("9"),
+            "a refused subscribe changed no stream set, so it discards no resume point"
+        );
+    }
+
+    /// A refused refresh is reported rather than acked with a deadline the
+    /// relay never set.
+    ///
+    /// Without the guard, `field_u64` reads the absent `expires_at_ms` as `0`,
+    /// which this protocol spells *no deadline* — so a client whose refresh was
+    /// rejected would be told its credential never expires, and would stop
+    /// refreshing until the relay closed the stream under it.
+    #[tokio::test]
+    async fn a_token_refresh_the_relay_refused_is_never_acked() {
+        let relay = relay::start(vec![
+            relay::Canned::json(200, SESSION_OK),
+            relay::Canned::json(401, r#"{"code":"AUTH_TOKEN_INVALID"}"#),
+        ])
+        .await;
+        let mut t = open_session(&relay).await;
+
+        let payload = super::RefreshTokenPayload {
+            token: "a token the relay will not take".to_owned(),
+        }
+        .encode()
+        .expect("an encodable refresh");
+        let err = t
+            .send_frame(frame_of(super::MsgKind::RefreshToken, &payload))
+            .await
+            .expect_err("the relay refused the refresh");
+
+        assert_eq!(code_of(&err), "AUTH_TOKEN_INVALID");
+        assert!(
+            t.inbound.is_empty(),
+            "a refused refresh names no new deadline"
+        );
+    }
+
     /// A `Ping` is answered locally. The stream keeps itself alive with
     /// comments, so a liveness probe costs no round trip — and a transport that
     /// issued one would make the driver's ping interval a request rate.
