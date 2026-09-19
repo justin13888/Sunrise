@@ -1059,18 +1059,27 @@ set -euo pipefail
 shopt -s nullglob
 outcomes=(out/mutants/*/mutants.out/outcomes.json)
 # Results from before each run got its own directory sit one level shallower,
-# and the glob above steps straight over them. A tree that has them is not an
-# empty tree, and saying "no results" to someone looking at a mutants.out they
-# just produced is the wrong answer. Named literally rather than globbed:
-# nullglob only drops patterns, and a literal path that does not exist would
-# survive into the array and be handed to the gate as a file to read.
-legacy=out/mutants/mutants.out/outcomes.json
-if [ -f "$legacy" ]; then
-  outcomes+=("$legacy")
-fi
+# in out/mutants/mutants.out/, and this task used to pick them up as well so
+# that a tree holding them was not reported as an empty tree. It no longer
+# does, because that kindness turned into a trap the moment floors started
+# requiring a measurement stamp: those directories predate the stamp, the gate
+# refuses any outcomes file without one, and refusal is over the whole set —
+# so one stale directory made this task exit 2 every time, for every crate,
+# with no floor recorded. The printed remedy made it worse by being right
+# about everything except the fix: `mise run mutants <crate>` writes to
+# out/mutants/<slug>/ and leaves the stale directory exactly where it was.
+#
+# A pre-stamp directory is not a measurement this task can use. Deleting it is
+# the whole remedy, and the message below says so.
 if [ -z "${outcomes[0]:-}" ]; then
-  echo "no results in out/mutants/*/mutants.out/ or out/mutants/mutants.out/;" >&2
+  echo "no results in out/mutants/*/mutants.out/;" >&2
   echo "run 'mise run mutants <crate>' first" >&2
+  if [ -d out/mutants/mutants.out ]; then
+    echo >&2
+    echo "out/mutants/mutants.out/ is a run from before each run got its own" >&2
+    echo "directory. It carries no revision stamp, so no floor can be recorded" >&2
+    echo "from it: 'rm -rf out/mutants/mutants.out' and measure again." >&2
+  fi
   exit 1
 fi
 echo "recording from:"
