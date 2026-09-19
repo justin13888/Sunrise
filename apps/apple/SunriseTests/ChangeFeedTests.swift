@@ -267,8 +267,11 @@ struct ChangeBroadcastTests {
         let live = ChangeBroadcast()
         let (openStream, wasOpen) = await live.subscribeIfOpen()
         #expect(wasOpen, "the feed had not closed, so a prime is honest")
-        await live.finish()
-        #expect(await drain(openStream) == [.closed])
+        // And the stream is a real attached consumer, not a placeholder handed
+        // back alongside the flag: a change published now reaches it.
+        await live.publish(.entity("tsk_a"))
+        await live.publish(.closed)
+        #expect(await drain(openStream) == [.entity("tsk_a"), .closed])
 
         let closed = ChangeBroadcast()
         await closed.finish()
