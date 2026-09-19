@@ -240,12 +240,34 @@ would otherwise start under-reporting with nothing to say so.
 That leaves the rule written in three places — the `mutants` task in
 `mise.toml`, the `mutants` matrix in `.github/workflows/ci.yml`, and the
 sentence in bold at the top of this section — with nothing keeping them in step.
-`.github/scripts/mutants-flags-gate.py` now enforces the two executable copies:
-it joins shell continuations, ignores commented-out commands and prose about the
-flag, and fails unless every `cargo mutants` invocation in both files carries
-`--all-features`. It fails separately, with a different exit code, when it finds
-no invocation at all in one of the files, because a gate reporting green on a
-matrix that no longer runs cargo-mutants is reporting on nothing.
+`.github/scripts/mutants-flags-gate.py` now enforces the executable copies: it
+joins shell continuations, splits each joined line into the commands it actually
+runs, drops comments, and fails unless every `cargo mutants` invocation carries
+`--all-features`. It fails separately, with a different exit code, when no file
+it read holds an invocation at all, because a gate reporting green on a matrix
+that no longer runs cargo-mutants is reporting on nothing.
+
+Two details in that are load-bearing, and both were established by defeating an
+earlier version of the gate against real copies of these files.
+
+The unit is an **invocation, not a line**. Shell puts several commands on one
+line, so asking whether `--all-features` appears anywhere in a line is satisfied
+by any of them. `cargo mutants --list -p X --all-features > population.txt &&
+cargo mutants -p X --jobs 1` is one line, two invocations, a legitimate flag on
+the one that measures nothing and no flag on the one that produces the floor —
+and it reported exit 0. So does a trailing `# dropped --all-features
+temporarily`, and so does a preceding `echo "we run with --all-features" && …`.
+The gate splits on `&&`, `||`, `;` and `|`, drops any `#`-to-end-of-line
+remainder, and looks for the flag in the *tokens* of each command that invokes
+cargo-mutants.
+
+The file set is **`mise.toml` plus every file under `.github/workflows/`**, not
+two names. A third executable copy — a matrix moved into a workflow of its own,
+a release job that measures something — was invisible to a gate that knew about
+two files, while the gate went on reporting OK about the two. Because the set is
+discovered rather than fixed, "no invocation anywhere" is judged over the union:
+moving the matrix from one workflow to another leaves a tree that is entirely in
+step, and calling that a broken gate is how a gate gets switched off.
 `.github/scripts/test_mutants_flags_gate.py` asserts that contract against
 synthesised files, so watching the gate go red never requires editing the two
 real ones. Both run as `Mutation flag gate` and `Mutation flag gate contract`,
@@ -382,10 +404,55 @@ to carry a `provenance` object with a non-empty `sha`, `date` and `command`, and
 `--update` writes all three from the run it is banking — one change rather than
 two, because the update path replaces each crate entry wholesale, so a
 `provenance` added by hand would not survive the next `mise run
-mutants-baseline`. When `git rev-parse HEAD` cannot answer, `--update` refuses to
-record rather than banking a blank: an empty string has the right shape and says
-nothing, which is the placeholder `mutants/baseline.json`'s own rule rejects, and
-refusing is recoverable because the outcomes are still on disk.
+mutants-baseline`.
+
+The three fields have fixed meanings, and they are fixed because the object is
+only comparable across floors if they are:
+
+| Field | Means |
+|---|---|
+| `sha` | the full 40-hex revision the mutants were **measured** at |
+| `date` | the day the **measurement** ran |
+| `command` | the invocation a person would type to reproduce it |
+| `dirty` | whether the measured tree had uncommitted changes |
+
+**The measurement, not the recording.** `--update` does not ask git what HEAD
+is. It reads the revision from a `revision.json` written beside each
+`outcomes.json` while the measurement was running — `mise.toml`'s `mutants` task
+and `ci.yml`'s `mutants` matrix both call `mutants-gate.py --record-revision`
+around the cargo-mutants run — and refuses, exit 2, when an outcomes file
+carries no stamp or when two stamps name different revisions. The gap between
+the two is the reason: a `sunrise-core` pass is about five hours and a
+`sunrise-domain` pass about two, the tests that motivated the run are committed
+while it is going, and `mise run mutants-baseline` may not run until the next
+day. A floor stamped with HEAD at recording time names a revision that does not
+produce the number beside it. Refusing is recoverable, because the outcomes are
+still on disk; a floor banked against the wrong tree is not.
+
+`dirty` comes from `git status --porcelain` at the same moment, and a dirty
+measurement is recorded rather than refused — it measured something real, it
+just does not reproduce at the named revision on its own. The three floors this
+file shipped before the stamp existed carry no `dirty` at all, and its absence
+means **unknown**, not clean: nobody can now establish whether those trees were
+modified, and writing `false` would be exactly the invention the requirement
+exists to stop.
+
+`command` is the human-facing invocation because the field exists so a reader
+can re-run the measurement, and nobody re-runs one by typing the gate's argv.
+`mise run mutants-baseline` passes it with `--command`; a person handing the
+gate a nightly's artifacts by hand gets the argv, which in that one case *is*
+the recipe.
+
+**Re-recording a baseline written before any of this.** Running the full check
+before `--update` writes makes such a file impossible to repair: every crate the
+run did not measure fails it, so the write never happens, and the only way out
+is to hand-edit the one field the design says must never be hand-added — after a
+measurement that costs hours. So `--update` checks the shape of the entries it
+is not replacing, without the provenance requirement, records what it measured,
+and then runs the full check on the merged file. A crate still carrying no
+provenance is reported by name with exit 2, and the floor just measured is
+already saved, so the file is repaired one crate at a time by re-recording
+rather than by hand.
 
 That check is structural, and the distinction matters more here than it looks.
 It establishes that a floor says where it came from. It cannot establish that
