@@ -56,7 +56,7 @@ struct KeychainMigrationFallbackTests {
     ///
     /// Its last assertion is one of the **five** an entitlement turns false: with
     /// a team the destination is reachable, the migration completes, and the
-    /// source is deleted. `KeychainMigrationTests`'
+    /// source is deleted. `KeychainDomainTests`'
     /// `theProbeAnswersWhatThisBuildCanActuallyReach` lists the five and what is
     /// done with them.
     @Test
@@ -87,6 +87,52 @@ struct KeychainMigrationFallbackTests {
         #expect(try migration.loadMigratingIfNeeded() == secret)
     }
 
+    /// The migration's destination write must be the **plain** one, on the one
+    /// arrangement where the difference is a deleted vault root.
+    ///
+    /// `migrate` writes its destination with `write(_:)`, not
+    /// `writeAcrossDomains(_:)`, and nothing pinned that. Every case in
+    /// `KeychainMigrationTests` runs `.login` → `.login` across two *different*
+    /// services, so the destination's `inOtherDomain` is never the source item
+    /// and "restoring the symmetry" leaves the whole suite green. The three real
+    /// stores build the opposite shape — one service, one account, two domains —
+    /// where the destination's other-domain copy **is** the source, so a
+    /// cross-domain write would delete the only readable copy of the secret one
+    /// line after writing the other one.
+    ///
+    /// Interrupted at `.verify`, which is the window that shows it: after the
+    /// destination write and before the source delete. An uninterrupted run
+    /// removes the source legitimately at step 5, so only the interruption can
+    /// tell a migration that *moved* the secret from one that destroyed a copy
+    /// on the way.
+    ///
+    /// Guarded rather than written to assert today's answer, because there is no
+    /// true form of it on a build that cannot reach `.dataProtection`: the
+    /// destination write is refused first with `errSecMissingEntitlement`, so
+    /// the cross-domain delete is never reached and the case would pass without
+    /// exercising anything. It is skipped on every build this repository can
+    /// make today and becomes live the hour an entitlement lands. That is a
+    /// different handoff from the five assertions an entitlement turns false,
+    /// which are rewritten rather than guarded; this one only starts running.
+    @Test(.enabled(if: KeychainDomain.current == .dataProtection))
+    func theMigrationsDestinationWriteDoesNotTakeTheSourceWithIt() throws {
+        let pair = crossDomainPair()
+        defer { try? pair.source.delete(); try? pair.destination.delete() }
+        try pair.source.write(secret)
+
+        let migration = KeychainMigration(source: pair.source, destination: pair.destination)
+        #expect(!migration.sourceAndDestinationAreOneItem, "or there is nothing to move")
+
+        #expect(throws: (any Error).self) {
+            try migration.run { if $0 == .verify { throw CancellationError() } }
+        }
+        #expect(
+            try pair.source.read() == secret,
+            "the destination write must not have taken the source's copy with it"
+        )
+        #expect(try pair.destination.read() == secret, "and must have landed")
+    }
+
     /// What this build's two keychains actually answer, which is the fact every
     /// other case here rests on and the one the source used to state wrongly.
     ///
@@ -113,7 +159,7 @@ struct KeychainMigrationFallbackTests {
     ///
     /// One of the **five** an entitlement turns false, and the one that is three
     /// assertions rather than one: every `errSecMissingEntitlement` expectation
-    /// below flips. `KeychainMigrationTests`'
+    /// below flips. `KeychainDomainTests`'
     /// `theProbeAnswersWhatThisBuildCanActuallyReach` lists the five and what is
     /// done with them.
     @Test
@@ -240,7 +286,7 @@ struct KeychainMigrationFallbackTests {
     ///
     /// Its first assertion is one of the **five** an entitlement turns false: with
     /// a team this domain's own delete succeeds and nothing is raised.
-    /// `KeychainMigrationTests`'
+    /// `KeychainDomainTests`'
     /// `theProbeAnswersWhatThisBuildCanActuallyReach` lists the five and what is
     /// done with them.
     @Test
@@ -281,7 +327,7 @@ struct KeychainMigrationFallbackTests {
     /// measures on `SecItemUpdate` and `SecItemAdd`.
     ///
     /// Its throws-expectation is one of the **five** an entitlement turns false:
-    /// with a team the write is not refused at all. `KeychainMigrationTests`'
+    /// with a team the write is not refused at all. `KeychainDomainTests`'
     /// `theProbeAnswersWhatThisBuildCanActuallyReach` lists the five and what is
     /// done with them.
     @Test
@@ -322,8 +368,11 @@ struct KeychainMigrationFallbackTests {
 ///
 /// Outside the `#if` above on purpose: the messages are platform-independent, and
 /// the Mac-only gate would have left them unexecuted on every iOS run. They sit in
-/// this file rather than `KeychainMigrationTests` because that file is exactly on
-/// the 520-line `file_length` ceiling `swiftlint --strict` enforces.
+/// this file rather than `KeychainMigrationTests` because that file sat on the
+/// 520-line `file_length` ceiling `swiftlint --strict` enforces when they were
+/// written; the `KeychainDomainTests` extraction has since brought it back under,
+/// but moving them now would cost the platform independence this paragraph is
+/// about and buy nothing.
 struct KeychainErrorMessageTests {
     /// Leads with what *was* saved. Every other message in the enum describes
     /// something that did not happen and this one does not, so a user told only
@@ -338,6 +387,28 @@ struct KeychainErrorMessageTests {
             KeychainError.writtenButOtherDomainRefused(status).errorDescription
                 == "This secret was saved, but an older copy of it in your other "
                 + "keychain could not be removed: " + reason
+        )
+    }
+
+    /// Names the **other** keychain, and says the secret may still be there.
+    ///
+    /// Both halves carry the repair this case exists for. `readAcrossDomains`
+    /// used to answer `nil` when the other domain refused, which reported a
+    /// readable vault root as a lost one; raising is only half the fix, because
+    /// the bare system sentence — "User interaction is not allowed." — arrives
+    /// under a header naming the keychain that is working, and sends the user to
+    /// unlock the wrong one. So the assertion below is on the *prefix*: relaying
+    /// the status alone, as `.unexpected` deliberately does, would leave the
+    /// message pointing at the wrong remedy while every other assertion here
+    /// stayed green.
+    @Test
+    func theUnreadableOtherDomainMessageNamesTheOtherKeychainAndNotALostSecret() {
+        let status = errSecInteractionNotAllowed
+        let reason = SecCopyErrorMessageString(status, nil) as String? ?? "Keychain error \(status)."
+        #expect(
+            KeychainError.otherDomainUnreadable(status).errorDescription
+                == "A copy of this secret may be in your other keychain, which could "
+                + "not be read: " + reason
         )
     }
 
