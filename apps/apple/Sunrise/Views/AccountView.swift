@@ -429,9 +429,9 @@ private struct SignOutIncompleteRow: View {
             )
             .foregroundStyle(.orange)
             Text(
-                "The refresh token is still in the Keychain, so the next launch will "
-                    + "sign you back in. Unlock your Keychain, then Sign out here to "
-                    + "try removing it again."
+                "The stored credential is still in the Keychain, so the next launch "
+                    + "will sign you back in. Unlock your Keychain, then Sign out here "
+                    + "to try removing it again."
             )
             .font(.caption)
             .foregroundStyle(.secondary)
