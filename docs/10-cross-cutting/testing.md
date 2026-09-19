@@ -247,8 +247,8 @@ runs, drops comments, and fails unless every `cargo mutants` invocation carries
 it read holds an invocation at all, because a gate reporting green on a matrix
 that no longer runs cargo-mutants is reporting on nothing.
 
-Two details in that are load-bearing, and both were established by defeating an
-earlier version of the gate against real copies of these files.
+Three details in that are load-bearing, and every one of them was established by
+defeating an earlier version of the gate against real copies of these files.
 
 The unit is an **invocation, not a line**. Shell puts several commands on one
 line, so asking whether `--all-features` appears anywhere in a line is satisfied
@@ -257,17 +257,34 @@ cargo mutants -p X --jobs 1` is one line, two invocations, a legitimate flag on
 the one that measures nothing and no flag on the one that produces the floor —
 and it reported exit 0. So does a trailing `# dropped --all-features
 temporarily`, and so does a preceding `echo "we run with --all-features" && …`.
-The gate splits on `&&`, `||`, `;` and `|`, drops any `#`-to-end-of-line
-remainder, and looks for the flag in the *tokens* of each command that invokes
-cargo-mutants.
+The gate splits on `&&`, `||`, `&`, `;`, `|` and newlines, applies one comment
+rule (a `#` that starts a word), and reads every `cargo mutants` pair in each
+command as an invocation of its own.
 
-The file set is **`mise.toml` plus every file under `.github/workflows/`**, not
-two names. A third executable copy — a matrix moved into a workflow of its own,
-a release job that measures something — was invisible to a gate that knew about
-two files, while the gate went on reporting OK about the two. Because the set is
-discovered rather than fixed, "no invocation anywhere" is judged over the union:
+What satisfies the test is the flag **as written, before any `--`**. Three more
+shapes carried the gate without carrying the feature selection: a second
+invocation inside a single command, because only the first pair was read;
+`--exclude-re '--all-features'`, because lexing threw the quotes away and a
+regex that mentions the flag lexed to the flag; and `-- --all-features`, which
+is an argument to `cargo test` and says nothing about what cargo-mutants built.
+A command that mentions cargo-mutants and will not lex at all — an unbalanced
+quote — is exit 2 rather than a lenient reading, because the lenient reading let
+the words of a trailing comment stand in for the command's own.
+
+The file set is **`mise.toml` plus every `*.yml`, `*.yaml` and `*.sh` under
+`.github/`**, at any depth, together with a **minimum invocation count**. A
+third executable copy was invisible to a gate that knew about two files; after
+the set became `.github/workflows/*.yml` it was still invisible in
+`.github/actions/rust-checks/action.yml`, which has eight `run:` steps, and in a
+script under `.github/scripts/`. The count is there because the set being
+discovered is what makes "no invocation anywhere" judgeable over the union —
 moving the matrix from one workflow to another leaves a tree that is entirely in
-step, and calling that a broken gate is how a gate gets switched off.
+step, and calling that a broken gate is how a gate gets switched off — and a
+union cannot see a count fall from two to one. Move the matrix out of everything
+globbed and `mise.toml`'s invocation keeps the union non-empty, so only a number
+notices. It lives at `MINIMUM_INVOCATIONS` in the gate, and adding or removing
+an invocation means editing it in the same change.
+
 `.github/scripts/test_mutants_flags_gate.py` asserts that contract against
 synthesised files, so watching the gate go red never requires editing the two
 real ones. Both run as `Mutation flag gate` and `Mutation flag gate contract`,

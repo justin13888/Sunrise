@@ -18,8 +18,8 @@ happens to be rather than for a change to the contract.
 The exception is deliberate: `run_gate_with_defaults` runs the gate with
 no arguments inside a temp directory laid out like a repository, because
 the default file set is the one part of the gate that naming files
-bypasses, and until something exercised it a typo in the default workflow
-directory would have shipped behind a check that blocks nothing.
+bypasses, and until something exercised it a typo in the default file set
+would have shipped behind a check that blocks nothing.
 
 The distinction the exit codes carry
 ------------------------------------
@@ -31,30 +31,41 @@ findings and only one of them is about the flags: a reader who sees a red
 `mutants-flags-gate` and assumes 1 will go looking for a deleted argument
 when the matrix has actually been rewritten out from under the gate.
 
-The second is judged over the union of the files rather than per file.
-One file with no invocation beside another that has one is an ordinary
-tree — the matrix moved — and calling it a broken gate is how a gate gets
-switched off.
+"Nothing to check" is judged over the union of the files rather than per
+file. One file with no invocation beside another that has one is an
+ordinary tree — the matrix moved — and calling it a broken gate is how a
+gate gets switched off. What the union cannot see is a count that falls
+from two to one, so the gate also asserts a minimum number of
+invocations; §"the file set" holds both halves, and the case that used to
+assert exit 0 on a tree with one invocation and no third file now asserts
+exit 2, because that tree has lost half of what the gate compares.
 
-The cases that matter most are the three under §"text that is not the
-invocation". Each is a shape that was constructed against real copies of
-this repository's own `mise.toml` and `.github/workflows/ci.yml`, with the
-flag deleted from the invocation that measures the floor, and each one
-reported exit 0 from a gate whose unit of checking was a joined logical
-line tested by substring containment:
+The cases that matter most are the two adversarial sections. Every shape
+in them was constructed against real copies of this repository's own
+`mise.toml` and `.github/workflows/ci.yml`, with the flag deleted from
+the invocation that measures the floor, and every one of them reported
+exit 0.
 
-* a trailing `# dropped --all-features temporarily`, because only
-  whole-line comments were dropped;
-* a preceding `echo "we run with --all-features" && …` on the same
-  joined line;
-* an ordinary `cargo mutants --list … --all-features > population.txt &&`
-  chained in front of the measuring invocation — a one-line,
-  entirely non-adversarial edit.
+§"text that is not the invocation" is the first set, against a gate whose
+unit of checking was a joined logical line tested by substring
+containment: a trailing `# dropped --all-features temporarily`, a
+preceding `echo "we run with --all-features" && …`, and an ordinary
+`cargo mutants --list … --all-features > population.txt &&` chained in
+front of the measuring invocation. They are why the gate splits a logical
+line into commands and tests the words of each command whose own first
+two are `cargo mutants`.
 
-All three now fail with exit 1. They are the reason the gate splits a
-logical line into commands and tests the flag against the tokens of the
-command whose first two are `cargo mutants`, rather than asking whether
-the text of the line contains the flag anywhere.
+§"text that unquotes, chains or passes through" is the second set,
+against that gate: a single `&` instead of `&&`; a second invocation
+inside one command, because only the first pair was taken;
+`--exclude-re '--all-features'`, because lexing threw the quotes away and
+a regex that mentions the flag lexed to the flag; `-- --all-features`,
+which is an argument to `cargo test`; and an unbalanced quote in front of
+`# keep --all-features later`, which fell back to a whitespace split and
+handed the comment's words to the command. Two of that set go the other
+way and are just as bad: `--output out/run#3 --all-features` was red on a
+correct tree, and `./ci/wrap.sh --tag v1#2 cargo mutants -p x` was not
+recognised as an invocation at all.
 
 Run it with `mise run mutants-flags-gate-test`, or directly.
 """
@@ -104,7 +115,8 @@ class FlagsGateContract(unittest.TestCase):
         self.tmp = pathlib.Path(self._tmp.name)
         self.addCleanup(self._tmp.cleanup)
 
-    def run_gate(self, mise: str | None, ci: str | None):
+    def run_gate(self, mise: str | None, ci: str | None, *,
+                 minimum: int | None = None):
         """The ordinary pair: a mise config and a workflow, both named."""
         mise_path = self.tmp / "mise.toml"
         ci_path = self.tmp / "ci.yml"
@@ -112,26 +124,35 @@ class FlagsGateContract(unittest.TestCase):
             mise_path.write_text(mise)
         if ci is not None:
             ci_path.write_text(ci)
-        return self.run_gate_on(mise_path, ci_path)
+        return self.run_gate_on(mise_path, ci_path, minimum=minimum)
 
-    def run_gate_on(self, *paths: pathlib.Path):
-        """The gate over exactly these paths, passed positionally."""
+    def run_gate_on(self, *paths: pathlib.Path, minimum: int | None = None):
+        """The gate over exactly these paths, passed positionally.
+
+        `minimum` is `--min-invocations`. A case whose fixture holds one
+        invocation on purpose says so, because the gate's own default is
+        the number this repository holds and a case that is about
+        something else should not trip over it.
+        """
+        floor = [] if minimum is None else ["--min-invocations", str(minimum)]
         return subprocess.run(
-            [sys.executable, str(GATE), *(str(path) for path in paths)],
+            [sys.executable, str(GATE), *floor,
+             *(str(path) for path in paths)],
             cwd=self.tmp, capture_output=True, text=True,
         )
 
-    def run_gate_with_defaults(self):
+    def run_gate_with_defaults(self, *, minimum: int | None = None):
         """The gate with no arguments, so it discovers its own file set.
 
         The defaults are the one part of the gate the live
         `Mutation flag gate` job exercises and nothing else did: every
         other case here names its files, by design. A typo in the default
-        workflow directory would have shipped with only a non-required
-        job standing between it and master.
+        file set would have shipped with only a non-required job standing
+        between it and master.
         """
+        floor = [] if minimum is None else ["--min-invocations", str(minimum)]
         return subprocess.run(
-            [sys.executable, str(GATE)],
+            [sys.executable, str(GATE), *floor],
             cwd=self.tmp, capture_output=True, text=True,
         )
 
@@ -329,6 +350,174 @@ class FlagsGateContract(unittest.TestCase):
             ),
             1, "--all-features is missing from 1 of 2")
 
+    # --- text that unquotes, chains or passes through to the flag --------
+    #
+    # A second round of shapes, each executed against real copies of this
+    # repository's own `mise.toml` and `.github/workflows/ci.yml` with the
+    # flag deleted from the invocation that measures the floor, and each
+    # one reporting exit 0 from the gate that split lines into commands
+    # and tested `shlex` tokens for the flag.
+
+    def test_a_single_ampersand_ends_a_command(self):
+        # `&&` was a separator and `&` was not, so two shapes one
+        # character apart got opposite verdicts. Here the flag belongs to
+        # the *next* command — an ordinary `cargo test` run alongside the
+        # backgrounded measurement — and with `&` unrecognised the whole
+        # thing is one command whose words include the flag, so the
+        # measuring invocation passes on the strength of somebody else's
+        # argument.
+        self.assert_code(
+            self.run_gate(
+                MISE_WITH_FLAG.replace(
+                    ' --all-features', '').replace(
+                    '--output "out/x"',
+                    '--output "out/x" & cargo test --all-features'),
+                CI_WITH_FLAG,
+            ),
+            1, "missing from 1 of 2")
+
+    def test_a_backgrounded_list_call_does_not_vouch_for_the_measurement(self):
+        # The shape as it was executed against this repository's own
+        # files: round-1's `&&` case with one `&` removed. It reported
+        # `OK: 2 … carry --all-features` while the invocation that
+        # produces the floor had none. Two properties hold it red now —
+        # `&` ends a command, and every `cargo mutants` pair inside a
+        # command is an invocation — and it is asserted whole because it
+        # is the shape somebody actually types.
+        self.assert_code(
+            self.run_gate(
+                MISE_WITH_FLAG.replace(
+                    'cargo mutants -p "$usage_crate" --all-features',
+                    'cargo mutants --list -p "$usage_crate" --all-features '
+                    '> pop.txt & cargo mutants -p "$usage_crate"'),
+                CI_WITH_FLAG,
+            ),
+            1, "missing from 1 of 3")
+
+    def test_the_flag_inside_quotes_does_not_count_as_the_flag(self):
+        # `--exclude-re '--all-features'` is a regex that mentions the
+        # flag, and lexing threw the quotes away, so it lexed to a token
+        # equal to the flag and satisfied the test. A feature selection
+        # is a word somebody wrote, not a word something unquoted into.
+        self.assert_code(
+            self.run_gate(
+                MISE_WITH_FLAG.replace(
+                    ' --all-features',
+                    " --exclude-re '--all-features'"),
+                CI_WITH_FLAG,
+            ),
+            1, "missing from 1 of 2")
+
+    def test_the_flag_after_a_double_dash_does_not_count(self):
+        # Everything after cargo-mutants' `--` is handed to the test
+        # runner. `-- --all-features` is an argument to `cargo test` and
+        # says nothing about which features cargo-mutants *built*, which
+        # is the only thing the floor depends on.
+        self.assert_code(
+            self.run_gate(
+                MISE_WITH_FLAG.replace(
+                    ' --all-features --jobs 1',
+                    ' --jobs 1').replace(
+                    '--output "out/x"', '--output "out/x" -- --all-features'),
+                CI_WITH_FLAG,
+            ),
+            1, "missing from 1 of 2")
+
+    def test_two_invocations_in_one_command_are_both_checked(self):
+        # Taking the first `cargo mutants` pair in a command and stopping
+        # made the second invisible — the same hole the split into
+        # commands closes one level up, one level down. A wrapper handed
+        # both is the shape that has no separator to split on.
+        self.assert_code(
+            self.run_gate(
+                MISE_WITH_FLAG.replace(
+                    'cargo mutants -p "$usage_crate" --all-features',
+                    './ci/both.sh cargo mutants -p a --all-features '
+                    'cargo mutants -p b'),
+                CI_WITH_FLAG,
+            ),
+            1, "missing from 1 of 3")
+
+    def test_a_command_that_will_not_lex_is_2_not_a_pass(self):
+        # An unbalanced quote used to fall back to a whitespace split,
+        # which applied no comment rule at all and so handed the words of
+        # a trailing comment to the invocation. A typo turned the gate
+        # green on an unflagged invocation; now it says it cannot judge
+        # the command, which is what exit 2 is for.
+        self.assert_code(
+            self.run_gate(
+                MISE_WITH_FLAG.replace(
+                    ' --all-features --jobs 1 --output "out/x"',
+                    ' --jobs 1 --output "out/x\' # keep --all-features later'),
+                CI_WITH_FLAG,
+            ),
+            2, "cannot lex a command that mentions cargo-mutants")
+
+    def test_a_hash_inside_a_word_is_not_a_comment(self):
+        # One comment rule, direction one. `#` starts a comment where it
+        # starts a word; `out/run#3` is a path. Lexing with a second,
+        # stricter rule truncated the command there and reported a
+        # correct tree red — which the gate's own docstring twice calls
+        # how a gate gets switched off in a week.
+        self.assert_code(
+            self.run_gate(
+                MISE_WITH_FLAG,
+                "jobs:\n  m:\n    steps:\n"
+                "      - run: cargo mutants -p x --output out/run#3 "
+                "--all-features\n",
+            ),
+            0, "2 cargo-mutants invocation(s) carry")
+
+    def test_a_hash_inside_a_word_does_not_hide_the_invocation(self):
+        # Direction two, and the worse one. The same disagreement cut
+        # `./ci/wrap.sh --tag v1#2 cargo mutants -p x` off before
+        # `cargo`, so the invocation was not recognised at all and the
+        # gate printed OK about the files that were left.
+        self.assert_code(
+            self.run_gate(
+                MISE_WITH_FLAG,
+                "jobs:\n  m:\n    steps:\n"
+                "      - run: ./ci/wrap.sh --tag v1#2 cargo mutants -p x "
+                "--jobs 1\n",
+            ),
+            1, "missing from 1 of 2", "v1#2")
+
+    def test_a_wrapper_assignment_does_not_vouch_for_the_invocation(self):
+        # The case `invocations_in`'s docstring is written to justify and
+        # which nothing asserted. Two properties hold it: everything in
+        # front of `cargo` is dropped rather than searched, and a word
+        # *contains* the flag without *being* it. `FLAGS=--all-features`
+        # is a string the invocation never receives unless something
+        # expands it, and a containment test over the words would take it
+        # for the feature selection.
+        self.assert_code(
+            self.run_gate(
+                MISE_WITH_FLAG.replace(
+                    'cargo mutants -p "$usage_crate" --all-features',
+                    'FLAGS=--all-features cargo mutants -p "$usage_crate"'),
+                CI_WITH_FLAG,
+            ),
+            1, "missing from 1 of 2")
+
+    def test_a_folded_scalar_says_the_remedy_is_the_backslashes(self):
+        # The restriction stated rather than removed: joining is
+        # backslash-only, so a YAML folded scalar reads here as several
+        # commands and the one holding `cargo mutants` loses the
+        # arguments under it. Parsing the workflow YAML would make this a
+        # different tool; what the next reader needs instead is to be
+        # told the fix is not a second copy of the flag.
+        result = self.run_gate(
+            MISE_WITH_FLAG,
+            "jobs:\n  m:\n    steps:\n"
+            "      - run: >-\n"
+            "          cargo mutants -p x\n"
+            "          --all-features\n"
+            "          --jobs 1\n",
+        )
+        self.assert_code(result, 1, "missing from 1 of 2")
+        self.assertIn("folded scalar", result.stderr)
+        self.assertIn("put the backslashes back", result.stderr)
+
     # --- the file set ----------------------------------------------------
 
     def test_a_third_file_holding_an_invocation_is_checked(self):
@@ -369,15 +558,99 @@ class FlagsGateContract(unittest.TestCase):
             self.run_gate_with_defaults(),
             0, "2 cargo-mutants invocation(s) carry")
 
+    def test_the_defaults_reach_a_composite_action(self):
+        # A composite action runs `run:` steps exactly as a workflow
+        # does, and this repository has one with eight of them. Globbing
+        # `.github/workflows/` alone left it outside the gate: an
+        # unflagged invocation there was executed and reported OK.
+        self.write("mise.toml", MISE_WITH_FLAG)
+        self.write(".github/workflows/ci.yml", CI_WITH_FLAG)
+        self.write(
+            ".github/actions/rust-checks/action.yml",
+            "runs:\n  using: composite\n  steps:\n"
+            "    - run: cargo mutants -p x --jobs 1\n")
+        result = self.run_gate_with_defaults()
+        self.assert_code(result, 1, "missing from 1 of 3")
+        self.assertIn("action.yml", result.stderr)
+
+    def test_the_defaults_reach_a_shell_script(self):
+        # The other location the first repair left out. A job that calls
+        # a script under `.github/scripts/` runs whatever is in it, and
+        # what was in it was invisible.
+        self.write("mise.toml", MISE_WITH_FLAG)
+        self.write(".github/workflows/ci.yml", CI_WITH_FLAG)
+        self.write(
+            ".github/scripts/nightly.sh",
+            "#!/bin/bash\ncargo mutants -p sunrise-core --jobs 1\n")
+        result = self.run_gate_with_defaults()
+        self.assert_code(result, 1, "missing from 1 of 3")
+        self.assertIn("nightly.sh", result.stderr)
+
+    def test_the_defaults_reach_a_yaml_beside_the_workflows(self):
+        # `.github/` at any depth, not one directory of it. A matrix
+        # moved to a file of its own outside `workflows/` is still
+        # something that runs.
+        self.write("mise.toml", MISE_WITH_FLAG)
+        self.write(".github/workflows/ci.yml", CI_WITH_FLAG)
+        self.write(
+            ".github/mutants.yml",
+            "jobs:\n  m:\n    steps:\n"
+            "      - run: cargo mutants -p x --jobs 1\n")
+        result = self.run_gate_with_defaults()
+        self.assert_code(result, 1, "missing from 1 of 3")
+        self.assertIn("mutants.yml", result.stderr)
+
+    def test_the_defaults_with_no_workflow_directory_are_2(self):
+        # The tree the union test cannot distinguish from a healthy one:
+        # `.github/workflows/` gone altogether, `mise.toml`'s invocation
+        # alone and perfectly flagged. Executed, and it printed `OK: 1`.
+        # The count is the only thing that sees it.
+        self.write("mise.toml", MISE_WITH_FLAG)
+        result = self.run_gate_with_defaults()
+        self.assert_code(result, 2, "found 1 `cargo mutants` invocation(s)")
+        self.assertNotIn("OK:", result.stdout)
+
     # --- 2: the gate could not check anything ----------------------------
 
     def test_a_file_with_no_invocation_beside_one_that_has_it_is_not_2(self):
         # Judged over the union, not per file. Moving the matrix out of
         # one workflow and into another leaves a tree that is entirely in
         # step; reporting that as a broken gate is how a gate gets
-        # switched off.
+        # switched off. The invocation has to still be *somewhere* the
+        # gate reads, which is what distinguishes this from the case
+        # below — the earlier version of this test had an empty ci.yml
+        # and no third file, and asserted exit 0 on a tree that had lost
+        # half of what the gate compares.
+        moved = self.write(
+            "nightly.yml",
+            "jobs:\n  m:\n    steps:\n"
+            "      - run: cargo mutants -p x --all-features --jobs 1\n")
+        mise = self.write("mise.toml", MISE_WITH_FLAG)
+        empty = self.write("ci.yml", "jobs:\n  build:\n    steps: []\n")
+        self.assert_code(
+            self.run_gate_on(mise, empty, moved),
+            0, "2 cargo-mutants invocation(s) carry")
+
+    def test_the_invocation_count_falling_below_the_minimum_is_2(self):
+        # The hole the union leaves, and the reason a count is asserted
+        # at all. One invocation of two has left the file set entirely —
+        # moved to a file nothing globs, or deleted — and every file the
+        # gate still reads looks perfect. The union is non-empty, so
+        # nothing above this notices; the gate is comparing one thing
+        # against nothing and would otherwise print OK.
         self.assert_code(
             self.run_gate(MISE_WITH_FLAG, "jobs:\n  build:\n    steps: []\n"),
+            2, "found 1 `cargo mutants` invocation(s)",
+            "expected at least 2", "MINIMUM_INVOCATIONS")
+
+    def test_the_minimum_is_a_number_a_caller_can_state(self):
+        # The escape hatch the failure text names. A tree that genuinely
+        # holds one invocation is not a broken gate, and the way to say
+        # so is to say the number — deliberately, in the change that
+        # removes the invocation.
+        self.assert_code(
+            self.run_gate(MISE_WITH_FLAG, "jobs:\n  build:\n    steps: []\n",
+                          minimum=1),
             0, "1 cargo-mutants invocation(s) carry")
 
     def test_no_invocation_anywhere_is_2(self):

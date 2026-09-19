@@ -884,8 +884,9 @@ jobs:
   mutants-flags-gate:
     name: Mutation flag gate
     runs-on: ubuntu-latest
-    # Reads two text files. No toolchain, no cargo, no network past the
-    # checkout.
+    # Reads mise.toml and every *.yml, *.yaml and *.sh under .github/ as
+    # text, and asserts how many cargo-mutants invocations it found. No
+    # toolchain, no cargo, no network past the checkout.
     timeout-minutes: 5
     # Deliberately without an `if:`, like the contract job above and unlike
     # the `mutants` matrix. `--all-features` is written in three places —
