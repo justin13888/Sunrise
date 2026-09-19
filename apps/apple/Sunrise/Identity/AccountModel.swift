@@ -81,6 +81,27 @@ final class AccountModel {
     /// ``DeviceListModel/lastRevocation`` already follows in this app.
     private(set) var signOutIncomplete: String?
 
+    /// Whether the Account screen renders the disclosure.
+    ///
+    /// The pairing rule lives here rather than at the render site so that a
+    /// change to the state machine fails a test instead of only a screenshot.
+    /// The row's text asserts the user is signed out, while ``restore()`` and
+    /// ``publish()`` can pair a non-`nil` ``signOutIncomplete`` with
+    /// `.signedIn` — the one combination it must not be rendered under.
+    var shouldDiscloseSignOutIncomplete: Bool {
+        signOutIncomplete != nil && stateTheDisclosureIsTrueIn
+    }
+
+    /// The states the disclosure's own text is true in. `.awaitingBrowser` is
+    /// transient with the browser in front, and under `.signedIn` the text
+    /// would predict a re-admission that has already happened.
+    private var stateTheDisclosureIsTrueIn: Bool {
+        switch state {
+        case .signedOut, .failed: true
+        case .signedIn, .awaitingBrowser: false
+        }
+    }
+
     private let store: any CredentialStore
     private let makeDriver: @Sendable (String, String) -> any LoginDriver
     private let openURL: @Sendable (URL) -> Void
