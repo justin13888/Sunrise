@@ -1049,16 +1049,53 @@ class Symbols(GateCase):
         # names a line, not an item, so there is nothing to resolve and no
         # reading under which failing it would be right -- and this gate may
         # not invent a failure for a spelling it never promised to read.
-        # Declined exactly as a non-Rust suffix is: the span leaves the
-        # anchored count rather than being reported either way.
+        # Declined exactly as a non-Rust suffix is, and to the same extent:
+        # the SYMBOL check is declined and the span stays counted.
         self.rust()
         self.write(
             "docs/a.md",
             "See `crates/c/src/lib.rs:3#L3` and `crates/c/src/lib.rs#L3`.\n",
         )
         result = self.run_gate()
-        self.assert_code(result, CLEAN, "OK: citations clean.", "0 anchored citation(s)")
+        self.assert_code(result, CLEAN, "OK: citations clean.", "2 anchored citation(s)")
         self.assertNotIn("path-like span(s) were NOT checked", result.stdout)
+
+    def test_every_github_fragment_spelling_is_declined(self):
+        # github.com emits a range for any multi-line selection and a column
+        # form when columns are included. This repository's citations are
+        # overwhelmingly ranges (`:31-63`, `:294-300`), so the range fragment
+        # is the one a contributor actually pastes -- and while the pattern
+        # read `L\d+` alone, every one of these red-lined a document for a
+        # spelling the gate had declared it would decline.
+        #
+        # No digit cap either: a permalink is not wrong for being long.
+        self.rust()
+        self.write(
+            "docs/a.md",
+            "See `crates/c/src/lib.rs#L3-L9`, `crates/c/src/lib.rs:3#L3-L9`, "
+            "`crates/c/src/lib.rs#L3C5-L9C20`, `crates/c/src/lib.rs#L3C5` and "
+            "`crates/c/src/lib.rs#L1234567890`.\n",
+        )
+        self.assert_code(
+            self.run_gate(), CLEAN, "OK: citations clean.", "5 anchored citation(s)"
+        )
+
+    def test_a_line_fragment_does_not_excuse_the_checks_beside_it(self):
+        # The placement, stated as five cases because each is a different
+        # branch of `classify` and a decline taken at the top removed all of
+        # them at once. Every span here fails without its suffix; appending a
+        # permalink fragment may not make the build greener.
+        self.rust()
+        for span, fragment in (
+            ("crates/c/src/lib.rs:99#L99", "cites line 99, but `crates/c/src/lib.rs` has 11"),
+            ("crates/c/src/gone.rs#L5", "names no file git tracks."),
+            ("crates/c/src/lib.rs:50-40#L1", "cites an empty range (50-40)."),
+            ("crates/c/src/lib.rs:0#L0", "cites line 0; line numbers start at 1."),
+            ("../../etc/passwd.rs:1#L1", "climbs out of the repository."),
+        ):
+            with self.subTest(span=span):
+                self.write("docs/a.md", f"See `{span}`.\n")
+                self.assert_code(self.run_gate(), DANGLING, fragment)
 
     def test_an_impl_block_is_not_a_citation_target(self):
         # An `impl` block is a container, not the item a sentence is about.
@@ -1149,11 +1186,12 @@ class Symbols(GateCase):
             "cites line 12, but `crates/c/src/lib.rs` has 11 line(s).",
         )
 
-    def test_a_suffix_on_a_target_that_is_not_rust_is_declined(self):
+    def test_a_suffix_on_a_target_that_is_not_rust_declines_only_the_symbol(self):
         # `docs/x.md#heading` is a link fragment, and there is no resolver for
-        # a symbol outside Rust. It must not crash, must not fail, and must
-        # not be counted as checked -- the gate declines the whole span, which
-        # is what it did before the suffix existed too.
+        # a symbol outside Rust. It must not crash and must not fail -- but
+        # the decline is of the SYMBOL check, not of the span. Every one of
+        # these resolves, so every one is counted, exactly as the same span
+        # without its suffix would be.
         self.write("docs/b.md", "one\ntwo\n")
         self.write("Cargo.toml", "[workspace]\n")
         self.write(
@@ -1161,28 +1199,45 @@ class Symbols(GateCase):
             "See `docs/b.md#heading`, `docs/b.md:1#heading` and `Cargo.toml#package`.\n",
         )
         result = self.run_gate()
-        self.assert_code(result, CLEAN, "OK: citations clean.", "0 anchored citation(s)")
+        self.assert_code(result, CLEAN, "OK: citations clean.", "3 anchored citation(s)")
         self.assertNotIn("path-like span(s) were NOT checked", result.stdout)
 
-    def test_a_non_rust_suffix_is_declined_even_when_the_path_is_dangling(self):
-        # The decline happens before resolution, so it is the suffix and not
-        # the file that takes the span out. Stated as its own case because the
-        # alternative reading -- "declined because it resolved" -- is wrong
-        # and would hide a real dangling path the day somebody writes one.
+    def test_a_non_rust_suffix_does_not_excuse_a_dangling_path(self):
+        # The half the placement decides. A suffix the gate cannot read is no
+        # reason to stop reading the path beside it: `docs/gone.md:5` is a
+        # reported dangling citation, so `docs/gone.md#heading` is one too.
+        #
+        # Taken before resolution -- which is where this decline first sat --
+        # the span vanished from the run and the dangling file went unseen,
+        # which is a document the gate would have caught being made green by
+        # a fragment somebody pasted.
         self.write("docs/a.md", "See `docs/gone.md#heading`.\n")
-        self.assert_code(self.run_gate(), CLEAN, "OK: citations clean.", "0 anchored citation(s)")
+        self.assert_code(self.run_gate(), DANGLING, "names no file git tracks.")
+
+    def test_a_non_rust_suffix_does_not_excuse_a_line_past_the_end(self):
+        # The same rule at the line check rather than the path check, because
+        # the two are separate branches and only a case each pins both.
+        self.write("docs/b.md", "one\ntwo\n")
+        self.write("docs/a.md", "See `docs/b.md:9#heading`.\n")
+        self.assert_code(
+            self.run_gate(), DANGLING, "cites line 9, but `docs/b.md` has 2 line(s)."
+        )
 
     def test_a_suffix_on_a_non_rust_directory_is_declined_for_its_extension(self):
-        # This case used to be named for the directory branch and never
-        # reached it: `json` is not `rs`, so the non-Rust decline answers two
-        # statements into `classify`, before the path is resolved at all. The
-        # assertion that says so is the count -- a decline takes the span out
-        # of the anchored total, where the directory branch would have
-        # reported it as checked.
+        # `json` is not `rs`, so the suffix is one the gate has no reading
+        # for, and a suffix it cannot read on a directory is no more readable
+        # than the same suffix on a file. The span falls through to the
+        # verdict its bare path carries -- clean, and counted, which is what a
+        # bare directory citation has always been.
+        #
+        # The neighbouring `.rs` directory case is a FAILURE rather than this,
+        # and the difference is the whole of the distinction: there the gate
+        # does have a resolver, so a directory declaring nothing is an answer
+        # it can give.
         self.write("schemas/bundle.json/part.json", "{}\n")
         self.write("docs/a.md", "See `schemas/bundle.json#thing`.\n")
         self.assert_code(
-            self.run_gate(), CLEAN, "OK: citations clean.", "0 anchored citation(s)"
+            self.run_gate(), CLEAN, "OK: citations clean.", "1 anchored citation(s)"
         )
 
     def test_a_symbol_on_a_rust_named_directory_fails(self):

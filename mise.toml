@@ -457,9 +457,12 @@ description = "Reject a backticked path:line#symbol citation that points at noth
 #   * A suffix that is not a bare Rust item name — `#Engine::f`, `#f()` — is a
 #     FAILURE, reported after the path and line checks have run on the span.
 #     It never removes a check the citation already had.
-#   * `#L702`, a github.com permalink fragment, and any `#symbol` on a target
-#     that is not `.rs`, are DECLINED: the span leaves the checked count
-#     rather than being failed on a guess.
+#   * A github.com permalink fragment — `#L702`, `#L702-L710` and the column
+#     forms — and any `#symbol` on a target that is not `.rs`, are DECLINED
+#     rather than failed on a guess. What is declined is the SYMBOL check:
+#     the path and line checks run on the span as they always did, and the
+#     span stays in the checked count. Appending a fragment can never make a
+#     build greener.
 #   * An `impl` block is not a legal target. `#Engine` spanned 97.7% of
 #     `sync.rs`, which checks nothing; cite the `struct`, `trait` or `fn`.
 #

@@ -85,9 +85,14 @@ a detail:
   such a span would fail to match `CITATION` altogether and be silently
   dropped from the run, so writing the method in the natural Rust form would
   make the build greener by checking strictly less.
-* **`#L702` is declined, not failed.** It is a github.com permalink fragment,
-  the one non-declaration `#` form a Rust-path span plausibly carries. There is
-  no item to resolve, so there is no reading under which failing it is right.
+* **`#L702` is declined, not failed — and declining it costs the *symbol*
+  check, not the span.** It is a github.com permalink fragment, the one
+  non-declaration `#` form a Rust-path span plausibly carries, in all four
+  spellings the site emits (`#L702`, `#L702-L710`, and either with a `C`
+  column). There is no item to resolve, so there is no reading under which
+  failing it is right — but the path and line checks are not the suffix's to
+  give away, and they run on the span exactly as they would with no `#`
+  written at all. The same holds for a `#symbol` on a target that is not Rust.
 * **An `impl` block is not a citation target.** `#Engine` once resolved to 38
   through 1628 of `sync.rs` — 97.7% of the file — which is no stronger than the
   line-existence check the suffix exists to improve on, while counting as a
@@ -192,12 +197,14 @@ Also out, each for a reason:
   decides that. Without a `#symbol` suffix this gate answers only "does that
   line exist"; with one it also answers "is that line inside the item named",
   which is strictly more and still strictly less than aboutness.
-* **A symbol suffix on a target that is not Rust**, and **a `#L<digits>` line
+* **A symbol suffix on a target that is not Rust**, and **a github.com line
   fragment on any target.** There is no resolver for the first, and a heading
   fragment on a markdown target is a link anchor rather than a declaration; the
   second names a line rather than an item. Neither has a reading this gate could
-  fail without guessing. Both decline the whole span, which takes it out of the
-  anchored count rather than passing it as checked. Recorded here because the
+  fail without guessing, so each declines **the symbol check alone**. The span
+  keeps every other check and stays in the anchored count, because a citation
+  this gate looked at and a citation nobody wrote are different things and the
+  run's own totals are where that difference shows. Recorded here because the
   grammar admits both and the check answers neither. Every *other* unresolvable
   suffix is a failure, not a decline: see "The `#symbol` suffix" above.
 
@@ -303,10 +310,19 @@ SYMBOL_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
 # A github.com permalink fragment, which is the one non-declaration `#` form a
 # code span naming a Rust path plausibly carries. `…/sync.rs:702#L702` names a
 # line, not an item, so there is no symbol to resolve and no reading under
-# which the gate could be right to fail it — it is declined exactly as a
-# non-Rust target is. Failing it would be a false failure invented for a
-# spelling this gate never promised to read, which the contract above forbids.
-LINE_FRAGMENT = re.compile(r"^L[0-9]{1,9}$")
+# which the gate could be right to fail it — the *symbol check* is declined
+# exactly as it is on a non-Rust target. Failing it would be a false failure
+# invented for a spelling this gate never promised to read, which the contract
+# above forbids.
+#
+# All four of github.com's spellings, not the single-line one alone. A range —
+# `#L702-L710` — is what the site emits for any multi-line selection, and this
+# repository's citations are overwhelmingly ranges (`:31-63`, `:294-300`,
+# `:1091-1101`), so the range form is the one a contributor actually pastes.
+# The column forms (`#L702C5-L710C20`) come from the same menu. No digit cap:
+# a cap here would red-line a permalink for being long, which is the failure
+# this pattern exists to prevent rather than a narrower version of it.
+LINE_FRAGMENT = re.compile(r"^L[0-9]+(?:C[0-9]+)?(?:-L[0-9]+(?:C[0-9]+)?)?$")
 
 # The declaration of one named Rust item, at whatever indent it sits.
 #
@@ -795,21 +811,26 @@ def classify(span: Span, citing: str, root: str, tree: Tree) -> tuple[str, Findi
         return "skip", None
 
     symbol = match.group("symbol")
-    if symbol is not None and match.group("ext").lower() != "rs":
-        # `docs/x.md#heading` is a link fragment, not a declaration, and there
-        # is no resolver for a symbol outside Rust. Declining the whole span
-        # keeps such a citation exactly as unchecked as it is today rather
-        # than inventing a verdict for it — and, decisively, it cannot turn a
-        # document red for a suffix the gate never promised to read.
-        return "skip", None
 
-    if symbol is not None and LINE_FRAGMENT.match(symbol):
-        # A github.com permalink fragment. Declined on the same ground as the
-        # non-Rust case above and with the same effect — the whole span leaves
-        # the count — because `#L702` names a line rather than an item, so
-        # there is nothing to resolve and no document this gate could be right
-        # to red-line for it.
-        return "skip", None
+    # The two suffixes this gate has no resolver for. `docs/x.md#heading` is a
+    # link fragment rather than a declaration and there is no declaration
+    # grammar for a file that is not Rust; `#L702` names a line rather than an
+    # item on any target at all. Neither has a reading the gate could fail
+    # without guessing, so neither is failed.
+    #
+    # **What is declined is the symbol check, and nothing else.** The verdict
+    # is computed here and spent below, after the path, path-escape, line-0,
+    # empty-range and line-count checks have run on the span — the placement
+    # the `SYMBOL_NAME` miss already has, for the reason this module's
+    # docstring gives: an unresolvable suffix never subtracts a check. Taken
+    # at the top instead, these two returns cost the citation every check it
+    # had, so `sync.rs:99999#L99999` passed where `sync.rs:99999` failed and
+    # appending a permalink fragment made the build greener by checking less.
+    # That is the defect the suffix was written to prevent, re-created by the
+    # decline meant to be safe.
+    declined = symbol is not None and (
+        match.group("ext").lower() != "rs" or LINE_FRAGMENT.match(symbol) is not None
+    )
 
     path = match.group("path")
     candidates, claimed, escapes = readings(citing, path, tree)
@@ -839,19 +860,23 @@ def classify(span: Span, citing: str, root: str, tree: Tree) -> tuple[str, Findi
         if any(candidate in tree.dirs for candidate in candidates):
             if first_line is not None:
                 return broken(f"cites a line, but `{path}` is a directory.")
-            if symbol is not None:
+            if symbol is not None and not declined:
                 # A directory declares nothing, so there is no reading under
                 # which this citation is correct and no document this verdict
-                # can red-line unfairly. Passing it silently would be worse
-                # than the non-Rust decline beside it: that one takes the
-                # whole span out of the count, while a silent pass here
-                # reports the citation as *checked* with the suffix never
-                # looked at — an unverified `#symbol` counted as a verified
-                # one, which is the single thing this suffix exists to
-                # prevent. That silent pass was reachable in this change's own
-                # first draft of the suffix, not before it: without a `#`
-                # group in `CITATION` the span is not a citation at all and
-                # `classify` returns `"skip"`.
+                # can red-line unfairly. Passing it silently would report the
+                # citation as *checked* with the suffix never looked at — an
+                # unverified `#symbol` counted as a verified one, which is the
+                # single thing this suffix exists to prevent. That silent pass
+                # was reachable in this change's own first draft of the
+                # suffix, not before it: without a `#` group in `CITATION` the
+                # span is not a citation at all and `classify` returns
+                # `"skip"`.
+                #
+                # A *declined* suffix is exempt, and consistently so: the gate
+                # never had a reading for `#heading` or `#L702`, so it has no
+                # more reading for one on a directory than on a file, and the
+                # span falls through to the verdict it would carry with no
+                # suffix written at all.
                 return broken(f"names `{symbol}`, but `{path}` is a directory.")
             return "checked", None
         if (citing, path) in ALLOWED:
@@ -865,6 +890,14 @@ def classify(span: Span, citing: str, root: str, tree: Tree) -> tuple[str, Findi
             return broken(f"cites {where}, but `{target}` has {total} line(s).")
 
     if symbol is not None:
+        if declined:
+            # `#heading` on a non-Rust target, or `#L702` on any target. Every
+            # check this span had has now run and been reported; the symbol
+            # alone goes unanswered, and the citation stays in the checked
+            # count as a span this gate looked at. A decline that removed the
+            # span from the run would be indistinguishable, in the gate's own
+            # output, from a citation nobody ever wrote.
+            return "checked", None
         if not SYMBOL_NAME.match(symbol):
             # Reported, never skipped. This branch runs *after* the path and
             # line checks above, so a suffix the gate cannot parse costs the
@@ -1097,13 +1130,27 @@ FIXTURE_TRACKED = [
 
 def self_test() -> int:
     failures = 0
+    cases = 0
     tree = Tree(FIXTURE_TRACKED)
+
+    def wrong(failed: bool, message: str) -> None:
+        """Record one self-test case, and report it when it went wrong.
+
+        Every assertion below runs through here, which is what makes the
+        count this function prints a measurement rather than a literal
+        somebody has to remember to edit. The argument is the *failure*
+        condition, spelled the way the `if` it replaced was, so adding a case
+        cannot silently invert one.
+        """
+        nonlocal failures, cases
+        cases += 1
+        if failed:
+            print(f"::error::citations self-test: {message}")
+            failures += 1
 
     markdown = [span.body for span in scan_file("docs/fixture.md", MARKDOWN_FIXTURE)]
     for absent in ("crates/never/scanned.rs", "crates/inside/a/fence.rs"):
-        if absent in markdown:
-            print(f"::error::citations self-test: `{absent}` was not masked out of the markdown fixture")
-            failures += 1
+        wrong(absent in markdown, f"`{absent}` was not masked out of the markdown fixture")
     for present in (
         "docs/in-a-heading.md",
         "crates/sunrise-core/src/lib.rs:12",
@@ -1111,15 +1158,11 @@ def self_test() -> int:
         "crates/a.rs:31-63",
         "docs/quoted.md",
     ):
-        if present not in markdown:
-            print(f"::error::citations self-test: `{present}` was not extracted from the markdown fixture")
-            failures += 1
+        wrong(present not in markdown, f"`{present}` was not extracted from the markdown fixture")
 
     rust = sorted(span.body for span in scan_file("crates/c/src/fixture.rs", RUST_FIXTURE))
     wanted = sorted(["crates/sunrise-core/src/lib.rs:12", "docs/plain.md", "Vec<u8>"])
-    if rust != wanted:
-        print(f"::error::citations self-test: the Rust fixture yielded {rust}, expected {wanted}")
-        failures += 1
+    wrong(rust != wanted, f"the Rust fixture yielded {rust}, expected {wanted}")
 
     def verdict(body: str, citing: str = "docs/03-crypto/recovery.md") -> str:
         got, _ = classify(Span(line=1, body=body), citing, ".", tree)
@@ -1146,58 +1189,64 @@ def self_test() -> int:
         "Task.blocks",
         "focus.end",
     ):
-        if verdict(body) != "skip":
-            print(f"::error::citations self-test: `{body}` was read as a citation")
-            failures += 1
+        wrong(verdict(body) != "skip", f"`{body}` was read as a citation")
 
     # Anchor 2, the explicit half: one reading, so a dangling one must fail.
-    if finding_for("../06-server/api.md") is not None:
-        print("::error::citations self-test: a resolving `../` citation was reported broken")
-        failures += 1
+    wrong(
+        finding_for("../06-server/api.md") is not None,
+        "a resolving `../` citation was reported broken",
+    )
     dangling = finding_for("../06-server/does-not-exist.md")
-    if dangling is None or "names no file" not in dangling.message:
-        print(f"::error::citations self-test: a dangling `../` citation reported {dangling}")
-        failures += 1
+    wrong(
+        dangling is None or "names no file" not in dangling.message,
+        f"a dangling `../` citation reported {dangling}",
+    )
     escaping = finding_for("../../../etc/passwd.toml")
-    if escaping is None or "climbs out" not in escaping.message:
-        print(f"::error::citations self-test: an escaping citation reported {escaping}")
-        failures += 1
+    wrong(
+        escaping is None or "climbs out" not in escaping.message,
+        f"an escaping citation reported {escaping}",
+    )
 
     # `./` is the implicit half, not the explicit one, because this repository
     # writes `./sunrise.toml` for a runtime working directory.
-    if verdict("./key-rotation.md") != "checked":
-        print("::error::citations self-test: a resolving `./` citation was not checked")
-        failures += 1
-    if verdict("./sunrise.toml") != "unanchored":
-        print("::error::citations self-test: a `./` runtime path was read as a repository citation")
-        failures += 1
+    wrong(verdict("./key-rotation.md") != "checked", "a resolving `./` citation was not checked")
+    wrong(
+        verdict("./sunrise.toml") != "unanchored",
+        "a `./` runtime path was read as a repository citation",
+    )
 
     # Anchor 2, the implicit half: claimed where it resolves, declined where
     # it does not, because the same span means different files in different
     # directories and guessing would fail a correct document.
-    if finding_for("key-rotation.md") is not None:
-        print("::error::citations self-test: a resolving sibling citation was reported broken")
-        failures += 1
-    if verdict("key-rotation.md", "docs/06-server/api.md") != "unanchored":
-        print("::error::citations self-test: a non-sibling bare filename was not declined")
-        failures += 1
+    wrong(
+        finding_for("key-rotation.md") is not None,
+        "a resolving sibling citation was reported broken",
+    )
+    wrong(
+        verdict("key-rotation.md", "docs/06-server/api.md") != "unanchored",
+        "a non-sibling bare filename was not declined",
+    )
     for body in ("main.rs", "ci.yml", "0013_baseline.sql", "Views/TaskEditorView.swift:97"):
-        if verdict(body) != "unanchored":
-            print(f"::error::citations self-test: `{body}` classified {verdict(body)!r}, expected 'unanchored'")
-            failures += 1
+        wrong(
+            verdict(body) != "unanchored",
+            f"`{body}` classified {verdict(body)!r}, expected 'unanchored'",
+        )
 
     # Anchor 3. The same span is dangling from a document and resolved from
     # inside the crate whose layout Cargo fixes -- and `tests/cli.rs` is the
     # shape that makes the difference, because a top-level `tests/` exists.
-    if finding_for("tests/cli.rs") is None:
-        print("::error::citations self-test: `tests/cli.rs` resolved from a document, where it cannot")
-        failures += 1
-    if finding_for("tests/cli.rs", "crates/sunrise-cli/src/main.rs") is not None:
-        print("::error::citations self-test: the crate anchor did not resolve `tests/cli.rs`")
-        failures += 1
-    if verdict("src/main.rs", "crates/sunrise-cli/tests/cli.rs") != "checked":
-        print("::error::citations self-test: the crate anchor did not claim `src/main.rs`")
-        failures += 1
+    wrong(
+        finding_for("tests/cli.rs") is None,
+        "`tests/cli.rs` resolved from a document, where it cannot",
+    )
+    wrong(
+        finding_for("tests/cli.rs", "crates/sunrise-cli/src/main.rs") is not None,
+        "the crate anchor did not resolve `tests/cli.rs`",
+    )
+    wrong(
+        verdict("src/main.rs", "crates/sunrise-cli/tests/cli.rs") != "checked",
+        "the crate anchor did not claim `src/main.rs`",
+    )
 
     # `crates/sunrise-cli/src/nested.rs` is a directory whose name ends in a
     # recognised extension, which is the only way the branch above is reached.
@@ -1209,9 +1258,7 @@ def self_test() -> int:
         "schemas/generated.json",
         "crates/sunrise-cli/src/nested.rs",
     ):
-        if finding_for(body) is not None:
-            print(f"::error::citations self-test: `{body}` resolves, but was reported broken")
-            failures += 1
+        wrong(finding_for(body) is not None, f"`{body}` resolves, but was reported broken")
 
     # The failures the gate exists for, each reported rather than passed.
     for body, fragment in (
@@ -1223,9 +1270,49 @@ def self_test() -> int:
         ("Cargo.toml:50-40", "empty range"),
     ):
         found = finding_for(body)
-        if found is None or fragment not in found.message:
-            print(f"::error::citations self-test: `{body}` reported {found}, expected {fragment!r}")
-            failures += 1
+        wrong(
+            found is None or fragment not in found.message,
+            f"`{body}` reported {found}, expected {fragment!r}",
+        )
+
+    # A `#symbol` on a target that is not Rust declines the SYMBOL check and
+    # keeps every other one. The gate has no declaration grammar for a file it
+    # cannot parse and `docs/x.md#heading` is a link anchor, so there is no
+    # verdict to reach for the suffix -- but the path and line checks were
+    # never the suffix's to give away, and a decline taken before them is the
+    # subtraction the whole `#` design exists to prevent.
+    #
+    # Asserted from both sides, which is what the earlier placement could not
+    # be: the resolving spans come back clean and COUNTED, and the ones whose
+    # path or line is wrong still report, with the suffix never looked at.
+    # `schemas/generated.json` is the directory branch's exemption -- a
+    # tracked directory whose own name ends in a recognised extension, where a
+    # suffix the gate has no reading for is no more readable than it is on a
+    # file, so the span falls through to the verdict the bare path carries.
+    #
+    # None of these cites a line, and that is a constraint rather than an
+    # oversight: `self_test` runs against whatever directory the gate was
+    # started in, and the contract suite beside this file starts it inside a
+    # synthesised tree where these documents do not exist. A case that needs a
+    # line counted belongs in the scratch tree below, which owns its files.
+    for body in ("docs/03-crypto/recovery.md#heading", "Cargo.toml#package",
+                 "schemas/generated.json#thing"):
+        state, found = classify(Span(line=1, body=body), "docs/03-crypto/recovery.md", ".", tree)
+        wrong(
+            state != "checked" or found is not None,
+            f"`{body}` reported {state}/{found}, expected a counted, clean decline",
+        )
+    for body, fragment in (
+        ("docs/03-crypto/gone.md#heading", "names no file"),
+        ("docs/03-crypto/recovery.md:0#heading", "line 0"),
+        ("docs/03-crypto/recovery.md:50-40#heading", "empty range"),
+        ("../../../etc/passwd.toml#heading", "climbs out"),
+    ):
+        found = finding_for(body)
+        wrong(
+            found is None or fragment not in found.message,
+            f"`{body}` reported {found}; a declined suffix must not remove that check",
+        )
 
     # The `#symbol` suffix. These are the only self-test cases that read a
     # file, so they get a tree of their own rather than this repository's --
@@ -1236,6 +1323,10 @@ def self_test() -> int:
         fixture = pathlib.Path(scratch) / "crates" / "sunrise-cli" / "src"
         fixture.mkdir(parents=True)
         (fixture / "main.rs").write_text(SYMBOL_FIXTURE, encoding="utf-8")
+        # Three lines, so a non-Rust target has a line count to overrun.
+        document = pathlib.Path(scratch) / "docs" / "03-crypto"
+        document.mkdir(parents=True)
+        (document / "recovery.md").write_text("one\ntwo\nthree\n", encoding="utf-8")
 
         def symbol_verdict(body: str) -> tuple[str, Finding | None]:
             return classify(Span(line=1, body=body), "docs/03-crypto/recovery.md", scratch, tree)
@@ -1247,44 +1338,41 @@ def self_test() -> int:
         # doc comments, so a citation of one must be inside its own item.
         for line in (1, 3, 4, 9):
             verdict_at, found = symbol_verdict(f"{main}:{line}#wanted")
-            if verdict_at != "checked" or found is not None:
-                print(f"::error::citations self-test: `{main}:{line}#wanted` reported {found}, expected clean")
-                failures += 1
+            wrong(
+                verdict_at != "checked" or found is not None,
+                f"`{main}:{line}#wanted` reported {found}, expected clean",
+            )
 
         # Outside it, which is the whole point of the suffix.
         for line in (11, 12, 21):
             _, found = symbol_verdict(f"{main}:{line}#wanted")
-            if found is None or "spans 1-9" not in found.message:
-                print(f"::error::citations self-test: `{main}:{line}#wanted` reported {found}, expected a span miss")
-                failures += 1
+            wrong(
+                found is None or "spans 1-9" not in found.message,
+                f"`{main}:{line}#wanted` reported {found}, expected a span miss",
+            )
 
         # A name declared twice is one citation target, not two: the trait
         # method and its impl are both `twice`, and a line in either is in.
         for line in (16, 20, 21):
             _, found = symbol_verdict(f"{main}:{line}#twice")
-            if found is not None:
-                print(f"::error::citations self-test: `{main}:{line}#twice` reported {found}, expected clean")
-                failures += 1
+            wrong(found is not None, f"`{main}:{line}#twice` reported {found}, expected clean")
         _, found = symbol_verdict(f"{main}:12#twice")
-        if found is None or "16-16, 20-22" not in found.message:
-            print(f"::error::citations self-test: `{main}:12#twice` reported {found}, expected both spans named")
-            failures += 1
+        wrong(
+            found is None or "16-16, 20-22" not in found.message,
+            f"`{main}:12#twice` reported {found}, expected both spans named",
+        )
 
         # Line-less: checks the declaration is still there and nothing else.
         # This is the form a citation into a file somebody else is rewriting
         # should take, so it has to work without a line to contain.
         _, found = symbol_verdict(f"{main}#wanted")
-        if found is not None:
-            print(f"::error::citations self-test: `{main}#wanted` reported {found}, expected clean")
-            failures += 1
-        _, found = symbol_verdict(f"{main}#absent")
-        if found is None or "does not declare" not in found.message:
-            print(f"::error::citations self-test: `{main}#absent` reported {found}, expected a missing symbol")
-            failures += 1
-        _, found = symbol_verdict(f"{main}:4#absent")
-        if found is None or "does not declare" not in found.message:
-            print(f"::error::citations self-test: `{main}:4#absent` reported {found}, expected a missing symbol")
-            failures += 1
+        wrong(found is not None, f"`{main}#wanted` reported {found}, expected clean")
+        for body in (f"{main}#absent", f"{main}:4#absent"):
+            _, found = symbol_verdict(body)
+            wrong(
+                found is None or "does not declare" not in found.message,
+                f"`{body}` reported {found}, expected a missing symbol",
+            )
 
         # A suffix the grammar admits but this gate cannot resolve is a
         # FAILURE, and the path and line checks run on the span first. While
@@ -1300,9 +1388,10 @@ def self_test() -> int:
             (f"{main}:9999#T::twice", "line(s)."),
         ):
             _, found = symbol_verdict(body)
-            if found is None or fragment not in found.message:
-                print(f"::error::citations self-test: `{body}` reported {found}, expected {fragment!r}")
-                failures += 1
+            wrong(
+                found is None or fragment not in found.message,
+                f"`{body}` reported {found}, expected {fragment!r}",
+            )
 
         # `impl` is not in `SYMBOL_DECL`'s alternation: an `impl` block is a
         # container, not the item a sentence is about, and containment against
@@ -1313,18 +1402,59 @@ def self_test() -> int:
         # `impl` was in the alternation the union covered 15-17 and 19-23 and
         # this citation was clean.
         _, found = symbol_verdict(f"{main}:20#T")
-        if found is None or "spans 15-17" not in found.message:
-            print(f"::error::citations self-test: `{main}:20#T` reported {found}, expected `impl` not to resolve")
-            failures += 1
+        wrong(
+            found is None or "spans 15-17" not in found.message,
+            f"`{main}:20#T` reported {found}, expected `impl` not to resolve",
+        )
 
-        # A github.com permalink fragment is declined, not failed. It names a
-        # line rather than an item, so there is nothing to resolve and no
-        # reading under which a failure here would be right.
-        for body in (f"{main}:4#L4", f"{main}#L4"):
+        # A github.com permalink fragment declines the SYMBOL check and
+        # nothing else. It names a line rather than an item, so there is
+        # nothing to resolve and no reading under which a failure here would
+        # be right -- and the span stays in the checked count, because a
+        # citation this gate looked at is not a citation nobody wrote.
+        #
+        # All four spellings the site emits. The range forms matter most:
+        # this repository's citations are overwhelmingly ranges, so
+        # `#L1-L9` is the fragment a contributor actually pastes.
+        for body in (f"{main}:4#L4", f"{main}#L4", f"{main}:4#L1-L9",
+                     f"{main}#L1-L9", f"{main}:4#L1C5-L9C20", f"{main}#L4C1",
+                     f"{main}#L1234567890"):
             verdict_at, found = symbol_verdict(body)
-            if verdict_at != "skip" or found is not None:
-                print(f"::error::citations self-test: `{body}` reported {verdict_at}/{found}, expected a decline")
-                failures += 1
+            wrong(
+                verdict_at != "checked" or found is not None,
+                f"`{body}` reported {verdict_at}/{found}, expected a counted, clean decline",
+            )
+
+        # And the half the decline may not touch, which is the whole of its
+        # placement. Each of these is a span the gate would have failed with
+        # no suffix on it; appending a fragment must not make the build
+        # greener. Taken before the path and line checks, every one of them
+        # came back a skip.
+        for body, fragment in (
+            (f"{main}:9999#L9999", "line(s)."),
+            (f"{main}:9999#L9999-L10000", "line(s)."),
+            ("crates/sunrise-cli/src/gone.rs#L5", "names no file"),
+            (f"{main}:50-40#L1", "empty range"),
+            (f"{main}:0#L0", "line 0"),
+            ("../../../etc/passwd.rs:1#L1", "climbs out"),
+            # And the non-Rust decline, which is the same mechanism: three
+            # lines in the scratch tree, so line 9 is past the end whether or
+            # not a `#heading` is written beside it.
+            ("docs/03-crypto/recovery.md:9#heading", "line(s)."),
+            ("docs/03-crypto/recovery.md:9#L9", "line(s)."),
+        ):
+            _, found = symbol_verdict(body)
+            wrong(
+                found is None or fragment not in found.message,
+                f"`{body}` reported {found}; a declined suffix must not remove that check",
+            )
+        # The resolving half of the same pair, counted rather than dropped.
+        for body in ("docs/03-crypto/recovery.md:2#heading", "docs/03-crypto/recovery.md:2#L2"):
+            verdict_at, found = symbol_verdict(body)
+            wrong(
+                verdict_at != "checked" or found is not None,
+                f"`{body}` reported {verdict_at}/{found}, expected a counted, clean decline",
+            )
 
         # `symbol_span`'s `OSError` arm, reached directly because no scan can
         # reach it: a `.rs` file tracked but absent from the working tree
@@ -1333,17 +1463,20 @@ def self_test() -> int:
         # scratch tree above, so opening it there raises and the arm returns
         # no spans at all.
         absent = "crates/sunrise-cli/src/lib.rs"
-        if symbol_span(posixpath.join(scratch, absent), "wanted") != []:
-            print(f"::error::citations self-test: `{absent}` was readable; the OSError arm was not reached")
-            failures += 1
+        wrong(
+            symbol_span(posixpath.join(scratch, absent), "wanted") != [],
+            f"`{absent}` was readable; the OSError arm was not reached",
+        )
 
         # No suffix: byte-for-byte the behaviour of every citation in the tree
         # before this suffix existed. If this moves, the widening was not one.
         for line, want in ((4, True), (38, True), (39, False)):
             _, found = symbol_verdict(f"{main}:{line}")
-            if (found is None) != want:
-                print(f"::error::citations self-test: `{main}:{line}` reported {found}, expected {'clean' if want else 'out of range'}")
-                failures += 1
+            wrong(
+                (found is None) != want,
+                f"`{main}:{line}` reported {found}, "
+                f"expected {'clean' if want else 'out of range'}",
+            )
 
         # An attribute rustfmt split across lines does not sever the item
         # from its doc comment. Lines 25-28 are the doc, the attribute's `#[`
@@ -1352,38 +1485,31 @@ def self_test() -> int:
         # correct document.
         for line in (25, 26, 28, 29):
             _, found = symbol_verdict(f"{main}:{line}#Split")
-            if found is not None:
-                print(f"::error::citations self-test: `{main}:{line}#Split` reported {found}, expected clean")
-                failures += 1
+            wrong(found is not None, f"`{main}:{line}#Split` reported {found}, expected clean")
         _, found = symbol_verdict(f"{main}:24#Split")
-        if found is None or "spans 25-31" not in found.message:
-            print(f"::error::citations self-test: `{main}:24#Split` reported {found}, expected a span miss")
-            failures += 1
+        wrong(
+            found is None or "spans 25-31" not in found.message,
+            f"`{main}:24#Split` reported {found}, expected a span miss",
+        )
 
         # And the climb back to a `#[` stays timid. Line 35 closes a `static`
         # array, not an attribute, so the item below it starts at its own doc
         # run and the array is outside -- the span must not swallow the item
         # above just because a line ends in a bracket.
         _, found = symbol_verdict(f"{main}:36#after_an_array")
-        if found is not None:
-            print(f"::error::citations self-test: `{main}:36#after_an_array` reported {found}, expected clean")
-            failures += 1
+        wrong(
+            found is not None,
+            f"`{main}:36#after_an_array` reported {found}, expected clean",
+        )
         _, found = symbol_verdict(f"{main}:33#after_an_array")
-        if found is None or "spans 36-38" not in found.message:
-            print(f"::error::citations self-test: `{main}:33#after_an_array` reported {found}, expected a span miss")
-            failures += 1
-
-        # A symbol on a target that is not Rust is declined, not failed. The
-        # gate has no resolver for one and `docs/x.md#heading` is a fragment.
-        for body in ("docs/03-crypto/recovery.md#heading", "docs/03-crypto/recovery.md:2#heading",
-                     "Cargo.toml#package", "docs/03-crypto/gone.md#heading"):
-            if symbol_verdict(body)[0] != "skip":
-                print(f"::error::citations self-test: `{body}` was not declined")
-                failures += 1
+        wrong(
+            found is None or "spans 36-38" not in found.message,
+            f"`{main}:33#after_an_array` reported {found}, expected a span miss",
+        )
 
     if failures:
         return 1
-    print("OK: citations self-test clean (85 cases).")
+    print(f"OK: citations self-test clean ({cases} cases).")
     return 0
 
 
