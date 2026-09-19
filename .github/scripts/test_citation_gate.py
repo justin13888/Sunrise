@@ -871,6 +871,64 @@ class Symbols(GateCase):
         self.write("docs/b.md", "See `crates/c/src/lib.rs:5#wanted`.\n")
         self.assert_code(self.run_gate(), DANGLING, "spans 3-3, 6-9.")
 
+    def test_a_suffix_that_is_not_an_item_name_fails_and_subtracts_nothing(self):
+        # The defect this grammar was widened for. `#Engine::f` and `#f()` are
+        # how a Rust method is written by hand, and while the symbol group was
+        # itself the identifier pattern such a span failed `CITATION` outright
+        # -- so it was not counted, not listed as unanchored, and LOST the
+        # path and line checks it had carried before the suffix was added.
+        # Appending a suffix made the build greener by checking less, which is
+        # the one thing a suffix must never be able to do.
+        #
+        # Both halves are asserted: the suffix is reported, and the line check
+        # still runs on the same span and still comes first.
+        self.rust()
+        self.write("docs/a.md", "See `crates/c/src/lib.rs:3#wanted::inner`.\n")
+        self.assert_code(
+            self.run_gate(),
+            DANGLING,
+            "carries `#wanted::inner`, which is not a Rust item name this gate can resolve",
+        )
+
+        self.write("docs/b.md", "See `crates/c/src/lib.rs:3#wanted()`.\n")
+        self.assert_code(self.run_gate(), DANGLING, "carries `#wanted()`, which is not a Rust")
+
+        # The subtraction, stated directly. A line past the end of the file is
+        # reported as such even though the suffix beside it is unparseable.
+        self.write("docs/c.md", "See `crates/c/src/lib.rs:99#wanted::inner`.\n")
+        self.assert_code(
+            self.run_gate(),
+            DANGLING,
+            "cites line 99, but `crates/c/src/lib.rs` has 11 line(s).",
+        )
+
+    def test_an_unparseable_suffix_on_a_dangling_path_still_reports_the_path(self):
+        # The other half of the subtraction: a path that resolves to nothing,
+        # carrying a suffix the gate cannot read, used to vanish from the run
+        # entirely -- where the same path with `:5` instead reports a dangling
+        # file. The path verdict is the older and more useful one, so it keeps
+        # precedence over the suffix verdict.
+        self.write("crates/c/src/lib.rs", "pub fn wanted() -> u8 {\n    0\n}\n")
+        self.write("docs/a.md", "See `crates/c/src/gone.rs#Engine::f`.\n")
+        self.assert_code(self.run_gate(), DANGLING, "names no file git tracks.")
+
+    def test_a_github_line_fragment_is_declined_not_failed(self):
+        # `#L702` is a github.com permalink fragment and the one
+        # non-declaration `#` form a Rust-path span plausibly carries. It
+        # names a line, not an item, so there is nothing to resolve and no
+        # reading under which failing it would be right -- and this gate may
+        # not invent a failure for a spelling it never promised to read.
+        # Declined exactly as a non-Rust suffix is: the span leaves the
+        # anchored count rather than being reported either way.
+        self.rust()
+        self.write(
+            "docs/a.md",
+            "See `crates/c/src/lib.rs:3#L3` and `crates/c/src/lib.rs#L3`.\n",
+        )
+        result = self.run_gate()
+        self.assert_code(result, CLEAN, "OK: citations clean.", "0 anchored citation(s)")
+        self.assertNotIn("path-like span(s) were NOT checked", result.stdout)
+
     def test_a_citation_with_no_suffix_is_unchanged(self):
         # The widening, asserted as a widening. Every citation in this
         # repository is this shape, and all three verdicts it can reach have

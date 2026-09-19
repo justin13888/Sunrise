@@ -246,11 +246,33 @@ CITATION = re.compile(
         \. (?P<ext> [A-Za-z][A-Za-z0-9]{0,11} )
     )
     (?: : (?P<start>[0-9]{1,9}) (?: - (?P<end>[0-9]{1,9}) )? )?
-    (?: \# (?P<symbol> [A-Za-z_][A-Za-z0-9_]{0,127} ) )?
+    (?: \# (?P<symbol> \S{1,128} ) )?
     $
     """,
     re.VERBOSE,
 )
+
+# What a `#suffix` has to look like to be resolved as a Rust item name.
+#
+# The grammar above deliberately admits **any** non-space run after the `#`,
+# and this is what separates the ones it can resolve from the ones it cannot.
+# The split is the point: a suffix the gate cannot parse must never be able to
+# take a citation *out* of the check. When the symbol group was itself the
+# identifier pattern, `sync.rs:99999#Engine::is_revoked` failed `CITATION`
+# outright, so `classify` returned `"skip"` — the span was not counted, not
+# listed as unanchored, and lost the line-range and path-existence checks it
+# had before the suffix was written. Appending a suffix in the natural Rust
+# form made the build greener by checking less. Now the span parses, the path
+# and line checks run as they always did, and the suffix itself is reported.
+SYMBOL_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
+
+# A github.com permalink fragment, which is the one non-declaration `#` form a
+# code span naming a Rust path plausibly carries. `…/sync.rs:702#L702` names a
+# line, not an item, so there is no symbol to resolve and no reading under
+# which the gate could be right to fail it — it is declined exactly as a
+# non-Rust target is. Failing it would be a false failure invented for a
+# spelling this gate never promised to read, which the contract above forbids.
+LINE_FRAGMENT = re.compile(r"^L[0-9]{1,9}$")
 
 # The declaration of one named Rust item, at whatever indent it sits.
 #
@@ -260,10 +282,20 @@ CITATION = re.compile(
 # which every file in the tree has been through. `{name}` is `re.escape`d by
 # `symbol_span`.
 #
-# `impl<'a> Foo` is not matched, and neither is a path-qualified `#Engine::f`
-# (the grammar above admits no `::`). Both are misses rather than false
-# failures: an unmatched suffix is reported as a symbol the file does not
-# declare, which is a red check somebody reads, not a silent pass.
+# Two different misses end in a red check, and they are worth telling apart
+# because only one of them is about this pattern:
+#
+# * `impl<'a> Foo` is a **`SYMBOL_DECL` miss**. `#Foo` parses as a symbol, the
+#   file genuinely declares it, and this pattern does not recognise the
+#   declaration, so the citation is reported as naming a symbol the file does
+#   not declare. Wrong reason, red check, and the remedy is to drop the suffix
+#   or the line.
+# * `#Engine::f` is a **`SYMBOL_NAME` miss**. The span parses as a citation —
+#   the grammar above takes any non-space run — and `classify` reports the
+#   suffix as one it cannot resolve, *after* running the path and line checks
+#   on it. It is not this pattern's business, and the distinction matters
+#   because the two used to be conflated here while a `SYMBOL_NAME` miss was
+#   in fact a silent skip that subtracted the checks the span already had.
 SYMBOL_DECL = (
     r"^(?P<indent>[ \t]*)"
     r"(?:pub(?:\([^)]*\))?[ \t]+)?"
@@ -727,6 +759,14 @@ def classify(span: Span, citing: str, root: str, tree: Tree) -> tuple[str, Findi
         # document red for a suffix the gate never promised to read.
         return "skip", None
 
+    if symbol is not None and LINE_FRAGMENT.match(symbol):
+        # A github.com permalink fragment. Declined on the same ground as the
+        # non-Rust case above and with the same effect — the whole span leaves
+        # the count — because `#L702` names a line rather than an item, so
+        # there is nothing to resolve and no document this gate could be right
+        # to red-line for it.
+        return "skip", None
+
     path = match.group("path")
     candidates, claimed, escapes = readings(citing, path, tree)
     if not claimed:
@@ -777,6 +817,16 @@ def classify(span: Span, citing: str, root: str, tree: Tree) -> tuple[str, Findi
             return broken(f"cites {where}, but `{target}` has {total} line(s).")
 
     if symbol is not None:
+        if not SYMBOL_NAME.match(symbol):
+            # Reported, never skipped. This branch runs *after* the path and
+            # line checks above, so a suffix the gate cannot parse costs the
+            # citation nothing it already had — which is the whole point of
+            # admitting the spelling into the grammar rather than letting the
+            # span fail to match and vanish from the run.
+            return broken(
+                f"carries `#{symbol}`, which is not a Rust item name this gate can "
+                f"resolve; name the item itself, or drop the suffix."
+            )
         spans = symbol_span(posixpath.join(root, target), symbol)
         if not spans:
             return broken(f"names `{symbol}`, which `{target}` does not declare.")
@@ -1188,6 +1238,33 @@ def self_test() -> int:
             print(f"::error::citations self-test: `{main}:4#absent` reported {found}, expected a missing symbol")
             failures += 1
 
+        # A suffix the grammar admits but this gate cannot resolve is a
+        # FAILURE, and the path and line checks run on the span first. While
+        # the symbol group was itself the identifier pattern, each of these
+        # failed `CITATION` outright and was dropped from the run entirely --
+        # writing a method the way Rust writes it took the citation out of the
+        # check it was already under. The third case is the subtraction stated
+        # directly: the line verdict still wins, and still fires.
+        for body, fragment in (
+            (f"{main}:4#T::twice", "is not a Rust item name"),
+            (f"{main}:4#twice()", "is not a Rust item name"),
+            (f"{main}#T::twice", "is not a Rust item name"),
+            (f"{main}:9999#T::twice", "line(s)."),
+        ):
+            _, found = symbol_verdict(body)
+            if found is None or fragment not in found.message:
+                print(f"::error::citations self-test: `{body}` reported {found}, expected {fragment!r}")
+                failures += 1
+
+        # A github.com permalink fragment is declined, not failed. It names a
+        # line rather than an item, so there is nothing to resolve and no
+        # reading under which a failure here would be right.
+        for body in (f"{main}:4#L4", f"{main}#L4"):
+            verdict_at, found = symbol_verdict(body)
+            if verdict_at != "skip" or found is not None:
+                print(f"::error::citations self-test: `{body}` reported {verdict_at}/{found}, expected a decline")
+                failures += 1
+
         # No suffix: byte-for-byte the behaviour of every citation in the tree
         # before this suffix existed. If this moves, the widening was not one.
         for line, want in ((4, True), (38, True), (39, False)):
@@ -1234,7 +1311,7 @@ def self_test() -> int:
 
     if failures:
         return 1
-    print("OK: citations self-test clean (77 cases).")
+    print("OK: citations self-test clean (83 cases).")
     return 0
 
 
