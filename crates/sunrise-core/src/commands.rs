@@ -409,6 +409,33 @@ pub struct CommandResult {
     /// the revocation was incomplete, this one says there was none.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub revocation_gated: bool,
+    /// Devices the account **no longer calls revoked**, while still giving
+    /// them no keys. Lowercase hex ids, empty for every command but
+    /// `RevokeDevice`.
+    ///
+    /// `device_revocations` is a fold (ADR-0041), so applying a
+    /// `device_revoke` can *remove* a row: a revocation stops being believed
+    /// once the ledger shows its own author had been revoked first. The device
+    /// then reads `current` on every device list again — and it is the only
+    /// outcome of that design a user could be surprised by, which is why
+    /// `core.device.revocation_unwound` is logged. This is the same fact where
+    /// a user can see it, on the rule `docs/10-cross-cutting/log-events.md`
+    /// states for `revoke_incomplete`: a signal that changes what the account
+    /// believes comes back on the result and is not left in an operator's
+    /// NDJSON.
+    ///
+    /// **It is the standing set, not this command's delta**, and deliberately:
+    /// the hazard is not that one op unwound something, it is that the account
+    /// is in a state it does not mean, and a user who was not looking the
+    /// first time is entitled to be told again. Each id here is read-bounded
+    /// (`DeviceRow::read_bounded`) and not revoked, so it receives nothing and
+    /// looks like an ordinary member. The remedy is this family's usual one:
+    /// revoke it again from a device the account still trusts.
+    ///
+    /// Same disclosure rule as `unrotated_streams` and `revocation_gated`: a
+    /// caller must not print a bare "revoked" over a non-empty list.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub revocation_unwound: Vec<String>,
 }
 
 impl CommandResult {
@@ -428,6 +455,7 @@ impl CommandResult {
             soft_violations: Vec::new(),
             unrotated_streams: Vec::new(),
             revocation_gated: false,
+            revocation_unwound: Vec::new(),
         }
     }
 
@@ -442,6 +470,14 @@ impl CommandResult {
     #[must_use]
     pub const fn with_revocation_gated(mut self, v: bool) -> Self {
         self.revocation_gated = v;
+        self
+    }
+
+    /// Attach the devices the account no longer calls revoked but still gives
+    /// no keys.
+    #[must_use]
+    pub fn with_revocation_unwound(mut self, v: Vec<String>) -> Self {
+        self.revocation_unwound = v;
         self
     }
 

@@ -31,6 +31,14 @@ import Foundation
 /// "what you asked for did not happen", so the view says that instead of the
 /// removal report and not beside it.
 ///
+/// A fifth is the one nobody asks for and everybody needs:
+/// ``DeviceRow/readBounded`` and ``Revocation/unwound``. The revocation
+/// register is a fold, so applying one removal can discard another whose own
+/// author was removed first — and the device that drops off goes back to
+/// reading as an ordinary member while still receiving no keys. Both halves
+/// are rendered: the row says what the device's state actually is, and the
+/// disclosure says it changed and what to do about it.
+///
 /// Snapshots, refreshed off the change feed, because a view body cannot await
 /// an actor — the same shape every other model in this app uses.
 @MainActor
@@ -44,7 +52,26 @@ final class DeviceListModel {
         let deviceID: String
         let nickname: String
         let platform: String
+        /// The account **currently** records this device as removed.
+        ///
+        /// Derived and reversible: since ADR-0041 the register is a fold over
+        /// the revocation ledger, so this goes back to `false` when the ledger
+        /// shows a removal's own author had been removed first. Read it beside
+        /// ``readBounded``, which does not move back.
         let revoked: Bool
+        /// This device receives no keys and never will, whatever ``revoked``
+        /// says.
+        ///
+        /// `readBounded: true, revoked: false` is the unwind, and the reason
+        /// this field is on screen at all: the account stopped recording the
+        /// removal and calls the device current again, while it goes on
+        /// receiving nothing. Without the line the row is indistinguishable
+        /// from an ordinary member.
+        ///
+        /// A state, not an accusation, and it has a remedy: the ordinary cause
+        /// is retiring two devices months apart, and the fix is to remove it
+        /// again from a device the account still trusts.
+        let readBounded: Bool
         /// Certified under the identity **in force**.
         ///
         /// Not the negation of ``revoked``. Rendered as "not active on this
@@ -87,6 +114,15 @@ final class DeviceListModel {
         /// this revocation queues no relay intent of its own. Same disclosure
         /// rule as ``unrotatedStreams`` at the other end of the scale.
         let gated: Bool
+        /// Devices the account has stopped recording a removal of, hex ids.
+        ///
+        /// Not about the device the user just acted on. Applying any removal
+        /// re-folds the whole register, which can discard an older removal
+        /// whose own author the ledger removes — and those devices go back to
+        /// reading as ordinary members while still receiving nothing. The
+        /// standing set rather than this command's delta, so a user who missed
+        /// it last time is told again.
+        let unwound: [String]
 
         /// Read straight off what the command returned.
         ///
@@ -102,6 +138,7 @@ final class DeviceListModel {
             unrotatedStreams = outcome.unrotatedStreams
             self.relayPending = relayPending
             gated = outcome.revocationGated
+            unwound = outcome.revocationUnwound
         }
     }
 
@@ -135,6 +172,7 @@ final class DeviceListModel {
                     nickname: row.nickname,
                     platform: row.platform,
                     revoked: row.revoked,
+                    readBounded: row.readBounded,
                     current: row.current,
                     admittedAfterRevocation: row.admittedAfterRevocation,
                     isThisDevice: row.deviceId == me

@@ -2412,6 +2412,11 @@ impl From<&ContextRow> for ContextListRow {
 }
 
 /// One paired device.
+///
+/// See `sunrise_core::DeviceRow` for why `struct_excessive_bools` is allowed
+/// here: the four flags are orthogonal facts rather than positions of one
+/// state, and every pair is reachable in both combinations.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct DeviceListRow {
     /// Device id, lowercase hex.
@@ -2433,8 +2438,28 @@ pub struct DeviceListRow {
     pub nickname: String,
     /// Platform string.
     pub platform: String,
-    /// Revoked.
+    /// The account **currently** calls this device revoked.
+    ///
+    /// Derived and therefore reversible: `device_revocations` is a fold over
+    /// the revocation ledger (ADR-0041), so this goes back to `false` when the
+    /// ledger shows a revocation's own author had been revoked first. Pair it
+    /// with `readBounded`, which does not move back.
     pub revoked: bool,
+    /// This device is **read-bounded**: some revocation this vault believed
+    /// named it, so it receives no key this vault mints, ever.
+    ///
+    /// The durable half of revocation, and worth its own line on a device list
+    /// because it does not always agree with `revoked`.
+    /// `readBounded: true, revoked: false` is the unwind — the account stopped
+    /// believing the revocation and calls the device current again, while it
+    /// goes on receiving nothing. Word it as a state and give the remedy
+    /// ("removed earlier; the account no longer records that, but it still
+    /// receives nothing — remove it again from a device you still trust"), not
+    /// as an accusation: the ordinary cause is retiring two devices months
+    /// apart.
+    ///
+    /// `readBounded: false, revoked: true` cannot happen.
+    pub read_bounded: bool,
     /// Certified under the account identity **in force**, and so a member.
     ///
     /// Not the negation of `revoked`, and a UI that renders it as one is
@@ -2466,6 +2491,7 @@ impl From<&DeviceRow> for DeviceListRow {
             nickname,
             platform,
             revoked,
+            read_bounded,
             current,
             admitted_after_revocation,
         } = d;
@@ -2475,6 +2501,7 @@ impl From<&DeviceRow> for DeviceListRow {
             nickname: nickname.clone(),
             platform: platform.clone(),
             revoked: *revoked,
+            read_bounded: *read_bounded,
             current: *current,
             admitted_after_revocation: *admitted_after_revocation,
         }
@@ -2549,6 +2576,20 @@ pub struct CommandOutcome {
     /// the other end of the scale: that one says the removal was incomplete,
     /// this one says there was none. `false` for every other command.
     pub revocation_gated: bool,
+    /// Devices the account **no longer calls revoked**, while still giving
+    /// them no keys. Lowercase hex ids; empty for every other command.
+    ///
+    /// The register is a fold (ADR-0041), so applying a revocation can remove
+    /// an older one whose author turns out to have been revoked first. Those
+    /// devices go back to reading `revoked: false` on the device list while
+    /// `readBounded` stays true, so they receive nothing — a state the account
+    /// does not really mean and nobody asked for. A client must say so and
+    /// name the remedy: revoke each of them again from a device the account
+    /// still trusts. Same disclosure rule as `unrotatedStreams`.
+    ///
+    /// The standing set, not this command's delta: a user who missed it last
+    /// time is entitled to be told again.
+    pub revocation_unwound: Vec<String>,
 }
 
 impl From<&CommandResult> for CommandOutcome {
@@ -2561,6 +2602,7 @@ impl From<&CommandResult> for CommandOutcome {
             soft_violations,
             unrotated_streams,
             revocation_gated,
+            revocation_unwound,
         } = r;
         Self {
             entity: *entity,
@@ -2570,6 +2612,7 @@ impl From<&CommandResult> for CommandOutcome {
             soft_violations: soft_violations.iter().map(Constraint::from).collect(),
             unrotated_streams: unrotated_streams.clone(),
             revocation_gated: *revocation_gated,
+            revocation_unwound: revocation_unwound.clone(),
         }
     }
 }

@@ -492,6 +492,17 @@ pub struct IdentityStatus {
 }
 
 /// One row of [`Query::DeviceList`].
+///
+/// Four independent bools, and `struct_excessive_bools` is allowed rather than
+/// obeyed. The lint's remedy is a state machine or two-variant enums, which is
+/// the wrong shape here: these are not four positions of one state but four
+/// orthogonal facts, and every pair of them is reachable in both combinations.
+/// `revoked` and `read_bounded` disagreeing is the whole subject of migration
+/// 0028; `current` is false for an honest device that has not applied a
+/// rotation yet; `admitted_after_revocation` is a fact about when the row was
+/// first seen and is independent of all three. Collapsing any of them would
+/// erase a distinction a user is shown on purpose.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeviceRow {
     /// Device id.
@@ -500,8 +511,37 @@ pub struct DeviceRow {
     pub nickname: String,
     /// Platform string.
     pub platform: String,
-    /// Revoked.
+    /// Revoked: the account **currently** calls this device revoked.
+    ///
+    /// Derived, and therefore reversible. Since ADR-0041 `device_revocations`
+    /// is a fold over the `device_revoke` ledger, so a revocation stops being
+    /// believed once the ledger shows its author had itself been revoked, and
+    /// this field goes back to `false`. Pair it with [`Self::read_bounded`],
+    /// which does not.
     pub revoked: bool,
+    /// Whether this device is **read-bounded**: some revocation this vault
+    /// believed named it, so it receives no key this vault mints, ever.
+    ///
+    /// The durable half of revocation, and the one a user is entitled to see
+    /// because it does not always agree with [`Self::revoked`].
+    /// `read_bounded: true, revoked: false` is the unwind: the fold stopped
+    /// believing the revocation and the device is called current again, while
+    /// `device_read_bounds` keeps it out of every recipient set
+    /// (`0028_device_read_bounds.sql`). Without this field that device reads
+    /// as an ordinary member on the list while silently receiving nothing,
+    /// which is the one outcome of the fold a user could be surprised by.
+    ///
+    /// **Word it as a state, not as an accusation, and say the remedy.** The
+    /// ordinary cause is honest: retire an old laptop from the desktop, retire
+    /// the desktop months later, and the laptop's revocation is unwound
+    /// because its author was revoked. The fix is the one this family always
+    /// has — revoke it again from a device the account still trusts — and
+    /// until someone does, the device is in a state the account does not
+    /// really mean.
+    ///
+    /// `read_bounded: false, revoked: true` cannot happen: the fold takes the
+    /// bound over the register it is about to write.
+    pub read_bounded: bool,
     /// Whether this device is certified under the account identity **in
     /// force**, and therefore a member.
     ///

@@ -849,8 +849,31 @@ impl Engine {
                         )
                         .optional()?
                         .is_some();
+                    // Counted over `device_read_bounds` and not over the
+                    // register, because the predicate is "has this account
+                    // ever expelled anything?" and that is the question the
+                    // bound answers by construction. The register answers
+                    // "does it *currently* record one", which since ADR-0041
+                    // is a fold and shrinks.
+                    //
+                    // **Not a live defect, and worth saying so rather than
+                    // implying one.** The register cannot actually reach zero
+                    // while the ledger holds a landed row: a row is gated only
+                    // by a revoker the discount pass kept, and the device at
+                    // the end of any such chain has no surviving revoker of
+                    // its own, so its row lands. That was checked exhaustively
+                    // over every four-device ledger and the smallest
+                    // non-empty register was one. So the two counts agree
+                    // today.
+                    //
+                    // The change is which question is being asked, not a
+                    // repair. Reading a shrinking table to decide a
+                    // "has ever" predicate is a coincidence this file should
+                    // not depend on, and it is the same table swap the four
+                    // key-distribution sites needed for reasons that *are*
+                    // live. See `Engine::is_read_bounded`.
                     let revocations: i64 =
-                        tx.query_row("SELECT count(*) FROM device_revocations", [], |r| r.get(0))?;
+                        tx.query_row("SELECT count(*) FROM device_read_bounds", [], |r| r.get(0))?;
                     !known && revocations > 0
                 };
                 if readmission {

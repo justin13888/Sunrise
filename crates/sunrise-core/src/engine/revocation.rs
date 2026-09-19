@@ -9,9 +9,33 @@
 //! receive things in. That difference is the cohesion boundary, and ADR-0041
 //! (`docs/11-adr/0041-peer-side-revocation-is-a-fold.md`) is why it exists.
 //!
-//! The read half of revocation — `emit_key_envelopes`' anti-join and
-//! `backfill_key_envelopes`' early return — lives in [`super::oplog`] and reads
-//! [`Engine::is_revoked`] from here.
+//! # Two questions, two tables
+//!
+//! This module keeps them apart on purpose, and which one a caller wants
+//! decides which it reads.
+//!
+//! - **"Is this device currently called revoked?"** — `device_revocations`,
+//!   via [`Engine::is_revoked`]. Derived, so it is *not* monotone: the fold
+//!   rebuilds it from the ledger and a row can leave it when a revocation's
+//!   author turns out to have been revoked first. It has to converge on the op
+//!   set, because it is what the device list paints and what ADR-0034
+//!   corollary 3 requires two replicas holding the same ops to agree on. Three
+//!   sites ask it: the device list (`super::query`), a sender's authority to
+//!   claim a third-party `key_envelope` recipient row (`super::sync`), and
+//!   `CommandResult::revocation_gated` in [`Engine::revoke_device`] below.
+//! - **"Is this device read-bounded?"** — `device_read_bounds`, via
+//!   [`Engine::is_read_bounded`]. A ratchet: written only by the fold's
+//!   `INSERT OR IGNORE`, never deleted. It has to be monotone or it is not a
+//!   bound, and it is the sole gate on all four key-distribution sites —
+//!   `emit_key_envelopes`' anti-join and `backfill_key_envelopes`' early
+//!   return in [`super::oplog`], the survivor roster `rotate_identity` builds
+//!   in [`super::identity`], and the readmission signal the
+//!   `DeviceCertPublish` arm computes in [`super::sync`].
+//!
+//! They were one table until `migrations/0028_device_read_bounds.sql`, and
+//! while they were, an ordinary unwind released the read bound: the device
+//! re-entered every recipient set and one republished cert handed it every
+//! held epoch of every stream.
 
 use super::ids::{hex_bytes, hex_short};
 use super::{Engine, EngineError, META_STREAM};
@@ -100,13 +124,20 @@ impl Engine {
     ///
     /// It can: this device may itself have been revoked, and
     /// [`Self::refold_device_revocations`] judges the sender of every row
-    /// including the one written a line ago. The command still succeeds, still
-    /// rotates and still returns `Ok` — the op is emitted and stored before
-    /// the fold decides, so an error after a committed transaction would be a
-    /// lie — but it says so, on [`CommandResult::revocation_gated`], and it
-    /// does **not** queue the relay's half. Telling the relay to cut a device
-    /// every replica still shows as current is the disclosure failure #160
-    /// fixed in the other direction.
+    /// including the one written a line ago. The command still succeeds and
+    /// still returns `Ok` — the op is emitted and stored before the fold
+    /// decides, so an error after a committed transaction would be a lie — but
+    /// it says so, on [`CommandResult::revocation_gated`], and **nothing else
+    /// happens**: no relay intent is queued, no stream is rotated, and the
+    /// account identity is left alone.
+    ///
+    /// Telling the relay to cut a device every replica still shows as current
+    /// is the disclosure failure #160 fixed in the other direction. Rotating
+    /// is worse than pointless, because the device doing the minting is the
+    /// revoked one: it writes each fresh key into its own `stream_keys` and
+    /// seals it to every honest peer, which then seal their next writes under
+    /// an epoch it holds. The guard on the rotation loop below is where that
+    /// is stated in full.
     pub(super) fn revoke_device(
         &self,
         db: &mut Db,
@@ -141,6 +172,12 @@ impl Engine {
         // because it has to outlive the transaction and reach the caller: see
         // `CommandResult::unrotated_streams`.
         let mut unrotatable: Vec<Vec<u8>> = Vec::new();
+        // Devices the account no longer calls revoked while still giving them
+        // no keys. Hoisted for the same reason as `unrotatable`, and read at
+        // the end of the transaction because applying this op is one of the
+        // things that can produce one. See
+        // `CommandResult::revocation_unwound`.
+        let mut unwound: Vec<Vec<u8>> = Vec::new();
         // Whether the register believes this command. Hoisted for the same
         // reason as `unrotatable`: it is read inside the transaction and has
         // to reach the caller, on `CommandResult::revocation_gated`.
@@ -287,13 +324,78 @@ impl Engine {
             //        revoked device goes on reading, and returning success over
             //        it is the shape this whole path exists to refuse. It is
             //        carried out to the caller instead.
-            let set = self.keychain.rotation_set(tx)?;
-            unrotatable = set.unrotatable;
-            for stream_id in set.streams {
-                let (epoch, key) =
-                    self.keychain
-                        .mint_epoch(tx, &stream_id, self.rng.as_ref(), now_ms)?;
-                self.emit_key_envelopes(tx, &stream_id, epoch, &key, now_ms, Some(&seal_under))?;
+            //
+            // **Guarded on `effective`, and the party this protects is not the
+            // target.** When the fold discards this command's own op the
+            // account records no revocation, nothing is cut, and the target
+            // would be a recipient of the new epochs either way — so on the
+            // target alone the rotation is merely pointless. What makes it
+            // harmful is who is holding the pen. The only way `effective` is
+            // false is that *this* device has itself been revoked, and
+            // `mint_epoch` writes the fresh key straight into this device's
+            // own `stream_keys`, `emit_key_envelopes` seals it to every
+            // unbounded peer, `Keychain::absorb_stream_key` stores it with no
+            // check on the sender's standing, and `current_epoch_tx` is
+            // `MAX(epoch)`. An expelled device running
+            // `sunrise devices revoke <anything>` therefore minted a fresh
+            // epoch for **every stream in the account**, handed it to every
+            // honest peer, and read everything they wrote next — while being
+            // told, correctly, that it had revoked nothing.
+            //
+            // Skipping it costs no disclosure. No caller reads
+            // `unrotated_streams` on this path: the CLI returns before it
+            // prints the rotation report, and `DeviceListSection` replaces the
+            // whole report rather than appending to it. `unrotatable` stays
+            // empty, which is the truth — nothing was left unrotated because
+            // nothing was rotated.
+            //
+            // Where the target was *already* revoked by a surviving row,
+            // `effective` is true and this still runs. That case is a
+            // re-revocation of a device the account has cut, and rotating
+            // again is harmless and keeps the command's meaning uniform.
+            //
+            // This closes one route and not the mechanism:
+            // `Command::RotateStreamKey` reaches the same
+            // mint-and-distribute chain with no gate at all.
+            if effective {
+                let set = self.keychain.rotation_set(tx)?;
+                unrotatable = set.unrotatable;
+                for stream_id in set.streams {
+                    let (epoch, key) =
+                        self.keychain
+                            .mint_epoch(tx, &stream_id, self.rng.as_ref(), now_ms)?;
+                    self.emit_key_envelopes(
+                        tx,
+                        &stream_id,
+                        epoch,
+                        &key,
+                        now_ms,
+                        Some(&seal_under),
+                    )?;
+                }
+            }
+
+            // Read last, so it reflects the fold this transaction just ran.
+            //
+            // The set is the two revocation tables disagreeing: bounded, and
+            // not currently called revoked. `refold_device_revocations` warns
+            // `core.device.revocation_unwound` at the moment it produces one;
+            // this is the same fact read out of the tables it wrote, so there
+            // is one derivation and not two, and it survives the restart a log
+            // line does not. It is the standing set rather than this command's
+            // delta on purpose — see `CommandResult::revocation_unwound`.
+            {
+                let mut stmt = tx.prepare(
+                    "SELECT b.device_id FROM device_read_bounds b
+                     WHERE NOT EXISTS (
+                         SELECT 1 FROM device_revocations r
+                         WHERE r.device_id = b.device_id
+                     )
+                     ORDER BY b.device_id",
+                )?;
+                unwound = stmt
+                    .query_map([], |r| r.get(0))?
+                    .collect::<rusqlite::Result<Vec<Vec<u8>>>>()?;
             }
             Ok(())
         })
@@ -341,7 +443,26 @@ impl Engine {
         //    genuinely needs to move. A paired device cannot do it, and the
         //    warning says so rather than letting the user believe otherwise.
         //    `docs/03-crypto/key-rotation.md` §Revocation is the procedure.
-        if self.keychain.can_rotate_identity() {
+        //
+        //    # And skipped entirely when the fold discarded the op
+        //
+        //    On the same predicate and for the same reason as the stream
+        //    rotation above. `rotate_identity` mints a successor `ID_S_priv`
+        //    and seals an HPKE share of it to each survivor's `D_D_pub`; run
+        //    from a device the account has itself revoked, over a revocation
+        //    the account does not believe, it hands that device a fresh
+        //    account identity it then distributes. There is also nothing for
+        //    it to exclude — the target is not revoked — so the rotation would
+        //    move the whole account's identity to achieve nothing.
+        //
+        //    `core.identity.rotation_unavailable` is deliberately *not*
+        //    emitted here. It means "the revocation cut every future key but
+        //    could not move the identity", and on this path there was no
+        //    revocation to cut anything; the fact a caller needs is
+        //    `CommandResult::revocation_gated`, which says it exactly.
+        if !effective {
+            // Nothing to rotate away from, and nothing to say about it.
+        } else if self.keychain.can_rotate_identity() {
             let rotation = self.rotate_identity(db, Some(revoked), true)?;
             if !rotation.carried_recovery_code {
                 tracing::warn!(
@@ -379,9 +500,26 @@ impl Engine {
             );
         }
 
+        // The unwind disclosure. Same rule as `unrotated_streams` above and as
+        // `revocation_gated`: a fact that changes what the account believes
+        // reaches the caller rather than stopping at an operator's NDJSON
+        // (`docs/10-cross-cutting/log-events.md`).
+        //
+        // **No event is emitted here, and that is deliberate.**
+        // `core.device.revocation_unwound` already names this fact, once per
+        // device, at the moment `refold_device_revocations` produces it. A
+        // second emission under the same name with a different field shape
+        // would make the catalogue's one row describe two things, and a third
+        // event name for the same fact is what
+        // `docs/10-cross-cutting/logging.md` §3 asks nobody to add. What was
+        // missing was never a log line; it was that the fact reached only an
+        // operator's NDJSON.
+        let revocation_unwound: Vec<String> = unwound.iter().map(|b| hex_bytes(b)).collect();
+
         Ok(CommandResult::new(device_id, None, op_id, seq)
             .with_unrotated_streams(unrotated_streams)
-            .with_revocation_gated(!effective))
+            .with_revocation_gated(!effective)
+            .with_revocation_unwound(revocation_unwound))
     }
     /// Whether `device_id` is revoked: **is there a row**, and nothing else.
     ///
@@ -431,6 +569,51 @@ impl Engine {
         let found: Option<i64> = conn
             .query_row(
                 "SELECT 1 FROM device_revocations WHERE device_id = ?",
+                params![&device_id[..]],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(found.is_some())
+    }
+
+    /// Whether `device_id` is **read-bounded**: has any revocation this replica
+    /// ever believed named it?
+    ///
+    /// The other question, and the one the four key-distribution sites ask.
+    /// [`Self::is_revoked`] answers "is this device currently called revoked?",
+    /// which is derived, has to converge, and can therefore go from true back
+    /// to false when the fold learns a revocation's author was itself revoked.
+    /// This one answers "may this device be given a key?", and it only ever
+    /// goes from false to true: `device_read_bounds` is written by
+    /// [`Self::refold_device_revocations`]' `INSERT OR IGNORE` and by migration
+    /// 0028's seed, and by nothing else — no `DELETE`, no `UPDATE`.
+    ///
+    /// Keeping them apart is what makes the threat model's A3 sentence true.
+    /// While one table served both, a routine unwind — retire the old laptop
+    /// from the desktop, months later retire the desktop from the phone — put
+    /// the laptop back in `emit_key_envelopes`' recipient set for every epoch
+    /// minted from then on, and let one `DeviceCertPublish` from it pull every
+    /// held epoch of every stream back out of
+    /// [`Self::backfill_key_envelopes`].
+    ///
+    /// Presence and nothing else, for the reason [`Self::is_revoked`] gives at
+    /// length: the only reading comparable with another device's cut is this
+    /// device's own HLC, and a fresh [`crate::config::MonotonicHlc`] reads zero
+    /// after any restart. `first_bound_at_ms` is disclosure — it is what the
+    /// device list's read-bounded signal renders — and gates nothing.
+    ///
+    /// Like the register, this is the *local* half: a replica that has not yet
+    /// applied the `device_revoke` op has no row to read and will seal the
+    /// device a new epoch. That is propagation, and it converges upward,
+    /// because the only move this table makes is to bound one more device.
+    pub(super) fn is_read_bounded(
+        &self,
+        conn: &rusqlite::Connection,
+        device_id: &[u8; 16],
+    ) -> rusqlite::Result<bool> {
+        let found: Option<i64> = conn
+            .query_row(
+                "SELECT 1 FROM device_read_bounds WHERE device_id = ?",
                 params![&device_id[..]],
                 |r| r.get(0),
             )
@@ -740,9 +923,19 @@ impl Engine {
         // This is the map the discount below reads and the walk does not. The
         // walk reads what the discount leaves.
         //
-        // `s != v` here for the same reason the walk skips a self-naming row
-        // below: a device cannot revoke itself, so it cannot enter its own
-        // revoker set and gate everything it goes on to write.
+        // `s != v` here because a device cannot revoke itself, so it must not
+        // enter its own revoker set and gate everything it goes on to write.
+        //
+        // **Defensive against a future writer, not against rows that exist.**
+        // No self-naming row can reach `device_revoke_ops` at HEAD — see the
+        // walk below, which states both sources — so nothing reaches this
+        // `continue` today. It is kept because the ledger is append-only and
+        // permanent: a writer that admitted one would put the device it named
+        // beyond revoking anything, on every replica, for good.
+        //
+        // The walk below holds the same condition and it is **not** a
+        // duplicate: this one bounds the *gate*, that one bounds the
+        // *register*. See it for what each prevents.
         let mut revokers_all: std::collections::BTreeMap<Vec<u8>, BTreeSet<Vec<u8>>> =
             std::collections::BTreeMap::new();
         for row in &rows {
@@ -839,10 +1032,28 @@ impl Engine {
             std::collections::BTreeMap::new();
         let mut skipped = Vec::new();
         for row in rows {
-            // A device must not move its own cut. Held here as well as in the
-            // arm above because this function is the sole author of the
-            // register, and a rule enforced only on the way in would be absent
-            // for every row the ledger already holds.
+            // A device must not move its own cut, and this is where that is
+            // enforced for the **register**.
+            //
+            // Not a second copy of the check in the map pass above, though it
+            // reads like one: the two prevent different things about the same
+            // hypothetical row. That one keeps a self-naming row from seating
+            // its sender in its own revoker set, which would gate everything
+            // that device ever wrote. This one keeps it out of the register,
+            // and therefore out of `device_read_bounds` — a row that landed
+            // here would revoke a device on its own say-so and cut its keys
+            // permanently, since the bound is taken from `register` and never
+            // released. Deleting either leaves the other's failure open.
+            //
+            // Both are defensive against a future writer rather than against
+            // rows that exist, and neither is reachable at HEAD: the live path
+            // refuses a self-naming op before the insert
+            // (`apply_device_revoke` returns early), and 0027's seed reads
+            // `device_revocations`, which the pre-ADR-0041 arm also refused to
+            // write for one. The ledger is append-only and permanent, so the
+            // cost of a writer that admitted one is not recoverable — which is
+            // why the checks are kept and said to be unreachable rather than
+            // quietly relied on.
             if row.sender == row.revoked {
                 continue;
             }
@@ -902,6 +1113,51 @@ impl Engine {
                          had itself been revoked first"
                     );
                 }
+            }
+        }
+        // **The read bound is taken here, and it is never given back.**
+        //
+        // Everything above is the register, which is derived and therefore not
+        // monotone: the `DELETE` below rebuilds it, and a row can be absent
+        // from the rebuild. That is correct for the question the register
+        // answers — "is this device currently called revoked?" — which has to
+        // converge on the op set and not on delivery order.
+        //
+        // It is not correct for the other question `device_revocations` used to
+        // be asked, which is whether a device is **read-bounded**. That one
+        // gates all four key-distribution sites (`emit_key_envelopes`'
+        // anti-join, `backfill_key_envelopes`' early return, the survivor
+        // roster `rotate_identity` builds, and the readmission signal in the
+        // `DeviceCertPublish` arm), and a bound that a later op can release is
+        // not a bound: an unwound device became a full recipient again for
+        // every epoch the vault minted afterwards, and one `DeviceCertPublish`
+        // from it drove `backfill_key_envelopes` to hand back every held epoch
+        // of every stream.
+        //
+        // So the bound is its own table and this is its only writer:
+        // `INSERT OR IGNORE` over the register this fold just computed, run
+        // **before** the `DELETE`, so no row can pass through a window where it
+        // is in neither. Nothing in this tree deletes from it or updates it —
+        // `migrations/0028_device_read_bounds.sql` is why it is a ratchet
+        // rather than a second fold, and why making the register itself the
+        // ratchet was rejected.
+        //
+        // The cost, stated rather than deduced: two replicas that saw the same
+        // ops in different orders can hold different bounds. It is a floor and
+        // not a disagreement — a replica can only bound more, never less — so
+        // no replica seals a key the strictest one would have withheld, and the
+        // set converges upward as the ops propagate. A device the discount pass
+        // rehabilitates therefore reads `current` in the device list while
+        // receiving no keys; that asymmetry is real, and
+        // `DeviceRow::read_bounded` is what puts it on screen instead of
+        // leaving a user to infer it.
+        {
+            let mut bound = tx.prepare(
+                "INSERT OR IGNORE INTO device_read_bounds (device_id, first_bound_at_ms)
+                 VALUES (?1, ?2)",
+            )?;
+            for (device_id, row) in &register {
+                bound.execute(params![device_id, row.recorded_at_ms])?;
             }
         }
         tx.execute("DELETE FROM device_revocations", [])?;

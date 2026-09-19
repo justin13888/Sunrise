@@ -1,0 +1,93 @@
+-- 0028: the read bound is its own table, because it must be monotone and the
+-- register is not.
+--
+-- Why one table could not answer both questions
+-- ---------------------------------------------
+--
+-- `device_revocations` (0017) was asked two things at once, and 0027 made them
+-- incompatible.
+--
+-- The first is **"is this device currently called revoked?"** — what the device
+-- list paints, and what ADR-0034 corollary 3 requires every replica holding the
+-- same ops to agree on. 0027 answers it by deriving the register from the
+-- ledger, and a derived register is not monotone: `refold_device_revocations`
+-- deletes the whole table and rebuilds it, the discount pass can un-gate a row
+-- as well as gate one, and a revocation this replica believed for months stops
+-- being believed the moment it learns its author had itself been revoked. That
+-- is ADR-0041 §Decision 1, it is deliberate, and `core.device.revocation_unwound`
+-- says so out loud.
+--
+-- The second is **"is this device read-bounded?"** — the sole gate on all four
+-- key-distribution sites: `emit_key_envelopes`' anti-join, the early return in
+-- `backfill_key_envelopes`, the survivor roster `rotate_identity` builds, and
+-- the readmission signal `DeviceCertPublish` computes. A bound that can be
+-- released is not a bound. Reading the derived register there meant that an
+-- unwound device became a full key recipient again, for every epoch the vault
+-- mints from then on — and one `DeviceCertPublish` from it drove
+-- `backfill_key_envelopes` to hand back every held epoch of every stream. The
+-- threat model's A3 says the revoked device "stops being able to *read* what is
+-- written afterwards. **That much is enforced**"; with one table it was not.
+--
+-- No adversary is needed to reach it — 0027's own worked seed is the example.
+-- A register `{C revoked by A, A revoked by B}` folds to a gated `A -> C`, so C
+-- drops off. Retiring an old laptop from the desktop and, months later, the
+-- desktop from the phone produces exactly that.
+--
+-- What this table is
+-- ------------------
+--
+-- A **ratchet**: a device enters it the first time any replica-believed
+-- revocation names it, and nothing in the tree ever takes it out again. There
+-- is no `DELETE FROM device_read_bounds` and no `UPDATE`; the only writer is
+-- the `INSERT OR IGNORE` `refold_device_revocations` runs over the register it
+-- is about to rebuild, immediately before its `DELETE`. So the fold stays a
+-- pure function of the op set for the question that has to converge, and the
+-- bound stays one-directional for the question that has to hold.
+--
+-- Order dependence is the price and it is bounded to one direction. Two
+-- replicas that have seen the same ops in different orders can hold different
+-- `device_read_bounds` — one that believed a revocation before learning it was
+-- unwound has the row, one that met them the other way round does not. That is
+-- why the *register* could not be made the ratchet instead (ADR-0041's own
+-- revisit trigger 4 says a ratchet and a fold cannot both be true of one
+-- table): a ratcheted register makes two replicas paint **different device
+-- lists**, which is the user-visible divergence ADR-0034 corollary 3 forbids.
+-- Here the divergence is confined to key distribution and is a floor rather
+-- than a disagreement: a replica can only bound more, never less, so no replica
+-- ever seals a key the strictest one would have withheld from a device it has
+-- itself bounded. The set converges upward as the ops propagate.
+--
+-- `first_bound_at_ms` is **when this replica first wrote the bound**, carried
+-- over from `device_revocations.recorded_at_ms` at the seed and from the
+-- register row's own `recorded_at_ms` afterwards. It is a local wall-clock
+-- reading and it gates nothing: the bound is the *presence of the row*, for the
+-- same reason `Engine::is_revoked` is presence and nothing else — the only
+-- reading comparable with another device's cut is this device's own HLC, which
+-- a fresh `MonotonicHlc` reads as zero after any restart. What the column is
+-- for is disclosure: it is the value the device list's read-bounded signal
+-- renders, so a device the discount pass rehabilitated can be shown as "still
+-- receives no keys, since <when>" rather than as an unexplained asymmetry.
+--
+-- The seed
+-- --------
+--
+-- Straight out of `device_revocations`, which at this moment is the whole of
+-- what this vault has ever believed about who is bounded. It is exact for a
+-- vault upgrading from 27 or below, because nothing before this migration could
+-- delete a register row: pre-0027 the register was a running upsert with no
+-- inverse, and a vault stamped 27 has not yet run a fold that could have
+-- removed one — 0027 only creates and seeds the ledger.
+--
+-- A bare `INSERT` and not `INSERT OR IGNORE`: `device_revocations` is keyed on
+-- `device_id`, so the rows it holds are distinct by construction and there is
+-- nothing for a no-op to swallow. `docs/04-storage/migrations.md` §"Who
+-- provides the no-op" is why one is not written anyway — a migration that runs
+-- once states what it means and fails loudly if the vault disagrees.
+CREATE TABLE device_read_bounds (
+    device_id          BLOB PRIMARY KEY,
+    first_bound_at_ms  INTEGER NOT NULL
+);
+
+INSERT INTO device_read_bounds (device_id, first_bound_at_ms)
+SELECT device_id, recorded_at_ms
+FROM device_revocations;

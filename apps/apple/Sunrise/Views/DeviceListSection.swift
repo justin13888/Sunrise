@@ -108,6 +108,23 @@ struct DeviceListSection: View {
         var out: [String] = []
         if row.isThisDevice { out.append("This \(Platform.deviceName).") }
         if row.revoked { out.append("Removed. It reads nothing written since.") }
+        if !row.revoked, row.readBounded {
+            // The two removal facts have come apart. Since ADR-0041 the
+            // register is a fold, so a removal stops being recorded once the
+            // ledger shows its own author was removed first, while the key
+            // bound never comes back. Without this line the row looks like any
+            // other member while receiving nothing at all — the one outcome of
+            // that design a user could be surprised by. Worded as a state with
+            // its remedy, for the same reason the two marks below are.
+            out.append(
+                """
+                Removed earlier. The account no longer records that, so it \
+                shows as current — but it still receives no keys and reads \
+                nothing written since. Remove it again from a device you \
+                still trust.
+                """
+            )
+        }
         if !row.current {
             out.append(
                 """
@@ -175,6 +192,7 @@ struct DeviceListSection: View {
                     whenever another removal arrives.
                     """
                 )
+                unwoundNotice(done)
                 Button("Done") { model.dismissRevocation() }
             }
             .font(.caption)
@@ -205,10 +223,38 @@ struct DeviceListSection: View {
                         """
                         : "The relay has been told."
                 )
+                unwoundNotice(done)
                 Button("Done") { model.dismissRevocation() }
             }
             .font(.caption)
             .accessibilityIdentifier("devices.revocationResult")
+        }
+    }
+
+    /// What this removal did to the account's record of **other** removals.
+    ///
+    /// Shown on both branches, because it is not about the device the user
+    /// acted on. Applying any removal re-folds the whole register, and that can
+    /// discard an older removal whose own author the ledger removes — the
+    /// device then goes back to reading as an ordinary member on the list above
+    /// while still receiving nothing. Silent when the set is empty, which is
+    /// almost always.
+    @ViewBuilder
+    private func unwoundNotice(_ done: DeviceListModel.Revocation) -> some View {
+        if !done.unwound.isEmpty {
+            Text(
+                """
+                The account no longer records a removal of \
+                \(done.unwound.count) other device(s), because the device \
+                that removed them was itself removed. They are not back in — \
+                they receive no keys and read nothing written since — but the \
+                account does not say they were removed. Remove each of them \
+                again from a device you still trust.
+                """
+            )
+            ForEach(done.unwound, id: \.self) { id in
+                Text(id).monospaced()
+            }
         }
     }
 }

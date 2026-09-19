@@ -218,4 +218,14 @@ pub const CRYPTO_SUITE_V: u16 = 5;
 /// which of the two ops it saw first, and what lets a skipped op be folded again
 /// when somebody revokes that sender's revoker and the gate stops reading the
 /// sender as revoked. A cut correction is not that: the gate reads no cut.
-pub const STORAGE_V: u16 = 27;
+///
+/// `28` is migration `0028_device_read_bounds.sql`, which separates the read
+/// bound from the register 27 made derived. The register answers "is this
+/// device currently called revoked?", which has to converge and therefore has
+/// to be a fold that can take a row back out; the four key-distribution sites
+/// ask "is this device read-bounded?", which has to be monotone or it is not a
+/// bound. One table could not be both, so the second question gets its own
+/// ratchet — written only by `INSERT OR IGNORE`, never deleted — and an
+/// unwound revocation stops handing the device back every epoch the vault
+/// mints (ADR-0041 §Decision 1 records the unwind; this is its read half).
+pub const STORAGE_V: u16 = 28;

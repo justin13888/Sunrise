@@ -251,6 +251,40 @@ fn hex16(bytes: &[u8; 16]) -> String {
     out
 }
 
+/// Report the devices the account has stopped calling revoked while still
+/// giving them no keys.
+///
+/// Printed on **both** branches of `devices revoke` — the gated one and the
+/// ordinary one — because it is not about the revocation the user just asked
+/// for. `device_revocations` is a fold (ADR-0041), so applying any revocation
+/// can discard an older one whose own author the ledger revokes, and the
+/// devices that drops go back to reading as ordinary members on `sunrise
+/// devices`. `core.device.revocation_unwound` says so in NDJSON; this is the
+/// same fact where the person who ran the command can see it.
+///
+/// Silent when the set is empty, which is the overwhelmingly common case.
+fn print_revocation_unwound(unwound: &[String]) {
+    // Same reason as `run` below: a CLI's whole job is writing to stdout, and
+    // the workspace-wide ban exists to keep it out of *library* code.
+    #![allow(clippy::print_stdout)]
+    if unwound.is_empty() {
+        return;
+    }
+    println!(
+        "  - NOTE: the account no longer records a removal of {} other device(s), because \
+         the device that removed them was itself removed:",
+        unwound.len()
+    );
+    for id in unwound {
+        println!("      {id}  (shows as current; still receives no keys)");
+    }
+    println!(
+        "    They are not back in: they receive no keys and cannot read anything written \
+         since. But the account does not say they were removed. Remove each of them again \
+         from a device you still trust."
+    );
+}
+
 /// The value after `--name`, if the flag is present with one.
 fn flag_value(args: &[String], name: &str) -> Option<String> {
     let i = args.iter().position(|a| a == name)?;
@@ -602,6 +636,18 @@ async fn dispatch(
                 }
                 if d.revoked {
                     marks.push("revoked");
+                } else if d.read_bounded {
+                    // The two revocation facts have come apart, which since
+                    // ADR-0041 is ordinary rather than exotic: the register is
+                    // a fold, so a revocation stops being believed once the
+                    // ledger shows its own author was revoked first, while
+                    // `device_read_bounds` never gives the key bound back.
+                    // Printing only `revoked` hid this device entirely — it
+                    // read as a plain member while receiving nothing. The
+                    // remedy is named because there is one.
+                    marks.push(
+                        "removed earlier; the account no longer records that, but it still                          receives no keys -- remove it again from a device you trust",
+                    );
                 }
                 if !d.current {
                     // Deliberately not "compromised" or "impostor". An honest
@@ -712,6 +758,8 @@ async fn dispatch(
                     "  - the op is kept, not dropped: revoke from a device the account \
                      still trusts, or see `sunrise devices` for which those are"
                 );
+                println!("  - no Stream key was rotated and the account identity is untouched");
+                print_revocation_unwound(&outcome.revocation_unwound);
                 return Ok(());
             }
             println!("Revoked {} locally.", hex16(&target));
@@ -732,6 +780,7 @@ async fn dispatch(
                 );
             }
             println!("  - that device cannot certify itself back in under a new id");
+            print_revocation_unwound(&outcome.revocation_unwound);
             let pending = core.relay_revocation_pending(&target)?;
             if pending {
                 println!(

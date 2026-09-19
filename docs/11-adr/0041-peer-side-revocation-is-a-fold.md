@@ -14,9 +14,11 @@ narrower place.
 closed, and whose state is asserted from the tree in §Context rather than taken
 from the issue.
 
-**Storage:** `STORAGE_V` 26 → 27, migration
-`0027_device_revoke_ops.sql`. No new op, no wire change, no primitive change:
-`DOC_SCHEMA_V`, `CRYPTO_SUITE_V` and `ENVELOPE_FORMAT_V` stay where they are.
+**Storage:** `STORAGE_V` 26 → 28, migrations `0027_device_revoke_ops.sql` (the
+ledger the register folds from) and `0028_device_read_bounds.sql` (the monotone
+read bound the register can no longer be). No new op, no wire change, no
+primitive change: `DOC_SCHEMA_V`, `CRYPTO_SUITE_V` and `ENVELOPE_FORMAT_V` stay
+where they are.
 
 ## Context
 
@@ -238,6 +240,18 @@ less. Two replicas disagreeing about one row cannot withhold a key from anybody.
   `devices.identity_id == head`, tested at every point of use, and a revoked
   device gains nothing by republishing its own cert because it is a recipient of
   nothing. Gating here would re-merge the two questions the code keeps apart.
+
+  **"A recipient of nothing" holds because of `device_read_bounds`, and did not
+  hold without it.** §"What a user sees" item 2 says the register routinely
+  stops calling a device revoked — so while the recipient gate read the
+  register, an unwound device *was* a recipient again, and this bullet's
+  justification failed in exactly the case the fold is designed to produce. The
+  contradiction was real and it is repaired in the code rather than talked
+  away: migration 0028 gives the read bound its own monotone table, so
+  `emit_key_envelopes` and `backfill_key_envelopes` no longer read anything the
+  fold can take a row out of. The republish restores `d_d_pub` and restores
+  nothing else. Both sentences are now true at once, and this is the one that
+  had to move.
 - **`Command::RevokeDevice` locally.** No "this device is revoked, refuse the
   command" guard. The one revocation a revoked device must still be able to make
   is of the device that revoked it — that is the fold's exception, and it is the
@@ -249,7 +263,7 @@ less. Two replicas disagreeing about one row cannot withhold a key from anybody.
 
 Nothing they typed is ever refused, and that is the point of the scope. What can
 be refused is an administrative act by a device the account has expelled, and
-there are four visible consequences:
+there are five visible consequences:
 
 1. **The attack produces no effect.** The device list is unchanged: the device
    the expelled one tried to revoke stays current. There is a `warn` line,
@@ -264,6 +278,12 @@ there are four visible consequences:
    back is the one outcome of this design a user could be surprised by. **The
    remedy is to revoke that device again, from a device the account still
    trusts.**
+
+   It does not stop at NDJSON. `CommandResult::revocation_unwound` carries the
+   ids to the caller on the next revocation, the CLI prints them under
+   `sunrise devices revoke`, and the Apple device list states the row's own
+   condition. That is the same rule `log-events.md` already stated for
+   `revoke_incomplete`, applied to a strictly larger consequence.
 3. **A cut correction does not recover a skipped revocation.** #82 offers two
    honest options — re-request the op, or accept the loss and say so where a
    user can see it — and this takes the second, because the first is not even
@@ -363,6 +383,28 @@ there are four visible consequences:
    bypass with the arrow reversed. §Alternatives (f) and (h) price both.
    `a_mutual_pair_locks_both_devices_out_of_third_party_revocation` pins the
    behaviour so that it stays deliberate.
+
+5. **An unwound device shows as current and still receives nothing.** The keys
+   are *not* given back, and that is the one place this design deliberately
+   stops being a pure function of the op set. `device_revocations` answers "is
+   this device currently called revoked?" and has to converge, so it is derived
+   and reversible; all four key-distribution sites read `device_read_bounds`
+   instead, which is written by `INSERT OR IGNORE` and never deleted from
+   (migration 0028). Without the split an unwind released the read bound —
+   the device re-entered `emit_key_envelopes`' recipient set for every
+   subsequent epoch, and one `DeviceCertPublish` from it drove
+   `backfill_key_envelopes` to hand back every held epoch of every stream.
+
+   The price is order dependence on the bound, in one direction: a replica that
+   believed a revocation before learning it was unwound holds the row and one
+   that met them the other way round does not. It is a floor rather than a
+   disagreement — a replica can only bound more, never less — so no replica
+   seals a key the strictest one would have withheld, and the set converges
+   upward. The *register* could not be made the ratchet instead for the reason
+   §"What would force revisiting this" trigger 4 gives: a ratcheted register
+   makes two replicas paint different device lists, which is the user-visible
+   divergence ADR-0034 corollary 3 forbids. `DeviceRow::read_bounded` is what
+   keeps the resulting asymmetry from being invisible.
 
 ## Alternatives considered
 
@@ -509,6 +551,26 @@ discount has to guess at. Taken.
   `INSERT` per surviving row, inside the transaction that is already open. The
   ledger is bounded by the number of revocation ops an account ever makes, which
   is a handful, and both are in the same order of magnitude as the device list.
+- **The read bound is a second table and is never rewritten**, only added to
+  (`0028_device_read_bounds.sql`). One `INSERT OR IGNORE` per surviving row runs
+  immediately before the `DELETE` above, so no row passes through a window where
+  it is in neither. `Engine::is_read_bounded` is the read, and the four
+  key-distribution sites are its only callers; `Engine::is_revoked` keeps the
+  three that ask the convergent question — the device list, a sender's
+  authority to claim a third-party `key_envelope` recipient row, and
+  `CommandResult::revocation_gated`. Which of the two a new call site wants is
+  the first question to ask of it, and `engine/revocation.rs`'s module doc is
+  where the two are stated side by side.
+- **A gated revocation now does nothing at all.** It was the op being discarded
+  and everything else proceeding: the relay intent was already guarded, but
+  every stream still rotated and the account identity still rotated with it —
+  and the device doing the minting is, necessarily, the revoked one. It wrote
+  each fresh key into its own `stream_keys` and sealed it to every honest peer,
+  whose next writes were then readable by it. `Command::RevokeDevice` guards the
+  rotation on the same `effective` predicate as the relay intent. This closes
+  one route and not the mechanism: `Command::RotateStreamKey` reaches the same
+  mint-and-distribute chain with no gate of any kind, and
+  `Keychain::absorb_stream_key` checks no sender standing.
 - **An upgraded vault folds *from* what it already held, and not necessarily
   back to it.** 0027 seeds the ledger from the register, and what the seed
   preserves is the fold's **input**, not its output. It folds back to the same

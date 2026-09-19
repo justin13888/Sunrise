@@ -71,11 +71,30 @@ async fn a_command_lowers_into_the_core_and_the_result_comes_back() {
     assert!(out.entity.to_str().starts_with("tsk_"));
     assert_eq!(out.op_id.len(), 32, "op id is 16 bytes of hex");
     assert!(out.soft_violations.is_empty());
-    // Both "it must not vanish" fields cross the seam, and both are empty for
-    // a command that neither schedules nor revokes. Asserted here because the
-    // seam is where a field added to `CommandResult` and forgotten in
-    // `CommandOutcome` would otherwise be lost in silence.
+    // Every "it must not vanish" field crosses the seam, and every one of them
+    // is empty or false for a command that neither schedules nor revokes.
+    // Asserted here because the seam is where a field added to `CommandResult`
+    // and forgotten in `CommandOutcome` would otherwise be lost in silence —
+    // `impl From<&CommandResult> for CommandOutcome` destructures exhaustively,
+    // so a *missing* field fails the build, but a field mapped to a constant or
+    // dropped on the Swift side would not, and neither would one nobody ever
+    // read back out here.
+    //
+    // All three are disclosure fields of the same family: `unrotated_streams`
+    // says the revocation was incomplete, `revocation_gated` says there was
+    // none, and `revocation_unwound` says an older one stopped being recorded.
+    // A client that printed a bare "removed" over any of them would be making a
+    // claim the account does not support.
     assert!(out.unrotated_streams.is_empty());
+    assert!(
+        !out.revocation_gated,
+        "a CreateTask cannot be gated, and the flag must cross the seam as false \
+         rather than not cross it"
+    );
+    assert!(
+        out.revocation_unwound.is_empty(),
+        "nothing has been revoked in this vault, so nothing can have been unwound"
+    );
 
     let CoreQueryResult::Tasks { tasks } = core.query(CoreQuery::Inbox).await.expect("inbox")
     else {

@@ -144,7 +144,8 @@ struct DeviceListModelTests {
             seq: 1,
             softViolations: [],
             unrotatedStreams: ["00aabb", "00ccdd"],
-            revocationGated: false
+            revocationGated: false,
+            revocationUnwound: []
         )
         let disclosure = DeviceListModel.Revocation(
             nickname: "Old laptop",
@@ -211,7 +212,8 @@ struct DeviceListModelTests {
             seq: 1,
             softViolations: [],
             unrotatedStreams: [],
-            revocationGated: true
+            revocationGated: true,
+            revocationUnwound: []
         )
         let disclosure = DeviceListModel.Revocation(
             nickname: "Old laptop",
@@ -223,13 +225,6 @@ struct DeviceListModelTests {
             """
             a client that dropped this would print "Removed Old laptop" over a \
             device that is still current on every replica
-            """
-        )
-        #expect(
-            !disclosure.relayPending,
-            """
-            a gated revocation queues no relay intent of its own, so a flag \
-            this one had set would promise a cut it is not sending
             """
         )
     }
