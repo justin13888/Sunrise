@@ -70,6 +70,58 @@ final class AccountModel {
     /// The bearer to present to the relay, or `nil` when signed out.
     private(set) var accessToken: String?
 
+    /// What the last sign-out could **not** do, until the user dismisses it.
+    ///
+    /// Non-`nil` means the local session ended and the stored credential did
+    /// not: the token is still in the Keychain, and the next launch's
+    /// ``restore()`` reads it back. Carried to the caller rather than logged,
+    /// because a log line is not a disclosure — the rule
+    /// `core.device.revoke_incomplete` states in
+    /// `docs/10-cross-cutting/log-events.md`, and the one
+    /// ``DeviceListModel/lastRevocation`` already follows in this app.
+    private(set) var signOutIncomplete: String?
+
+    /// Whether the Keychain has refused a sign-out in this process.
+    ///
+    /// Separate from ``signOutIncomplete`` because
+    /// ``dismissSignOutIncomplete()`` consumes that one, and acknowledging a
+    /// message must not retire the only control that can act on it: the
+    /// caption tells the user to unlock the Keychain and sign out again, and
+    /// under `.signedOut` the Account screen has no other control that reaches
+    /// ``signOut()``. Session scoped, like the message — it says what happened
+    /// in this process, and the credential it refers to is still stored until
+    /// a `clear()` or a `save()` replaces it.
+    private(set) var signOutRefusedThisSession = false
+
+    /// Whether the Account screen renders the disclosure.
+    ///
+    /// The pairing rule lives here rather than at the render site so that a
+    /// change to the state machine fails a test instead of only a screenshot.
+    /// The row's text asserts the user is signed out, while ``restore()`` and
+    /// ``publish()`` can pair a non-`nil` ``signOutIncomplete`` with
+    /// `.signedIn` — the one combination it must not be rendered under.
+    var shouldDiscloseSignOutIncomplete: Bool {
+        signOutIncomplete != nil && stateTheDisclosureIsTrueIn
+    }
+
+    /// Whether the Account screen still offers a way to re-run the removal.
+    ///
+    /// Outlives ``dismissSignOutIncomplete()``: dismissing says the message
+    /// has been read, and the credential it was about is still stored.
+    var shouldOfferSignOutRetry: Bool {
+        signOutRefusedThisSession && stateTheDisclosureIsTrueIn
+    }
+
+    /// The states the disclosure's own text is true in. `.awaitingBrowser` is
+    /// transient with the browser in front, and under `.signedIn` the text
+    /// would predict a re-admission that has already happened.
+    private var stateTheDisclosureIsTrueIn: Bool {
+        switch state {
+        case .signedOut, .failed: true
+        case .signedIn, .awaitingBrowser: false
+        }
+    }
+
     private let store: any CredentialStore
     private let makeDriver: @Sendable (String, String) -> any LoginDriver
     private let openURL: @Sendable (URL) -> Void
@@ -122,6 +174,14 @@ final class AccountModel {
                 nowMs: nowMs
             )
             try store.save(fresh)
+            // A warning about the previous sign-out must not sit under a new
+            // session — and this is the line that ends it: `save` has just
+            // overwritten the credential the warning is about. Clearing on
+            // entry instead would also fire on the `guard` above and the
+            // `catch` below, neither of which establishes a session; there the
+            // old credential is still stored and the warning is still true.
+            signOutIncomplete = nil
+            signOutRefusedThisSession = false
             credentials = fresh
             publish()
         } catch {
@@ -157,18 +217,52 @@ final class AccountModel {
             // again. Dropping it here would sign the user out early, every
             // time the network blinked.
             if current.hasExpired(nowMs: nowMs) {
-                state = .failed(error.localizedDescription)
+                // `signOut()` assigns `.signedOut` last, so the renewal error
+                // has to be written after it or it is never shown. It used to
+                // be written first, which made this assignment dead.
                 signOut()
+                state = .failed(error.localizedDescription)
             }
         }
     }
 
-    /// Forget the token, here and in the Keychain.
+    /// Forget the token, here and in the Keychain — and say so when the
+    /// Keychain will not let go of it.
+    ///
+    /// The local half is unconditional, deliberately. Refusing to drop the
+    /// in-memory bearer because the Keychain was locked would leave the user
+    /// holding a live session with no way out of it, which is worse than the
+    /// state this method exists to reach.
+    ///
+    /// The Keychain half can genuinely refuse. ``KeychainItem/delete()`` maps
+    /// `errSecItemNotFound` to success and throws for every other status, so
+    /// "nothing was there" never arrives here and a locked keychain
+    /// (`errSecInteractionNotAllowed`) or a dismissed prompt
+    /// (`errSecUserCanceled`) does. `try?` used to absorb it and present
+    /// `.signedOut` anyway: the refresh token survived, ``restore()`` read it
+    /// back on the next launch, and the user was signed in again on a session
+    /// they had deliberately ended — silently, and repeatably for as long as
+    /// the refusal held.
     func signOut() {
-        try? store.clear()
+        do {
+            try store.clear()
+            signOutIncomplete = nil
+            signOutRefusedThisSession = false
+        } catch {
+            signOutIncomplete = error.localizedDescription
+            signOutRefusedThisSession = true
+        }
         credentials = nil
         accessToken = nil
         state = .signedOut
+    }
+
+    /// Acknowledge ``signOutIncomplete``. The token it describes is still
+    /// stored; dismissing says the user has read that, not that it is gone —
+    /// which is why it leaves ``signOutRefusedThisSession`` standing, and with
+    /// it the control that re-runs the removal.
+    func dismissSignOutIncomplete() {
+        signOutIncomplete = nil
     }
 
     private func publish() {
