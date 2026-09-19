@@ -393,6 +393,8 @@ struct AccountView: View {
         // disclose.
         if account.shouldDiscloseSignOutIncomplete, let message = account.signOutIncomplete {
             SignOutIncompleteRow(message: message, account: account)
+        } else if account.shouldOfferSignOutRetry {
+            SignOutRetryRow(account: account)
         }
     }
 
@@ -439,5 +441,31 @@ private struct SignOutIncompleteRow: View {
             }
         }
         .accessibilityIdentifier("account.signOutIncomplete")
+    }
+}
+
+/// The retry an acknowledged disclosure leaves behind.
+///
+/// ``AccountModel/dismissSignOutIncomplete()`` clears the message, not the
+/// fact: the credential is still in the Keychain, and the caption the user
+/// just dismissed told them to unlock it and sign out again. Without this row
+/// the dismissal would destroy the only control that re-runs `store.clear()`,
+/// because ``AccountView/accountRow`` renders its other **Sign out** in the
+/// `.signedIn` arm alone — so acknowledging the warning would retire the
+/// affordance the warning tells the user to use.
+private struct SignOutRetryRow: View {
+    let account: AccountModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(
+                "A credential the last sign-out could not remove is still in the "
+                    + "Keychain. Unlock your Keychain, then Sign out here to try again."
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            Button("Sign out") { account.signOut() }
+        }
+        .accessibilityIdentifier("account.signOutRetry")
     }
 }

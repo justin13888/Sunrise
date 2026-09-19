@@ -431,9 +431,41 @@ struct AccountModelTests {
             !account.shouldDiscloseSignOutIncomplete,
             "NOT shown: the row's own text would now be false"
         )
+        #expect(!account.shouldOfferSignOutRetry, "nor does a retry belong under a live session")
 
         account.dismissSignOutIncomplete()
         #expect(account.signOutIncomplete == nil, "nothing to disclose once acknowledged")
+    }
+
+    /// Refused, acknowledged, unlocked, retried — the sequence the row's own
+    /// **Sign out** exists for. Dismiss must not take the retry with it, since
+    /// under `.signedOut` no other control reaches `signOut()`; and nothing
+    /// else in the suite reaches the line in the do-branch that ends the
+    /// disclosure once the credential is genuinely gone.
+    @Test
+    func dismissingKeepsTheRetryAndTheRetryRemovesTheCredential() {
+        let store = StubCredentialStore(
+            value: credentials(accessToken: "access-old"),
+            clearFailure: KeychainError.unexpected(errSecInteractionNotAllowed)
+        )
+        let account = model(store: store)
+        account.signOut()
+        #expect(account.shouldDiscloseSignOutIncomplete)
+
+        account.dismissSignOutIncomplete()
+        #expect(!account.shouldDiscloseSignOutIncomplete, "the message is acknowledged")
+        #expect(account.shouldOfferSignOutRetry, "the way to act on it is not")
+
+        account.signOut()
+        #expect(account.shouldDiscloseSignOutIncomplete, "still locked: the retry re-discloses")
+
+        store.stopRefusingClears()
+        account.signOut()
+
+        #expect(account.signOutIncomplete == nil, "the credential is gone, so the warning is not")
+        #expect(store.stored == nil, "gone from the Keychain, not just from the screen")
+        #expect(store.clearCount == 3, "refused, retried under the lock, then the one that worked")
+        #expect(!account.shouldOfferSignOutRetry, "nothing left to retry")
     }
 
     /// The lock that refused the `clear()` refuses the `save()`, so a sign-in

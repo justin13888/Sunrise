@@ -81,6 +81,18 @@ final class AccountModel {
     /// ``DeviceListModel/lastRevocation`` already follows in this app.
     private(set) var signOutIncomplete: String?
 
+    /// Whether the Keychain has refused a sign-out in this process.
+    ///
+    /// Separate from ``signOutIncomplete`` because
+    /// ``dismissSignOutIncomplete()`` consumes that one, and acknowledging a
+    /// message must not retire the only control that can act on it: the
+    /// caption tells the user to unlock the Keychain and sign out again, and
+    /// under `.signedOut` the Account screen has no other control that reaches
+    /// ``signOut()``. Session scoped, like the message — it says what happened
+    /// in this process, and the credential it refers to is still stored until
+    /// a `clear()` or a `save()` replaces it.
+    private(set) var signOutRefusedThisSession = false
+
     /// Whether the Account screen renders the disclosure.
     ///
     /// The pairing rule lives here rather than at the render site so that a
@@ -90,6 +102,14 @@ final class AccountModel {
     /// `.signedIn` — the one combination it must not be rendered under.
     var shouldDiscloseSignOutIncomplete: Bool {
         signOutIncomplete != nil && stateTheDisclosureIsTrueIn
+    }
+
+    /// Whether the Account screen still offers a way to re-run the removal.
+    ///
+    /// Outlives ``dismissSignOutIncomplete()``: dismissing says the message
+    /// has been read, and the credential it was about is still stored.
+    var shouldOfferSignOutRetry: Bool {
+        signOutRefusedThisSession && stateTheDisclosureIsTrueIn
     }
 
     /// The states the disclosure's own text is true in. `.awaitingBrowser` is
@@ -161,6 +181,7 @@ final class AccountModel {
             // `catch` below, neither of which establishes a session; there the
             // old credential is still stored and the warning is still true.
             signOutIncomplete = nil
+            signOutRefusedThisSession = false
             credentials = fresh
             publish()
         } catch {
@@ -226,8 +247,10 @@ final class AccountModel {
         do {
             try store.clear()
             signOutIncomplete = nil
+            signOutRefusedThisSession = false
         } catch {
             signOutIncomplete = error.localizedDescription
+            signOutRefusedThisSession = true
         }
         credentials = nil
         accessToken = nil
@@ -235,7 +258,9 @@ final class AccountModel {
     }
 
     /// Acknowledge ``signOutIncomplete``. The token it describes is still
-    /// stored; dismissing says the user has read that, not that it is gone.
+    /// stored; dismissing says the user has read that, not that it is gone —
+    /// which is why it leaves ``signOutRefusedThisSession`` standing, and with
+    /// it the control that re-runs the removal.
     func dismissSignOutIncomplete() {
         signOutIncomplete = nil
     }
