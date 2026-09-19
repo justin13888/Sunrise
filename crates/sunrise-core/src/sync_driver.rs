@@ -98,27 +98,37 @@ pub type ConnectFuture = Pin<Box<dyn Future<Output = Result<BoxTransport, Transp
 /// connect attempt (initial connect and every reconnect after a drop), so it
 /// must be able to produce a brand-new connection each time.
 ///
-/// # Precondition: read the credential in the closure body
+/// # Precondition: do not fix the bearer when the factory is built
 ///
-/// A factory that presents a bearer must read it from its [`TokenSource`]
-/// **synchronously, in the closure's own body** — not inside the
-/// [`ConnectFuture`] it returns, and not once when the factory is built.
+/// A factory that presents a bearer must read it from its [`TokenSource`] on
+/// **every call** — never once, when the factory is built.
 ///
 /// This is a precondition of the driver, not a suggestion. `run` marks its
 /// renewal handle current the instant this closure returns, taking whatever
-/// the closure read as what the attempt will present. A factory that fixed
-/// its bearer earlier has that renewal consumed by a connect which did not
-/// carry it, and the relay is then never told: not in band, because the pump
-/// has nothing pending, and not on the next reconnect either, because that
-/// attempt marks the handle current too.
+/// the attempt is about to present as consumed. A factory that fixed its
+/// bearer when it was built has every later renewal consumed by a connect
+/// which did not carry it, and the relay is then never told: not in band,
+/// because the pump has nothing pending, and not on the next reconnect either,
+/// because that attempt marks the handle current too.
 ///
-/// The two factories that ship satisfy it — `sunrise_cli::livesync::ws_factory`
-/// and `sunrise_core_bindings::ws_factory` both call [`TokenSource::get`] in
-/// the closure body. The test harnesses do not, and cannot break it: the
-/// in-process harness in this file's `tests` module and the three factories in
-/// `sunrise-e2e` present no renewable bearer at all, so there is nothing for
-/// the handle to consume. Each says so in its own documentation. A harness
-/// that grows one must read it here, per attempt, like the shipped two.
+/// Reading in the closure's own body is what the driver is written against.
+/// Reading inside the [`ConnectFuture`] the closure returns is *discouraged*
+/// rather than forbidden, and the difference between the two is waste against
+/// loss: that read happens **after** the mark, not before it. `run` marks at
+/// some version `v_m` and the future then reads at `v_f >= v_m`, so the
+/// attempt carries everything the mark consumed and possibly more. A write
+/// landing between the two makes the pump fire and costs one redundant
+/// `0x12 RefreshToken` — waste, never loss. Only a build-time capture loses a
+/// renewal, and loses it silently.
+///
+/// The two factories that ship read in the closure body —
+/// `sunrise_cli::livesync::ws_factory` and `sunrise_core_bindings::ws_factory`
+/// both call [`TokenSource::get`] there. The test harnesses do not, and cannot
+/// break it: the in-process harness in this file's `tests` module and the
+/// three factories in `sunrise-e2e` present no renewable bearer at all, so
+/// there is nothing for the handle to consume. Each says so in its own
+/// documentation. A harness that grows one must read it per attempt, like the
+/// shipped two.
 pub type TransportFactory = Arc<dyn Fn() -> ConnectFuture + Send + Sync>;
 
 /// Default anti-entropy interval: how often a live session re-subscribes with
