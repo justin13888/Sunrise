@@ -2672,6 +2672,65 @@ mod tests {
         );
     }
 
+    /// A frame the wire codec cannot decode is refused before any route is
+    /// chosen.
+    ///
+    /// `send_frame` decodes the frame header first, and every arm below that
+    /// point assumes it succeeded. A build that let a malformed frame through
+    /// would dispatch on whatever `msg_kind` the garbage happened to hold, and
+    /// a build that reported it as `Unavailable` would have the driver retry a
+    /// frame that will never decode.
+    #[tokio::test]
+    async fn a_frame_that_does_not_decode_is_refused_before_any_route() {
+        let relay = relay::start(Vec::new()).await;
+        let mut t = SseTransport::connect(&relay.base);
+        let err = t
+            .send_frame(vec![0xffu8; 8])
+            .await
+            .expect_err("that is not a frame");
+        assert!(matches!(err, TransportError::Protocol(_)), "{err}");
+        assert!(
+            relay.seen().is_empty(),
+            "nothing reaches the relay for a frame that never decoded"
+        );
+    }
+
+    /// A `Hello` reply this transport cannot read leaves no session behind it.
+    ///
+    /// Two shapes, and the second is the quiet one. A reply that is not JSON is
+    /// a protocol error the driver sees. A reply that *is* JSON but names no
+    /// `session_id` is accepted today: `self.session` stays `None`, the
+    /// `HelloAck` goes to the driver as if the handshake succeeded, and every
+    /// later `call` goes up with no `x-sunrise-session` for the relay to
+    /// refuse. The behaviour is pinned as it is rather than as it should be,
+    /// so that a change to it is a decision somebody takes rather than a
+    /// regression nobody notices.
+    #[tokio::test]
+    async fn a_hello_reply_this_build_cannot_read_leaves_no_session() {
+        let relay = relay::start(vec![relay::Canned::json(200, "not json at all")]).await;
+        let mut t = dial(&relay);
+        let err = t
+            .send_frame(hello_frame())
+            .await
+            .expect_err("a reply that is not JSON is not a session");
+        assert!(matches!(err, TransportError::Protocol(_)), "{err}");
+        assert!(t.session.is_none());
+
+        let relay = relay::start(vec![relay::Canned::json(
+            200,
+            r#"{"server_app_v":"9.9.9","wire_proto":1,"crypto_suite":1,"doc_schema_floor":3}"#,
+        )])
+        .await;
+        let mut t = dial(&relay);
+        t.send_frame(hello_frame())
+            .await
+            .expect("a reply with no session id is accepted today");
+        assert!(
+            t.session.is_none(),
+            "which leaves every later operation unsessioned, silently"
+        );
+    }
+
     /// A frame kind that has no operation upstream is refused here rather than
     /// turned into a request the relay would have to reject.
     #[tokio::test]
