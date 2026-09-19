@@ -31,6 +31,18 @@ enum KeychainError: Error, Equatable {
     /// ``KeychainItem/writeAcrossDomains(_:)`` for the two sessions the missing
     /// distinction cost.
     case writtenButOtherDomainRefused(OSStatus)
+    /// ``KeychainItem/readAcrossDomains()`` found nothing in the domain it was
+    /// addressed to and could not **read** the other one, which refused on its
+    /// own terms. Carries that domain's status. Distinct from `unexpected`
+    /// because the two name different keychains: `unexpected` out of a read
+    /// comes from the store this build resolved to, and this one comes from the
+    /// store it fell back to, so a message that did not say which would send a
+    /// user to unlock the keychain that is already working.
+    ///
+    /// It is emphatically **not** "the secret is missing". Answering `nil` here
+    /// is what let a temporarily unreadable vault root be reported as a lost
+    /// one; this case exists so the distinction survives as far as the screen.
+    case otherDomainUnreadable(OSStatus)
     /// A ``KeychainMigration`` found a secret already sitting at its
     /// destination whose bytes are **not** the source's, so two different
     /// secrets claim one `(service, account)` and nothing here can tell which
@@ -65,6 +77,15 @@ extension KeychainError: LocalizedError {
             // something that did not happen, and this one does not.
             "This secret was saved, but an older copy of it in your other "
                 + "keychain could not be removed: "
+                + (SecCopyErrorMessageString(status, nil) as String?
+                    ?? "Keychain error \(status).")
+        case let .otherDomainUnreadable(status):
+            // Names the *other* keychain, and says the secret may still be
+            // there. A message that only relayed the system's sentence would
+            // read as a failure of the keychain the app just used
+            // successfully, which is the one a user would then go and unlock.
+            "A copy of this secret may be in your other keychain, which could "
+                + "not be read: "
                 + (SecCopyErrorMessageString(status, nil) as String?
                     ?? "Keychain error \(status).")
         case .migrationUnverified:

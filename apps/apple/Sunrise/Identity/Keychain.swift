@@ -180,57 +180,58 @@ struct KeychainItem: Sendable {
     /// keychain, and the app report a missing key — the "looks exactly like a
     /// lost vault" screen, to a user whose vault is intact.
     ///
-    /// **The second read can only turn a `nil` into bytes.** It never turns a
-    /// success into a failure and never turns a `nil` into a throw: a refusal
-    /// from the other domain is swallowed. Here — and *only* here — the swallow
-    /// stays blanket, which is the one place this type still differs from its
-    /// two cross-domain mutations. The reason is not the one an earlier
-    /// revision gave: it is **not** that a refusal in the unresolved domain
-    /// means there was nothing of ours to find, a premise the paragraph below
-    /// refutes and ``deleteInOtherDomain()`` has retired. It is that a refused
-    /// *read* has changed nothing, so swallowing it answers the `nil` this
-    /// method would have answered before the fallback existed, while raising it
-    /// would turn a genuine first run — nothing anywhere, refused on the way
-    /// past — into "a key may exist and cannot be reached".
+    /// **`nil` means both keychains answered *not-found*, and nothing else.**
+    /// That is this method's whole contract, and an earlier revision broke it:
+    /// the second read was wrapped in a blanket `try?`, so a store that was
+    /// reached and *refused* — locked, or a prompt denied — answered `nil` too.
+    /// `nil` is the one value ``SessionModel`` reads as absence, so a vault root
+    /// that exists and is momentarily unreadable was presented as a vault root
+    /// that is **gone**, and the user was steered into a two-machine pairing
+    /// ceremony for a condition an unlock fixes.
     ///
-    /// So the trade deliberately runs the other way from the mutations'. A
-    /// swallowed *delete* leaves a live secret in a store a later launch can
-    /// still read, which is a failure that outlives the call; a swallowed read
-    /// leaves this method answering the `nil` it would have answered before the
-    /// fallback existed, which is at worst a retry next launch.
+    /// The argument that swallow rested on — a refused *read* has changed
+    /// nothing, so answering `nil` is no worse than the answer before the
+    /// fallback existed — is true about the **Keychain** and false about the
+    /// **caller**. Before the fallback existed there was no second store to be
+    /// wrong about; once there is one, `nil` asserts something about it.
     ///
-    /// The *first* read keeps ``read()``'s contract in full: a refusal there is
-    /// still "a key may exist and cannot be reached" and still throws.
+    /// So a refusal is raised, and as ``KeychainError/otherDomainUnreadable(_:)``
+    /// rather than the bare status underneath: the sentence a bare
+    /// ``KeychainError/unexpected(_:)`` shows is the *other* keychain's — "User
+    /// interaction is not allowed." — under a header naming the one that is
+    /// working, which points the user at the wrong remedy. ``SessionModel``
+    /// already maps any throw out of a store's `load` to
+    /// `.locked(.keychainUnavailable)`, the screen that offers Keychain Access,
+    /// so the raise needs no new handling anywhere — only a sentence naming the
+    /// right keychain.
     ///
-    /// The entitlement is **not** what the `try?` is defending against, and an
-    /// earlier revision of this comment said it was. Measured on the ad-hoc Mac
-    /// this repository builds, and pinned by
-    /// `theUnreachableDomainRefusesMutationsAndAnswersReadsAsEmpty`: a
-    /// `.dataProtection` **query** answers `errSecItemNotFound` (-25300), not
-    /// `errSecMissingEntitlement`. The -34018 refusal lands on the *mutating*
-    /// calls — `SecItemAdd`, `SecItemUpdate` and `SecItemDelete`. So the swallow
-    /// here is only ever *exercised* on the entitled Mac, where the other store
-    /// can be locked or can refuse a prompt while this one answers; on the
-    /// unsigned one no read is refused and the second read simply finds
-    /// nothing.
+    /// A genuine first run is unaffected: not-found is a refusal in neither
+    /// domain, so nothing-anywhere still answers `nil`. The *first* read keeps
+    /// ``read()``'s contract in full, and always did.
     ///
-    /// **This swallow executes in no test**, and this declares it — item 7. On
-    /// every build this repository makes the other domain's *read* is answered
-    /// rather than refused: `.dataProtection` returns `errSecItemNotFound`
-    /// (pinned by `theUnreachableDomainRefusesMutationsAndAnswersReadsAsEmpty`),
-    /// `.login` answers cleanly, and on iOS the guard below short-circuits
-    /// before the `try?` is reached. So it absorbs nothing. **Measured, not
-    /// inferred:** on 2026-09-17 the `try?` was replaced with `try` and
-    /// `mise run macos-app` run on the result — 586 passed, 0 failed, 0 skipped.
-    /// The mutation survives. That is the macOS suite; on iOS the guard above
-    /// short-circuits before the line, so there is nothing there to measure.
-    /// It joins items 3, 4 and 6 on the
+    /// **The raise below executes in no test**, and this declares it — item 7
+    /// of the seven listed in `docs/07-clients/desktop.md`. It replaced the
+    /// swallow that was item 7 before it, blocker for blocker: on every build
+    /// this repository makes the other domain's *read* is answered rather than
+    /// refused — `.dataProtection` returns `errSecItemNotFound` (-25300), pinned
+    /// by `theUnreachableDomainRefusesMutationsAndAnswersReadsAsEmpty`, `.login`
+    /// answers cleanly, and on iOS the guard below short-circuits before the
+    /// `do` is entered. The -34018 refusal lands on the *mutating* calls, so no
+    /// build here can make a read refuse. It joins items 3, 4 and 6 on the
     /// refusal side: it needs the other store to refuse a read on its own terms
     /// while a case is running. Reach supplies no part of it.
     func readAcrossDomains() throws -> Data? {
         if let data = try read() { return data }
         guard KeychainDomain.domainsAreDistinctStores else { return nil }
-        return try? inOtherDomain.read()
+        do {
+            return try inOtherDomain.read()
+        } catch let error as KeychainError {
+            // `.malformedItem` is rethrown as itself: a corrupt item is not an
+            // unreachable domain, and relabelling it would point the user at
+            // an unlock that fixes nothing.
+            guard case let .unexpected(status) = error else { throw error }
+            throw KeychainError.otherDomainUnreadable(status)
+        }
     }
 
     /// Store `data`, replacing any existing value.
