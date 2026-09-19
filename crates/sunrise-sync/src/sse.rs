@@ -459,8 +459,28 @@ impl SseTransport {
                     .unwrap_or("cursor gap"),
             )?)),
             "closed" => {
+                // The relay's own code wins, exactly as [`SseTransport::refuse`]
+                // keeps it for a refused request. `ClosePayload::is_recoverable`
+                // is `matches!(self.code, AuthTokenExpired)`, and the stream
+                // emits three distinct close reasons — `AUTH_TOKEN_EXPIRED`,
+                // `AUTH_DEVICE_REVOKED` and `RELAY_STORAGE_UNAVAILABLE`
+                // (`docs/05-sync/wire-protocol.md:379-383`). Collapsing them
+                // onto the first is what `docs/05-sync/wire-protocol.md:203-206`
+                // names as the defect: a client that cannot tell them apart
+                // "retries forever against a revoked device".
+                //
+                // A `closed` event with no code, or one this build has never
+                // heard of, keeps the recoverable reading. The relay's
+                // `SyncEvent::Closed.code` is not optional, so such an event is
+                // a malformed one rather than a withdrawal of access, and
+                // reading a malformed event as a revocation would strand a
+                // working client at a prompt it cannot clear.
                 let payload = ClosePayload {
-                    code: sunrise_error::ErrorCode::AuthTokenExpired,
+                    code: event
+                        .get("code")
+                        .and_then(|c| c.as_str())
+                        .and_then(sunrise_error::ErrorCode::from_wire_str)
+                        .unwrap_or(sunrise_error::ErrorCode::AuthTokenExpired),
                     reason: event
                         .get("reason")
                         .and_then(|r| r.as_str())
@@ -1450,22 +1470,68 @@ mod tests {
         }
     }
 
-    /// A `closed` event becomes the *recoverable* close, so a driver that reads
-    /// one refreshes its credential rather than treating the session as revoked.
+    /// A `closed` event carries the relay's own close code through, so only the
+    /// expiry is read as recoverable.
+    ///
+    /// One case per code `crates/sunrise-server/src/api/sync/stream.rs` emits —
+    /// `AUTH_TOKEN_EXPIRED` (:338), `AUTH_DEVICE_REVOKED` (:362) and
+    /// `RELAY_STORAGE_UNAVAILABLE` (:232) — because
+    /// `ClosePayload::is_recoverable` is `matches!(self.code,
+    /// AuthTokenExpired)` and collapsing the three onto the first is what
+    /// `docs/05-sync/wire-protocol.md:203-206` calls "retries forever against a
+    /// revoked device". `SyncEvent::Closed.code` is not an `Option`, so every
+    /// one of these is an event the relay really sends.
     #[test]
-    fn a_closed_event_becomes_a_recoverable_close() {
-        for (event, reason) in [
-            (
-                serde_json::json!({"kind": "closed", "reason": "token expired"}),
-                "token expired",
-            ),
-            (serde_json::json!({"kind": "closed"}), "session closed"),
+    fn a_closed_event_carries_the_relay_s_own_close_code() {
+        for (code, recoverable) in [
+            ("AUTH_TOKEN_EXPIRED", true),
+            ("AUTH_DEVICE_REVOKED", false),
+            ("RELAY_STORAGE_UNAVAILABLE", false),
         ] {
+            let event = serde_json::json!({
+                "kind": "closed",
+                "code": code,
+                "reason": "the relay said so",
+            });
             let frame = SseTransport::frame_for(&event)
                 .expect("a well-formed closed event")
                 .expect("a close is a frame");
             let (head, payload) = super::decode_frame(&frame).expect("a decodable frame");
             assert_eq!(head.msg_kind, super::MsgKind::Close);
+            let parsed = super::ClosePayload::decode(&payload).expect("a ClosePayload");
+            assert_eq!(
+                parsed.code.as_str(),
+                code,
+                "the driver branches on the relay's code, not on a constant"
+            );
+            assert_eq!(parsed.reason, "the relay said so");
+            assert_eq!(
+                parsed.is_recoverable(),
+                recoverable,
+                "{code} decides whether the client refreshes or asks the user"
+            );
+        }
+    }
+
+    /// A `closed` event with no code, or one this build has never heard of,
+    /// stays recoverable.
+    ///
+    /// The relay's `code` is not optional, so neither shape is an event it
+    /// sends: both are malformed, and reading a malformed close as a revocation
+    /// would strand a working client at a prompt it cannot clear.
+    #[test]
+    fn a_closed_event_this_build_cannot_read_is_still_recoverable() {
+        for (event, reason) in [
+            (serde_json::json!({"kind": "closed"}), "session closed"),
+            (
+                serde_json::json!({"kind": "closed", "code": "FROM_THE_FUTURE", "reason": "who knows"}),
+                "who knows",
+            ),
+        ] {
+            let frame = SseTransport::frame_for(&event)
+                .expect("a well-formed closed event")
+                .expect("a close is a frame");
+            let (_, payload) = super::decode_frame(&frame).expect("a decodable frame");
             let parsed = super::ClosePayload::decode(&payload).expect("a ClosePayload");
             assert_eq!(parsed.code, sunrise_error::ErrorCode::AuthTokenExpired);
             assert_eq!(parsed.reason, reason);
