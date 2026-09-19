@@ -841,7 +841,7 @@ def classify(span: Span, citing: str, root: str, tree: Tree) -> tuple[str, Findi
         if not spans:
             return broken(f"names `{symbol}`, which `{target}` does not declare.")
         if first_line is not None and not any(
-            low <= first_line and (last_line or first_line) <= high for low, high in spans
+            low <= first_line and last_line <= high for low, high in spans
         ):
             where = f"line {first_line}" if end is None else f"lines {first_line}-{last_line}"
             spelled = ", ".join(f"{low}-{high}" for low, high in spans)
@@ -1288,6 +1288,17 @@ def self_test() -> int:
                 print(f"::error::citations self-test: `{body}` reported {verdict_at}/{found}, expected a decline")
                 failures += 1
 
+        # `symbol_span`'s `OSError` arm, reached directly because no scan can
+        # reach it: a `.rs` file tracked but absent from the working tree
+        # stops the gate at exit 2 long before `classify` sees a citation.
+        # `lib.rs` is tracked in this repository and is not written into the
+        # scratch tree above, so opening it there raises and the arm returns
+        # no spans at all.
+        absent = "crates/sunrise-cli/src/lib.rs"
+        if symbol_span(posixpath.join(scratch, absent), "wanted") != []:
+            print(f"::error::citations self-test: `{absent}` was readable; the OSError arm was not reached")
+            failures += 1
+
         # No suffix: byte-for-byte the behaviour of every citation in the tree
         # before this suffix existed. If this moves, the widening was not one.
         for line, want in ((4, True), (38, True), (39, False)):
@@ -1334,7 +1345,7 @@ def self_test() -> int:
 
     if failures:
         return 1
-    print("OK: citations self-test clean (84 cases).")
+    print("OK: citations self-test clean (85 cases).")
     return 0
 
 

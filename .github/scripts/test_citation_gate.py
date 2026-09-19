@@ -687,6 +687,103 @@ class Symbols(GateCase):
             "cites line 1, but `wanted` in `crates/c/src/lib.rs` spans 4-6.",
         )
 
+    def test_a_blank_line_above_a_bare_close_stops_the_attribute_climb(self):
+        # `attribute_opener`'s first inner bail, reached. The case above bails
+        # at the *outer* guard -- its `];` does not end in `]` -- so it never
+        # enters the loop at all and the inner bails were pinned by nothing.
+        #
+        # Every fixture in this group has the same shape: a bare `]` directly
+        # above the item, and a real `#[` two lines up with the bail's trigger
+        # between them. That is what makes the bail load-bearing rather than
+        # incidental. Delete it and the climb reaches the `#[`, the span opens
+        # at line 1, and the assertion below goes green when it must not: the
+        # span would have swallowed an attribute belonging to something else.
+        self.write(
+            "crates/c/src/lib.rs",
+            "#[allow(dead_code)]\n"        # 1
+            "\n"                           # 2  the bail
+            "]\n"                          # 3
+            "pub fn wanted() -> u8 {\n"    # 4
+            "    0\n"                      # 5
+            "}\n",                         # 6
+        )
+        self.write("docs/a.md", "See `crates/c/src/lib.rs:4#wanted`.\n")
+        self.assert_code(self.run_gate(), CLEAN, "OK: citations clean.")
+
+        self.write("docs/b.md", "See `crates/c/src/lib.rs:1#wanted`.\n")
+        self.assert_code(
+            self.run_gate(),
+            DANGLING,
+            "cites line 1, but `wanted` in `crates/c/src/lib.rs` spans 4-6.",
+        )
+
+    def test_a_comment_above_a_bare_close_stops_the_attribute_climb(self):
+        # The second inner bail. rustfmt writes no `//` inside an attribute,
+        # so one here means the `]` below closes something else.
+        self.write(
+            "crates/c/src/lib.rs",
+            "#[allow(dead_code)]\n"        # 1
+            "// an ordinary comment\n"     # 2  the bail
+            "]\n"                          # 3
+            "pub fn wanted() -> u8 {\n"    # 4
+            "    0\n"                      # 5
+            "}\n",                         # 6
+        )
+        self.write("docs/a.md", "See `crates/c/src/lib.rs:1#wanted`.\n")
+        self.assert_code(
+            self.run_gate(),
+            DANGLING,
+            "cites line 1, but `wanted` in `crates/c/src/lib.rs` spans 4-6.",
+        )
+
+    def test_a_line_ending_in_a_brace_or_semicolon_stops_the_attribute_climb(self):
+        # The third inner bail, all three of its terminators. `{`, `}` and `;`
+        # each end a construct rustfmt would never leave open inside an
+        # attribute, so each one means the climb has left the attribute and is
+        # walking into the item above.
+        for terminator, middle in (
+            ("{", "fn above() -> u8 {"),
+            ("}", "}"),
+            (";", "const ABOVE: u8 = 0;"),
+        ):
+            with self.subTest(terminator=terminator):
+                self.write(
+                    "crates/c/src/lib.rs",
+                    "#[allow(dead_code)]\n"        # 1
+                    f"{middle}\n"                  # 2  the bail
+                    "]\n"                          # 3
+                    "pub fn wanted() -> u8 {\n"    # 4
+                    "    0\n"                      # 5
+                    "}\n",                         # 6
+                )
+                self.write("docs/a.md", "See `crates/c/src/lib.rs:1#wanted`.\n")
+                self.assert_code(
+                    self.run_gate(),
+                    DANGLING,
+                    "cites line 1, but `wanted` in `crates/c/src/lib.rs` spans 4-6.",
+                )
+
+    def test_a_bare_close_at_the_top_of_the_file_stops_the_attribute_climb(self):
+        # The loop running off the top of the file, which is the one exit
+        # `attribute_opener` takes without deciding anything. There is no `#[`
+        # to find, so the span must stay exactly where the walk left it.
+        self.write(
+            "crates/c/src/lib.rs",
+            "]\n"                          # 1
+            "pub fn wanted() -> u8 {\n"    # 2
+            "    0\n"                      # 3
+            "}\n",                         # 4
+        )
+        self.write("docs/a.md", "See `crates/c/src/lib.rs:2#wanted`.\n")
+        self.assert_code(self.run_gate(), CLEAN, "OK: citations clean.")
+
+        self.write("docs/b.md", "See `crates/c/src/lib.rs:1#wanted`.\n")
+        self.assert_code(
+            self.run_gate(),
+            DANGLING,
+            "cites line 1, but `wanted` in `crates/c/src/lib.rs` spans 2-4.",
+        )
+
     def test_a_symbol_that_does_not_contain_the_cited_line_fails(self):
         self.rust()
         self.write("docs/a.md", "See `crates/c/src/lib.rs:10#wanted`.\n")
@@ -858,6 +955,52 @@ class Symbols(GateCase):
 
         self.write("docs/b.md", "See `crates/c/src/lib.rs:5#wanted`.\n")
         self.assert_code(self.run_gate(), DANGLING, "spans 3-3, 6-9.")
+
+    def test_a_span_whose_close_is_never_found_runs_to_the_end_of_the_file(self):
+        # The documented safe direction, asserted rather than assumed. An item
+        # whose closing brace never appears at its own indent -- a truncated
+        # file, or a shape the line-based walk cannot match -- gets a span
+        # that runs to EOF. Over-broad, so it can only ever PASS a citation,
+        # never fail a correct one, which is the only direction this gate is
+        # allowed to be wrong in.
+        #
+        # Line 5 is textually inside `other`, and the assertion is that
+        # `#wanted` accepts it anyway. Narrow the fallback to the declaration
+        # line and this goes red, which is the point: the cost of the safe
+        # direction is stated here instead of being discovered in a document.
+        self.write(
+            "crates/c/src/lib.rs",
+            "/// Doc.\n"                   # 1
+            "pub fn wanted() -> u8 {\n"    # 2
+            "    0\n"                      # 3
+            "    // never closed\n"        # 4
+            "fn other() -> u8 { 0 }\n",    # 5
+        )
+        self.write("docs/a.md", "See `crates/c/src/lib.rs:5#wanted`.\n")
+        self.assert_code(self.run_gate(), CLEAN, "OK: citations clean.")
+
+    def test_a_tracked_rust_file_absent_from_the_worktree_stops_the_gate(self):
+        # `git_tracked` reads the index, so a file staged and then removed
+        # from the working tree is still a file this gate believes exists.
+        # `symbol_span` has an `OSError` arm for exactly that, returning no
+        # spans -- but through the command line that arm cannot be reached for
+        # a `.rs` target, because the scan reads every tracked `.rs` file
+        # looking for code spans and raises on this one first.
+        #
+        # So the outcome is exit 2, "the gate could not run", and NOT a
+        # citation verdict. That is the right answer and the one worth
+        # pinning: a missing file must never be reported as a document naming
+        # a symbol that does not exist. `symbol_span`'s arm is exercised
+        # directly in the gate's own `self_test`, which can call it without a
+        # scan in front of it.
+        path = self.write("crates/c/src/lib.rs", "pub fn wanted() -> u8 {\n    0\n}\n")
+        path.unlink()
+        self.write("docs/a.md", "See `crates/c/src/lib.rs#wanted`.\n")
+        self.assert_code(
+            self.run_gate(),
+            COULD_NOT_RUN,
+            "could not read crates/c/src/lib.rs",
+        )
 
     def test_a_suffix_that_is_not_an_item_name_fails_and_subtracts_nothing(self):
         # The defect this grammar was widened for. `#Engine::f` and `#f()` are
