@@ -90,8 +90,9 @@ Every floor records the revision it was measured at, and `--update` does not
 ask git for it. It reads it from a `revision.json` written beside each
 `outcomes.json` while the measurement was running — by `mise.toml`'s `mutants`
 task and by `ci.yml`'s `mutants` matrix, both of which call
-`--record-revision` — and refuses when an outcomes file carries no stamp or
-when two stamps name different revisions.
+`--record-revision` — and refuses when an outcomes file carries no stamp, when
+a stamp is missing any of `sha`, `date` and `dirty`, or when two stamps name
+different revisions.
 
 The reason is the gap between the two. A `sunrise-core` pass is about five
 hours and a `sunrise-domain` pass about two; the tests that motivated the run
@@ -100,7 +101,9 @@ until the next day. A floor stamped with HEAD at recording time therefore names
 a revision that does not produce the number beside it, which is verbatim the
 defect this field was added to stop. The same stamp carries a `dirty` flag from
 `git status --porcelain`, because a floor taken on a modified tree does not
-reproduce at the named revision either.
+reproduce at the named revision either — required rather than defaulted, so
+that a stamp nobody filled in cannot read as a tree nobody looked at being
+clean.
 
 `--command` is what gets banked as `provenance.command`. It exists so the field
 is a recipe rather than a trace: `mise run mutants-baseline --expect-shards
