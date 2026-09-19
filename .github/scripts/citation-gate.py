@@ -32,8 +32,12 @@ path, optionally followed by `:LINE` or `:LINE-LINE`, optionally followed by
 `#SYMBOL`. Three conditions, each decidable without an opinion about prose:
 
 1. The span content, after CommonMark's one-space strip, matches
-   `<path>(:<start>(-<end>)?)?(#<symbol>)?` and holds nothing else — no spaces,
-   no trailing word. `` `see crates/foo.rs` `` is not a citation.
+   `<path>(:<start>(-<end>)?)?(#<symbol>)?` and holds nothing else — no
+   trailing word, and no whitespace anywhere in the path or the line numbers.
+   `` `see crates/foo.rs` `` is not a citation. The `#<symbol>` tail is the one
+   part that takes anything at all, for the reason the next section gives; it
+   is still the tail of a path with no space in it, so no prose reaches the
+   grammar through it.
 2. The final segment ends in one of the extensions in `EXTENSIONS` below, which
    is the closed set this repository's tracked files actually use. A *shape*
    rule instead of a list reads `task.update`, `Task.blocks` and `focus.end` as
@@ -79,12 +83,15 @@ Three things the suffix deliberately does, each of them a decision rather than
 a detail:
 
 * **An unresolvable suffix fails; it never subtracts a check.** `#Engine::f`,
-  `#f()` and anything else that is not a bare Rust item name is reported, and
-  reported *after* the path and line checks have run on the same span. The
-  grammar therefore admits any non-space run after the `#` — if it did not,
-  such a span would fail to match `CITATION` altogether and be silently
-  dropped from the run, so writing the method in the natural Rust form would
-  make the build greener by checking strictly less.
+  `#f()`, `#two words`, a 129-character run and a bare trailing `#` are each
+  reported, and reported *after* the path and line checks have run on the same
+  span. The grammar therefore admits **anything** after the `#`, with no
+  length bound and no character excluded — if it excluded any of them, such a
+  span would fail to match `CITATION` altogether and be silently dropped from
+  the run, so writing the method in the natural Rust form, or leaving a stray
+  space after the `#`, would make the build greener by checking strictly less.
+  The exclusion that costs the least to keep is the one that costs the most:
+  a trailing space is invisible in the rendered document.
 * **`#L702` is declined, not failed — and declining it costs the *symbol*
   check, not the span.** It is a github.com permalink fragment, the one
   non-declaration `#` form a Rust-path span plausibly carries, in all four
@@ -291,7 +298,7 @@ CITATION = re.compile(
         \. (?P<ext> [A-Za-z][A-Za-z0-9]{0,11} )
     )
     (?: : (?P<start>[0-9]{1,9}) (?: - (?P<end>[0-9]{1,9}) )? )?
-    (?: \# (?P<symbol> \S* ) )?
+    (?: \# (?P<symbol> [^\n]* ) )?
     $
     """,
     re.VERBOSE,
@@ -299,28 +306,40 @@ CITATION = re.compile(
 
 # What a `#suffix` has to look like to be resolved as a Rust item name.
 #
-# The grammar above deliberately admits **any** non-space run after the `#`,
-# and this is what separates the ones it can resolve from the ones it cannot.
-# The split is the point: a suffix the gate cannot parse must never be able to
-# take a citation *out* of the check. When the symbol group was itself the
-# identifier pattern, `sync.rs:99999#Engine::is_revoked` failed `CITATION`
-# outright, so `classify` returned `"skip"` — the span was not counted, not
-# listed as unanchored, and lost the line-range and path-existence checks it
-# had before the suffix was written. Appending a suffix in the natural Rust
-# form made the build greener by checking less. Now the span parses, the path
-# and line checks run as they always did, and the suffix itself is reported.
+# The grammar above deliberately admits **everything** after the `#` up to the
+# end of the span, and this is what separates the ones it can resolve from the
+# ones it cannot. The split is the point: a suffix the gate cannot parse must
+# never be able to take a citation *out* of the check. When the symbol group
+# was itself the identifier pattern, `sync.rs:99999#Engine::is_revoked` failed
+# `CITATION` outright, so `classify` returned `"skip"` — the span was not
+# counted, not listed as unanchored, and lost the line-range and
+# path-existence checks it had before the suffix was written. Appending a
+# suffix in the natural Rust form made the build greener by checking less. Now
+# the span parses, the path and line checks run as they always did, and the
+# suffix itself is reported.
 #
-# `\S*` above carries no upper bound and no lower one, and both halves of that
-# are the same decision. A bound on the *grammar* side re-creates the very
-# subtraction this split exists to remove, at its own edge: while the group
-# read `\S{1,128}`, a 129-character suffix and a bare trailing `#` failed
-# `CITATION` outright and the span was dropped from the run with its path and
-# line checks. The length limit lives here instead, where overrunning it is a
-# reported failure rather than a silent exit -- this pattern admits 128
-# characters and anything longer is a `SYMBOL_NAME` miss. A suffix holding
-# whitespace stays outside the grammar, because a code span with a space in it
-# is not a path at all: `docs/a.md and docs/b.md` is prose, and the near-miss
-# cases in `self_test` pin it that way.
+# `[^\n]*` above carries no upper bound, no lower one, and no character class
+# narrower than "not the end of the span", and all three of those are the same
+# decision. Any bound on the *grammar* side re-creates the very subtraction
+# this split exists to remove, at whichever edge it is drawn:
+#
+# * While the group read `\S{1,128}`, a 129-character suffix and a bare
+#   trailing `#` failed `CITATION` outright and the span was dropped from the
+#   run with its path and line checks. The length limit lives here instead,
+#   where overrunning it is a reported failure rather than a silent exit --
+#   this pattern admits 128 characters and anything longer is a `SYMBOL_NAME`
+#   miss.
+# * While it read `\S*`, the same hole stood at the whitespace edge:
+#   `lib.rs:99#two words` came back clean where `lib.rs:99` was red, and the
+#   most reachable spelling of it was a stray trailing space, so the verdict
+#   turned on a character the author cannot see. Whitespace is rejected here
+#   too, as a reported failure.
+#
+# Widening the *symbol* group admits no prose, because the **path** group is
+# what forbids whitespace and no near-miss in `self_test` carries a `#` at
+# all: `docs/a.md and docs/b.md`, `see docs/prose.md`, `cargo test
+# --workspace`, `Vec<u8>` and `#[derive(Debug)]` each still fail to match, and
+# they are pinned there so this stays true.
 SYMBOL_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
 
 # A github.com permalink fragment, which is the one non-declaration `#` form a
@@ -357,7 +376,7 @@ LINE_FRAGMENT = re.compile(r"^L[0-9]+(?:C[0-9]+)?(?:-L[0-9]+(?:C[0-9]+)?)?$")
 #   not declare. Wrong reason, red check, and the remedy is to drop the suffix
 #   or the line.
 # * `#Engine::f` is a **`SYMBOL_NAME` miss**. The span parses as a citation —
-#   the grammar above takes any non-space run — and `classify` reports the
+#   the grammar above takes anything after the `#` — and `classify` reports the
 #   suffix as one it cannot resolve, *after* running the path and line checks
 #   on it. It is not this pattern's business, and the distinction matters
 #   because the two used to be conflated here while a `SYMBOL_NAME` miss was
@@ -1434,15 +1453,26 @@ def self_test() -> int:
                 f"`{body}` reported {found}, expected {fragment!r}",
             )
 
-        # A suffix holding whitespace is outside the grammar and stays there.
-        # A code span with a space in it is not a path -- `docs/a.md and
-        # docs/b.md` is prose, and the near-miss cases above pin it -- so the
-        # span is not a citation at all rather than a citation with an
-        # unreadable suffix.
-        wrong(
-            symbol_verdict(f"{main}:4#a b")[0] != "skip",
-            f"`{main}:4#a b` was read as a citation",
-        )
+        # A suffix holding whitespace is inside the grammar and unresolvable
+        # inside it, which is the same rule the `::` and 129-character cases
+        # state. It was the last edge at which the grammar still subtracted:
+        # while the group read `\S*`, `{main}:9999#two words` came back clean
+        # where `{main}:9999` was red, and the most reachable spelling of that
+        # is a stray trailing space -- a verdict turning on a character the
+        # author cannot see. Admitting it costs nothing, because the near-miss
+        # cases above are kept out by the PATH group, which forbids
+        # whitespace, and by carrying no `#` at all.
+        for suffix in ("a b", "a\tb", "a\u00a0b", " "):
+            _, found = symbol_verdict(f"{main}:4#{suffix}")
+            wrong(
+                found is None or "is not a Rust item name" not in found.message,
+                f"`{main}:4#{suffix}` reported {found}, expected an unresolvable suffix",
+            )
+            _, found = symbol_verdict(f"{main}:9999#{suffix}")
+            wrong(
+                found is None or "line(s)." not in found.message,
+                f"`{main}:9999#{suffix}` reported {found}; a suffix must not remove that check",
+            )
 
         # `impl` is not in `SYMBOL_DECL`'s alternation: an `impl` block is a
         # container, not the item a sentence is about, and containment against

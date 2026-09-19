@@ -1216,15 +1216,49 @@ class Symbols(GateCase):
         self.write("docs/a.md", "See `crates/c/src/lib.rs:3#" + "a" * 129 + "`.\n")
         self.assert_code(self.run_gate(), DANGLING, "is not a Rust item name")
 
-    def test_a_suffix_holding_whitespace_is_not_a_citation(self):
-        # The one shape that stays outside the grammar, and deliberately: a
-        # code span with a space in it is not a path. `docs/a.md and
-        # docs/b.md` is prose about two files, and admitting whitespace after
-        # the `#` would make the gate read it as one. There is no citation
-        # here to subtract a check from.
+    def test_a_suffix_holding_whitespace_keeps_every_check_and_is_reported(self):
+        # The last edge at which the grammar still subtracted. While the
+        # symbol group read `\S*`, `:99#two words` came back CLEAN where
+        # `:99` was red: the whole span failed `CITATION`, so it was not
+        # counted, not listed as unanchored, and lost the line check it
+        # already had. Appending a suffix made the build greener by checking
+        # less -- the same defect as `#Engine::f` and the 129-character run,
+        # reached by a third spelling.
+        #
+        # Every kind of whitespace, because they are one rule and only the
+        # first is visible: a plain space, a tab, a no-break space, and the
+        # bare trailing space that is the most human-reachable spelling of
+        # all -- `foo.rs:99# ` is a stray keystroke nothing renders.
         self.rust()
-        self.write("docs/a.md", "See `crates/c/src/lib.rs:99#two words`.\n")
-        self.assert_code(self.run_gate(), CLEAN, "OK: citations clean.")
+        for suffix in ("two words", "two\twords", "two\u00a0words", " "):
+            with self.subTest(suffix=suffix):
+                self.write("docs/a.md", f"See `crates/c/src/lib.rs:99#{suffix}`.\n")
+                self.assert_code(
+                    self.run_gate(),
+                    DANGLING,
+                    "cites line 99, but `crates/c/src/lib.rs` has 11 line(s).",
+                )
+
+        # And where the path and line are fine, the suffix itself is the
+        # failure -- reported, never skipped.
+        self.write("docs/a.md", "See `crates/c/src/lib.rs:3#two words`.\n")
+        self.assert_code(self.run_gate(), DANGLING, "is not a Rust item name")
+
+    def test_prose_holding_a_space_is_still_not_a_citation(self):
+        # The other half of the widening, and the reason it costs nothing.
+        # What keeps prose out of the grammar is the PATH group, which forbids
+        # whitespace, not the symbol group -- and none of these carries a `#`
+        # for the symbol group to reach. `docs/a.md and docs/b.md` is a
+        # sentence about two files and has to stay one.
+        self.write("docs/b.md", "one\n")
+        self.write(
+            "docs/a.md",
+            "Prose: `docs/a.md and docs/b.md`, `see docs/prose.md`, "
+            "`cargo test --workspace`, `Vec<u8>`, `#[derive(Debug)]`.\n",
+        )
+        result = self.run_gate()
+        self.assert_code(result, CLEAN, "OK: citations clean.", "0 anchored citation(s)")
+        self.assertNotIn("path-like span(s) were NOT checked", result.stdout)
 
     def test_a_citation_with_no_suffix_is_unchanged(self):
         # The widening, asserted as a widening. Every citation in this
