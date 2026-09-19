@@ -3077,6 +3077,60 @@ mod tests {
         assert_json_binding(&seen[2]);
     }
 
+    /// A commit the relay under-described still names its blob, and reads as
+    /// zero rather than as a size nobody sent.
+    ///
+    /// `size_bytes` and `chunk_count` are read with `unwrap_or(0)`, and
+    /// `chunk_count` narrows to `u32` first. All three fallbacks are reachable
+    /// from a relay that answers the route and omits or overflows a field, and
+    /// none of them was executed: the blob id is the only part of the commit
+    /// this build refuses to guess at, which is the distinction the fallbacks
+    /// encode.
+    #[tokio::test]
+    async fn a_commit_with_fields_missing_or_too_large_reads_as_zero() {
+        let relay = relay::start(vec![
+            relay::Canned::json(200, &format!(r#"{{"blob_id":"blb_{}"}}"#, "0f".repeat(16))),
+            relay::Canned::json(
+                200,
+                &format!(
+                    r#"{{"blob_id":"blb_{}","size_bytes":9,"chunk_count":4294967297}}"#,
+                    "0f".repeat(16)
+                ),
+            ),
+            relay::Canned::json(200, r#"{"size_bytes":9,"chunk_count":1}"#),
+        ])
+        .await;
+        let mut t = dial(&relay);
+
+        let bare = t
+            .blob_finalize("up-1", &[0x22u8; 32], &[[0x33u8; 32]])
+            .await
+            .expect("a commit naming its blob");
+        assert_eq!(bare.blob_id, [0x0fu8; 16]);
+        assert_eq!(bare.size_bytes, 0, "a size nobody sent is not invented");
+        assert_eq!(bare.chunk_count, 0);
+
+        let wide = t
+            .blob_finalize("up-1", &[0x22u8; 32], &[[0x33u8; 32]])
+            .await
+            .expect("a commit naming its blob");
+        assert_eq!(wide.size_bytes, 9);
+        assert_eq!(
+            wide.chunk_count, 0,
+            "a count past u32 is refused, not truncated into a plausible one: \
+             the fixture is 2^32 + 1, so a narrowing cast would read 1"
+        );
+
+        let err = t
+            .blob_finalize("up-1", &[0x22u8; 32], &[[0x33u8; 32]])
+            .await
+            .expect_err("a commit with no blob id names nothing");
+        assert!(
+            matches!(&err, TransportError::Protocol(m) if m.contains("blob id")),
+            "{err}"
+        );
+    }
+
     /// A fetch returns the ciphertext, and the relay's single 404 — "no such
     /// blob", "not yours" and "not finished yet" answered alike, so the route
     /// is not an oracle for whether another account holds a ciphertext — is
