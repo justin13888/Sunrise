@@ -36,12 +36,25 @@ One file with no invocation beside another that has one is an ordinary
 tree — the matrix moved — and calling it a broken gate is how a gate gets
 switched off.
 
-The case that matters most is `test_comment_mentioning_the_flag_is_not_a_pass`.
-Both real files discuss `--all-features` in prose and `ci.yml` quotes a
-complete `cargo mutants --list ... --all-features` command in a comment. A
-gate that counted those would pass on the strength of a sentence about the
-flag while the command underneath it had lost it, which is an exact
-inversion of what it is for.
+The cases that matter most are the three under §"text that is not the
+invocation". Each is a shape that was constructed against real copies of
+this repository's own `mise.toml` and `.github/workflows/ci.yml`, with the
+flag deleted from the invocation that measures the floor, and each one
+reported exit 0 from a gate whose unit of checking was a joined logical
+line tested by substring containment:
+
+* a trailing `# dropped --all-features temporarily`, because only
+  whole-line comments were dropped;
+* a preceding `echo "we run with --all-features" && …` on the same
+  joined line;
+* an ordinary `cargo mutants --list … --all-features > population.txt &&`
+  chained in front of the measuring invocation — a one-line,
+  entirely non-adversarial edit.
+
+All three now fail with exit 1. They are the reason the gate splits a
+logical line into commands and tests the flag against the tokens of the
+command whose first two are `cargo mutants`, rather than asking whether
+the text of the line contains the flag anywhere.
 
 Run it with `mise run mutants-flags-gate-test`, or directly.
 """
@@ -210,6 +223,111 @@ class FlagsGateContract(unittest.TestCase):
         )
         self.assert_code(
             self.run_gate_on(commented), 2, "no `cargo mutants` invocation")
+
+    # --- text that is not the invocation ---------------------------------
+    #
+    # Three shapes that each defeated a line-and-substring gate against
+    # real copies of this repository's own files. Every one of them left
+    # the measuring invocation without the flag and reported exit 0.
+
+    def test_a_trailing_comment_mentioning_the_flag_is_not_a_pass(self):
+        # Shape A. `logical_lines` drops comments that occupy a whole
+        # line; this one sits at the end of the invocation's own line, so
+        # the flag was "present" on the line and absent from the command.
+        self.assert_code(
+            self.run_gate(
+                MISE_WITH_FLAG.replace(
+                    " --all-features",
+                    "").replace(
+                    '--output "out/x"',
+                    '--output "out/x"  # dropped --all-features temporarily'),
+                CI_WITH_FLAG,
+            ),
+            1, "--all-features is missing from 1 of 2")
+
+    def test_a_neighbouring_command_mentioning_the_flag_is_not_a_pass(self):
+        # Shape B. A joined `echo` in front of the invocation. Nothing
+        # about it is adversarial — a task that announces what it is
+        # about to do looks exactly like this.
+        self.assert_code(
+            self.run_gate(
+                MISE_WITH_FLAG.replace(
+                    'cargo mutants -p "$usage_crate" --all-features',
+                    'echo "note: we run with --all-features" && \\\n'
+                    'cargo mutants -p "$usage_crate"'),
+                CI_WITH_FLAG,
+            ),
+            1, "--all-features is missing from 1 of 2")
+
+    def test_two_invocations_on_one_line_are_counted_separately(self):
+        # Shape C, and the one that makes the case for splitting rather
+        # than for merely dropping trailing comments. A `--list` call
+        # chained in front of the measuring invocation carries the flag
+        # legitimately; the invocation that produces the floor does not.
+        # A line-counting gate saw one unit, found the flag in it, and
+        # reported OK — which is the 27.17%-vs-36.89% corruption this
+        # gate exists to prevent, wearing a green tick.
+        result = self.run_gate(
+            MISE_WITH_FLAG,
+            CI_WITH_FLAG.replace(
+                "          cargo mutants \\\n",
+                "          cargo mutants --list -p ${{ matrix.crate }} "
+                "--all-features > population.txt && \\\n"
+                "          cargo mutants \\\n").replace(
+                "            --all-features \\\n", ""),
+        )
+        # Three invocations, not two: the count is what says the unit is
+        # an invocation and not a line.
+        self.assert_code(result, 1, "missing from 1 of 3")
+
+    def test_a_list_call_is_held_to_the_flag_too(self):
+        # The converse of the case above, stated so the rule is not read
+        # as "only the measuring invocation counts". Every `cargo mutants`
+        # command is held to the flag, because a `--list` that enumerates
+        # a different population from the one being measured is the same
+        # class of divergence.
+        self.assert_code(
+            self.run_gate(
+                MISE_WITH_FLAG,
+                CI_WITH_FLAG.replace(
+                    "          cargo mutants \\\n",
+                    "          cargo mutants --list -p x > population.txt "
+                    "&& \\\n"
+                    "          cargo mutants \\\n"),
+            ),
+            1, "missing from 1 of 3")
+
+    def test_a_separator_inside_a_quoted_argument_is_not_a_separator(self):
+        # The splitter has to be quote-aware or it invents commands: an
+        # argument containing `;` or `|` cuts the invocation in half, and
+        # a flag written after that argument lands in a fragment that is
+        # no longer the invocation. The gate then calls a correct tree
+        # red — which is how a gate gets switched off in a week. The flag
+        # sits after the quoted separator here deliberately; before it,
+        # the case passes whether or not quotes are honoured.
+        self.assert_code(
+            self.run_gate(
+                MISE_WITH_FLAG.replace(
+                    ' --all-features', '').replace(
+                    '--output "out/x"',
+                    '--exclude-re "a|b; c" --output "out/x" --all-features'),
+                CI_WITH_FLAG,
+            ),
+            0, "2 cargo-mutants invocation(s) carry")
+
+    def test_a_trailing_comment_cannot_supply_the_flag_at_all(self):
+        # The stronger form of shape A: the comment is the *only* place
+        # the flag appears, and it is attached to the invocation with no
+        # separator in between, so nothing but comment-stripping keeps it
+        # out of the command's tokens.
+        self.assert_code(
+            self.run_gate(
+                MISE_WITH_FLAG.replace(
+                    ' --all-features --jobs 1 --output "out/x"',
+                    ' --jobs 1 --output "out/x" # --all-features'),
+                CI_WITH_FLAG,
+            ),
+            1, "--all-features is missing from 1 of 2")
 
     # --- the file set ----------------------------------------------------
 

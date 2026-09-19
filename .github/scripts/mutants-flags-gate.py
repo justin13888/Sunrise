@@ -43,6 +43,17 @@ third executable copy — a matrix moved into a workflow of its own, a
 release job that measures something — invisible, while the gate went on
 reporting OK about the two it knew about.
 
+What it counts is an *invocation*, not a line. Shell puts several
+commands on one line, and a containment test over the joined line is
+satisfied by any of them: `cargo mutants --list … --all-features &&
+cargo mutants -p X --jobs 1` has a flag in it and no flag on the
+invocation that measures the floor. So each logical line is split into
+commands on `&&`, `||`, `;` and `|`, any `#`-to-end-of-line remainder is
+dropped, and the flag is looked for in the *tokens* of each command whose
+first two are `cargo mutants`. A comment about the flag, a neighbouring
+`echo` about the flag, and a `--list` call carrying the flag all stop
+vouching for the command beside them.
+
 Why a separate script rather than `grep-gate.sh`
 ------------------------------------------------
 
@@ -101,6 +112,7 @@ from __future__ import annotations
 import argparse
 import pathlib
 import re
+import shlex
 import sys
 
 REQUIRED_FLAG = "--all-features"
@@ -110,7 +122,8 @@ REQUIRED_FLAG = "--all-features"
 PROSE_COPY = "docs/10-cross-cutting/testing.md (§Features)"
 
 # The start of an invocation. `cargo mutants`, allowing the run of spaces
-# a wrapped command can pick up.
+# a wrapped command can pick up. Used to find *candidate* text only; what
+# decides that a command is an invocation is its first two tokens.
 INVOCATION = re.compile(r"\bcargo\s+mutants\b")
 
 # The file that holds the local `mutants` task. Named literally rather
@@ -124,6 +137,11 @@ DEFAULT_MISE = pathlib.Path("mise.toml")
 # hazard the gate exists for.
 DEFAULT_WORKFLOW_DIR = pathlib.Path(".github/workflows")
 WORKFLOW_GLOBS = ("*.yml", "*.yaml")
+
+# Shell separators between one command and the next. `&&` and `||` are
+# matched before `|` so that `||` is one boundary rather than two empty
+# commands.
+SEPARATORS = ("&&", "||", ";", "|")
 
 
 class CannotRun(Exception):
@@ -178,14 +196,127 @@ def logical_lines(text: str) -> list[tuple[int, str]]:
     return out
 
 
-def invocations(path: pathlib.Path) -> list[tuple[int, str]]:
-    """Every `cargo mutants` command in one file, as (line, text)."""
+def commands(line: str) -> list[str]:
+    """Split one logical line into the commands it actually runs.
+
+    The unit this gate checks has to be an *invocation*, not a line. A
+    logical line is a piece of shell, and shell puts several commands on
+    one: `cargo mutants --list ... --all-features > population.txt &&
+    cargo mutants -p X --jobs 1` is one line, two invocations, and only
+    one of them measures anything. Counting that as a single unit and
+    asking whether the flag appears anywhere in it reports the whole line
+    green on the strength of the `--list` call, while the invocation that
+    produces the floor has no flag at all — the exact 27.17%-vs-36.89%
+    corruption this gate exists to prevent, reported as a pass.
+
+    The same containment test is satisfied by any neighbouring text: a
+    preceding `echo "we run with --all-features" && cargo mutants -p X`
+    passes, and so does a trailing `# dropped --all-features temporarily`,
+    because `logical_lines` only drops comments that occupy a whole line.
+    Both were constructed against this repository's own two files and both
+    reported exit 0. Splitting first is what makes those three shapes red.
+
+    Quote-aware, because a separator inside a quoted argument is an
+    argument and not a separator. A `#` that starts a word ends the line:
+    everything after it is a comment, and it is dropped here — before any
+    flag test sees it — rather than being allowed to vouch for the command
+    in front of it.
+    """
+    out: list[str] = []
+    current: list[str] = []
+    quote: str | None = None
+    index = 0
+    while index < len(line):
+        char = line[index]
+        if quote is not None:
+            current.append(char)
+            if char == quote:
+                quote = None
+            index += 1
+            continue
+        if char in "'\"":
+            quote = char
+            current.append(char)
+            index += 1
+            continue
+        # A comment starts at the beginning of a word, as it does in the
+        # shell, in TOML and in YAML. `foo#bar` is not a comment and
+        # neither is `$#`.
+        if char == "#" and (index == 0 or line[index - 1].isspace()):
+            break
+        matched = next(
+            (sep for sep in SEPARATORS if line.startswith(sep, index)), None)
+        if matched is not None:
+            out.append("".join(current))
+            current = []
+            index += len(matched)
+            continue
+        current.append(char)
+        index += 1
+    out.append("".join(current))
+    return [command.strip() for command in out if command.strip()]
+
+
+def tokens_of(command: str) -> list[str]:
+    """`shlex` tokens for one command, or a whitespace split if it will not lex.
+
+    An unbalanced quote makes `shlex` raise rather than answer. That is a
+    malformed command and not this gate's business to diagnose, but
+    falling over on it would take the gate out — so the fallback keeps the
+    flag test running on something, and a flag on its own word survives a
+    whitespace split intact.
+    """
+    try:
+        return shlex.split(command, comments=True)
+    except ValueError:
+        return command.split()
+
+
+def invocation_tokens(command: str) -> list[str] | None:
+    """The invocation inside one command, from `cargo` onwards, or None.
+
+    `cargo` and `mutants` have to be two adjacent *tokens*, which is what
+    stops prose from qualifying: `echo "we run cargo mutants
+    --all-features"` is two tokens, the second of them a quoted sentence,
+    and it is not an invocation of anything.
+
+    Not anchored at the first token, deliberately. A workflow step
+    written inline — `- run: cargo mutants -p x --jobs 1`, which is
+    ordinary YAML and is a fixture in this gate's own contract test —
+    begins `-`, `run:`. Requiring position 0 would make every command of
+    that shape invisible to the gate while it went on reporting OK, which
+    is the same class of hole as counting a line instead of a command.
+    Everything before `cargo` is dropped rather than searched, so a flag
+    that belongs to a wrapper (`FOO=--all-features cargo mutants …`) does
+    not vouch for the invocation either.
+    """
+    tokens = tokens_of(command)
+    for index in range(len(tokens) - 1):
+        if tokens[index] == "cargo" and tokens[index + 1] == "mutants":
+            return tokens[index:]
+    return None
+
+
+def invocations(path: pathlib.Path) -> list[tuple[int, str, list[str]]]:
+    """Every `cargo mutants` invocation in one file.
+
+    Returns (1-based line where the logical line starts, the command as
+    written, the invocation's tokens). The text of a command an
+    invocation shares a line with cannot make it carry a flag.
+    """
     try:
         text = path.read_text()
     except OSError as error:
         raise CannotRun(f"cannot read {path}: {error}") from error
-    return [(number, line) for number, line in logical_lines(text)
-            if INVOCATION.search(line)]
+    found: list[tuple[int, str, list[str]]] = []
+    for number, line in logical_lines(text):
+        if not INVOCATION.search(line):
+            continue
+        for command in commands(line):
+            tokens = invocation_tokens(command)
+            if tokens is not None:
+                found.append((number, command, tokens))
+    return found
 
 
 def default_paths() -> list[pathlib.Path]:
@@ -224,10 +355,10 @@ def main() -> int:
     offenders: list[tuple[pathlib.Path, int, str]] = []
     try:
         for path in paths:
-            for number, line in invocations(path):
+            for number, command, tokens in invocations(path):
                 checked += 1
-                if REQUIRED_FLAG not in line:
-                    offenders.append((path, number, line))
+                if REQUIRED_FLAG not in tokens:
+                    offenders.append((path, number, command))
         if not checked:
             # Judged over the union rather than per file. Per file, moving
             # the matrix from one workflow to another was an exit 2 on a
@@ -252,8 +383,8 @@ def main() -> int:
         print(f"{REQUIRED_FLAG} is missing from "
               f"{len(offenders)} of {checked} cargo-mutants invocation(s):",
               file=sys.stderr)
-        for path, number, line in offenders:
-            print(f"  {path}:{number}: {line}", file=sys.stderr)
+        for path, number, command in offenders:
+            print(f"  {path}:{number}: {command}", file=sys.stderr)
         print(
             "\nAn invocation without it mutates modules behind non-default "
             "features and then does not compile them, so those mutants are "
