@@ -170,6 +170,14 @@ impl SseTransport {
             return Ok(Vec::new());
         };
         let date = sunrise_http_sig::date_header(signer.now_ms());
+        // The `?` is unreachable from this module and stays for the signature's
+        // sake. `sign_with` fails only with `SigError::NotCanonicalizable`,
+        // which its own doc records as reachable for a map with non-string keys
+        // — and `body` is a `serde_json::Value`, whose maps are
+        // `Map<String, Value>` by construction. Non-finite floats do not reach
+        // it either: `serde_jcs` follows `serde_json` and writes `null`. So a
+        // mutant that deletes this error path survives because no input can
+        // take it, not because nothing depends on it.
         let signature =
             sunrise_http_sig::sign_with(|msg| signer.sign(msg), method, path, &date, body)
                 .map_err(|e| protocol(&e))?;
@@ -726,6 +734,12 @@ impl Transport for SseTransport {
                 }
             }
 
+            // Unreachable, and kept because `as_mut` has to answer something:
+            // the guard above opens the stream when `events` is `None`, and a
+            // successful `open_events` assigns it, so control only arrives here
+            // with `Some`. The drain loop touches `buf` alone. A mutant that
+            // changes what this arm returns therefore survives by construction
+            // rather than for want of a test.
             let Some(body) = self.events.as_mut() else {
                 return Ok(None);
             };
