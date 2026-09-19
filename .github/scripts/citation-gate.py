@@ -671,10 +671,17 @@ def symbol_span(path: str, name: str) -> list[tuple[int, int]]:
 
     Returns a list rather than the one span the first draft of this reached
     for, because a name is declared more than once in a single file all over
-    this tree: a trait method and each `impl` of it, a `struct` and the `mod`
-    that shares its name. Taking the first would fail a citation into the
-    second, and a gate that fails a correct document is worse than one that
-    passes a wrong one. Containment is therefore tested against the union.
+    this tree: a trait method and each `impl` of it. Taking the first would
+    fail a citation into the second, and a gate that fails a correct document
+    is worse than one that passes a wrong one. Containment is therefore tested
+    against the union.
+
+    This paragraph used to give a second example — a `struct` and the `mod`
+    that shares its name — and `SYMBOL_DECL` can no longer produce it, because
+    `mod` left the alternation: that pair now yields one span, not two. The
+    reason it is named rather than quietly deleted is that a justification
+    left standing after the thing it justifies moved is precisely this gate's
+    own defect class, reached here inside the gate.
 
     A span **starts** at the first line of the contiguous run of `///` lines
     and `#[…]` attributes above the declaration, so
