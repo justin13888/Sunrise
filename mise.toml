@@ -973,6 +973,26 @@ mkdir -p "out/mutants/$slug"
 # broke, and the guidance it prints was unreachable in the only case that
 # needed it. Coverage is the gate's verdict, not this task's; any other exit
 # code is a real failure and is re-raised.
+
+# The revision this measurement is about to be taken at, captured BEFORE
+# the run and moved beside the outcomes after it. This is the whole of
+# what makes a recorded floor's `sha` and `date` mean the measurement
+# rather than the recording.
+#
+# They are not the same revision and the gap is the point. A sunrise-core
+# pass is about five hours and a sunrise-domain pass about two; the tests
+# that motivated the run get committed while it is going, and
+# `mutants-baseline` may not be run until the next day. A floor stamped
+# with HEAD at recording time names a revision that does not produce the
+# number beside it — verbatim the defect #246 section 2 cites.
+#
+# Captured first rather than after because HEAD can move under a run that
+# long, and the answer wanted is the tree that was mutated. cargo-mutants
+# renames an existing `mutants.out` out of the way, so the stamp waits
+# outside the output directory until the run has created it.
+staged_revision="out/mutants/$slug.revision.json"
+.github/scripts/mutants-gate.py --record-revision "$staged_revision"
+
 rc=0
 # `--all-features`, and this line is the other one to read before changing it.
 #
@@ -1007,6 +1027,7 @@ case "$rc" in
   0 | 2 | 3) ;;
   *) exit "$rc" ;;
 esac
+mv "$staged_revision" "out/mutants/$slug/mutants.out/revision.json"
 echo
 echo "surviving mutants: out/mutants/$slug/mutants.out/missed.txt"
 echo "score this run:    .github/scripts/mutants-gate.py out/mutants/$slug/mutants.out/outcomes.json"
@@ -1038,26 +1059,43 @@ set -euo pipefail
 shopt -s nullglob
 outcomes=(out/mutants/*/mutants.out/outcomes.json)
 # Results from before each run got its own directory sit one level shallower,
-# and the glob above steps straight over them. A tree that has them is not an
-# empty tree, and saying "no results" to someone looking at a mutants.out they
-# just produced is the wrong answer. Named literally rather than globbed:
-# nullglob only drops patterns, and a literal path that does not exist would
-# survive into the array and be handed to the gate as a file to read.
-legacy=out/mutants/mutants.out/outcomes.json
-if [ -f "$legacy" ]; then
-  outcomes+=("$legacy")
-fi
+# in out/mutants/mutants.out/, and this task used to pick them up as well so
+# that a tree holding them was not reported as an empty tree. It no longer
+# does, because that kindness turned into a trap the moment floors started
+# requiring a measurement stamp: those directories predate the stamp, the gate
+# refuses any outcomes file without one, and refusal is over the whole set —
+# so one stale directory made this task exit 2 every time, for every crate,
+# with no floor recorded. The printed remedy made it worse by being right
+# about everything except the fix: `mise run mutants <crate>` writes to
+# out/mutants/<slug>/ and leaves the stale directory exactly where it was.
+#
+# A pre-stamp directory is not a measurement this task can use. Deleting it is
+# the whole remedy, and the message below says so.
 if [ -z "${outcomes[0]:-}" ]; then
-  echo "no results in out/mutants/*/mutants.out/ or out/mutants/mutants.out/;" >&2
+  echo "no results in out/mutants/*/mutants.out/;" >&2
   echo "run 'mise run mutants <crate>' first" >&2
+  if [ -d out/mutants/mutants.out ]; then
+    echo >&2
+    echo "out/mutants/mutants.out/ is a run from before each run got its own" >&2
+    echo "directory. It carries no revision stamp, so no floor can be recorded" >&2
+    echo "from it: 'rm -rf out/mutants/mutants.out' and measure again." >&2
+  fi
   exit 1
 fi
 echo "recording from:"
 for outcome in "${outcomes[@]}"; do
   echo "  $outcome"
 done
+# `--command` is what gets banked as each floor's `provenance.command`,
+# and it is this line rather than the one below it on purpose. The field
+# exists so a reader can reproduce the measurement, and nobody reproduces
+# a measurement by typing the gate's own argv; they type the task. Left
+# to default, the gate records `mutants-gate.py out/mutants/.../
+# outcomes.json --update --expect-shards ...`, which is the inside of the
+# recipe and not the recipe.
 .github/scripts/mutants-gate.py "${outcomes[@]}" --update \
-  --expect-shards "$usage_expect_shards"
+  --expect-shards "$usage_expect_shards" \
+  --command "mise run mutants-baseline --expect-shards $usage_expect_shards"
 """
 
 [tasks.mutants-gate-test]
@@ -1068,6 +1106,27 @@ description = "Assert the mutation gate's exit-code contract (fast, no mutants)"
 # anything asserted it, because the only way to exercise it was a full mutation
 # run nobody waits for.
 run = "python3 .github/scripts/test_mutants_gate.py"
+
+[tasks.mutants-flags-gate]
+description = "Assert every cargo-mutants invocation carries --all-features"
+# Reads mise.toml, plus every *.yml, *.yaml and *.sh under .github/, as
+# text, and never invokes cargo. It also asserts how many invocations it
+# expects to find, because moving one out of the files it reads leaves
+# the rest looking perfect. `--all-features` is stated in three places —
+# the `mutants` task below, the `mutants` matrix in ci.yml, and prose in
+# docs/10-cross-cutting/testing.md §Features — and nothing kept them in
+# step. An invocation that loses it mutates modules behind non-default
+# features without compiling them, so those mutants score MISSED and are
+# indistinguishable downstream from a real test gap; that is what made
+# sunrise-sync's floor read 27.17% instead of 36.89%.
+run = "python3 .github/scripts/mutants-flags-gate.py"
+
+[tasks.mutants-flags-gate-test]
+description = "Assert the flag gate's exit-code contract (fast, no cargo)"
+# Runs in under a second: it synthesises a mise.toml and a ci.yml in a
+# temp directory and points the gate at those, so the only way to see the
+# gate go red is never to edit the real files to find out.
+run = "python3 .github/scripts/test_mutants_flags_gate.py"
 
 [tasks.core-filesystem-gate-test]
 description = "Assert the core filesystem gate still reports (fast, no cargo)"

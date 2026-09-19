@@ -237,6 +237,67 @@ today, so the flag is a no-op for the other three. It is passed unconditionally
 anyway, because the failure it prevents is silent: the next feature-gated module
 would otherwise start under-reporting with nothing to say so.
 
+That leaves the rule written in three places — the `mutants` task in
+`mise.toml`, the `mutants` matrix in `.github/workflows/ci.yml`, and the
+sentence in bold at the top of this section — with nothing keeping them in step.
+`.github/scripts/mutants-flags-gate.py` now enforces the executable copies: it
+joins shell continuations, splits each joined line into the commands it actually
+runs, drops comments, and fails unless every `cargo mutants` invocation carries
+`--all-features`. It fails separately, with a different exit code, when no file
+it read holds an invocation at all, because a gate reporting green on a matrix
+that no longer runs cargo-mutants is reporting on nothing.
+
+Three details in that are load-bearing, and every one of them was established by
+defeating an earlier version of the gate against real copies of these files.
+
+The unit is an **invocation, not a line**. Shell puts several commands on one
+line, so asking whether `--all-features` appears anywhere in a line is satisfied
+by any of them. `cargo mutants --list -p X --all-features > population.txt &&
+cargo mutants -p X --jobs 1` is one line, two invocations, a legitimate flag on
+the one that measures nothing and no flag on the one that produces the floor —
+and it reported exit 0. So does a trailing `# dropped --all-features
+temporarily`, and so does a preceding `echo "we run with --all-features" && …`.
+The gate splits on `&&`, `||`, `&`, `;`, `|` and newlines, applies one comment
+rule (a `#` that starts a word), and reads every `cargo mutants` pair in each
+command as an invocation of its own.
+
+What satisfies the test is the flag **as written, before any `--`**. Three more
+shapes carried the gate without carrying the feature selection: a second
+invocation inside a single command, because only the first pair was read;
+`--exclude-re '--all-features'`, because lexing threw the quotes away and a
+regex that mentions the flag lexed to the flag; and `-- --all-features`, which
+is an argument to `cargo test` and says nothing about what cargo-mutants built.
+A command that mentions cargo-mutants and will not lex at all — an unbalanced
+quote — is exit 2 rather than a lenient reading, because the lenient reading let
+the words of a trailing comment stand in for the command's own.
+
+The file set is **`mise.toml` plus every `*.yml`, `*.yaml` and `*.sh` under
+`.github/`**, at any depth, together with a **minimum invocation count**. A
+third executable copy was invisible to a gate that knew about two files; after
+the set became `.github/workflows/*.yml` it was still invisible in
+`.github/actions/rust-checks/action.yml`, which has eight `run:` steps, and in a
+script under `.github/scripts/`. The count is there because the set being
+discovered is what makes "no invocation anywhere" judgeable over the union —
+moving the matrix from one workflow to another leaves a tree that is entirely in
+step, and calling that a broken gate is how a gate gets switched off — and a
+union cannot see a count fall from two to one. Move the matrix out of everything
+globbed and `mise.toml`'s invocation keeps the union non-empty, so only a number
+notices. It lives at `MINIMUM_INVOCATIONS` in the gate, and adding or removing
+an invocation means editing it in the same change.
+
+`.github/scripts/test_mutants_flags_gate.py` asserts that contract against
+synthesised files, so watching the gate go red never requires editing the two
+real ones. Both run as `Mutation flag gate` and `Mutation flag gate contract`,
+on every pull request rather than on the nightly — the divergence is introduced
+in a pull request, and the `mutants` matrix that would eventually notice it does
+not report until 04:00 the next morning, by which time a floor has already been
+compared against a differently-measured population.
+
+What it deliberately does not check is this paragraph and the one above it.
+Asserting a sentence checks the wording, not the rule, so the prose copy stays a
+copy; the gate names this file in its failure output instead, so whoever is
+changing the flags is told the third copy exists.
+
 ### Cost, measured
 
 | Crate | mutants | `cargo test -p`, rebuilt (2026-09-07) |
@@ -347,7 +408,90 @@ described: `.github/scripts/test_mutants_gate.py` synthesises its own outcomes
 files and checks the code for every route in about a second. `mise run
 mutants-gate-test` locally, and the `Mutation gate contract` job in CI, which
 carries no schedule condition and so runs on every push, pull request and
-nightly alike — the only part of mutation testing that does not wait for 04:00.
+nightly alike. It is one of three such jobs — `Mutation flag gate` and `Mutation
+flag gate contract`, above under §Features, are the others — and between them
+they are the whole of mutation testing that does not wait for 04:00. What they
+have in common is that none of them runs a mutant: they check the parts of the
+campaign that are text, which is why they can report in seconds on a pull
+request while the measurement itself cannot.
+
+A floor also has to say what produced it. `malformed()` in
+`.github/scripts/mutants-gate.py` requires every crate carrying a `caught_pct`
+to carry a `provenance` object with a non-empty `sha`, `date` and `command`, and
+`--update` writes all three from the run it is banking — one change rather than
+two, because the update path replaces each crate entry wholesale, so a
+`provenance` added by hand would not survive the next `mise run
+mutants-baseline`.
+
+Four fields, of which the first three are required of every floor carrying a
+`caught_pct` and `dirty` is required of a *stamp* rather than of a floor — see
+below. They have fixed meanings, and they are fixed because the object is only
+comparable across floors if they are:
+
+| Field | Means |
+|---|---|
+| `sha` | the full 40-hex revision the mutants were **measured** at |
+| `date` | the day the **measurement** ran |
+| `command` | the invocation a person would type to reproduce it |
+| `dirty` | whether the measured tree had uncommitted changes |
+
+**The measurement, not the recording.** `--update` does not ask git what HEAD
+is. It reads the revision from a `revision.json` written beside each
+`outcomes.json` while the measurement was running — `mise.toml`'s `mutants` task
+and `ci.yml`'s `mutants` matrix both call `mutants-gate.py --record-revision`
+around the cargo-mutants run — and refuses, exit 2, when an outcomes file
+carries no stamp or when two stamps name different revisions. The gap between
+the two is the reason: a `sunrise-core` pass is about five hours and a
+`sunrise-domain` pass about two, the tests that motivated the run are committed
+while it is going, and `mise run mutants-baseline` may not run until the next
+day. A floor stamped with HEAD at recording time names a revision that does not
+produce the number beside it. Refusing is recoverable, because the outcomes are
+still on disk; a floor banked against the wrong tree is not.
+
+`dirty` comes from `git status --porcelain` at the same moment, and a dirty
+measurement is recorded rather than refused — it measured something real, it
+just does not reproduce at the named revision on its own. The three floors this
+file shipped before the stamp existed carry no `dirty` at all, and its absence
+means **unknown**, not clean: nobody can now establish whether those trees were
+modified, and writing `false` would be exactly the invention the requirement
+exists to stop.
+
+Which is why a `revision.json` stamp must carry it, and is refused with exit 2
+when it does not — the same refusal `sha` and `date` get, and not the leniency
+the baseline's own `dirty` gets. The two rules point the same way read forwards
+and backwards. A floor from before the stamp existed cannot answer the question
+and says so by omission; a stamp is written at the one moment the question is
+answerable, so a stamp that omits it is not an old floor, it is somebody who did
+not look. Defaulting that to `false` would bank a floor asserting a clean tree
+on nobody's authority, which is the invention again, one file along. The refusal
+above invites a hand-written stamp, so this is a thing to get wrong by following
+the instructions: `sha`, `date` and `dirty`, all three.
+
+`command` is the human-facing invocation because the field exists so a reader
+can re-run the measurement, and nobody re-runs one by typing the gate's argv.
+`mise run mutants-baseline` passes it with `--command`; a person handing the
+gate a nightly's artifacts by hand gets the argv, which in that one case *is*
+the recipe.
+
+**Re-recording a baseline written before any of this.** Running the full check
+before `--update` writes makes such a file impossible to repair: every crate the
+run did not measure fails it, so the write never happens, and the only way out
+is to hand-edit the one field the design says must never be hand-added — after a
+measurement that costs hours. So `--update` checks the shape of the entries it
+is not replacing, without the provenance requirement, records what it measured,
+and then runs the full check on the merged file. A crate still carrying no
+provenance is reported by name with exit 2, and the floor just measured is
+already saved, so the file is repaired one crate at a time by re-recording
+rather than by hand.
+
+That check is structural, and the distinction matters more here than it looks.
+It establishes that a floor says where it came from. It cannot establish that
+what it says is true — whether the named revision carried the tests the floor
+beside it is worth, and whether a percentage quoted in prose was computed by the
+rule it names, are both decidable only by re-running the campaign at that
+revision, which is the work a recorded floor exists to avoid. Both of those
+defects have occurred in this repository's own baseline, and neither is
+something any check here can catch.
 
 **≥ 90 % caught is the release sign-off requirement, and the baseline is what
 climbs toward it.** The two are deliberately separate. A gate that failed from

@@ -38,7 +38,9 @@ Run it with `mise run mutants-gate-test`, or directly.
 
 from __future__ import annotations
 
+import importlib.util
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -46,6 +48,9 @@ import tempfile
 import unittest
 
 GATE = pathlib.Path(__file__).resolve().parent / "mutants-gate.py"
+# `.github/scripts/` -> the repository root, for the one test that reads the
+# committed baseline rather than a fixture it made up.
+REPO = GATE.parent.parent.parent
 
 CAUGHT = "CaughtMutant"
 MISSED = "MissedMutant"
@@ -77,10 +82,32 @@ def mutant(crate: str, summary: str, package=None, file=None) -> dict:
     }
 
 
-def document_file(path: pathlib.Path, outcomes: list) -> pathlib.Path:
+# The stamp `mise run mutants` and ci.yml's matrix write beside every
+# outcomes.json while the measurement runs. Every fixture below gets one,
+# because an outcomes file without one is a measurement whose revision
+# nobody recorded and `--update` refuses it. Tests that are *about* the
+# stamp pass `revision=` to drop it, contradict it, or corrupt it.
+MEASURED_AT = {
+    "sha": "9f8e7d6c5b4a39281706f5e4d3c2b1a098765432",
+    "dirty": False,
+    "date": "2026-09-15",
+}
+
+
+def stamp_file(directory: pathlib.Path, revision) -> None:
+    """Write the measurement stamp beside an outcomes file."""
+    if revision is None:
+        return
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "revision.json").write_text(json.dumps(revision))
+
+
+def document_file(path: pathlib.Path, outcomes: list,
+                  revision=MEASURED_AT) -> pathlib.Path:
     """Write an outcomes.json holding exactly these outcomes."""
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({"outcomes": outcomes}))
+    stamp_file(path.parent, revision)
     return path
 
 
@@ -91,6 +118,7 @@ def outcomes_file(
     missed: int = 0,
     timeout: int = 0,
     unviable: int = 0,
+    revision=MEASURED_AT,
 ) -> pathlib.Path:
     """Write an outcomes.json holding exactly the tally asked for."""
     document = {
@@ -106,13 +134,30 @@ def outcomes_file(
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(document))
+    stamp_file(path.parent, revision)
     return path
 
 
-def baseline_file(path: pathlib.Path, crates: dict, target=None) -> pathlib.Path:
-    document: dict = {
-        "crates": {c: {"caught_pct": pct} for c, pct in crates.items()}
-    }
+# A floored crate must carry one of these or the gate refuses the file, so
+# every fixture below gets one by default. Tests that are *about* the
+# requirement pass `provenance=` explicitly to drop or corrupt it.
+SOME_PROVENANCE = {
+    "sha": "0123456789abcdef0123456789abcdef01234567",
+    "date": "2026-09-17",
+    "command": "mutants-gate.py out.json --update --expect-shards x=1",
+}
+
+
+def baseline_file(path: pathlib.Path, crates: dict, target=None,
+                  provenance=SOME_PROVENANCE) -> pathlib.Path:
+    entries = {}
+    for crate, pct in crates.items():
+        entry: dict = {"caught_pct": pct}
+        if provenance is not None:
+            entry["provenance"] = dict(provenance) if isinstance(
+                provenance, dict) else provenance
+        entries[crate] = entry
+    document: dict = {"crates": entries}
     if target is not None:
         document["target_caught_pct"] = target
     path.write_text(json.dumps(document))
@@ -193,7 +238,18 @@ class CrateAttribution(unittest.TestCase):
 
 
 class GateContract(unittest.TestCase):
-    """One temp directory per test; the gate always runs inside it."""
+    """One temp directory per test; the gate always runs inside it.
+
+    No git repository, deliberately. `--update` takes the revision it
+    stamps a floor with from the `revision.json` written beside each
+    outcomes file while the measurement ran, not from the tree it happens
+    to be invoked in — which is the whole point of the mechanism, since
+    those are different revisions whenever the measurement was long
+    enough to be worth recording. `outcomes_file` writes that stamp, so
+    nothing here needs a repository. The cases that *are* about reading a
+    revision out of a working tree live in `FloorProvenance`, which
+    builds one.
+    """
 
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
@@ -681,7 +737,8 @@ class GateContract(unittest.TestCase):
         recorded = json.loads(base.read_text())["crates"]["sunrise-sync"]
         self.assertEqual(
             sorted(recorded),
-            ["caught", "caught_pct", "missed", "timeout", "unviable"],
+            ["caught", "caught_pct", "missed", "provenance", "timeout",
+             "unviable"],
         )
         self.assertEqual(recorded["caught"], 1)
         self.assertEqual(recorded["caught_pct"], 100.0)
@@ -990,6 +1047,568 @@ class GateContract(unittest.TestCase):
             "--expect-shards", "sunrise-sync=2",
         )
         self.assert_code(result, 0, "66.67% vs floor 66.67% — ok", "2/2 shards")
+
+
+class FloorProvenance(unittest.TestCase):
+    """A recorded floor has to say what produced it.
+
+    The exit code is the contract, not the message: `ci.yml` and the
+    gate's own printed remedies branch on 2 meaning "nothing was scored"
+    rather than "coverage regressed", and a baseline this gate cannot use
+    is squarely the former.
+
+    The pairing is the point. `malformed()` requiring `provenance` and
+    `--update` writing it are one change: with only the first, the next
+    `mise run mutants-baseline` writes a file the gate then refuses,
+    because the update path replaces each crate entry wholesale.
+    `test_update_writes_provenance_the_validator_accepts` is what holds
+    the two halves together, and it would fail on either alone.
+
+    What `sha` and `date` mean is asserted here too, not just their
+    shape. Asserting shape alone is what let three committed floors ship
+    in a vocabulary the writer could not produce: seven hex digits where
+    it writes forty, and a `command` no `shlex.join(sys.argv)` can emit.
+    So `test_update_records_the_format_the_committed_floors_are_in`
+    reads the file this repository actually ships and holds it to the
+    same format as a fresh write, and
+    `test_update_records_the_measurement_revision_not_head` pins the
+    distinction the field exists for.
+
+    The tests in this class do build a git repository, because the ones
+    below `--record-revision` are about reading a revision out of a
+    working tree.
+    """
+
+    def setUp(self) -> None:
+        self._repo = tempfile.TemporaryDirectory()
+        self.tmp = pathlib.Path(self._repo.name)
+        self.addCleanup(self._repo.cleanup)
+        for args in (
+            ("git", "init", "--quiet"),
+            ("git", "config", "user.email", "gate@example.invalid"),
+            ("git", "config", "user.name", "gate"),
+            ("git", "commit", "--quiet", "--allow-empty", "-m", "fixture"),
+        ):
+            subprocess.run(args, cwd=self.tmp, capture_output=True,
+                           text=True, check=True)
+
+    def run_gate(self, *args: str, cwd=None) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [sys.executable, str(GATE), *args],
+            cwd=cwd or self.tmp, capture_output=True, text=True,
+        )
+
+    def assert_code(self, result, expected: int, *fragments: str) -> None:
+        output = result.stdout + result.stderr
+        self.assertEqual(
+            result.returncode, expected,
+            f"expected exit {expected}, got {result.returncode}\n{output}")
+        for fragment in fragments:
+            self.assertIn(fragment, output)
+
+    # --- 2: the baseline cannot be used ----------------------------------
+
+    def test_floor_without_provenance_is_2(self):
+        run = outcomes_file(self.tmp / "a.json", "sunrise-sync", caught=1)
+        base = baseline_file(
+            self.tmp / "base.json", {"sunrise-sync": 50.0}, provenance=None)
+        self.assert_code(
+            self.run_gate(str(run), "--baseline", str(base)),
+            2, "cannot use", "provenance", "expected an object")
+
+    def test_floor_with_non_object_provenance_is_2(self):
+        run = outcomes_file(self.tmp / "a.json", "sunrise-sync", caught=1)
+        base = baseline_file(
+            self.tmp / "base.json", {"sunrise-sync": 50.0},
+            provenance="1d4b484 on 2026-09-16")
+        self.assert_code(
+            self.run_gate(str(run), "--baseline", str(base)),
+            2, "cannot use", '"crates.sunrise-sync.provenance" is str')
+
+    def test_floor_with_a_missing_provenance_field_is_2(self):
+        run = outcomes_file(self.tmp / "a.json", "sunrise-sync", caught=1)
+        base = baseline_file(
+            self.tmp / "base.json", {"sunrise-sync": 50.0},
+            provenance={"sha": "1d4b484", "date": "2026-09-16"})
+        self.assert_code(
+            self.run_gate(str(run), "--baseline", str(base)),
+            2, "cannot use", "provenance.command")
+
+    def test_floor_with_a_blank_provenance_field_is_2(self):
+        # The case `git rev-parse` failing would have written if the writer
+        # recorded an empty string instead of refusing. A blank sha has the
+        # right shape and says nothing, which is the placeholder
+        # mutants/baseline.json's own rule rejects.
+        run = outcomes_file(self.tmp / "a.json", "sunrise-sync", caught=1)
+        base = baseline_file(
+            self.tmp / "base.json", {"sunrise-sync": 50.0},
+            provenance={"sha": "   ", "date": "2026-09-16", "command": "x"})
+        self.assert_code(
+            self.run_gate(str(run), "--baseline", str(base)),
+            2, "cannot use", "provenance.sha")
+
+    def test_crate_with_no_floor_needs_no_provenance(self):
+        # An entry carrying no `caught_pct` constrains nothing, so there is
+        # nothing to account for. This is the shape `sunrise-core` is in.
+        run = outcomes_file(self.tmp / "a.json", "sunrise-sync", caught=1)
+        base = self.tmp / "base.json"
+        base.write_text(json.dumps({"crates": {"sunrise-core": {}}}))
+        self.assert_code(
+            self.run_gate(str(run), "--baseline", str(base)),
+            1, "NO FLOOR RECORDED")
+
+    # --- 0: --update writes what the validator requires -------------------
+
+    def test_update_writes_provenance_the_validator_accepts(self):
+        run = outcomes_file(
+            self.tmp / "a.json", "sunrise-sync", caught=3, missed=1)
+        base = baseline_file(self.tmp / "base.json", {})
+        self.assert_code(
+            self.run_gate(
+                str(run), "--update", "--baseline", str(base),
+                "--expect-shards", "sunrise-sync=1"),
+            0, "recorded 1 crate(s)")
+        recorded = json.loads(base.read_text())["crates"]["sunrise-sync"]
+        origin = recorded["provenance"]
+        self.assertEqual(
+            sorted(origin), ["command", "date", "dirty", "sha"])
+        self.assertIn("--expect-shards", origin["command"])
+
+        # The half that makes this one change rather than two: the file the
+        # writer just produced is a file the validator accepts. Fails if
+        # either the requirement or the write is dropped.
+        self.assert_code(
+            self.run_gate(str(run), "--baseline", str(base)),
+            0, "75.0% vs floor 75.0% — ok")
+
+    def test_update_records_the_measurement_revision_not_head(self):
+        # The defect this whole mechanism exists for. The fixture's stamp
+        # names a revision that is deliberately not this repository's
+        # HEAD, which is what a real run looks like: the measurement took
+        # hours, the tests that motivated it were committed while it ran,
+        # and `--update` comes later. A gate that asked git would record
+        # the wrong tree and nothing would contradict it.
+        run = outcomes_file(self.tmp / "a.json", "sunrise-sync", caught=1)
+        base = baseline_file(self.tmp / "base.json", {})
+        self.assert_code(
+            self.run_gate(
+                str(run), "--update", "--baseline", str(base),
+                "--expect-shards", "sunrise-sync=1"),
+            0, "recorded 1 crate(s)")
+        origin = json.loads(
+            base.read_text())["crates"]["sunrise-sync"]["provenance"]
+        head = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=self.tmp,
+            capture_output=True, text=True, check=True).stdout.strip()
+        self.assertEqual(origin["sha"], MEASURED_AT["sha"])
+        self.assertNotEqual(origin["sha"], head)
+        self.assertEqual(origin["date"], MEASURED_AT["date"])
+        self.assertIs(origin["dirty"], False)
+
+    def test_update_records_the_format_the_committed_floors_are_in(self):
+        # The written values and the committed ones have to be one
+        # vocabulary or `provenance` is not comparable across floors and
+        # its `command` is not a recipe. Pinned against the shipped file
+        # rather than against a restatement of it, so a re-record that
+        # changed either side's shape is caught here.
+        run = outcomes_file(self.tmp / "a.json", "sunrise-sync", caught=1)
+        base = baseline_file(self.tmp / "base.json", {})
+        self.assert_code(
+            self.run_gate(
+                str(run), "--update", "--baseline", str(base),
+                "--expect-shards", "sunrise-sync=1",
+                "--command",
+                "mise run mutants-baseline --expect-shards sunrise-sync=1"),
+            0)
+        written = json.loads(
+            base.read_text())["crates"]["sunrise-sync"]["provenance"]
+
+        committed = json.loads(
+            (REPO / "mutants" / "baseline.json").read_text())["crates"]
+        for crate, entry in committed.items():
+            origin = entry.get("provenance")
+            if origin is None:
+                continue
+            with self.subTest(crate=crate):
+                # A full revision, not an abbreviation: `1d4b484` is
+                # ambiguous in principle and not what any writer emits.
+                self.assertEqual(len(origin["sha"]), len(written["sha"]))
+                self.assertRegex(origin["sha"], r"\A[0-9a-f]{40}\Z")
+                self.assertRegex(origin["date"], r"\A\d{4}-\d{2}-\d{2}\Z")
+                # The human-facing invocation, not the gate's own argv.
+                self.assertTrue(
+                    origin["command"].startswith("mise run mutants-baseline"),
+                    origin["command"])
+        self.assertTrue(
+            written["command"].startswith("mise run mutants-baseline"),
+            written["command"])
+
+    def test_the_command_defaults_to_this_process_argv(self):
+        # The one caller with no friendlier form: a person handing the
+        # gate a nightly's artifacts by hand. Their argv *is* the recipe.
+        run = outcomes_file(self.tmp / "a.json", "sunrise-sync", caught=1)
+        base = baseline_file(self.tmp / "base.json", {})
+        self.assert_code(
+            self.run_gate(
+                str(run), "--update", "--baseline", str(base),
+                "--expect-shards", "sunrise-sync=1"),
+            0)
+        origin = json.loads(
+            base.read_text())["crates"]["sunrise-sync"]["provenance"]
+        self.assertIn("--update", origin["command"])
+        self.assertIn("--expect-shards", origin["command"])
+
+    def test_a_dirty_measurement_is_recorded_as_dirty(self):
+        run = outcomes_file(
+            self.tmp / "a.json", "sunrise-sync", caught=1,
+            revision={**MEASURED_AT, "dirty": True})
+        base = baseline_file(self.tmp / "base.json", {})
+        result = self.run_gate(
+            str(run), "--update", "--baseline", str(base),
+            "--expect-shards", "sunrise-sync=1")
+        self.assert_code(result, 0, "modified working tree")
+        origin = json.loads(
+            base.read_text())["crates"]["sunrise-sync"]["provenance"]
+        self.assertIs(origin["dirty"], True)
+
+    def test_a_non_boolean_dirty_flag_is_2(self):
+        # `"false"` is a string and every string is truthy, so it reads
+        # as clean to a person and as dirty to the code.
+        run = outcomes_file(self.tmp / "a.json", "sunrise-sync", caught=1)
+        base = baseline_file(
+            self.tmp / "base.json", {"sunrise-sync": 50.0},
+            provenance={**SOME_PROVENANCE, "dirty": "false"})
+        self.assert_code(
+            self.run_gate(str(run), "--baseline", str(base)),
+            2, "cannot use", "provenance.dirty", "expected a boolean")
+
+    def test_update_with_allow_partial_writes_provenance_too(self):
+        # A partial floor is still a standing constraint, so it still has
+        # to say what produced it.
+        run = outcomes_file(self.tmp / "a.json", "sunrise-sync", caught=1)
+        base = baseline_file(self.tmp / "base.json", {})
+        self.assert_code(
+            self.run_gate(
+                str(run), "--update", "--allow-partial",
+                "--baseline", str(base)),
+            0, "no completeness check")
+        origin = json.loads(
+            base.read_text())["crates"]["sunrise-sync"]["provenance"]
+        self.assertEqual(
+            sorted(origin), ["command", "date", "dirty", "sha"])
+        self.assertIn("--allow-partial", origin["command"])
+
+    # --- 2: the measurement cannot say what revision produced it ---------
+
+    def test_update_refuses_when_the_outcomes_carry_no_revision(self):
+        # The recorder's HEAD is not an answer to this question, and
+        # guessing it is what put a wrong revision in the file before.
+        # Refusing is recoverable — the outcomes are still on disk.
+        run = outcomes_file(
+            self.tmp / "a.json", "sunrise-sync", caught=1, revision=None)
+        base = baseline_file(self.tmp / "base.json", {})
+        self.assert_code(
+            self.run_gate(
+                str(run), "--update", "--baseline", str(base),
+                "--expect-shards", "sunrise-sync=1"),
+            2, "carry no measurement revision", str(run))
+        # Nothing was written: the refusal is before the file is touched.
+        self.assertEqual(json.loads(base.read_text())["crates"], {})
+
+    def test_update_refuses_when_two_shards_disagree_on_the_revision(self):
+        # A crate scored across two trees is not a measurement of either.
+        first = outcomes_file(
+            self.tmp / "one" / "outcomes.json", "sunrise-sync", caught=1)
+        second = outcomes_file(
+            self.tmp / "two" / "outcomes.json", "sunrise-sync", caught=1,
+            revision={**MEASURED_AT, "sha": "a" * 40})
+        base = baseline_file(self.tmp / "base.json", {})
+        self.assert_code(
+            self.run_gate(
+                str(first), str(second), "--update", "--baseline", str(base),
+                "--expect-shards", "sunrise-sync=2"),
+            2, "measured at more than one revision", "a" * 40)
+        self.assertEqual(json.loads(base.read_text())["crates"], {})
+
+    def test_shards_agreeing_on_the_revision_may_differ_in_date(self):
+        # Thirteen CI shards start together and can finish either side of
+        # midnight UTC. Refusing that would make the nightly unrecordable
+        # for reasons that have nothing to do with the measurement.
+        first = outcomes_file(
+            self.tmp / "one" / "outcomes.json", "sunrise-sync", caught=1)
+        second = outcomes_file(
+            self.tmp / "two" / "outcomes.json", "sunrise-sync", caught=1,
+            revision={**MEASURED_AT, "date": "2026-09-16"})
+        base = baseline_file(self.tmp / "base.json", {})
+        self.assert_code(
+            self.run_gate(
+                str(first), str(second), "--update", "--baseline", str(base),
+                "--expect-shards", "sunrise-sync=2"),
+            0)
+        origin = json.loads(
+            base.read_text())["crates"]["sunrise-sync"]["provenance"]
+        # The earliest: the day the measurement began.
+        self.assertEqual(origin["date"], "2026-09-15")
+
+    def test_a_revision_stamp_with_a_blank_sha_is_2(self):
+        run = outcomes_file(
+            self.tmp / "a.json", "sunrise-sync", caught=1,
+            revision={**MEASURED_AT, "sha": "   "})
+        base = baseline_file(self.tmp / "base.json", {})
+        self.assert_code(
+            self.run_gate(
+                str(run), "--update", "--baseline", str(base),
+                "--expect-shards", "sunrise-sync=1"),
+            2, 'records no "sha"')
+
+    def test_a_revision_stamp_with_no_date_is_2(self):
+        run = outcomes_file(
+            self.tmp / "a.json", "sunrise-sync", caught=1,
+            revision={"sha": "b" * 40})
+        base = baseline_file(self.tmp / "base.json", {})
+        self.assert_code(
+            self.run_gate(
+                str(run), "--update", "--baseline", str(base),
+                "--expect-shards", "sunrise-sync=1"),
+            2, 'records no "date"')
+
+    def test_a_revision_stamp_with_no_dirty_flag_is_2(self):
+        # The stamp the gate's own refusal text tells a person to write
+        # by hand. Read as `false` — a missing key is falsy — it banked a
+        # floor saying the measured tree was clean, which nobody had
+        # asserted and nobody could check afterwards. Every other place
+        # in this design reads an absent `dirty` as *unknown*; a stamp is
+        # written at the one moment the question is answerable, so it is
+        # required there rather than defaulted.
+        run = outcomes_file(
+            self.tmp / "a.json", "sunrise-sync", caught=1,
+            revision={"sha": "b" * 40, "date": "2026-09-15"})
+        base = baseline_file(self.tmp / "base.json", {})
+        self.assert_code(
+            self.run_gate(
+                str(run), "--update", "--baseline", str(base),
+                "--expect-shards", "sunrise-sync=1"),
+            2, 'records no boolean "dirty"')
+        # Nothing banked: the refusal is before the file is touched.
+        self.assertEqual(json.loads(base.read_text())["crates"], {})
+
+    def test_a_revision_stamp_with_a_non_boolean_dirty_flag_is_2(self):
+        # The same trap the baseline's own `dirty` is typed against, one
+        # file upstream: `"false"` is a string, every string is truthy,
+        # and it reads as clean to a person and as dirty to the code.
+        run = outcomes_file(
+            self.tmp / "a.json", "sunrise-sync", caught=1,
+            revision={**MEASURED_AT, "dirty": "false"})
+        base = baseline_file(self.tmp / "base.json", {})
+        self.assert_code(
+            self.run_gate(
+                str(run), "--update", "--baseline", str(base),
+                "--expect-shards", "sunrise-sync=1"),
+            2, 'records no boolean "dirty"')
+
+    def test_one_dirty_shard_makes_the_whole_floor_dirty(self):
+        # `dirty` is the union across the shards, not the last one read.
+        # Thirteen shards measure one crate between them, so one of them
+        # seeing uncommitted changes is enough to make the floor they
+        # produce unreproducible at the revision beside it — and the
+        # single-shard case cannot tell a union from an overwrite.
+        first = outcomes_file(
+            self.tmp / "one" / "outcomes.json", "sunrise-sync", caught=1)
+        second = outcomes_file(
+            self.tmp / "two" / "outcomes.json", "sunrise-sync", caught=1,
+            revision={**MEASURED_AT, "dirty": True})
+        base = baseline_file(self.tmp / "base.json", {})
+        result = self.run_gate(
+            str(first), str(second), "--update", "--baseline", str(base),
+            "--expect-shards", "sunrise-sync=2")
+        self.assert_code(result, 0, "modified working tree")
+        origin = json.loads(
+            base.read_text())["crates"]["sunrise-sync"]["provenance"]
+        self.assertIs(origin["dirty"], True)
+
+    def test_clean_shards_together_stay_clean(self):
+        # The other direction of the same union, so that "always true"
+        # is not a way of passing the case above.
+        first = outcomes_file(
+            self.tmp / "one" / "outcomes.json", "sunrise-sync", caught=1)
+        second = outcomes_file(
+            self.tmp / "two" / "outcomes.json", "sunrise-sync", caught=1)
+        base = baseline_file(self.tmp / "base.json", {})
+        result = self.run_gate(
+            str(first), str(second), "--update", "--baseline", str(base),
+            "--expect-shards", "sunrise-sync=2")
+        self.assert_code(result, 0)
+        self.assertNotIn("modified working tree", result.stderr)
+        origin = json.loads(
+            base.read_text())["crates"]["sunrise-sync"]["provenance"]
+        self.assertIs(origin["dirty"], False)
+
+    def test_the_stamp_refusal_names_all_three_required_fields(self):
+        # The refusal invites a hand-written stamp, so it has to say what
+        # one contains. Naming two of three is how the `dirty`-less stamp
+        # got written in the first place.
+        run = outcomes_file(
+            self.tmp / "a.json", "sunrise-sync", caught=1, revision=None)
+        base = baseline_file(self.tmp / "base.json", {})
+        result = self.run_gate(
+            str(run), "--update", "--baseline", str(base),
+            "--expect-shards", "sunrise-sync=1")
+        self.assert_code(result, 2)
+        for field in ("sha", "date", "dirty"):
+            self.assertIn(f'"{field}"', result.stderr)
+
+    def test_the_stamp_is_found_one_level_above_the_outcomes(self):
+        # cargo-mutants always writes `mutants.out/` under the directory
+        # it is handed, so the run directory the task created is one
+        # level up. Both layouts have to work or the local task and the
+        # CI artifacts disagree about where the stamp lives.
+        run = outcomes_file(
+            self.tmp / "run" / "mutants.out" / "outcomes.json",
+            "sunrise-sync", caught=1, revision=None)
+        stamp_file(self.tmp / "run", MEASURED_AT)
+        base = baseline_file(self.tmp / "base.json", {})
+        self.assert_code(
+            self.run_gate(
+                str(run), "--update", "--baseline", str(base),
+                "--expect-shards", "sunrise-sync=1"),
+            0, "recorded 1 crate(s)")
+
+    # --- the bootstrap: a baseline written before provenance existed -----
+
+    def test_update_can_re_record_a_crate_in_a_legacy_baseline(self):
+        # Reachable by reverting a floor-recording commit, by --update
+        # against a baseline restored from an older ref, or by running
+        # this script against a release branch's. With the full check
+        # running before the write, the entry `--update` is about to
+        # replace blocks its own replacement, and the only recovery is to
+        # hand-edit the one field the design says must never be
+        # hand-added — after a measurement that costs hours.
+        run = outcomes_file(self.tmp / "a.json", "sunrise-sync", caught=1)
+        base = baseline_file(
+            self.tmp / "base.json", {"sunrise-sync": 50.0}, provenance=None)
+        self.assert_code(
+            self.run_gate(
+                str(run), "--update", "--baseline", str(base),
+                "--expect-shards", "sunrise-sync=1"),
+            0, "recorded 1 crate(s)")
+        origin = json.loads(
+            base.read_text())["crates"]["sunrise-sync"]["provenance"]
+        self.assertEqual(origin["sha"], MEASURED_AT["sha"])
+
+    def test_a_legacy_crate_the_run_did_not_measure_is_reported_after(self):
+        # The deferred half. The crate that was measured is recorded —
+        # the repair proceeds one crate at a time — and the file is
+        # reported as not yet usable rather than as a clean write,
+        # because the nightly gate cannot read it until the rest are
+        # re-recorded too.
+        run = outcomes_file(self.tmp / "a.json", "sunrise-sync", caught=1)
+        base = baseline_file(
+            self.tmp / "base.json",
+            {"sunrise-sync": 50.0, "sunrise-crypto": 70.0}, provenance=None)
+        result = self.run_gate(
+            str(run), "--update", "--baseline", str(base),
+            "--expect-shards", "sunrise-sync=1")
+        self.assert_code(
+            result, 2, "recorded 1 crate(s)",
+            "not yet a usable baseline",
+            '"crates.sunrise-crypto.provenance"')
+        crates = json.loads(base.read_text())["crates"]
+        self.assertEqual(
+            crates["sunrise-sync"]["provenance"]["sha"], MEASURED_AT["sha"])
+        self.assertNotIn("provenance", crates["sunrise-crypto"])
+
+    def test_a_baseline_of_the_wrong_shape_still_blocks_update(self):
+        # The bootstrap relaxes the provenance requirement and nothing
+        # else. A `crates` value that is not an object is not a legacy
+        # file, it is a broken one, and merging into it would lose
+        # whatever is there.
+        run = outcomes_file(self.tmp / "a.json", "sunrise-sync", caught=1)
+        base = self.tmp / "base.json"
+        base.write_text(json.dumps({"crates": []}))
+        self.assert_code(
+            self.run_gate(
+                str(run), "--update", "--baseline", str(base),
+                "--expect-shards", "sunrise-sync=1"),
+            2, "cannot use", '"crates" is list')
+
+    # --- --record-revision: where the stamp comes from -------------------
+
+    def test_record_revision_writes_the_head_of_the_tree(self):
+        target = self.tmp / "out" / "revision.json"
+        result = self.run_gate("--record-revision", str(target))
+        self.assert_code(result, 0, "clean")
+        head = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=self.tmp,
+            capture_output=True, text=True, check=True).stdout.strip()
+        document = json.loads(target.read_text())
+        self.assertEqual(document["sha"], head)
+        self.assertIs(document["dirty"], False)
+        self.assertRegex(document["date"], r"\A\d{4}-\d{2}-\d{2}\Z")
+
+    def test_record_revision_sees_a_modified_tree(self):
+        (self.tmp / "tracked.txt").write_text("committed\n")
+        for args in (
+            ("git", "add", "tracked.txt"),
+            ("git", "commit", "--quiet", "-m", "tracked"),
+        ):
+            subprocess.run(args, cwd=self.tmp, capture_output=True,
+                           text=True, check=True)
+        (self.tmp / "tracked.txt").write_text("edited\n")
+        target = self.tmp / "revision.json"
+        self.assert_code(
+            self.run_gate("--record-revision", str(target)), 0, "dirty")
+        self.assertIs(json.loads(target.read_text())["dirty"], True)
+
+    def test_record_revision_outside_a_repository_is_2(self):
+        # The arm that `check=True` made unreachable. `git rev-parse
+        # HEAD` exits non-zero and prints nothing, and a stamp with a
+        # blank sha has the right shape and says nothing.
+        outside = tempfile.TemporaryDirectory()
+        self.addCleanup(outside.cleanup)
+        where = pathlib.Path(outside.name)
+        target = where / "revision.json"
+        self.assert_code(
+            self.run_gate("--record-revision", str(target), cwd=where),
+            2, "printed nothing")
+        self.assertFalse(target.exists())
+
+    def test_record_revision_with_no_git_on_path_is_2(self):
+        # Distinct news from the case above: no repository tooling at
+        # all, rather than no repository.
+        target = self.tmp / "revision.json"
+        result = subprocess.run(
+            [sys.executable, str(GATE), "--record-revision", str(target)],
+            cwd=self.tmp, capture_output=True, text=True,
+            env={**os.environ, "PATH": str(self.tmp / "empty")},
+        )
+        self.assert_code(result, 2, "cannot run git")
+        self.assertFalse(target.exists())
+
+    def test_no_outcomes_and_no_record_revision_is_2(self):
+        self.assert_code(self.run_gate("--update"), 2, "usage")
+
+
+class ShippedBaselineIsUsable(unittest.TestCase):
+    """The baseline this repository actually ships passes its own validator.
+
+    Every other test here synthesises a fixture. This one reads
+    `mutants/baseline.json`, which is the file the nightly gate loads, and
+    is the check that would have caught adding `provenance` to the
+    validator without adding it to the committed floors.
+    """
+
+    def test_committed_baseline_is_well_formed(self):
+        baseline = REPO / "mutants" / "baseline.json"
+        document = json.loads(baseline.read_text())
+        sys.path.insert(0, str(GATE.parent))
+        try:
+            spec = importlib.util.spec_from_file_location(
+                "mutants_gate_under_test", GATE)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+        finally:
+            sys.path.pop(0)
+        self.assertIsNone(module.malformed(document))
 
 
 if __name__ == "__main__":
