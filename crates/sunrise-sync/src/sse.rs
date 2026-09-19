@@ -612,10 +612,24 @@ impl Transport for SseTransport {
                 }
                 let parsed: serde_json::Value =
                     serde_json::from_slice(&reply.bytes).map_err(|e| protocol(&e))?;
-                self.session = parsed
-                    .get("session_id")
-                    .and_then(|s| s.as_str())
-                    .map(ToOwned::to_owned);
+                // A reply naming no session is a failed handshake, not a
+                // quiet one.
+                // `crates/sunrise-server/src/api/sync/credential.rs:51`
+                // declares `session_id` as a `String` rather than an
+                // `Option<String>`, so a `200` without it is malformed by the
+                // server's own contract. Accepting it used to leave
+                // `self.session` `None` while a `HelloAck` went to the driver
+                // as though the handshake had succeeded: every later `call`
+                // then went up with no `x-sunrise-session` for the relay to
+                // refuse, and the next stream open reported "no sync session:
+                // send Hello first" — naming the wrong cause to whoever read
+                // the log, because `Hello` *was* sent and *was* acked.
+                let Some(session) = parsed.get("session_id").and_then(|s| s.as_str()) else {
+                    return Err(TransportError::Protocol(
+                        "handshake reply carries no session_id".to_owned(),
+                    ));
+                };
+                self.session = Some(session.to_owned());
 
                 let ack = HelloAck {
                     server_app_v: field_str(&parsed, "server_app_v"),
@@ -2842,40 +2856,45 @@ mod tests {
         );
     }
 
-    /// A `Hello` reply this transport cannot read leaves no session behind it.
+    /// A `Hello` reply this transport cannot read is a failed handshake, and
+    /// says so.
     ///
-    /// Two shapes, and the second is the quiet one. A reply that is not JSON is
-    /// a protocol error the driver sees. A reply that *is* JSON but names no
-    /// `session_id` is accepted today: `self.session` stays `None`, the
-    /// `HelloAck` goes to the driver as if the handshake succeeded, and every
-    /// later `call` goes up with no `x-sunrise-session` for the relay to
-    /// refuse. The behaviour is pinned as it is rather than as it should be,
-    /// so that a change to it is a decision somebody takes rather than a
-    /// regression nobody notices.
+    /// Two shapes, and the second is the one that used to be quiet. A reply
+    /// that is not JSON has always been a protocol error the driver sees. A
+    /// reply that *is* JSON but names no `session_id` was accepted:
+    /// `self.session` stayed `None` and a `HelloAck` went to the driver as
+    /// though the handshake had succeeded, so every later `call` went up with
+    /// no `x-sunrise-session` for the relay to refuse and the next stream open
+    /// reported "no sync session: send Hello first" — the wrong cause, since
+    /// `Hello` was sent and acked.
+    ///
+    /// `crates/sunrise-server/src/api/sync/credential.rs:51` declares
+    /// `session_id` non-`Option`, so such a reply is malformed by the server's
+    /// own contract. Both shapes now fail where they are read, and neither
+    /// leaves an ack behind: the driver's reconnect is what decides what
+    /// happens next, which is what it does for every other failed handshake.
     #[tokio::test]
-    async fn a_hello_reply_this_build_cannot_read_leaves_no_session() {
-        let relay = relay::start(vec![relay::Canned::json(200, "not json at all")]).await;
-        let mut t = dial(&relay);
-        let err = t
-            .send_frame(hello_frame())
-            .await
-            .expect_err("a reply that is not JSON is not a session");
-        assert!(matches!(err, TransportError::Protocol(_)), "{err}");
-        assert!(t.session.is_none());
-
-        let relay = relay::start(vec![relay::Canned::json(
-            200,
+    async fn a_hello_reply_this_build_cannot_read_is_refused_rather_than_acked() {
+        for body in [
+            "not json at all",
             r#"{"server_app_v":"9.9.9","wire_proto":1,"crypto_suite":1,"doc_schema_floor":3}"#,
-        )])
-        .await;
-        let mut t = dial(&relay);
-        t.send_frame(hello_frame())
-            .await
-            .expect("a reply with no session id is accepted today");
-        assert!(
-            t.session.is_none(),
-            "which leaves every later operation unsessioned, silently"
-        );
+        ] {
+            let relay = relay::start(vec![relay::Canned::json(200, body)]).await;
+            let mut t = dial(&relay);
+            let err = t
+                .send_frame(hello_frame())
+                .await
+                .expect_err("a reply this build cannot read is not a session");
+            assert!(matches!(err, TransportError::Protocol(_)), "{err}");
+            assert!(
+                t.session.is_none(),
+                "and nothing is remembered from a handshake that failed"
+            );
+            assert!(
+                t.inbound.is_empty(),
+                "no HelloAck reaches the driver for a handshake that did not happen"
+            );
+        }
     }
 
     /// A frame kind that has no operation upstream is refused here rather than
