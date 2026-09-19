@@ -1322,7 +1322,11 @@ jobs:
         # permalink fragment — `#L702`, `#L702-L710` and the column forms —
         # and any `#symbol` on a non-`.rs` target are DECLINED rather than
         # failed, and what is declined is the SYMBOL check alone: the span
-        # keeps every other check and stays in the checked count. Neither an
+        # keeps every other check and stays in the checked count. The
+        # DIRECTORY check is one of those others, so a `#symbol` on a path
+        # that resolves to a directory fails whatever the extension, the
+        # permalink fragment alone excepted, because it names a line rather
+        # than an item a directory could be missing. Neither an
         # `impl` block nor a `mod` is a legal target, because `#Engine`
         # spanned 97.7% of `sync.rs` and `mod tests` in `api/sync/suite.rs`
         # spans 99.5% of it, so neither checked anything.

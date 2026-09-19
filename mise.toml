@@ -462,7 +462,11 @@ description = "Reject a backticked path:line#symbol citation that points at noth
 #     rather than failed on a guess. What is declined is the SYMBOL check:
 #     the path and line checks run on the span as they always did, and the
 #     span stays in the checked count. Appending a fragment can never make a
-#     build greener.
+#     build greener. The DIRECTORY check is one of the others the span keeps,
+#     so a `#symbol` on a path that resolves to a directory fails whatever
+#     the path's extension — a directory declares nothing under any grammar.
+#     The permalink fragment alone is exempt there, because it names a line
+#     rather than an item the directory could be missing.
 #   * Neither an `impl` block nor a `mod` is a legal target. `#Engine` spanned
 #     97.7% of `sync.rs` and `mod tests` in `api/sync/suite.rs` spans 99.5%
 #     of it, which checks nothing; cite the `struct`, `trait` or `fn`.

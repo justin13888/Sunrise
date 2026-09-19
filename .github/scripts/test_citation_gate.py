@@ -1315,29 +1315,81 @@ class Symbols(GateCase):
             self.run_gate(), DANGLING, "cites line 9, but `docs/b.md` has 2 line(s)."
         )
 
-    def test_a_suffix_on_a_non_rust_directory_is_declined_for_its_extension(self):
-        # `json` is not `rs`, so the suffix is one the gate has no reading
-        # for, and a suffix it cannot read on a directory is no more readable
-        # than the same suffix on a file. The span falls through to the
-        # verdict its bare path carries -- clean, and counted, which is what a
-        # bare directory citation has always been.
+    def test_a_symbol_on_a_directory_fails_whatever_the_extension(self):
+        # A directory declares nothing under any grammar, so the verdict
+        # cannot turn on the extension of a path that names no file. It used
+        # to: the exemption here tested `declined`, whose other half is "the
+        # target is not Rust", and that made `bundle.json#thing` a clean,
+        # counted pass while `mod.rs#anything` failed -- an asymmetry nothing
+        # chose and no citation in this repository has ever reached, since the
+        # only tracked directories with extension-shaped names are `.cargo`,
+        # `.github` and `.vscode` and none of those suffixes is in
+        # `EXTENSIONS`.
         #
-        # The neighbouring `.rs` directory case is a FAILURE rather than this,
-        # and the difference is the whole of the distinction: there the gate
-        # does have a resolver, so a directory declaring nothing is an answer
-        # it can give.
+        # What the non-Rust arm declines is the SYMBOL check. The directory
+        # check is one of the others the span keeps, exactly as the path and
+        # line checks are.
         self.write("schemas/bundle.json/part.json", "{}\n")
         self.write("docs/a.md", "See `schemas/bundle.json#thing`.\n")
         self.assert_code(
-            self.run_gate(), CLEAN, "OK: citations clean.", "1 anchored citation(s)"
+            self.run_gate(),
+            DANGLING,
+            "names `thing`, but `schemas/bundle.json` is a directory.",
+        )
+
+        # The markdown spelling of the same suffix, which is the one a reader
+        # would call a link anchor rather than a symbol. Still a directory.
+        self.write("docs/a.md", "See `schemas/bundle.json#heading`.\n")
+        self.assert_code(
+            self.run_gate(),
+            DANGLING,
+            "names `heading`, but `schemas/bundle.json` is a directory.",
+        )
+
+    def test_a_permalink_fragment_on_a_directory_is_exempt(self):
+        # The one exemption, and the only branch of the directory verdict that
+        # is not a failure. `#L702` names a LINE rather than an item, so
+        # "declares nothing" is not an answer to it and there is nothing for
+        # the message to name; the span falls through to the verdict its bare
+        # path carries, which for a directory has always been clean and
+        # counted.
+        #
+        # Asserted on both extensions, because the exemption is the half of
+        # the rule that must NOT have become extension-dependent when the
+        # failure above stopped being so.
+        self.write("crates/c/src/mod.rs/inner.rs", "pub fn anything() {}\n")
+        self.write("schemas/bundle.json/part.json", "{}\n")
+        self.write(
+            "docs/a.md",
+            "See `crates/c/src/mod.rs#L702`, `crates/c/src/mod.rs#L702-L710` "
+            "and `schemas/bundle.json#L702`.\n",
+        )
+        result = self.run_gate()
+        self.assert_code(result, CLEAN, "OK: citations clean.", "3 anchored citation(s)")
+        self.assertNotIn("path-like span(s) were NOT checked", result.stdout)
+
+    def test_a_bare_hash_on_a_directory_fails_naming_no_symbol(self):
+        # A trailing `#` with nothing after it parses, because the grammar
+        # carries no lower bound on the suffix -- a bound there would drop the
+        # span from the run with the checks it already had. On a directory it
+        # reaches the failure above with an empty symbol, so the message names
+        # nothing between its backticks. That is the honest report: the
+        # citation named no item, and the path names no file either.
+        self.write("crates/c/src/mod.rs/inner.rs", "pub fn anything() {}\n")
+        self.write("docs/a.md", "See `crates/c/src/mod.rs#`.\n")
+        self.assert_code(
+            self.run_gate(),
+            DANGLING,
+            "names ``, but `crates/c/src/mod.rs` is a directory.",
         )
 
     def test_a_symbol_on_a_rust_named_directory_fails(self):
-        # The branch the case above was named for, reached the only way it
-        # can be: a tracked directory whose own name ends in `.rs`. A
-        # directory declares nothing, so there is no reading under which this
-        # citation is correct -- which is why it is a failure and not a
-        # decline, and why no correct document can be red-lined by it.
+        # The same verdict as the `.json` directory above, reached through the
+        # extension the gate does have a resolver for -- which is the point of
+        # keeping both: they must not differ. A directory declares nothing, so
+        # there is no reading under which this citation is correct, which is
+        # why it is a failure and not a decline and why no correct document
+        # can be red-lined by it.
         #
         # A silent clean pass here -- counted as an anchored, checked citation
         # for a symbol no resolver was ever consulted about -- is exactly the

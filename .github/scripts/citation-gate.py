@@ -168,9 +168,12 @@ climbs out of the repository, when a cited line is past the end of the resolved
 file, when a range is empty (`:50-40`), when line 0 is cited, or when a line is
 cited on a directory. With a `#symbol` it also fails when the suffix is not a
 resolvable Rust item name, when the named item is not declared in the resolved
-file, when a `#symbol` is cited on a directory, and when the cited line falls
-outside every span of the named item. Every failure is reported with the citing
-file and its line; the gate exits 1 if any failed and 0 with a count when clean.
+file, when a `#symbol` is cited on a directory — **whatever the path's
+extension**, because a directory declares nothing under any grammar, and the
+one exemption is a permalink fragment, which names no item for the directory to
+be missing — and when the cited line falls outside every span of the named
+item. Every failure is reported with the citing file and its line; the gate
+exits 1 if any failed and 0 with a count when clean.
 
 What is deliberately not checked
 --------------------------------
@@ -218,6 +221,12 @@ Also out, each for a reason:
   run's own totals are where that difference shows. Recorded here because the
   grammar admits both and the check answers neither. Every *other* unresolvable
   suffix is a failure, not a decline: see "The `#symbol` suffix" above.
+
+  The non-Rust half declines the symbol check; it does not excuse the span
+  from the *directory* check, which is one of the others it keeps. A path that
+  resolves to a directory declares nothing whatever its name ends in, so
+  `schemas/bundle.json#thing` fails exactly as `crates/c/src/mod.rs#anything`
+  does. Only the permalink fragment is exempt there, because it names no item.
 
 Usage: citation-gate.py [--root PATH] [--list-unanchored] [--self-test]
 Exit 0 clean, 1 on a dangling citation, 2 if the gate could not run at all.
@@ -875,8 +884,13 @@ def classify(span: Span, citing: str, root: str, tree: Tree) -> tuple[str, Findi
     # appending a permalink fragment made the build greener by checking less.
     # That is the defect the suffix was written to prevent, re-created by the
     # decline meant to be safe.
+    # Split out, because the directory branch below needs the half of this
+    # that does not depend on the path's extension. A permalink fragment names
+    # no item on any target at all; a `#heading` names one the gate merely has
+    # no grammar for.
+    names_no_item = symbol is not None and LINE_FRAGMENT.match(symbol) is not None
     declined = symbol is not None and (
-        match.group("ext").lower() != "rs" or LINE_FRAGMENT.match(symbol) is not None
+        match.group("ext").lower() != "rs" or names_no_item
     )
 
     path = match.group("path")
@@ -907,7 +921,7 @@ def classify(span: Span, citing: str, root: str, tree: Tree) -> tuple[str, Findi
         if any(candidate in tree.dirs for candidate in candidates):
             if first_line is not None:
                 return broken(f"cites a line, but `{path}` is a directory.")
-            if symbol is not None and not declined:
+            if symbol is not None and not names_no_item:
                 # A directory declares nothing, so there is no reading under
                 # which this citation is correct and no document this verdict
                 # can red-line unfairly. Passing it silently would report the
@@ -919,11 +933,20 @@ def classify(span: Span, citing: str, root: str, tree: Tree) -> tuple[str, Findi
                 # span is not a citation at all and `classify` returns
                 # `"skip"`.
                 #
-                # A *declined* suffix is exempt, and consistently so: the gate
-                # never had a reading for `#heading` or `#L702`, so it has no
-                # more reading for one on a directory than on a file, and the
-                # span falls through to the verdict it would carry with no
-                # suffix written at all.
+                # **The test is `names_no_item`, not `declined`, and the
+                # difference is deliberate.** `declined` also covers a suffix
+                # on a target that is not Rust, and that half is about the
+                # gate having no *declaration grammar* for the file's
+                # contents — a question a directory does not raise, because a
+                # directory has no contents to parse under any grammar.
+                # Reusing `declined` here made the verdict turn on the
+                # extension of a path that names no file: `bundle.json#thing`
+                # was a clean, counted pass and `src/mod.rs#anything` a
+                # failure, an asymmetry nothing chose and no citation in this
+                # tree has ever exercised. A permalink fragment is exempt on
+                # its own terms — `#L702` names a line rather than an item, so
+                # "declares nothing" is not an answer to it, and the span
+                # falls through to the verdict the bare path carries.
                 return broken(f"names `{symbol}`, but `{path}` is a directory.")
             return "checked", None
         if (citing, path) in ALLOWED:
@@ -1308,11 +1331,22 @@ def self_test() -> int:
         wrong(finding_for(body) is not None, f"`{body}` resolves, but was reported broken")
 
     # The failures the gate exists for, each reported rather than passed.
+    #
+    # The two directories are the same verdict reached through different
+    # extensions, and asserting both is the point: a directory declares
+    # nothing whatever its name ends in, so `#thing` on `generated.json` and
+    # `#thing` on `nested.rs` are one rule. While the exemption here read
+    # `declined` rather than `names_no_item`, the first of those was a clean,
+    # counted pass and the second a failure -- a verdict turning on the
+    # extension of a path that names no file.
     for body, fragment in (
         ("docs/gone.md", "names no file"),
         ("schemas/generated.json:12", "is a directory"),
         ("crates/sunrise-cli/src/nested.rs#thing", "is a directory"),
         ("crates/sunrise-cli/src/nested.rs:3#thing", "is a directory"),
+        ("crates/sunrise-cli/src/nested.rs#", "is a directory"),
+        ("schemas/generated.json#thing", "is a directory"),
+        ("schemas/generated.json#heading", "is a directory"),
         ("Cargo.toml:0", "line 0"),
         ("Cargo.toml:50-40", "empty range"),
     ):
@@ -1320,6 +1354,21 @@ def self_test() -> int:
         wrong(
             found is None or fragment not in found.message,
             f"`{body}` reported {found}, expected {fragment!r}",
+        )
+
+    # And the one suffix a directory is exempt from, on either extension: a
+    # permalink fragment names a line rather than an item, so "declares
+    # nothing" answers nothing about it and the span falls through to the
+    # verdict its bare path carries -- clean, and counted.
+    for body in (
+        "crates/sunrise-cli/src/nested.rs#L702",
+        "crates/sunrise-cli/src/nested.rs#L702-L710",
+        "schemas/generated.json#L702",
+    ):
+        state, found = classify(Span(line=1, body=body), "docs/03-crypto/recovery.md", ".", tree)
+        wrong(
+            state != "checked" or found is not None,
+            f"`{body}` reported {state}/{found}, expected a counted, clean decline",
         )
 
     # A `#symbol` on a target that is not Rust declines the SYMBOL check and
@@ -1332,18 +1381,17 @@ def self_test() -> int:
     # Asserted from both sides, which is what the earlier placement could not
     # be: the resolving spans come back clean and COUNTED, and the ones whose
     # path or line is wrong still report, with the suffix never looked at.
-    # `schemas/generated.json` is the directory branch's exemption -- a
-    # tracked directory whose own name ends in a recognised extension, where a
-    # suffix the gate has no reading for is no more readable than it is on a
-    # file, so the span falls through to the verdict the bare path carries.
+    # Both of these name a FILE. The same suffix on a directory is a failure
+    # and is asserted above, because what the non-Rust arm declines is the
+    # symbol check and the directory check is one of the others the span
+    # keeps.
     #
     # None of these cites a line, and that is a constraint rather than an
     # oversight: `self_test` runs against whatever directory the gate was
     # started in, and the contract suite beside this file starts it inside a
     # synthesised tree where these documents do not exist. A case that needs a
     # line counted belongs in the scratch tree below, which owns its files.
-    for body in ("docs/03-crypto/recovery.md#heading", "Cargo.toml#package",
-                 "schemas/generated.json#thing"):
+    for body in ("docs/03-crypto/recovery.md#heading", "Cargo.toml#package"):
         state, found = classify(Span(line=1, body=body), "docs/03-crypto/recovery.md", ".", tree)
         wrong(
             state != "checked" or found is not None,
