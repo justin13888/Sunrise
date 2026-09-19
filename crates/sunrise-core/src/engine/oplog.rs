@@ -383,9 +383,7 @@ impl Engine {
     /// query uses, so this route cannot readmit a device the rotation just
     /// excluded. Without it, a revocation followed by the revoked device
     /// republishing its own cert would hand back everything the revocation had
-    /// just rotated away. Without that, a revocation followed by the revoked
-    /// device republishing its own cert would hand back everything the
-    /// revocation had just rotated away.
+    /// just rotated away.
     pub(super) fn backfill_key_envelopes(
         &self,
         tx: &Transaction<'_>,
