@@ -492,23 +492,37 @@ impl SseTransport {
                 // names as the defect: a client that cannot tell them apart
                 // "retries forever against a revoked device".
                 //
-                // A `closed` event with no code, or one this build has never
-                // heard of, keeps the recoverable reading. The relay's
-                // `SyncEvent::Closed.code` is not optional, so such an event is
-                // a malformed one rather than a withdrawal of access, and
-                // reading a malformed event as a revocation would strand a
-                // working client at a prompt it cannot clear.
+                // A close this build cannot read is **not** recoverable, and
+                // the direction of that fallback is the whole point of it.
+                // `docs/05-sync/wire-protocol.md:214-216` records adding a
+                // close code as non-breaking, so a relay one version ahead
+                // closing for a fourth reason is sanctioned rather than
+                // malformed. Defaulting such a close onto `AUTH_TOKEN_EXPIRED`
+                // — the single member `is_recoverable` admits — would put a
+                // client into exactly the loop the paragraph above names: it
+                // refreshes, reconnects, is closed again for the same unread
+                // reason, and never stops. `INTERNAL_UNKNOWN_CODE` is the code
+                // `docs/10-cross-cutting/error-handling.md:36` reserves for
+                // this — "an older client receiving an unknown code maps it to
+                // `INTERNAL_UNKNOWN_CODE` and preserves the original wire
+                // string in `diagnostic`" — so the unparsed spelling is carried
+                // into `reason`, which is `ClosePayload`'s diagnostic field.
+                // This is the same direction [`SseTransport::refuse`] takes at
+                // its own fallback, and for the same stated reason.
+                let reported = event.get("code").and_then(|c| c.as_str());
+                let parsed = reported.and_then(sunrise_error::ErrorCode::from_wire_str);
+                let reason = event
+                    .get("reason")
+                    .and_then(|r| r.as_str())
+                    .unwrap_or("session closed");
                 let payload = ClosePayload {
-                    code: event
-                        .get("code")
-                        .and_then(|c| c.as_str())
-                        .and_then(sunrise_error::ErrorCode::from_wire_str)
-                        .unwrap_or(sunrise_error::ErrorCode::AuthTokenExpired),
-                    reason: event
-                        .get("reason")
-                        .and_then(|r| r.as_str())
-                        .unwrap_or("session closed")
-                        .to_owned(),
+                    code: parsed.unwrap_or(sunrise_error::ErrorCode::InternalUnknownCode),
+                    reason: match (parsed, reported) {
+                        (None, Some(wire)) => {
+                            format!("{reason} (unrecognised close code {wire})")
+                        }
+                        _ => reason.to_owned(),
+                    },
                 }
                 .encode()
                 .map_err(|e| protocol(&e))?;
@@ -1542,19 +1556,30 @@ mod tests {
         }
     }
 
-    /// A `closed` event with no code, or one this build has never heard of,
-    /// stays recoverable.
+    /// A `closed` event with no code, or one this build has never heard of, is
+    /// **not** recoverable.
     ///
-    /// The relay's `code` is not optional, so neither shape is an event it
-    /// sends: both are malformed, and reading a malformed close as a revocation
-    /// would strand a working client at a prompt it cannot clear.
+    /// `docs/05-sync/wire-protocol.md:214-216` records adding a close code as
+    /// non-breaking, so a relay one version ahead closing for a reason this
+    /// build has never heard of is sanctioned rather than malformed — and a
+    /// client that read it as recoverable would refresh, reconnect, be closed
+    /// again for the same unread reason and loop, which is the failure
+    /// `docs/05-sync/wire-protocol.md:203-206` exists to name. Neither shape
+    /// may land on `AUTH_TOKEN_EXPIRED`, the single code `is_recoverable`
+    /// admits.
+    ///
+    /// The code it does land on is the one
+    /// `docs/10-cross-cutting/error-handling.md:36` reserves for an older
+    /// client meeting a newer code, and the unparsed spelling survives in the
+    /// diagnostic the same paragraph asks for, so support tooling can still
+    /// say which close this was.
     #[test]
-    fn a_closed_event_this_build_cannot_read_is_still_recoverable() {
+    fn a_closed_event_this_build_cannot_read_is_terminal_rather_than_recoverable() {
         for (event, reason) in [
             (serde_json::json!({"kind": "closed"}), "session closed"),
             (
                 serde_json::json!({"kind": "closed", "code": "FROM_THE_FUTURE", "reason": "who knows"}),
-                "who knows",
+                "who knows (unrecognised close code FROM_THE_FUTURE)",
             ),
         ] {
             let frame = SseTransport::frame_for(&event)
@@ -1562,8 +1587,19 @@ mod tests {
                 .expect("a close is a frame");
             let (_, payload) = super::decode_frame(&frame).expect("a decodable frame");
             let parsed = super::ClosePayload::decode(&payload).expect("a ClosePayload");
-            assert_eq!(parsed.code, sunrise_error::ErrorCode::AuthTokenExpired);
-            assert_eq!(parsed.reason, reason);
+            assert_eq!(
+                parsed.code,
+                sunrise_error::ErrorCode::InternalUnknownCode,
+                "a close this build cannot read is named as such, not guessed at"
+            );
+            assert!(
+                !parsed.is_recoverable(),
+                "{event} must not read as a close the client may retry through"
+            );
+            assert_eq!(
+                parsed.reason, reason,
+                "the relay's own words survive, and so does the code nobody could parse"
+            );
         }
     }
 
