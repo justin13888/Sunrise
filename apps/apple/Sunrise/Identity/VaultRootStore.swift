@@ -41,21 +41,34 @@ struct KeychainVaultRootStore: VaultRootStore {
     static let accessibility = KeychainAccessibility.afterFirstUnlockThisDeviceOnly
 
     private let item: KeychainItem
+    private let migration: KeychainMigration
 
     init(vaultName: String = "default") {
         item = KeychainItem(
             service: Self.service,
             account: vaultName,
-            accessibility: Self.accessibility
+            accessibility: Self.accessibility,
+            domain: KeychainDomain.current
+        )
+        migration = KeychainMigration(
+            source: KeychainItem(
+                service: Self.service,
+                account: vaultName,
+                accessibility: Self.accessibility,
+                domain: .login
+            ),
+            destination: item
         )
     }
 
     func load() throws -> Data? {
-        // Before the read, because an installation that predates the class
-        // above still holds its root under the older one and nothing else on
-        // this path would ever rewrite it.
-        try item.upgradeAccessibilityIfNeeded()
-        guard let data = try item.read() else { return nil }
+        // Migrate, raise, then read — and answer with what the migration
+        // returned when the destination holds nothing. All three orderings are
+        // load-bearing and all three are argued once, on
+        // `KeychainMigration.loadMigratingIfNeeded`, rather than three times
+        // here. `migration.destination` is `item`; they are built together
+        // above.
+        guard let data = try migration.loadMigratingIfNeeded() else { return nil }
         guard data.count == VaultRoot.byteCount else {
             throw VaultRootError.wrongLength(data.count)
         }
@@ -69,7 +82,9 @@ struct KeychainVaultRootStore: VaultRootStore {
         try item.write(root)
     }
 
-    func clear() throws { try item.delete() }
+    /// Across both domains, because `load` reads across both: a root this
+    /// store can still find is a root it has not forgotten.
+    func clear() throws { try item.deleteAcrossDomains() }
 }
 
 enum VaultRootError: Error, Equatable {

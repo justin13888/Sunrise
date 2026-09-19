@@ -99,12 +99,23 @@ struct KeychainCredentialStore: CredentialStore {
     static let accessibility = KeychainAccessibility.afterFirstUnlockThisDeviceOnly
 
     private let item: KeychainItem
+    private let migration: KeychainMigration
 
     init(account: String = "default") {
         item = KeychainItem(
             service: Self.service,
             account: account,
-            accessibility: Self.accessibility
+            accessibility: Self.accessibility,
+            domain: KeychainDomain.current
+        )
+        migration = KeychainMigration(
+            source: KeychainItem(
+                service: Self.service,
+                account: account,
+                accessibility: Self.accessibility,
+                domain: .login
+            ),
+            destination: item
         )
     }
 
@@ -121,17 +132,89 @@ struct KeychainCredentialStore: CredentialStore {
         // failure for a session — unlike the vault root, nothing is lost —
         // and it is strictly better than handing back a token that is still in
         // the backup-bearing class.
-        try item.upgradeAccessibilityIfNeeded()
-        guard let data = try item.read() else { return nil }
+        //
+        // The move between keychains comes first, for the reason
+        // `KeychainVaultRootStore.load` gives: the class only starts meaning
+        // anything once the item is in a keychain that implements one. That
+        // order, and the two answers a migration can give, are
+        // `KeychainMigration.loadMigratingIfNeeded`'s.
+        guard let data = try migration.loadMigratingIfNeeded() else { return nil }
         // A token written by an older build that cannot be decoded is treated
         // as absent: signing in again is cheap, and refusing to launch over a
         // stale token is not.
         return try? JSONDecoder().decode(StoredCredentials.self, from: data)
     }
 
+    /// Across both domains, as `clear` is, and for the sharper half of the same
+    /// reason. `load` reads the other keychain before reporting nothing, so a
+    /// save that wrote only this one would leave two tokens under one
+    /// `(service, account)`. This store is the one where that happens with **no
+    /// user action at all**: `refreshIfNeeded` renews at 75% of the token's
+    /// life, so a single launch whose probe failed open writes the fresh token
+    /// to the login keychain while the stale one stays in the data-protection
+    /// one, and every later launch with a correct probe reads two secrets that
+    /// disagree, raises `.migrationUnverified`, and is signed out by
+    /// `AccountModel.restore()`'s `try?` without a word — a loop whose only
+    /// remedy is a Sign out button rendered in a state the user cannot reach.
+    /// See `KeychainItem.writeAcrossDomains`, including why the migration's own
+    /// write must not do this.
+    ///
+    /// **A refused other-domain delete is not a failed save, and this is where
+    /// that is decided.** `writeAcrossDomains` writes first and cleans up
+    /// second, so it can throw with the token already stored; it says which
+    /// case that is by raising `KeychainError.writtenButOtherDomainRefused`,
+    /// and only that case. This method is the boundary that owns the question
+    /// "was the token stored", because `save` returns `Void` and a throw out of
+    /// it is the only answer its callers get. Answering "no" when the bytes are
+    /// on disk is what made a dismissed Keychain prompt cost a session: the
+    /// renewal path keeps its stale credential and signs the user out at
+    /// expiry, deleting the good token on the way; the sign-in path reports a
+    /// failure for a login that succeeded. Both are `AccountModel`'s reading of
+    /// a throw, and both are correct readings of the wrong signal.
+    ///
+    /// So the caveat is dropped here rather than carried. It has nowhere to go:
+    /// `CredentialStore.save` is `Void`, and widening it to carry a partial
+    /// success is the shape #255 is proposing for the sign-out path, across a
+    /// protocol with more than one conformer. What is lost by dropping it is
+    /// named in `KeychainItem.writeAcrossDomains`: the stale copy survives, and
+    /// the next load's migration refuses it with `.migrationUnverified`. That
+    /// state is the refused delete's doing, not this `catch`'s — it exists
+    /// identically whether this line rethrows or not — and rethrowing adds the
+    /// lost session on top of it.
+    ///
+    /// **This `catch` executes in no test**, and this declares it — one of the
+    /// seven listed in `docs/07-clients/desktop.md`, where it is item 5. It is
+    /// reached only through `KeychainItem.writeAcrossDomains`'s raise of
+    /// `writtenButOtherDomainRefused`, item 1 of that set, so it inherits item
+    /// 1's blockers exactly: the raise needs the write to succeed in its own
+    /// domain, which on an ad-hoc Mac makes the other domain `.dataProtection`,
+    /// whose refusal is the missing-entitlement one and is swallowed before it
+    /// can reach here. What it waits on is *reach* **and then a refusal** — only
+    /// a build that reaches both keychains can address the item at
+    /// `.dataProtection` and so put a refusable `.login` on the far side of the
+    /// delete, and that delete must then actually refuse. The refusal is
+    /// `KeychainItem.meansTheOtherStoreWasUnreachable` answering `false`, which
+    /// is item 3 of that set: this catch is reached only through item 1's raise,
+    /// and that raise is constructed only where item 3's `false` arm has already
+    /// run. So this inherits **both** blockers, and an earlier revision of this
+    /// paragraph said it inherited only the first. Item 3's own blocker — the
+    /// refusal having to arrive *mid-case* — is stated as a mechanism on
+    /// `KeychainItem.deleteAcrossDomains`, which items 4, 6 and 7 share.
+    /// Saying the refusal here is *always* the missing-entitlement one would be
+    /// too strong: on such a build it is whatever `.login` answers. What *is*
+    /// pinned is the discrimination this rests on —
+    /// `aWriteRefusedInItsOwnDomainIsNotReportedAsAPartialSuccess` fails if a
+    /// write that stored nothing is labelled as one that stored something.
     func save(_ credentials: StoredCredentials) throws {
-        try item.write(try JSONEncoder().encode(credentials))
+        do {
+            try item.writeAcrossDomains(try JSONEncoder().encode(credentials))
+        } catch let error as KeychainError {
+            guard case .writtenButOtherDomainRefused = error else { throw error }
+        }
     }
 
-    func clear() throws { try item.delete() }
+    /// Across both domains. Signing out has to reach the refresh token
+    /// wherever `load` could have read it from — a token left in the other
+    /// keychain is a live session the user believes they ended.
+    func clear() throws { try item.deleteAcrossDomains() }
 }
