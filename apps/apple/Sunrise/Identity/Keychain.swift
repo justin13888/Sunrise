@@ -445,8 +445,10 @@ struct KeychainItem: Sendable {
     /// (-34018), so the *whole* cross-domain clear was a no-op for exactly the
     /// item that needed it.
     ///
-    /// **Decision 13's promise, narrowed rather than broken.** That promise was
-    /// that `clear()` would gain no new way to throw, and this comment used to
+    /// **The cross-domain clear's founding promise, narrowed rather than
+    /// broken.** When `clear()` was first taught to cross domains — so that
+    /// whatever a read can reach, a clear removes — the promise attached to it
+    /// was that `clear()` would gain no new way to throw, and this comment used to
     /// keep it by raising this domain's status and only this domain's. It still
     /// holds on every configuration this repository builds: there, the other
     /// domain's refusal is the missing-entitlement one, which is swallowed. It

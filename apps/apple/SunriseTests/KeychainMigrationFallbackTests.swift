@@ -50,7 +50,9 @@ struct KeychainMigrationFallbackTests {
     }
 
     /// A destination that refuses must cost the user a retry next launch, not
-    /// the secret. This is the arm decision 3 chose over throwing, and the one
+    /// the secret. This is the arm this change chose over throwing — a failed
+    /// or ambiguous migration falls back to the source rather than refusing the
+    /// load, because the source is still readable and still correct — and the one
     /// whose value `load` has to consume — a caller that discards it and reads
     /// the destination instead sees nothing and reports a lost vault.
     ///
@@ -186,8 +188,9 @@ struct KeychainMigrationFallbackTests {
         insert[kSecValueData as String] = Data([0])
         #expect(SecItemAdd(insert as CFDictionary, nil) == errSecMissingEntitlement)
 
-        // The third mutating call. Decision 19, `KeychainItem.readAcrossDomains`
-        // and `docs/07-clients/desktop.md` all name the update alongside the add
+        // The third mutating call. This change's record of what the unentitled
+        // Mac actually refuses, `KeychainItem.readAcrossDomains` and
+        // `docs/07-clients/desktop.md` all name the update alongside the add
         // and the delete; until this line only two of the three were pinned. It
         // is the interesting one of the three, because an update against an
         // item that is not there would answer `errSecItemNotFound` on a keychain
