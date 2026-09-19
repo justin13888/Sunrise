@@ -123,12 +123,14 @@ pub type ConnectFuture = Pin<Box<dyn Future<Output = Result<BoxTransport, Transp
 ///
 /// The two factories that ship read in the closure body —
 /// `sunrise_cli::livesync::ws_factory` and `sunrise_core_bindings::ws_factory`
-/// both call [`TokenSource::get`] there. The test harnesses do not, and cannot
-/// break it: the in-process harness in this file's `tests` module and the
-/// three factories in `sunrise-e2e` present no renewable bearer at all, so
-/// there is nothing for the handle to consume. Each says so in its own
-/// documentation. A harness that grows one must read it per attempt, like the
-/// shipped two.
+/// both call [`TokenSource::get`] there. Most harnesses cannot break it at
+/// all: the in-process harness in this file's `tests` module and the three
+/// factories in `sunrise-e2e` present no renewable bearer, so there is nothing
+/// for the handle to consume, and each says so in its own documentation. The
+/// test factories in this file that *do* read a [`TokenSource`] read it in the
+/// closure body, per attempt, which is the shipped shape — that is what makes
+/// them evidence about the driver rather than about themselves. A harness that
+/// grows a bearer must do the same.
 pub type TransportFactory = Arc<dyn Fn() -> ConnectFuture + Send + Sync>;
 
 /// Default anti-entropy interval: how often a live session re-subscribes with
@@ -2425,6 +2427,11 @@ mod tests {
     }
 
     struct ServerInner {
+        /// Attempts whose **factory was called**, not attempts that dialled.
+        /// The closure counts and pops its script on entry, so a future `run`
+        /// drops un-polled — shutdown winning the connect select — has still
+        /// consumed a script and moved this. Every assertion on it is relative
+        /// or `>=` for that reason.
         connect_count: u64,
         scripts: VecDeque<Script>,
     }
@@ -3263,7 +3270,17 @@ mod tests {
         let reading = credential.clone();
         let recorded = presented.clone();
         let factory: TransportFactory = Arc::new(move || {
-            recorded.lock().push(reading.get());
+            // The lock is taken in its own statement, before the read, and the
+            // test below holds it while it writes the renewal — so an attempt
+            // that starts during the write waits here and reads afterwards.
+            // Written as `recorded.lock().push(reading.get())` this works only
+            // because Rust evaluates a method call's receiver before its
+            // arguments, which is not something the next reader should have to
+            // know to keep the ordering intact.
+            let mut recorded = recorded.lock();
+            let bearer = reading.get();
+            recorded.push(bearer);
+            drop(recorded);
             inner()
         });
         core.start_sync(factory).unwrap();
@@ -3280,8 +3297,8 @@ mod tests {
         .await
         .expect("session 1 never closed");
         // The same ordering the test above takes, against the observable that
-        // matters here: attempt 2's read of the credential is the closure's
-        // first statement, so holding this lock puts the write ahead of it.
+        // matters here: attempt 2's factory takes this lock before it reads
+        // the credential, so holding it here puts the write ahead of that read.
         {
             let reads = presented.lock();
             assert_eq!(
