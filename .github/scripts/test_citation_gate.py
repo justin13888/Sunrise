@@ -1192,9 +1192,12 @@ class Symbols(GateCase):
         # citation is correct -- which is why it is a failure and not a
         # decline, and why no correct document can be red-lined by it.
         #
-        # It used to be a silent clean pass, counted as an anchored, checked
-        # citation for a symbol no resolver was ever consulted about. That is
-        # exactly the unverified suffix the feature exists to prevent.
+        # A silent clean pass here -- counted as an anchored, checked citation
+        # for a symbol no resolver was ever consulted about -- is exactly the
+        # unverified suffix the feature exists to prevent. It was reachable in
+        # this change's own first draft of the suffix and not before it: with
+        # no `#` group in `CITATION` the span never parsed as a citation, so
+        # it was skipped rather than passed.
         self.write("crates/c/src/mod.rs/inner.rs", "pub fn anything() {}\n")
         self.write("docs/a.md", "See `crates/c/src/mod.rs#anything`.\n")
         self.assert_code(

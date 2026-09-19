@@ -810,10 +810,14 @@ def classify(span: Span, citing: str, root: str, tree: Tree) -> tuple[str, Findi
                 # which this citation is correct and no document this verdict
                 # can red-line unfairly. Passing it silently would be worse
                 # than the non-Rust decline beside it: that one takes the
-                # whole span out of the count, while this one used to report
-                # the citation as *checked* with the suffix never looked at —
-                # an unverified `#symbol` counted as a verified one, which is
-                # the single thing this suffix exists to prevent.
+                # whole span out of the count, while a silent pass here
+                # reports the citation as *checked* with the suffix never
+                # looked at — an unverified `#symbol` counted as a verified
+                # one, which is the single thing this suffix exists to
+                # prevent. That silent pass was reachable in this change's own
+                # first draft of the suffix, not before it: without a `#`
+                # group in `CITATION` the span is not a citation at all and
+                # `classify` returns `"skip"`.
                 return broken(f"names `{symbol}`, but `{path}` is a directory.")
             return "checked", None
         if (citing, path) in ALLOWED:
