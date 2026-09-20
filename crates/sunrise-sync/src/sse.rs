@@ -69,23 +69,44 @@ use sunrise_wire_protocol::{
 /// frame, base64-encoded.
 const MAX_EVENT_BYTES: usize = 8 * 1024 * 1024;
 
-/// How long this client will wait for a *refusal's* problem document.
+/// The largest *blob* this client will hold out of one reply.
 ///
-/// The document is read only after the response head has already arrived, so
-/// the connection is established and the body is one round trip away — a
-/// problem document is a few hundred bytes. Two seconds is generous against
-/// that and deliberately tight against the alternative: a relay, proxy or
-/// captive portal that answers non-2xx and then stalls the body would
-/// otherwise park [`SseTransport::open_events`] with no bound of its own. The
-/// sync driver does not supply one — its `tokio::select!` *cancels* the read
-/// rather than timing it out, which drops the refusal unreported and reopens
-/// the stream, so a stall becomes a silent retry loop instead of a session
+/// The blob surface is the one route whose body is content rather than a
+/// document: `blob_fetch` reads a whole committed attachment into a `Vec<u8>`.
+/// `crates/sunrise-server/src/api/blobs.rs:62` refuses to commit one larger
+/// than this, so the number is the relay's own ceiling restated on the side
+/// that has to allocate it. Capping it at [`MAX_EVENT_BYTES`] instead would
+/// refuse every attachment over eight mebibytes, and leaving it uncapped — as
+/// this route was — lets any relay decide how much memory this client holds.
+const MAX_BLOB_BYTES: usize = 100 * 1000 * 1000;
+
+/// How long this client will wait for the *next* piece of a response body.
+///
+/// An **idle** bound rather than a total one: every frame that arrives resets
+/// it, so it bounds a peer that has stopped sending without putting a
+/// throughput floor under a peer that is merely slow. That distinction is what
+/// lets one deadline serve both a few-hundred-byte problem document and a
+/// hundred megabytes of attachment ciphertext — a total deadline large enough
+/// for the second would not bound the first at all, and one tight enough for
+/// the first would refuse the second on any modest link.
+///
+/// Two seconds, measured against a connection that is already established and
+/// a head that has already arrived. The relay writes a problem document from a
+/// `format!`-bounded string and streams a blob one chunk per poll out of local
+/// storage (`crates/sunrise-server/src/api/blobs.rs:423-453`), so two seconds
+/// of *no bytes at all* is a stalled peer rather than a loaded one.
+///
+/// The alternative to expiring is not a slower read; it is no return at all. A
+/// stall is not a failure the body reports, and nothing above supplies a bound:
+/// there is no timeout on the client (see [`SseTransport::connect_with_bearer`]),
+/// and `crates/sunrise-core/src/sync_driver.rs:723` awaits the `Hello` send
+/// bare, outside any `tokio::select!`. An unbounded read under that await parks
+/// the driver task with no error, no `SessionEnd::Disconnected`, no backoff and
+/// no log line. On the stream route the driver's `tokio::select!` *cancels*
+/// rather than times out, which drops the refusal unreported and reopens the
+/// stream, so a stall there becomes a silent retry loop instead of a session
 /// that ends and backs off.
-///
-/// Expiring is safe by construction: a refusal whose body did not arrive is
-/// still a refusal, and falls back to the status map — which is where this
-/// route was before it read the body at all.
-const REFUSAL_BODY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+const BODY_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// SSE + `POST` client transport over `http://` / `https://`.
 pub struct SseTransport {
@@ -265,13 +286,12 @@ impl SseTransport {
             .map_err(|e| TransportError::Unavailable(e.to_string()))?;
         let status = response.status();
         let date = server_date(response.headers());
-        let bytes = response
-            .into_body()
-            .collect()
-            .await
-            .map_err(|e| TransportError::Unavailable(e.to_string()))?
-            .to_bytes()
-            .to_vec();
+        // [`MAX_BLOB_BYTES`] rather than [`MAX_EVENT_BYTES`]: this is the one
+        // route whose body is content rather than a document, and the relay
+        // commits attachments four orders of magnitude larger than the event
+        // cap. Sizing this route by the event cap would refuse every
+        // attachment over eight mebibytes.
+        let bytes = read_body(response.into_body(), MAX_BLOB_BYTES, BODY_IDLE_TIMEOUT).await?;
         Ok(Reply {
             status,
             date,
@@ -315,13 +335,17 @@ impl SseTransport {
             .map_err(|e| TransportError::Unavailable(e.to_string()))?;
         let status = response.status();
         let date = server_date(response.headers());
-        let bytes = response
-            .into_body()
-            .collect()
-            .await
-            .map_err(|e| TransportError::Unavailable(e.to_string()))?
-            .to_bytes()
-            .to_vec();
+        // Every reply on this route is a small JSON document, so the event cap
+        // is far above anything legitimate — it is here so a relay cannot
+        // choose how much memory this client holds, not to size the reply.
+        //
+        // The deadline is the load-bearing half. This is the route the
+        // handshake rides: `send_frame`'s `Hello` arm calls it, and
+        // `crates/sunrise-core/src/sync_driver.rs:723` awaits that send bare,
+        // outside any `tokio::select!`. An unbounded read here was not a retry
+        // loop the driver eventually notices — it was the driver task parked
+        // for good, with no error, no backoff and nothing in the log.
+        let bytes = read_body(response.into_body(), MAX_EVENT_BYTES, BODY_IDLE_TIMEOUT).await?;
         Ok(Reply {
             status,
             date,
@@ -405,40 +429,28 @@ impl SseTransport {
             .map_err(|e| TransportError::Unavailable(e.to_string()))?;
         if !response.status().is_success() {
             // A stream refusal is diagnosed from its status, its code and the
-            // relay's `Date`, so the body is collected rather than dropped: the
+            // relay's `Date`, so the body is read rather than dropped: the
             // problem document is where the relay puts the typed code, and
             // leaving it unread flattened every `401` on this one route back
             // onto the status map — the exact defect [`SseTransport::refuse`]
             // exists to prevent on the other six.
             //
-            // A body that fails to arrive is not allowed to swallow the
-            // refusal. An empty one falls back to the status map, which is
-            // where this route already was — and that is what makes both
-            // bounds below safe to apply: every way of not getting the
-            // document degrades to the reading this route already had.
-            //
-            // Capped at [`MAX_EVENT_BYTES`], which already bounds the success
-            // path in this same function, so a relay that answers a refusal
-            // with an unbounded body cannot make this client hold it. The peak
-            // is a multiple of the body across `collect` → `to_bytes` →
-            // `to_vec`, and `refuse` clones an arbitrarily long `code` twice
-            // more, so an uncapped read here is not one allocation.
-            //
-            // Deadlined at [`REFUSAL_BODY_TIMEOUT`], because a stall is not a
-            // failure the body reports: without a timer this await simply does
-            // not return, and the driver's only bound is cancelling the whole
-            // future, which discards the refusal rather than surfacing it.
+            // This is the one body read in this module that *degrades* instead
+            // of propagating, and the asymmetry is the point rather than an
+            // oversight. On this route the 2xx body is the event stream and is
+            // never collected at all — it is handed to `self.events` below — so
+            // the only body [`read_body`] ever reads here is a refusal's, and a
+            // refusal whose document did not arrive is still a refusal. Every
+            // way of not getting the document therefore lands on the status
+            // map, which is where this route was before it read the body at
+            // all. [`SseTransport::call`] collects on both sides of
+            // `is_success`, where the same degrade would turn a success reply
+            // that never arrived into an empty one that did, so it propagates.
             let status = response.status();
             let date = server_date(response.headers());
-            let bytes = tokio::time::timeout(
-                REFUSAL_BODY_TIMEOUT,
-                http_body_util::Limited::new(response.into_body(), MAX_EVENT_BYTES).collect(),
-            )
-            .await
-            .ok()
-            .and_then(Result::ok)
-            .map(|b| b.to_bytes().to_vec())
-            .unwrap_or_default();
+            let bytes = read_body(response.into_body(), MAX_EVENT_BYTES, BODY_IDLE_TIMEOUT)
+                .await
+                .unwrap_or_default();
             return Err(self.refuse(&Reply {
                 status,
                 date,
@@ -1022,6 +1034,64 @@ struct Reply {
     date: Option<String>,
     /// The whole body.
     bytes: Vec<u8>,
+}
+
+/// Read a response body whole, under a size cap and an idle deadline.
+///
+/// The one place this client reads a body it did not write. Three routes need
+/// it — the JSON control plane ([`SseTransport::call`]), the blob surface
+/// ([`SseTransport::call_bytes`]) and a refused stream open
+/// ([`SseTransport::open_events`]) — and each of them used to hand-roll the
+/// read. That is how two of them came to have a cap and a deadline and the
+/// third to have neither: a bound nobody can see is missing is a bound that
+/// goes missing, and stating it once per route is what made the omission
+/// invisible.
+///
+/// `cap` is a parameter because the routes carry different things — a problem
+/// document and an attachment are not bounded by the same number — and `idle`
+/// is one because a caller wanting different patience should have to say so.
+/// Both are now stated at the call rather than assembled out of a `timeout`
+/// and a `Limited` at each site.
+///
+/// What a failure *means* is deliberately not decided here, because it differs:
+/// a refusal whose problem document did not arrive is still a refusal and
+/// degrades to the status map, while a success reply whose body did not arrive
+/// is not a reply at all. So this reports the failure and the caller reads it.
+///
+/// Both bounds discard what already arrived. Half a document is not a document:
+/// parsing a truncated body would turn a bounded read into a source of
+/// arbitrary misreadings, which is a worse answer than the one the caller's
+/// fallback already gives.
+async fn read_body<B>(
+    body: B,
+    cap: usize,
+    idle: std::time::Duration,
+) -> Result<Vec<u8>, TransportError>
+where
+    B: hyper::body::Body<Data = Bytes> + Unpin,
+    B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+{
+    let mut body = http_body_util::Limited::new(body, cap);
+    let mut out = Vec::new();
+    loop {
+        // The timer is armed per frame rather than once around the whole read,
+        // which is the difference between bounding a stall and bounding a
+        // download: a body that keeps arriving keeps resetting it.
+        let Ok(next) = tokio::time::timeout(idle, body.frame()).await else {
+            return Err(TransportError::Unavailable(format!(
+                "response body stalled: no data for {}s",
+                idle.as_secs()
+            )));
+        };
+        let Some(frame) = next else { return Ok(out) };
+        let frame = frame.map_err(|e| TransportError::Unavailable(e.to_string()))?;
+        // Trailers carry nothing this client reads. Dropping them here rather
+        // than treating the frame as data is what keeps a trailing frame from
+        // appending its encoding to a body somebody is about to parse.
+        if let Ok(data) = frame.into_data() {
+            out.extend_from_slice(&data);
+        }
+    }
 }
 
 /// The `Date` a response carried, if it carried a readable one.
