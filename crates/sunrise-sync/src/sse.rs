@@ -117,8 +117,17 @@ impl SseTransport {
     ///
     /// Nothing is dialled here. Unlike the socket this replaces there is no
     /// handshake to fail at construction: the first request is the `Hello` the
-    /// driver sends, and its failure is reported there — which is where the
-    /// driver's backoff already expects to see one.
+    /// driver sends, and that is where its failure is reported.
+    ///
+    /// It is **not** where the driver's backoff accounts for one, which is the
+    /// premise the sentence above used to end on. `run` resets the attempt
+    /// counter in its connect-`Ok` arm — `crates/sunrise-core/src/sync_driver.rs:668`
+    /// — before the handshake has run, and because this constructor returns
+    /// `Self` rather than a `Result` no attempt can take any other arm. So a
+    /// relay that refuses the `Hello` is retried on the first step of the
+    /// schedule, forever, and `Backoff::reset`'s own stated precondition —
+    /// "call after a successful operation", `backoff.rs:70` — is not met.
+    /// Carried as #283; the repair is the driver's, not this constructor's.
     #[must_use]
     pub fn connect_with_bearer(base: &str, bearer: Option<&str>) -> Self {
         let https = hyper_rustls::HttpsConnectorBuilder::new()
