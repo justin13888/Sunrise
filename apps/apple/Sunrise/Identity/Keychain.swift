@@ -119,6 +119,19 @@ struct KeychainItem: Sendable {
     /// failure is the other store refusing *on its own terms* — it was reached
     /// well enough to say no, and a copy of ours may be sitting in it.
     ///
+    /// **Three callers, one rule, one named exception: the two cross-domain
+    /// *mutations* ask this, and ``readAcrossDomains()`` deliberately does
+    /// not.** A mutation asks "does this status say anything about *us*", and
+    /// for a refused mutation the answer is genuinely no — the other domain's
+    /// item is exactly where it was. A read is the opposite: the other domain
+    /// is where the answer might be, so a status saying nothing about us leaves
+    /// the answer *unknown*, and ``KeychainError/otherDomainUnreadable(_:)`` is
+    /// precisely the report that it is unknown. Consulting this there would put
+    /// the collapse of unknown into absent back one status at a time. The
+    /// exception is `errSecItemNotFound`, which is an answer rather than an
+    /// unknown — and it cannot reach that relabel, because ``read()`` maps it to
+    /// `nil` before it can become a ``KeychainError/unexpected(_:)``.
+    ///
     /// **The `false` answer is pinned directly** by
     /// `KeychainUnreachableStatusTests`, which asks this predicate about a
     /// locked keychain, a denied prompt, a cancelled prompt and an I/O failure
