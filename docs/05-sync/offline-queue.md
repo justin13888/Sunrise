@@ -44,11 +44,11 @@ One policy, in memory, used in two places
 at 30 000 ms, jittered ×[0.8, 1.2], `max_retries = 5`.
 
 **Reconnect.** The session loop backs off between connection attempts
-(`crates/sunrise-core/src/sync_driver.rs:619` and `:654`, `ev = "sync.backoff"`).
+(`crates/sunrise-core/src/sync_driver.rs:711` and `:749`, `ev = "sync.backoff"`).
 Exhausting the policy here does *not* give up — it **cycles**. Five jittered
 delays of 100, 200, 400, 800 and 1600 ms; on the sixth call `next_delay` returns
 `None`, so `backoff_sleep` resets the policy and sleeps a flat, un-jittered 30 s
-(`sync_driver.rs:694-704`, `next_backoff_delay`); the attempt counter is then
+(`sync_driver.rs:789-799`, `next_backoff_delay`); the attempt counter is then
 back at zero and the
 sequence starts again at 100 ms. A client that cannot reach its relay for an hour
 therefore retries roughly every 30 s in bursts of five, forever, on the reasoning
