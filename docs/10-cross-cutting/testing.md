@@ -264,6 +264,17 @@ The gate lexes each joined line **once**, splits it at the separators `&&`,
 (a `#` that starts a word), and reads every `cargo mutants` pair in each command
 as an invocation of its own, ending where the next one begins.
 
+Two positions where one of those characters is **not** a separator, both of them
+false reds on a tree in step rather than holes. A `&` **adjacent to a
+redirection operator** belongs to the redirection: `2>&1`, `>&2`, `<&3`, `&>`
+and `&>>` are one command. Scanning the `&` in `2>&1` as a separator ended the
+invocation at `cargo mutants -p "$usage_crate" 2>` and reported the flag missing
+while `bash` passed every argument through — `ARGC=5` on a probe. The remedy is
+adjacency and not dropping `&` from the set, because a bare `&` really does
+background and really should end a command; the two shapes are one character
+apart and need opposite answers. `release.yml` writes the redirection form
+twice, once inside a `$( )`.
+
 A **command substitution is a command too**. `$( … )` and backticks open a
 nested context whose words are its own, and the enclosing command resumes after
 the close with the substitution standing in it as one opaque word. Until it did,

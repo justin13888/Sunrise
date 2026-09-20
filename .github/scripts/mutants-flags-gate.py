@@ -82,6 +82,14 @@ starts. A comment about the flag, a neighbouring `echo` about the flag,
 a `--list` call carrying the flag and a background job carrying it all
 stop vouching for the command beside them.
 
+A `&` adjacent to a redirection operator belongs to the
+redirection rather than to the separator set: `2>&1`, `>&2`, `<&3`,
+`&>` and `&>>` are one command, and splitting there ended an
+invocation at `cargo mutants -p "$usage_crate" 2>` while `bash`
+passed every argument through. A bare `&` still ends a command:
+the two shapes are one character apart and need opposite answers.
+See `REDIRECTION_OPERATORS`.
+
 A command substitution is a command too. `$( … )` and backticks open a
 nested command context whose words are its own and never the enclosing
 invocation's; the enclosing command resumes after the close, with the
@@ -270,6 +278,7 @@ DEFAULT_MISE = pathlib.Path("mise.toml")
 DEFAULT_GITHUB_DIR = pathlib.Path(".github")
 GITHUB_GLOBS = ("**/*.yml", "**/*.yaml", "**/*.sh")
 
+
 # Shell separators between one command and the next. Longest first, so
 # that `&&` is one boundary rather than `&` twice and `||` is one rather
 # than two empty commands.
@@ -287,6 +296,39 @@ GITHUB_GLOBS = ("**/*.yml", "**/*.yaml", "**/*.sh")
 # dead the day it was written — and being dead, nothing could have
 # noticed it was also being claimed in prose.
 SEPARATORS = ("&&", "||", "&", ";", "|")
+
+# The characters that make the `&` beside them a REDIRECTION rather than
+# the separator above. `&` is scanned at every unquoted position, and in
+# `2>&1`, `1>&2`, `>&2`, `<&3` and `&>`/`&>>` it is part of a file
+# descriptor redirection — one command, not two.
+#
+# The separator set was right about `&` and wrong about where it looked
+# for one, which is why the remedy is here and not in `SEPARATORS`. A
+# bare `&` really does background, and bash confirms both halves: on a
+# probe that prints `$#`, `printargs -p crate 2>&1 --all-features --jobs
+# 1` reports `ARGC=5` — every argument reached the command, the
+# redirection took none of them — while `printargs --list --all-features
+# & printargs -p crate --jobs 1` reports `ARGC=2` and `ARGC=4`, two
+# commands. Dropping `&` from `SEPARATORS` would trade this false red
+# for a false green on the second shape, which is the one the separator
+# was added for.
+#
+# Live here: `release.yml:879` writes `sigcheck=$(codesign -d
+# --verbose=2 "$app" 2>&1)` — inside a `$( )`, at that — and `:1170`
+# ends a `gh release download` with `>/dev/null 2>&1 || true`. Neither
+# names cargo-mutants, so neither is red today; put an invocation on
+# either shape and it is.
+#
+# Adjacency is the whole rule, and it is positional rather than textual
+# so that quoting and escaping cannot fake it. `&` is part of a
+# redirection when the character immediately before it was consumed as a
+# plain unquoted `>` or `<`, or when the character immediately after it
+# is `>`. `cmd > file& cmd2` backgrounds, because the `&` follows `e`;
+# `cmd \>& echo` backgrounds too, because the `>` was an escape and
+# never went through the plain path. `&&` never reaches this test at
+# all — it is matched first, longest-first, exactly as the comment above
+# says.
+REDIRECTION_OPERATORS = "><"
 
 # The cargo-mutants options this gate knows take a value, so that the
 # word after one of them is that option's value rather than a switch of
@@ -568,10 +610,21 @@ def commands(line: str) -> list[list[Word]]:
     ending `-p $(cargo metadata --all-features` was read as ordinary
     words and reported OK.
 
-    Raises `ValueError` on an unterminated quote, a trailing escape or
-    an unclosed command substitution. Callers turn that into a
-    `CannotRun`, per the module docstring: a line this gate cannot parse
-    is a line it cannot judge.
+    A `&` in a redirection is not a separator. `&` is scanned at every
+    unquoted position and that is right for a bare one, but `2>&1`,
+    `>&2`, `<&3`, `&>log` and `&>>log` are one command with a
+    redirection in it — bash passes every argument straight through,
+    `ARGC=5` on a probe. Split there and the invocation ends mid-word:
+    `cargo mutants -p "$usage_crate" 2>&1 --all-features --jobs 1` was
+    exit 1 with the command named as `cargo mutants -p "$usage_crate"
+    2>`, on a tree carrying the flag correctly. See
+    `REDIRECTION_OPERATORS` for why the remedy is adjacency rather than
+    dropping `&` from `SEPARATORS`.
+
+    Raises `ValueError` on an unterminated quote, a trailing escape
+    or an unclosed command substitution. Callers turn that into a
+    `CannotRun`, per the module docstring: a line this gate cannot
+    parse is a line it cannot judge.
     """
     out: list[list[Word]] = []
     current: list[Word] = []
@@ -591,6 +644,13 @@ def commands(line: str) -> list[list[Word]]:
     # "the enclosing command resumes" means.
     enclosing: list[
         tuple[str, int, list[Word], list[str], list[str], bool, bool]] = []
+    # Where a `>` or `<` was last consumed as a plain unquoted character,
+    # so that the `&` at `redirect + 1` is that redirection's and not a
+    # separator. Positional rather than textual, and never cleared: the
+    # test is `redirect == index - 1`, which only a genuinely adjacent
+    # plain `>` or `<` can satisfy. A quoted `"x>"&` and an escaped `\>&`
+    # both background, because neither went through this path.
+    redirect = -1
     index = 0
     while index < len(line):
         char = line[index]
@@ -665,6 +725,14 @@ def commands(line: str) -> list[list[Word]]:
             continue
         separator = next(
             (sep for sep in SEPARATORS if line.startswith(sep, index)), None)
+        if separator == "&" and (
+                redirect == index - 1
+                or line.startswith(">", index + 1)):
+            # `2>&1`, `>&2`, `<&3` on the left of it; `&>log` and
+            # `&>>log` on the right. One command with a redirection in
+            # it, not two commands — and `&&` never gets here, because
+            # the longest-first match above already took it.
+            separator = None
         if separator is not None:
             if started:
                 current.append(Word("".join(value), "".join(raw)))
@@ -694,6 +762,10 @@ def commands(line: str) -> list[list[Word]]:
             raw.append(line[index:index + 2])
             index += 2
             continue
+        if char in REDIRECTION_OPERATORS:
+            # Plain, unquoted, unescaped — the only path that can make
+            # the next character's `&` part of a redirection.
+            redirect = index
         value.append(char)
         raw.append(char)
         index += 1

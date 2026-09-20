@@ -520,6 +520,84 @@ class FlagsGateContract(unittest.TestCase):
             ),
             1, "missing from 1 of 3")
 
+    # --- an `&` that is a redirection and not a separator ----------------
+    #
+    # The separator set was right about `&` and wrong about where it
+    # looked for one. The two cases above are why a bare `&` must end a
+    # command; these are why the `&` in `2>&1` must not. Both directions
+    # are asserted together on purpose, because the tempting remedy for
+    # either one is to drop `&` from `SEPARATORS`, and that breaks the
+    # other.
+
+    def test_an_ampersand_in_a_redirection_does_not_end_the_command(self):
+        # Executed against a real copy of this repository's `mise.toml`
+        # with the flag genuinely present and correctly placed: exit 1,
+        # naming the invocation as `cargo mutants -p "$usage_crate" 2>`.
+        # A red on a correct tree, which this gate's own docstring twice
+        # calls how a gate gets switched off in a week. `bash` passes
+        # every argument through — `ARGC=5` on a probe that prints `$#`.
+        self.assert_code(
+            self.run_gate(
+                MISE_WITH_FLAG.replace(
+                    '-p "$usage_crate" --all-features',
+                    '-p "$usage_crate" 2>&1 --all-features'),
+                CI_WITH_FLAG,
+            ),
+            0, "2 cargo-mutants invocation(s) carry")
+
+    def test_every_descriptor_redirection_form_keeps_its_command(self):
+        # The rest of the set, each the same one character apart from a
+        # separator: `>&2` and `<&3` put the `&` after the operator,
+        # `&>` and `&>>` put it before. Round 4 settled plain `>` and
+        # stopped there; the search never reached `>&`.
+        for redirection in (">&2", "<&3", "&> log.txt", "&>> log.txt"):
+            with self.subTest(redirection=redirection):
+                self.assert_code(
+                    self.run_gate(
+                        MISE_WITH_FLAG.replace(
+                            '-p "$usage_crate" --all-features',
+                            f'-p "$usage_crate" {redirection} '
+                            '--all-features'),
+                        CI_WITH_FLAG,
+                    ),
+                    0, "2 cargo-mutants invocation(s) carry")
+
+    def test_a_redirection_does_not_borrow_the_next_commands_flag(self):
+        # The mirror, and the reason the remedy is adjacency rather than
+        # dropping `&` from the separator set: a redirection joins the
+        # words of ITS OWN command and nothing else. The `;` after the
+        # unflagged invocation still ends it, so the `echo` beyond it
+        # cannot vouch for the measurement.
+        self.assert_code(
+            self.run_gate(
+                MISE_WITH_FLAG.replace(
+                    '-p "$usage_crate" --all-features',
+                    '-p "$usage_crate" 2>&1').replace(
+                    '--output "out/x"',
+                    '--output "out/x" ; echo --all-features'),
+                CI_WITH_FLAG,
+            ),
+            1, "missing from 1 of 2")
+
+    def test_an_angle_bracket_that_is_not_plain_leaves_the_ampersand_alone(
+            self):
+        # Adjacency is positional, not textual, so quoting and escaping
+        # cannot fake a redirection. In `-p "x>"& …` the `&` follows a
+        # closing quote and in `-p x \\>& …` it follows an escape; both
+        # background, and the `cargo test` beyond them must not vouch
+        # for the measuring invocation.
+        for written in ('-p "x>"&', '-p x \\>&'):
+            with self.subTest(written=written):
+                self.assert_code(
+                    self.run_gate(
+                        MISE_WITH_FLAG.replace(
+                            '-p "$usage_crate" --all-features --jobs 1 '
+                            '--output "out/x"',
+                            f'{written} cargo test --all-features'),
+                        CI_WITH_FLAG,
+                    ),
+                    1, "missing from 1 of 2")
+
     def test_the_flag_inside_quotes_does_not_count_as_the_flag(self):
         # `--exclude-re '--all-features'` is a regex that mentions the
         # flag, and lexing threw the quotes away, so it lexed to a token
