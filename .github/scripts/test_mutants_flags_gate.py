@@ -336,6 +336,42 @@ class FlagsGateContract(unittest.TestCase):
             ),
             0, "2 cargo-mutants invocation(s) carry")
 
+    def test_an_escaped_quote_inside_a_quoted_argument_is_one_argument(self):
+        # The case above with one backslash added, and the direction the
+        # two-grammar version got wrong on a correct tree. A regex that
+        # has to match a double quote is written `"a\"&&b"`. When the
+        # line was scanned twice — once to split it, once to lex it —
+        # the splitter did not honour the backslash, mis-closed the
+        # quotation at it, re-opened at the real closing quote, and cut
+        # the invocation in half at the `&&` inside the argument.
+        # Executed at the previous head: exit 2 on a tree whose flags
+        # are perfect. No fixture in this file contained a
+        # backslash-escaped quote at all.
+        self.assert_code(
+            self.run_gate(
+                MISE_WITH_FLAG.replace(
+                    '--output "out/x"',
+                    '--exclude-re "a\\"&&b" --output "out/x"'),
+                CI_WITH_FLAG,
+            ),
+            0, "2 cargo-mutants invocation(s) carry")
+
+    def test_an_escaped_space_and_an_empty_argument_are_ordinary(self):
+        # Two shapes a lexer gets to have an opinion about and this one
+        # should not: a path with an escaped space in it is one word,
+        # and `''` is an argument that happens to be empty. Neither is
+        # the flag and neither hides it; the tree is correct and stays
+        # green. Unasserted until now, which is how the dead newline in
+        # SEPARATORS survived as long as it did.
+        self.assert_code(
+            self.run_gate(
+                MISE_WITH_FLAG.replace(
+                    '--output "out/x"',
+                    "--exclude-re '' --output out/my\\ run"),
+                CI_WITH_FLAG,
+            ),
+            0, "2 cargo-mutants invocation(s) carry")
+
     def test_a_trailing_comment_cannot_supply_the_flag_at_all(self):
         # The stronger form of shape A: the comment is the *only* place
         # the flag appears, and it is attached to the invocation with no
@@ -346,6 +382,54 @@ class FlagsGateContract(unittest.TestCase):
                 MISE_WITH_FLAG.replace(
                     ' --all-features --jobs 1 --output "out/x"',
                     ' --jobs 1 --output "out/x" # --all-features'),
+                CI_WITH_FLAG,
+            ),
+            1, "--all-features is missing from 1 of 2")
+
+    def test_an_escaped_quote_does_not_disable_the_comment_rule(self):
+        # The case above with one backslash added to the path, and the
+        # original trailing-comment hole back verbatim. `--output
+        # "out/\"x"` desynchronised the splitter's quote state from the
+        # lexer's, and a splitter that believes it is inside a quotation
+        # does not honour a `#` either — so the comment's words became
+        # the invocation's own and the flag in it vouched for a command
+        # that does not have it. Executed: exit 0.
+        self.assert_code(
+            self.run_gate(
+                MISE_WITH_FLAG.replace(
+                    ' --all-features --jobs 1 --output "out/x"',
+                    ' --jobs 1 --output "out/\\"x" # put --all-features back'),
+                CI_WITH_FLAG,
+            ),
+            1, "--all-features is missing from 1 of 2")
+
+    def test_an_escaped_quote_does_not_disable_the_separator(self):
+        # The same desync in the other rule the splitter owns. With the
+        # rest of the line read as quoted, `&&` stopped ending the
+        # command, so a neighbouring `echo` became words of the
+        # invocation — which is the shape the split into commands was
+        # introduced to make red two rounds ago, reachable again through
+        # one backslash. Executed: exit 0.
+        self.assert_code(
+            self.run_gate(
+                MISE_WITH_FLAG.replace(
+                    ' --all-features --jobs 1 --output "out/x"',
+                    ' --jobs 1 --output "out/\\"x" && echo --all-features'),
+                CI_WITH_FLAG,
+            ),
+            1, "--all-features is missing from 1 of 2")
+
+    def test_an_escaped_quote_outside_a_quotation_is_not_a_quotation(self):
+        # The third shape: the backslash-escaped quote is not inside a
+        # quoted argument at all, so a scanner that honours neither
+        # backslashes nor anything after them opens a quotation on a
+        # character the shell treats as a literal `"`. Executed: exit 0
+        # with the measuring invocation unflagged.
+        self.assert_code(
+            self.run_gate(
+                MISE_WITH_FLAG.replace(
+                    ' --all-features --jobs 1 --output "out/x"',
+                    ' --jobs 1 --output \\"out && echo --all-features'),
                 CI_WITH_FLAG,
             ),
             1, "--all-features is missing from 1 of 2")
@@ -434,6 +518,24 @@ class FlagsGateContract(unittest.TestCase):
                     'cargo mutants -p "$usage_crate" --all-features',
                     './ci/both.sh cargo mutants -p a --all-features '
                     'cargo mutants -p b'),
+                CI_WITH_FLAG,
+            ),
+            1, "missing from 1 of 3")
+
+    def test_an_invocation_ends_where_the_next_one_begins(self):
+        # The case above with the flag on the other one. Both orders
+        # have to be red, and only one of them is red for the reason
+        # anybody would guess: if an invocation ran to the end of the
+        # command rather than to the start of its neighbour, the first
+        # one here would be handed the second's `--all-features` and the
+        # command would report clean. Unasserted before — the existing
+        # order passes whether or not the boundary is drawn.
+        self.assert_code(
+            self.run_gate(
+                MISE_WITH_FLAG.replace(
+                    'cargo mutants -p "$usage_crate" --all-features',
+                    './ci/both.sh cargo mutants -p a '
+                    'cargo mutants -p b --all-features'),
                 CI_WITH_FLAG,
             ),
             1, "missing from 1 of 3")

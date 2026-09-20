@@ -247,7 +247,7 @@ runs, drops comments, and fails unless every `cargo mutants` invocation carries
 it read holds an invocation at all, because a gate reporting green on a matrix
 that no longer runs cargo-mutants is reporting on nothing.
 
-Three details in that are load-bearing, and every one of them was established by
+Four details in that are load-bearing, and every one of them was established by
 defeating an earlier version of the gate against real copies of these files.
 
 The unit is an **invocation, not a line**. Shell puts several commands on one
@@ -257,9 +257,23 @@ cargo mutants -p X --jobs 1` is one line, two invocations, a legitimate flag on
 the one that measures nothing and no flag on the one that produces the floor —
 and it reported exit 0. So does a trailing `# dropped --all-features
 temporarily`, and so does a preceding `echo "we run with --all-features" && …`.
-The gate splits on `&&`, `||`, `&`, `;`, `|` and newlines, applies one comment
-rule (a `#` that starts a word), and reads every `cargo mutants` pair in each
-command as an invocation of its own.
+The gate lexes each joined line **once**, splits it at the separators `&&`,
+`||`, `&`, `;` and `|` that the lexer finds unquoted, applies one comment rule
+(a `#` that starts a word), and reads every `cargo mutants` pair in each command
+as an invocation of its own, ending where the next one begins.
+
+Lexing once is the load-bearing half of that sentence. Splitting the raw line
+and then lexing the pieces put two quote rules in one file, and a single
+backslash-escaped double quote — `--output "out/\"$slug"`, which is ordinary,
+and which `mise.toml` already writes in the `fuzz-build` task's `run = "…"` — was
+enough to desynchronise them. After the desync the splitter believed it was
+inside a quotation to end of line, so it stopped splitting on `&&` and stopped
+honouring `#`, while the lexer read the same text as words of the invocation:
+three shapes reported green with the measuring invocation unflagged, one of them
+the trailing-comment hole above restored verbatim. The mirror direction, an
+escaped quote inside a legitimate `--exclude-re`, was exit 2 on a correct tree.
+Two lexical rules for one thing are wrong in both directions at once, which is
+the same argument that had already collapsed the two comment rules into one.
 
 What satisfies the test is the flag **as written, before any `--`**. Three more
 shapes carried the gate without carrying the feature selection: a second

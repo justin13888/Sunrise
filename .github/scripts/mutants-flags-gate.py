@@ -57,13 +57,13 @@ What it counts is an *invocation*, not a line. Shell puts several
 commands on one line, and a containment test over the joined line is
 satisfied by any of them: `cargo mutants --list … --all-features &&
 cargo mutants -p X --jobs 1` has a flag in it and no flag on the
-invocation that measures the floor. So each logical line is split into
-commands on `&&`, `||`, `&`, `;`, `|` and a newline; each command is
-lexed into words; and every adjacent `cargo mutants` pair in it is an
-invocation, ending where the next one starts. A comment about the flag, a
-neighbouring `echo` about the flag, a `--list` call carrying the flag and
-a background job carrying it all stop vouching for the command beside
-them.
+invocation that measures the floor. So each logical line is lexed once
+into words, split into commands at the separators `&&`, `||`, `&`, `;`
+and `|` that the lexer finds unquoted, and every adjacent `cargo
+mutants` pair in a command is an invocation, ending where the next one
+starts. A comment about the flag, a neighbouring `echo` about the flag,
+a `--list` call carrying the flag and a background job carrying it all
+stop vouching for the command beside them.
 
 And what satisfies the flag test is the flag as *written*. Three ways it
 was satisfiable by something else, each executed against real copies of
@@ -76,14 +76,24 @@ and says nothing about what cargo-mutants built. So an invocation carries
 the flag only if a word whose source text is exactly `--all-features`
 appears in it before any `--`.
 
-There is one comment rule, not two. A `#` that starts a word ends the
-line; `foo#bar` is a path. Lexing with a second, stricter rule made
-`--output out/run#3 --all-features` red on a correct tree and made
-`./ci/wrap.sh --tag v1#2 cargo mutants -p x` vanish from the gate
-entirely — wrong in both directions from the same disagreement. And a
-command that mentions cargo-mutants and will not lex at all is exit 2:
-falling back to a whitespace split turned an unbalanced quote into a way
-of passing, which is the one thing a typo must never be.
+One lexer, one pass — which is not tidiness. Separating "split the line"
+from "lex the command" put two quote rules in one file, and a single
+backslash-escaped double quote desynchronised them: the splitter read
+the rest of the line as quoted, so it stopped splitting and stopped
+honouring `#`, while the lexer read that same text as ordinary words of
+the invocation. Three shapes of that reported green with the measuring
+invocation unflagged, one of them the original trailing-comment hole
+restored verbatim, and the mirror direction — an escaped quote inside a
+legitimate `--exclude-re` — was exit 2 on a correct tree. The same
+argument had already settled the comment rule: a `#` that starts a word
+ends the line, `foo#bar` is a path, and a second stricter rule made
+`--output out/run#3 --all-features` red on a correct tree while making
+`./ci/wrap.sh --tag v1#2 cargo mutants -p x` vanish. Two lexical rules
+for one thing are wrong in both directions at once, so there is one
+rule and nowhere for it to disagree with itself. A line that mentions
+cargo-mutants and will not lex at all is exit 2: falling back to a
+whitespace split turned an unbalanced quote into a way of passing, which
+is the one thing a typo must never be.
 
 Why a separate script rather than `grep-gate.sh`
 ------------------------------------------------
@@ -124,7 +134,7 @@ Two exit codes, because they are two different pieces of news
 * **1 — an invocation is missing the flag.** The two places disagree, or
   both dropped it. The remedy is to put it back, in every place.
 * **2 — the gate could not run.** A file it reads is missing or
-  unreadable; a command that mentions cargo-mutants will not lex; *no*
+  unreadable; a line that mentions cargo-mutants will not lex; *no*
   file it read holds a `cargo mutants` invocation at all; or the files
   hold fewer than `MINIMUM_INVOCATIONS` between them. The "none at all"
   case is judged over the union and not per file, because moving the
@@ -252,67 +262,6 @@ def logical_lines(text: str) -> list[tuple[int, str]]:
     return out
 
 
-def commands(line: str) -> list[str]:
-    """Split one logical line into the commands it actually runs.
-
-    The unit this gate checks has to be an *invocation*, not a line. A
-    logical line is a piece of shell, and shell puts several commands on
-    one: `cargo mutants --list ... --all-features > population.txt &&
-    cargo mutants -p X --jobs 1` is one line, two invocations, and only
-    one of them measures anything. Counting that as a single unit and
-    asking whether the flag appears anywhere in it reports the whole line
-    green on the strength of the `--list` call, while the invocation that
-    produces the floor has no flag at all — the exact 27.17%-vs-36.89%
-    corruption this gate exists to prevent, reported as a pass.
-
-    The same containment test is satisfied by any neighbouring text: a
-    preceding `echo "we run with --all-features" && cargo mutants -p X`
-    passes, and so does a trailing `# dropped --all-features temporarily`,
-    because `logical_lines` only drops comments that occupy a whole line.
-    Both were constructed against this repository's own two files and both
-    reported exit 0. Splitting first is what makes those three shapes red.
-
-    Quote-aware, because a separator inside a quoted argument is an
-    argument and not a separator. A `#` that starts a word ends the line:
-    everything after it is a comment, and it is dropped here — before any
-    flag test sees it — rather than being allowed to vouch for the command
-    in front of it.
-    """
-    out: list[str] = []
-    current: list[str] = []
-    quote: str | None = None
-    index = 0
-    while index < len(line):
-        char = line[index]
-        if quote is not None:
-            current.append(char)
-            if char == quote:
-                quote = None
-            index += 1
-            continue
-        if char in "'\"":
-            quote = char
-            current.append(char)
-            index += 1
-            continue
-        # A comment starts at the beginning of a word, as it does in the
-        # shell, in TOML and in YAML. `foo#bar` is not a comment and
-        # neither is `$#`.
-        if char == "#" and (index == 0 or line[index - 1].isspace()):
-            break
-        matched = next(
-            (sep for sep in SEPARATORS if line.startswith(sep, index)), None)
-        if matched is not None:
-            out.append("".join(current))
-            current = []
-            index += len(matched)
-            continue
-        current.append(char)
-        index += 1
-    out.append("".join(current))
-    return [command.strip() for command in out if command.strip()]
-
-
 class Word(NamedTuple):
     """One shell word, as the shell sees it and as a person wrote it.
 
@@ -326,70 +275,115 @@ class Word(NamedTuple):
     raw: str
 
 
-def words(command: str) -> list[Word]:
-    """Lex one command into words, keeping each word's source text.
+def commands(line: str) -> list[list[Word]]:
+    """Split one logical line into the commands it runs, lexing once.
 
-    Deliberately not `shlex`, for two reasons that are the same reason.
+    The unit this gate checks has to be an *invocation*, not a line. A
+    logical line is a piece of shell, and shell puts several commands on
+    one: `cargo mutants --list ... --all-features > population.txt &&
+    cargo mutants -p X --jobs 1` is one line, two invocations, and only
+    one of them measures anything. Counting that as a single unit and
+    asking whether the flag appears anywhere in it reports the whole line
+    green on the strength of the `--list` call, while the invocation that
+    produces the floor has no flag at all — the exact 27.17%-vs-36.89%
+    corruption this gate exists to prevent, reported as a pass. The same
+    containment test is satisfied by a preceding `echo "we run with
+    --all-features" &&` and by a trailing `# dropped --all-features
+    temporarily`. Splitting first is what makes those shapes red.
 
-    `shlex.split(…, comments=True)` truncates at *any* `#`, while
-    `commands` above drops a comment only where one starts a word. Two
-    comment rules in one file are wrong in both directions at once:
-    `--output out/run#3 --all-features` lost its flag to a `#` that is
-    part of a path and went red on a correct tree, and
-    `./ci/wrap.sh --tag v1#2 cargo mutants -p x` lost its *invocation* the
-    same way and went green with the flag missing. There is now one rule,
-    `commands`', and this function has no opinion about `#` at all.
+    One pass, one grammar. This used to be two functions: a splitter
+    that re-scanned the raw line for separators and comments with a
+    quote rule of its own, and a lexer that produced the words. Two
+    quote rules in one file disagree, and a single backslash-escaped
+    double quote was enough to desynchronise them — after which the
+    splitter thought it was inside a quotation to end of line, so it
+    stopped splitting on `&&` and stopped honouring `#`, while the lexer
+    read the same text as ordinary words of the invocation. All three
+    shapes of that were executed and all reported green with the
+    measuring invocation unflagged, one of them round-1's original
+    comment case restored verbatim; the mirror direction, an escaped
+    quote inside a legitimate `--exclude-re`, was exit 2 on a correct
+    tree. The same argument decided the `#` rule one round earlier —
+    two lexical rules for one thing are wrong in both directions at
+    once — and the answer is the same: there is one rule, it is here,
+    and there is nowhere else for it to disagree with.
 
-    And `shlex` answers with values, having thrown the quoting away.
-    `--exclude-re '--all-features'` lexes to a word whose value is exactly
-    the flag, so the gate accepted a regex that merely mentions it as the
-    feature selection of the run — executed against this repository's own
-    files, exit 0, with the measuring invocation unflagged. Keeping `raw`
-    beside `value` is what lets `carries_flag` ask the question that
-    matters: was the flag *written*, or was it produced by unquoting
-    something else?
+    So separators and comments are decided by this scanner, at positions
+    it already knows are unquoted and unescaped, and a command is a list
+    of `Word` rather than a slice of text somebody has to lex again. A
+    separator inside a quoted argument is an argument; a separator
+    written `\\&` is an argument too. A `#` that starts a word ends the
+    line, and everything after it is dropped before any flag test sees
+    it.
+
+    Deliberately not `shlex`, which answers with values, having thrown
+    the quoting away: `--exclude-re '--all-features'` lexes to a word
+    whose value is exactly the flag, so the gate accepted a regex that
+    merely mentions it as the feature selection of the run — executed
+    against this repository's own files, exit 0, with the measuring
+    invocation unflagged. Keeping `raw` beside `value` is what lets
+    `carries_flag` ask the question that matters. `shlex`'s comment rule
+    is the other reason: it truncates at *any* `#`, so `--output
+    out/run#3 --all-features` went red on a correct tree.
 
     Raises `ValueError` on an unterminated quote or a trailing escape.
     Callers turn that into a `CannotRun`, per the module docstring: a
-    command this gate cannot parse is a command it cannot judge.
+    line this gate cannot parse is a line it cannot judge.
     """
-    out: list[Word] = []
+    out: list[list[Word]] = []
+    current: list[Word] = []
     value: list[str] = []
     raw: list[str] = []
     started = False
     index = 0
-    while index < len(command):
-        char = command[index]
+    while index < len(line):
+        char = line[index]
         if char.isspace():
             if started:
-                out.append(Word("".join(value), "".join(raw)))
+                current.append(Word("".join(value), "".join(raw)))
                 value, raw, started = [], [], False
             index += 1
             continue
+        # A comment starts at the beginning of a word, as it does in the
+        # shell, in TOML and in YAML. `foo#bar` is not a comment and
+        # neither is `$#`; `started` is false at exactly the positions a
+        # word can begin at.
+        if char == "#" and not started:
+            break
+        separator = next(
+            (sep for sep in SEPARATORS if line.startswith(sep, index)), None)
+        if separator is not None:
+            if started:
+                current.append(Word("".join(value), "".join(raw)))
+                value, raw, started = [], [], False
+            out.append(current)
+            current = []
+            index += len(separator)
+            continue
         started = True
         if char == "'":
-            close = command.find("'", index + 1)
+            close = line.find("'", index + 1)
             if close < 0:
                 raise ValueError("no closing quotation")
-            value.append(command[index + 1:close])
-            raw.append(command[index:close + 1])
+            value.append(line[index + 1:close])
+            raw.append(line[index:close + 1])
             index = close + 1
             continue
         if char == '"':
             index += 1
             raw.append('"')
             while True:
-                if index >= len(command):
+                if index >= len(line):
                     raise ValueError("no closing quotation")
-                inner = command[index]
+                inner = line[index]
                 if inner == '"':
                     raw.append('"')
                     index += 1
                     break
-                if inner == "\\" and index + 1 < len(command) and \
-                        command[index + 1] in '"\\$`':
-                    value.append(command[index + 1])
-                    raw.append(command[index:index + 2])
+                if inner == "\\" and index + 1 < len(line) and \
+                        line[index + 1] in '"\\$`':
+                    value.append(line[index + 1])
+                    raw.append(line[index:index + 2])
                     index += 2
                     continue
                 value.append(inner)
@@ -397,21 +391,31 @@ def words(command: str) -> list[Word]:
                 index += 1
             continue
         if char == "\\":
-            if index + 1 >= len(command):
+            if index + 1 >= len(line):
                 raise ValueError("no escaped character")
-            value.append(command[index + 1])
-            raw.append(command[index:index + 2])
+            value.append(line[index + 1])
+            raw.append(line[index:index + 2])
             index += 2
             continue
         value.append(char)
         raw.append(char)
         index += 1
     if started:
-        out.append(Word("".join(value), "".join(raw)))
-    return out
+        current.append(Word("".join(value), "".join(raw)))
+    out.append(current)
+    return [command for command in out if command]
 
 
-def invocations_in(command: str) -> list[list[Word]]:
+def written(command: list[Word]) -> str:
+    """One command back as source text, for naming it in a failure.
+
+    Word by word, so what a person is shown is what the gate read
+    rather than the slice of line it came from.
+    """
+    return " ".join(word.raw for word in command)
+
+
+def invocations_in(command: list[Word]) -> list[list[Word]]:
     """Every invocation inside one command, each from its `cargo` onwards.
 
     `cargo` and `mutants` have to be two adjacent *words*, which is what
@@ -439,15 +443,15 @@ def invocations_in(command: str) -> list[list[Word]]:
     Each invocation ends where the next one begins, so one invocation's
     arguments cannot be read as its neighbour's.
     """
-    lexed = words(command)
     starts = [
         index
-        for index in range(len(lexed) - 1)
-        if lexed[index].value == "cargo" and lexed[index + 1].value == "mutants"
+        for index in range(len(command) - 1)
+        if command[index].value == "cargo"
+        and command[index + 1].value == "mutants"
     ]
     return [
-        lexed[start:(starts[position + 1] if position + 1 < len(starts)
-                     else len(lexed))]
+        command[start:(starts[position + 1] if position + 1 < len(starts)
+                       else len(command))]
         for position, start in enumerate(starts)
     ]
 
@@ -483,12 +487,12 @@ def invocations(path: pathlib.Path) -> list[tuple[int, str, list[Word]]]:
     written, the invocation's words). The text of a command an
     invocation shares a line with cannot make it carry a flag.
 
-    A command that mentions cargo-mutants and will not lex is a
-    `CannotRun` rather than something to test leniently. The previous
-    answer — fall back to a whitespace split — re-created by the back
-    door the substring behaviour the split into commands removed: an
-    unbalanced quote in front of `# keep --all-features later` made the
-    comment's words into the command's own, and the gate went green on an
+    A line that mentions cargo-mutants and will not lex is a `CannotRun`
+    rather than something to test leniently. The previous answer — fall
+    back to a whitespace split — re-created by the back door the
+    substring behaviour the split into commands removed: an unbalanced
+    quote in front of `# keep --all-features later` made the comment's
+    words into the command's own, and the gate went green on an
     invocation with no flag. A typo must not be a way of passing.
     """
     try:
@@ -499,21 +503,21 @@ def invocations(path: pathlib.Path) -> list[tuple[int, str, list[Word]]]:
     for number, line in logical_lines(text):
         if not INVOCATION.search(line):
             continue
-        for command in commands(line):
-            try:
-                here = invocations_in(command)
-            except ValueError as error:
-                raise CannotRun(
-                    f"{path}:{number}: cannot lex a command that mentions "
-                    f"cargo-mutants ({error}):\n    {command}\n\n"
-                    "The gate refuses rather than guessing. Reading this "
-                    "with the quoting ignored would let the text after an "
-                    "unbalanced quote — a trailing comment, say — supply "
-                    f"{REQUIRED_FLAG} to a command that does not have it. "
-                    "Balance the quotes and run it again."
-                ) from error
-            for invocation in here:
-                found.append((number, command, invocation))
+        try:
+            split = commands(line)
+        except ValueError as error:
+            raise CannotRun(
+                f"{path}:{number}: cannot lex a command that mentions "
+                f"cargo-mutants ({error}):\n    {line}\n\n"
+                "The gate refuses rather than guessing. Reading this "
+                "with the quoting ignored would let the text after an "
+                "unbalanced quote — a trailing comment, say — supply "
+                f"{REQUIRED_FLAG} to a command that does not have it. "
+                "Balance the quotes and run it again."
+            ) from error
+        for command in split:
+            for invocation in invocations_in(command):
+                found.append((number, written(command), invocation))
     return found
 
 
