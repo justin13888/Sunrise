@@ -264,6 +264,12 @@ final class AccountModel {
         do {
             let fresh = try await driver.refresh(refreshToken: refreshToken, nowMs: nowMs)
             try store.save(fresh)
+            // The renewal has replaced the credential a refused sign-out left
+            // behind, so the residue about it stops being true here for the
+            // same reason, and on the same line, as the save in `signIn()`.
+            // ``signOutResidue`` states the invariant "until a `clear()` or a
+            // `save()` replaces it", and this is such a save.
+            signOutResidue = .none
             credentials = fresh
             publish()
         } catch {

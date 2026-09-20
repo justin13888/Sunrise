@@ -26,6 +26,13 @@ struct AccountDisclosureTests {
         AccountModel(store: store, makeDriver: { _, _ in driver }, openURL: opened ?? { _ in })
     }
 
+    private func model(
+        store: StubCredentialStore,
+        makeDriver: @escaping @Sendable (String, String) -> any LoginDriver
+    ) -> AccountModel {
+        AccountModel(store: store, makeDriver: makeDriver, openURL: { _ in })
+    }
+
     /// A Keychain that holds a credential and will not let go of it.
     private func lockedStore() -> StubCredentialStore {
         StubCredentialStore(value: credentials(accessToken: "access-old"), clearFailure: refusal)
@@ -232,6 +239,47 @@ struct AccountDisclosureTests {
         #expect(account.signOutDisclosure == .none, "dismissing the retry retires the message too")
     }
 
+    /// A renewal is a `save()`, and ``AccountModel/signOutResidue`` states the
+    /// invariant that it stands only "until a `clear()` or a `save()` replaces
+    /// it". `refreshIfNeeded` used to replace the credential and retire
+    /// nothing, so the screen went on offering a retry that named a credential
+    /// the renewal had already overwritten.
+    ///
+    /// Latent while nothing ticks the renewal — but reachable today without
+    /// one, because `restore()` runs from a per-window `.task` against the
+    /// SHARED model, so opening a second window re-enters `.signedIn` over a
+    /// residue that is still standing.
+    @Test
+    func aRenewalThatSavesRetiresTheResidue() async {
+        let store = lockedStore()
+        let renewed = credentials(accessToken: "access-new", expiresAtMs: 9_000, renewAtMs: 8_000)
+        let account = model(store: store, makeDriver: { _, _ in
+            RenewingButNotSigningInDriver(renewed: renewed)
+        })
+        account.signOut()
+        #expect(account.signOutDisclosure == .incomplete(refusalText))
+
+        account.restore()
+        #expect(account.state == .signedIn(expiresAtMs: 4_000), "a second window reloads it")
+        #expect(account.signOutRefusedThisSession, "and the residue stands behind the session")
+
+        await account.refreshIfNeeded(issuer: "https://issuer.example", clientID: "c", nowMs: 3_000)
+        #expect(store.stored?.accessToken == "access-new", "the renewal replaced the credential")
+        #expect(!account.signOutRefusedThisSession, "so the residue about the old one is spent")
+
+        await account.signIn(
+            issuer: "https://issuer.example",
+            clientID: "client",
+            deviceID: "abcd",
+            nowMs: 0
+        )
+        #expect(account.state == .failed("the issuer refused"))
+        #expect(
+            account.signOutDisclosure == .none,
+            "and no retry naming a credential the renewal already overwrote"
+        )
+    }
+
     /// What the disclosure NAMES, pinned.
     ///
     /// It used to say "the refresh token", which ``StoredCredentials`` is
@@ -258,6 +306,23 @@ struct AccountDisclosureTests {
             )
         }
     }
+}
+
+/// Renews, but will not start a login.
+///
+/// `StubLoginDriver`'s one `failure` knob short-circuits all three calls, so a
+/// renewal followed by a sign-in that fails — the sequence a stale residue
+/// surfaces in — is inexpressible through it.
+struct RenewingButNotSigningInDriver: LoginDriver {
+    let renewed: StoredCredentials
+
+    func begin(deviceID: String) async throws -> URL { throw StubLoginError() }
+
+    func complete(timeoutMs: UInt64, nowMs: UInt64) async throws -> StoredCredentials {
+        throw StubLoginError()
+    }
+
+    func refresh(refreshToken: String, nowMs: UInt64) async throws -> StoredCredentials { renewed }
 }
 
 /// Looks at the model from inside `signIn()`'s `openURL` hook, which is the

@@ -16,6 +16,9 @@ final class StubCredentialStore: CredentialStore, @unchecked Sendable {
     private var clearFailure: (any Error)?
     /// What `save()` refuses with — the lock that refuses a `clear()` refuses
     /// a `save()` too, so a sign-in under the warning establishes nothing.
+    /// Mutable for the same reason `clearFailure` is: the Keychain the user
+    /// goes and unlocks stops refusing BOTH, and a knob that can only be
+    /// turned on cannot express the recovery this change is about.
     private var saveFailure: (any Error)?
 
     init(value: StoredCredentials? = nil, clearFailure: (any Error)? = nil) {
@@ -28,6 +31,8 @@ final class StubCredentialStore: CredentialStore, @unchecked Sendable {
     /// The user unlocked the Keychain.
     func stopRefusingClears() { lock.withLock { clearFailure = nil } }
     func refuseSaves(with error: any Error) { lock.withLock { saveFailure = error } }
+    /// The same unlock, on the other half of the lock.
+    func stopRefusingSaves() { lock.withLock { saveFailure = nil } }
 
     func load() throws -> StoredCredentials? { lock.withLock { value } }
 
@@ -392,6 +397,13 @@ struct AccountModelTests {
     /// attempted under the warning establishes nothing and the credential the
     /// warning is about is still the stored one. Clearing the warning before
     /// `store.save` rather than after would destroy it on exactly this path.
+    ///
+    /// Then the user unlocks and the same sign-in works, which is the other
+    /// half: a `save()` that succeeds has replaced the credential the warning
+    /// names, so the warning and the retry it left behind both go. Nothing
+    /// else in either suite reaches that line — the one place a retry is read
+    /// after a sign-in sits under `.signedIn`, where the state term suppresses
+    /// it anyway, so deleting the line left the suite green.
     @Test
     func aSignInThatCannotSaveLeavesTheWarningAndNoSession() async {
         let refusal = KeychainError.unexpected(errSecInteractionNotAllowed)
@@ -414,6 +426,27 @@ struct AccountModelTests {
         #expect(account.state == .failed(refusal.localizedDescription))
         #expect(store.stored?.accessToken == "access-old", "the old credential is still stored")
         #expect(account.signOutIncomplete != nil, "so the warning about it is still true")
+        #expect(account.signOutRefusedThisSession, "and the refusal behind it stands")
+
+        store.stopRefusingSaves()
+        await account.signIn(
+            issuer: "https://issuer.example",
+            clientID: "client",
+            deviceID: "abcd",
+            nowMs: 0
+        )
+
+        #expect(account.state == .signedIn(expiresAtMs: 4_000))
+        #expect(store.stored?.accessToken == "access-1", "the save replaced the credential")
+        #expect(account.signOutIncomplete == nil)
+        #expect(
+            !account.signOutRefusedThisSession,
+            "the credential the refusal was about is not the stored one any more"
+        )
+        #expect(
+            account.signOutDisclosure == .none,
+            "so the screen has nothing left to say about it, in either row"
+        )
     }
 
     /// A struct carrying a live bearer and a refresh token ends up in the
