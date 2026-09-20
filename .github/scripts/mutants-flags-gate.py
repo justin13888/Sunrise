@@ -1067,11 +1067,42 @@ def report_unlexable(unlexable: int) -> None:
     four hundred would mean the gate had stopped reading most of what it
     was pointed at, and nothing would have said so.
 
-    On this repository at the time of writing it is 45, of which 44 are
-    TOML triple-quote fences in `mise.toml`. The forty-fifth is
-    `mise.toml:530`, which continues a line with `\\\\` inside a `\"\"\"`
-    string — one backslash to the shell, two to this gate, which reads
-    TOML source rather than decoded TOML values.
+    On this repository the tally is 45, and it is **not** 44 fences plus
+    one oddity in `mise.toml`, which is what this docstring claimed from
+    the commit that introduced the sentence until the composition was
+    re-derived rather than asserted. Six of the 45 are not in
+    `mise.toml` at all:
+
+    * **38** TOML triple-quote fences in `mise.toml` — 28 `\"\"\"` and 10
+      `'''`, each an unbalanced quotation to a shell lexer.
+    * **1** more in `mise.toml`, at `:530`, which continues a line with
+      `\\\\` inside a `\"\"\"` string — one backslash to the shell, two to
+      this gate, which reads TOML source rather than decoded TOML
+      values. It is the only entry that is an unclosed `$(` rather than
+      an unbalanced quote.
+    * **3** in `.github/scripts/sparkle-tools.sh` at `:37`, `:42` and
+      `:43` — one `awk` program whose single-quoted body spans three
+      lines inside a `$( )`, which no trailing backslash joins.
+    * **2** in `.github/workflows/ci.yml` at `:972` and `:998`, and
+      **1** in `.github/workflows/release.yml` at `:854`. All three are
+      `- name:` prose whose English apostrophe is an unbalanced
+      quotation: "the core's storage seam", "its package's threshold",
+      "a user's Mac".
+
+    Those last three are the visible half of the limit the module
+    docstring states as latent — that this gate cannot tell an
+    executable line from prose that happens to lex. Prose that does
+    *not* lex lands here and is skipped, which is the safe direction and
+    is why the number has to be broken down rather than summarised: a
+    reader told all 45 are TOML fences never learns the gate is skipping
+    English apostrophes in two workflows, and would read a fence count
+    that had quietly become a prose count as no change at all.
+
+    Asserted by `test_the_real_tree_unlexable_tally_holds_its_stated_
+    composition`, which re-derives the breakdown with this module's own
+    `invocations` rather than trusting this paragraph. The total alone
+    was not enough: 45 was right while four statements of what made it
+    up were wrong.
     """
     if unlexable:
         print(f"({unlexable} line(s) did not lex as shell and name no "

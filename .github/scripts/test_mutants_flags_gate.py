@@ -16,23 +16,33 @@ is exercised. The default file set is the one part of the gate that
 naming files bypasses, and until something ran it a typo there would have
 shipped behind a check that blocks nothing.
 
-One case reads this repository, and only one:
-`test_the_real_tree_is_in_step_and_holds_the_stated_count`. It runs the
-gate from the repository root with no arguments and asserts that the tree
-is in step and holds `EXPECTED_INVOCATIONS` invocations. It is here
-because that number is otherwise asserted nowhere a developer runs: the
-live `Mutation flag gate` job is not a required check, so a number that
-had stopped describing this repository would have had nothing blocking to
-say so.
+Two cases read this repository, and only two. Both are here for the same
+reason: a number the gate states about this tree is otherwise asserted
+nowhere a developer runs, because the live `Mutation flag gate` job is
+not a required check.
 
-The cost of that one case is real and is the reason it is called out
-rather than left to be discovered. It couples this suite to working-tree
-state: an **untracked** `.github/**/*.sh` holding a `cargo mutants` line
-fails it locally while the tracked tree is perfectly in step. That is
-intended, it is the price of asserting the number somewhere blocking, and
-a reader who trips it should find it written down. Every other case here
-is hermetic, and a change to the contract is the only thing that should
-move them.
+`test_the_real_tree_is_in_step_and_holds_the_stated_count` runs the gate
+from the repository root with no arguments and asserts that the tree is
+in step and holds `EXPECTED_INVOCATIONS` invocations.
+
+`test_the_real_tree_unlexable_tally_holds_its_stated_composition`
+asserts the other number — how many lines the gate could not read as
+shell, and **in which files**. The total alone was not enough: it was
+right at 45 while four separate statements of what made it up were
+wrong, each claiming all but one of the 45 were TOML fences in
+`mise.toml` when six of them are in three other files. A total cannot
+notice that, and the case above it in this file asserts only that the
+tally MOVES when the file set gets noisier.
+
+The cost of those two cases is real and is the reason it is called out
+rather than left to be discovered. They couple this suite to
+working-tree state: an **untracked** `.github/**/*.sh` holding a `cargo
+mutants` line fails the first locally while the tracked tree is
+perfectly in step, and an untracked file the gate cannot lex moves the
+second. That is intended, it is the price of asserting these numbers
+somewhere blocking, and a reader who trips it should find it written
+down. Every other case here is hermetic, and a change to the contract is
+the only thing that should move them.
 
 The distinction the exit codes carry
 ------------------------------------
@@ -87,6 +97,7 @@ Run it with `mise run mutants-flags-gate-test`, or directly.
 
 from __future__ import annotations
 
+import importlib.util
 import pathlib
 import re
 import subprocess
@@ -180,6 +191,22 @@ class FlagsGateContract(unittest.TestCase):
             [sys.executable, str(GATE), *stated],
             cwd=self.tmp, capture_output=True, text=True,
         )
+
+    def load_gate(self):
+        """The gate as a module, for the one case that reads its parts.
+
+        Every verdict case here runs the gate as a subprocess, because
+        the contract being asserted is an exit code. The unlexable
+        composition is not a verdict — it is a breakdown of a number the
+        gate only ever prints as a total — so deriving it means calling
+        `invocations` per file. Importing is how that gets done without
+        keeping a second copy of the gate's own loop in this file, which
+        is the duplication the gate exists to object to.
+        """
+        spec = importlib.util.spec_from_file_location("_gate", GATE)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
 
     def write(self, relative: str, text: str) -> pathlib.Path:
         path = self.tmp / relative
@@ -1283,6 +1310,83 @@ class FlagsGateContract(unittest.TestCase):
             cwd=root, capture_output=True, text=True)
         self.assert_code(result, 0, "cargo-mutants invocation(s) carry")
         self.assertIn(f"OK: {EXPECTED_INVOCATIONS} ", result.stdout)
+
+    def test_the_real_tree_unlexable_tally_holds_its_stated_composition(self):
+        # The second case that reads this repository, and it is here
+        # because the first one was not enough. The tally's TOTAL was
+        # right — 45 — while four separate statements of what made it up
+        # said "44 of them are TOML triple-quote fences in `mise.toml`,
+        # the forty-fifth is `mise.toml:530`". Six of the 45 are not in
+        # `mise.toml` at all. Re-deriving at the commit that introduced
+        # the sentence gives the same breakdown as today, so it was
+        # wrong the day it was written: the one measurement that was
+        # asked to be measured rather than assumed was, in its second
+        # half, assumed.
+        #
+        # A total cannot catch that, and neither can
+        # `test_the_unlexable_tally_is_reported_not_silent` above, which
+        # asserts only that the number MOVES when the file set gets
+        # noisier. So the composition is asserted, with the gate's own
+        # `invocations` rather than a second copy of its loop.
+        #
+        # PER FILE and not per line, deliberately. Line numbers move for
+        # reasons that have nothing to do with this gate; what must not
+        # move unnoticed is WHICH FILES the gate is failing to read, and
+        # how much of each. The three workflow entries are the live half
+        # of a limit the module docstring states as latent — prose the
+        # gate cannot tell from shell — and a reader who believes the
+        # old sentence never learns they exist.
+        #
+        # Like the case above, this couples to working-tree state: an
+        # untracked `.github/**/*.{yml,yaml,sh}` will move these counts
+        # while the tracked tree is in step. That is the price of
+        # asserting the composition somewhere blocking.
+        gate = self.load_gate()
+        root = GATE.parent.parent.parent
+        derived: dict[str, int] = {}
+        for path in (root / "mise.toml",) + tuple(
+                sorted(p for pattern in gate.GITHUB_GLOBS
+                       for p in (root / ".github").glob(pattern))):
+            _, skipped = gate.invocations(path)
+            if skipped:
+                derived[str(path.relative_to(root))] = skipped
+        self.assertEqual(
+            derived,
+            {
+                "mise.toml": 39,
+                ".github/scripts/sparkle-tools.sh": 3,
+                ".github/workflows/ci.yml": 2,
+                ".github/workflows/release.yml": 1,
+            },
+            "the unlexable tally's composition moved. Correct the "
+            "breakdown in `report_unlexable`'s docstring and in "
+            "docs/10-cross-cutting/testing.md in the same change, and "
+            "check whether a file has started going unread rather than "
+            "only editing this mapping to match.")
+        # And the two kinds inside `mise.toml`: 38 fences, which are
+        # unbalanced quotations to a shell lexer, and `:530` alone,
+        # which is an unclosed `$(` continued with `\\` inside a `"""`
+        # string. They are counted together by the gate and stated
+        # separately by its docstring, so they are asserted separately
+        # here.
+        kinds: dict[str, int] = {}
+        for _, line in gate.logical_lines((root / "mise.toml").read_text()):
+            try:
+                gate.commands(line)
+            except ValueError as error:
+                if not gate.INVOCATION.search(line):
+                    kinds[str(error)] = kinds.get(str(error), 0) + 1
+        self.assertEqual(kinds.get("no closing quotation"), 38)
+        self.assertEqual(
+            kinds.get("no closing `)` for a command substitution"), 1)
+        # Finally, the number the gate PRINTS is the sum of the parts.
+        # The docstring's total and its breakdown are one claim.
+        printed = subprocess.run(
+            [sys.executable, str(GATE)], cwd=root,
+            capture_output=True, text=True)
+        self.assertEqual(
+            int(re.search(r"\((\d+) line", printed.stdout).group(1)),
+            sum(derived.values()))
 
     # --- 2: the gate could not check anything ----------------------------
 
