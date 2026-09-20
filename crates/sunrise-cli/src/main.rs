@@ -646,7 +646,9 @@ async fn dispatch(
                     // read as a plain member while receiving nothing. The
                     // remedy is named because there is one.
                     marks.push(
-                        "removed earlier; the account no longer records that, but it still                          receives no keys -- remove it again from a device you trust",
+                        "removed earlier; the account no longer records that, \
+                         but it still receives no keys -- remove it again from \
+                         a device you trust",
                     );
                 }
                 if !d.current {
