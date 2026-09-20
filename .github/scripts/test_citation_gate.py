@@ -1324,10 +1324,21 @@ class Symbols(GateCase):
 
     def test_prose_holding_a_space_is_still_not_a_citation(self):
         # The other half of the widening, and the reason it costs nothing.
-        # What keeps prose out of the grammar is the PATH group, which forbids
-        # whitespace, not the symbol group -- and none of these carries a `#`
-        # for the symbol group to reach. `docs/a.md and docs/b.md` is a
-        # sentence about two files and has to stay one.
+        # What keeps prose out of the grammar is the PATH group, never the
+        # symbol group -- and it keeps these five out three different ways,
+        # which is worth writing down because the one-line version ("none of
+        # them carries a `#`") is false:
+        #
+        #   docs/a.md and docs/b.md   whitespace
+        #   see docs/prose.md         whitespace
+        #   cargo test --workspace    whitespace
+        #   #[derive(Debug)]          CARRIES a `#`, and the path group's
+        #                             first character class has no `#` in it
+        #   Vec<u8>                   no whitespace, no `#`; no dotted
+        #                             extension either
+        #
+        # `docs/a.md and docs/b.md` is a sentence about two files and has to
+        # stay one.
         self.write("docs/b.md", "one\n")
         self.write(
             "docs/a.md",

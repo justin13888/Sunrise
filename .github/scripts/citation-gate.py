@@ -348,11 +348,25 @@ CITATION = re.compile(
 #   turned on a character the author cannot see. Whitespace is rejected here
 #   too, as a reported failure.
 #
-# Widening the *symbol* group admits no prose, because the **path** group is
-# what forbids whitespace and no near-miss in `self_test` carries a `#` at
-# all: `docs/a.md and docs/b.md`, `see docs/prose.md`, `cargo test
-# --workspace`, `Vec<u8>` and `#[derive(Debug)]` each still fail to match, and
-# they are pinned there so this stays true.
+# Widening the *symbol* group admits no prose, because nothing the symbol
+# group does can help a span that never reaches it: `CITATION` is anchored at
+# both ends, so the **path** group has to match from the first character, and
+# the suffix group is optional and last. Three properties of the path group do
+# all the work, and the five near-misses `self_test` pins are kept out by
+# them rather than by any bound on the suffix — measured, one at a time,
+# because "they carry no `#`" is the obvious reason and it is false:
+#
+# * It forbids whitespace. That is what excludes `docs/a.md and docs/b.md`,
+#   `see docs/prose.md` and `cargo test --workspace`.
+# * It cannot begin at `#`, which has no place in its first character class.
+#   That is what excludes `#[derive(Debug)]` — **which does carry a `#`**, and
+#   is the counter-example to the tempting summary.
+# * It requires a dotted extension in a narrow character set. That is what
+#   excludes `Vec<u8>`, which carries neither whitespace nor a `#`.
+#
+# All five are pinned in `self_test` so this stays true, and the reason is
+# spelled out per example because the reason is what a future reader reuses
+# when deciding whether some other `#`-bearing span is safe.
 SYMBOL_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
 
 # A github.com permalink fragment, which is the one non-declaration `#` form a
@@ -1538,9 +1552,14 @@ def self_test() -> int:
         # while the group read `\S*`, `{main}:9999#two words` came back clean
         # where `{main}:9999` was red, and the most reachable spelling of that
         # is a stray trailing space -- a verdict turning on a character the
-        # author cannot see. Admitting it costs nothing, because the near-miss
-        # cases above are kept out by the PATH group, which forbids
-        # whitespace, and by carrying no `#` at all.
+        # author cannot see. Admitting it costs nothing, because what keeps
+        # the near-miss cases above out is the PATH group, never the symbol
+        # group -- `CITATION` is anchored, so the path has to match from the
+        # first character. It excludes `docs/a.md and docs/b.md`, `see
+        # docs/prose.md` and `cargo test --workspace` for their whitespace,
+        # `#[derive(Debug)]` because its first character class has no `#` in
+        # it -- **that one does carry a `#`** -- and `Vec<u8>` for having no
+        # dotted extension.
         for suffix in ("a b", "a\tb", "a\u00a0b", " "):
             _, found = symbol_verdict(f"{main}:4#{suffix}")
             wrong(
