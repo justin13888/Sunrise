@@ -556,19 +556,46 @@ impl SseTransport {
                 // into `reason`, which is `ClosePayload`'s diagnostic field.
                 // This is the same direction [`SseTransport::refuse`] takes at
                 // its own fallback, and for the same stated reason.
-                let reported = event.get("code").and_then(|c| c.as_str());
-                let parsed = reported.and_then(sunrise_error::ErrorCode::from_wire_str);
+                //
+                // An **absent** code is a different condition and gets a
+                // different answer. `INTERNAL_UNKNOWN_CODE` is reserved for an
+                // unknown code, and "the relay sent a code this build has never
+                // heard of" is not "the relay sent no code": the first is a
+                // newer peer doing something the protocol permits, the second
+                // is a malformed event.
+                // `crates/sunrise-server/src/api/sync/stream.rs:72-78` declares
+                // `SyncEvent::Closed.code` as a `String` rather than an
+                // `Option<String>`, so no relay produces the second — which is
+                // exactly the argument the `Hello` arm below makes from
+                // `credential.rs:51` about a missing `session_id`, and it is
+                // made here for the same reason. Reporting it as a protocol
+                // error says what happened; folding it into the forward-compat
+                // code would file a broken relay under "newer than us" and
+                // hide it.
+                let Some(code) = event.get("code").filter(|c| !c.is_null()) else {
+                    return Err(TransportError::Protocol(
+                        "closed event carries no code".to_owned(),
+                    ));
+                };
+                // Present but not a string is still present, and its spelling
+                // is still the only evidence of which close this was. Rendering
+                // the value as it arrived keeps the diagnostic
+                // `error-handling.md:36` asks for on the one shape where
+                // reading it as a string yields nothing.
+                let reported = match code {
+                    serde_json::Value::String(s) => s.clone(),
+                    other => other.to_string(),
+                };
+                let parsed = sunrise_error::ErrorCode::from_wire_str(&reported);
                 let reason = event
                     .get("reason")
                     .and_then(|r| r.as_str())
                     .unwrap_or("session closed");
                 let payload = ClosePayload {
                     code: parsed.unwrap_or(sunrise_error::ErrorCode::InternalUnknownCode),
-                    reason: match (parsed, reported) {
-                        (None, Some(wire)) => {
-                            format!("{reason} (unrecognised close code {wire})")
-                        }
-                        _ => reason.to_owned(),
+                    reason: match parsed {
+                        Some(_) => reason.to_owned(),
+                        None => format!("{reason} (unrecognised close code {reported})"),
                     },
                 }
                 .encode()
@@ -1675,16 +1702,16 @@ mod tests {
         }
     }
 
-    /// A `closed` event with no code, or one this build has never heard of, is
-    /// **not** recoverable.
+    /// A `closed` event whose code this build has never heard of is **not**
+    /// recoverable, and its spelling survives whatever shape it arrived in.
     ///
     /// `docs/05-sync/wire-protocol.md:214-216` records adding a close code as
     /// non-breaking, so a relay one version ahead closing for a reason this
     /// build has never heard of is sanctioned rather than malformed — and a
     /// client that read it as recoverable would refresh, reconnect, be closed
     /// again for the same unread reason and loop, which is the failure
-    /// `docs/05-sync/wire-protocol.md:203-206` exists to name. Neither shape
-    /// may land on `AUTH_TOKEN_EXPIRED`, the single code `is_recoverable`
+    /// `docs/05-sync/wire-protocol.md:203-206` exists to name. No unreadable
+    /// code may land on `AUTH_TOKEN_EXPIRED`, the single code `is_recoverable`
     /// admits.
     ///
     /// The code it does land on is the one
@@ -1692,13 +1719,28 @@ mod tests {
     /// client meeting a newer code, and the unparsed spelling survives in the
     /// diagnostic the same paragraph asks for, so support tooling can still
     /// say which close this was.
+    ///
+    /// The last two shapes are the ones a JSON reader loses. `code` is a
+    /// `String` in the relay's own type, so a number or an object is as
+    /// unreadable as an unknown name — but reading it *as a string* yields
+    /// `None` and throws the spelling away, which leaves a terminal close with
+    /// nothing to say about itself. Rendering the value as it arrived is what
+    /// keeps the preservation half of `error-handling.md:36` true on every
+    /// shape rather than only on the convenient one.
     #[test]
     fn a_closed_event_this_build_cannot_read_is_terminal_rather_than_recoverable() {
         for (event, reason) in [
-            (serde_json::json!({"kind": "closed"}), "session closed"),
             (
                 serde_json::json!({"kind": "closed", "code": "FROM_THE_FUTURE", "reason": "who knows"}),
                 "who knows (unrecognised close code FROM_THE_FUTURE)",
+            ),
+            (
+                serde_json::json!({"kind": "closed", "code": 42, "reason": "who knows"}),
+                "who knows (unrecognised close code 42)",
+            ),
+            (
+                serde_json::json!({"kind": "closed", "code": {"was": "an object"}}),
+                r#"session closed (unrecognised close code {"was":"an object"})"#,
             ),
         ] {
             let frame = SseTransport::frame_for(&event)
@@ -1718,6 +1760,41 @@ mod tests {
             assert_eq!(
                 parsed.reason, reason,
                 "the relay's own words survive, and so does the code nobody could parse"
+            );
+        }
+    }
+
+    /// A `closed` event carrying **no** code is a malformed event rather than a
+    /// close this build is merely too old to read.
+    ///
+    /// The two conditions are not the same one, and
+    /// `docs/10-cross-cutting/error-handling.md:36` reserves
+    /// `INTERNAL_UNKNOWN_CODE` for the first of them — "an older client
+    /// receiving an **unknown** code". A relay one version ahead is doing
+    /// something the protocol permits; a relay sending no code at all is not,
+    /// because `crates/sunrise-server/src/api/sync/stream.rs:72-78` declares
+    /// `SyncEvent::Closed.code` as a `String` rather than an `Option<String>`.
+    /// That is the same argument the `Hello` arm makes from `credential.rs:51`
+    /// about a missing `session_id`, and this is the other end of it.
+    ///
+    /// `null` counts as absent: a non-`Option` `String` does not accept one
+    /// either, so the two reach this client for the same reason and get the
+    /// same answer.
+    ///
+    /// Folding this into the forward-compatibility code would file a broken
+    /// relay under "newer than us", which is the one reading that guarantees
+    /// nobody looks at it.
+    #[test]
+    fn a_closed_event_with_no_code_at_all_is_a_protocol_error() {
+        for event in [
+            serde_json::json!({"kind": "closed"}),
+            serde_json::json!({"kind": "closed", "code": null, "reason": "who knows"}),
+        ] {
+            let err = SseTransport::frame_for(&event)
+                .expect_err("a closed event with no code is malformed, not merely unreadable");
+            assert!(
+                matches!(&err, TransportError::Protocol(m) if m.contains("no code")),
+                "{event} names the condition rather than guessing at a code: {err}"
             );
         }
     }
