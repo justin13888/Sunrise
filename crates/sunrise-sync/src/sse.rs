@@ -2043,6 +2043,14 @@ mod tests {
         stall: bool,
         /// Fail instead of ending, once every frame has been delivered.
         abort: bool,
+        /// A trailer frame to send after the last data frame, if any.
+        ///
+        /// A body may end with a `Frame::trailers` rather than with data, and
+        /// no double in this file could produce one until this field existed:
+        /// both of them built `Frame::data` exclusively, which left
+        /// [`read_body`]'s trailer arm unreachable by the fixtures rather than
+        /// by the code.
+        trailer: Option<hyper::HeaderMap>,
         /// The gap currently being waited out, if any.
         sleep: Option<std::pin::Pin<Box<tokio::time::Sleep>>>,
     }
@@ -2057,7 +2065,25 @@ mod tests {
                 .collect(),
             stall,
             abort,
+            trailer: None,
             sleep: None,
+        }
+    }
+
+    /// The same, ending with one trailer frame after the last data frame.
+    fn scripted_with_trailer(
+        frames: &[(std::time::Duration, &str)],
+        name: &'static str,
+        value: &'static str,
+    ) -> Scripted {
+        let mut trailer = hyper::HeaderMap::new();
+        trailer.insert(
+            hyper::header::HeaderName::from_static(name),
+            hyper::header::HeaderValue::from_static(value),
+        );
+        Scripted {
+            trailer: Some(trailer),
+            ..scripted(frames, false, false)
         }
     }
 
@@ -2093,6 +2119,12 @@ mod tests {
                     Some(_) => {
                         let (_, data) = this.rest.pop_front().expect("a frame was just there");
                         return Poll::Ready(Some(Ok(hyper::body::Frame::data(data))));
+                    }
+                    // Before the end, and before a stall or a break: a
+                    // trailer is the last frame of a body that ended well.
+                    None if this.trailer.is_some() => {
+                        let trailer = this.trailer.take().expect("just checked");
+                        return Poll::Ready(Some(Ok(hyper::body::Frame::trailers(trailer))));
                     }
                     None if this.stall => {
                         // A real timer rather than a bare `Pending`: a body that
@@ -2334,6 +2366,43 @@ mod tests {
             elapsed < inside + across,
             "and it did not simply wait the long gap out, which is what an unbounded read \
              would have done: {elapsed:?}"
+        );
+    }
+
+    /// A trailer frame ends the body without being appended to it.
+    ///
+    /// [`read_body`] drops a frame that is not data, and the comment at that
+    /// arm says why: a trailer's encoding appended to a document is a document
+    /// nobody can parse. Nothing exercised the arm until this case — both
+    /// doubles in this file built `Frame::data` exclusively — so a mutant
+    /// treating a trailer as data survived the whole suite. That is the same
+    /// shape as the hard-coded status which once made a failed refusal read
+    /// unscriptable: unreachable by the fixture, not by the code.
+    ///
+    /// The body is a problem document, because that is the read whose bytes are
+    /// parsed straight afterwards, and therefore the one where an extra frame
+    /// would do damage rather than merely be present.
+    #[tokio::test]
+    async fn a_trailer_frame_ends_the_body_without_being_appended_to_it() {
+        let document = r#"{"code":"AUTH_DEVICE_SIG_INVALID"}"#;
+
+        let read = super::read_body(
+            scripted_with_trailer(
+                &[(std::time::Duration::ZERO, document)],
+                "x-sunrise-checksum",
+                "d0a1",
+            ),
+            1024,
+            TEST_IDLE,
+        )
+        .await
+        .expect("a trailer ends a body; it does not break one");
+
+        assert_eq!(
+            String::from_utf8(read).expect("the frame was UTF-8"),
+            document,
+            "the document is exactly what the data frames carried, with none of the \
+             trailer in it"
         );
     }
 
