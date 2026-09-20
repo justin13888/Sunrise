@@ -65,6 +65,14 @@ impl TokenSource {
 
     /// A source holding no token. A connect through this is unauthenticated
     /// and only a self-host relay will accept it.
+    ///
+    /// Named rather than left to [`Default`], and the two are the same value on
+    /// purpose: the call site says which of the two meanings it has. That makes
+    /// `replace TokenSource::empty -> Self with Default::default()` an
+    /// **equivalent mutant** — it survives every mutation run and always will,
+    /// because no test can distinguish two constructors with one body. It is
+    /// recorded here rather than in an issue nobody re-reads, so the next
+    /// reader of `missed.txt` meets the answer where the mutant is.
     #[must_use]
     pub fn empty() -> Self {
         Self::new(None)
