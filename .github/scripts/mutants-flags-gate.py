@@ -118,10 +118,23 @@ ends the line, `foo#bar` is a path, and a second stricter rule made
 `--output out/run#3 --all-features` red on a correct tree while making
 `./ci/wrap.sh --tag v1#2 cargo mutants -p x` vanish. Two lexical rules
 for one thing are wrong in both directions at once, so there is one
-rule and nowhere for it to disagree with itself. A line that mentions
-cargo-mutants and will not lex at all is exit 2: falling back to a
-whitespace split turned an unbalanced quote into a way of passing, which
-is the one thing a typo must never be.
+rule and nowhere for it to disagree with itself.
+
+The same argument, one level out: *every* line is lexed, and the lexer
+is the only thing that decides what an invocation is. A regular
+expression used to decide whether a line was worth lexing, which is the
+two-grammars shape again with the two halves further apart — the regex
+deciding *whether* to look and the lexer deciding *what it found*, and
+they disagree about `cargo "mutants"` and `car\\go mutants`, both of
+which are real invocations. The pattern survives as the ESCALATION
+TRIGGER and nothing else: a line that will not lex yields no invocation,
+and is exit 2 only if its raw text names cargo-mutants — positive
+evidence that a real invocation may be going unread. Falling back to a
+whitespace split there turned an unbalanced quote into a way of passing,
+which is the one thing a typo must never be. Every other unlexable line
+is skipped and counted, and the tally is printed, because most of these
+files are not shell and a number that quietly grew would mean the gate
+had stopped reading what it was pointed at.
 
 Why a separate script rather than `grep-gate.sh`
 ------------------------------------------------
@@ -162,10 +175,14 @@ Two exit codes, because they are two different pieces of news
 * **1 — an invocation is missing the flag.** The two places disagree, or
   both dropped it. The remedy is to put it back, in every place.
 * **2 — the gate could not run.** A file it reads is missing or
-  unreadable; a line that mentions cargo-mutants will not lex; *no*
-  file it read holds a `cargo mutants` invocation at all; or the files
-  hold some number other than `EXPECTED_INVOCATIONS` between them. The
-  "none at all"
+  unreadable; a line whose raw text names cargo-mutants will not lex;
+  *no* file it read holds a `cargo mutants` invocation at all; or the
+  files hold some number other than `EXPECTED_INVOCATIONS` between
+  them. A line that will not lex and names nothing is skipped and
+  counted, not blocked: the file set is every `*.yml`, `*.yaml` and
+  `*.sh` under `.github/`, most of which is not shell, and blocking a
+  merge over a YAML scalar with an apostrophe in it is how a gate gets
+  switched off; the tally of those is printed instead. The "none at all"
   case is judged over the union and not per file, because moving the
   matrix from one workflow to another leaves a tree entirely in step and
   would otherwise be reported as a broken gate — and the count is what
@@ -195,9 +212,16 @@ REQUIRED_FLAG = "--all-features"
 # a person fixing the flags is told about it rather than finding it later.
 PROSE_COPY = "docs/10-cross-cutting/testing.md (§Features)"
 
-# The start of an invocation. `cargo mutants`, allowing the run of spaces
-# a wrapped command can pick up. Used to find *candidate* text only; what
-# decides that a command is an invocation is its first two tokens.
+# The ESCALATION TRIGGER, and nothing else. It does NOT decide what an
+# invocation is — `invocations_in` does, from adjacent lexed values, and
+# it is the only thing that does. This is consulted at exactly one
+# moment: a line that will not lex. If its raw text names cargo-mutants,
+# the gate may be failing to read a real invocation and refuses; if it
+# does not, the line is skipped and counted.
+#
+# It used to gate the lexer instead, which left two grammars for one
+# decision. They disagree: `cargo "mutants" -p x --jobs 1` and `car\go
+# mutants -p x --jobs 1` are real invocations this pattern never matches.
 INVOCATION = re.compile(r"\bcargo\s+mutants\b")
 
 # The file that holds the local `mutants` task. Named literally rather
@@ -706,45 +730,102 @@ def carries_flag(invocation: list[Word]) -> bool:
     return False
 
 
-def invocations(path: pathlib.Path) -> list[tuple[int, str, list[Word]]]:
-    """Every `cargo mutants` invocation in one file.
+def invocations(
+        path: pathlib.Path) -> tuple[list[tuple[int, str, list[Word]]], int]:
+    """Every `cargo mutants` invocation in one file, and what would not lex.
 
-    Returns (1-based line where the logical line starts, the command as
-    written, the invocation's words). The text of a command an
-    invocation shares a line with cannot make it carry a flag.
+    Returns ((1-based line where the logical line starts, the command as
+    written, the invocation's words) …, how many lines would not lex).
+    The text of a command an invocation shares a line with cannot make it
+    carry a flag.
 
-    A line that mentions cargo-mutants and will not lex is a `CannotRun`
-    rather than something to test leniently. The previous answer — fall
-    back to a whitespace split — re-created by the back door the
-    substring behaviour the split into commands removed: an unbalanced
-    quote in front of `# keep --all-features later` made the comment's
-    words into the command's own, and the gate went green on an
-    invocation with no flag. A typo must not be a way of passing.
+    Every line is lexed, and the lexer is the only thing that decides
+    what an invocation is. `INVOCATION` used to gate that: a line whose
+    raw text did not match it was never lexed at all, which left two
+    grammars for one decision — the regex deciding *whether* to look and
+    the lexer deciding *what it found* — and they disagree. `cargo
+    "mutants" -p x --jobs 1` and `car\\go mutants -p x --jobs 1` are real
+    invocations, unflagged, that the regex never sees: the gate reported
+    "found 1 … expected exactly 2", a bookkeeping error rather than the
+    missing flag, and only because the equality happens to exist. Remove
+    the count and that is a silent green.
+
+    `INVOCATION` survives in a strictly narrower role: it is the
+    ESCALATION TRIGGER and nothing else. A line that will not lex yields
+    no invocation, and is a `CannotRun` only if its raw text matches —
+    positive evidence that the gate may be failing to read a real
+    invocation. Otherwise it is skipped and counted, and the tally is
+    reported.
+
+    That is not leniency about a typo in an invocation: an unbalanced
+    quote in front of `# keep --all-features later` still refuses, which
+    is what stopped the comment's words becoming the command's own. It is
+    an admission that this file set is full of text that is not shell.
+    A `- name: Don't run cargo mutants by hand` in a workflow is an
+    English apostrophe, and the honest thing to say about it is that the
+    gate cannot tell shell from prose there — not "balance the quotes".
+
+    Prefiltering on the word `cargo` alone was the other candidate and is
+    worse in both directions: it still misses `car\\go mutants`, whose
+    raw text contains no `cargo`, and it widens the exposure to every
+    `cargo install` line in the tree.
     """
     try:
         text = path.read_text()
     except OSError as error:
         raise CannotRun(f"cannot read {path}: {error}") from error
     found: list[tuple[int, str, list[Word]]] = []
+    unlexable = 0
     for number, line in logical_lines(text):
-        if not INVOCATION.search(line):
-            continue
         try:
             split = commands(line)
         except ValueError as error:
+            if not INVOCATION.search(line):
+                # Not shell, as far as anything here can tell, and it
+                # names nothing this gate is about. Counted, not fatal.
+                unlexable += 1
+                continue
             raise CannotRun(
-                f"{path}:{number}: cannot lex a command that mentions "
-                f"cargo-mutants ({error}):\n    {line}\n\n"
-                "The gate refuses rather than guessing. Reading this "
-                "with the quoting ignored would let the text after an "
-                "unbalanced quote — a trailing comment, say — supply "
-                f"{REQUIRED_FLAG} to a command that does not have it. "
-                "Balance the quotes and run it again."
+                f"{path}:{number}: this line names cargo-mutants and will "
+                f"not lex as shell ({error}):\n    {line}\n\n"
+                "The gate refuses rather than guessing. If it is a "
+                "command, reading it with the quoting ignored would let "
+                "the text after an unbalanced quote — a trailing "
+                f"comment, say — supply {REQUIRED_FLAG} to a command "
+                "that does not have it, and a typo must not be a way of "
+                "passing. If it is prose, the gate cannot tell: it "
+                "escalates on any unlexable line naming cargo-mutants "
+                "precisely because it cannot rule out that one is an "
+                "invocation it is failing to read. Balance the quoting, "
+                "or write the tool's name as `cargo-mutants`, which is "
+                "how this repository spells it in prose everywhere else."
             ) from error
         for command in split:
             for invocation in invocations_in(command):
                 found.append((number, written(command), invocation))
-    return found
+    return found, unlexable
+
+
+def report_unlexable(unlexable: int) -> None:
+    """Say how much of the file set the gate could not read as shell.
+
+    Not a verdict, and deliberately not silent. Every line is lexed now,
+    and most of these files are not shell: a TOML `run = '''` fence, a
+    YAML scalar with an apostrophe in it, a line of prose. None of them
+    name cargo-mutants — one that did would have been an exit 2 — so
+    skipping them is right, but a number that quietly grew from forty to
+    four hundred would mean the gate had stopped reading most of what it
+    was pointed at, and nothing would have said so.
+
+    On this repository at the time of writing it is 45, of which 44 are
+    TOML triple-quote fences in `mise.toml`. The forty-fifth is
+    `mise.toml:530`, which continues a line with `\\\\` inside a `\"\"\"`
+    string — one backslash to the shell, two to this gate, which reads
+    TOML source rather than decoded TOML values.
+    """
+    if unlexable:
+        print(f"({unlexable} line(s) did not lex as shell and name no "
+              "cargo-mutants invocation; skipped)")
 
 
 def default_paths() -> list[pathlib.Path]:
@@ -792,10 +873,13 @@ def main() -> int:
     paths = args.paths or default_paths()
 
     checked = 0
+    unlexable = 0
     offenders: list[tuple[pathlib.Path, int, str]] = []
     try:
         for path in paths:
-            for number, command, invocation in invocations(path):
+            found, skipped = invocations(path)
+            unlexable += skipped
+            for number, command, invocation in found:
                 checked += 1
                 if not carries_flag(invocation):
                     offenders.append((path, number, command))
@@ -884,10 +968,12 @@ def main() -> int:
             "explicit continuations — not to add a second copy of the "
             "flag.",
             file=sys.stderr)
+        report_unlexable(unlexable)
         return 1
 
     print(f"OK: {checked} cargo-mutants invocation(s) carry {REQUIRED_FLAG} "
           f"({', '.join(str(path) for path in paths)})")
+    report_unlexable(unlexable)
     return 0
 
 

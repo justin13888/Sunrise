@@ -803,7 +803,81 @@ class FlagsGateContract(unittest.TestCase):
                     ' --jobs 1 --output "out/x\' # keep --all-features later'),
                 CI_WITH_FLAG,
             ),
-            2, "cannot lex a command that mentions cargo-mutants")
+            2, "this line names cargo-mutants and will not lex as shell")
+
+    def test_an_invocation_the_old_prefilter_could_not_see_is_checked(self):
+        # Two grammars for one decision: a regular expression over the
+        # RAW text decided whether to lex, and the lexer decided what an
+        # invocation was. They disagree. Both of these are real,
+        # unflagged invocations — the shell runs cargo-mutants — and
+        # neither raw text matches `\bcargo\s+mutants\b`. At the
+        # previous head the gate did not report a missing flag; it
+        # reported "found 1 … expected exactly 2", a bookkeeping error,
+        # and only because the equality happens to exist. Take the count
+        # away and that is a silent green.
+        for written in ('cargo "mutants"', "car\\go mutants",
+                        "'cargo' mutants", "cargo mut''ants"):
+            with self.subTest(written=written):
+                self.assert_code(
+                    self.run_gate(
+                        MISE_WITH_FLAG.replace(
+                            'cargo mutants -p "$usage_crate" --all-features',
+                            f'{written} -p "$usage_crate"'),
+                        CI_WITH_FLAG,
+                    ),
+                    1, "missing from 1 of 2")
+
+    def test_a_line_that_will_not_lex_and_names_nothing_is_skipped(self):
+        # The other half, and the reason the prefilter could not simply
+        # be deleted. The file set is every *.yml, *.yaml and *.sh under
+        # .github/, most of which is not shell: an apostrophe in an
+        # ordinary YAML scalar is an unbalanced quote to a shell lexer.
+        # Blocking a merge for one is how a gate gets switched off, so a
+        # line that will not lex and names no cargo-mutants is skipped
+        # and counted.
+        self.write("mise.toml", MISE_WITH_FLAG)
+        self.write(".github/workflows/ci.yml", CI_WITH_FLAG)
+        self.write(
+            ".github/workflows/other.yml",
+            "jobs:\n  b:\n    steps:\n"
+            "      - name: Don't build it by hand\n"
+            "        run: true\n")
+        result = self.run_gate_with_defaults()
+        self.assert_code(result, 0, "2 cargo-mutants invocation(s) carry")
+        self.assertIn("did not lex as shell", result.stdout)
+
+    def test_a_line_that_will_not_lex_and_names_the_tool_is_2(self):
+        # Escalation on evidence. The gate cannot tell whether this is
+        # prose or an invocation it is failing to read, and it says so
+        # rather than telling the reader to balance a quote that is an
+        # English apostrophe.
+        self.write("mise.toml", MISE_WITH_FLAG)
+        self.write(".github/workflows/ci.yml", CI_WITH_FLAG)
+        self.write(
+            ".github/workflows/other.yml",
+            "jobs:\n  b:\n    steps:\n"
+            "      - name: Don't run cargo mutants by hand\n"
+            "        run: true\n")
+        self.assert_code(
+            self.run_gate_with_defaults(),
+            2, "names cargo-mutants and will not lex as shell",
+            "cannot tell")
+
+    def test_the_unlexable_tally_is_reported_not_silent(self):
+        # Not a verdict, and deliberately not silent. Every line is
+        # lexed now; a tally that quietly grew from forty to four
+        # hundred would mean the gate had stopped reading most of what
+        # it was pointed at, and nothing else would say so.
+        self.write("mise.toml", MISE_WITH_FLAG)
+        self.write(".github/workflows/ci.yml", CI_WITH_FLAG)
+        clean = self.run_gate_with_defaults()
+        self.assert_code(clean, 0)
+        self.write(".github/scripts/prose.sh", "#!/bin/bash\necho it's fine\n")
+        noisier = self.run_gate_with_defaults()
+        self.assert_code(noisier, 0)
+        self.assertNotEqual(
+            re.search(r"\((\d+) line", clean.stdout).group(1),
+            re.search(r"\((\d+) line", noisier.stdout).group(1))
 
     def test_a_hash_inside_a_word_is_not_a_comment(self):
         # One comment rule, direction one. `#` starts a comment where it

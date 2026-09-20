@@ -311,9 +311,27 @@ written tree and never a false red on a correct one. The `--`
 terminator is recognised by its **value**: `"--"` and `\--` are the separator as
 far as the shell is concerned, and matching its source text meant quoting it
 turned the passthrough guard off while cargo-mutants still received the `--`.
-A line that mentions cargo-mutants and will not lex at all — an unbalanced
-quote — is exit 2 rather than a lenient reading, because the lenient reading let
-the words of a trailing comment stand in for the command's own.
+**Every line is lexed**, and the lexer is the only thing that decides what an
+invocation is. A regular expression over the raw text used to decide whether a
+line was worth lexing, which is two grammars for one decision with the halves
+further apart than the two the paragraph above collapsed — and they disagree:
+`cargo "mutants" -p X --jobs 1` and `car\go mutants -p X --jobs 1` are real,
+unflagged invocations that the pattern never matches. At the previous head the
+gate did not report a missing flag for either; it reported a count that had
+moved, and only because the count is an equality.
+
+The pattern survives as the **escalation trigger** and nothing else. A line that
+will not lex yields no invocation, and is exit 2 only when its raw text names
+cargo-mutants — positive evidence that a real invocation may be going unread,
+and the reason an unbalanced quote in an invocation is still never a lenient
+reading. Every other unlexable line is skipped and counted, because the file set
+is mostly not shell: a TOML `run = '''` fence and a YAML scalar with an
+apostrophe in it are both unbalanced quotations to a shell lexer, and blocking a
+merge for one is how a gate gets switched off. The tally is printed rather than
+kept quiet, so that a number which grew from forty-odd to four hundred would say
+so. On this repository it is 45, of which 44 are `mise.toml`'s triple-quote
+fences. Lexing every line rather than two costs about 21 ms of the gate's ~69 ms
+run — measurable, and nothing against a five-minute job.
 
 The file set is **`mise.toml` plus every `*.yml`, `*.yaml` and `*.sh` under
 `.github/`**, at any depth, together with an **expected invocation count**. A
