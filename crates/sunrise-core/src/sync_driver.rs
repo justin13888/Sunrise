@@ -652,6 +652,19 @@ pub(crate) async fn run(
                 // so this attempt has not yet reached the relay and a consumed
                 // renewal is not reported here. `session` reports it once the
                 // handshake comes back.
+                //
+                // The `reset` below rests on the premise those sentences
+                // refute, and is wrong for the same reason: because no factory
+                // here can resolve to `Err`, this arm is taken on **every**
+                // attempt, so the reconnect counter is zeroed before it can
+                // advance and the driver never leaves the first step of the
+                // schedule `docs/05-sync/offline-queue.md` §Backoff publishes.
+                // The line predates this change and is byte-identical on
+                // `master`; moving it to the handshake — where the relay has
+                // demonstrably answered, which is `reset`'s own documented
+                // precondition — needs `session` to report whether it ever
+                // handshook, and `SessionEnd::Disconnected` cannot say that
+                // today. Filed as #283, and not repaired here.
                 backoff.reset();
                 t
             }
