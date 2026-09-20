@@ -273,7 +273,7 @@ class SelfTest(GateCase):
         #
         # Same caveat as the two tripwires beside it: the slack is
         # deliberate, and raising the floor is a decision rather than
-        # bookkeeping. 100 against 109 today.
+        # bookkeeping. 100 against 111 today.
         collected = unittest.defaultTestLoader.loadTestsFromModule(
             sys.modules[__name__]
         ).countTestCases()
@@ -1592,6 +1592,56 @@ class Symbols(GateCase):
             DANGLING,
             "names ``, but `crates/c/src/mod.rs` is a directory.",
         )
+
+    def test_a_whitespace_suffix_on_a_directory_fails_naming_the_whitespace(self):
+        # The sibling of the bare `#` above, and the same reason for pinning
+        # it: the message names the suffix between backticks, and a suffix
+        # made only of whitespace prints a pair of backticks with something
+        # invisible between them. `` names ` ` `` is not a typo in the gate's
+        # output, and a reader who takes it for one goes looking for a bug
+        # that is not there.
+        #
+        # It is also the human-reachable half of the pair -- `dir.rs# ` is a
+        # stray keystroke, where `dir.rs#` needs somebody to type the `#` and
+        # stop. The tab spelling travels with it because the suffix grammar
+        # excludes no character and the two must not part company.
+        self.write("crates/c/src/mod.rs/inner.rs", "pub fn anything() {}\n")
+        for suffix in (" ", "a\tb"):
+            with self.subTest(suffix=suffix):
+                self.write("docs/a.md", f"See `crates/c/src/mod.rs#{suffix}`.\n")
+                self.assert_code(
+                    self.run_gate(),
+                    DANGLING,
+                    f"names `{suffix}`, but `crates/c/src/mod.rs` is a directory.",
+                )
+
+    def test_the_column_form_fragment_on_a_directory_fails_like_the_others(self):
+        # `LINE_FRAGMENT` admits four spellings and the case above pins two
+        # of them on a directory. The two column forms were unpinned, which
+        # left a mutant alive: a re-exemption that re-admitted only
+        # `#L702C5` and `#L702C5-L710C20` on a directory passed every test in
+        # this tree, where the full re-exemption the case above kills does
+        # not. A directory has no lines, so it has no columns on them either,
+        # and all four spellings get the one verdict.
+        self.write("crates/c/src/mod.rs/inner.rs", "pub fn anything() {}\n")
+        self.write("schemas/bundle.json/part.json", "{}\n")
+        for body, message in (
+            (
+                "crates/c/src/mod.rs#L702C5",
+                "names `L702C5`, but `crates/c/src/mod.rs` is a directory.",
+            ),
+            (
+                "crates/c/src/mod.rs#L702C5-L710C20",
+                "names `L702C5-L710C20`, but `crates/c/src/mod.rs` is a directory.",
+            ),
+            (
+                "schemas/bundle.json#L702C5-L710C20",
+                "names `L702C5-L710C20`, but `schemas/bundle.json` is a directory.",
+            ),
+        ):
+            with self.subTest(body=body):
+                self.write("docs/a.md", f"See `{body}`.\n")
+                self.assert_code(self.run_gate(), DANGLING, message)
 
     def test_a_symbol_on_a_rust_named_directory_fails(self):
         # The same verdict as the `.json` directory above, reached through the
