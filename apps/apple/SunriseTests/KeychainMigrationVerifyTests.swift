@@ -6,8 +6,9 @@ import Testing
 
 /// The verify step's two conditions, pinned apart.
 ///
-/// Outside `KeychainMigrationTests` because that file is exactly on the
-/// 520-line `file_length` ceiling `swiftlint --strict` enforces, and outside
+/// Outside `KeychainMigrationTests` because that file sat exactly on the
+/// 520-line `file_length` ceiling `swiftlint --strict` enforces when these were
+/// written — the domain suite has since been extracted out of it — and outside
 /// `KeychainMigrationFallbackTests`'s `#if os(macOS)` gate because neither case
 /// here needs two keychains: both run `.login` -> `.login` across two services,
 /// which are distinct stored items on every Apple platform.

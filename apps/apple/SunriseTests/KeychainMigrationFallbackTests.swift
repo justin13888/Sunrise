@@ -179,7 +179,7 @@ struct KeychainMigrationFallbackTests {
         read[kSecMatchLimit as String] = kSecMatchLimitOne
         #expect(
             SecItemCopyMatching(read as CFDictionary, nil) == errSecItemNotFound,
-            "a query is answered, not refused — the `try?` in readAcrossDomains is not for this"
+            "a query is answered, not refused — a refusal is what readAcrossDomains now raises on"
         )
 
         var insert = query

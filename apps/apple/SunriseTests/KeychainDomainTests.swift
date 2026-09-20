@@ -51,8 +51,11 @@ struct KeychainDomainTests {
     ///
     /// It is also a statement about the **machine** rather than about the probe:
     /// it asks whether anything at all sits under `probeService`, so a Sunrise
-    /// app running beside the suite, or one orphan from a killed process, fails
-    /// it on a tree that is green.
+    /// app running beside the suite fails it on a tree that is green. It no
+    /// longer fails on an orphan left by a killed process — the sweep this same
+    /// change made keyed by *service* reclaims exactly that, on the `probe()`
+    /// below, before the query runs — and an earlier revision of this paragraph
+    /// listed the orphan alongside the racing app after that stopped being true.
     /// `aProbeReclaimsAnOrphanAnEarlierProbeLeftBehind` is the probe-level
     /// assertion, and is what actually pins the sweep.
     @Test
@@ -99,6 +102,15 @@ struct KeychainDomainTests {
             domain: .login
         )
         defer { try? orphan.delete() }
+
+        // The same barrier `theProbeDeletesWhateverItWrote` takes, and needed
+        // for a sharper reason: `@Suite(.serialized)` orders this suite's cases
+        // and nothing else's, so a first touch of `KeychainDomain.current` from
+        // another keychain suite can run its memoised probe — and that probe now
+        // sweeps the whole service — between the plant below and the assertion
+        // that the plant survived. Forcing it to have *finished* here leaves the
+        // `probe()` further down as the only one that can be in flight.
+        _ = KeychainDomain.current
 
         try orphan.write(Data([0]))
         #expect(try orphan.read() != nil, "the orphan must exist, or this case proves nothing")
