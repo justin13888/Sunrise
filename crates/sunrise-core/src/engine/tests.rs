@@ -6795,6 +6795,41 @@ fn the_register_is_the_same_whichever_order_the_two_revocations_arrive() {
         None,
         "and learning the sender was revoked undoes what it had already written"
     );
+
+    // **The register converges and the read bound does not, and that is the
+    // shipped behaviour rather than an oversight.**
+    //
+    // This test builds the two arrival orders that separate them, so asserting
+    // only the register leaves the interesting half unobserved. `one` applied
+    // `B -> A` first: its first fold produced the register `{A}`, its second
+    // already gated `A -> C`, so C never entered a register on this replica and
+    // the `INSERT OR IGNORE` had nothing to write. `two` applied `A -> C` first,
+    // bounded C on that fold, and keeps the row forever because nothing deletes
+    // from `device_read_bounds`.
+    //
+    // Pinned as the **known current behaviour**, not as the behaviour anyone
+    // wants: on `two` the bound holds C out of every recipient set, and on `one`
+    // C is an ordinary member that will be sealed every epoch this replica
+    // mints. Closing
+    // [#282](https://github.com/justin13888/Sunrise/issues/282) means the two
+    // become equal and these assertions turn red — which is the point of
+    // writing them down rather than leaving the gap undiscovered.
+    assert_eq!(
+        read_bound_row(&one, &c_id),
+        None,
+        "known gap (#282): the replica that learned of A's own revocation first \
+         never bounds C, so it goes on sealing C every epoch it mints"
+    );
+    assert!(
+        read_bound_row(&two, &c_id).is_some(),
+        "while the replica that believed A's op first keeps the bound, because \
+         the ratchet never gives a row back"
+    );
+    assert!(
+        read_bound_row(&one, &a_id).is_some() && read_bound_row(&two, &a_id).is_some(),
+        "both replicas bound A, which is why the divergence is C's alone and not \
+         a difference in what either replica believes about the ledger"
+    );
 }
 
 /// **A cut correction does not bring a skipped revocation back, and the
