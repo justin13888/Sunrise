@@ -163,6 +163,36 @@ final class AccountModel {
         }
     }
 
+    /// Whether the screen should carry a plain **Sign out** of its own,
+    /// alongside whatever ``signOutDisclosure`` says — which, where this is
+    /// `true`, is nothing.
+    ///
+    /// ``dismissSignOutRetry()`` retires the disclosure, not the credential.
+    /// Without this the retired state is the end state this whole change
+    /// exists to remove: the token is still in the Keychain, the next launch
+    /// reads it back, and no control on the Account screen reaches
+    /// `store.clear()` — **Sign in…** needs a `save()` the same lock refuses,
+    /// and the `.signedIn` arm's own **Sign out** is a state away. It is
+    /// reached by consent here rather than by a dismissal that destroyed the
+    /// only retry, which is a real difference and not a difference in end
+    /// state. This is the control that keeps it from being a trap.
+    ///
+    /// It carries no warning text, because the user has said twice that they
+    /// do not want to be told again; and unlike the row it replaces it does
+    /// clear, because a sign-out that succeeds sets the residue to
+    /// ``SignOutResidue/none`` and this with it.
+    var offersBareSignOut: Bool {
+        guard signOutRefusedThisSession, signOutDisclosure == .none else { return false }
+        switch state {
+        // The two settled states. Not `.signedIn`, whose arm has a **Sign
+        // out** already, and not `.awaitingBrowser`, where a login is in front
+        // of the user and a retired residue is the one thing they asked to
+        // stop hearing about.
+        case .signedOut, .failed: return true
+        case .signedIn, .awaitingBrowser: return false
+        }
+    }
+
     /// The states the message's own text is true and wanted in.
     private var stateTheMessageIsTrueIn: Bool {
         switch state {
@@ -367,8 +397,11 @@ final class AccountModel {
         if case .unread = signOutResidue { signOutResidue = .acknowledged }
     }
 
-    /// Dismiss the retry as well, and stop offering anything about this
-    /// refusal.
+    /// Dismiss the retry as well, and stop SAYING anything about this refusal.
+    ///
+    /// Not stop offering anything about it: the credential is still stored, so
+    /// ``offersBareSignOut`` keeps a plain **Sign out** on the screen with no
+    /// warning attached to it.
     ///
     /// The retry needs an exit of its own. It renders for the rest of the
     /// process and is otherwise cleared only by a `clear()` or a `save()` that

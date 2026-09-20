@@ -398,6 +398,11 @@ struct AccountView: View {
         case .retry:
             SignOutRetryRow(account: account)
         }
+        // The way out of a refusal the user has retired: the one combination
+        // the switch says nothing about while the credential is still stored.
+        if account.offersBareSignOut {
+            Button("Sign out") { account.signOut() }
+        }
     }
 
     private func expiry(_ ms: UInt64) -> String {

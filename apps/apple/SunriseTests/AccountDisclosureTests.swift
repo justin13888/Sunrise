@@ -245,6 +245,10 @@ struct AccountDisclosureTests {
         #expect(probe.seen == .retry, "the alarming row waits; the control does not")
         #expect(probe.saidAfter(.none), "and its Dismiss retires the message it stood in for")
         #expect(
+            probe.offeredBareAfter == false,
+            "and no bare Sign out takes its place mid-login — there is a browser in front of them"
+        )
+        #expect(
             account.signOutRefusedThisSession,
             "retired, not un-refused — the credential it was about is still stored"
         )
@@ -285,6 +289,42 @@ struct AccountDisclosureTests {
             account.signOutDisclosure == .none,
             "and no retry naming a credential the renewal already overwrote"
         )
+    }
+
+    /// The way out of a refusal the user has retired.
+    ///
+    /// After both dismissals the screen says nothing — by the user's own
+    /// request, twice — but the credential is still in the Keychain and the
+    /// next launch reads it back. Under `.signedOut` and `.failed` nothing
+    /// else on the screen reaches `store.clear()`: **Sign in…** needs a
+    /// `save()` the lock that refused the `clear()` refuses too. That is the
+    /// end state this change exists to remove, reached here by consent.
+    @Test
+    func aRetiredRefusalStillOffersAPlainSignOut() async {
+        let store = lockedStore()
+        let account = model(store: store, driver: StubLoginDriver(failure: StubLoginError()))
+        account.signOut()
+        #expect(!account.offersBareSignOut, "the message is on screen and carries its own")
+
+        account.dismissSignOutIncomplete()
+        #expect(!account.offersBareSignOut, "and so does the retry")
+
+        account.dismissSignOutRetry()
+        #expect(account.signOutDisclosure == .none, "nothing left to say")
+        #expect(account.offersBareSignOut, "but still something to do about it")
+
+        await signIn(account)
+        #expect(account.state == .failed("the issuer refused"))
+        #expect(account.offersBareSignOut, "and under a sign-in that failed, for the same reason")
+
+        account.restore()
+        #expect(account.state == .signedIn(expiresAtMs: 4_000))
+        #expect(!account.offersBareSignOut, "not under a session whose own arm carries one")
+
+        store.stopRefusingClears()
+        account.signOut()
+        #expect(store.stored == nil, "pressing it is what finally removes the credential")
+        #expect(!account.offersBareSignOut, "so it goes — unlike the row it stands in for")
     }
 
     /// A sign-out taken while the browser is still open is not undone by the
@@ -432,6 +472,7 @@ final class ParkedProbe {
     private(set) var state: AccountModel.State?
     private(set) var seen: AccountModel.SignOutDisclosure?
     private(set) var seenAfter: AccountModel.SignOutDisclosure?
+    private(set) var offeredBareAfter: Bool?
 
     /// What the screen said once ``act`` had run. A method rather than a bare
     /// comparison because `seenAfter == .none` reads as `Optional.none`, which
@@ -444,6 +485,7 @@ final class ParkedProbe {
         guard let account, let act else { return }
         act(account)
         seenAfter = account.signOutDisclosure
+        offeredBareAfter = account.offersBareSignOut
     }
 }
 
