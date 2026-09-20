@@ -35,10 +35,12 @@ when the matrix has actually been rewritten out from under the gate.
 file. One file with no invocation beside another that has one is an
 ordinary tree — the matrix moved — and calling it a broken gate is how a
 gate gets switched off. What the union cannot see is a count that falls
-from two to one, so the gate also asserts a minimum number of
-invocations; §"the file set" holds both halves, and the case that used to
-assert exit 0 on a tree with one invocation and no third file now asserts
-exit 2, because that tree has lost half of what the gate compares.
+from two to one, so the gate also asserts how many invocations the tree
+holds — as an equality, so that a count which grows is as loud as one
+that shrinks; §"the file set" holds both halves, and the case that used
+to assert exit 0 on a tree with one invocation and no third file now
+asserts exit 2, because that tree has lost half of what the gate
+compares.
 
 The cases that matter most are the two adversarial sections. Every shape
 in them was constructed against real copies of this repository's own
@@ -73,12 +75,20 @@ Run it with `mise run mutants-flags-gate-test`, or directly.
 from __future__ import annotations
 
 import pathlib
+import re
 import subprocess
 import sys
 import tempfile
 import unittest
 
 GATE = pathlib.Path(__file__).resolve().parent / "mutants-flags-gate.py"
+
+# Read out of the gate rather than written down again here. A second
+# copy of a number is the thing this gate exists to stop, and a contract
+# test that keeps its own copy asserts that the two copies agree instead
+# of asserting anything about the tree.
+EXPECTED_INVOCATIONS = int(re.search(
+    r"^EXPECTED_INVOCATIONS = (\d+)$", GATE.read_text(), re.M).group(1))
 
 # The shapes the two real files have, reduced to what the gate reads: one
 # invocation on a single line, and one spread over continuations.
@@ -116,7 +126,7 @@ class FlagsGateContract(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
 
     def run_gate(self, mise: str | None, ci: str | None, *,
-                 minimum: int | None = None):
+                 expect: int | None = None):
         """The ordinary pair: a mise config and a workflow, both named."""
         mise_path = self.tmp / "mise.toml"
         ci_path = self.tmp / "ci.yml"
@@ -124,24 +134,25 @@ class FlagsGateContract(unittest.TestCase):
             mise_path.write_text(mise)
         if ci is not None:
             ci_path.write_text(ci)
-        return self.run_gate_on(mise_path, ci_path, minimum=minimum)
+        return self.run_gate_on(mise_path, ci_path, expect=expect)
 
-    def run_gate_on(self, *paths: pathlib.Path, minimum: int | None = None):
+    def run_gate_on(self, *paths: pathlib.Path, expect: int | None = None):
         """The gate over exactly these paths, passed positionally.
 
-        `minimum` is `--min-invocations`. A case whose fixture holds one
+        `expect` is `--expect-invocations`. A case whose fixture holds one
         invocation on purpose says so, because the gate's own default is
         the number this repository holds and a case that is about
         something else should not trip over it.
         """
-        floor = [] if minimum is None else ["--min-invocations", str(minimum)]
+        stated = ([] if expect is None
+                  else ["--expect-invocations", str(expect)])
         return subprocess.run(
-            [sys.executable, str(GATE), *floor,
+            [sys.executable, str(GATE), *stated,
              *(str(path) for path in paths)],
             cwd=self.tmp, capture_output=True, text=True,
         )
 
-    def run_gate_with_defaults(self, *, minimum: int | None = None):
+    def run_gate_with_defaults(self, *, expect: int | None = None):
         """The gate with no arguments, so it discovers its own file set.
 
         The defaults are the one part of the gate the live
@@ -150,9 +161,10 @@ class FlagsGateContract(unittest.TestCase):
         file set would have shipped with only a non-required job standing
         between it and master.
         """
-        floor = [] if minimum is None else ["--min-invocations", str(minimum)]
+        stated = ([] if expect is None
+                  else ["--expect-invocations", str(expect)])
         return subprocess.run(
-            [sys.executable, str(GATE), *floor],
+            [sys.executable, str(GATE), *stated],
             cwd=self.tmp, capture_output=True, text=True,
         )
 
@@ -789,6 +801,21 @@ class FlagsGateContract(unittest.TestCase):
         self.assert_code(result, 2, "found 1 `cargo mutants` invocation(s)")
         self.assertNotIn("OK:", result.stdout)
 
+    def test_the_real_tree_is_in_step_and_holds_the_stated_count(self):
+        # The one case that does not synthesise its files. Every other
+        # case here names or writes its own, by design — but that left
+        # `EXPECTED_INVOCATIONS` asserted against nothing except the
+        # live `Mutation flag gate` job, which is not a required check,
+        # so a number that had stopped describing this repository would
+        # have had nothing blocking to say so. This runs the gate the
+        # way CI runs it, from the repository root, with no arguments.
+        root = GATE.parent.parent.parent
+        result = subprocess.run(
+            [sys.executable, str(GATE)],
+            cwd=root, capture_output=True, text=True)
+        self.assert_code(result, 0, "cargo-mutants invocation(s) carry")
+        self.assertIn(f"OK: {EXPECTED_INVOCATIONS} ", result.stdout)
+
     # --- 2: the gate could not check anything ----------------------------
 
     def test_a_file_with_no_invocation_beside_one_that_has_it_is_not_2(self):
@@ -810,7 +837,7 @@ class FlagsGateContract(unittest.TestCase):
             self.run_gate_on(mise, empty, moved),
             0, "2 cargo-mutants invocation(s) carry")
 
-    def test_the_invocation_count_falling_below_the_minimum_is_2(self):
+    def test_the_invocation_count_falling_below_the_expected_is_2(self):
         # The hole the union leaves, and the reason a count is asserted
         # at all. One invocation of two has left the file set entirely —
         # moved to a file nothing globs, or deleted — and every file the
@@ -820,16 +847,52 @@ class FlagsGateContract(unittest.TestCase):
         self.assert_code(
             self.run_gate(MISE_WITH_FLAG, "jobs:\n  build:\n    steps: []\n"),
             2, "found 1 `cargo mutants` invocation(s)",
-            "expected at least 2", "MINIMUM_INVOCATIONS")
+            "expected exactly 2", "EXPECTED_INVOCATIONS")
 
-    def test_the_minimum_is_a_number_a_caller_can_state(self):
+    def test_the_invocation_count_rising_above_the_expected_is_2(self):
+        # The direction a floor could not see, and the one a tree
+        # actually moves in. A third invocation is added and nothing
+        # needs editing, so the number stops describing the tree while
+        # the gate stays green — after which deleting one of the
+        # original two lands back on 2 and is still green. Executed at
+        # the previous head: `OK: 3`, then `OK: 2` with the ci.yml
+        # matrix invocation gone. The neighbour of the case above, one
+        # invocation in the other direction.
+        third = self.write(
+            "release.yml",
+            "jobs:\n  audit:\n    steps:\n"
+            "      - run: cargo mutants -p x --all-features --jobs 1\n")
+        mise = self.write("mise.toml", MISE_WITH_FLAG)
+        ci = self.write("ci.yml", CI_WITH_FLAG)
+        result = self.run_gate_on(mise, ci, third)
+        self.assert_code(
+            result, 2, "found 3 `cargo mutants` invocation(s)",
+            "expected exactly 2", "EXPECTED_INVOCATIONS in this script to 3")
+        self.assertNotIn("OK:", result.stdout)
+
+    def test_a_count_that_is_wrong_does_not_hide_a_missing_flag(self):
+        # Which of the two codes a tree with both gets. The flag is the
+        # specific news; the count is the gate saying it no longer
+        # describes the tree. Reporting the count first would hide a
+        # corrupted floor behind a bookkeeping error, so the flag
+        # verdict goes first and the count is raised on the next run.
+        third = self.write(
+            "release.yml",
+            "jobs:\n  audit:\n    steps:\n"
+            "      - run: cargo mutants -p x --jobs 1\n")
+        mise = self.write("mise.toml", MISE_WITH_FLAG)
+        ci = self.write("ci.yml", CI_WITH_FLAG)
+        self.assert_code(
+            self.run_gate_on(mise, ci, third), 1, "missing from 1 of 3")
+
+    def test_the_expected_count_is_a_number_a_caller_can_state(self):
         # The escape hatch the failure text names. A tree that genuinely
         # holds one invocation is not a broken gate, and the way to say
         # so is to say the number — deliberately, in the change that
         # removes the invocation.
         self.assert_code(
             self.run_gate(MISE_WITH_FLAG, "jobs:\n  build:\n    steps: []\n",
-                          minimum=1),
+                          expect=1),
             0, "1 cargo-mutants invocation(s) carry")
 
     def test_no_invocation_anywhere_is_2(self):

@@ -45,13 +45,17 @@ repository has `.github/actions/rust-checks/action.yml`, with eight
 `run:` steps) and the shell scripts under `.github/scripts/` just as
 invisible, while the gate went on reporting OK.
 
-Alongside the files, a *count*. `MINIMUM_INVOCATIONS` says how many
-invocations the tree holds, and fewer is exit 2. It has to be asserted
-rather than inferred because the "nothing to check" test below is judged
-over the union of the files, and a union cannot see a count fall from two
-to one: take the matrix out of everything globbed here and `mise.toml`'s
-invocation keeps the union non-empty, so the gate stays green with half
-of what it compares gone.
+Alongside the files, a *count*. `EXPECTED_INVOCATIONS` says how many
+invocations the tree holds, and any other number is exit 2. It has to be
+asserted rather than inferred because the "nothing to check" test below
+is judged over the union of the files, and a union cannot see a count
+fall from two to one: take the matrix out of everything globbed here and
+`mise.toml`'s invocation keeps the union non-empty, so the gate stays
+green with half of what it compares gone. It is an equality and not a
+floor because a floor is silent in the direction a tree actually moves
+in — invocations get added, nobody edits the number, and from three the
+matrix invocation can be deleted outright and land back on a floor of
+two with the gate green.
 
 What it counts is an *invocation*, not a line. Shell puts several
 commands on one line, and a containment test over the joined line is
@@ -144,7 +148,8 @@ Two exit codes, because they are two different pieces of news
 * **2 — the gate could not run.** A file it reads is missing or
   unreadable; a line that mentions cargo-mutants will not lex; *no*
   file it read holds a `cargo mutants` invocation at all; or the files
-  hold fewer than `MINIMUM_INVOCATIONS` between them. The "none at all"
+  hold some number other than `EXPECTED_INVOCATIONS` between them. The
+  "none at all"
   case is judged over the union and not per file, because moving the
   matrix from one workflow to another leaves a tree entirely in step and
   would otherwise be reported as a broken gate — and the count is what
@@ -205,17 +210,29 @@ GITHUB_GLOBS = ("**/*.yml", "**/*.yaml", "**/*.sh")
 # in it and reports the measuring half green. That is the same
 # 27.17%-vs-36.89% corruption the `&&` case describes, one character
 # apart from it.
-SEPARATORS = ("&&", "||", "&", ";", "|", "\n")
+#
+# No newline. `commands` is only ever handed a line `logical_lines` built
+# from `splitlines()` and joined with a space, so a newline separator was
+# dead the day it was written — and being dead, nothing could have
+# noticed it was also being claimed in prose.
+SEPARATORS = ("&&", "||", "&", ";", "|")
 
-# How many invocations the tree is expected to hold, at least. Asserted
-# because "no invocation anywhere" is judged over the union, and a union
+# How many invocations the tree holds. Asserted as an EQUALITY, not a
+# floor. "No invocation anywhere" is judged over the union, and a union
 # is blind to a count that falls from two to one: move the matrix out of
 # the globbed files entirely and `mise.toml`'s surviving invocation keeps
 # the union non-empty, so the gate reports OK while the thing it was
-# checking has left. A number is the only thing that notices, and it has
-# to be a number a person edits deliberately in the same change that adds
-# or removes an invocation.
-MINIMUM_INVOCATIONS = 2
+# checking has left. A number is the only thing that notices.
+#
+# A floor was not that number. A floor of 2 is silent when a third
+# invocation appears, so the tree drifts to three while the guard still
+# says two — and from three, the `ci.yml` matrix invocation can be
+# deleted outright and the count lands back on the floor with the gate
+# green. Both were executed. An equality is the guard this comment and
+# `docs/10-cross-cutting/testing.md` were already describing: adding or
+# removing an invocation means editing this number in the same change,
+# and with a floor, adding one did not.
+EXPECTED_INVOCATIONS = 2
 
 
 class CannotRun(Exception):
@@ -592,11 +609,12 @@ def main() -> int:
         help="files to check; defaults to mise.toml plus every "
              "*.yml, *.yaml and *.sh under .github/")
     parser.add_argument(
-        "--min-invocations", type=int, default=MINIMUM_INVOCATIONS,
-        help="how many invocations the files must hold between them "
-             f"(default {MINIMUM_INVOCATIONS}); fewer is exit 2, because "
-             "a gate checking less than it was written to check is not a "
-             "pass")
+        "--expect-invocations", type=int, default=EXPECTED_INVOCATIONS,
+        help="how many invocations the files hold between them "
+             f"(default {EXPECTED_INVOCATIONS}); any other number is "
+             "exit 2, because a gate checking less than it was written "
+             "to check is not a pass and a gate that never noticed the "
+             "tree grew is not one either")
     args = parser.parse_args()
 
     paths = args.paths or default_paths()
@@ -625,22 +643,42 @@ def main() -> int:
                 "if they are genuinely gone, delete this gate in the "
                 "same change."
             )
-        if checked < args.min_invocations:
+        if not offenders and checked != args.expect_invocations:
             # The union above cannot see this: one invocation left out of
             # two keeps the union non-empty, so every check passes while
             # half of what the gate was written to compare has walked out
             # of the file set. Only a count notices.
+            #
+            # After the flag verdict, not before it. A missing flag is
+            # the specific news and a count that has moved is the news
+            # that the gate no longer describes the tree; reporting the
+            # count first would hide the corruption behind a
+            # bookkeeping error. A tree with both gets exit 1 here and
+            # exit 2 on the next run, which is the order somebody fixing
+            # it wants them in.
+            #
+            # Equality, not a floor. A floor is silent in the direction
+            # the tree actually moves in — a third invocation appears,
+            # nobody edits anything, and the number now describes a tree
+            # that no longer exists. From there, deleting one of the
+            # original two lands back on the floor and the gate reports
+            # OK on a matrix that has lost its invocation. Requiring the
+            # number to match is what makes "editing it in the same
+            # change" true rather than merely written down.
             raise CannotRun(
                 f"found {checked} `cargo mutants` invocation(s) in "
                 f"{', '.join(str(path) for path in paths)}, and expected "
-                f"at least {args.min_invocations}. An invocation this "
+                f"exactly {args.expect_invocations}. An invocation this "
                 "gate can no longer see is one it can no longer keep in "
                 "step, and the files it reads still look fine — which is "
-                "why the number is asserted rather than inferred. If an "
-                "invocation moved somewhere this gate does not read, "
-                "point it there; if one was deliberately removed, lower "
-                f"{MINIMUM_INVOCATIONS!r} at MINIMUM_INVOCATIONS in "
-                "this script in the same change."
+                "why the number is asserted rather than inferred. An "
+                "invocation it has never seen before is the same news "
+                "from the other side: the count is a description of this "
+                "tree, and a description nobody has to update stops "
+                "being one. If an invocation moved somewhere this gate "
+                "does not read, point it there; if one was added or "
+                "removed on purpose, set EXPECTED_INVOCATIONS in this "
+                f"script to {checked} in the same change."
             )
     except CannotRun as error:
         print(error, file=sys.stderr)

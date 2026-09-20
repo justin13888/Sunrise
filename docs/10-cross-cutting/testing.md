@@ -294,7 +294,7 @@ quote — is exit 2 rather than a lenient reading, because the lenient reading l
 the words of a trailing comment stand in for the command's own.
 
 The file set is **`mise.toml` plus every `*.yml`, `*.yaml` and `*.sh` under
-`.github/`**, at any depth, together with a **minimum invocation count**. A
+`.github/`**, at any depth, together with an **expected invocation count**. A
 third executable copy was invisible to a gate that knew about two files; after
 the set became `.github/workflows/*.yml` it was still invisible in
 `.github/actions/rust-checks/action.yml`, which has eight `run:` steps, and in a
@@ -304,8 +304,21 @@ moving the matrix from one workflow to another leaves a tree that is entirely in
 step, and calling that a broken gate is how a gate gets switched off — and a
 union cannot see a count fall from two to one. Move the matrix out of everything
 globbed and `mise.toml`'s invocation keeps the union non-empty, so only a number
-notices. It lives at `MINIMUM_INVOCATIONS` in the gate, and adding or removing
-an invocation means editing it in the same change.
+notices. It lives at `EXPECTED_INVOCATIONS` in the gate, and it is an
+**equality**, not a floor: a floor is silent in the direction a tree actually
+moves in. Add a third invocation and a floor of two needs no edit, so the number
+stops describing the tree while the gate stays green — and from three, deleting
+the matrix invocation outright lands back on the floor and is still green. Both
+were executed. Requiring the number to match is what makes "adding or removing
+an invocation means editing it in the same change" true rather than merely
+written here. What the count cannot tell you is whether an invocation is one
+anything runs: two in a script nothing references satisfy it exactly as two in
+the matrix do, and deciding otherwise would need the gate to know what CI
+executes, which is a different tool.
+
+The count is asserted against this repository in the contract test, not only by
+the live job. `Mutation flag gate` is not a required check, so a number that had
+stopped describing the tree would otherwise have had nothing blocking to say so.
 
 `.github/scripts/test_mutants_flags_gate.py` asserts that contract against
 synthesised files, so watching the gate go red never requires editing the two
