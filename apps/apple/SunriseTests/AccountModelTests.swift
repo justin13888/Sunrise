@@ -84,6 +84,11 @@ struct AccountModelTests {
     /// would not answer, so whether a token is in it is unknown.
     private static let refusal = KeychainError.otherDomainUnreadable(errSecInteractionNotAllowed)
 
+    /// The other shape `restore()` can be handed, and the one that behaves
+    /// oppositely: both copies were read, they disagree, and a sign-in is the
+    /// repair rather than the harm.
+    private static let unverified = KeychainError.migrationUnverified
+
     private func model(
         store: StubCredentialStore,
         driver: StubLoginDriver = StubLoginDriver(),
@@ -239,6 +244,59 @@ struct AccountModelTests {
 
         #expect(account.state == .signedIn(expiresAtMs: 4_000))
         #expect(store.stored?.accessToken == "access-1")
+    }
+
+    /// The branch the three cases above do not reach, and the one the whole
+    /// guard exists for: the store is **still** refusing on the second look, so
+    /// the login must not be reached. Delete the `!storeRefusedToAnswer` half of
+    /// `signIn`'s guard and all three stay green — A never calls `signIn`, B
+    /// returns because a token came back, C returns because the store answered
+    /// nothing. This is the case that reddens.
+    @Test
+    func aStoreStillRefusingOnTheSecondLookDoesNotReachTheLogin() async {
+        let store = StubCredentialStore(loadError: Self.refusal)
+        let opened = OpenedURLs()
+        let account = model(store: store, opened: { opened.record($0) })
+        account.restore()
+
+        await account.signIn(
+            issuer: "https://issuer.example",
+            clientID: "client",
+            deviceID: "abcd",
+            nowMs: 0
+        )
+
+        #expect(opened.first == nil, "a store still refusing was spent on a login")
+        #expect(store.stored == nil, "a second token was written beside an unread copy")
+        #expect(account.state == .failed(Self.refusal.localizedDescription))
+        #expect(account.accessToken == nil)
+    }
+
+    /// And the refusal that must **not** latch. `migrationUnverified` is the one
+    /// shape where both copies have been read and are known to disagree, so no
+    /// copy survives unread and there is no second token to invite: a sign-in's
+    /// `writeAcrossDomains` writes this domain and deletes the other, which is
+    /// the collapse that ends the state. Gating the second look on any throw
+    /// made this a dead end — every later Try again re-threw and returned.
+    @Test
+    func anUnverifiedMigrationFallsThroughToTheLoginThatCollapsesIt() async {
+        let store = StubCredentialStore(loadError: Self.unverified)
+        let opened = OpenedURLs()
+        let account = model(store: store, opened: { opened.record($0) })
+        account.restore()
+        #expect(account.state == .failed(Self.unverified.localizedDescription))
+
+        await account.signIn(
+            issuer: "https://issuer.example",
+            clientID: "client",
+            deviceID: "abcd",
+            nowMs: 0
+        )
+
+        #expect(opened.first != nil, "the one refusal a sign-in repairs was refused one")
+        #expect(store.stored?.accessToken == "access-1")
+        #expect(account.accessToken == "access-1")
+        #expect(account.state == .signedIn(expiresAtMs: 4_000))
     }
 
     @Test
