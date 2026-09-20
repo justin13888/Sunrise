@@ -227,6 +227,16 @@ class SelfTest(GateCase):
         # A floor, then, in the shape this file already uses for the
         # allowlist: 100 is not a count anybody derived, it is a tripwire, and
         # tripping it should be a conversation rather than a commit.
+        #
+        # **What the number does and does not promise.** The self-test runs
+        # 119 cases today, so the floor carries 19 cases of slack and a
+        # deletion smaller than that is silent here. That is the price of a
+        # tripwire rather than a derived count: a number recomputed at every
+        # legitimate retirement is a number that gets relaxed on the commit
+        # that retires one, and the failure this exists to catch is the large
+        # one -- half the self-test cut, the gate still printing "OK:
+        # citations self-test clean (56 cases)" and still exiting 0. Raise
+        # the floor when the slack stops being worth it; do not derive it.
         gate = rewritten_gate(self.tmp)
         result = subprocess.run(
             [sys.executable, str(gate), "--self-test"], capture_output=True, text=True
@@ -236,6 +246,26 @@ class SelfTest(GateCase):
         self.assertIsNotNone(found, f"the self-test's count line moved:\n{result.stdout}")
         self.assertGreaterEqual(
             int(found.group(1)), 100, "the self-test lost cases; restore them or say why"
+        )
+
+    def test_this_suite_keeps_its_own_cases(self):
+        # The floor above guards the self-test's count. Nothing guarded this
+        # file's, and the asymmetry is the gap: a rule deleted from
+        # `self_test` trips a tripwire, while the contract case that pins the
+        # same rule can be deleted with the suite still printing OK. Both
+        # directions of that silence matter, because most of what this change
+        # added lives here rather than there.
+        #
+        # Counted from the source rather than from a run, so it constrains
+        # the file on disk and not whatever a filtered invocation happened to
+        # execute. Same idiom and same caveat as the two tripwires beside it:
+        # the slack is deliberate, and raising the floor is a
+        # decision rather than bookkeeping. 100 against 109 today.
+        source = pathlib.Path(__file__).read_text(encoding="utf-8")
+        self.assertGreaterEqual(
+            len(re.findall(r"^    def test_", source, re.MULTILINE)),
+            100,
+            "this suite lost cases; restore them or say why",
         )
 
     def test_the_shipped_allowlist_stays_small(self):
