@@ -351,10 +351,28 @@ stops describing the tree while the gate stays green — and from three, deletin
 the matrix invocation outright lands back on the floor and is still green. Both
 were executed. Requiring the number to match is what makes "adding or removing
 an invocation means editing it in the same change" true rather than merely
-written here. What the count cannot tell you is whether an invocation is one
-anything runs: two in a script nothing references satisfy it exactly as two in
-the matrix do, and deciding otherwise would need the gate to know what CI
-executes, which is a different tool.
+written here.
+
+A total cannot say **where**, and the argument for it is an argument about two
+roles. Executed: delete the `ci.yml` matrix invocation and add a second one to
+`mise.toml`, and the total is still two, every invocation carries the flag, and
+the gate exits 0 with `OK: 2` while CI runs no mutation testing at all — on one
+edit. So on the default file set the gate also requires at least one invocation
+in `mise.toml` and at least one in `.github/workflows/ci.yml`: what a person
+runs locally, and what the nightly runs. A floor per role rather than an
+equality, because either acquiring a second invocation is a legitimate change
+and should not need the gate edited; the total equality is what notices that.
+The rule is not applied to a caller-supplied path set, and
+`--expect-invocations` restates the total only.
+
+What neither the count nor the roles can tell you is whether an invocation is
+one anything runs. The shape that used to satisfy the count — the matrix
+invocation deleted and a replacement put in `.github/release.yml` or in a shell
+script nothing calls — is exit 2 now, because `ci.yml` no longer holds one. What
+survives is narrower: a third invocation in a file nothing runs, in a tree whose
+two roles are both intact, counted because somebody raised the expected total to
+admit it. Deciding otherwise would need the gate to know what CI executes, which
+is a different tool.
 
 The count is asserted against this repository in the contract test, not only by
 the live job. `Mutation flag gate` is not a required check, so a number that had

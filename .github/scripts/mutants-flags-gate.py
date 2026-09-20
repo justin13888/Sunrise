@@ -57,6 +57,19 @@ in — invocations get added, nobody edits the number, and from three the
 matrix invocation can be deleted outright and land back on a floor of
 two with the gate green.
 
+And alongside the count, *where*. The argument above is about two
+roles — the local task and the CI matrix — and a single integer over
+their union cannot enforce it. Executed: delete the `ci.yml` matrix
+invocation and add a second one to `mise.toml`, and the total is still
+two, every invocation carries the flag, and the gate exits 0 with
+`OK: 2` while CI runs no mutation testing at all. One edit. So on the
+default file set each of `REQUIRED_ROLES` must hold at least one
+invocation — a floor per role, because either acquiring a second is a
+legitimate change and should not need this script edited, and the total
+equality is what catches that. A caller who names paths is checking
+their own files and is not held to this repository's layout, and
+`--expect-invocations` restates the total only.
+
 What it counts is an *invocation*, not a line. Shell puts several
 commands on one line, and a containment test over the joined line is
 satisfied by any of them: `cargo mutants --list … --all-features &&
@@ -328,6 +341,38 @@ VALUE_TAKING_OPTIONS = frozenset({
 # removing an invocation means editing this number in the same change,
 # and with a floor, adding one did not.
 EXPECTED_INVOCATIONS = 2
+
+# WHERE the invocations have to be, which a total cannot say. The
+# paragraph above — and the module docstring's — argues for the count
+# like this: "take the matrix out of everything globbed here and
+# `mise.toml`'s invocation keeps the union non-empty". That is an
+# argument about two ROLES, one local and one in CI, and a single
+# integer over their union does not enforce it. Executed: delete the
+# `ci.yml` matrix invocation and add a second one to `mise.toml` and the
+# total is still 2, so the gate exits 0 with `OK: 2` while CI runs no
+# mutation testing at all. ONE edit. The same move in the mirror
+# direction, and the same move with the second invocation put in a new
+# workflow, were both exit 0 too.
+#
+# A floor per role, not an equality: `mise.toml` acquiring a second
+# invocation is a legitimate change and should not need this file
+# edited. The total equality above is what catches that.
+#
+# Only on the DEFAULT file set. A caller who names paths is checking
+# something else — the contract suite names its fixtures — and has no
+# reason to hold them to this repository's layout. `--expect-invocations`
+# restates the total only, for the same reason: the roles are not a
+# number anyone should be able to argue away from the command line.
+#
+# What this does NOT close, and does not pretend to: an invocation in a
+# script nothing calls still counts as an invocation. The per-role floor
+# bounds that — both real roles must still hold one — without removing
+# it, and deciding otherwise would need the gate to know what CI
+# executes, which is a different tool.
+REQUIRED_ROLES = (
+    (pathlib.Path("mise.toml"), "the local `mutants` task"),
+    (pathlib.Path(".github/workflows/ci.yml"), "the `mutants` matrix"),
+)
 
 
 class CannotRun(Exception):
@@ -870,15 +915,18 @@ def main() -> int:
              "tree grew is not one either")
     args = parser.parse_args()
 
+    default_set = not args.paths
     paths = args.paths or default_paths()
 
     checked = 0
     unlexable = 0
+    per_path: dict[pathlib.Path, int] = {}
     offenders: list[tuple[pathlib.Path, int, str]] = []
     try:
         for path in paths:
             found, skipped = invocations(path)
             unlexable += skipped
+            per_path[path] = len(found)
             for number, command, invocation in found:
                 checked += 1
                 if not carries_flag(invocation):
@@ -936,6 +984,43 @@ def main() -> int:
                 "removed on purpose, set EXPECTED_INVOCATIONS in this "
                 f"script to {checked} in the same change."
             )
+        if not offenders and default_set:
+            # WHERE, after HOW MANY. The count is the coarser test and
+            # the one a reader is likelier to have caused, so it speaks
+            # first; this only ever fires on a tree whose total is
+            # exactly right. That is the whole point of it — M8 is one
+            # edit away from a green tree, moving `ci.yml`'s invocation
+            # into `mise.toml` at a constant total, and the total cannot
+            # see it.
+            #
+            # Only on the default file set. A caller who named paths is
+            # checking their own fixtures, not this repository's layout.
+            empty = [(path, what) for path, what in REQUIRED_ROLES
+                     if not per_path.get(path)]
+            if empty:
+                raise CannotRun(
+                    "the invocation count is right and the invocations "
+                    "are in the wrong place. Nothing invokes "
+                    "cargo-mutants in "
+                    + "; ".join(f"{path} ({what})" for path, what in empty)
+                    + ".\n\nThe count exists because a union cannot see "
+                    "an invocation leave, and a total cannot see one "
+                    "MOVE. Executed: delete the `ci.yml` matrix "
+                    "invocation and add a second one to `mise.toml`, and "
+                    "the total is still "
+                    f"{args.expect_invocations} — the gate said OK while "
+                    "CI ran no mutation testing at all, on one edit. So "
+                    "the two roles this gate exists to keep in step are "
+                    "each required to hold at least one invocation: what "
+                    "a person runs locally, and what the nightly runs. "
+                    "A floor per role and not an equality, because "
+                    "either acquiring a second invocation is a "
+                    "legitimate change and should not need this script "
+                    "edited.\n\nIf a role genuinely moved to another "
+                    "file, change REQUIRED_ROLES in this script in the "
+                    "same commit, and say in the message what now runs "
+                    "the mutation campaign in its place."
+                )
     except CannotRun as error:
         print(error, file=sys.stderr)
         return 2

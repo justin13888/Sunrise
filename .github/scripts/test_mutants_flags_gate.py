@@ -1053,6 +1053,72 @@ class FlagsGateContract(unittest.TestCase):
 
     # --- 2: the gate could not check anything ----------------------------
 
+    def test_invocations_redistributed_at_a_constant_total_are_2(self):
+        # M8, and what a scalar total cannot see. Delete the `ci.yml`
+        # matrix invocation and add a second to `mise.toml`: the total
+        # is still 2, every invocation carries the flag, and CI runs no
+        # mutation testing at all. Executed at the previous head — exit
+        # 0, `OK: 2` — on ONE edit, not two. The same move with the
+        # second invocation put in a new workflow (round 3's M4, which
+        # round 3 recorded as not closed) is the same news.
+        self.write("mise.toml", MISE_WITH_FLAG + MISE_WITH_FLAG.replace(
+            "[tasks.mutants]", "[tasks.mutants-again]"))
+        self.write(".github/workflows/ci.yml",
+                   "jobs:\n  build:\n    steps: []\n")
+        self.assert_code(
+            self.run_gate_with_defaults(),
+            2, "in the wrong place", ".github/workflows/ci.yml",
+            "the `mutants` matrix")
+
+    def test_the_local_task_losing_its_invocation_is_2(self):
+        # The mirror, and the reason this is stated per role rather than
+        # as "ci.yml must hold one". A tree where the nightly measures
+        # and nobody can reproduce it locally is the same divergence
+        # from the other end.
+        self.write("mise.toml", "[tasks.test]\nrun = \"cargo test\"\n")
+        self.write(".github/workflows/ci.yml", CI_WITH_FLAG)
+        self.write(
+            ".github/workflows/nightly.yml",
+            "jobs:\n  m:\n    steps:\n"
+            "      - run: cargo mutants -p x --all-features --jobs 1\n")
+        self.assert_code(
+            self.run_gate_with_defaults(),
+            2, "in the wrong place", "mise.toml",
+            "the local `mutants` task")
+
+    def test_a_role_holding_a_second_invocation_is_not_a_failure(self):
+        # A floor per role, not an equality per role. `mise.toml`
+        # acquiring a second invocation is a legitimate change; what it
+        # needs is the total edited, which is a different message and a
+        # different fix.
+        self.write("mise.toml", MISE_WITH_FLAG + MISE_WITH_FLAG.replace(
+            "[tasks.mutants]", "[tasks.mutants-again]"))
+        self.write(".github/workflows/ci.yml", CI_WITH_FLAG)
+        result = self.run_gate_with_defaults(expect=3)
+        self.assert_code(result, 0, "3 cargo-mutants invocation(s) carry")
+
+    def test_the_per_role_rule_does_not_apply_to_named_paths(self):
+        # A caller who names paths is checking their own fixtures, not
+        # this repository's layout — which is what every other case in
+        # this file does, and why the rule is keyed on the default set.
+        mise = self.write("elsewhere.toml", MISE_WITH_FLAG)
+        self.assert_code(
+            self.run_gate_on(mise, expect=1),
+            0, "1 cargo-mutants invocation(s) carry")
+
+    def test_a_missing_role_is_reported_after_a_missing_flag(self):
+        # The same ordering argument the count already makes, one step
+        # further down. A missing flag is the specific news; where the
+        # invocations sit is the news that the gate no longer describes
+        # the tree.
+        self.write("mise.toml", MISE_WITH_FLAG.replace(
+            " --all-features", "") + MISE_WITH_FLAG.replace(
+            "[tasks.mutants]", "[tasks.mutants-again]"))
+        self.write(".github/workflows/ci.yml",
+                   "jobs:\n  build:\n    steps: []\n")
+        self.assert_code(
+            self.run_gate_with_defaults(), 1, "missing from 1 of 2")
+
     def test_a_file_with_no_invocation_beside_one_that_has_it_is_not_2(self):
         # Judged over the union, not per file. Moving the matrix out of
         # one workflow and into another leaves a tree that is entirely in
