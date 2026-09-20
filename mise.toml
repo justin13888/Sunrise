@@ -451,7 +451,7 @@ description = "Reject a backticked path:line#symbol citation that points at noth
 # onto unrelated code goes red instead of passing because the line still
 # exists. `path#symbol` with no line checks only that the item is still
 # declared, which is what a citation into a file somebody is rewriting this
-# week should say. Three declines and failures worth knowing before you write
+# week should say. Four declines and failures worth knowing before you write
 # one:
 #
 #   * A suffix that is not a bare Rust item name — `#Engine::f`, `#f()` — is a
