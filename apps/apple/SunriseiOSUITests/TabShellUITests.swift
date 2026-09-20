@@ -127,9 +127,9 @@ final class TabShellUITests: SunriseUITestCase {
     /// Calendar has no inline bar, so `openCapture` presents the sheet instead
     /// of focusing a field — a different path with a different commit
     /// (`AppSurfaces.commitCapture`, which has no local refresh and repaints
-    /// through the change stream). The confirmation is set strictly after that
-    /// commit returns, so it is proof the write landed rather than proof a
-    /// button was tapped; the Inbox row afterwards is proof it is still there.
+    /// through the change stream). The Inbox row at the end is what proves the
+    /// write landed — read back out of the core, not a label the sheet drew —
+    /// and the sheet is checked for a refusal rather than for a confirmation.
     func testTheCaptureSheetCommitsFromAScreenWithNoBar() throws {
         createVault()
 
@@ -147,14 +147,30 @@ final class TabShellUITests: SunriseUITestCase {
         )
         activate(add, named: "the capture sheet's Add button")
 
-        // Matched as any descendant rather than as a `staticText`: the label is
-        // a `Label`, and which element type SwiftUI folds that into is not a
-        // promise worth resting a test on.
-        let confirmation = app.descendants(matching: .any)["quick-capture.confirmation"]
-        XCTAssertTrue(
-            confirmation.waitForExistence(timeout: 10),
-            "the sheet confirms the commit the core accepted"
-        )
+        // Not a wait on `quick-capture.confirmation`. `submit` sets that label
+        // and clears it two seconds later (`QuickCaptureView.swift:146-149`),
+        // so the evidence this line used to wait for deletes itself: a
+        // ten-second `waitForExistence` is protection against an element
+        // arriving late and none at all against one already gone. CI run
+        // 35446535264 was red on this line on a Rust-only diff, which is a
+        // slow runner and not a broken commit.
+        //
+        // `quick-capture.failure` is the durable half of the same state — set
+        // by `submit`'s catch arm and never cleared, deliberately, because it
+        // asks the user to do something and names the line still waiting in
+        // the field (`QuickCaptureView.swift:59-61`). Its absence is therefore
+        // checkable at any later moment, and what carries "the write landed"
+        // is the Inbox row at the end of this test rather than anything the
+        // sheet drew. Matched as any descendant rather than as a `staticText`
+        // for the reason the confirmation was: the label is a `Label`, and
+        // which element type SwiftUI folds that into is not a promise worth
+        // resting a test on.
+        let refusal = app.descendants(matching: .any)["quick-capture.failure"]
+        XCTAssertFalse(refusal.exists, "the core accepted the capture rather than refusing it")
+
+        // Sampled again, later: `failure` is never cleared, so a second look
+        // costs nothing and cannot pass where the one above would have failed.
+        XCTAssertFalse(refusal.exists, "the core still has not refused the capture")
 
         // Cancel takes the sheet and its keyboard away together, which is what
         // makes the tab bar tappable again.
