@@ -598,6 +598,113 @@ class FlagsGateContract(unittest.TestCase):
                     ),
                     1, "missing from 1 of 2")
 
+    # --- a workflow is a template, not shell -----------------------------
+    #
+    # The same class as the redirections above and a different root: a
+    # `run:` body is not handed to a shell as written. GitHub substitutes
+    # every `${{ … }}` first, and `&&` and `||` inside one are the
+    # expression language's operators, gone before `bash` reads a
+    # character. Latent in this repository rather than live — today's
+    # `ci.yml:814` is `-p ${{ matrix.crate }}`, which holds no operator —
+    # and one edit away, since the `mutants` matrix is
+    # `schedule || workflow_dispatch` and `ci.yml:17` already declares
+    # the dispatch.
+
+    def test_a_template_expression_operator_does_not_end_the_command(self):
+        # Executed: exit 1, with the invocation read as `cargo mutants
+        # -p ${{ inputs.crate`, on a workflow that runs correctly.
+        self.assert_code(
+            self.run_gate(
+                MISE_WITH_FLAG,
+                CI_WITH_FLAG.replace(
+                    "-p ${{ matrix.crate }} \\",
+                    "-p ${{ inputs.crate || 'sunrise-core' }} \\"),
+            ),
+            0, "2 cargo-mutants invocation(s) carry")
+
+    def test_a_ternary_template_expression_does_not_end_the_command(self):
+        # The shape that is already live two files over, at
+        # `release.yml:1262` and `:1270`, where a `runs-on:` picks its
+        # runner with `${{ … && 'macos-26' || 'ubuntu-latest' }}`. Both
+        # operators in one expression.
+        self.assert_code(
+            self.run_gate(
+                MISE_WITH_FLAG,
+                CI_WITH_FLAG.replace(
+                    "-p ${{ matrix.crate }} \\",
+                    "-p ${{ inputs.x == 'y' && 'a' || 'b' }} \\"),
+            ),
+            0, "2 cargo-mutants invocation(s) carry")
+
+    def test_the_flag_inside_a_template_expression_does_not_vouch(self):
+        # Opaque cuts both ways, and this is the direction that matters:
+        # the expression is one word in one argument position, so the
+        # flag's source text inside it is not the flag, exactly as the
+        # flag's source text inside a command substitution is not.
+        self.assert_code(
+            self.run_gate(
+                MISE_WITH_FLAG,
+                CI_WITH_FLAG.replace(
+                    "            --all-features \\\n", "").replace(
+                    "-p ${{ matrix.crate }} \\",
+                    "-p ${{ inputs.f || '--all-features' }} \\"),
+            ),
+            1, "missing from 1 of 2")
+
+    def test_a_template_expression_occupies_one_argument_position(self):
+        # It has to leave a word behind rather than nothing. Dropping it
+        # would vacate the slot it holds and let `-p` read the flag
+        # after it as its value — the same way deleting a command
+        # substitution made `-p $(cargo metadata …) --all-features` red
+        # on a correct tree. And GitHub's substitution is textual, so an
+        # expression glued into a larger word is still one word.
+        for written in ("${{ matrix.crate }}", "out-${{ matrix.crate }}.x"):
+            with self.subTest(written=written):
+                self.assert_code(
+                    self.run_gate(
+                        MISE_WITH_FLAG,
+                        CI_WITH_FLAG.replace(
+                            "-p ${{ matrix.crate }} \\", f"-p {written} \\"),
+                    ),
+                    0, "2 cargo-mutants invocation(s) carry")
+
+    def test_an_unclosed_template_expression_is_2_not_a_pass(self):
+        # A line the gate cannot parse is a line it cannot judge, the
+        # same answer an unterminated quotation and an unclosed `$(`
+        # get. It used to be a silent pass: `${{`, `inputs.crate` and
+        # `--all-features` lexed as three ordinary words, `-p` took the
+        # first as its value and the third was read as the flag, so a
+        # workflow GitHub itself rejects as malformed reported green.
+        self.assert_code(
+            self.run_gate(
+                MISE_WITH_FLAG,
+                CI_WITH_FLAG.replace(
+                    "-p ${{ matrix.crate }} \\",
+                    "-p ${{ inputs.crate \\"),
+            ),
+            2, "will not lex as shell")
+
+    def test_a_template_expression_is_only_a_template_in_a_workflow(self):
+        # Scoped by file, because this is a fact about the reader and
+        # not about shell. `${{` is not valid parameter expansion in
+        # bash, so nothing in `mise.toml` or a `.sh` means a template by
+        # it, and there the `||` really would separate two commands. The
+        # same text gets opposite and correct verdicts in the two files.
+        written = "-p ${{ inputs.c || 'core' }} --all-features"
+        self.assert_code(
+            self.run_gate(
+                MISE_WITH_FLAG.replace(
+                    '-p "$usage_crate" --all-features', written),
+                CI_WITH_FLAG),
+            1, "missing from 1 of 2")
+        self.assert_code(
+            self.run_gate(
+                MISE_WITH_FLAG,
+                CI_WITH_FLAG.replace(
+                    "-p ${{ matrix.crate }} \\",
+                    "-p ${{ inputs.c || 'core' }} \\")),
+            0, "2 cargo-mutants invocation(s) carry")
+
     def test_the_flag_inside_quotes_does_not_count_as_the_flag(self):
         # `--exclude-re '--all-features'` is a regex that mentions the
         # flag, and lexing threw the quotes away, so it lexed to a token

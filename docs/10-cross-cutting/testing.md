@@ -275,6 +275,20 @@ background and really should end a command; the two shapes are one character
 apart and need opposite answers. `release.yml` writes the redirection form
 twice, once inside a `$( )`.
 
+And a **`${{ … }}` in a workflow is not shell at all**. GitHub substitutes it
+before any shell reads the line, so `&&` and `||` inside one are the expression
+language's operators choosing between two strings, and the whole construct is
+one opaque word — occupying one argument position, vouching for nothing, and
+unable to separate or quote anything. `cargo mutants -p ${{ inputs.crate ||
+'sunrise-core' }} --all-features` was exit 1 on a workflow that runs correctly.
+This one is scoped to `*.yml` and `*.yaml`, because `${{` means nothing in
+`mise.toml` or a `.sh` and a gate claiming otherwise would be asserting a rule
+it cannot support. It is **latent** here rather than live: `ci.yml`'s invocation
+is `-p ${{ matrix.crate }}`, which holds no operator, and is one edit from
+holding one — the `mutants` matrix is `schedule || workflow_dispatch`, the
+dispatch is already declared, and a crate input with a default is the natural
+next change on that line. The shape is live in `release.yml`'s `runs-on:`.
+
 A **command substitution is a command too**. `$( … )` and backticks open a
 nested context whose words are its own, and the enclosing command resumes after
 the close with the substitution standing in it as one opaque word. Until it did,

@@ -82,13 +82,19 @@ starts. A comment about the flag, a neighbouring `echo` about the flag,
 a `--list` call carrying the flag and a background job carrying it all
 stop vouching for the command beside them.
 
-A `&` adjacent to a redirection operator belongs to the
-redirection rather than to the separator set: `2>&1`, `>&2`, `<&3`,
-`&>` and `&>>` are one command, and splitting there ended an
-invocation at `cargo mutants -p "$usage_crate" 2>` while `bash`
-passed every argument through. A bare `&` still ends a command:
-the two shapes are one character apart and need opposite answers.
-See `REDIRECTION_OPERATORS`.
+Two positions where one of those characters is NOT a separator, and
+both of them were false reds on a tree in step rather than holes. A `&`
+adjacent to a redirection operator belongs to the redirection: `2>&1`,
+`>&2`, `<&3`, `&>` and `&>>` are one command, and splitting there ended
+an invocation at `cargo mutants -p "$usage_crate" 2>` while `bash`
+passed every argument through. And inside a GitHub Actions `${{ … }}`,
+`&&` and `||` are the expression language's operators, substituted away
+before any shell reads the line, so the whole construct is one opaque
+word — in a workflow or composite action only, because `${{` means
+nothing in `mise.toml` or a `.sh`. Neither weakens the separators: a
+bare `&` still ends a command, and a flag written inside a substitution
+or a template expression still vouches for nothing. See
+`REDIRECTION_OPERATORS` and `TEMPLATE_SUFFIXES`.
 
 A command substitution is a command too. `$( … )` and backticks open a
 nested command context whose words are its own and never the enclosing
@@ -278,6 +284,49 @@ DEFAULT_MISE = pathlib.Path("mise.toml")
 DEFAULT_GITHUB_DIR = pathlib.Path(".github")
 GITHUB_GLOBS = ("**/*.yml", "**/*.yaml", "**/*.sh")
 
+# The files in that set that are TEMPLATES rather than shell, and the
+# construct that makes them one.
+#
+# A workflow's `run:` body is not handed to a shell as written. GitHub
+# substitutes every `${{ … }}` first, and inside those braces `&&` and
+# `||` are the expression language's operators — they choose between two
+# strings and are gone before `bash` reads a character. Scanning them as
+# command separators splits an invocation that no shell would ever
+# split: `cargo mutants -p ${{ inputs.crate || 'sunrise-core' }}
+# --all-features` was exit 1 here, with the invocation named as `cargo
+# mutants -p ${{ inputs.crate`, on a workflow that runs correctly.
+#
+# LATENT, not live, and the distinction is worth keeping: today's
+# `ci.yml:814` is `cargo mutants -p ${{ matrix.crate }}`, which holds no
+# operator and is green. It is one operator away — the `mutants` matrix
+# is `if: schedule || workflow_dispatch`, `ci.yml:17` already declares
+# `workflow_dispatch`, and giving that dispatch a crate input with a
+# default is the natural next edit on this very line. The shape is
+# already live two files over, at `release.yml:1262` and `:1270`, where
+# a `runs-on:` picks a runner with `${{ … && 'macos-26' || 'ubuntu-latest'
+# }}`.
+#
+# So the whole construct is one opaque word: it occupies exactly one
+# argument position, which is what it really does, and nothing inside it
+# can separate, quote, comment or vouch for anything. As text it can
+# never be `cargo`, never `mutants`, never the flag and never an option
+# in `VALUE_TAKING_OPTIONS` — the same argument that makes a command
+# substitution safe to stand in a word.
+#
+# Scoped by file, because this is a fact about the reader and not about
+# shell. `${{` is not valid parameter expansion in bash, so nothing in
+# `mise.toml` or a `.sh` means a template by it, and a gate that decided
+# otherwise everywhere would be claiming a rule it cannot support. This
+# is the half of the separator set that needs the gate to know WHICH
+# FILE it is reading; the redirection half above needs it to know shell.
+#
+# Refusing to judge any line holding `${{ … }}` was the other candidate
+# and is worse: it would add the one `ci.yml` invocation this gate
+# exists for to the unlexable tally and stop checking it, which is a
+# silent green in exchange for a loud false red.
+TEMPLATE_SUFFIXES = frozenset({".yml", ".yaml"})
+TEMPLATE_OPEN = "${{"
+TEMPLATE_CLOSE = "}}"
 
 # Shell separators between one command and the next. Longest first, so
 # that `&&` is one boundary rather than `&` twice and `||` is one rather
@@ -508,7 +557,7 @@ class Word(NamedTuple):
     raw: str
 
 
-def commands(line: str) -> list[list[Word]]:
+def commands(line: str, *, template: bool = False) -> list[list[Word]]:
     """Split one logical line into the commands it runs, lexing once.
 
     The unit this gate checks has to be an *invocation*, not a line. A
@@ -621,10 +670,19 @@ def commands(line: str) -> list[list[Word]]:
     `REDIRECTION_OPERATORS` for why the remedy is adjacency rather than
     dropping `&` from `SEPARATORS`.
 
-    Raises `ValueError` on an unterminated quote, a trailing escape
-    or an unclosed command substitution. Callers turn that into a
-    `CannotRun`, per the module docstring: a line this gate cannot
-    parse is a line it cannot judge.
+    `template` says this line came out of a GitHub Actions workflow or
+    composite action, where `${{ … }}` is substituted before any shell
+    sees it and its `&&` and `||` are the expression language's, not the
+    shell's. Under it the whole construct is one opaque word. Without
+    it, `cargo mutants -p ${{ inputs.crate || 'sunrise-core' }}
+    --all-features` was exit 1 on a workflow that runs correctly. It is
+    off by default because `${{` means nothing in `mise.toml` or a
+    `.sh`, and `invocations` sets it from the file's suffix.
+
+    Raises `ValueError` on an unterminated quote, a trailing escape, an
+    unclosed command substitution or — under `template` — an unclosed
+    `${{`. Callers turn that into a `CannotRun`, per the module
+    docstring: a line this gate cannot parse is a line it cannot judge.
     """
     out: list[list[Word]] = []
     current: list[Word] = []
@@ -679,6 +737,27 @@ def commands(line: str) -> list[list[Word]]:
             # positions a word can begin at.
             if char == "#" and not started:
                 break
+        # A template expression is one opaque word, in or out of a
+        # quotation. GitHub substitutes it before any shell reads the
+        # line, so its `&&`, `||`, `!`, quotes and parentheses are the
+        # expression language's and none of them are the scanner's. It
+        # has to leave a word behind rather than nothing, because it
+        # occupies an argument position — `-p ${{ matrix.crate }}` means
+        # `-p` took a value — and it can be part of a larger word, which
+        # is what GitHub's textual substitution does: `out-${{ x }}.json`
+        # is one word here and one word there.
+        if template and line.startswith(TEMPLATE_OPEN, index):
+            close = line.find(TEMPLATE_CLOSE, index + len(TEMPLATE_OPEN))
+            if close < 0:
+                raise ValueError(
+                    f"no closing `{TEMPLATE_CLOSE}` for a template "
+                    "expression")
+            expression = line[index:close + len(TEMPLATE_CLOSE)]
+            value.append(expression)
+            raw.append(expression)
+            started = True
+            index = close + len(TEMPLATE_CLOSE)
+            continue
         opening = ("$(" if line.startswith("$(", index)
                    else "`" if char == "`" and (
                        not enclosing or enclosing[-1][0] != "`")
@@ -942,9 +1021,14 @@ def invocations(
         raise CannotRun(f"cannot read {path}: {error}") from error
     found: list[tuple[int, str, list[Word]]] = []
     unlexable = 0
+    # A `.yml` or `.yaml` in this set is a workflow or a composite
+    # action, and its `run:` bodies are templates GitHub substitutes
+    # before any shell reads them. `mise.toml` and the `.sh` scripts are
+    # read by a shell as written, and `${{` means nothing in either.
+    template = path.suffix in TEMPLATE_SUFFIXES
     for number, line in logical_lines(text):
         try:
-            split = commands(line)
+            split = commands(line, template=template)
         except ValueError as error:
             if not INVOCATION.search(line):
                 # Not shell, as far as anything here can tell, and it
