@@ -95,15 +95,16 @@ a detail:
   invisible in the rendered document.
 
   "That can reach it" is the honest bound, and it is set upstream rather than
-  here. Every file is read through `open(..., encoding="utf-8")`, whose
-  universal-newline translation turns a lone `\\r` into a line break before
-  `CODE_SPAN` ever runs, and a code span does not survive a line break. So a
-  carriage return inside a span is not a suffix the grammar rejects; it is a
-  span the scanner never produces. That is a property of the **span**, not of
-  the `#` — a `\\r` in the path or in the line number destroys it identically,
-  and so does one in a span carrying no `#` at all — and it is unchanged from
-  before this suffix existed. No tracked `.md` or `.rs` file in this
-  repository contains one.
+  here. The scanner reads through `open(..., encoding="utf-8")` — the gate's
+  only text read, `line_count` and `symbol_span` both opening `"rb"` — and
+  that read's universal-newline translation turns a lone `\\r` into a line
+  break before `CODE_SPAN` ever runs, and a code span does not survive a line
+  break. So a carriage return inside a span is not a suffix the grammar
+  rejects; it is a span the scanner never produces. That is a property of the
+  **span**, not of the `#` — a `\\r` in the path or in the line number
+  destroys it identically, and so does one in a span carrying no `#` at all —
+  and it is unchanged from before this suffix existed. No tracked `.md` or
+  `.rs` file in this repository contains one.
 * **`#L702` is declined, not failed — and declining it costs the *symbol*
   check, not the span.** It is a github.com permalink fragment, the one
   non-declaration `#` form a Rust-path span plausibly carries, in all four

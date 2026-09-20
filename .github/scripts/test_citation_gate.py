@@ -1370,10 +1370,20 @@ class Symbols(GateCase):
         # span just as completely, and so does one in a span carrying no `#`
         # at all. It is a property of the span, identical before and after
         # this change, and no tracked `.md` or `.rs` file in this repository
-        # contains one. Repairing it would mean reading every file with
-        # `newline=""`, which is a behaviour change on every file the gate
-        # touches for an input nothing produces -- so the behaviour is
-        # recorded here rather than changed.
+        # contains one. Repairing it would mean reading with `newline=""` at
+        # ONE call site -- the scanner's; `line_count` and `symbol_span` both
+        # open `"rb"` and `newline=` does not reach them -- over the 454 `.md`
+        # and `.rs` files this repository's own run scans, of which zero hold
+        # a lone `\r` and zero hold CRLF. So the measured radius of that
+        # repair is ZERO files, and the behaviour is kept because nothing
+        # produces the input, not because the change would be wide. Recorded
+        # here rather than changed, and a future reader reopening it is
+        # deciding against that cost and not a larger one.
+        #
+        # `self.rust()` below is load-bearing: `0 anchored citation(s)` holds
+        # only because that fixture writes no citation of its own, so a
+        # fixture that starts citing something fails this case for a reason
+        # that has nothing to do with carriage returns.
         self.rust()
 
         # The control: without the `\r` this exact span is red.
