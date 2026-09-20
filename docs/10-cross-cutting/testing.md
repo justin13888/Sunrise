@@ -281,7 +281,15 @@ invocation inside a single command, because only the first pair was read;
 `--exclude-re '--all-features'`, because lexing threw the quotes away and a
 regex that mentions the flag lexed to the flag; and `-- --all-features`, which
 is an argument to `cargo test` and says nothing about what cargo-mutants built.
-A command that mentions cargo-mutants and will not lex at all — an unbalanced
+The two halves of that rule point in opposite directions, so only one of them is
+about source text. The flag counts when a word is written `--all-features`, or
+is that text under one consistent pair of quotes and not sitting where an
+option's value sits — `-p X "--all-features"` is a feature selection somebody
+quoted, and going red on it is how a gate gets switched off in a week. The `--`
+terminator is recognised by its **value**: `"--"` and `\--` are the separator as
+far as the shell is concerned, and matching its source text meant quoting it
+turned the passthrough guard off while cargo-mutants still received the `--`.
+A line that mentions cargo-mutants and will not lex at all — an unbalanced
 quote — is exit 2 rather than a lenient reading, because the lenient reading let
 the words of a trailing comment stand in for the command's own.
 

@@ -492,6 +492,44 @@ class FlagsGateContract(unittest.TestCase):
             ),
             1, "missing from 1 of 2")
 
+    def test_a_consistently_quoted_flag_is_the_flag(self):
+        # The innocent neighbour of the case above, and the reason that
+        # case cannot be the whole rule. `-p x "--all-features"` is the
+        # feature selection with quotes around it — the shell delivers
+        # exactly the same argument — and a gate that is red on it is
+        # red on a correct tree, which this gate's own docstring twice
+        # calls how a gate gets switched off in a week. Executed at the
+        # previous head: exit 1, both ways round. What separates it from
+        # the case above is where the word sits: after `--exclude-re` it
+        # is that option's value, and after `-p x` it is a switch.
+        for quoted in ('"--all-features"', "'--all-features'"):
+            with self.subTest(quoted=quoted):
+                self.assert_code(
+                    self.run_gate(
+                        MISE_WITH_FLAG.replace(' --all-features',
+                                               f" {quoted}"),
+                        CI_WITH_FLAG,
+                    ),
+                    0, "2 cargo-mutants invocation(s) carry")
+
+    def test_a_flag_assembled_out_of_parts_is_not_the_flag(self):
+        # The other side of the line the case above draws. One
+        # consistent pair of quotes around the whole word is the flag
+        # written with quotes; anything else is a word that merely
+        # unquotes to it. `--all-"features"` is assembled out of pieces
+        # and `$'--all-features'` does not even unquote to the flag —
+        # ANSI-C quoting is contrived in a workflow, and widening the
+        # rule to admit it would buy nothing any real invocation needs.
+        for shape in ('--all-"features"', "$'--all-features'"):
+            with self.subTest(shape=shape):
+                self.assert_code(
+                    self.run_gate(
+                        MISE_WITH_FLAG.replace(' --all-features',
+                                               f" {shape}"),
+                        CI_WITH_FLAG,
+                    ),
+                    1, "missing from 1 of 2")
+
     def test_the_flag_after_a_double_dash_does_not_count(self):
         # Everything after cargo-mutants' `--` is handed to the test
         # runner. `-- --all-features` is an argument to `cargo test` and
@@ -506,6 +544,28 @@ class FlagsGateContract(unittest.TestCase):
                 CI_WITH_FLAG,
             ),
             1, "missing from 1 of 2")
+
+    def test_a_quoted_or_escaped_double_dash_is_still_the_passthrough(self):
+        # The neighbour of the case above, one quote character along,
+        # and the place `raw` equality points the wrong way. Strictness
+        # about source text is conservative on the flag — it refuses
+        # something that might not be a feature selection — and
+        # permissive on the terminator, where it refuses to believe in a
+        # `--` the shell delivers anyway. `"--"`, `'--'` and `\--` are
+        # all one separator by the time cargo-mutants sees them.
+        # Executed at the previous head: exit 0 for each.
+        for written in ('"--"', "'--'", "\\--"):
+            with self.subTest(written=written):
+                self.assert_code(
+                    self.run_gate(
+                        MISE_WITH_FLAG.replace(
+                            ' --all-features --jobs 1',
+                            ' --jobs 1').replace(
+                            '--output "out/x"',
+                            f'--output "out/x" {written} --all-features'),
+                        CI_WITH_FLAG,
+                    ),
+                    1, "missing from 1 of 2")
 
     def test_two_invocations_in_one_command_are_both_checked(self):
         # Taking the first `cargo mutants` pair in a command and stopping

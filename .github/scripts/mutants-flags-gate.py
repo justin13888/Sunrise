@@ -65,16 +65,24 @@ starts. A comment about the flag, a neighbouring `echo` about the flag,
 a `--list` call carrying the flag and a background job carrying it all
 stop vouching for the command beside them.
 
-And what satisfies the flag test is the flag as *written*. Three ways it
-was satisfiable by something else, each executed against real copies of
-this repository's own files and each reporting exit 0 with the measuring
-invocation unflagged: a second invocation in one command, because only
-the first pair was taken; `--exclude-re '--all-features'`, because
-lexing threw the quotes away and a regex that mentions the flag lexed to
-the flag; and `-- --all-features`, which is an argument to `cargo test`
-and says nothing about what cargo-mutants built. So an invocation carries
-the flag only if a word whose source text is exactly `--all-features`
-appears in it before any `--`.
+And what satisfies the flag test is the flag as *written*, before any
+`--`. Ways it was satisfiable by something else, each executed against
+real copies of this repository's own files and each reporting exit 0
+with the measuring invocation unflagged: a second invocation in one
+command, because only the first pair was taken; `--exclude-re
+'--all-features'`, because lexing threw the quotes away and a regex that
+mentions the flag lexed to the flag; and `-- --all-features`, which is an
+argument to `cargo test` and says nothing about what cargo-mutants built.
+The two restrictions that answer those pull in opposite directions, so
+only one of them is about source text. The flag counts when a word is
+written `--all-features`, or is that text under one consistent pair of
+quotes and not sitting where an option's value sits — because `-p x
+"--all-features"` is a feature selection somebody quoted and going red
+on it is how a gate gets switched off in a week. The `--` terminator,
+by contrast, is recognised by its *value*: `"--"` and `\\--` are the
+separator as far as the shell is concerned, and matching its source text
+meant quoting it turned the passthrough guard off while cargo-mutants
+still received the `--`.
 
 One lexer, one pass — which is not tidiness. Separating "split the line"
 from "lex the command" put two quote rules in one file, and a single
@@ -460,23 +468,44 @@ def carries_flag(invocation: list[Word]) -> bool:
     """Whether this invocation selects features with the required flag.
 
     Two restrictions, each of which was a way of passing without the
-    feature selection the floor depends on.
-
-    Written, not unquoted into. `--exclude-re '--all-features'` names the
-    flag in a regex; `--all-features` selects features. Only a word whose
-    *source text* is the flag counts, so quoting it is not a way to
-    satisfy the gate by accident.
+    feature selection the floor depends on. They pull in opposite
+    directions, and the word `raw` belongs to only one of them.
 
     Before any `--`. Everything after cargo-mutants' `--` is passed
     through to the test runner, so a `--all-features` there is an
     argument to `cargo test` and says nothing about what cargo-mutants
-    built.
+    built. The terminator is recognised by its *value*: `"--"`, `'--'`
+    and `\\--` are all the separator as far as the shell is concerned,
+    and requiring the source text to be bare `--` meant quoting it
+    turned the guard off while cargo-mutants still received the
+    passthrough. Strict matching is conservative on the flag and
+    permissive on the terminator; only the flag gets it.
+
+    Written, not unquoted into — but quoting is not a way of writing
+    something else. `--exclude-re '--all-features'` names the flag in a
+    regex and must not count; `-p x "--all-features"` is the feature
+    selection, quoted, and used to be exit 1 on a correct tree, which is
+    what this gate's own docstring twice calls how a gate gets switched
+    off in a week. The rule is the flag's source text, optionally under
+    one consistent pair of quotes — so `--all-"features"`, which is a
+    word assembled out of parts, and `$'--all-features'`, whose value is
+    not even the flag, both still fail. A quoted flag directly after an
+    option word is that option's value rather than a switch of its own,
+    which is the `--exclude-re` shape and the only place the quoting is
+    load-bearing.
     """
+    quoted = {f'"{REQUIRED_FLAG}"', f"'{REQUIRED_FLAG}'"}
+    previous: Word | None = None
     for word in invocation:
-        if word.value == "--" and word.raw == "--":
+        if word.value == "--":
             return False
         if word.raw == REQUIRED_FLAG:
             return True
+        if (word.raw in quoted
+                and not (previous is not None
+                         and previous.value.startswith("-"))):
+            return True
+        previous = word
     return False
 
 
