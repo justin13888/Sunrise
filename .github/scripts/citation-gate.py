@@ -85,13 +85,25 @@ a detail:
 * **An unresolvable suffix fails; it never subtracts a check.** `#Engine::f`,
   `#f()`, `#two words`, a 129-character run and a bare trailing `#` are each
   reported, and reported *after* the path and line checks have run on the same
-  span. The grammar therefore admits **anything** after the `#`, with no
-  length bound and no character excluded — if it excluded any of them, such a
-  span would fail to match `CITATION` altogether and be silently dropped from
-  the run, so writing the method in the natural Rust form, or leaving a stray
-  space after the `#`, would make the build greener by checking strictly less.
-  The exclusion that costs the least to keep is the one that costs the most:
-  a trailing space is invisible in the rendered document.
+  span. The grammar therefore admits anything after the `#` that can reach it
+  — no length bound, and no character excluded from those the scanner hands
+  over — because if it excluded any of them, such a span would fail to match
+  `CITATION` altogether and be silently dropped from the run, so writing the
+  method in the natural Rust form, or leaving a stray space after the `#`,
+  would make the build greener by checking strictly less. The exclusion that
+  costs the least to keep is the one that costs the most: a trailing space is
+  invisible in the rendered document.
+
+  "That can reach it" is the honest bound, and it is set upstream rather than
+  here. Every file is read through `open(..., encoding="utf-8")`, whose
+  universal-newline translation turns a lone `\\r` into a line break before
+  `CODE_SPAN` ever runs, and a code span does not survive a line break. So a
+  carriage return inside a span is not a suffix the grammar rejects; it is a
+  span the scanner never produces. That is a property of the **span**, not of
+  the `#` — a `\\r` in the path or in the line number destroys it identically,
+  and so does one in a span carrying no `#` at all — and it is unchanged from
+  before this suffix existed. No tracked `.md` or `.rs` file in this
+  repository contains one.
 * **`#L702` is declined, not failed — and declining it costs the *symbol*
   check, not the span.** It is a github.com permalink fragment, the one
   non-declaration `#` form a Rust-path span plausibly carries, in all four
@@ -334,7 +346,19 @@ CITATION = re.compile(
 # `[^\n]*` above carries no upper bound, no lower one, and no character class
 # narrower than "not the end of the span", and all three of those are the same
 # decision. Any bound on the *grammar* side re-creates the very subtraction
-# this split exists to remove, at whichever edge it is drawn:
+# this split exists to remove, at whichever edge it is drawn.
+#
+# One character never arrives to be admitted, and it is worth naming here
+# rather than leaving the `[^\n]` to imply otherwise: `\r`. The scanner reads
+# through `open(..., encoding="utf-8")`, whose universal-newline translation
+# rewrites a lone carriage return to `\n` before `CODE_SPAN` matches, and
+# `CODE_SPAN`'s own body is `[^\n]+?`, so the span is gone before either
+# pattern below is consulted. **That is the reader's bound, not this one**,
+# and it is symmetric: `\r` in the path or in the line number loses the span
+# just as completely, as does `\r` in a span with no `#` in it, all three
+# exactly as they did before this suffix existed. The two edges below are
+# different in kind — they are characters the grammar *does* receive and
+# deliberately passes through to a reported failure:
 #
 # * While the group read `\S{1,128}`, a 129-character suffix and a bare
 #   trailing `#` failed `CITATION` outright and the span was dropped from the
@@ -345,8 +369,10 @@ CITATION = re.compile(
 # * While it read `\S*`, the same hole stood at the whitespace edge:
 #   `lib.rs:99#two words` came back clean where `lib.rs:99` was red, and the
 #   most reachable spelling of it was a stray trailing space, so the verdict
-#   turned on a character the author cannot see. Whitespace is rejected here
-#   too, as a reported failure.
+#   turned on a character the author cannot see. Every whitespace character
+#   the scanner can hand over — a space, a tab, U+00A0 — is rejected here
+#   instead, as a reported failure. `\r` is the one it cannot hand over, for
+#   the reason above.
 #
 # Widening the *symbol* group admits no prose, because nothing the symbol
 # group does can help a span that never reaches it: `CITATION` is anchored at

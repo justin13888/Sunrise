@@ -1322,6 +1322,51 @@ class Symbols(GateCase):
         self.write("docs/a.md", "See `crates/c/src/lib.rs:3#two words`.\n")
         self.assert_code(self.run_gate(), DANGLING, "is not a Rust item name")
 
+    def test_a_carriage_return_loses_the_span_before_the_grammar_sees_it(self):
+        # The one character the suffix grammar's "no character excluded" does
+        # NOT cover, pinned so the sentence that now says so has a test
+        # behind it.
+        #
+        # Nothing in `classify` decides this. The scanner reads every file
+        # through `open(..., encoding="utf-8")`, whose universal-newline
+        # translation rewrites a lone `\r` to `\n` before `CODE_SPAN` runs,
+        # and `CODE_SPAN`'s body is `[^\n]+?` -- so the backticks never close
+        # and there is no span to classify. The result is a citation counted
+        # in NEITHER tally: not anchored, not declined.
+        #
+        # **This is not the suffix subtracting a check**, which is the
+        # reading to rule out, and the second half of the test is what rules
+        # it out: a `\r` in the PATH and a `\r` in the LINE NUMBER lose the
+        # span just as completely, and so does one in a span carrying no `#`
+        # at all. It is a property of the span, identical before and after
+        # this change, and no tracked `.md` or `.rs` file in this repository
+        # contains one. Repairing it would mean reading every file with
+        # `newline=""`, which is a behaviour change on every file the gate
+        # touches for an input nothing produces -- so the behaviour is
+        # recorded here rather than changed.
+        self.rust()
+
+        # The control: without the `\r` this exact span is red.
+        self.write("docs/a.md", "See `crates/c/src/lib.rs:99#ab`.\n")
+        self.assert_code(
+            self.run_gate(),
+            DANGLING,
+            "cites line 99, but `crates/c/src/lib.rs` has 11 line(s).",
+        )
+
+        for body in (
+            "crates/c/src/lib.rs:99#a\rb",  # in the suffix
+            "crates/c/src/lib.rs:9\r9",  # in the line number
+            "crates/c/src/li\rb.rs:99",  # in the path
+            "crates/c/src/lib.rs\r",  # no `#` anywhere
+        ):
+            with self.subTest(body=body):
+                self.write("docs/a.md", f"See `{body}`.\n")
+                result = self.run_gate()
+                self.assert_code(result, CLEAN, "OK: citations clean.")
+                self.assertIn("0 anchored citation(s)", result.stdout)
+                self.assertNotIn("path-like span(s) were NOT checked", result.stdout)
+
     def test_prose_holding_a_space_is_still_not_a_citation(self):
         # The other half of the widening, and the reason it costs nothing.
         # What keeps prose out of the grammar is the PATH group, never the
