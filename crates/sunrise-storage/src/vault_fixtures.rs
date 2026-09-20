@@ -520,12 +520,17 @@ fn a_v13_vault_migrates_all_the_way_forward() {
         "identity",
         "deferred_ops",
         "device_revocations",
+        // The other revocation table. Listed beside the register because the
+        // two answer different questions and a vault that arrived with only
+        // one of them would run the four key-distribution anti-joins against a
+        // table that does not exist.
+        "device_read_bounds",
         "key_envelope_recipients",
         "relay_revocation_intents",
     ] {
         assert!(
             table_exists(&db, table),
-            "`{table}` must exist after 13 -> 20"
+            "`{table}` must exist after the whole chain has run"
         );
     }
 }
@@ -877,6 +882,37 @@ fn the_0027_seed_carries_a_chain_of_revocations_into_the_ledger() {
         ],
         "the seed hands the fold `B -> A` and `A -> C`: two rows, each keeping \
          the sender that makes it a link"
+    );
+
+    // **And 0028 takes the read bound off the same register, before 0027's
+    // fold has had a chance to gate anything.**
+    //
+    // This is the claim every upgrading user's read bound rests on — that the
+    // seed is exact for a vault coming from 26 or below — and it is exactly
+    // this fixture that can observe it, because the register it carries is the
+    // chain that the first fold afterwards will collapse. C is the interesting
+    // one: `A -> C` is gated the moment the fold runs, so a bound derived from
+    // the ledger rather than seeded here would never name C at all, and the
+    // laptop this user retired first would quietly become a key recipient again
+    // on the upgrade.
+    let bounded: Vec<Vec<u8>> = {
+        let conn = db.conn();
+        let mut stmt = conn
+            .prepare("SELECT device_id FROM device_read_bounds ORDER BY device_id")
+            .expect("prepare");
+        let rows = stmt
+            .query_map([], |r| r.get(0))
+            .expect("query")
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .expect("collect");
+        rows
+    };
+    assert_eq!(
+        bounded,
+        vec![CHAIN_A.to_vec(), CHAIN_C.to_vec()],
+        "0028 seeds the bound from the register it finds, so both links of the \
+         chain are read-bounded across the upgrade -- including the one the \
+         first fold afterwards stops calling revoked"
     );
 }
 
