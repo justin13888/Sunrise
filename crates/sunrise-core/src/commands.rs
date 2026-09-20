@@ -389,6 +389,53 @@ pub struct CommandResult {
     /// not ids; see `Keychain::rotation_set`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unrotated_streams: Vec<String>,
+    /// The fold **discarded** this `RevokeDevice`'s own op, so the account
+    /// records no revocation of the target.
+    ///
+    /// `false` for every command but `RevokeDevice`, and for almost every one
+    /// of those. `true` means this device's standing is the problem rather
+    /// than the target's: `device_revocations` is a fold over every
+    /// `device_revoke` op, and a row whose sender the ledger revokes anywhere
+    /// is stored and skipped (ADR-0041). The op is kept and the judgement is
+    /// re-taken whenever another revocation lands, so this is "not believed
+    /// yet" and not "thrown away".
+    ///
+    /// What the caller must not do is print "revoked". Nothing was cut: the
+    /// target stays current on every replica, it keeps receiving new epochs,
+    /// and the relay's half is deliberately not queued for it — the two
+    /// halves of a revocation are different guarantees and a user is entitled
+    /// to know which they have (issue #160). Same rule as
+    /// `unrotated_streams` above, at the other end of the scale: that one says
+    /// the revocation was incomplete, this one says there was none.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub revocation_gated: bool,
+    /// Devices the account **no longer calls revoked**, while still giving
+    /// them no keys. Lowercase hex ids, empty for every command but
+    /// `RevokeDevice`.
+    ///
+    /// `device_revocations` is a fold (ADR-0041), so applying a
+    /// `device_revoke` can *remove* a row: a revocation stops being believed
+    /// once the ledger shows its own author had been revoked first. The device
+    /// then reads `current` on every device list again — and it is the only
+    /// outcome of that design a user could be surprised by, which is why
+    /// `core.device.revocation_unwound` is logged. This is the same fact where
+    /// a user can see it, on the rule `docs/10-cross-cutting/log-events.md`
+    /// states for `revoke_incomplete`: a signal that changes what the account
+    /// believes comes back on the result and is not left in an operator's
+    /// NDJSON.
+    ///
+    /// **It is the standing set, not this command's delta**, and deliberately:
+    /// the hazard is not that one op unwound something, it is that the account
+    /// is in a state it does not mean, and a user who was not looking the
+    /// first time is entitled to be told again. Each id here is read-bounded
+    /// (`DeviceRow::read_bounded`) and not revoked, so it receives nothing and
+    /// looks like an ordinary member. The remedy is this family's usual one:
+    /// revoke it again from a device the account still trusts.
+    ///
+    /// Same disclosure rule as `unrotated_streams` and `revocation_gated`: a
+    /// caller must not print a bare "revoked" over a non-empty list.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub revocation_unwound: Vec<String>,
 }
 
 impl CommandResult {
@@ -407,6 +454,8 @@ impl CommandResult {
             seq,
             soft_violations: Vec::new(),
             unrotated_streams: Vec::new(),
+            revocation_gated: false,
+            revocation_unwound: Vec::new(),
         }
     }
 
@@ -414,6 +463,21 @@ impl CommandResult {
     #[must_use]
     pub fn with_unrotated_streams(mut self, v: Vec<String>) -> Self {
         self.unrotated_streams = v;
+        self
+    }
+
+    /// Record that the fold discarded this revocation's own op.
+    #[must_use]
+    pub const fn with_revocation_gated(mut self, v: bool) -> Self {
+        self.revocation_gated = v;
+        self
+    }
+
+    /// Attach the devices the account no longer calls revoked but still gives
+    /// no keys.
+    #[must_use]
+    pub fn with_revocation_unwound(mut self, v: Vec<String>) -> Self {
+        self.revocation_unwound = v;
         self
     }
 

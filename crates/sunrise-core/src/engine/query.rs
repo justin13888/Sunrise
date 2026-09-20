@@ -215,13 +215,25 @@ impl Engine {
         // on the same rule every other membership test in this file follows:
         // it is a fact about the op set, so a row that cached it would go stale
         // the moment a transition landed.
+        //
+        // Both revocation tables are joined, because since ADR-0041 they can
+        // disagree and the disagreement is the thing worth showing. `revoked`
+        // is the derived register, which an unwind can take a row back out of;
+        // `read_bounded` is the ratchet the four key-distribution sites read
+        // (`0028_device_read_bounds.sql`), which nothing takes a row out of. A
+        // device reading `revoked: false, read_bounded: true` is one the fold
+        // stopped believing a revocation of while the keys stay cut off — an
+        // ordinary outcome, not an exotic one, and invisible on a list that
+        // showed only the register.
         let head = self.current_identity(db.conn())?;
         let mut stmt = db.conn().prepare(
             "SELECT d.device_id, d.nickname, d.platform, r.device_id IS NOT NULL,
+                    b.device_id IS NOT NULL,
                     d.identity_id IS NOT NULL AND d.identity_id = ?1,
                     d.admitted_after_revocation
              FROM devices d
-             LEFT JOIN device_revocations r ON r.device_id = d.device_id",
+             LEFT JOIN device_revocations r ON r.device_id = d.device_id
+             LEFT JOIN device_read_bounds b ON b.device_id = d.device_id",
         )?;
         let rows = stmt.query_map(params![&head.identity_id[..]], |row| {
             let blob: Vec<u8> = row.get(0)?;
@@ -233,8 +245,9 @@ impl Engine {
                 nickname: row.get(1)?,
                 platform: row.get(2)?,
                 revoked: row.get(3)?,
-                current: row.get(4)?,
-                admitted_after_revocation: row.get(5)?,
+                read_bounded: row.get(4)?,
+                current: row.get(5)?,
+                admitted_after_revocation: row.get(6)?,
             })
         })?;
         let mut out = Vec::new();

@@ -60,27 +60,33 @@ the code rather than from the issue:
   number: the previous wording ("returns nothing across the whole tree") was
   false the day it was written, and a count here is falsified by the next
   sentence that mentions the table.
-- `Engine::is_revoked` (`crates/sunrise-core/src/engine/sync.rs:702#is_revoked`)
-  has exactly **one** non-test caller, plus one raw anti-join against the same
-  register, and both are on the **key-distribution** side: the anti-join is
-  `emit_key_envelopes`'s `NOT EXISTS` against `device_revocations`
-  (`crates/sunrise-core/src/engine/oplog.rs:294-300#emit_key_envelopes`), which
+- Since migration 0028 the key-distribution side reads `device_read_bounds`
+  rather than the register, so the register's own predicate `Engine::is_revoked`
+  (`crates/sunrise-core/src/engine/revocation.rs:576#is_revoked`) has exactly
+  **one** non-test caller and it is not on the apply path at all: the revoking
+  command reads it to report whether its own row survived the fold
+  (`crates/sunrise-core/src/engine/revocation.rs:257#revoke_device`). What the
+  apply path reaches is the **bound**, twice, and both reads are on the
+  **key-distribution** side: the anti-join is `emit_key_envelopes`'s
+  `NOT EXISTS` against `device_read_bounds`
+  (`crates/sunrise-core/src/engine/oplog.rs:309-311#emit_key_envelopes`), which
   is SQL and calls nothing, and the caller is the early return in
   `backfill_key_envelopes`
-  (`crates/sunrise-core/src/engine/oplog.rs:399-401#backfill_key_envelopes`).
+  (`crates/sunrise-core/src/engine/oplog.rs:418#backfill_key_envelopes`), which
+  tested `is_revoked` until 0028 gave the bound its own table.
   The apply path does reach that early return, and inside a single
   transaction: `apply_remote_all` opens one
-  (`crates/sunrise-core/src/engine/sync.rs:539#apply_remote_all`), routes a
+  (`crates/sunrise-core/src/engine/sync.rs:279#apply_remote_all`), routes a
   control op into `apply_control_op`
-  (`crates/sunrise-core/src/engine/sync.rs:571#apply_remote_all`), and a
+  (`crates/sunrise-core/src/engine/sync.rs:312#apply_remote_all`), and a
   published device cert carries it on into `backfill_key_envelopes`
-  (`crates/sunrise-core/src/engine/sync.rs:1290#apply_control_op`). What no
-  read of the register decides is whether an op **applies**; it decides which
+  (`crates/sunrise-core/src/engine/sync.rs:968#apply_control_op`). What no
+  read of either table decides is whether an op **applies**; it decides which
   device is sealed key material, and that is this whole decision in one
   sentence. An earlier draft of this bullet said nothing in the apply path
   consulted the register at all, which the call chain above falsifies.
 - `apply_remote_all` says so at step b
-  (`crates/sunrise-core/src/engine/sync.rs:464-465#apply_remote_all`): *"A
+  (`crates/sunrise-core/src/engine/sync.rs:200-201#apply_remote_all`): *"A
   revoked device's row is found here like any other, and its op is applied like
   any other."*
 - `upsert_sync_cursor`'s doc
@@ -89,7 +95,7 @@ the code rather than from the issue:
   It was, briefly."* Cited without a line on purpose — that paragraph is being
   rewritten, and a line number into it is a citation built to rot.
 - The test `a_revoked_devices_ops_still_apply_at_the_replica`
-  (`crates/sunrise-core/src/engine/tests.rs:6414#a_revoked_devices_ops_still_apply_at_the_replica`)
+  (`crates/sunrise-core/src/engine/tests.rs:7437-7439#a_revoked_devices_ops_still_apply_at_the_replica`)
   revokes a device at a cut before
   every op it writes — the strongest form of the premise — and asserts the op
   applies, materializes and is passed by the cursor.
@@ -234,7 +240,7 @@ not, and that is what the relay bound is for.
   ([#105](https://github.com/justin13888/Sunrise/issues/105)); nothing here
   narrows that, and `key-rotation.md` already states it as unmitigated.
 - **No code changes.** The test doc at
-  `crates/sunrise-core/src/engine/tests.rs:6388#a_revoked_devices_ops_still_apply_at_the_replica`
+  `crates/sunrise-core/src/engine/tests.rs:7397#a_revoked_devices_ops_still_apply_at_the_replica`
   and `apply_remote_all`'s step b gain
   a citation of this ADR in place of a bare issue number, so the next reader
   finds a decision rather than an open question.

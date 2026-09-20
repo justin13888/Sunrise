@@ -255,11 +255,11 @@ impl Engine {
         let mut recipients: Vec<(Recipient, [u8; 32])> = Vec::new();
         {
             let mut stmt = tx.prepare(
-                // The anti-join against `device_revocations` is the read half
-                // of revocation. A device with a recorded cut gets no envelope
-                // for any epoch minted at or after it, and since `ID_D_priv`
-                // stopped travelling in a `PairingPayload` there is no second
-                // copy for it to open instead.
+                // The anti-join against `device_read_bounds` is the read half
+                // of revocation. A device the bound names gets no envelope for
+                // any epoch minted afterwards, and since `ID_D_priv` stopped
+                // travelling in a `PairingPayload` there is no second copy for
+                // it to open instead.
                 //
                 // The presence of the row is the whole test -- there is no
                 // `cut_ms` comparison, and [`Self::is_revoked`] explains at
@@ -268,11 +268,12 @@ impl Engine {
                 // restart.
                 //
                 // This is also what the revoking transaction relies on for the
-                // device it is revoking: `revoke_device` writes the register
-                // before it mints anything, so by the time any seal in that
-                // transaction reaches this query the row is already here.
+                // device it is revoking: `revoke_device` applies the op --
+                // which folds the register and takes the bound -- before it
+                // mints anything, so by the time any seal in that transaction
+                // reaches this query the row is already here.
                 //
-                // What no test here closes: the register is per-replica, so a
+                // What no test here closes: the bound is per-replica, so a
                 // device that has not yet applied the `device_revoke` op has no
                 // row to read and will seal this epoch to the revoked device.
                 // Revocation propagates like every other op.
@@ -291,12 +292,23 @@ impl Engine {
                 // failure ADR-0032's alternative 3 could not close: a one-shot
                 // check at admission time leaves the device on the recipient
                 // list for everything minted afterwards.
+                //
+                // The anti-join is against `device_read_bounds` and **not**
+                // against the register. Since ADR-0041 the register is derived
+                // and can take a row back out — a revocation stops being
+                // believed when the ledger shows its author was revoked first
+                // — and a recipient gate that a later op can release is not a
+                // gate. `device_read_bounds` only ever grows
+                // (`migrations/0028_device_read_bounds.sql`), so a device this
+                // replica once excluded stays excluded from every epoch it
+                // mints afterwards, whatever the device list goes on to say
+                // about it.
                 "SELECT d.device_id, d.d_d_pub FROM devices d
                  WHERE d.d_d_pub IS NOT NULL
                    AND d.identity_id = ?1
                    AND NOT EXISTS (
-                       SELECT 1 FROM device_revocations r
-                       WHERE r.device_id = d.device_id
+                       SELECT 1 FROM device_read_bounds b
+                       WHERE b.device_id = d.device_id
                    )",
             )?;
             let rows = stmt
@@ -379,13 +391,20 @@ impl Engine {
     /// between. See [`Keychain::held_epochs_tx`] for the cost this trades
     /// against and for the derivation that was rejected.
     ///
-    /// A revoked device is skipped, on the same presence test the recipient
-    /// query uses, so this route cannot readmit a device the rotation just
-    /// excluded. Without it, a revocation followed by the revoked device
+    /// A **read-bounded** device is skipped, on the same presence test the
+    /// recipient query uses, so this route cannot readmit a device the rotation
+    /// just excluded. Without it, a revocation followed by the revoked device
     /// republishing its own cert would hand back everything the revocation had
-    /// just rotated away. Without that, a revocation followed by the revoked
-    /// device republishing its own cert would hand back everything the
-    /// revocation had just rotated away.
+    /// just rotated away.
+    ///
+    /// The test is [`Self::is_read_bounded`] and not [`Self::is_revoked`], and
+    /// this is the site where the difference costs the most. The register is
+    /// derived, so a revocation stops being believed once the ledger shows its
+    /// author was revoked first; against the register this early return then
+    /// stopped firing, and a single `DeviceCertPublish` from the unwound device
+    /// pulled **every held epoch of every stream** back out — not merely the
+    /// epochs minted from then on. `device_read_bounds` never gives a row back,
+    /// so the hand-back stays closed however the device list changes.
     pub(super) fn backfill_key_envelopes(
         &self,
         tx: &Transaction<'_>,
@@ -396,7 +415,7 @@ impl Engine {
         if *device_id == self.keychain.device_id() {
             return Ok(());
         }
-        if self.is_revoked(tx, device_id)? {
+        if self.is_read_bounded(tx, device_id)? {
             return Ok(());
         }
         // **This is the line that closes #105's round trip.**

@@ -65,6 +65,14 @@ impl TokenSource {
 
     /// A source holding no token. A connect through this is unauthenticated
     /// and only a self-host relay will accept it.
+    ///
+    /// Named rather than left to [`Default`], and the two are the same value on
+    /// purpose: the call site says which of the two meanings it has. That makes
+    /// `replace TokenSource::empty -> Self with Default::default()` an
+    /// **equivalent mutant** — it survives every mutation run and always will,
+    /// because no test can distinguish two constructors with one body. It is
+    /// recorded here rather than in an issue nobody re-reads, so the next
+    /// reader of `missed.txt` meets the answer where the mutant is.
     #[must_use]
     pub fn empty() -> Self {
         Self::new(None)
@@ -102,8 +110,9 @@ impl TokenSource {
     /// Take one per consumer and keep it: [`TokenWatch::changed`] remembers
     /// which version it last woke that consumer for, which is what makes a
     /// write impossible to miss. That memory is private to `changed` — it is
-    /// the receiver's own position in the channel, and nothing reads it out.
-    /// [`TokenWatch::seen`] does not: it reports the source.
+    /// the receiver's own position in the channel, and nothing reads it out as
+    /// a number. [`TokenWatch::mark_current`] is the way to move that position,
+    /// and the only operation that can say whether a given handle was behind.
     #[must_use]
     pub fn watch(&self) -> TokenWatch {
         TokenWatch(self.0.version.subscribe())
@@ -139,25 +148,34 @@ impl TokenWatch {
         *self.0.borrow_and_update()
     }
 
-    /// How many times the token has been replaced — the source's current
-    /// version, the same number [`TokenSource::version`] returns.
+    /// Bring this handle forward to whatever the source has already sent, and
+    /// report whether it was behind.
     ///
-    /// Per-source, not per-handle, and the distinction matters because the
-    /// name suggests otherwise. This borrows the channel without marking it
-    /// seen, so it does not report where this handle's
-    /// [`TokenWatch::changed`] has got to, and it cannot lag behind the
-    /// source: `watch.seen() != source.version()` is false for every handle
-    /// at every moment, including one parked in `changed` with a write
-    /// pending. A guard written that way is dead code, not a staleness check.
+    /// `Some(v)` when this handle had fallen behind and has now been brought
+    /// forward to version `v`; `None` when it was already current and there was
+    /// nothing to consume. Either way [`TokenWatch::changed`] afterwards waits
+    /// for the next *write* rather than resolving immediately for writes that
+    /// landed earlier.
     ///
-    /// What it is for is comparing against a version the *consumer* is
-    /// holding — the one it last acted on, which only the consumer knows.
-    /// `seen() != my_last_version` is the live comparison, and it is why a
-    /// mutant pinning this to a constant is worth killing: it would make
-    /// every write after the first invisible to that consumer.
-    #[must_use]
-    pub fn seen(&self) -> u64 {
-        *self.0.borrow()
+    /// It exists for a consumer that has just read the token by another route
+    /// and so is already holding the latest bearer — a sync session whose
+    /// connect read the credential after those writes landed. Announcing them
+    /// again would be work the relay does not need, because the connect
+    /// already carried them.
+    ///
+    /// # Why the answer cannot be a version number
+    ///
+    /// The value in the watch cell *is* the source's counter, the same number
+    /// [`TokenSource::version`] returns, so every handle reads the same value
+    /// at every position. Comparing that against the source, or against what a
+    /// previous call returned, therefore cannot report that *this* handle
+    /// moved — a guard written either way is dead code rather than a staleness
+    /// check, which is the defect #244 reported. The receiver's own position in
+    /// the channel is the only thing that distinguishes two handles, nothing
+    /// reads it out as a number, and `Ref::has_changed` is what consults it.
+    pub fn mark_current(&mut self) -> Option<u64> {
+        let current = self.0.borrow_and_update();
+        current.has_changed().then(|| *current)
     }
 }
 
@@ -251,6 +269,53 @@ mod tests {
         );
     }
 
+    /// A write that landed while this handle was not waiting is consumed
+    /// without waking anyone.
+    ///
+    /// This is the shape the sync driver relies on: writes land while the
+    /// client is disconnected, the next connect reads the token and so already
+    /// carries them, and the handle is brought forward rather than made to
+    /// re-announce what the connect delivered. Built on `borrow` instead of
+    /// `borrow_and_update` this leaves the handle where it was, and the wait
+    /// below resolves at once.
+    #[tokio::test]
+    async fn a_handle_that_missed_a_write_is_brought_current() {
+        let s = TokenSource::new(None);
+        let mut w = s.watch();
+        // The offline window: two writes, and nobody waiting on either.
+        s.set(Some("a".into()));
+        s.set(Some("b".into()));
+        assert_eq!(
+            w.mark_current(),
+            Some(2),
+            "the handle was behind, and both writes are consumed and counted"
+        );
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(200), w.changed())
+                .await
+                .is_err(),
+            "a renewal the connect already carried must not wake the pump"
+        );
+    }
+
+    /// And bringing a handle that is already current forward eats nothing.
+    ///
+    /// The opposite over-correction to the one above: a `mark_current` that
+    /// left the receiver marked *past* the sender would swallow the next real
+    /// renewal, which is the failure `TokenWatch` exists to prevent.
+    #[tokio::test]
+    async fn bringing_a_current_handle_forward_swallows_nothing() {
+        let s = TokenSource::new(None);
+        let mut w = s.watch();
+        assert_eq!(
+            w.mark_current(),
+            None,
+            "a fresh handle is already current and has nothing to consume"
+        );
+        s.set(Some("a".into()));
+        assert_eq!(w.changed().await, 1, "the next real write still arrives");
+    }
+
     /// The token is a live credential and this type is reachable from
     /// `CoreConfig`, which is `Debug` and does get logged.
     #[test]
@@ -261,29 +326,30 @@ mod tests {
         assert!(rendered.contains("set: true"), "{rendered}");
     }
 
-    /// `seen` reports the version, and the version is a count rather than a flag.
+    /// **The falsifier for #244's defect.** A handle brought forward by
+    /// `changed` is already current, and the mark must say so.
     ///
-    /// A consumer compares this against the version it last acted on to decide
-    /// whether a renewal is still outstanding, so a `seen` pinned to any
-    /// constant makes every write after the first invisible to that comparison
-    /// — which is the failure `TokenWatch` exists to prevent, and which no test
-    /// here had pinned.
-    #[test]
-    fn a_watch_reports_the_version_it_is_looking_at() {
+    /// `mark_current` used to return `*borrow_and_update()` — the *source's*
+    /// counter, which is the same number for every handle at every position.
+    /// Here that return was `1` having consumed nothing, and a caller comparing
+    /// it against the number a previous attempt saw read it as "this connect
+    /// brought the handle forward". The source's counter is deliberately left
+    /// non-zero below, because that is what made the old return look right.
+    #[tokio::test]
+    async fn a_handle_already_brought_forward_by_changed_consumes_nothing() {
         let s = TokenSource::new(None);
-        let w = s.watch();
-        assert_eq!(w.seen(), 0, "a fresh watch has observed no write");
-        s.set(Some("first".into()));
-        s.set(Some("second".into()));
+        let mut w = s.watch();
+        s.set(Some("a".into()));
+        assert_eq!(w.changed().await, 1, "the write wakes the parked handle");
         assert_eq!(
-            w.seen(),
-            2,
-            "two writes, counted, not collapsed to 'changed'"
+            w.mark_current(),
+            None,
+            "`changed` already brought this handle forward; the mark consumed nothing"
         );
         assert_eq!(
-            w.seen(),
             s.version(),
-            "the watch and its source must agree on which write is current"
+            1,
+            "and the source's counter is not zero, which is what the old return reported"
         );
     }
 }
