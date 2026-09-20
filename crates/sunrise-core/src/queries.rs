@@ -269,7 +269,8 @@ pub enum QueryResult {
     Context(Box<Context>),
     /// `Routines` returns all live routines.
     Routines(Vec<Routine>),
-    /// Device list rows: (device_id, nickname, platform, is_revoked).
+    /// `DeviceList` returns one [`DeviceRow`] per device this replica knows
+    /// of, revoked ones included.
     Devices(Vec<DeviceRow>),
     /// `IdentityStatus` returns the account's identity chain as this replica
     /// folds it. Boxed to keep the enum small.
@@ -352,8 +353,8 @@ pub struct FocusPlanRow {
 }
 
 /// One row of a focus-session query: the assembled
-/// [`sunrise_domain::FocusSession`] view plus the two derived numbers a caller
-/// would otherwise have to recompute against the clock.
+/// [`sunrise_domain::FocusSession`] view plus the two derived facts a caller
+/// would otherwise have to recompute for itself.
 #[derive(Debug, Clone, Serialize)]
 pub struct FocusSessionRow {
     /// Start, optional end, and the union of interruptions.
@@ -443,8 +444,9 @@ pub struct IdentityStatus {
     /// every rotation, and the point the chain is folded from.
     ///
     /// This is the value to show a user as "your account", and the one to
-    /// compare when asking whether two devices belong together. `current` is
-    /// the key that signs today; this is the account.
+    /// compare when asking whether two devices belong together.
+    /// [`Self::current_identity_id`] is the key that signs today; this is the
+    /// account.
     #[serde(with = "serde_bytes")]
     pub genesis_identity_id: [u8; 16],
     /// The identity **in force**: what every current cert verifies under and
