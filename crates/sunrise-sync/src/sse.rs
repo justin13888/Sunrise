@@ -67,6 +67,14 @@ use sunrise_wire_protocol::{
 /// A relay that never emits a blank line would otherwise grow this buffer
 /// without bound. The frame cap is the natural ceiling: an event carries one
 /// frame, base64-encoded.
+///
+/// It has a second job, named here because it is not visible from the sentence
+/// above: it is also the cap on every response body that is a **document** —
+/// [`SseTransport::call`]'s replies, a refused stream's problem document, and a
+/// chunk upload's ack. Nothing legitimate on those routes is anywhere near
+/// eight mebibytes, so there it is not sizing the reply; it is denying a relay
+/// the choice of how much memory this client holds. The one route it does not
+/// bound is the blob fetch, which takes [`MAX_BLOB_BYTES`].
 const MAX_EVENT_BYTES: usize = 8 * 1024 * 1024;
 
 /// The largest *blob* this client will hold out of one reply.
@@ -80,21 +88,21 @@ const MAX_EVENT_BYTES: usize = 8 * 1024 * 1024;
 /// this route was — lets any relay decide how much memory this client holds.
 const MAX_BLOB_BYTES: usize = 100 * 1000 * 1000;
 
-/// How long this client will wait for the *next* piece of a response body.
+/// How long this client will wait for the *next* piece of a **document** body.
 ///
 /// An **idle** bound rather than a total one: every frame that arrives resets
 /// it, so it bounds a peer that has stopped sending without putting a
-/// throughput floor under a peer that is merely slow. That distinction is what
-/// lets one deadline serve both a few-hundred-byte problem document and a
-/// hundred megabytes of attachment ciphertext — a total deadline large enough
-/// for the second would not bound the first at all, and one tight enough for
-/// the first would refuse the second on any modest link.
+/// throughput floor under a peer that is merely slow. Idle is the right shape
+/// for every body this client reads; it is not the same *number* for every
+/// body, and [`BLOB_IDLE_TIMEOUT`] is the other one.
 ///
 /// Two seconds, measured against a connection that is already established and
-/// a head that has already arrived. The relay writes a problem document from a
-/// `format!`-bounded string and streams a blob one chunk per poll out of local
-/// storage (`crates/sunrise-server/src/api/blobs.rs:423-453`), so two seconds
-/// of *no bytes at all* is a stalled peer rather than a loaded one.
+/// a head that has already arrived. Every body this number bounds is a
+/// document the relay writes from a `format!`-bounded string — a handshake
+/// reply, an ack, a problem document — so two seconds of *no bytes at all* is
+/// a stalled peer rather than a loaded one. It is deliberately not applied to
+/// the one route whose body is content: see [`BLOB_IDLE_TIMEOUT`] for why two
+/// seconds there refuses ordinary transfers rather than stalled ones.
 ///
 /// The alternative to expiring is not a slower read; it is no return at all. A
 /// stall is not a failure the body reports, and nothing above supplies a bound:
@@ -107,6 +115,50 @@ const MAX_BLOB_BYTES: usize = 100 * 1000 * 1000;
 /// stream, so a stall there becomes a silent retry loop instead of a session
 /// that ends and backs off.
 const BODY_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// How long this client will wait for the *next* piece of an **attachment**.
+///
+/// Fifteen seconds, and the number is not this module's own. It is
+/// `KEEP_ALIVE_SECS` (`crates/sunrise-server/src/api/sync/stream.rs:31`), the
+/// only value in this repository that says how long silence on a live
+/// connection is *normal* rather than broken, and
+/// `docs/05-sync/wire-protocol.md:360-366` states it in exactly this bound's
+/// shape — "an **idle timer, not an interval**", restarted by every delivery,
+/// with the promise being that a silent stream produces something "within
+/// 15 s". So the magnitude transfers rather than being borrowed by analogy: a
+/// client that treats fifteen seconds of silence as a live connection on one
+/// route cannot call it a dead peer on another.
+///
+/// [`BODY_IDLE_TIMEOUT`]'s two seconds are right for a document and wrong
+/// here, because an idle bound is a **minimum inter-frame arrival rate** and
+/// this is the one route that carries content rather than a document. A TCP
+/// retransmit backs off 1 s → 2 s → 4 s and a Wi-Fi roam is seconds, so two
+/// seconds of application-level silence inside a hundred-megabyte transfer is
+/// ordinary rather than stalled — and the cost of calling it stalled is not
+/// one slow download. [`SseTransport::blob_fetch`] sends no `Range` header, so
+/// every attempt restarts at byte 0, and
+/// `crates/sunrise-core/src/blob_fetch.rs:100` allows ten of them before the
+/// row is parked `partial` and the waiting client is told the attachment is
+/// unavailable. One gap per hundred megabytes is then a permanently
+/// unfetchable attachment.
+///
+/// What this number costs, stated because it is ten times itself: a peer that
+/// accepts the connection and then says nothing holds a fetch for fifteen
+/// seconds per attempt and 150 s across all ten before the request parks.
+/// That is the reason it is no larger than its evidence allows —
+/// `crates/sunrise-cli/src/main.rs:934` gives one interactive download 300 s
+/// in total, and ten attempts at this bound stay inside it, so the caller is
+/// told the attachment is unavailable rather than being told the command ran
+/// out of time.
+///
+/// **Not for the live stream.** `recv_frame` reads its body with no idle bound
+/// at all, deliberately, and this constant must not be the one that changes
+/// that. On the blob route fifteen seconds is silence the peer never promised
+/// to break; on the stream route it is the interval the relay promises to
+/// break it *at*, so a bound of exactly this value races the beat it was
+/// derived from. A stream bound would have to be strictly larger, and choosing
+/// it is a separate decision from this one.
+const BLOB_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
 /// SSE + `POST` client transport over `http://` / `https://`.
 pub struct SseTransport {
@@ -249,19 +301,30 @@ impl SseTransport {
     }
 
     /// Issue one request with a raw byte body (possibly empty) and read the
-    /// whole reply.
+    /// whole reply under the bounds the caller states.
     ///
     /// The blob surface is the only place this is needed: a chunk `PUT` sends
     /// opaque ciphertext and a blob `GET` receives it, and neither is
     /// describable as a JSON value. `content_type` is `None` for a request
     /// with no body, which is what keeps a bodiless `GET` from advertising a
     /// media type it is not sending.
+    ///
+    /// `cap` and `idle` belong to the caller because this method's two callers
+    /// do not read the same thing, and only one of them reads content. A blob
+    /// `GET`'s reply is a whole attachment; a chunk `PUT`'s reply is an ack —
+    /// an empty `204` or a short JSON document. Choosing the attachment's
+    /// bounds here for both, as this route did, let a relay answer an upload
+    /// with a hundred megabytes and be waited on per frame for as long as a
+    /// download deserves. Same shape as [`read_body`]'s parameters one level
+    /// down, and for the same reason.
     async fn call_bytes(
         &self,
         method: &str,
         path: &str,
         content_type: Option<&str>,
         body: &[u8],
+        cap: usize,
+        idle: std::time::Duration,
     ) -> Result<Reply, TransportError> {
         let mut request = hyper::Request::builder()
             .method(method)
@@ -286,12 +349,7 @@ impl SseTransport {
             .map_err(|e| TransportError::Unavailable(e.to_string()))?;
         let status = response.status();
         let date = server_date(response.headers());
-        // [`MAX_BLOB_BYTES`] rather than [`MAX_EVENT_BYTES`]: this is the one
-        // route whose body is content rather than a document, and the relay
-        // commits attachments four orders of magnitude larger than the event
-        // cap. Sizing this route by the event cap would refuse every
-        // attachment over eight mebibytes.
-        let bytes = read_body(response.into_body(), MAX_BLOB_BYTES, BODY_IDLE_TIMEOUT).await?;
+        let bytes = read_body(response.into_body(), cap, idle).await?;
         Ok(Reply {
             status,
             date,
@@ -966,6 +1024,15 @@ impl Transport for SseTransport {
                 &format!("/api/v1/blobs/{upload_id}/{chunk_idx}"),
                 Some("application/octet-stream"),
                 bytes,
+                // The *request* carries a chunk; the *reply* is an ack, and
+                // these bounds are the reply's. An ack is an empty `204` or a
+                // short JSON document, so it is bounded exactly as every other
+                // document reply is — by [`MAX_EVENT_BYTES`], which denies a
+                // relay the choice of how much memory this client holds, and
+                // by [`BODY_IDLE_TIMEOUT`], because a relay that has already
+                // sent the head of an ack and then goes quiet has stalled.
+                MAX_EVENT_BYTES,
+                BODY_IDLE_TIMEOUT,
             )
             .await?;
         if reply.status.is_success() {
@@ -1029,6 +1096,13 @@ impl Transport for SseTransport {
                 &format!("/api/v1/blobs/blb_{}", hex::encode(blob_id)),
                 None,
                 &[],
+                // The one reply on this transport that is content rather than
+                // a document, and the only one either bound is sized for:
+                // [`MAX_BLOB_BYTES`] is the relay's own ceiling, and
+                // [`BLOB_IDLE_TIMEOUT`] is what keeps an ordinary gap in a
+                // hundred-megabyte transfer from being read as a dead peer.
+                MAX_BLOB_BYTES,
+                BLOB_IDLE_TIMEOUT,
             )
             .await?;
         if reply.status.is_success() {
@@ -1069,16 +1143,22 @@ struct Reply {
 /// it — the JSON control plane ([`SseTransport::call`]), the blob surface
 /// ([`SseTransport::call_bytes`]) and a refused stream open
 /// ([`SseTransport::open_events`]) — and each of them used to hand-roll the
-/// read. That is how two of them came to have a cap and a deadline and the
-/// third to have neither: a bound nobody can see is missing is a bound that
-/// goes missing, and stating it once per route is what made the omission
-/// invisible.
+/// read. That is how *one* of them came to have a cap and a deadline and the
+/// other two neither: a bound nobody can see is missing is a bound that goes
+/// missing, and stating it once per route is what made the omission invisible.
+/// (One, counted against the tree rather than remembered: before the reads
+/// were shared, `open_events` held both bounds and `call` and `call_bytes`
+/// each collected without either. Further back still, on `master`,
+/// `open_events` did not read the refusal body at all, so the count there is
+/// none of three.)
 ///
 /// `cap` is a parameter because the routes carry different things — a problem
 /// document and an attachment are not bounded by the same number — and `idle`
-/// is one because a caller wanting different patience should have to say so.
-/// Both are now stated at the call rather than assembled out of a `timeout`
-/// and a `Limited` at each site.
+/// is one for the same reason and not merely as a courtesy: the blob route
+/// waits [`BLOB_IDLE_TIMEOUT`] where the two document routes wait
+/// [`BODY_IDLE_TIMEOUT`], because an idle bound is a minimum arrival rate and
+/// content and documents do not arrive alike. Both are now stated at the call
+/// rather than assembled out of a `timeout` and a `Limited` at each site.
 ///
 /// What a failure *means* is deliberately not decided here, because it differs:
 /// a refusal whose problem document did not arrive is still a refusal and
@@ -2115,15 +2195,22 @@ mod tests {
         );
     }
 
-    /// The shipped deadline and the blob cap are these numbers.
+    /// The shipped deadlines and the blob cap are these numbers.
     ///
     /// Spelled out rather than read from the constants they pin, for the reason
     /// [`FRAME_CAP`] is: a case sized from the constant moves with it and
     /// asserts the comparison instead of the value. The cases above exercise
     /// the mechanism at a deadline of their own, so without this one a mutant
-    /// could move `BODY_IDLE_TIMEOUT` anywhere and nothing would notice — which
+    /// could move either deadline anywhere and nothing would notice — which
     /// matters, because "anywhere" includes long enough to park the handshake
     /// route for the rest of the session.
+    ///
+    /// The two deadlines are asserted together, and their *inequality* with
+    /// them, because what this pair pins is not either value alone: it is that
+    /// one value does not serve both routes. [`BODY_IDLE_TIMEOUT`] applied to a
+    /// blob fetch is a minimum inter-frame arrival rate on a hundred megabytes,
+    /// and [`BLOB_IDLE_TIMEOUT`] applied to the handshake would slacken the one
+    /// route with nothing above it.
     ///
     /// [`MAX_BLOB_BYTES`] is the relay's own ceiling
     /// (`crates/sunrise-server/src/api/blobs.rs:62`) restated on the side that
@@ -2132,6 +2219,11 @@ mod tests {
     #[test]
     fn the_body_bounds_are_the_numbers_they_are_documented_as() {
         assert_eq!(super::BODY_IDLE_TIMEOUT, std::time::Duration::from_secs(2));
+        assert_eq!(super::BLOB_IDLE_TIMEOUT, std::time::Duration::from_secs(15));
+        assert!(
+            super::BLOB_IDLE_TIMEOUT > super::BODY_IDLE_TIMEOUT,
+            "the route that carries content waits longer than the routes that carry documents"
+        );
         assert_eq!(super::MAX_BLOB_BYTES, 100 * 1000 * 1000);
     }
 
@@ -2184,6 +2276,64 @@ mod tests {
         assert!(
             matches!(&err, TransportError::Unavailable(m) if m.contains("broke")),
             "the peer's own failure comes through: {err}"
+        );
+    }
+
+    /// A body that is *still arriving* is cut off at the first gap that
+    /// crosses the deadline.
+    ///
+    /// The case that tells "bounded a stall" apart from "aborted a slow
+    /// download", and neither of the two cases above reaches it: one has every
+    /// gap inside the deadline and ends, the other stops after one frame and
+    /// never resumes. This one makes progress, keeps making it, and then takes
+    /// one gap too long — which is what a real link does when a radio hands
+    /// over or a retransmit backs off, and is exactly the shape that makes the
+    /// deadline's *value* a decision rather than a formality. A number below
+    /// what a healthy link goes quiet for turns this case into every download,
+    /// which is why the blob route has [`BLOB_IDLE_TIMEOUT`] rather than
+    /// [`BODY_IDLE_TIMEOUT`].
+    ///
+    /// Three assertions, because three different things could be true. It
+    /// errors, so the gap was not simply waited out. It errors as a stall
+    /// rather than as a broken body. And it errors *late* — after the first,
+    /// inside-deadline gap was absorbed — so the deadline was re-armed per
+    /// frame rather than fired on the first pause.
+    #[tokio::test]
+    async fn a_body_still_arriving_is_cut_off_at_the_first_gap_that_crosses_the_deadline() {
+        let inside = TEST_IDLE / 3;
+        let across = TEST_IDLE * 2;
+        let started = tokio::time::Instant::now();
+
+        let err = super::read_body(
+            scripted(
+                &[
+                    (std::time::Duration::ZERO, "one "),
+                    (inside, "two "),
+                    (across, "three"),
+                ],
+                false,
+                false,
+            ),
+            1024,
+            TEST_IDLE,
+        )
+        .await
+        .expect_err("the third frame was one gap too late");
+
+        assert!(
+            matches!(&err, TransportError::Unavailable(m) if m.contains("stalled")),
+            "a body that stopped arriving is named as one, though it had been arriving: {err}"
+        );
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed >= TEST_IDLE + inside,
+            "the gap inside the deadline was absorbed rather than counted against it, so \
+             the read outlived the deadline before the deadline ended it: {elapsed:?}"
+        );
+        assert!(
+            elapsed < inside + across,
+            "and it did not simply wait the long gap out, which is what an unbounded read \
+             would have done: {elapsed:?}"
         );
     }
 
@@ -3700,8 +3850,17 @@ mod tests {
              turns into a disconnect and a backoff: {err}"
         );
         assert!(
-            started.elapsed() < std::time::Duration::from_secs(10),
-            "and it came back on the client's own deadline"
+            matches!(&err, TransportError::Unavailable(m) if m.contains("no data for 2s")),
+            "and it is the *document* deadline that ran, named in the diagnostic: {err}"
+        );
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed >= std::time::Duration::from_millis(1_500)
+                && elapsed < std::time::Duration::from_secs(10),
+            "it came back on the client's own deadline, and on that deadline's own value — \
+             an upper bound alone leaves every shorter value passing, including the fifteen \
+             seconds the blob route waits, which on this route is the whole handshake: \
+             {elapsed:?}"
         );
         assert!(
             t.session.is_none(),
@@ -3741,12 +3900,27 @@ mod tests {
         );
     }
 
-    /// The blob surface is bounded too, and by the same deadline.
+    /// The blob surface is bounded too — and by a deadline of its own.
     ///
     /// The third of the three body reads. It is not on the handshake's footing
     /// — a blob fetch is driven by a caller who can be told it failed — but it
     /// had the same missing bound, and the shared read is what makes the three
     /// move together instead of each being remembered separately.
+    ///
+    /// What it does *not* share is the value. This case is the one that says
+    /// so, from both sides: the fetch is still running well past
+    /// [`super::BODY_IDLE_TIMEOUT`], so a mutant passing the document deadline
+    /// here returns far too early and turns it red; and the diagnostic names
+    /// the fifteen seconds it actually waited, so a mutant moving
+    /// [`super::BLOB_IDLE_TIMEOUT`] without moving the constant's own case has
+    /// nowhere to hide either. An upper bound alone would have left both
+    /// passing.
+    ///
+    /// This is the most expensive case in the file — it spends
+    /// [`super::BLOB_IDLE_TIMEOUT`] of real wall clock, by construction, since
+    /// no clock in this crate's test profile can be paused — and it is the only
+    /// place the blob route's own patience is observable end to end. The
+    /// mechanism itself is pinned in milliseconds against `Scripted` above.
     ///
     /// The double's media type says JSON where a blob would say octets;
     /// `call_bytes` never reads it, and the stall is the subject.
@@ -3761,7 +3935,7 @@ mod tests {
 
         let started = tokio::time::Instant::now();
         let err = tokio::time::timeout(
-            std::time::Duration::from_secs(30),
+            std::time::Duration::from_secs(60),
             t.blob_fetch(&[0x22; 16]),
         )
         .await
@@ -3773,8 +3947,18 @@ mod tests {
             "a stalled fetch is reported, so the caller can retry it: {err}"
         );
         assert!(
-            started.elapsed() < std::time::Duration::from_secs(10),
-            "and it came back on the client's own deadline"
+            matches!(&err, TransportError::Unavailable(m) if m.contains("no data for 15s")),
+            "and the deadline that ran is the blob route's own, named in the diagnostic \
+             rather than inferred from the clock: {err}"
+        );
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed >= std::time::Duration::from_millis(11_000)
+                && elapsed < std::time::Duration::from_secs(30),
+            "it waited an attachment's worth of patience, not a document's: two seconds \
+             here is a minimum inter-frame arrival rate on a hundred megabytes, and with \
+             no `Range` header and ten attempts it is an attachment that never arrives: \
+             {elapsed:?}"
         );
     }
 
@@ -4074,6 +4258,51 @@ mod tests {
             Some("application/json"),
             "a request with a JSON body advertises one"
         );
+    }
+
+    /// A chunk upload's *ack* is read under the event cap, not the blob cap.
+    ///
+    /// `call_bytes` has two callers and only one of them receives content. The
+    /// cap used to be chosen inside `call_bytes`, and the comment that chose it
+    /// named `blob_fetch` alone — so the reply to every chunk `PUT`, which is
+    /// an empty `204` or a short JSON document, was read under a hundred-
+    /// megabyte ceiling. A relay answering an upload with a hundred megabytes
+    /// made this client hold it, on the more frequently driven of the two
+    /// routes.
+    ///
+    /// A body one byte past [`super::MAX_EVENT_BYTES`] is the cheapest thing
+    /// that tells the two constants apart on this route: under the blob cap it
+    /// is read and the upload succeeds, under the event cap it is refused. The
+    /// same byte, and the same reasoning, as the fetch route's case — pointed
+    /// the other way, because here the cap's *refusing* side is the one that
+    /// matters.
+    #[tokio::test]
+    async fn a_chunk_upload_ack_past_the_event_cap_is_refused_rather_than_held() {
+        let oversized = format!(r#"{{"ok":"{}"}}"#, "x".repeat(FRAME_CAP));
+        assert!(oversized.len() > FRAME_CAP, "the ack is past the event cap");
+        let relay = relay::start(vec![relay::Canned::json(200, &oversized)]).await;
+        let mut t = dial(&relay);
+
+        let err = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            t.blob_put_chunk("up-1", 0, b"sealed-chunk-bytes"),
+        )
+        .await
+        .expect("a capped read returns")
+        .expect_err("the ack is past the cap this route reads under");
+
+        assert!(
+            matches!(&err, TransportError::Unavailable(_)),
+            "the relay sent more than an ack is allowed to be, which is the relay's \
+             failure: {err}"
+        );
+
+        let seen = relay.seen();
+        assert_eq!(
+            seen[0].method, "PUT",
+            "and the route reached was the upload"
+        );
+        assert_eq!(seen[0].path, "/api/v1/blobs/up-1/0");
     }
 
     /// A commit the relay under-described still names its blob, and reads as
