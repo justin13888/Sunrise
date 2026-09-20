@@ -1869,6 +1869,247 @@ mod tests {
     ///
     /// It costs no new dependency: the workspace already pins `hyper` with
     /// `server` on and `tokio` with `net`, both for other crates.
+    /// A response body this module drives directly, one frame at a time.
+    ///
+    /// The relay double below proves each *route* reaches [`read_body`]; this
+    /// proves what `read_body` itself does, at boundaries a relay would have to
+    /// move a hundred megabytes or wait whole seconds to reach. Driving the
+    /// body here rather than over loopback is also what lets these cases name
+    /// their own deadline: `read_body` takes one as a parameter, so the
+    /// mechanism can be exercised in milliseconds and the shipped value pinned
+    /// separately, instead of every case paying for two real seconds.
+    #[derive(Debug)]
+    struct Scripted {
+        /// Each frame, and how long the body withholds it first.
+        rest: std::collections::VecDeque<(std::time::Duration, hyper::body::Bytes)>,
+        /// Withhold the *end* of the body too, indefinitely.
+        stall: bool,
+        /// Fail instead of ending, once every frame has been delivered.
+        abort: bool,
+        /// The gap currently being waited out, if any.
+        sleep: Option<std::pin::Pin<Box<tokio::time::Sleep>>>,
+    }
+
+    /// A body that yields `frames` — each a `(gap, data)` pair — and then ends,
+    /// stalls or breaks.
+    fn scripted(frames: &[(std::time::Duration, &str)], stall: bool, abort: bool) -> Scripted {
+        Scripted {
+            rest: frames
+                .iter()
+                .map(|(gap, data)| (*gap, hyper::body::Bytes::copy_from_slice(data.as_bytes())))
+                .collect(),
+            stall,
+            abort,
+            sleep: None,
+        }
+    }
+
+    impl hyper::body::Body for Scripted {
+        type Data = hyper::body::Bytes;
+        /// Not `Infallible`, for the same reason the relay's body is not: a
+        /// body that cannot fail forecloses the error arm by construction.
+        type Error = std::io::Error;
+
+        fn poll_frame(
+            self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Option<Result<hyper::body::Frame<hyper::body::Bytes>, std::io::Error>>>
+        {
+            use std::future::Future as _;
+            use std::task::Poll;
+
+            let this = self.get_mut();
+            loop {
+                if let Some(sleep) = this.sleep.as_mut() {
+                    match sleep.as_mut().poll(cx) {
+                        Poll::Pending => return Poll::Pending,
+                        Poll::Ready(()) => this.sleep = None,
+                    }
+                }
+                match this.rest.front_mut() {
+                    // A gap still owed. Arm it, clear it, and go round, so the
+                    // timer registers its waker before this returns `Pending`.
+                    Some(owed) if !owed.0.is_zero() => {
+                        let gap = std::mem::replace(&mut owed.0, std::time::Duration::ZERO);
+                        this.sleep = Some(Box::pin(tokio::time::sleep(gap)));
+                    }
+                    Some(_) => {
+                        let (_, data) = this.rest.pop_front().expect("a frame was just there");
+                        return Poll::Ready(Some(Ok(hyper::body::Frame::data(data))));
+                    }
+                    None if this.stall => {
+                        // A real timer rather than a bare `Pending`: a body that
+                        // returns `Pending` without registering a waker is one
+                        // the runtime is entitled never to poll again, and the
+                        // stall would then be an artefact of this double.
+                        let held = this.sleep.get_or_insert_with(|| {
+                            Box::pin(tokio::time::sleep(std::time::Duration::from_secs(3_600)))
+                        });
+                        return match held.as_mut().poll(cx) {
+                            Poll::Pending => Poll::Pending,
+                            Poll::Ready(()) => Poll::Ready(None),
+                        };
+                    }
+                    None if this.abort => {
+                        this.abort = false;
+                        return Poll::Ready(Some(Err(std::io::Error::other(
+                            "the peer broke the body",
+                        ))));
+                    }
+                    None => return Poll::Ready(None),
+                }
+            }
+        }
+    }
+
+    /// The deadline these cases drive `read_body` with.
+    ///
+    /// Not [`BODY_IDLE_TIMEOUT`]: the mechanism and the shipped value are
+    /// separate claims, and tying them together would spend two real seconds
+    /// per case to say nothing the value's own case does not.
+    const TEST_IDLE: std::time::Duration = std::time::Duration::from_millis(300);
+
+    /// [`read_body`]'s deadline bounds a *stall*, not a download: a body that
+    /// keeps arriving keeps resetting it, however long the whole read takes.
+    ///
+    /// The load-bearing property of the whole helper. Four frames, each
+    /// withheld for a third of the deadline, so every gap is comfortably inside
+    /// it while the total is a third longer than it.
+    ///
+    /// A deadline wrapped around the whole read instead of around each frame
+    /// passes every other case in this file and refuses this one — and with it
+    /// any attachment large enough to take longer than [`BODY_IDLE_TIMEOUT`] to
+    /// arrive, which on the blob route is most of them: [`MAX_BLOB_BYTES`] is a
+    /// hundred megabytes and the relay serves it one chunk per poll. That is
+    /// why the bound is idle rather than total, and this is the case that says
+    /// so.
+    #[tokio::test]
+    async fn a_body_that_keeps_arriving_is_not_cut_off_by_the_idle_deadline() {
+        let gap = TEST_IDLE / 3;
+        let started = tokio::time::Instant::now();
+
+        let read = super::read_body(
+            scripted(
+                &[(gap, "one "), (gap, "two "), (gap, "three "), (gap, "four")],
+                false,
+                false,
+            ),
+            1024,
+            TEST_IDLE,
+        )
+        .await
+        .expect("every gap is inside the deadline");
+
+        assert_eq!(
+            String::from_utf8(read).expect("the frames were UTF-8"),
+            "one two three four",
+            "and every frame is there, in order"
+        );
+        assert!(
+            started.elapsed() > TEST_IDLE,
+            "the read outlasted the deadline, which is the whole point of it"
+        );
+    }
+
+    /// And a body that *stops* arriving is cut off.
+    #[tokio::test]
+    async fn a_body_that_stops_arriving_is_cut_off_at_the_idle_deadline() {
+        let started = tokio::time::Instant::now();
+
+        let err = super::read_body(
+            scripted(
+                &[(std::time::Duration::ZERO, r#"{"code":"AUTH_DEV"#)],
+                true,
+                false,
+            ),
+            1024,
+            TEST_IDLE,
+        )
+        .await
+        .expect_err("the rest of the body never came");
+
+        assert!(
+            matches!(&err, TransportError::Unavailable(m) if m.contains("stalled")),
+            "a stall is named as one rather than reported as a broken read: {err}"
+        );
+        assert!(
+            started.elapsed() >= TEST_IDLE,
+            "and it waited the deadline out rather than giving up on the first `Pending`"
+        );
+    }
+
+    /// The shipped deadline and the blob cap are these numbers.
+    ///
+    /// Spelled out rather than read from the constants they pin, for the reason
+    /// [`FRAME_CAP`] is: a case sized from the constant moves with it and
+    /// asserts the comparison instead of the value. The cases above exercise
+    /// the mechanism at a deadline of their own, so without this one a mutant
+    /// could move `BODY_IDLE_TIMEOUT` anywhere and nothing would notice — which
+    /// matters, because "anywhere" includes long enough to park the handshake
+    /// route for the rest of the session.
+    ///
+    /// [`MAX_BLOB_BYTES`] is the relay's own ceiling
+    /// (`crates/sunrise-server/src/api/blobs.rs:62`) restated on the side that
+    /// allocates it. Lowering it would refuse attachments the relay accepted,
+    /// which is a failure no caller could diagnose from here.
+    #[test]
+    fn the_body_bounds_are_the_numbers_they_are_documented_as() {
+        assert_eq!(super::BODY_IDLE_TIMEOUT, std::time::Duration::from_secs(2));
+        assert_eq!(super::MAX_BLOB_BYTES, 100 * 1000 * 1000);
+    }
+
+    /// The cap is a ceiling, not a limit one byte lower — and what it refuses
+    /// is discarded rather than short-read.
+    ///
+    /// Both sides of the boundary, because a cap that refused everything would
+    /// pass a case written only against the oversized half. Ten bytes against a
+    /// ten-byte cap are delivered; the same ten against nine are not delivered
+    /// truncated, which is the answer that matters: a caller handed nine bytes
+    /// of a ten-byte document cannot tell them from a document.
+    #[tokio::test]
+    async fn a_body_at_the_cap_is_read_and_one_byte_past_it_is_refused_whole() {
+        let at_cap = super::read_body(
+            scripted(&[(std::time::Duration::ZERO, "0123456789")], false, false),
+            10,
+            TEST_IDLE,
+        )
+        .await
+        .expect("exactly the cap is under the cap");
+        assert_eq!(at_cap, b"0123456789", "and arrives whole");
+
+        let err = super::read_body(
+            scripted(&[(std::time::Duration::ZERO, "0123456789")], false, false),
+            9,
+            TEST_IDLE,
+        )
+        .await
+        .expect_err("one byte past the cap is not read");
+        assert!(
+            matches!(&err, TransportError::Unavailable(_)),
+            "the peer sent more than was allowed, which is the peer's failure: {err}"
+        );
+    }
+
+    /// A body that breaks part-way through is reported, not short-read.
+    #[tokio::test]
+    async fn a_body_that_breaks_part_way_through_is_reported_rather_than_short_read() {
+        let err = super::read_body(
+            scripted(
+                &[(std::time::Duration::ZERO, "half a document")],
+                false,
+                true,
+            ),
+            1024,
+            TEST_IDLE,
+        )
+        .await
+        .expect_err("the body broke before it ended");
+        assert!(
+            matches!(&err, TransportError::Unavailable(m) if m.contains("broke")),
+            "the peer's own failure comes through: {err}"
+        );
+    }
+
     mod relay {
         use http_body_util::BodyExt as _;
         use hyper::body::{Bytes, Frame};
@@ -3262,9 +3503,174 @@ mod tests {
             "AUTH_TOKEN_INVALID",
             "a body that never arrived falls back to the status map"
         );
+        let elapsed = started.elapsed();
         assert!(
-            started.elapsed() < std::time::Duration::from_secs(20),
-            "the read is bounded by its own deadline, not by the test harness's"
+            elapsed >= std::time::Duration::from_millis(1_500)
+                && elapsed < std::time::Duration::from_secs(10),
+            "the read is bounded by its own deadline, and that deadline is the two seconds \
+             `the_body_bounds_are_the_numbers_they_are_documented_as` pins — an upper bound \
+             alone leaves every shorter value passing too: {elapsed:?}"
+        );
+    }
+
+    /// A handshake whose reply body never finishes arriving is reported rather
+    /// than waited on for good.
+    ///
+    /// The `Hello` route is the one with nothing above it. The stream route's
+    /// stall, above, was at least *cancelled*: `sync_driver.rs:848-855` selects
+    /// over the read, so a stalled refusal there became a silent retry loop.
+    /// This one is not. `sync_driver.rs:723` awaits the `Hello` send bare,
+    /// outside any `tokio::select!`, `session(...)` is itself awaited bare at
+    /// `sync_driver.rs:628`, and `Client::builder(...).build(https)` sets no
+    /// timeout — so an unbounded read here parks the driver task with no error,
+    /// no `SessionEnd::Disconnected`, no backoff and no log line. That is the
+    /// "the client isn't syncing" state `sync_driver.rs:580-585` calls the
+    /// commonest support question, and the only symptom is silence.
+    ///
+    /// The relay answers `200` — a refusal is not needed to reach this, and a
+    /// success makes the point better: the handshake is going *well* right up
+    /// to the body that never comes.
+    #[tokio::test]
+    async fn a_stalled_handshake_reply_is_reported_rather_than_parking_the_driver() {
+        let relay = relay::start(vec![relay::Canned::json_then_stall(
+            200,
+            r#"{"session_id":"sess-"#,
+        )])
+        .await;
+        let mut t = dial(&relay);
+
+        let started = tokio::time::Instant::now();
+        let err = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            t.send_frame(hello_frame()),
+        )
+        .await
+        .expect("the read is bounded by the client, not by this harness")
+        .expect_err("the relay answered and then went quiet");
+
+        assert!(
+            matches!(&err, TransportError::Unavailable(m) if m.contains("stalled")),
+            "a stalled handshake is reported as unavailable, which is what the driver \
+             turns into a disconnect and a backoff: {err}"
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(10),
+            "and it came back on the client's own deadline"
+        );
+        assert!(
+            t.session.is_none(),
+            "no session is recorded out of a reply that never arrived"
+        );
+    }
+
+    /// A handshake reply past the event cap is refused rather than held.
+    ///
+    /// The other half of the same bound. Nothing legitimate on this route is
+    /// anywhere near eight mebibytes — every reply it reads is a small JSON
+    /// document — so the cap is not sizing the reply; it is denying a relay the
+    /// choice of how much memory this client holds. Before the read was capped
+    /// that choice was the relay's alone.
+    #[tokio::test]
+    async fn a_handshake_reply_past_the_event_cap_is_refused_rather_than_held() {
+        let oversized = format!(r#"{{"session_id":"{}"}}"#, "x".repeat(FRAME_CAP));
+        assert!(oversized.len() > FRAME_CAP, "the reply is past the cap");
+        let relay = relay::start(vec![relay::Canned::json(200, &oversized)]).await;
+        let mut t = dial(&relay);
+
+        let err = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            t.send_frame(hello_frame()),
+        )
+        .await
+        .expect("a capped read returns")
+        .expect_err("the reply is past the cap");
+
+        assert!(
+            matches!(&err, TransportError::Unavailable(_)),
+            "the relay sent more than was allowed, which is the relay's failure: {err}"
+        );
+        assert!(
+            t.session.is_none(),
+            "and nothing is read out of a body that was refused"
+        );
+    }
+
+    /// The blob surface is bounded too, and by the same deadline.
+    ///
+    /// The third of the three body reads. It is not on the handshake's footing
+    /// — a blob fetch is driven by a caller who can be told it failed — but it
+    /// had the same missing bound, and the shared read is what makes the three
+    /// move together instead of each being remembered separately.
+    ///
+    /// The double's media type says JSON where a blob would say octets;
+    /// `call_bytes` never reads it, and the stall is the subject.
+    #[tokio::test]
+    async fn a_stalled_blob_fetch_is_reported_rather_than_parking_the_caller() {
+        let relay = relay::start(vec![relay::Canned::json_then_stall(
+            200,
+            "the first ciphertext",
+        )])
+        .await;
+        let mut t = dial(&relay);
+
+        let started = tokio::time::Instant::now();
+        let err = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            t.blob_fetch(&[0x22; 16]),
+        )
+        .await
+        .expect("the read is bounded by the client, not by this harness")
+        .expect_err("the relay answered and then went quiet");
+
+        assert!(
+            matches!(&err, TransportError::Unavailable(m) if m.contains("stalled")),
+            "a stalled fetch is reported, so the caller can retry it: {err}"
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(10),
+            "and it came back on the client's own deadline"
+        );
+    }
+
+    /// An attachment larger than the *event* cap is still delivered.
+    ///
+    /// The blob route's cap is the one argument in this module that cannot be
+    /// reached from its refusing side: [`super::MAX_BLOB_BYTES`] is a hundred
+    /// megabytes, and scripting that over loopback to watch it be refused would
+    /// cost more than the boundary is worth. So it is pinned from the other
+    /// side, which is the side that matters anyway — sizing this route by
+    /// [`super::MAX_EVENT_BYTES`] would refuse every attachment over eight
+    /// mebibytes, and the relay commits them up to a hundred megabytes
+    /// (`crates/sunrise-server/src/api/blobs.rs:62`). A byte past the event cap
+    /// is enough to tell the two constants apart, and it is the cheapest body
+    /// that can.
+    ///
+    /// The ciphertext is opaque by construction here: what is asserted is that
+    /// every byte the relay sent came back, which is what a content hash
+    /// downstream depends on.
+    #[tokio::test]
+    async fn an_attachment_larger_than_the_event_cap_is_still_fetched_whole() {
+        let ciphertext = vec![0xA5u8; FRAME_CAP + 1];
+        let relay = relay::start(vec![relay::Canned::bytes(200, &ciphertext)]).await;
+        let mut t = dial(&relay);
+
+        let fetched = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            t.blob_fetch(&[0x33; 16]),
+        )
+        .await
+        .expect("a bounded read returns")
+        .expect("the relay served the blob")
+        .expect("and it is there");
+
+        assert_eq!(
+            fetched.len(),
+            FRAME_CAP + 1,
+            "the blob route is not bounded by the event cap"
+        );
+        assert!(
+            fetched.iter().all(|b| *b == 0xA5),
+            "and every byte of it came back unaltered"
         );
     }
 
