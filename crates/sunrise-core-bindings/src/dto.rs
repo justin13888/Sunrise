@@ -2413,10 +2413,10 @@ impl From<&ContextRow> for ContextListRow {
 
 /// One paired device.
 ///
-/// See `sunrise_core::DeviceRow` for why `struct_excessive_bools` is allowed
-/// here: the four flags are orthogonal facts rather than positions of one
-/// state, and every pair is reachable in both combinations.
-#[allow(clippy::struct_excessive_bools)]
+/// See `sunrise_core::DeviceRow` for why the four flags are orthogonal facts
+/// rather than positions of one state: every pair is reachable in both
+/// combinations. No item-level `allow` for `struct_excessive_bools` here —
+/// `lib.rs` already allows it crate-wide, so a second one would be dead.
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct DeviceListRow {
     /// Device id, lowercase hex.
