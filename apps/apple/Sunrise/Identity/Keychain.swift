@@ -279,7 +279,7 @@ struct KeychainItem: Sendable {
     /// current — and the next launch whose ``KeychainDomain/probe()`` answers
     /// correctly walks into ``KeychainMigration``'s one refusal:
     /// ``KeychainError/migrationUnverified``, two different secrets claiming one
-    /// name, with no way out that the user can reach.
+    /// name, whose one way out is the sign-in that runs this method.
     ///
     /// The steady state that motivates it needs no user action. An entitled Mac
     /// holds its token in `.dataProtection`; one launch's probe fails open to
