@@ -1092,15 +1092,18 @@ class Symbols(GateCase):
         # from the working tree is still a file this gate believes exists.
         # `symbol_span` has an `OSError` arm for exactly that, returning no
         # spans -- but through the command line that arm cannot be reached for
-        # a `.rs` target, because the scan reads every tracked `.rs` file
-        # looking for code spans and raises on this one first.
+        # a SCANNED `.rs` target, because the scan reads every tracked `.rs`
+        # file outside `legacy/` looking for code spans and raises on this one
+        # first. (A `legacy/**.rs` target is the one `.rs` shape the scan does
+        # not cover, and there the arm is reached; that gap is recorded on the
+        # pull request rather than repaired here.)
         #
-        # So the outcome is exit 2, "the gate could not run", and NOT a
-        # citation verdict. That is the right answer and the one worth
-        # pinning: a missing file must never be reported as a document naming
-        # a symbol that does not exist. `symbol_span`'s arm is exercised
-        # directly in the gate's own `self_test`, which can call it without a
-        # scan in front of it.
+        # So for a scanned target the outcome is exit 2, "the gate could not
+        # run", and NOT a citation verdict. That is the right answer and the
+        # one worth pinning: a missing file must never be reported as a
+        # document naming a symbol that does not exist. `symbol_span`'s arm is
+        # exercised directly in the gate's own `self_test`, which can call it
+        # without a scan in front of it.
         path = self.write("crates/c/src/lib.rs", "pub fn wanted() -> u8 {\n    0\n}\n")
         path.unlink()
         self.write("docs/a.md", "See `crates/c/src/lib.rs#wanted`.\n")

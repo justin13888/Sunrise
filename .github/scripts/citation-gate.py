@@ -1662,9 +1662,12 @@ def self_test() -> int:
                 f"`{body}` reported {verdict_at}/{found}, expected a counted, clean decline",
             )
 
-        # `symbol_span`'s `OSError` arm, reached directly because no scan can
-        # reach it: a `.rs` file tracked but absent from the working tree
-        # stops the gate at exit 2 long before `classify` sees a citation.
+        # `symbol_span`'s `OSError` arm, reached directly because a *scanned*
+        # `.rs` file cannot reach it: tracked but absent from the working
+        # tree, it stops the gate at exit 2 long before `classify` sees a
+        # citation. A `legacy/` `.rs` target is the exception — resolvable,
+        # because `Tree` holds every tracked file, but never scanned — and
+        # there the arm is reached through the command line.
         # `lib.rs` is tracked in this repository and is not written into the
         # scratch tree above, so opening it there raises and the arm returns
         # no spans at all.
