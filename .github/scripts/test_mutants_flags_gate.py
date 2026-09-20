@@ -559,6 +559,82 @@ class FlagsGateContract(unittest.TestCase):
                     ),
                     1, "missing from 1 of 2")
 
+    def test_a_quoted_flag_after_a_boolean_switch_is_the_flag(self):
+        # The shape that made "the predecessor starts with `-`" the wrong
+        # question. A boolean switch is option-shaped and takes no value,
+        # so the word after it is a switch of its own — and cargo-mutants
+        # has plenty of them. All three were executed at the previous
+        # head and all three were exit 1 on a tree whose feature
+        # selection is genuinely present, which this gate's own docstring
+        # twice calls how a gate gets switched off in a week.
+        for switch in ("--no-times", "--no-shuffle", "-v", "--in-place",
+                       "--list"):
+            for quoted in ('"--all-features"', "'--all-features'"):
+                with self.subTest(switch=switch, quoted=quoted):
+                    self.assert_code(
+                        self.run_gate(
+                            MISE_WITH_FLAG.replace(
+                                ' --all-features',
+                                f" {switch} {quoted}"),
+                            CI_WITH_FLAG,
+                        ),
+                        0, "2 cargo-mutants invocation(s) carry")
+
+    def test_the_flag_unquoted_after_a_value_taking_option_is_its_value(self):
+        # The other half of the same rule, and the half that used to be
+        # missing: the discriminator sat below the source-text test, so
+        # the bare spelling never reached it. Executed at the previous
+        # head: `--exclude-re --all-features` was EXIT 0 with the
+        # measuring invocation carrying no feature selection, while
+        # `--exclude-re '--all-features'` — the same word, the same
+        # place, one pair of quotes apart — was exit 1.
+        for option in ("--exclude-re", "--examine-re", "--output", "-E",
+                       "--file", "--in-diff"):
+            with self.subTest(option=option):
+                self.assert_code(
+                    self.run_gate(
+                        MISE_WITH_FLAG.replace(
+                            ' --all-features', f" {option} --all-features"),
+                        CI_WITH_FLAG,
+                    ),
+                    1, "missing from 1 of 2")
+
+    def test_an_option_that_took_its_value_with_an_equals_leaves_a_switch(self):
+        # `--exclude-re=--all-features` is one word, it is not the flag's
+        # source text, and the invocation really does carry no feature
+        # selection — so it is exit 1, and that verdict is correct rather
+        # than an inversion to be repaired. What the `=` spelling must
+        # not do is swallow the NEXT word: the option already took its
+        # value inside itself, so what follows is a switch again.
+        self.assert_code(
+            self.run_gate(
+                MISE_WITH_FLAG.replace(
+                    ' --all-features', " --exclude-re=^foo"),
+                CI_WITH_FLAG,
+            ),
+            1, "missing from 1 of 2")
+        self.assert_code(
+            self.run_gate(
+                MISE_WITH_FLAG.replace(
+                    ' --all-features', " --exclude-re=^foo --all-features"),
+                CI_WITH_FLAG,
+            ),
+            0, "2 cargo-mutants invocation(s) carry")
+
+    def test_an_unknown_option_shaped_word_lets_the_flag_count(self):
+        # The direction the named set is deliberately wrong in. An option
+        # this gate has never heard of — a future cargo-mutants flag, a
+        # wrapper's own — makes the word after it COUNT, so a set that
+        # goes stale costs a false green on a tree somebody wrote oddly
+        # and never a false red on a correct one.
+        self.assert_code(
+            self.run_gate(
+                MISE_WITH_FLAG.replace(
+                    ' --all-features', " --not-a-real-option --all-features"),
+                CI_WITH_FLAG,
+            ),
+            0, "2 cargo-mutants invocation(s) carry")
+
     def test_the_flag_after_a_double_dash_does_not_count(self):
         # Everything after cargo-mutants' `--` is handed to the test
         # runner. `-- --all-features` is an argument to `cargo test` and

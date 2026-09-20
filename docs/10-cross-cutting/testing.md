@@ -283,9 +283,19 @@ regex that mentions the flag lexed to the flag; and `-- --all-features`, which
 is an argument to `cargo test` and says nothing about what cargo-mutants built.
 The two halves of that rule point in opposite directions, so only one of them is
 about source text. The flag counts when a word is written `--all-features`, or
-is that text under one consistent pair of quotes and not sitting where an
-option's value sits — `-p X "--all-features"` is a feature selection somebody
-quoted, and going red on it is how a gate gets switched off in a week. The `--`
+is that text under one consistent pair of quotes — `-p X "--all-features"` is a
+feature selection somebody quoted, and going red on it is how a gate gets
+switched off in a week. It does not count when it sits **where an option's value
+sits**, and that test is decided by a named set of the cargo-mutants options
+that take a value, applied before either source-text test so that
+`--exclude-re --all-features` and `--exclude-re '--all-features'` get the same
+verdict. Deciding it from the predecessor's *shape* instead — "starts with
+`-`" — enforced the rule in one spelling of two and could not tell a boolean
+switch from an option with a value, so `--no-times "--all-features"` was red on
+a tree whose feature selection is genuinely present. The set is a whitelist on
+purpose: an option-shaped word that is not in it lets the flag count, so a set
+that goes stale against a future cargo-mutants costs a false green on an oddly
+written tree and never a false red on a correct one. The `--`
 terminator is recognised by its **value**: `"--"` and `\--` are the separator as
 far as the shell is concerned, and matching its source text meant quoting it
 turned the passthrough guard off while cargo-mutants still received the `--`.

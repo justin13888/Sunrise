@@ -80,13 +80,18 @@ argument to `cargo test` and says nothing about what cargo-mutants built.
 The two restrictions that answer those pull in opposite directions, so
 only one of them is about source text. The flag counts when a word is
 written `--all-features`, or is that text under one consistent pair of
-quotes and not sitting where an option's value sits — because `-p x
-"--all-features"` is a feature selection somebody quoted and going red
-on it is how a gate gets switched off in a week. The `--` terminator,
-by contrast, is recognised by its *value*: `"--"` and `\\--` are the
-separator as far as the shell is concerned, and matching its source text
-meant quoting it turned the passthrough guard off while cargo-mutants
-still received the `--`.
+quotes — because `-p x "--all-features"` is a feature selection somebody
+quoted and going red on it is how a gate gets switched off in a week —
+and when it is not sitting where an option's *value* sits. That last
+test is decided by a named set, `VALUE_TAKING_OPTIONS`, and it runs
+first, so it decides `--exclude-re --all-features` and `--exclude-re
+'--all-features'` alike; reading the predecessor's shape instead
+enforced the rule in one spelling of two and made `--no-times
+"--all-features"` red on a correct tree into the bargain. The `--`
+terminator, by contrast, is recognised by its *value*: `"--"` and `\\--`
+are the separator as far as the shell is concerned, and matching its
+source text meant quoting it turned the passthrough guard off while
+cargo-mutants still received the `--`.
 
 One lexer, one pass — which is not tidiness. Separating "split the line"
 from "lex the command" put two quote rules in one file, and a single
@@ -216,6 +221,61 @@ GITHUB_GLOBS = ("**/*.yml", "**/*.yaml", "**/*.sh")
 # dead the day it was written — and being dead, nothing could have
 # noticed it was also being claimed in prose.
 SEPARATORS = ("&&", "||", "&", ";", "|")
+
+# The cargo-mutants options this gate knows take a value, so that the
+# word after one of them is that option's value rather than a switch of
+# its own. `--exclude-re --all-features` names the flag in a regex and
+# must not vouch for the run; `--no-times "--all-features"` is a boolean
+# switch followed by the feature selection and must.
+#
+# Named, not inferred from shape. "The preceding word starts with `-`"
+# cannot tell a boolean switch from an option that takes a value, and
+# cargo-mutants has plenty of both — `-v`, `--list`, `--no-times`,
+# `--no-shuffle` and `--in-place` all take nothing, so the word after
+# them is a switch. Reading the shape made three of those red on a tree
+# whose feature selection is genuinely present, and this gate's own
+# docstring twice calls a red on a correct tree how a gate gets switched
+# off in a week.
+#
+# A whitelist, and deliberately so: where the preceding word is
+# option-shaped but is NOT in here, the flag COUNTS. A set that goes
+# stale against a future cargo-mutants therefore costs a disclosed false
+# green on a tree somebody wrote oddly, and can never cost a false red on
+# a correct one. That asymmetry is why an option whose arity is not
+# certain is left out rather than guessed at — `--cap-lints` and
+# `--test-workspace` are out for exactly that reason.
+#
+# The `=` spelling needs no entry here. `--exclude-re=--all-features` is
+# one word: it is not the flag's source text, so it does not count, and
+# the word after it is a switch again because the option already took
+# its value.
+VALUE_TAKING_OPTIONS = frozenset({
+    "-p", "--package",
+    "-e", "--exclude",
+    "-f", "--file",
+    "-F", "--examine-re",
+    "-E", "--exclude-re",
+    "-o", "--output",
+    "-j", "--jobs",
+    "-d", "--dir",
+    "-L", "--level",
+    "-C", "--cargo-arg",
+    "--features",
+    "--shard",
+    "--timeout",
+    "--build-timeout",
+    "--timeout-multiplier",
+    "--build-timeout-multiplier",
+    "--minimum-test-timeout",
+    "--baseline",
+    "--color", "--colors",
+    "--error",
+    "--in-diff",
+    "--jobserver-tasks",
+    "--manifest-path",
+    "--profile",
+    "--test-tool",
+})
 
 # How many invocations the tree holds. Asserted as an EQUALITY, not a
 # floor. "No invocation anywhere" is judged over the union, and a union
@@ -514,21 +574,41 @@ def carries_flag(invocation: list[Word]) -> bool:
     off in a week. The rule is the flag's source text, optionally under
     one consistent pair of quotes — so `--all-"features"`, which is a
     word assembled out of parts, and `$'--all-features'`, whose value is
-    not even the flag, both still fail. A quoted flag directly after an
-    option word is that option's value rather than a switch of its own,
-    which is the `--exclude-re` shape and the only place the quoting is
-    load-bearing.
+    not even the flag, both still fail.
+
+    Not where an option's value sits, whichever way it is spelled. A
+    word directly after one of `VALUE_TAKING_OPTIONS` is that option's
+    value and not a switch of its own, and that test runs *before* the
+    source-text tests so it decides `--exclude-re --all-features` and
+    `--exclude-re '--all-features'` by the same rule. It used to sit
+    below them and read the predecessor's *shape* — "starts with `-`" —
+    which answered two different questions wrongly at once: the quoted
+    spelling of `--exclude-re` was red and the bare spelling green, and
+    `--no-times "--all-features"`, `--no-shuffle '--all-features'` and
+    `-v "--all-features"` were red on a tree whose feature selection is
+    genuinely there, because a boolean switch is option-shaped too. All
+    five were executed against real copies of this repository's files.
+    The `=` spelling needs nothing extra and gets nothing:
+    `--exclude-re=--all-features` is one word whose source text is not
+    the flag, so it does not count — correctly, because that invocation
+    really does carry no feature selection — and the word after it is a
+    switch again, because the option took its value inside itself.
     """
     quoted = {f'"{REQUIRED_FLAG}"', f"'{REQUIRED_FLAG}'"}
     previous: Word | None = None
     for word in invocation:
         if word.value == "--":
             return False
-        if word.raw == REQUIRED_FLAG:
-            return True
-        if (word.raw in quoted
-                and not (previous is not None
-                         and previous.value.startswith("-"))):
+        if previous is not None and previous.value in VALUE_TAKING_OPTIONS:
+            # This word is the previous option's value. Not a switch,
+            # whatever it is written as. `--` reaches the test above
+            # first and stays the passthrough: which of the two a shell
+            # means by `--exclude-re --` is not settled, and the
+            # conservative reading is the one that cannot pass a tree
+            # with no feature selection.
+            previous = word
+            continue
+        if word.raw == REQUIRED_FLAG or word.raw in quoted:
             return True
         previous = word
     return False
