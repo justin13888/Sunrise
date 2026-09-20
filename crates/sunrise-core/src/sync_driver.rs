@@ -3191,6 +3191,9 @@ mod tests {
     /// subscriber can be attached to `run`'s own future. `captured_events`
     /// cannot reach it: `tracing::subscriber::with_default` is thread-local
     /// and `start_sync` spawns.
+    // Three scripted sessions and the connect-count assertion put this one
+    // six lines past the limit; `session` above carries the same allow.
+    #[allow(clippy::too_many_lines)]
     #[tokio::test(flavor = "multi_thread")]
     async fn the_report_waits_for_the_handshake_not_for_the_connect() {
         use std::sync::atomic::{AtomicU64, Ordering};
@@ -3216,7 +3219,7 @@ mod tests {
         // One script, and attempt 1 never reaches `inner` — it returns its own
         // dead-peer transport — so the script is popped by attempt 2. Attempt 3
         // gets `Script::default()` and stays up until shutdown.
-        let (inner, _server, _batch_rx, subs, _refreshes) = harness_full(
+        let (inner, server, _batch_rx, subs, _refreshes) = harness_full(
             vec![Script {
                 close_after_subscribe: true,
                 ..Script::default()
@@ -3285,6 +3288,19 @@ mod tests {
             .await
             .expect("the driver never stopped")
             .unwrap();
+
+        // `subs >= 2` above is a proxy for "session 3 opened", and it is sound
+        // only via three properties nothing here states. Say it in the
+        // harness's own counter instead. **Two, not three**: `connect_count`
+        // is bumped inside `harness_full`'s closure, and attempt 1 returns its
+        // own dead-peer duplex without ever calling `inner()`, so the harness
+        // sees attempts 2 and 3 and nothing else.
+        assert_eq!(
+            server.lock().connect_count,
+            2,
+            "sessions 2 and 3 must both have been built through the harness, or \
+             `reports.len() == 1` below proves nothing about repetition"
+        );
 
         let events = log.0.lock().clone();
         let reports: Vec<&LoggedEvent> = events
