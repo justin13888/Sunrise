@@ -79,6 +79,13 @@ pub async fn spawn_relay_with(
 /// Build a [`TransportFactory`] that reaches `http://{addr}` with the real
 /// [`SseTransport`] on every connect attempt (initial connect + every
 /// reconnect).
+///
+/// **This factory never renews.** It reads no `TokenSource` and presents no
+/// bearer, so it satisfies [`TransportFactory`]'s read-in-the-body
+/// precondition vacuously — there is no credential for the driver to consume
+/// at connect. A driver run against it cannot exercise the
+/// renewal-across-reconnect behaviour; the shipped factories in `sunrise-cli`
+/// and `sunrise-core-bindings` are where that contract is actually met.
 #[must_use]
 pub fn ws_factory(addr: SocketAddr) -> TransportFactory {
     // The harness relay runs the self-host `NullVerifier`, which accepts an
@@ -102,9 +109,19 @@ pub fn ws_factory(addr: SocketAddr) -> TransportFactory {
 /// device-bound, which is why the relay's refusal of a revoked device could
 /// only be covered through `sunrise-server`'s own HTTP tests.
 ///
-/// The signer is cloned per attempt for the same reason the bearer is read per
-/// attempt: every reconnect is a new transport and has to carry the binding
-/// too.
+/// The signer is cloned per attempt because every reconnect is a new transport
+/// and has to carry the binding too.
+///
+/// **This factory never renews.** `bearer` is an `Option<String>` fixed when
+/// the factory is *built* and cloned unchanged on every attempt; it is not a
+/// `TokenSource`, and no write can reach it. It therefore satisfies
+/// [`TransportFactory`]'s read-in-the-body precondition only because there is
+/// nothing to read: a driver whose `SyncConfig` carries a `TokenSource` must
+/// not be driven by this factory, because the driver would consume at connect
+/// a renewal this transport never presented, and the relay would never be told
+/// of it. Taking a `TokenSource` and reading it per attempt is the change that
+/// would lift that restriction, and it is a change to every call site in this
+/// suite.
 #[must_use]
 pub fn signed_ws_factory(
     addr: SocketAddr,
@@ -133,6 +150,9 @@ pub fn signed_ws_factory(
 /// reconnect. Each connection gets its own RNG stream, seeded from `seed` plus a
 /// monotonic connection counter, so a reconnect does not replay the identical
 /// fault pattern the previous connection saw.
+///
+/// **This factory never renews**, on the same terms as [`ws_factory`]: no
+/// `TokenSource`, no bearer, nothing for the driver to consume at connect.
 #[must_use]
 pub fn toxic_ws_factory(
     addr: SocketAddr,
