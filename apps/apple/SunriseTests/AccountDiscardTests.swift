@@ -104,6 +104,68 @@ struct AccountDiscardTests {
         #expect(account.accessToken == nil)
     }
 
+    /// A sign-out REFUSED while a login is in flight: the discard leaves the
+    /// disclosure it found standing exactly where it was.
+    ///
+    /// Both of the existing interleaving cases have the sign-out SUCCEED, so
+    /// nothing in either pins what the discard path does to a residue that is
+    /// still standing. Clearing it on the way out would wipe the message saying
+    /// the credential is still in the Keychain — #255's swallow, reintroduced
+    /// inside the fix for it — and the credential really is still there,
+    /// because the lock that refused the `clear()` is the one this path is
+    /// declining to `save()` past.
+    @Test
+    func aLoginDiscardedByARefusedSignOutLeavesTheDisclosureStanding() async {
+        let probe = ParkedProbe()
+        let store = lockedStore()
+        let account = model(store: store, opened: { _ in
+            MainActor.assumeIsolated { probe.sample() }
+        })
+        probe.account = account
+        probe.act = { $0.signOut() }
+        account.signOut()
+        account.dismissSignOutIncomplete()
+
+        await signIn(account)
+
+        #expect(probe.state == .awaitingBrowser, "the second sign-out ran inside the suspension")
+        #expect(account.state == .signedOut)
+        #expect(
+            account.signOutDisclosure == .incomplete(refusalText),
+            "refused again, so the message is unread again — and the discard does not spend it"
+        )
+        #expect(account.signOutRefusedThisSession, "the credential it names is still the stored one")
+        #expect(store.stored?.accessToken == "access-old", "because it is")
+    }
+
+    /// The discard path must not touch `credentials` either.
+    ///
+    /// It is `private`, so the only way to observe it is to ask the model to
+    /// use it — a renewal after the discarded login. Had the discard kept the
+    /// late token, the model would be holding a live bearer nothing on screen
+    /// says anything about, and the next tick would renew it straight back into
+    /// the Keychain the sign-out just emptied.
+    @Test
+    func aDiscardedLoginLeavesNoCredentialForTheNextRenewalToFind() async {
+        let probe = ParkedProbe()
+        let store = StubCredentialStore(value: credentials(accessToken: "access-old"))
+        var driver = StubLoginDriver()
+        driver.refreshed = credentials(accessToken: "access-renewed", expiresAtMs: 9_000, renewAtMs: 8_000)
+        let account = model(store: store, driver: driver, opened: { _ in
+            MainActor.assumeIsolated { probe.sample() }
+        })
+        probe.account = account
+        probe.act = { $0.signOut() }
+
+        await signIn(account)
+        #expect(account.state == .signedOut)
+
+        await account.refreshIfNeeded(issuer: "https://issuer.example", clientID: "c", nowMs: 3_000)
+
+        #expect(account.accessToken == nil, "the discarded login left no bearer to renew")
+        #expect(store.stored == nil, "so nothing renews it back into the Keychain")
+    }
+
     /// The `catch` is on the discard path too, and it is the slowest arm of it.
     ///
     /// The user signs out under the open browser and the screen returns to
