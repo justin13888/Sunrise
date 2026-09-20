@@ -75,6 +75,16 @@ final class AccountModel {
     private let openURL: @Sendable (URL) -> Void
     private var credentials: StoredCredentials?
 
+    /// Whether the last look at the store was *refused* rather than answered.
+    ///
+    /// Held rather than derived, because the two states it separates render the
+    /// same: `signedOut` and a `failed` carrying a Keychain sentence both mean
+    /// "no token in hand", and only this says whether asking again is the
+    /// remedy or whether signing in is. ``signIn(issuer:clientID:deviceID:nowMs:)``
+    /// is its only reader; ``restore()`` sets it either way on every call, so it
+    /// never outlives the condition it describes.
+    private var storeRefusedToAnswer = false
+
     /// How long to wait for the browser redirect. Long enough for a password
     /// manager and a second factor, short enough that an abandoned login does
     /// not hold a loopback port forever.
@@ -99,15 +109,63 @@ final class AccountModel {
     }
 
     /// Restore a previous session, if there is one.
+    ///
+    /// **`nil` and a throw are different answers, and this is the method where
+    /// that starts to matter.** `CredentialStore.load` answers `nil` only when
+    /// *both* keychains reported not-found — genuinely signed out — and throws
+    /// when one of them was reached and refused, which leaves it unknown whether
+    /// a token is sitting in it. `KeychainError.otherDomainUnreadable` is the
+    /// shape that arrives when the refusing store is the one this build did not
+    /// resolve to; `KeychainError.migrationUnverified` is the shape that arrives
+    /// once two tokens already disagree.
+    ///
+    /// A `try?` here collapsed the second answer into the first, and the
+    /// collapse was not cosmetic. The signed-out row offers exactly one thing,
+    /// Sign in; signing in writes a *fresh* token into the domain this build
+    /// resolved to while the unreadable one stays where it was; and two secrets
+    /// under one `(service, account)` is `migrationUnverified` on every later
+    /// launch — signed out in silence, for good, by the remedy the app itself
+    /// held out. `KeychainCredentialStore.save` describes the same loop from the
+    /// writing end and calls its only remedy a Sign out button rendered in a
+    /// state the user cannot reach.
+    ///
+    /// So the refusal is reported. It renders through `failed`, which already
+    /// carries a sentence — for `otherDomainUnreadable` one naming the *other*
+    /// keychain rather than the working one — and a Try again that
+    /// ``signIn(issuer:clientID:deviceID:nowMs:)`` turns into a second look at
+    /// the store rather than a second token. No new `State` case, because the
+    /// difference a new case would encode is not one the view can act on
+    /// differently: unlocking the keychain is the remedy either way, and Try
+    /// again is how the app finds out it happened.
     func restore() {
-        credentials = try? store.load()
-        publish()
+        do {
+            credentials = try store.load()
+            storeRefusedToAnswer = false
+            publish()
+        } catch {
+            credentials = nil
+            accessToken = nil
+            storeRefusedToAnswer = true
+            state = .failed(error.localizedDescription)
+        }
     }
 
     /// Run a login. `deviceID` binds the token to this device: the issuer
     /// stamps it into a claim and the relay refuses a token whose claim names
     /// a different device, so one lifted off this Mac is useless elsewhere.
     func signIn(issuer: String, clientID: String, deviceID: String, nowMs: UInt64) async {
+        // A sign-in run while the store is unreadable is the second token
+        // ``restore()`` describes, and this is the only place it can be
+        // stopped — the view's Try again cannot know what the store answered.
+        // So look again first, and let the answer decide: still refused, and
+        // `restore()` has just re-stated the refusal with a current status;
+        // answered with a token, and the session is restored rather than
+        // replaced. Only "answered, and there is nothing there" falls through
+        // to a login, which is the one case where writing a token is safe.
+        if storeRefusedToAnswer {
+            restore()
+            guard !storeRefusedToAnswer, credentials == nil else { return }
+        }
         guard !issuer.trimmed.isEmpty, !clientID.trimmed.isEmpty else {
             state = .failed(AccountError.notConfigured.localizedDescription)
             return
