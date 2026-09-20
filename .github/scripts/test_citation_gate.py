@@ -256,16 +256,29 @@ class SelfTest(GateCase):
         # directions of that silence matter, because most of what this change
         # added lives here rather than there.
         #
-        # Counted from the source rather than from a run, so it constrains
-        # the file on disk and not whatever a filtered invocation happened to
-        # execute. Same idiom and same caveat as the two tripwires beside it:
-        # the slack is deliberate, and raising the floor is a
-        # decision rather than bookkeeping. 100 against 109 today.
-        source = pathlib.Path(__file__).read_text(encoding="utf-8")
+        # Counted by asking the loader what it collects, not by matching
+        # `^    def test_` against this file's own source: sixty fake
+        # `def test_` lines written inside a docstring satisfy the regular
+        # expression and satisfy the loader not at all, and a tripwire a
+        # decorative string can trip is the silent-pass shape this gate
+        # exists to catch.
+        #
+        # What the floor promises, exactly: the loader collects at least 100
+        # cases from this module. It promises NOTHING about whether those
+        # cases assert anything, and no count of any kind could -- measured
+        # rather than assumed: on a four-case probe carrying two
+        # `@unittest.skip`s, `countTestCases` is 4 and `testsRun` is also 4,
+        # and a body gutted to `pass` is invisible to both. Skipping and
+        # gutting are not what this wire catches. Bulk deletion is.
+        #
+        # Same caveat as the two tripwires beside it: the slack is
+        # deliberate, and raising the floor is a decision rather than
+        # bookkeeping. 100 against 109 today.
+        collected = unittest.defaultTestLoader.loadTestsFromModule(
+            sys.modules[__name__]
+        ).countTestCases()
         self.assertGreaterEqual(
-            len(re.findall(r"^    def test_", source, re.MULTILINE)),
-            100,
-            "this suite lost cases; restore them or say why",
+            collected, 100, "this suite lost cases; restore them or say why"
         )
 
     def test_the_shipped_allowlist_stays_small(self):
