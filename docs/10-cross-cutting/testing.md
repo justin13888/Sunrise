@@ -271,10 +271,19 @@ the close with the substitution standing in it as one opaque word. Until it did,
 --jobs 1` was exit 0 on the strength of a flag belonging to `cargo metadata`,
 and its control — the same line without that flag — was exit 1; an unclosed
 `$(` was not noticed at all. Both halves of the shape matter. The substitution
-has to stay a word, because deleting it vacated the argument position it held
-and made `-p $(…) --all-features` red on a correct tree; and the words inside it
-have to stay a command, because a `cargo mutants` written inside `$( )` really
-runs and dropping it would lose it from the count.
+has to leave a word behind, because deleting it vacated the argument position it
+held and made `-p $(…) --all-features` red on a correct tree; and the words
+inside it have to stay a command, because a `cargo mutants` written inside `$( )`
+really runs and dropping it would lose it from the count.
+
+Double quoting is **state in that one scanner**, not a loop of its own, for the
+reason every other rule in it is one rule: `$( … )` and backticks are special
+inside a double quotation too, and a separate loop missed that silently.
+`out="$(cargo mutants -p x --jobs 1)"` was one opaque word — the invocation
+inside it never seen, the count never moved, the gate green on a tree running an
+unflagged campaign — while the identical text unquoted was exit 1. A bare `)`
+inside a quotation is not special, and reading it as the close made
+`.github/scripts/changelog.sh`'s `$(… grep -vE "(a|b)(\(…\))?" …)` stop lexing.
 
 Lexing once is the load-bearing half of that sentence. Splitting the raw line
 and then lexing the pieces put two quote rules in one file, and a single
@@ -332,8 +341,9 @@ apostrophe in it are both unbalanced quotations to a shell lexer, and blocking a
 merge for one is how a gate gets switched off. The tally is printed rather than
 kept quiet, so that a number which grew from forty-odd to four hundred would say
 so. On this repository it is 45, of which 44 are `mise.toml`'s triple-quote
-fences. Lexing every line rather than two costs about 21 ms of the gate's ~69 ms
-run — measurable, and nothing against a five-minute job.
+fences. Lexing every line rather than two costs about 21 ms — the gate's run
+goes from ~50 ms to ~73 ms, median of fifteen — which is measurable, and nothing
+against a five-minute job.
 
 The file set is **`mise.toml` plus every `*.yml`, `*.yaml` and `*.sh` under
 `.github/`**, at any depth, together with an **expected invocation count**. A

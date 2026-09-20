@@ -756,6 +756,41 @@ class FlagsGateContract(unittest.TestCase):
                     ),
                     2, "for a command substitution", "mise.toml")
 
+    def test_a_substitution_inside_double_quotes_is_still_a_substitution(self):
+        # The neighbour of the case above, one quote character away, and
+        # a silent green until the scanner's double-quote handling
+        # stopped being a loop of its own. `"$(cargo mutants …)"` was one
+        # opaque word, so the invocation inside it was never seen, the
+        # count never moved, and the gate printed OK on a tree running an
+        # unflagged campaign. Executed both ways: quoted was exit 0 and
+        # unquoted was exit 1, on the same text.
+        for quoted in ('out="$(cargo mutants -p x --jobs 1)"',
+                       "out=$(cargo mutants -p x --jobs 1)"):
+            with self.subTest(quoted=quoted):
+                self.assert_code(
+                    self.run_gate(
+                        MISE_WITH_FLAG.replace(
+                            "cargo mutants -p",
+                            f"{quoted}\ncargo mutants -p", 1),
+                        CI_WITH_FLAG,
+                    ),
+                    1, "missing from 1 of 3")
+
+    def test_a_bare_paren_inside_a_quotation_does_not_end_a_substitution(self):
+        # `)` is special only where the scanner is not inside a
+        # quotation. `.github/scripts/changelog.sh` writes
+        # `$(… grep -vE "(a|b)(\(…\))?" …)`, and reading those as the
+        # close made a line that lexes perfectly stop lexing.
+        self.assert_code(
+            self.run_gate(
+                MISE_WITH_FLAG.replace(
+                    'cargo mutants -p "$usage_crate"',
+                    'cargo mutants -p $(printf %s "$usage_crate" '
+                    '| grep -E "(a|b)(\\(x\\))?")'),
+                CI_WITH_FLAG,
+            ),
+            0, "2 cargo-mutants invocation(s) carry")
+
     def test_a_separator_inside_a_substitution_does_not_end_the_outer(self):
         # `$(printf '%s' "$shard" | tr / -)` is house style here —
         # mise.toml writes one — and the `|` inside it belongs to the

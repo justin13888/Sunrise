@@ -540,18 +540,28 @@ def commands(line: str) -> list[list[Word]]:
     `cargo mutants $(…) --all-features` loses its flag and goes red on a
     correct tree.
 
-    In the enclosing command the substitution is one opaque word, its
-    own source text. It has to be a word and not nothing: it occupies an
-    argument position, and deleting it let `-p $(cargo metadata …)
-    --all-features` read the flag as `-p`'s value and go red on a
-    correct tree. As a word it can never be `cargo`, never `mutants`,
-    never the flag and never an option in `VALUE_TAKING_OPTIONS`, so it
-    cannot vouch for anything or swallow anything. It also breaks the
-    word it is embedded in — `-p$(echo x)y` is read as three words where
-    the shell gives one — and that divergence is one-sided on purpose:
-    it can only split a word that would otherwise have been the flag or
-    half of `cargo mutants`, so it can produce a red or a count that has
-    moved, and never a green.
+    In the enclosing command the substitution's own source text goes
+    into the word it sits in, which is what the shell does with it:
+    `"a$(x)b"` and `-p$(x)y` are each one word. It has to leave a word
+    behind and not nothing, because it occupies an argument position —
+    deleting it let `-p $(cargo metadata …) --all-features` read the
+    flag as `-p`'s value and go red on a correct tree. As text it can
+    never be `cargo`, never `mutants`, never the flag and never an
+    option in `VALUE_TAKING_OPTIONS`, so it cannot vouch for anything or
+    swallow anything either.
+
+    Double quoting is state in this scanner and not a loop of its own,
+    for the reason every other rule here is: a nested scanner with a
+    quote rule of its own is two grammars again. `$( … )` and backticks
+    are special inside a double quotation and open there too — which is
+    what a separate loop got wrong, and it got it wrong silently:
+    `out="$(cargo mutants -p x --jobs 1)"` was one opaque word, the
+    invocation inside it was never seen, the count never moved, and the
+    gate printed OK on a tree running an unflagged campaign. The same
+    text unquoted was exit 1. A bare `)` inside a quotation is *not*
+    special, though: `$(… grep -E "(a|b)" …)` is one substitution, and
+    reading that `)` as the close made a line that lexes perfectly stop
+    lexing.
 
     A `$(` or a backtick that is never closed raises, exactly as an
     unterminated quotation does. It used to be invisible: an invocation
@@ -568,54 +578,89 @@ def commands(line: str) -> list[list[Word]]:
     value: list[str] = []
     raw: list[str] = []
     started = False
+    # Whether the scanner is inside a double quotation. State, not a loop
+    # of its own: a `$( … )` can open inside one, and a nested scanner
+    # with a quote rule of its own is the two-grammars shape this whole
+    # function exists to not have.
+    in_double = False
     # One entry per command substitution currently open: the opener that
-    # started it, where it started, and the enclosing command it
-    # interrupted.
-    enclosing: list[tuple[str, int, list[Word]]] = []
+    # started it, where it started, and the whole of the enclosing
+    # context it interrupted — that command's words, the word being
+    # built, and whether the enclosing text was inside a double
+    # quotation. All of it is restored on the close, which is what
+    # "the enclosing command resumes" means.
+    enclosing: list[
+        tuple[str, int, list[Word], list[str], list[str], bool, bool]] = []
     index = 0
     while index < len(line):
         char = line[index]
-        if char.isspace():
-            if started:
-                current.append(Word("".join(value), "".join(raw)))
-                value, raw, started = [], [], False
-            index += 1
-            continue
-        # A comment starts at the beginning of a word, as it does in the
-        # shell, in TOML and in YAML. `foo#bar` is not a comment and
-        # neither is `$#`; `started` is false at exactly the positions a
-        # word can begin at.
-        if char == "#" and not started:
-            break
+        if in_double:
+            if char == '"':
+                raw.append('"')
+                in_double = False
+                index += 1
+                continue
+            if char == "\\" and index + 1 < len(line) and \
+                    line[index + 1] in '"\\$`':
+                value.append(line[index + 1])
+                raw.append(line[index:index + 2])
+                index += 2
+                continue
+        else:
+            if char.isspace():
+                if started:
+                    current.append(Word("".join(value), "".join(raw)))
+                    value, raw, started = [], [], False
+                index += 1
+                continue
+            # A comment starts at the beginning of a word, as it does in
+            # the shell, in TOML and in YAML. `foo#bar` is not a comment
+            # and neither is `$#`; `started` is false at exactly the
+            # positions a word can begin at.
+            if char == "#" and not started:
+                break
         opening = ("$(" if line.startswith("$(", index)
                    else "`" if char == "`" and (
                        not enclosing or enclosing[-1][0] != "`")
                    else None)
         if opening is not None:
-            if started:
-                current.append(Word("".join(value), "".join(raw)))
-                value, raw, started = [], [], False
-            enclosing.append((opening, index, current))
-            current = []
+            enclosing.append(
+                (opening, index, current, value, raw, started, in_double))
+            current, value, raw = [], [], []
+            started, in_double = False, False
             index += len(opening)
             continue
-        closing = (char == ")" and enclosing and enclosing[-1][0] == "$(") \
+        # `$(` and a backtick are special inside a double quotation and a
+        # closing backtick is its own opener's mirror, but a bare `)`
+        # inside one is an ordinary character: `grep -E "(a|b)"` inside a
+        # substitution must not end it.
+        closing = (char == ")" and not in_double
+                   and enclosing and enclosing[-1][0] == "$(") \
             or (char == "`" and enclosing and enclosing[-1][0] == "`")
         if closing:
             if started:
                 current.append(Word("".join(value), "".join(raw)))
-                value, raw, started = [], [], False
             out.append(current)
-            _, start, current = enclosing.pop()
-            # The substitution stands in the enclosing command as one
-            # opaque word — its own source text, which is never `cargo`,
-            # never `mutants`, never the flag and never an option this
-            # gate knows. Dropping it outright instead vacated the slot
-            # it occupied, so `-p $(cargo metadata …) --all-features`
-            # read `--all-features` as `-p`'s value and went red on a
-            # correct tree.
+            _, start, current, value, raw, started, in_double = \
+                enclosing.pop()
+            # The substitution's own source text goes into the enclosing
+            # WORD, which is what the shell does with it — `"a$(x)b"` and
+            # `-p$(x)y` are each one word — and what keeps the argument
+            # position it occupies occupied. Dropping it vacated that
+            # slot, so `-p $(cargo metadata …) --all-features` read the
+            # flag as `-p`'s value and went red on a correct tree. As
+            # text it can never be `cargo`, never `mutants`, never the
+            # flag and never an option this gate knows, so it cannot
+            # vouch for anything or swallow anything either.
             substitution = line[start:index + 1]
-            current.append(Word(substitution, substitution))
+            value.append(substitution)
+            raw.append(substitution)
+            started = True
+            index += 1
+            continue
+        if in_double:
+            value.append(char)
+            raw.append(char)
             index += 1
             continue
         separator = next(
@@ -638,25 +683,9 @@ def commands(line: str) -> list[list[Word]]:
             index = close + 1
             continue
         if char == '"':
-            index += 1
             raw.append('"')
-            while True:
-                if index >= len(line):
-                    raise ValueError("no closing quotation")
-                inner = line[index]
-                if inner == '"':
-                    raw.append('"')
-                    index += 1
-                    break
-                if inner == "\\" and index + 1 < len(line) and \
-                        line[index + 1] in '"\\$`':
-                    value.append(line[index + 1])
-                    raw.append(line[index:index + 2])
-                    index += 2
-                    continue
-                value.append(inner)
-                raw.append(inner)
-                index += 1
+            in_double = True
+            index += 1
             continue
         if char == "\\":
             if index + 1 >= len(line):
@@ -668,6 +697,8 @@ def commands(line: str) -> list[list[Word]]:
         value.append(char)
         raw.append(char)
         index += 1
+    if in_double:
+        raise ValueError("no closing quotation")
     if enclosing:
         raise ValueError(
             f"no closing `{')' if enclosing[-1][0] == '$(' else '`'}` "
