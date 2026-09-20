@@ -377,10 +377,13 @@ is a different tool.
 The count is asserted against this repository in the contract test, not only by
 the live job. `Mutation flag gate` is not a required check, so a number that had
 stopped describing the tree would otherwise have had nothing blocking to say so.
+That one case costs a coupling worth knowing about: an **untracked**
+`.github/**/*.sh` holding a `cargo mutants` line fails the contract suite
+locally while the tracked tree is perfectly in step.
 
-`.github/scripts/test_mutants_flags_gate.py` asserts that contract against
-synthesised files, so watching the gate go red never requires editing the two
-real ones. Both run as `Mutation flag gate` and `Mutation flag gate contract`,
+`.github/scripts/test_mutants_flags_gate.py` asserts that contract against files
+it synthesises — every case but the one above — so watching the gate go red
+never requires editing the two real ones. Both run as `Mutation flag gate` and `Mutation flag gate contract`,
 on every pull request rather than on the nightly — the divergence is introduced
 in a pull request, and the `mutants` matrix that would eventually notice it does
 not report until 04:00 the next morning, by which time a floor has already been

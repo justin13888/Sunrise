@@ -1123,9 +1123,15 @@ run = "python3 .github/scripts/mutants-flags-gate.py"
 
 [tasks.mutants-flags-gate-test]
 description = "Assert the flag gate's exit-code contract (fast, no cargo)"
-# Runs in under a second: it synthesises a mise.toml and a ci.yml in a
-# temp directory and points the gate at those, so the only way to see the
-# gate go red is never to edit the real files to find out.
+# Runs in a few seconds: it synthesises a mise.toml and a ci.yml in a
+# temp directory and points the gate at those, so seeing the gate go red
+# never means editing the real files to find out. One case is the
+# exception and runs the gate against this repository, because the
+# invocation count the gate states is otherwise asserted nowhere a
+# developer runs — `Mutation flag gate` in ci.yml is not a required
+# check. That case costs a coupling to working-tree state: an untracked
+# .github/**/*.sh holding a cargo-mutants line fails this suite locally
+# while the tracked tree is perfectly in step.
 run = "python3 .github/scripts/test_mutants_flags_gate.py"
 
 [tasks.core-filesystem-gate-test]

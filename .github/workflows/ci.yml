@@ -908,12 +908,20 @@ jobs:
     runs-on: ubuntu-latest
     # One Python script over two files it synthesises itself. Seconds.
     timeout-minutes: 5
-    # The gate above reads this repository; this reads fixtures. Both are
-    # needed and neither substitutes for the other: the gate passing says
-    # the tree is in step, and says nothing about whether the gate would
-    # notice if it were not. The only way to watch it go red is to hand it
-    # two files that disagree, and the two files it reads in anger are
-    # ones nobody wants edited to find out.
+    # The gate above reads this repository; this reads fixtures it
+    # synthesises, with one deliberate exception. Both are needed and
+    # neither substitutes for the other: the gate passing says the tree is
+    # in step, and says nothing about whether the gate would notice if it
+    # were not. The only way to watch it go red is to hand it two files
+    # that disagree, and the two files it reads in anger are ones nobody
+    # wants edited to find out.
+    #
+    # The exception is one case, which runs the gate against this
+    # repository and asserts it holds the number of invocations the gate
+    # states. That number is otherwise asserted nowhere blocking, because
+    # `Mutation flag gate` above is not a required check. Its cost: an
+    # untracked `.github/**/*.sh` holding a cargo-mutants line fails this
+    # suite locally while the tracked tree is fine.
     steps:
       - uses: actions/checkout@v4
       - name: Exit-code contract

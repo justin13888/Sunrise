@@ -9,17 +9,30 @@ and the only way to see that happen is to hand it two files that disagree.
 Editing the repository's own `mise.toml` to check would be a change nobody
 wants committed, and running the gate by hand against a tree that happened
 to be on disk is what every other gate here learned not to rely on. So
-every case below synthesises its own files in a temp directory and names
-them on the command line. Nothing here reads the repository's `mise.toml`
-or `.github/workflows/ci.yml` — the `mutants-flags-gate` job does that,
-and a contract test that also did would go red for whatever the tree
-happens to be rather than for a change to the contract.
+every case below synthesises its own files in a temp directory — either
+naming them on the command line, or, in `run_gate_with_defaults`, laying
+the temp directory out like a repository so that `default_paths()` itself
+is exercised. The default file set is the one part of the gate that
+naming files bypasses, and until something ran it a typo there would have
+shipped behind a check that blocks nothing.
 
-The exception is deliberate: `run_gate_with_defaults` runs the gate with
-no arguments inside a temp directory laid out like a repository, because
-the default file set is the one part of the gate that naming files
-bypasses, and until something exercised it a typo in the default file set
-would have shipped behind a check that blocks nothing.
+One case reads this repository, and only one:
+`test_the_real_tree_is_in_step_and_holds_the_stated_count`. It runs the
+gate from the repository root with no arguments and asserts that the tree
+is in step and holds `EXPECTED_INVOCATIONS` invocations. It is here
+because that number is otherwise asserted nowhere a developer runs: the
+live `Mutation flag gate` job is not a required check, so a number that
+had stopped describing this repository would have had nothing blocking to
+say so.
+
+The cost of that one case is real and is the reason it is called out
+rather than left to be discovered. It couples this suite to working-tree
+state: an **untracked** `.github/**/*.sh` holding a `cargo mutants` line
+fails it locally while the tracked tree is perfectly in step. That is
+intended, it is the price of asserting the number somewhere blocking, and
+a reader who trips it should find it written down. Every other case here
+is hermetic, and a change to the contract is the only thing that should
+move them.
 
 The distinction the exit codes carry
 ------------------------------------
