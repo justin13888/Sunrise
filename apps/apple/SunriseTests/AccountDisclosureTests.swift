@@ -33,6 +33,16 @@ struct AccountDisclosureTests {
         AccountModel(store: store, makeDriver: makeDriver, openURL: { _ in })
     }
 
+    /// The one sign-in every case in this file drives; only the driver differs.
+    private func signIn(_ account: AccountModel) async {
+        await account.signIn(
+            issuer: "https://issuer.example",
+            clientID: "client",
+            deviceID: "abcd",
+            nowMs: 0
+        )
+    }
+
     /// A Keychain that holds a credential and will not let go of it.
     private func lockedStore() -> StubCredentialStore {
         StubCredentialStore(value: credentials(accessToken: "access-old"), clearFailure: refusal)
@@ -69,12 +79,7 @@ struct AccountDisclosureTests {
             "shown: signed out, the token stayed, and it carries the Keychain's own words"
         )
 
-        await account.signIn(
-            issuer: "https://issuer.example",
-            clientID: "client",
-            deviceID: "abcd",
-            nowMs: 0
-        )
+        await signIn(account)
         #expect(account.state == .failed("the issuer refused"))
         #expect(
             account.signOutDisclosure == .incomplete(refusalText),
@@ -166,12 +171,7 @@ struct AccountDisclosureTests {
         account.dismissSignOutIncomplete()
         #expect(account.signOutDisclosure == .retry, "signed out")
 
-        await account.signIn(
-            issuer: "https://issuer.example",
-            clientID: "client",
-            deviceID: "abcd",
-            nowMs: 0
-        )
+        await signIn(account)
         #expect(account.state == .failed("the issuer refused"))
         #expect(account.signOutDisclosure == .retry, "and still, under a sign-in that failed")
 
@@ -199,12 +199,7 @@ struct AccountDisclosureTests {
         account.signOut()
         account.dismissSignOutIncomplete()
 
-        await account.signIn(
-            issuer: "https://issuer.example",
-            clientID: "client",
-            deviceID: "abcd",
-            nowMs: 0
-        )
+        await signIn(account)
 
         #expect(probe.state == .awaitingBrowser, "the probe ran with the browser open")
         #expect(probe.seen == .retry, "and the retry was on offer there")
@@ -214,6 +209,7 @@ struct AccountDisclosureTests {
     /// browser, and rather than leaving the screen with nothing the retry
     /// takes its place. Dismissing that row retires the whole residue — the
     /// user has been told the fact the message carries.
+    ///
     @Test
     func theMessageStandsAsideForTheBrowserAndTheRetryTakesItsPlace() async {
         let probe = ParkedProbe()
@@ -224,12 +220,7 @@ struct AccountDisclosureTests {
         account.signOut()
         #expect(account.signOutDisclosure == .incomplete(refusalText))
 
-        await account.signIn(
-            issuer: "https://issuer.example",
-            clientID: "client",
-            deviceID: "abcd",
-            nowMs: 0
-        )
+        await signIn(account)
 
         #expect(probe.state == .awaitingBrowser)
         #expect(probe.seen == .retry, "the alarming row waits; the control does not")
@@ -267,17 +258,76 @@ struct AccountDisclosureTests {
         #expect(store.stored?.accessToken == "access-new", "the renewal replaced the credential")
         #expect(!account.signOutRefusedThisSession, "so the residue about the old one is spent")
 
-        await account.signIn(
-            issuer: "https://issuer.example",
-            clientID: "client",
-            deviceID: "abcd",
-            nowMs: 0
-        )
+        await signIn(account)
         #expect(account.state == .failed("the issuer refused"))
         #expect(
             account.signOutDisclosure == .none,
             "and no retry naming a credential the renewal already overwrote"
         )
+    }
+
+    /// A sign-out taken while the browser is still open is not undone by the
+    /// login it interrupted.
+    ///
+    /// `.awaitingBrowser` is not an idle state: it is `signIn()` suspended at
+    /// `driver.complete(...)`, and the retry row renders throughout it. The
+    /// user unlocks the Keychain, presses that row's **Sign out**, and the
+    /// credential is genuinely removed — then minutes later the tab they left
+    /// open completes the authorization. Without the generation check the
+    /// login's own `store.save` puts a fresh credential back and `publish()`
+    /// signs them in, silently: the harm the disclosure exists to report,
+    /// produced by the control that reports it.
+    @Test
+    func aSignOutWhileTheBrowserIsOpenDiscardsTheLoginThatLandsLate() async {
+        let probe = ParkedProbe()
+        let store = lockedStore()
+        let account = model(store: store, opened: { _ in
+            MainActor.assumeIsolated { probe.sample() }
+        })
+        probe.account = account
+        probe.act = { parked in
+            store.stopRefusingClears()
+            parked.signOut()
+        }
+        account.signOut()
+        account.dismissSignOutIncomplete()
+        #expect(account.signOutDisclosure == .retry, "the row whose Sign out this presses")
+
+        await signIn(account)
+
+        #expect(probe.state == .awaitingBrowser, "the sign-out ran inside the suspension")
+        #expect(probe.saidAfter(.none), "and it worked — the Keychain let go this time")
+        #expect(store.stored == nil, "the late token is discarded, not written over the removal")
+        #expect(account.state == .signedOut, "the user asked to be signed out, and still is")
+        #expect(account.accessToken == nil, "so there is no bearer for the relay or the sync bridge")
+        #expect(!account.signOutRefusedThisSession, "and nothing left behind to disclose")
+    }
+
+    /// The same rule on the other `store.save` in the type.
+    ///
+    /// A renewal is silent by design — the screen stays `.signedIn` and its
+    /// own **Sign out** is live for the whole of it — so a sign-out lands
+    /// inside `refreshIfNeeded`'s suspension just as readily, and the renewed
+    /// token would be written over the removal the user just asked for.
+    @Test
+    func aSignOutDuringARenewalDiscardsTheTokenItWasRenewing() async {
+        let probe = ParkedProbe()
+        let store = StubCredentialStore(value: credentials(accessToken: "access-old"))
+        let renewed = credentials(accessToken: "access-new", expiresAtMs: 9_000, renewAtMs: 8_000)
+        let account = model(store: store, makeDriver: { _, _ in
+            InterruptedRenewalDriver(renewed: renewed, interrupt: { probe.sample() })
+        })
+        probe.account = account
+        probe.act = { $0.signOut() }
+        account.restore()
+        #expect(account.state == .signedIn(expiresAtMs: 4_000))
+
+        await account.refreshIfNeeded(issuer: "https://issuer.example", clientID: "c", nowMs: 3_000)
+
+        #expect(probe.state == .signedIn(expiresAtMs: 4_000), "the sign-out ran mid-renewal")
+        #expect(store.stored == nil, "the renewed token is discarded, not saved over the removal")
+        #expect(account.state == .signedOut)
+        #expect(account.accessToken == nil)
     }
 
     /// What the disclosure NAMES, pinned.
@@ -328,14 +378,51 @@ struct RenewingButNotSigningInDriver: LoginDriver {
 /// Looks at the model from inside `signIn()`'s `openURL` hook, which is the
 /// one moment a test can observe `.awaitingBrowser` — the state is
 /// `private(set)` and the call that leaves it returns before the `await` does.
+///
+/// It is also the one moment a test can ACT in: ``act`` runs on the parked
+/// screen, where the user pressing the retry's buttons stands, and the two
+/// `After` properties are what the screen said once they had.
 @MainActor
 final class ParkedProbe {
     var account: AccountModel?
+    /// What the user does while the browser is open, if anything.
+    var act: (@MainActor (AccountModel) -> Void)?
     private(set) var state: AccountModel.State?
     private(set) var seen: AccountModel.SignOutDisclosure?
+    private(set) var seenAfter: AccountModel.SignOutDisclosure?
+
+    /// What the screen said once ``act`` had run. A method rather than a bare
+    /// comparison because `seenAfter == .none` reads as `Optional.none`, which
+    /// is a different question and one the compiler warns about.
+    func saidAfter(_ disclosure: AccountModel.SignOutDisclosure) -> Bool { seenAfter == disclosure }
 
     func sample() {
         state = account?.state
         seen = account?.signOutDisclosure
+        guard let account, let act else { return }
+        act(account)
+        seenAfter = account.signOutDisclosure
+    }
+}
+
+/// Renews, and lets the caller act on the model while the renewal is still in
+/// flight.
+///
+/// ``AccountModel/refreshIfNeeded(issuer:clientID:nowMs:)`` has no `openURL`
+/// hook, so the interleaving ``ParkedProbe`` observes for `signIn()` has to
+/// arrive through the driver instead. `refresh` is `nonisolated async`, so it
+/// hops to the main actor explicitly rather than assuming it is already there.
+struct InterruptedRenewalDriver: LoginDriver {
+    let renewed: StoredCredentials
+    let interrupt: @MainActor @Sendable () -> Void
+
+    func begin(deviceID: String) async throws -> URL { throw StubLoginError() }
+    func complete(timeoutMs: UInt64, nowMs: UInt64) async throws -> StoredCredentials {
+        throw StubLoginError()
+    }
+
+    func refresh(refreshToken: String, nowMs: UInt64) async throws -> StoredCredentials {
+        await MainActor.run { interrupt() }
+        return renewed
     }
 }

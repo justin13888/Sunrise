@@ -124,7 +124,9 @@ final class AccountModel {
     /// credential it refers to is still stored until a `clear()` or a
     /// `save()` replaces it. All three writes that replace it — ``signOut()``,
     /// ``signIn(issuer:clientID:deviceID:nowMs:)`` and
-    /// ``refreshIfNeeded(issuer:clientID:nowMs:)`` — retire it.
+    /// ``refreshIfNeeded(issuer:clientID:nowMs:)`` — retire it. The two
+    /// asynchronous ones replace nothing, and so retire nothing, when a
+    /// sign-out has landed since they began: see ``sessionGeneration``.
     private(set) var signOutResidue: SignOutResidue = .none
 
     /// The message a refused sign-out left unread, or `nil` once it has been
@@ -183,6 +185,23 @@ final class AccountModel {
     private let openURL: @Sendable (URL) -> Void
     private var credentials: StoredCredentials?
 
+    /// How many times the session has been ended since this model was made.
+    ///
+    /// A login is not atomic. ``signIn(issuer:clientID:deviceID:nowMs:)``
+    /// suspends at `driver.complete(...)` for up to ``redirectTimeoutMs`` with
+    /// the browser in front of the user, and the Account screen offers a
+    /// **Sign out** throughout that window — the retry row renders under
+    /// `.awaitingBrowser`. Nothing cancels the login when it is pressed: the
+    /// driver is a local of the suspended frame and the task that runs it is
+    /// unstructured and unstored. So the counter is what tells the resumed
+    /// login that the session it was establishing is not wanted any more.
+    ///
+    /// Bumped in ``signOut()`` rather than at the button, so every caller is
+    /// covered — the three on the Account screen, the two inside
+    /// ``refreshIfNeeded(issuer:clientID:nowMs:)``, and any added later
+    /// without this being noticed.
+    private var sessionGeneration: UInt64 = 0
+
     /// How long to wait for the browser redirect. Long enough for a password
     /// manager and a second factor, short enough that an abandoned login does
     /// not hold a loopback port forever.
@@ -220,6 +239,7 @@ final class AccountModel {
             state = .failed(AccountError.notConfigured.localizedDescription)
             return
         }
+        let generation = sessionGeneration
         let driver = makeDriver(issuer.trimmed, clientID.trimmed)
         do {
             let url = try await driver.begin(deviceID: deviceID)
@@ -229,6 +249,14 @@ final class AccountModel {
                 timeoutMs: Self.redirectTimeoutMs,
                 nowMs: nowMs
             )
+            // A sign-out taken while this login was parked in the browser ends
+            // this login too. ``signOut()`` has already removed the credential
+            // and left the screen where the user asked for it; saving `fresh`
+            // would put a new one back and `publish()` would sign them in
+            // again — minutes later, with nothing on screen to say so, which
+            // is the silent readmission the disclosure below exists to
+            // prevent. Drop the token instead and touch nothing.
+            guard sessionGeneration == generation else { return }
             try store.save(fresh)
             // A warning about the previous sign-out must not sit under a new
             // session — and this is the line that ends it: `save` has just
@@ -260,9 +288,17 @@ final class AccountModel {
             if current.hasExpired(nowMs: nowMs) { signOut() }
             return
         }
+        let generation = sessionGeneration
         let driver = makeDriver(issuer.trimmed, clientID.trimmed)
         do {
             let fresh = try await driver.refresh(refreshToken: refreshToken, nowMs: nowMs)
+            // The other `store.save` in this type, under the same rule: a
+            // sign-out taken while the renewal was in flight ended the session
+            // this was renewing, and writing the renewed token here would hand
+            // it straight back. Silent by design is what makes it worth
+            // guarding — the screen stays `.signedIn` throughout, so the
+            // **Sign out** at `AccountView.accountRow` is live the whole time.
+            guard sessionGeneration == generation else { return }
             try store.save(fresh)
             // The renewal has replaced the credential a refused sign-out left
             // behind, so the residue about it stops being true here for the
@@ -317,6 +353,10 @@ final class AccountModel {
         credentials = nil
         accessToken = nil
         state = .signedOut
+        // Ends any login or renewal still in flight, which is the other half
+        // of "forget the token". See ``sessionGeneration``: neither can be
+        // cancelled, so they are discarded on the way back in instead.
+        sessionGeneration &+= 1
     }
 
     /// Acknowledge ``signOutIncomplete``. The token it describes is still
