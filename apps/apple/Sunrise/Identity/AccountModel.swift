@@ -227,10 +227,10 @@ final class AccountModel {
     /// cancels the login when it is pressed: the driver is a local of the
     /// suspended frame and the task that runs it is unstructured and
     /// unstored. So the counter is what tells the resumed login that the
-    /// session it was establishing is not wanted any more — checked before the
-    /// transient state as well as before the save, because a discarded login
-    /// that has already written `.awaitingBrowser` leaves a screen with no
-    /// control on it.
+    /// session it was establishing is not wanted any more — checked at each of
+    /// the five points a resumed login or renewal would otherwise write, the
+    /// transient state included, because a discarded login that has already
+    /// written `.awaitingBrowser` leaves a screen with no control on it.
     ///
     /// Bumped in ``signOut()`` rather than at the button, so every caller is
     /// covered — the four on the Account screen, the two inside
@@ -315,6 +315,13 @@ final class AccountModel {
             credentials = fresh
             publish()
         } catch {
+            // The discard path once more. `credentials` and `accessToken` are
+            // already nil — ``signOut()`` cleared them — so what this guards is
+            // `.failed`: an abandoned login that times out on
+            // ``redirectTimeoutMs`` minutes later would otherwise change the
+            // screen by itself, replacing the `.signedOut` the user asked for
+            // with an error about a login they deliberately walked away from.
+            guard sessionGeneration == generation else { return }
             credentials = nil
             accessToken = nil
             state = .failed(error.localizedDescription)
@@ -360,6 +367,14 @@ final class AccountModel {
             // is still good until `expiresAtMs`, and the next tick tries
             // again. Dropping it here would sign the user out early, every
             // time the network blinked.
+            //
+            // Nor is it one when a sign-out has already ended the session:
+            // `current` was captured at entry and that sign-out has already
+            // invalidated it, so without this guard a renewal failing in the
+            // background calls ``signOut()`` a SECOND time — a `store.clear()`
+            // nobody asked for, and on a refusal a fresh `.unread` re-arming
+            // the disclosure the user retired, with no user action behind it.
+            guard sessionGeneration == generation else { return }
             if current.hasExpired(nowMs: nowMs) {
                 // `signOut()` assigns `.signedOut` last, so the renewal error
                 // has to be written after it or it is never shown. It used to

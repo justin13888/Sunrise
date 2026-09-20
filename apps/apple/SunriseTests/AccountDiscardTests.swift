@@ -104,6 +104,84 @@ struct AccountDiscardTests {
         #expect(account.accessToken == nil)
     }
 
+    /// The `catch` is on the discard path too, and it is the slowest arm of it.
+    ///
+    /// The user signs out under the open browser and the screen returns to
+    /// **Sign in…**. Five minutes later the tab they abandoned times out on
+    /// ``AccountModel/redirectTimeoutMs`` and, unguarded, the `catch` writes
+    /// `.failed` over the `.signedOut` they asked for: the Account screen
+    /// changes by itself into an error about a login they deliberately walked
+    /// away from.
+    @Test
+    func anAbandonedLoginTimingOutDoesNotReportItselfOverTheSignOut() async {
+        let probe = ParkedProbe()
+        let store = lockedStore()
+        let account = model(
+            store: store,
+            makeDriver: { _, _ in AbandonedLoginDriver() },
+            opened: { _ in MainActor.assumeIsolated { probe.sample() } }
+        )
+        probe.account = account
+        probe.act = { parked in
+            store.stopRefusingClears()
+            parked.signOut()
+        }
+        account.signOut()
+        account.dismissSignOutIncomplete()
+
+        await signIn(account)
+
+        #expect(probe.state == .awaitingBrowser, "the sign-out ran inside the suspension")
+        #expect(
+            account.state == .signedOut,
+            "and the timeout five minutes later is not news about a session that has ended"
+        )
+        #expect(account.accessToken == nil)
+        #expect(store.stored == nil, "the Keychain let go when they asked, and stays empty")
+    }
+
+    /// The other `catch`, where the same shape is worse in kind: it does not
+    /// only write, it calls ``AccountModel/signOut()`` a second time.
+    ///
+    /// `hasExpired` is tested against the credential captured at entry, which a
+    /// concurrent sign-out has already invalidated. Unguarded, a renewal that
+    /// fails on the network after that sign-out runs `store.clear()` again —
+    /// nobody asked for it, and under a lock that refuses it the refusal is
+    /// fresh, re-arming from the top a disclosure the user may have retired,
+    /// from a background event with no user action behind it.
+    @Test
+    func aRenewalFailingAfterASignOutDoesNotSignTheUserOutAgain() async {
+        let probe = ParkedProbe()
+        let store = lockedStore()
+        let account = model(store: store, makeDriver: { _, _ in
+            InterruptedFailingRenewalDriver(interrupt: { probe.sample() })
+        })
+        probe.account = account
+        probe.act = { $0.signOut() }
+        account.signOut()
+        account.dismissSignOutIncomplete()
+        account.dismissSignOutRetry()
+        #expect(account.signOutDisclosure == .none, "told twice, and done being told")
+
+        account.restore()
+        #expect(account.state == .signedIn(expiresAtMs: 4_000), "a second window reloads it")
+
+        await account.refreshIfNeeded(issuer: "https://issuer.example", clientID: "c", nowMs: 4_001)
+
+        #expect(probe.state == .signedIn(expiresAtMs: 4_000), "the sign-out ran mid-renewal")
+        #expect(
+            store.clearCount == 2,
+            "the user's two sign-outs, and no third one from a renewal failing behind the screen"
+        )
+        #expect(
+            account.state == .signedOut,
+            "so the screen stays where the sign-out put it, not on the renewal's network error"
+        )
+        #expect(
+            account.signOutDisclosure == .incomplete(refusalText),
+            "and what it discloses is the user's own refusal, not one the app went and provoked"
+        )
+    }
 }
 
 /// Lets the caller act on the model while `begin` is still in flight.
@@ -128,5 +206,26 @@ struct InterruptedBeginDriver: LoginDriver {
 
     func refresh(refreshToken: String, nowMs: UInt64) async throws -> StoredCredentials {
         try await inner.refresh(refreshToken: refreshToken, nowMs: nowMs)
+    }
+}
+
+/// A renewal the caller can act on, which then fails — the network blink
+/// ``AccountModel/refreshIfNeeded(issuer:clientID:nowMs:)``'s `catch` exists
+/// for, arriving after a sign-out rather than instead of one.
+///
+/// ``InterruptedRenewalDriver`` succeeds, so it reaches the guard on the save
+/// and never the one in the `catch`.
+struct InterruptedFailingRenewalDriver: LoginDriver {
+    let interrupt: @MainActor @Sendable () -> Void
+
+    func begin(deviceID: String) async throws -> URL { throw StubLoginError() }
+
+    func complete(timeoutMs: UInt64, nowMs: UInt64) async throws -> StoredCredentials {
+        throw StubLoginError()
+    }
+
+    func refresh(refreshToken: String, nowMs: UInt64) async throws -> StoredCredentials {
+        await MainActor.run { interrupt() }
+        throw StubLoginError()
     }
 }
