@@ -65,45 +65,6 @@ final class AccountModel {
         case failed(String)
     }
 
-    /// What a refused sign-out has left behind, and how far the user has got
-    /// with it.
-    ///
-    /// One value rather than a flag per row. As two independent booleans the
-    /// message and the retry were simultaneously true in the ordinary refused
-    /// state, so nothing here said which of the two rows the screen should
-    /// carry and the view had to invent the rule — off the model, where no
-    /// test reaches it. Every combination that can exist is a case here, and
-    /// no two of them are true at once.
-    enum SignOutResidue: Equatable {
-        /// The Keychain let go of the credential, or was never asked.
-        case none
-        /// It refused, and the message has not been acknowledged yet. The
-        /// payload is the Keychain's own localized prose.
-        case unread(String)
-        /// The message was acknowledged. The credential it named is still
-        /// stored, so the control that re-runs the removal stays.
-        case acknowledged
-        /// The retry was dismissed too, so the screen says nothing more about
-        /// this refusal. A sign-out refused again starts the sequence over.
-        case retired
-    }
-
-    /// What the Account screen renders about the last sign-out — the whole of
-    /// it, as one value.
-    ///
-    /// The view switches over this and keeps no rule of its own, so it cannot
-    /// render both rows, nor neither, nor the wrong one of the two when the
-    /// conditions behind them overlap.
-    enum SignOutDisclosure: Equatable {
-        /// The screen says nothing about the last sign-out.
-        case none
-        /// The full disclosure, carrying the Keychain's own message.
-        case incomplete(String)
-        /// The message has been read; the credential it named is still
-        /// stored, so the way to act on it is still offered.
-        case retry
-    }
-
     private(set) var state: State = .signedOut
 
     /// The bearer to present to the relay, or `nil` when signed out.
@@ -129,91 +90,24 @@ final class AccountModel {
     /// sign-out has landed since they began: see ``sessionGeneration``.
     private(set) var signOutResidue: SignOutResidue = .none
 
-    /// The message a refused sign-out left unread, or `nil` once it has been
-    /// acknowledged, retired, or made untrue by a replaced credential.
-    var signOutIncomplete: String? {
-        if case let .unread(message) = signOutResidue { message } else { nil }
-    }
-
-    /// Whether the Keychain has refused a sign-out whose credential is still
-    /// the stored one. Unlike ``signOutIncomplete`` this outlives
-    /// ``dismissSignOutIncomplete()`` and ``dismissSignOutRetry()``:
-    /// acknowledging a message does not remove the credential it is about.
-    var signOutRefusedThisSession: Bool { signOutResidue != .none }
-
-    /// What the Account screen renders about the last sign-out.
-    ///
-    /// Which of the cases wins is decided here rather than at the render site,
-    /// so a change to it fails a test instead of only a screenshot. The
-    /// message is suppressed under `.signedIn`, where its text would predict a
-    /// re-admission that has already happened, and stands aside under
-    /// `.awaitingBrowser` for the browser in front of it. The retry is
-    /// suppressed under `.signedIn` alone, whose own arm carries a **Sign
-    /// out**: an abandoned login parks `.awaitingBrowser` for
-    /// ``redirectTimeoutMs`` with no cancel and no other control that reaches
-    /// `store.clear()`.
-    var signOutDisclosure: SignOutDisclosure {
-        switch signOutResidue {
-        case .none, .retired:
-            return .none
-        case let .unread(message) where stateTheMessageIsTrueIn:
-            return .incomplete(message)
-        case .unread, .acknowledged:
-            return stateTheRetryIsUsefulIn ? .retry : .none
-        }
-    }
-
-    /// Whether the screen should carry a plain **Sign out** of its own,
-    /// alongside whatever ``signOutDisclosure`` says — which, where this is
-    /// `true`, is nothing.
-    ///
-    /// ``dismissSignOutRetry()`` retires the disclosure, not the credential.
-    /// Without this the retired state is the end state this whole change
-    /// exists to remove: the token is still in the Keychain, the next launch
-    /// reads it back, and no control on the Account screen reaches
-    /// `store.clear()` — **Sign in…** needs a `save()` the same lock refuses,
-    /// and the `.signedIn` arm's own **Sign out** is a state away. It is
-    /// reached by consent here rather than by a dismissal that destroyed the
-    /// only retry, which is a real difference and not a difference in end
-    /// state. This is the control that keeps it from being a trap.
-    ///
-    /// It carries no warning text, because the user has said twice that they
-    /// do not want to be told again; and unlike the row it replaces it does
-    /// clear, because a sign-out that succeeds sets the residue to
-    /// ``SignOutResidue/none`` and this with it.
-    var offersBareSignOut: Bool {
-        guard signOutRefusedThisSession, signOutDisclosure == .none else { return false }
-        switch state {
-        // The two settled states. Not `.signedIn`, whose arm has a **Sign
-        // out** already, and not `.awaitingBrowser`, where a login is in front
-        // of the user and a retired residue is the one thing they asked to
-        // stop hearing about.
-        case .signedOut, .failed: return true
-        case .signedIn, .awaitingBrowser: return false
-        }
-    }
-
-    /// The states the message's own text is true and wanted in.
-    private var stateTheMessageIsTrueIn: Bool {
-        switch state {
-        case .signedOut, .failed: true
-        case .signedIn, .awaitingBrowser: false
-        }
-    }
-
-    /// The states a retry is worth offering in: every one where the Account
-    /// screen has no other control that reaches ``signOut()``.
-    private var stateTheRetryIsUsefulIn: Bool {
-        switch state {
-        case .signedOut, .failed, .awaitingBrowser: true
-        case .signedIn: false
-        }
-    }
-
     private let store: any CredentialStore
     private let makeDriver: @Sendable (String, String) -> any LoginDriver
     private let openURL: @Sendable (URL) -> Void
     private var credentials: StoredCredentials?
+
+    /// Whether the last look at the store was refused in a way that may have
+    /// left a copy of the token somewhere **nobody read**.
+    ///
+    /// Held rather than derived, because the two states it separates render the
+    /// same: `signedOut` and a `failed` carrying a Keychain sentence both mean
+    /// "no token in hand", and only this says whether asking again is the
+    /// remedy or whether signing in is. ``signIn(issuer:clientID:deviceID:nowMs:)``
+    /// is its only reader; ``restore()`` sets it either way on every call, so it
+    /// never outlives the condition it describes.
+    ///
+    /// **It is the shape of the refusal that sets it, not the fact of one**, and
+    /// the difference is a remedy: see ``mayHaveLeftACopyUnread(_:)``.
+    private var storeRefusedToAnswer = false
 
     /// How many times the session has been ended since this model was made.
     ///
@@ -262,15 +156,123 @@ final class AccountModel {
     }
 
     /// Restore a previous session, if there is one.
+    ///
+    /// **`nil` and a throw are different answers, and this is the method where
+    /// that starts to matter.** `CredentialStore.load` answers `nil` only when
+    /// *both* keychains reported not-found — genuinely signed out — and throws
+    /// when one of them was reached and refused, which leaves it unknown whether
+    /// a token is sitting in it. `KeychainError.otherDomainUnreadable` is the
+    /// shape that arrives when the refusing store is the one this build did not
+    /// resolve to; `KeychainError.migrationUnverified` is the shape that arrives
+    /// once two tokens already disagree.
+    ///
+    /// A `try?` here collapsed the second answer into the first, and the
+    /// collapse was not cosmetic. The signed-out row offers exactly one thing,
+    /// Sign in; signing in writes a *fresh* token into the domain this build
+    /// resolved to while the unreadable one stays where it was; and two secrets
+    /// under one `(service, account)` is `migrationUnverified` on every later
+    /// launch — signed out in silence, for good, by the remedy the app itself
+    /// held out. `KeychainCredentialStore.save` describes the same loop from the
+    /// writing end, and names the one thing that ends it: a sign-in's
+    /// cross-domain write collapses the pair.
+    ///
+    /// So the refusal is reported. It renders through `failed`, which already
+    /// carries a sentence — for `otherDomainUnreadable` one naming the *other*
+    /// keychain rather than the working one — and a Try again that
+    /// ``signIn(issuer:clientID:deviceID:nowMs:)`` turns into a second look at
+    /// the store rather than a second token. No new `State` case, because the
+    /// difference a new case would encode is not one the view can act on
+    /// differently: unlocking the keychain is the remedy either way, and Try
+    /// again is how the app finds out it happened.
+    ///
+    /// **What Try again does with it is decided by the shape, not by the
+    /// throw**, and this is where that is recorded. For every shape that may
+    /// have left a copy unread it is a second look; for
+    /// ``KeychainError/migrationUnverified`` it is a sign-in, because there the
+    /// sign-in *is* the repair. ``mayHaveLeftACopyUnread(_:)`` is the whole of
+    /// the distinction, and gating on any throw instead is what made that one
+    /// shape a state with no way out of it at all.
     func restore() {
-        credentials = try? store.load()
-        publish()
+        do {
+            credentials = try store.load()
+            storeRefusedToAnswer = false
+            publish()
+        } catch {
+            credentials = nil
+            accessToken = nil
+            storeRefusedToAnswer = Self.mayHaveLeftACopyUnread(error)
+            state = .failed(error.localizedDescription)
+        }
+    }
+
+    /// Whether a refusal out of ``CredentialStore/load()`` may have left a copy
+    /// of the token somewhere **nobody read** — the one condition under which
+    /// offering a sign-in writes a *second* secret beside a first that survives.
+    ///
+    /// Exhaustive on purpose: a new ``KeychainError`` case has to be placed here
+    /// rather than inheriting a default, because the default is a user-visible
+    /// dead end in one direction and a lost session in the other.
+    ///
+    /// - ``KeychainError/otherDomainUnreadable(_:)`` is the condition by
+    ///   definition — the other keychain was reached, refused, and may be
+    ///   holding a copy.
+    /// - ``KeychainError/unexpected(_:)`` and ``KeychainError/malformedItem``
+    ///   leave an item that exists and was not read; so does an error from a
+    ///   ``CredentialStore`` this model knows nothing about, which is why the
+    ///   non-`KeychainError` answer is `true`.
+    /// - ``KeychainError/writtenButOtherDomainRefused(_:)`` names a surviving
+    ///   copy in as many words.
+    /// - ``KeychainError/accessibilityNotRaised(_:)`` belongs with them, and the
+    ///   grouping is the one that is not obvious.
+    ///   ``KeychainItem/upgradeAccessibilityIfNeeded()`` asks only for
+    ///   `kSecReturnAttributes`, so it establishes that an item **exists**
+    ///   without ever reading it, and
+    ///   ``KeychainMigration/loadMigratingIfNeeded()`` raises it one line before
+    ///   the cross-domain read that is the only thing that ever looks in the
+    ///   other keychain. Nor can a sign-in repair it: the write it runs is the
+    ///   same `SecItemUpdate` that was just refused. The remedy that method
+    ///   names for itself is the next look, which is exactly what this returns.
+    ///
+    /// ``KeychainError/migrationUnverified`` is the exception, and it is the
+    /// only one. There *both* copies were read and compared — that is what the
+    /// shape means — so nothing survives unread, and a sign-in's
+    /// ``KeychainItem/writeAcrossDomains(_:)`` writes this domain and deletes
+    /// the other, which is the collapse that ends the disagreement. Blocking the
+    /// login there does not prevent a second token; it prevents the repair.
+    private static func mayHaveLeftACopyUnread(_ error: any Error) -> Bool {
+        guard let refusal = error as? KeychainError else { return true }
+        switch refusal {
+        case .migrationUnverified:
+            return false
+        case .malformedItem, .unexpected, .accessibilityNotRaised,
+             .writtenButOtherDomainRefused, .otherDomainUnreadable:
+            return true
+        }
     }
 
     /// Run a login. `deviceID` binds the token to this device: the issuer
     /// stamps it into a claim and the relay refuses a token whose claim names
     /// a different device, so one lifted off this Mac is useless elsewhere.
     func signIn(issuer: String, clientID: String, deviceID: String, nowMs: UInt64) async {
+        // A sign-in run while the store may be holding a token nobody read is
+        // the second token `restore()` describes, and this is the only place it
+        // can be stopped — the view's Try again cannot know what the store
+        // answered. So look again first, and let the answer decide: still
+        // refused, and `restore()` has just re-stated the refusal with a
+        // current status; answered with a token, and the session is restored
+        // rather than replaced. Only "answered, and there is nothing there"
+        // falls through to a login from here.
+        //
+        // What is guarded is the *shape* of the last refusal, not the fact of
+        // one. `migrationUnverified` never sets the flag and so never reaches
+        // this block: there the two copies already exist and have both been
+        // read, and the login below is what collapses them. Gating on any throw
+        // is what left that shape with no remedy at all — every Try again
+        // re-threw and returned. See `mayHaveLeftACopyUnread(_:)`.
+        if storeRefusedToAnswer {
+            restore()
+            guard !storeRefusedToAnswer, credentials == nil else { return }
+        }
         guard !issuer.trimmed.isEmpty, !clientID.trimmed.isEmpty else {
             state = .failed(AccountError.notConfigured.localizedDescription)
             return

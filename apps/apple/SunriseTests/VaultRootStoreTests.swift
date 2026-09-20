@@ -15,7 +15,8 @@ struct KeychainItemTests {
         KeychainItem(
             service: "dev.sunrise.Sunrise.tests.\(UUID().uuidString)",
             account: "vault-root",
-            accessibility: accessibility
+            accessibility: accessibility,
+            domain: KeychainDomain.current
         )
     }
 
@@ -80,7 +81,8 @@ struct KeychainItemTests {
         let asThisBuildWantsIt = KeychainItem(
             service: asAnOlderBuildWroteIt.service,
             account: asAnOlderBuildWroteIt.account,
-            accessibility: .afterFirstUnlockThisDeviceOnly
+            accessibility: .afterFirstUnlockThisDeviceOnly,
+            domain: asAnOlderBuildWroteIt.domain
         )
         try asThisBuildWantsIt.upgradeAccessibilityIfNeeded()
 
@@ -105,13 +107,14 @@ struct KeychainItemTests {
 /// The `kSecAttrAccessible` the Keychain actually recorded, or `nil` when the
 /// keychain in use does not implement protection classes.
 private func storedAccessibility(of item: KeychainItem) -> String? {
-    let query: [String: Any] = [
+    var query: [String: Any] = [
         kSecClass as String: kSecClassGenericPassword,
         kSecAttrService as String: item.service,
         kSecAttrAccount as String: item.account,
         kSecReturnAttributes as String: true,
         kSecMatchLimit as String: kSecMatchLimitOne
     ]
+    item.domain.apply(to: &query)
     var found: CFTypeRef?
     guard SecItemCopyMatching(query as CFDictionary, &found) == errSecSuccess,
           let attributes = found as? [String: Any]
@@ -188,7 +191,8 @@ struct VaultRootTests {
         let asAnOlderBuildWroteIt = KeychainItem(
             service: KeychainVaultRootStore.service,
             account: vaultName,
-            accessibility: .afterFirstUnlock
+            accessibility: .afterFirstUnlock,
+            domain: KeychainDomain.current
         )
         defer { try? asAnOlderBuildWroteIt.delete() }
 
@@ -198,6 +202,35 @@ struct VaultRootTests {
         let store = KeychainVaultRootStore(vaultName: vaultName)
         #expect(try store.load() == root, "raising the class must not cost the user their vault")
         #expect(storedAccessibility(of: asAnOlderBuildWroteIt) == expectedThisDeviceOnly)
+    }
+
+    /// `load` now runs a Keychain *migration* ahead of the accessibility
+    /// raise, and the failure that migration could introduce is the one it
+    /// exists to prevent: a source and a destination that are two names for one
+    /// stored item would be verified against each other and then deleted.
+    ///
+    /// On every configuration this repository can build they *are* one item —
+    /// the Mac cannot reach the data-protection keychain, and the phone has no
+    /// other keychain to reach — so this case is the one both platforms take,
+    /// and it has to be boring. Read twice, because a migration that ate the
+    /// item would still answer the first read from its own memory of it.
+    @Test
+    func aRootInTheLoginKeychainSurvivesTheMigrationOnEveryLoad() throws {
+        let vaultName = "tests-\(UUID().uuidString)"
+        let asAnOlderBuildWroteIt = KeychainItem(
+            service: KeychainVaultRootStore.service,
+            account: vaultName,
+            accessibility: KeychainVaultRootStore.accessibility,
+            domain: .login
+        )
+        defer { try? asAnOlderBuildWroteIt.delete() }
+
+        let root = try VaultRoot.generate()
+        try asAnOlderBuildWroteIt.write(root)
+
+        let store = KeychainVaultRootStore(vaultName: vaultName)
+        #expect(try store.load() == root, "the migration must not eat the item it is moving")
+        #expect(try store.load() == root, "and it must still be there on the launch after")
     }
 }
 
@@ -246,7 +279,8 @@ struct KeychainCredentialStoreTests {
         let asAnOlderBuildWroteIt = KeychainItem(
             service: KeychainCredentialStore.service,
             account: account,
-            accessibility: .afterFirstUnlock
+            accessibility: .afterFirstUnlock,
+            domain: KeychainDomain.current
         )
         defer { try? asAnOlderBuildWroteIt.delete() }
         try asAnOlderBuildWroteIt.write(JSONEncoder().encode(credentials("access")))
@@ -255,6 +289,26 @@ struct KeychainCredentialStoreTests {
         let store = KeychainCredentialStore(account: account)
         #expect(try store.load() == credentials("access"), "raising it must not sign the user out")
         #expect(storedAccessibility(of: asAnOlderBuildWroteIt) == expectedThisDeviceOnly)
+    }
+
+    /// The same guard `aRootInTheLoginKeychainSurvivesTheMigrationOnEveryLoad`
+    /// puts on the vault root, for the credential: each store migrates its own
+    /// item, so each store has to be checked for it.
+    @Test
+    func aTokenInTheLoginKeychainSurvivesTheMigrationOnEveryLoad() throws {
+        let account = "tests-\(UUID().uuidString)"
+        let asAnOlderBuildWroteIt = KeychainItem(
+            service: KeychainCredentialStore.service,
+            account: account,
+            accessibility: KeychainCredentialStore.accessibility,
+            domain: .login
+        )
+        defer { try? asAnOlderBuildWroteIt.delete() }
+        try asAnOlderBuildWroteIt.write(JSONEncoder().encode(credentials("access")))
+
+        let store = KeychainCredentialStore(account: account)
+        #expect(try store.load() == credentials("access"))
+        #expect(try store.load() == credentials("access"))
     }
 
     /// A credential written under the new class stays under it, which is the
@@ -269,7 +323,8 @@ struct KeychainCredentialStoreTests {
         let item = KeychainItem(
             service: KeychainCredentialStore.service,
             account: account,
-            accessibility: KeychainCredentialStore.accessibility
+            accessibility: KeychainCredentialStore.accessibility,
+            domain: KeychainDomain.current
         )
         #expect(storedAccessibility(of: item) == expectedThisDeviceOnly)
     }

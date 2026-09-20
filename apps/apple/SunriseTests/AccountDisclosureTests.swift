@@ -7,11 +7,11 @@ import Testing
 /// What the Account screen says about a sign-out the Keychain refused.
 ///
 /// Split out of ``AccountModelTests`` rather than merged into it: that file
-/// stands three lines under SwiftLint's `file_length` warning of 520, which
-/// `swiftlint lint --strict` makes a red gate, and these cases are a subject of
-/// their own — the value the view renders, rather than the state machine that
-/// feeds it. `project.yml` globs `SunriseTests/`, so a new file here is picked
-/// up by both the macOS and the iOS unit bundle with no project edit.
+/// was three lines under SwiftLint's `file_length` warning of 520 when these
+/// cases were written, which `swiftlint lint --strict` makes a red gate, and
+/// these cases are a subject of their own — the value the view renders, not
+/// the state machine that feeds it. `project.yml` globs `SunriseTests/`, so a
+/// file here joins both the macOS and the iOS unit bundle with no project edit.
 ///
 /// The helpers come from ``AccountModelTests``' file: `StubCredentialStore`,
 /// `StubLoginDriver`, `StubLoginError` and `credentials(accessToken:)` are all

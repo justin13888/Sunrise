@@ -9,7 +9,7 @@ import Testing
 ///
 /// Split out rather than merged into either sibling for the reason
 /// ``AccountDisclosureTests`` states about itself: `AccountModelTests.swift`
-/// stands at 470 of SwiftLint's `file_length` warning of 520 and
+/// stands at 489 of SwiftLint's `file_length` warning of 520 and
 /// `AccountDisclosureTests.swift` at 512, `swiftlint lint --strict` makes that
 /// warning a red gate, and these cases will not fit in either. They are also a
 /// subject of their own — not the state machine, and not the value the view

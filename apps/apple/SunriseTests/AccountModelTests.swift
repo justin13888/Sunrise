@@ -7,6 +7,7 @@ import Testing
 final class StubCredentialStore: CredentialStore, @unchecked Sendable {
     private let lock = NSLock()
     private var value: StoredCredentials?
+    private var failure: (any Error)?
     private(set) var clearCount = 0
     /// What `clear()` refuses with, standing in for a locked Keychain. The
     /// value survives the refusal, which is the fact this is about. Mutable
@@ -21,12 +22,25 @@ final class StubCredentialStore: CredentialStore, @unchecked Sendable {
     /// turned on cannot express the recovery this change is about.
     private var saveFailure: (any Error)?
 
-    init(value: StoredCredentials? = nil, clearFailure: (any Error)? = nil) {
+    init(
+        value: StoredCredentials? = nil,
+        loadError: (any Error)? = nil,
+        clearFailure: (any Error)? = nil
+    ) {
         self.value = value
+        failure = loadError
         self.clearFailure = clearFailure
     }
 
     var stored: StoredCredentials? { lock.withLock { value } }
+
+    /// The refusal `load` raises, settable mid-case: what a refused read costs
+    /// is decided by the *next* look, so a case has to be able to unlock the
+    /// keychain between two of them.
+    var loadError: (any Error)? {
+        get { lock.withLock { failure } }
+        set { lock.withLock { failure = newValue } }
+    }
 
     /// The user unlocked the Keychain.
     func stopRefusingClears() { lock.withLock { clearFailure = nil } }
@@ -34,7 +48,12 @@ final class StubCredentialStore: CredentialStore, @unchecked Sendable {
     /// The same unlock, on the other half of the lock.
     func stopRefusingSaves() { lock.withLock { saveFailure = nil } }
 
-    func load() throws -> StoredCredentials? { lock.withLock { value } }
+    func load() throws -> StoredCredentials? {
+        try lock.withLock {
+            if let failure { throw failure }
+            return value
+        }
+    }
 
     func save(_ credentials: StoredCredentials) throws {
         try lock.withLock {

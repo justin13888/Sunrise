@@ -59,6 +59,29 @@ struct KeychainRelayDeviceIDStoreTests {
         #expect(KeychainRelayDeviceIDStore.accessibility == .afterFirstUnlockThisDeviceOnly)
     }
 
+    /// The guard the Keychain migration needs on every store that runs one.
+    /// `load` migrates this item before it raises its class, and on every
+    /// configuration this repository can build the source and the destination
+    /// are two names for one stored item — which a migration that did not
+    /// notice would verify against itself and then delete. Read twice, because
+    /// the failure only shows on the launch after.
+    @Test
+    func anIDInTheLoginKeychainSurvivesTheMigrationOnEveryLoad() throws {
+        let vaultName = "tests-\(UUID().uuidString)"
+        let asAnOlderBuildWroteIt = KeychainItem(
+            service: KeychainRelayDeviceIDStore.service,
+            account: vaultName,
+            accessibility: KeychainRelayDeviceIDStore.accessibility,
+            domain: .login
+        )
+        defer { try? asAnOlderBuildWroteIt.delete() }
+        try asAnOlderBuildWroteIt.write(Data("dev_01J8ZQ7X9K3M5N7P9R1T3V5W7Y".utf8))
+
+        let store = KeychainRelayDeviceIDStore(vaultName: vaultName)
+        #expect(try store.load() == "dev_01J8ZQ7X9K3M5N7P9R1T3V5W7Y")
+        #expect(try store.load() == "dev_01J8ZQ7X9K3M5N7P9R1T3V5W7Y")
+    }
+
     /// Its own service, so a user who deletes one Sunrise item in Keychain
     /// Access does not silently take the others with it.
     @Test
