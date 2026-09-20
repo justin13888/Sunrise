@@ -672,6 +672,91 @@ class FlagsGateContract(unittest.TestCase):
                     ),
                     1, "missing from 1 of 2")
 
+    def test_a_flag_inside_a_command_substitution_does_not_vouch(self):
+        # The lexer modelled quotes and escapes and nothing else, so
+        # `$(`, `)` and backticks were ordinary characters and a word
+        # belonging to a NESTED command became a word of the invocation
+        # around it. Executed at the previous head with a control: this
+        # line was exit 0, and the same line with `--all-features` taken
+        # out of the substitution was exit 1. The flag is an argument to
+        # `cargo metadata`; it says nothing about what cargo-mutants
+        # built.
+        for substitution in (
+            "$(cargo metadata --all-features --no-deps --format-version 1)",
+            "`cargo metadata --all-features --no-deps`",
+        ):
+            with self.subTest(substitution=substitution):
+                self.assert_code(
+                    self.run_gate(
+                        MISE_WITH_FLAG.replace(
+                            '-p "$usage_crate" --all-features',
+                            f"-p {substitution}"),
+                        CI_WITH_FLAG,
+                    ),
+                    1, "missing from 1 of 2")
+
+    def test_a_flag_outside_a_substitution_still_vouches(self):
+        # The innocent neighbour, and the reason the substitution has to
+        # be one opaque WORD of the enclosing command rather than
+        # nothing at all. Dropping it vacated the argument position it
+        # occupied, so `-p $(…)` left `--all-features` sitting where
+        # `-p`'s value sits and the gate went red on a correct tree.
+        # Treating `$(`, `)` and backticks as separators instead is the
+        # same failure by another route: it ends the enclosing command
+        # at the substitution, and the flag after it belongs to nothing.
+        self.assert_code(
+            self.run_gate(
+                MISE_WITH_FLAG.replace(
+                    '-p "$usage_crate" --all-features',
+                    "-p $(cargo metadata --no-deps) --all-features"),
+                CI_WITH_FLAG,
+            ),
+            0, "2 cargo-mutants invocation(s) carry")
+
+    def test_an_invocation_inside_a_substitution_is_still_an_invocation(self):
+        # Dropping the substitution's words was the other tempting
+        # answer and it loses this: a `cargo mutants` written inside
+        # `$( )` really runs. It is checked as a command of its own, so
+        # it raises the count and is held to the flag like any other.
+        self.assert_code(
+            self.run_gate(
+                MISE_WITH_FLAG.replace(
+                    'cargo mutants -p "$usage_crate" --all-features',
+                    'echo $(cargo mutants -p "$usage_crate")'),
+                CI_WITH_FLAG,
+            ),
+            1, "missing from 1 of 2")
+
+    def test_an_unclosed_command_substitution_is_2_not_a_pass(self):
+        # An unbalanced `$(` used to be invisible: every character of it
+        # was ordinary, so the line lexed happily and the gate reported
+        # OK. It refuses now, for the reason an unbalanced quotation
+        # does — a typo must not be a way of passing.
+        for opener, closer in (("$(", ")"), ("`", "`")):
+            with self.subTest(opener=opener):
+                self.assert_code(
+                    self.run_gate(
+                        MISE_WITH_FLAG.replace(
+                            '-p "$usage_crate" --all-features',
+                            f"-p {opener}cargo metadata --all-features"),
+                        CI_WITH_FLAG,
+                    ),
+                    2, "for a command substitution", "mise.toml")
+
+    def test_a_separator_inside_a_substitution_does_not_end_the_outer(self):
+        # `$(printf '%s' "$shard" | tr / -)` is house style here —
+        # mise.toml writes one — and the `|` inside it belongs to the
+        # nested command. Ending the enclosing invocation there would
+        # strip the flag off everything after it.
+        self.assert_code(
+            self.run_gate(
+                MISE_WITH_FLAG.replace(
+                    '-p "$usage_crate"',
+                    '-p $(printf \'%s\' "$usage_crate" | tr / -)'),
+                CI_WITH_FLAG,
+            ),
+            0, "2 cargo-mutants invocation(s) carry")
+
     def test_two_invocations_in_one_command_are_both_checked(self):
         # Taking the first `cargo mutants` pair in a command and stopping
         # made the second invisible — the same hole the split into

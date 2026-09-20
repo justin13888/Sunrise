@@ -262,6 +262,18 @@ The gate lexes each joined line **once**, splits it at the separators `&&`,
 (a `#` that starts a word), and reads every `cargo mutants` pair in each command
 as an invocation of its own, ending where the next one begins.
 
+A **command substitution is a command too**. `$( … )` and backticks open a
+nested context whose words are its own, and the enclosing command resumes after
+the close with the substitution standing in it as one opaque word. Until it did,
+`cargo mutants -p $(cargo metadata --all-features --no-deps --format-version 1)
+--jobs 1` was exit 0 on the strength of a flag belonging to `cargo metadata`,
+and its control — the same line without that flag — was exit 1; an unclosed
+`$(` was not noticed at all. Both halves of the shape matter. The substitution
+has to stay a word, because deleting it vacated the argument position it held
+and made `-p $(…) --all-features` red on a correct tree; and the words inside it
+have to stay a command, because a `cargo mutants` written inside `$( )` really
+runs and dropping it would lose it from the count.
+
 Lexing once is the load-bearing half of that sentence. Splitting the raw line
 and then lexing the pieces put two quote rules in one file, and a single
 backslash-escaped double quote — `--output "out/\"$slug"`, which is ordinary,

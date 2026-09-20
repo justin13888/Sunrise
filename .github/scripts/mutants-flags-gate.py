@@ -69,6 +69,17 @@ starts. A comment about the flag, a neighbouring `echo` about the flag,
 a `--list` call carrying the flag and a background job carrying it all
 stop vouching for the command beside them.
 
+A command substitution is a command too. `$( … )` and backticks open a
+nested command context whose words are its own and never the enclosing
+invocation's; the enclosing command resumes after the close, with the
+substitution standing in it as one opaque word. Until it did, `cargo
+mutants -p $(cargo metadata --all-features --no-deps --format-version
+1) --jobs 1` was exit 0 on the strength of a flag that belongs to
+`cargo metadata` — the same corruption the `&&` case describes, one
+construct further in — and an unclosed `$(` was not noticed at all. A
+`cargo mutants` written inside a substitution stays an invocation and
+is checked as its own command, because it really runs.
+
 And what satisfies the flag test is the flag as *written*, before any
 `--`. Ways it was satisfiable by something else, each executed against
 real copies of this repository's own files and each reporting exit 0
@@ -419,15 +430,61 @@ def commands(line: str) -> list[list[Word]]:
     is the other reason: it truncates at *any* `#`, so `--output
     out/run#3 --all-features` went red on a correct tree.
 
-    Raises `ValueError` on an unterminated quote or a trailing escape.
-    Callers turn that into a `CannotRun`, per the module docstring: a
-    line this gate cannot parse is a line it cannot judge.
+    A command substitution is a command, and its words are its own.
+    `$(` and an opening backtick start a nested command context; `)` and
+    the matching backtick end it, and the enclosing command resumes
+    where it left off. Without that, every character of `$( … )` was an
+    ordinary one and a word belonging to a *nested* command became a
+    word of the invocation around it: `cargo mutants -p $(cargo metadata
+    --all-features --no-deps --format-version 1) --jobs 1` was exit 0,
+    and the same line with the flag taken out of the substitution was
+    exit 1 — the flag inside it, an argument to `cargo metadata`, was
+    the only difference. Backticks did the same. That is the
+    27.17%-vs-36.89% corruption reported as a pass, and the house style
+    here writes substitutions in argument position already
+    (`mise.toml:529`, `:963`).
+
+    Kept, not dropped. A `cargo mutants` written inside a substitution
+    really runs, so the nested context is emitted as a command of its
+    own and gets checked like any other; dropping the words would have
+    lost it from the count entirely. Treating `$(`, `)` and backticks as
+    separators was the other tempting answer and is wrong in the mirror
+    direction: it ends the enclosing command at the substitution, so
+    `cargo mutants $(…) --all-features` loses its flag and goes red on a
+    correct tree.
+
+    In the enclosing command the substitution is one opaque word, its
+    own source text. It has to be a word and not nothing: it occupies an
+    argument position, and deleting it let `-p $(cargo metadata …)
+    --all-features` read the flag as `-p`'s value and go red on a
+    correct tree. As a word it can never be `cargo`, never `mutants`,
+    never the flag and never an option in `VALUE_TAKING_OPTIONS`, so it
+    cannot vouch for anything or swallow anything. It also breaks the
+    word it is embedded in — `-p$(echo x)y` is read as three words where
+    the shell gives one — and that divergence is one-sided on purpose:
+    it can only split a word that would otherwise have been the flag or
+    half of `cargo mutants`, so it can produce a red or a count that has
+    moved, and never a green.
+
+    A `$(` or a backtick that is never closed raises, exactly as an
+    unterminated quotation does. It used to be invisible: an invocation
+    ending `-p $(cargo metadata --all-features` was read as ordinary
+    words and reported OK.
+
+    Raises `ValueError` on an unterminated quote, a trailing escape or
+    an unclosed command substitution. Callers turn that into a
+    `CannotRun`, per the module docstring: a line this gate cannot parse
+    is a line it cannot judge.
     """
     out: list[list[Word]] = []
     current: list[Word] = []
     value: list[str] = []
     raw: list[str] = []
     started = False
+    # One entry per command substitution currently open: the opener that
+    # started it, where it started, and the enclosing command it
+    # interrupted.
+    enclosing: list[tuple[str, int, list[Word]]] = []
     index = 0
     while index < len(line):
         char = line[index]
@@ -443,6 +500,37 @@ def commands(line: str) -> list[list[Word]]:
         # word can begin at.
         if char == "#" and not started:
             break
+        opening = ("$(" if line.startswith("$(", index)
+                   else "`" if char == "`" and (
+                       not enclosing or enclosing[-1][0] != "`")
+                   else None)
+        if opening is not None:
+            if started:
+                current.append(Word("".join(value), "".join(raw)))
+                value, raw, started = [], [], False
+            enclosing.append((opening, index, current))
+            current = []
+            index += len(opening)
+            continue
+        closing = (char == ")" and enclosing and enclosing[-1][0] == "$(") \
+            or (char == "`" and enclosing and enclosing[-1][0] == "`")
+        if closing:
+            if started:
+                current.append(Word("".join(value), "".join(raw)))
+                value, raw, started = [], [], False
+            out.append(current)
+            _, start, current = enclosing.pop()
+            # The substitution stands in the enclosing command as one
+            # opaque word — its own source text, which is never `cargo`,
+            # never `mutants`, never the flag and never an option this
+            # gate knows. Dropping it outright instead vacated the slot
+            # it occupied, so `-p $(cargo metadata …) --all-features`
+            # read `--all-features` as `-p`'s value and went red on a
+            # correct tree.
+            substitution = line[start:index + 1]
+            current.append(Word(substitution, substitution))
+            index += 1
+            continue
         separator = next(
             (sep for sep in SEPARATORS if line.startswith(sep, index)), None)
         if separator is not None:
@@ -493,6 +581,10 @@ def commands(line: str) -> list[list[Word]]:
         value.append(char)
         raw.append(char)
         index += 1
+    if enclosing:
+        raise ValueError(
+            f"no closing `{')' if enclosing[-1][0] == '$(' else '`'}` "
+            "for a command substitution")
     if started:
         current.append(Word("".join(value), "".join(raw)))
     out.append(current)
