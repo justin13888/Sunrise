@@ -9,10 +9,27 @@ final class StubCredentialStore: CredentialStore, @unchecked Sendable {
     private var value: StoredCredentials?
     private var failure: (any Error)?
     private(set) var clearCount = 0
+    /// What `clear()` refuses with, standing in for a locked Keychain. The
+    /// value survives the refusal, which is the fact this is about. Mutable
+    /// because a Keychain unlocks: refused, then unlocked, then a second
+    /// sign-out is what the disclosure's own button drives, and a refusal
+    /// fixed at construction cannot express it.
+    private var clearFailure: (any Error)?
+    /// What `save()` refuses with — the lock that refuses a `clear()` refuses
+    /// a `save()` too, so a sign-in under the warning establishes nothing.
+    /// Mutable for the same reason `clearFailure` is: the Keychain the user
+    /// goes and unlocks stops refusing BOTH, and a knob that can only be
+    /// turned on cannot express the recovery this change is about.
+    private var saveFailure: (any Error)?
 
-    init(value: StoredCredentials? = nil, loadError: (any Error)? = nil) {
+    init(
+        value: StoredCredentials? = nil,
+        loadError: (any Error)? = nil,
+        clearFailure: (any Error)? = nil
+    ) {
         self.value = value
         failure = loadError
+        self.clearFailure = clearFailure
     }
 
     var stored: StoredCredentials? { lock.withLock { value } }
@@ -25,6 +42,12 @@ final class StubCredentialStore: CredentialStore, @unchecked Sendable {
         set { lock.withLock { failure = newValue } }
     }
 
+    /// The user unlocked the Keychain.
+    func stopRefusingClears() { lock.withLock { clearFailure = nil } }
+    func refuseSaves(with error: any Error) { lock.withLock { saveFailure = error } }
+    /// The same unlock, on the other half of the lock.
+    func stopRefusingSaves() { lock.withLock { saveFailure = nil } }
+
     func load() throws -> StoredCredentials? {
         try lock.withLock {
             if let failure { throw failure }
@@ -32,9 +55,21 @@ final class StubCredentialStore: CredentialStore, @unchecked Sendable {
         }
     }
 
-    func save(_ credentials: StoredCredentials) throws { lock.withLock { value = credentials } }
+    func save(_ credentials: StoredCredentials) throws {
+        try lock.withLock {
+            if let saveFailure { throw saveFailure }
+            value = credentials
+        }
+    }
 
-    func clear() throws { lock.withLock { value = nil; clearCount += 1 } }
+    /// `clearCount` counts attempts, so it still reads 1 after a refusal.
+    func clear() throws {
+        try lock.withLock {
+            clearCount += 1
+            if let clearFailure { throw clearFailure }
+            value = nil
+        }
+    }
 }
 
 struct StubLoginDriver: LoginDriver {
@@ -80,15 +115,6 @@ func credentials(
 
 @MainActor
 struct AccountModelTests {
-    /// The refusal the repair is about: the *other* keychain was reached and
-    /// would not answer, so whether a token is in it is unknown.
-    private static let refusal = KeychainError.otherDomainUnreadable(errSecInteractionNotAllowed)
-
-    /// The other shape `restore()` can be handed, and the one that behaves
-    /// oppositely: both copies were read, they disagree, and a sign-in is the
-    /// repair rather than the harm.
-    private static let unverified = KeychainError.migrationUnverified
-
     private func model(
         store: StubCredentialStore,
         driver: StubLoginDriver = StubLoginDriver(),
@@ -177,128 +203,6 @@ struct AccountModelTests {
         #expect(opened.first == nil)
     }
 
-    /// A store that *refuses* is not a store that answered nothing, and this
-    /// is the difference the whole cross-domain read exists to keep. Reading a
-    /// refusal as "signed out" offers Sign in, and signing in writes a second
-    /// token beside the one that may still be sitting in the unreadable
-    /// keychain — two secrets under one `(service, account)`, which is
-    /// `migrationUnverified` on every later launch.
-    @Test
-    func aRefusedReadIsReportedInsteadOfLookingLikeASignedOutSession() {
-        let store = StubCredentialStore(loadError: Self.refusal)
-        let account = model(store: store)
-
-        account.restore()
-
-        #expect(account.state == .failed(Self.refusal.localizedDescription))
-        #expect(account.state != .signedOut, "a refusal that renders as Sign in invites the second token")
-        #expect(account.accessToken == nil)
-    }
-
-    /// And the Try again that state offers has to mean "look again". The view
-    /// cannot know what the store answered, so the model is the only place the
-    /// second token can be stopped: a store that has started answering hands
-    /// back the session it was holding, without a browser and without writing
-    /// over it.
-    @Test
-    func tryingAgainAfterARefusalLooksAgainRatherThanSigningInAfresh() async {
-        let store = StubCredentialStore(
-            value: credentials(accessToken: "access-old"),
-            loadError: Self.refusal
-        )
-        let opened = OpenedURLs()
-        let account = model(store: store, opened: { opened.record($0) })
-        account.restore()
-        #expect(account.state == .failed(Self.refusal.localizedDescription))
-
-        store.loadError = nil
-        await account.signIn(
-            issuer: "https://issuer.example",
-            clientID: "client",
-            deviceID: "abcd",
-            nowMs: 0
-        )
-
-        #expect(account.state == .signedIn(expiresAtMs: 4_000))
-        #expect(account.accessToken == "access-old")
-        #expect(store.stored?.accessToken == "access-old", "a second token was written over the first")
-        #expect(opened.first == nil, "the refusal was spent on a login rather than a second look")
-    }
-
-    /// The other half of the same guard: the refusal is a reason to look
-    /// again, not a latch. Once the store answers and there is genuinely
-    /// nothing in it, signing in is safe and has to happen.
-    @Test
-    func aStoreThatAnswersNothingAfterARefusalStillReachesTheLogin() async {
-        let store = StubCredentialStore(loadError: Self.refusal)
-        let account = model(store: store)
-        account.restore()
-
-        store.loadError = nil
-        await account.signIn(
-            issuer: "https://issuer.example",
-            clientID: "client",
-            deviceID: "abcd",
-            nowMs: 0
-        )
-
-        #expect(account.state == .signedIn(expiresAtMs: 4_000))
-        #expect(store.stored?.accessToken == "access-1")
-    }
-
-    /// The branch the three cases above do not reach, and the one the whole
-    /// guard exists for: the store is **still** refusing on the second look, so
-    /// the login must not be reached. Delete the `!storeRefusedToAnswer` half of
-    /// `signIn`'s guard and all three stay green — A never calls `signIn`, B
-    /// returns because a token came back, C returns because the store answered
-    /// nothing. This is the case that reddens.
-    @Test
-    func aStoreStillRefusingOnTheSecondLookDoesNotReachTheLogin() async {
-        let store = StubCredentialStore(loadError: Self.refusal)
-        let opened = OpenedURLs()
-        let account = model(store: store, opened: { opened.record($0) })
-        account.restore()
-
-        await account.signIn(
-            issuer: "https://issuer.example",
-            clientID: "client",
-            deviceID: "abcd",
-            nowMs: 0
-        )
-
-        #expect(opened.first == nil, "a store still refusing was spent on a login")
-        #expect(store.stored == nil, "a second token was written beside an unread copy")
-        #expect(account.state == .failed(Self.refusal.localizedDescription))
-        #expect(account.accessToken == nil)
-    }
-
-    /// And the refusal that must **not** latch. `migrationUnverified` is the one
-    /// shape where both copies have been read and are known to disagree, so no
-    /// copy survives unread and there is no second token to invite: a sign-in's
-    /// `writeAcrossDomains` writes this domain and deletes the other, which is
-    /// the collapse that ends the state. Gating the second look on any throw
-    /// made this a dead end — every later Try again re-threw and returned.
-    @Test
-    func anUnverifiedMigrationFallsThroughToTheLoginThatCollapsesIt() async {
-        let store = StubCredentialStore(loadError: Self.unverified)
-        let opened = OpenedURLs()
-        let account = model(store: store, opened: { opened.record($0) })
-        account.restore()
-        #expect(account.state == .failed(Self.unverified.localizedDescription))
-
-        await account.signIn(
-            issuer: "https://issuer.example",
-            clientID: "client",
-            deviceID: "abcd",
-            nowMs: 0
-        )
-
-        #expect(opened.first != nil, "the one refusal a sign-in repairs was refused one")
-        #expect(store.stored?.accessToken == "access-1")
-        #expect(account.accessToken == "access-1")
-        #expect(account.state == .signedIn(expiresAtMs: 4_000))
-    }
-
     @Test
     func renewalIsSilentAndOnlyHappensAtTheRenewalPoint() async {
         let store = StubCredentialStore(value: credentials(accessToken: "access-old"))
@@ -341,6 +245,10 @@ struct AccountModelTests {
 
         #expect(account.accessToken == nil)
         #expect(store.stored == nil)
+        #expect(
+            account.state == .failed("the issuer refused"),
+            "why the session ended was overwritten by the sign-out that followed it"
+        )
     }
 
     @Test
@@ -354,6 +262,210 @@ struct AccountModelTests {
         #expect(account.state == .signedOut)
         #expect(store.stored == nil)
         #expect(store.clearCount == 1)
+    }
+
+    /// The defect this pins: `try? store.clear()` presented `.signedOut` over a
+    /// refusal, the token survived in the Keychain, and `restore()` signed the
+    /// user back in on the next launch without a word. What is disclosed is
+    /// the Keychain's own prose, because the user is being told to go and
+    /// unlock something.
+    @Test
+    func aRefusedClearIsDisclosedRatherThanSwallowed() {
+        let refusal = KeychainError.unexpected(errSecInteractionNotAllowed)
+        let store = StubCredentialStore(
+            value: credentials(accessToken: "access-old"),
+            clearFailure: refusal
+        )
+        let account = model(store: store)
+        account.restore()
+
+        account.signOut()
+
+        #expect(account.state == .signedOut, "the local session ends regardless")
+        #expect(account.accessToken == nil)
+        #expect(store.stored != nil, "the token is still there — that is what is disclosed")
+        #expect(
+            account.signOutIncomplete == refusal.localizedDescription,
+            "the Keychain's message, not `String(describing:)`, which says `unexpected(-25308)`"
+        )
+        #expect(store.clearCount == 1, "the attempt is counted even though it was refused")
+    }
+
+    /// The harm itself, driven end to end: the refusal leaves the credential
+    /// in the Keychain, and the very next `restore()` — which runs from the
+    /// window and scene `.task` blocks, so on the next launch — reads it back
+    /// and signs the user into the session they deliberately ended. This is
+    /// the sequence the disclosure warns about; nothing else in the suite
+    /// executes it.
+    @Test
+    func theSurvivingCredentialSignsTheUserBackInOnTheNextRestore() {
+        let store = StubCredentialStore(
+            value: credentials(accessToken: "access-old"),
+            clearFailure: KeychainError.unexpected(errSecInteractionNotAllowed)
+        )
+        let account = model(store: store)
+        account.restore()
+
+        account.signOut()
+        #expect(account.state == .signedOut)
+        #expect(account.accessToken == nil)
+
+        account.restore()
+
+        #expect(
+            account.state == .signedIn(expiresAtMs: 4_000),
+            "the session the user ended is back — this is #255"
+        )
+        #expect(
+            account.accessToken == "access-old",
+            "and it is the same bearer, not a fresh one"
+        )
+        #expect(
+            account.signOutIncomplete != nil,
+            "the warning outlives the restore, so the view can still disclose it"
+        )
+    }
+
+    @Test
+    func aSignOutThatWorkedDisclosesNothing() {
+        let store = StubCredentialStore(value: credentials(accessToken: "access-old"))
+        let account = model(store: store)
+        account.restore()
+
+        account.signOut()
+
+        #expect(account.signOutIncomplete == nil)
+    }
+
+    /// Dismissing says the user has read it, and a later sign-in clears it on
+    /// its own — neither leaves a stale warning under a live session.
+    @Test
+    func theDisclosureIsDismissedAndDoesNotOutliveTheNextSignIn() async {
+        let store = StubCredentialStore(
+            value: credentials(accessToken: "access-old"),
+            clearFailure: KeychainError.unexpected(errSecInteractionNotAllowed)
+        )
+        let account = model(store: store)
+        account.signOut()
+        #expect(account.signOutIncomplete != nil)
+
+        account.dismissSignOutIncomplete()
+        #expect(account.signOutIncomplete == nil)
+
+        account.signOut()
+        await account.signIn(
+            issuer: "https://issuer.example",
+            clientID: "client",
+            deviceID: "abcd",
+            nowMs: 0
+        )
+
+        #expect(account.signOutIncomplete == nil)
+    }
+
+    /// A sign-in that never established a session has not replaced the
+    /// credential the disclosure is about, so the disclosure is still true.
+    /// Clearing it on entry to `signIn()` destroyed it on both of these paths
+    /// and left the user with a stored refresh token and no indication of it.
+    @Test
+    func aSignInRefusedBeforeItStartedLeavesTheWarningStanding() async {
+        let store = StubCredentialStore(
+            value: credentials(accessToken: "access-old"),
+            clearFailure: KeychainError.unexpected(errSecInteractionNotAllowed)
+        )
+        let account = model(store: store)
+        account.signOut()
+        #expect(account.signOutIncomplete != nil)
+
+        await account.signIn(issuer: "  ", clientID: "", deviceID: "abcd", nowMs: 0)
+
+        #expect(account.state == .failed(AccountError.notConfigured.localizedDescription))
+        #expect(store.stored != nil, "the credential the warning is about is still stored")
+        #expect(
+            account.signOutIncomplete != nil,
+            "a sign-in that never started leaves the stored credential, and the warning about it"
+        )
+    }
+
+    @Test
+    func aSignInThatFailedLeavesTheWarningStanding() async {
+        let store = StubCredentialStore(
+            value: credentials(accessToken: "access-old"),
+            clearFailure: KeychainError.unexpected(errSecInteractionNotAllowed)
+        )
+        let account = model(store: store, driver: StubLoginDriver(failure: StubLoginError()))
+        account.signOut()
+        #expect(account.signOutIncomplete != nil)
+
+        await account.signIn(
+            issuer: "https://issuer.example",
+            clientID: "client",
+            deviceID: "abcd",
+            nowMs: 0
+        )
+
+        #expect(account.state == .failed("the issuer refused"))
+        #expect(store.stored != nil, "the credential the warning is about is still stored")
+        #expect(
+            account.signOutIncomplete != nil,
+            "the issuer refusing does not make the surviving refresh token go away"
+        )
+    }
+
+    /// The lock that refused the `clear()` refuses the `save()`, so a sign-in
+    /// attempted under the warning establishes nothing and the credential the
+    /// warning is about is still the stored one. Clearing the warning before
+    /// `store.save` rather than after would destroy it on exactly this path.
+    ///
+    /// Then the user unlocks and the same sign-in works, which is the other
+    /// half: a `save()` that succeeds has replaced the credential the warning
+    /// names, so the warning and the retry it left behind both go. Nothing
+    /// else in either suite reaches that line — the one place a retry is read
+    /// after a sign-in sits under `.signedIn`, where the state term suppresses
+    /// it anyway, so deleting the line left the suite green.
+    @Test
+    func aSignInThatCannotSaveLeavesTheWarningAndNoSession() async {
+        let refusal = KeychainError.unexpected(errSecInteractionNotAllowed)
+        let store = StubCredentialStore(
+            value: credentials(accessToken: "access-old"),
+            clearFailure: refusal
+        )
+        let account = model(store: store)
+        account.signOut()
+        store.refuseSaves(with: refusal)
+
+        await account.signIn(
+            issuer: "https://issuer.example",
+            clientID: "client",
+            deviceID: "abcd",
+            nowMs: 0
+        )
+
+        #expect(account.accessToken == nil, "a save that failed is not a session")
+        #expect(account.state == .failed(refusal.localizedDescription))
+        #expect(store.stored?.accessToken == "access-old", "the old credential is still stored")
+        #expect(account.signOutIncomplete != nil, "so the warning about it is still true")
+        #expect(account.signOutRefusedThisSession, "and the refusal behind it stands")
+
+        store.stopRefusingSaves()
+        await account.signIn(
+            issuer: "https://issuer.example",
+            clientID: "client",
+            deviceID: "abcd",
+            nowMs: 0
+        )
+
+        #expect(account.state == .signedIn(expiresAtMs: 4_000))
+        #expect(store.stored?.accessToken == "access-1", "the save replaced the credential")
+        #expect(account.signOutIncomplete == nil)
+        #expect(
+            !account.signOutRefusedThisSession,
+            "the credential the refusal was about is not the stored one any more"
+        )
+        #expect(
+            account.signOutDisclosure == .none,
+            "so the screen has nothing left to say about it, in either row"
+        )
     }
 
     /// A struct carrying a live bearer and a refresh token ends up in the

@@ -467,9 +467,9 @@ struct KeychainItem: Sendable {
     /// domain's refusal is the missing-entitlement one, which is swallowed. It
     /// gains exactly one new throw, on an entitled Mac whose other keychain is
     /// locked or refuses a prompt — a real failure that was previously reported
-    /// to the user as a successful sign-out. `AccountModel.signOut()` swallows
-    /// the throw with a `try?` of its own, so raising it here does not by
-    /// itself reach the user; that is tracked separately.
+    /// to the user as a successful sign-out. `AccountModel.signOut()` catches
+    /// it and holds the Keychain's own words as its sign-out residue, so the
+    /// throw raised here is what reaches the user rather than dying on arrival.
     ///
     /// **The tie-break below executes in no test**, and this declares it — one of the
     /// seven. The `??` needs *both* deletes to refuse, and the one case reaching the

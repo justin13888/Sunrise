@@ -148,6 +148,33 @@ actor ChangeBroadcast {
     /// precisely because nothing counted them.
     var consumerCount: Int { consumers.count }
 
+    /// Whether the feed has ended.
+    ///
+    /// Exposed for the tests that assert the flag itself. Nothing that has to
+    /// act on it reads it separately — see ``subscribeIfOpen()``.
+    var isClosed: Bool { hasClosed }
+
+    /// Subscribe, and say in the same breath whether the feed was still open.
+    ///
+    /// ``CoreBridge/changes(window:)`` needs both, and taking them as two hops
+    /// into this actor was a race rather than a style point: a `finish()`
+    /// processed between the two left the second read returning `false`, so a
+    /// feed opened onto a vault that had just shut down was primed anyway —
+    /// every `follow()` loop then ran one `refresh()` against a closed core and
+    /// painted `CoreError.Closed`. That is the symptom
+    /// `aStreamOpenedAfterShutdownIsClosedRatherThanPrimed` exists to prevent,
+    /// surviving in a narrower window.
+    ///
+    /// One hop closes it because both values are read under the actor's own
+    /// isolation, so nothing can run between them. Note that the sticky-flag
+    /// argument does **not** rescue two hops: stickiness is about the order of
+    /// the batches, and the failure is about when the *consumer's query* runs,
+    /// which is after the close either way.
+    func subscribeIfOpen() -> (stream: AsyncStream<CoreChange>, wasOpen: Bool) {
+        let open = !hasClosed
+        return (subscribe(), open)
+    }
+
     /// A stream of everything published from now on, with a lifetime of its
     /// own: ending it detaches this consumer and disturbs no other.
     func subscribe() -> AsyncStream<CoreChange> {
@@ -254,6 +281,45 @@ extension AsyncStream where Element == CoreChange {
                 if let batch = await coalescer.closeWindow() {
                     continuation.yield(batch)
                 }
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in pump.cancel() }
+        }
+    }
+}
+
+extension AsyncStream where Element == ChangeBatch {
+    /// Begin with one batch that names nothing, so a consumer's first act is
+    /// always to re-read.
+    ///
+    /// **What this closes.** `CoreBridge.changes()` subscribes lazily, on the
+    /// first caller. Every screen therefore ran `refresh()` and *then*
+    /// subscribed, and a write landing between the query and the subscription
+    /// was in neither: absent from the rows the query returned, and announced
+    /// to nobody, because `Core::changes()` is a `tokio` broadcast and a
+    /// receiver created after a send does not get it. The list stayed wrong
+    /// until some later, unrelated change repainted it. A longer timeout never
+    /// helped, because a missed event does not arrive late — it does not
+    /// arrive.
+    ///
+    /// Ordering the two the other way is what fixes it, and doing it here
+    /// rather than in each of the fourteen `follow()` implementations is
+    /// deliberate: the trap is a property of a lazily-subscribed feed, so the
+    /// feed is where it should be answered. A consumer that only ever calls
+    /// `refresh()` on a batch is now correct with no ordering discipline of
+    /// its own, and a fifteenth model cannot get it wrong.
+    ///
+    /// `isComplete` is `false` on the prime, which is the truth: `touched` is
+    /// empty and is *not* the whole story, so the consumer must re-run every
+    /// query rather than patch the ids named. That is the same remedy a lag
+    /// asks for, which is why it is the same flag rather than a new one.
+    func primed() -> AsyncStream<ChangeBatch> {
+        AsyncStream<ChangeBatch> { continuation in
+            let pump = Task {
+                continuation.yield(
+                    ChangeBatch(touched: [], isComplete: false, isClosed: false)
+                )
+                for await batch in self { continuation.yield(batch) }
                 continuation.finish()
             }
             continuation.onTermination = { _ in pump.cancel() }

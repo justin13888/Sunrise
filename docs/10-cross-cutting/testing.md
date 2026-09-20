@@ -196,21 +196,284 @@ the four either — the argument goes straight to `-p` — so
 `mise run mutants sunrise-storage` mutates an unscoped crate and the gate fails
 that run the same way.
 
+### Features
+
+**Every mutation run passes `--all-features`, and a run that does not is not a
+coverage measurement.**
+
+cargo-mutants mutates the *source file*. cargo decides whether that file is
+compiled. A module behind a non-default feature is therefore mutated and then
+not built: the mutant changes nothing, the suite passes, and the mutant is
+recorded MISSED — which in `outcomes.json` is the same value a mutant gets when
+a test genuinely failed to kill it. The two are indistinguishable downstream,
+so the gate scores the feature flag as though it were a test gap.
+
+This was not hypothetical. `sunrise-sync` puts its SSE + POST client transport
+behind a non-default `sse` feature, and neither `mise run mutants` nor `ci.yml`
+enabled it. At `1d4b484`, on one tree and one 135-mutant population, with the
+flag the only difference:
+
+| | caught | missed | timeout | unviable | caught_pct |
+|---|---:|---:|---:|---:|---:|
+| without `--all-features` | 26 | 104 | 1 | 4 | 19.85% |
+| with `--all-features` | 45 | 76 | 1 | 13 | 36.89% |
+
+All 94 of `src/sse.rs`'s mutants missed — 94 of 94 — while the crate's own ten
+`sse` tests, including the one asserting that every transport operation carries
+a device binding, never compiled. Seventeen points of the crate's score were a
+build configuration, and #193 read them as untested security code.
+
+Why it went unnoticed for so long is worth keeping, because it is the part that
+generalises. `cargo test --workspace` compiles `src/sse.rs` and runs all ten of
+those tests — `sunrise-cli`, `sunrise-e2e`, `sunrise-bench` and
+`sunrise-core-bindings` each depend on `sunrise-sync` with `features = ["sse"]`,
+and Cargo unifies features across a workspace build. cargo-mutants does not do a
+workspace build: it builds `-p sunrise-sync` alone, where nothing asks for the
+feature and the default is off. So the ordinary suite and the mutation run
+disagreed about which files existed, and only the mutation run was wrong.
+
+`sunrise-sync`'s `sse` is the only feature any of the four scoped crates has
+today, so the flag is a no-op for the other three. It is passed unconditionally
+anyway, because the failure it prevents is silent: the next feature-gated module
+would otherwise start under-reporting with nothing to say so.
+
+That leaves the rule written in three places — the `mutants` task in
+`mise.toml`, the `mutants` matrix in `.github/workflows/ci.yml`, and the
+sentence in bold at the top of this section — with nothing keeping them in step.
+`.github/scripts/mutants-flags-gate.py` now enforces the executable copies: it
+joins shell continuations, splits each joined line into the commands it actually
+runs, drops comments, and fails unless every `cargo mutants` invocation carries
+`--all-features`. It fails separately, with a different exit code, when no file
+it read holds an invocation at all, because a gate reporting green on a matrix
+that no longer runs cargo-mutants is reporting on nothing.
+
+Five details in that are load-bearing — the unit it checks, lexing once, lexing
+everything, what satisfies the flag test, and the file set with its count and
+roles — and every one of them was established by defeating an earlier version of
+the gate against real copies of these files.
+
+The unit is an **invocation, not a line**. Shell puts several commands on one
+line, so asking whether `--all-features` appears anywhere in a line is satisfied
+by any of them. `cargo mutants --list -p X --all-features > population.txt &&
+cargo mutants -p X --jobs 1` is one line, two invocations, a legitimate flag on
+the one that measures nothing and no flag on the one that produces the floor —
+and it reported exit 0. So does a trailing `# dropped --all-features
+temporarily`, and so does a preceding `echo "we run with --all-features" && …`.
+The gate lexes each joined line **once**, splits it at the separators `&&`,
+`||`, `&`, `;` and `|` that the lexer finds unquoted, applies one comment rule
+(a `#` that starts a word), and reads every `cargo mutants` pair in each command
+as an invocation of its own, ending where the next one begins.
+
+Two positions where one of those characters is **not** a separator, both of them
+false reds on a tree in step rather than holes. A `&` **adjacent to a
+redirection operator** belongs to the redirection: `2>&1`, `>&2`, `<&3`, `&>`
+and `&>>` are one command. Scanning the `&` in `2>&1` as a separator ended the
+invocation at `cargo mutants -p "$usage_crate" 2>` and reported the flag missing
+while `bash` passed every argument through — `ARGC=5` on a probe. The remedy is
+adjacency and not dropping `&` from the set, because a bare `&` really does
+background and really should end a command; the two shapes are one character
+apart and need opposite answers. `release.yml` writes the redirection form
+twice, once inside a `$( )`.
+
+And a **`${{ … }}` in a workflow is not shell at all**. GitHub substitutes it
+before any shell reads the line, so `&&` and `||` inside one are the expression
+language's operators choosing between two strings, and the whole construct is
+one opaque word — occupying one argument position, vouching for nothing, and
+unable to separate or quote anything. `cargo mutants -p ${{ inputs.crate ||
+'sunrise-core' }} --all-features` was exit 1 on a workflow that runs correctly.
+This one is scoped to `*.yml` and `*.yaml`, because `${{` means nothing in
+`mise.toml` or a `.sh` and a gate claiming otherwise would be asserting a rule
+it cannot support. It is **latent** here rather than live: `ci.yml`'s invocation
+is `-p ${{ matrix.crate }}`, which holds no operator, and is one edit from
+holding one — the `mutants` matrix is `schedule || workflow_dispatch`, the
+dispatch is already declared, and a crate input with a default is the natural
+next change on that line. The shape is live in `release.yml`'s `runs-on:`.
+
+A **command substitution is a command too**. `$( … )` and backticks open a
+nested context whose words are its own, and the enclosing command resumes after
+the close with the substitution standing in it as one opaque word. Until it did,
+`cargo mutants -p $(cargo metadata --all-features --no-deps --format-version 1)
+--jobs 1` was exit 0 on the strength of a flag belonging to `cargo metadata`,
+and its control — the same line without that flag — was exit 1; an unclosed
+`$(` was not noticed at all. Both halves of the shape matter. The substitution
+has to leave a word behind, because deleting it vacated the argument position it
+held and made `-p $(…) --all-features` red on a correct tree; and the words
+inside it have to stay a command, because a `cargo mutants` written inside `$( )`
+really runs and dropping it would lose it from the count.
+
+Double quoting is **state in that one scanner**, not a loop of its own, for the
+reason every other rule in it is one rule: `$( … )` and backticks are special
+inside a double quotation too, and a separate loop missed that silently.
+`out="$(cargo mutants -p x --jobs 1)"` was one opaque word — the invocation
+inside it never seen, the count never moved, the gate green on a tree running an
+unflagged campaign — while the identical text unquoted was exit 1. A bare `)`
+inside a quotation is not special, and reading it as the close made
+`.github/scripts/changelog.sh`'s `$(… grep -vE "(a|b)(\(…\))?" …)` stop lexing.
+
+Lexing once is the load-bearing half of that sentence. Splitting the raw line
+and then lexing the pieces put two quote rules in one file, and a single
+backslash-escaped double quote — `--output "out/\"$slug"`, which is ordinary,
+and which `mise.toml` already writes in the `fuzz-build` task's `run = "…"` — was
+enough to desynchronise them. After the desync the splitter believed it was
+inside a quotation to end of line, so it stopped splitting on `&&` and stopped
+honouring `#`, while the lexer read the same text as words of the invocation:
+three shapes reported green with the measuring invocation unflagged, one of them
+the trailing-comment hole above restored verbatim. The mirror direction, an
+escaped quote inside a legitimate `--exclude-re`, was exit 2 on a correct tree.
+Two lexical rules for one thing are wrong in both directions at once, which is
+the same argument that had already collapsed the two comment rules into one.
+
+What satisfies the test is the flag **as written, before any `--`**. Three more
+shapes carried the gate without carrying the feature selection: a second
+invocation inside a single command, because only the first pair was read;
+`--exclude-re '--all-features'`, because lexing threw the quotes away and a
+regex that mentions the flag lexed to the flag; and `-- --all-features`, which
+is an argument to `cargo test` and says nothing about what cargo-mutants built.
+The two halves of that rule point in opposite directions, so only one of them is
+about source text. The flag counts when a word is written `--all-features`, or
+is that text under one consistent pair of quotes — `-p X "--all-features"` is a
+feature selection somebody quoted, and going red on it is how a gate gets
+switched off in a week. It does not count when it sits **where an option's value
+sits**, and that test is decided by a named set of the cargo-mutants options
+that take a value, applied before either source-text test so that
+`--exclude-re --all-features` and `--exclude-re '--all-features'` get the same
+verdict. Deciding it from the predecessor's *shape* instead — "starts with
+`-`" — enforced the rule in one spelling of two and could not tell a boolean
+switch from an option with a value, so `--no-times "--all-features"` was red on
+a tree whose feature selection is genuinely present. The set is a whitelist on
+purpose: an option-shaped word that is not in it lets the flag count, so a set
+that goes stale against a future cargo-mutants costs a false green on an oddly
+written tree and never a false red on a correct one. The `--`
+terminator is recognised by its **value**: `"--"` and `\--` are the separator as
+far as the shell is concerned, and matching its source text meant quoting it
+turned the passthrough guard off while cargo-mutants still received the `--`.
+**Every line is lexed**, and the lexer is the only thing that decides what an
+invocation is. A regular expression over the raw text used to decide whether a
+line was worth lexing, which is two grammars for one decision with the halves
+further apart than the two the paragraph above collapsed — and they disagree:
+`cargo "mutants" -p X --jobs 1` and `car\go mutants -p X --jobs 1` are real,
+unflagged invocations that the pattern never matches. At the previous head the
+gate did not report a missing flag for either; it reported a count that had
+moved, and only because the count is an equality.
+
+The pattern survives as the **escalation trigger** and nothing else. A line that
+will not lex yields no invocation, and is exit 2 only when its raw text names
+cargo-mutants — positive evidence that a real invocation may be going unread,
+and the reason an unbalanced quote in an invocation is still never a lenient
+reading. Every other unlexable line is skipped and counted, because the file set
+is mostly not shell: a TOML `run = '''` fence and a YAML scalar with an
+apostrophe in it are both unbalanced quotations to a shell lexer, and blocking a
+merge for one is how a gate gets switched off. The tally is printed rather than
+kept quiet, so that a number which grew from forty-odd to four hundred would say
+so. On this repository it is 45: **38** of `mise.toml`'s triple-quote fences
+plus `mise.toml:530`, **three** in `.github/scripts/sparkle-tools.sh` where one
+`awk` program's single-quoted body spans three lines inside a `$( )`, and
+**three** `- name:` scalars whose English apostrophe is an unbalanced quotation
+— two in `ci.yml`, one in `release.yml`. Six of the 45 are not in `mise.toml`,
+which matters because the three workflow entries are the visible half of the
+limit two paragraphs up: the gate cannot tell an executable line from prose.
+Prose that does not lex lands in this tally and is skipped, which is the safe
+direction; prose that *does* lex is counted as an invocation, which is the
+other one. The composition is asserted by the contract suite, not just the
+total — the total was right at 45 while every written statement of what made it
+up was wrong. Lexing every line rather than two costs about 21 ms — the gate's run
+goes from ~50 ms to ~73 ms, median of fifteen — which is measurable, and nothing
+against a five-minute job.
+
+The file set is **`mise.toml` plus every `*.yml`, `*.yaml` and `*.sh` under
+`.github/`**, at any depth, together with an **expected invocation count**. A
+third executable copy was invisible to a gate that knew about two files; after
+the set became `.github/workflows/*.yml` it was still invisible in
+`.github/actions/rust-checks/action.yml`, which has eight `run:` steps, and in a
+script under `.github/scripts/`. The count is there because the set being
+discovered is what makes "no invocation anywhere" judgeable over the union —
+moving the matrix from one workflow to another leaves a tree that is entirely in
+step, and calling that a broken gate is how a gate gets switched off — and a
+union cannot see a count fall from two to one. Move the matrix out of everything
+globbed and `mise.toml`'s invocation keeps the union non-empty, so only a number
+notices. It lives at `EXPECTED_INVOCATIONS` in the gate, and it is an
+**equality**, not a floor: a floor is silent in the direction a tree actually
+moves in. Add a third invocation and a floor of two needs no edit, so the number
+stops describing the tree while the gate stays green — and from three, deleting
+the matrix invocation outright lands back on the floor and is still green. Both
+were executed. Requiring the number to match is what makes "adding or removing
+an invocation means editing it in the same change" true rather than merely
+written here.
+
+A total cannot say **where**, and the argument for it is an argument about two
+roles. Executed: delete the `ci.yml` matrix invocation and add a second one to
+`mise.toml`, and the total is still two, every invocation carries the flag, and
+the gate exits 0 with `OK: 2` while CI runs no mutation testing at all — on one
+edit. So on the default file set the gate also requires at least one invocation
+in `mise.toml` and at least one in `.github/workflows/ci.yml`: what a person
+runs locally, and what the nightly runs. A floor per role rather than an
+equality, because either acquiring a second invocation is a legitimate change
+and should not need the gate edited; the total equality is what notices that.
+The rule is not applied to a caller-supplied path set, and
+`--expect-invocations` restates the total only.
+
+What neither the count nor the roles can tell you is whether an invocation is
+one anything runs. The shape that used to satisfy the count — the matrix
+invocation deleted and a replacement put in `.github/release.yml` or in a shell
+script nothing calls — is exit 2 now, because `ci.yml` no longer holds one. What
+survives is narrower: a third invocation in a file nothing runs, in a tree whose
+two roles are both intact, counted because somebody raised the expected total to
+admit it. Deciding otherwise would need the gate to know what CI executes, which
+is a different tool.
+
+The count is asserted against this repository in the contract test, not only by
+the live job. `Mutation flag gate` is not a required check, so a number that had
+stopped describing the tree would otherwise have had nothing blocking to say so.
+That one case costs a coupling worth knowing about: an **untracked**
+`.github/**/*.sh` holding a `cargo mutants` line fails the contract suite
+locally while the tracked tree is perfectly in step.
+
+`.github/scripts/test_mutants_flags_gate.py` asserts that contract against files
+it synthesises — every case but the one above — so watching the gate go red
+never requires editing the two real ones. Both run as `Mutation flag gate` and `Mutation flag gate contract`,
+on every pull request rather than on the nightly — the divergence is introduced
+in a pull request, and the `mutants` matrix that would eventually notice it does
+not report until 04:00 the next morning, by which time a floor has already been
+compared against a differently-measured population.
+
+What it deliberately does not check is this paragraph and the one above it.
+Asserting a sentence checks the wording, not the rule, so the prose copy stays a
+copy; the gate names this file in its failure output instead, so whoever is
+changing the flags is told the third copy exists.
+
 ### Cost, measured
 
-| Crate | mutants | `cargo test -p`, rebuilt |
+| Crate | mutants | `cargo test -p`, rebuilt (2026-09-07) |
 |---|---:|---:|
-| `sunrise-domain` | 1 349 | 4.9 s |
-| `sunrise-core` | 982 | 14.0 s |
-| `sunrise-crypto` | 349 | 2.7 s |
-| `sunrise-sync` | 97 | 1.2 s |
+| `sunrise-domain` | 1 356 | 4.9 s |
+| `sunrise-core` | 1 259 | 14.0 s |
+| `sunrise-crypto` | 519 | 2.7 s |
+| `sunrise-sync` | 135 | 1.2 s |
 
 Both columns are reproducible, and the left one is cheap enough that there is no
 excuse for it being wrong:
 
 ```
-cargo mutants --list -p <crate> | wc -l
+cargo mutants --list -p <crate> --all-features | wc -l
 ```
+
+The left column was re-taken at `1d4b484`; it had drifted on every row, by 28%
+on `sunrise-core`, which had just gained `src/blob_fetch.rs`. The right column
+is the original measurement, taken 2026-09-07, and was **not** re-taken with it
+— which is why its heading carries that date. The two columns are from
+different commits, and the right one is a cost estimate rather than a number
+anything checks.
+
+`--all-features` changes nothing about this command's output. `--list` returns
+an identical population with and without it for all four crates today: three
+have no features at all, and it makes no difference to `sunrise-sync` either,
+because discovery mutates the *source file* and ignores the gate — which is
+§Features' whole mechanism, a gated module mutated and then not built. The
+§Features table above is the measurement: both of its rows are the same
+135-mutant population, and `.cargo/mutants.toml` records `sunrise-sync` at 135
+either way. The flag rides in this command only so the listing invocation
+matches the campaign invocation, which is where it is load-bearing — see
+§Features above.
 
 `--list` parses the crate and prints one line per mutant **without building
 anything**, so all four counts take seconds. The right column is
@@ -223,9 +486,47 @@ An earlier version of this table gave the column no definition at all, which is
 why its numbers could not be checked and drifted by up to a third before anyone
 noticed.
 
-At `--jobs 1`: **604 MB peak RSS** — about one `cargo build` — and roughly
-1.8 s per mutant on `sunrise-sync`. (Those two are the original measurements and
-were not re-taken.) Each additional job is another copy of the source tree on
+At `--jobs 1`: **604 MB peak RSS** — about one `cargo build`. (That one is the
+original measurement and was not re-taken.)
+
+Per-mutant cost does **not** transfer between crates, and assuming it does was
+how this job's CI timeout came to be derived from the wrong crate. It spans a
+factor of eight. Full local passes at `--jobs 1`, 2026-09-16 at `1d4b484`:
+
+| Crate | mutants | wall | per mutant |
+|---|---:|---:|---:|
+| `sunrise-crypto` | 519 | 16 m | ~1.9 s |
+| `sunrise-sync` | 135 | 7 m | ~3.1 s |
+| `sunrise-domain` | 1 356 | 2 h | ~5.3 s |
+| `sunrise-core` | 1 259 | — | ~15.4 s |
+
+The right-hand column is the `wall` column divided by the `mutants` column —
+full-pass wall clock ÷ mutants. It is an average over a whole pass, not a
+marginal cost per additional mutant, so everything `cargo mutants` spends
+inside one invocation is already amortised into it, **the unmutated baseline
+build it runs once before any mutant included**. The three completed rows
+recompute from the table itself: 960 / 519 = 1.85, 420 / 135 = 3.11,
+7 200 / 1 356 = 5.31. The `wall` column is rounded to whole minutes, which is
+the whole of the gap between 1.85 and the 1.9 recorded beside it.
+
+That definition is what the column means anywhere it is reused. Multiplying it
+by a *shard's* mutant count charges that shard a baseline build already, and
+splitting a crate into more shards adds baseline builds this column does not
+price — which is why `.github/workflows/ci.yml`'s `mutants` timeout comment
+treats more shards as sub-proportional relief rather than free.
+
+`sunrise-core`'s row is a partial sample over its first 76 mutants — it is the
+one crate no local pass has run to completion — and projects to roughly 5.4
+hours whole. It is why `sunrise-core` is still the only scoped crate without a
+recorded floor. It is also the one row that cannot be recomputed here, because
+its `wall` cell is empty: nothing in this repository records whether 15.4 is
+the same full-pass average, taken over those 76 mutants, or a marginal rate
+read off `cargo mutants`' own output. The two differ by one baseline build's
+cost spread across 76 mutants — the average carries a 76th of it, the marginal
+rate carries none — so anything derived from 15.4 inherits that ambiguity
+until a completed pass records its wall clock.
+
+Each additional job is another copy of the source tree on
 disk and another resident rustc, which is why `mise run mutants` pins one and
 says so. A full pass over all four is hours, which is why it runs nightly and
 sharded rather than on a pull request.
@@ -250,7 +551,90 @@ described: `.github/scripts/test_mutants_gate.py` synthesises its own outcomes
 files and checks the code for every route in about a second. `mise run
 mutants-gate-test` locally, and the `Mutation gate contract` job in CI, which
 carries no schedule condition and so runs on every push, pull request and
-nightly alike — the only part of mutation testing that does not wait for 04:00.
+nightly alike. It is one of three such jobs — `Mutation flag gate` and `Mutation
+flag gate contract`, above under §Features, are the others — and between them
+they are the whole of mutation testing that does not wait for 04:00. What they
+have in common is that none of them runs a mutant: they check the parts of the
+campaign that are text, which is why they can report in seconds on a pull
+request while the measurement itself cannot.
+
+A floor also has to say what produced it. `malformed()` in
+`.github/scripts/mutants-gate.py` requires every crate carrying a `caught_pct`
+to carry a `provenance` object with a non-empty `sha`, `date` and `command`, and
+`--update` writes all three from the run it is banking — one change rather than
+two, because the update path replaces each crate entry wholesale, so a
+`provenance` added by hand would not survive the next `mise run
+mutants-baseline`.
+
+Four fields, of which the first three are required of every floor carrying a
+`caught_pct` and `dirty` is required of a *stamp* rather than of a floor — see
+below. They have fixed meanings, and they are fixed because the object is only
+comparable across floors if they are:
+
+| Field | Means |
+|---|---|
+| `sha` | the full 40-hex revision the mutants were **measured** at |
+| `date` | the day the **measurement** ran |
+| `command` | the invocation a person would type to reproduce it |
+| `dirty` | whether the measured tree had uncommitted changes |
+
+**The measurement, not the recording.** `--update` does not ask git what HEAD
+is. It reads the revision from a `revision.json` written beside each
+`outcomes.json` while the measurement was running — `mise.toml`'s `mutants` task
+and `ci.yml`'s `mutants` matrix both call `mutants-gate.py --record-revision`
+around the cargo-mutants run — and refuses, exit 2, when an outcomes file
+carries no stamp or when two stamps name different revisions. The gap between
+the two is the reason: a `sunrise-core` pass is about five hours and a
+`sunrise-domain` pass about two, the tests that motivated the run are committed
+while it is going, and `mise run mutants-baseline` may not run until the next
+day. A floor stamped with HEAD at recording time names a revision that does not
+produce the number beside it. Refusing is recoverable, because the outcomes are
+still on disk; a floor banked against the wrong tree is not.
+
+`dirty` comes from `git status --porcelain` at the same moment, and a dirty
+measurement is recorded rather than refused — it measured something real, it
+just does not reproduce at the named revision on its own. The three floors this
+file shipped before the stamp existed carry no `dirty` at all, and its absence
+means **unknown**, not clean: nobody can now establish whether those trees were
+modified, and writing `false` would be exactly the invention the requirement
+exists to stop.
+
+Which is why a `revision.json` stamp must carry it, and is refused with exit 2
+when it does not — the same refusal `sha` and `date` get, and not the leniency
+the baseline's own `dirty` gets. The two rules point the same way read forwards
+and backwards. A floor from before the stamp existed cannot answer the question
+and says so by omission; a stamp is written at the one moment the question is
+answerable, so a stamp that omits it is not an old floor, it is somebody who did
+not look. Defaulting that to `false` would bank a floor asserting a clean tree
+on nobody's authority, which is the invention again, one file along. The refusal
+above invites a hand-written stamp, so this is a thing to get wrong by following
+the instructions: `sha`, `date` and `dirty`, all three.
+
+`command` is the human-facing invocation because the field exists so a reader
+can re-run the measurement, and nobody re-runs one by typing the gate's argv.
+`mise run mutants-baseline` passes it with `--command`; a person handing the
+gate a nightly's artifacts by hand gets the argv, which in that one case *is*
+the recipe.
+
+**Re-recording a baseline written before any of this.** Running the full check
+before `--update` writes makes such a file impossible to repair: every crate the
+run did not measure fails it, so the write never happens, and the only way out
+is to hand-edit the one field the design says must never be hand-added — after a
+measurement that costs hours. So `--update` checks the shape of the entries it
+is not replacing, without the provenance requirement, records what it measured,
+and then runs the full check on the merged file. A crate still carrying no
+provenance is reported by name with exit 2, and the floor just measured is
+already saved, so the file is repaired one crate at a time by re-recording
+rather than by hand.
+
+That check is structural, and the distinction matters more here than it looks.
+It establishes that a floor says where it came from. It cannot establish that
+what it says is true — whether the named revision carried the tests the floor
+beside it is worth, and whether a percentage quoted in prose was computed by the
+rule it names, are both decidable only by re-running the campaign at that
+revision, which is the work a recorded floor exists to avoid. Both of those
+defects have occurred in this repository's own baseline, and neither is
+something any check here can catch.
 
 **≥ 90 % caught is the release sign-off requirement, and the baseline is what
 climbs toward it.** The two are deliberately separate. A gate that failed from

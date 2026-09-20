@@ -623,21 +623,86 @@ jobs:
   mutants:
     name: Mutation coverage
     runs-on: ubuntu-latest
-    # No run of this job has ever completed, so this is derived rather than
-    # measured, and one step of the derivation is an assumption: 1352
-    # sunrise-domain mutants over 6 shards is 226 in the largest, and
-    # mise.toml's `mutants` task records ~1.8s per mutant at `--jobs 1` on a
-    # developer machine -- but it records that for **sunrise-sync**, a
-    # 94-mutant crate, and a mutant costs an incremental rebuild plus a test
-    # run of the crate it is in, which does not transfer between crates. Five
-    # times that figure, plus the baseline build cargo-mutants does first,
-    # still lands a shard inside an hour, and 120 is double the result. Both
-    # the transfer and the cushion want replacing with a measurement the
-    # first time a nightly actually completes.
+    # Measured rather than derived, finally. The per-mutant cost was previously
+    # assumed to transfer between crates from a `sunrise-sync` figure, with a
+    # note saying that assumption wanted replacing. It does not transfer: it
+    # spans a factor of eight. Full local passes at `--jobs 1` on an Apple
+    # silicon laptop, 2026-09-16 at `1d4b484`:
+    #
+    #   sunrise-crypto    519 mutants   16m    ~1.9 s/mutant
+    #   sunrise-sync      135 mutants    7m    ~3.1 s/mutant
+    #   sunrise-domain   1356 mutants    2h    ~5.3 s/mutant
+    #   sunrise-core     1259 mutants     -    ~15.4 s/mutant, over the first 76
+    #
+    # `sunrise-core` is the only one not run to completion; its rate is a
+    # partial sample and projects to roughly 5.4 hours whole. That is what sets
+    # this ceiling, not `sunrise-domain`: core's largest shard is 315 mutants at
+    # ~15.4 s, about 81 minutes, where domain's 226 at ~5.3 s is about 20. A
+    # hosted runner is slower than the laptop these came from, and 120 is set
+    # to absorb that — but by how much is not derivable from what is written
+    # here, because three terms under it are unmeasured. State all three.
+    #
+    # The first is the runner ratio. 81 minutes holds at the laptop's
+    # per-mutant cost; `ubuntu-latest` is slower by a factor nobody has
+    # written down. At 1.5x, core's largest shard is 121 minutes of mutants
+    # alone and this job times out; every other shard survives a much worse
+    # ratio. Nobody has timed a shard on a runner, because the matrix has
+    # never completed one — so the ratio is unrecorded rather than measured
+    # and generous.
+    #
+    # The second is what `315 x 15.4 s` leaves out, which is the job around
+    # the run rather than the run: `actions/checkout`, the toolchain action,
+    # a `Swatinem/rust-cache` that is cold on a nightly, and the cargo-mutants
+    # install. Those are additive, none is timed here, and each pushes the
+    # break-even ratio below 1.5x.
+    #
+    # What it does not leave out is the baseline build, and an earlier
+    # revision of this comment claimed it did. `cargo mutants` does build and
+    # test the tree unmutated once per invocation — in a fresh tree that
+    # compiles SQLCipher from source through `rusqlite`'s `bundled-sqlcipher`,
+    # as `.cargo/mutants.toml` records and `crates/sunrise-core/Cargo.toml`
+    # pulls — but the per-mutant figures above are full-pass wall clock
+    # divided by mutants, so every one of them already contains it.
+    # `docs/10-cross-cutting/testing.md` defines the column that way and its
+    # three completed rows divide out. Adding it here would count it twice,
+    # and the correction is not cosmetic: the lever this comment
+    # ends on is more shards, and more shards buys more baseline builds, not
+    # fewer.
+    #
+    # The third term is `15.4` itself, and it is the one that decides which
+    # way the bound points. `sunrise-core` has no completed pass and no
+    # recorded wall clock, and nothing in this repository says whether 15.4
+    # is that same full-pass average taken over its first 76 mutants or a
+    # marginal rate off cargo-mutants' own output. If it is the average, it
+    # carries 1/76th of a baseline build and `315 x 15.4` charges that build
+    # 315/76 times — about four — so the arithmetic **over**-counts fixed
+    # cost. If it is marginal, it carries none and the arithmetic
+    # under-counts.
+    #
+    # So ~1.5x is not a measured break-even, and it is not established as a
+    # bound in either direction: the second term pushes it down, the third
+    # pushes it up if 15.4 is an average, and no shard has completed at any
+    # revision to settle which dominates. No corrected figure is offered: a
+    # second number derived from the same missing measurement is exactly what
+    # this comment exists to stop. What would settle it is one completed
+    # `sunrise-core` pass with its wall clock recorded — the same pass #246 is
+    # waiting on for that crate's floor.
+    #
+    # The lever if it turns out to be wrong is `sunrise-core`'s shard count,
+    # not this number: the longest shard is the only one near the ceiling, and
+    # raising `timeout-minutes` only lets a bad ratio cost more. Splitting
+    # core further does shorten the longest shard, but **sub**-proportionally
+    # — each new shard pays another baseline build — and total runner minutes
+    # rise with every split. And the failure is cheap while it lasts —
+    # `sunrise-core` has no recorded floor, so a shard that times out spends
+    # runner minutes and gates nothing.
+    #
+    # If core's shard count rises, this can come down with it.
     timeout-minutes: 120
     # Nightly and on demand, never on a pull request. The four scoped crates
-    # generate ~2,500 mutants and each one is an incremental rebuild plus a
-    # test run; a full pass is hours, which is exactly why
+    # generate 3,269 mutants — the sum of the four populations recorded on
+    # the matrix below — and each one is an incremental rebuild plus a test
+    # run; a full pass is hours, which is exactly why
     # docs/10-cross-cutting/testing.md scopes this to release candidates rather
     # than to every commit.
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
@@ -649,9 +714,18 @@ jobs:
       matrix:
         # Sharded by crate rather than one shard-space across the workspace,
         # because the gate scores per crate and a shard that straddles two
-        # crates makes a partial denominator. Shard counts are proportional to
-        # mutant count: sunrise-domain 1352, sunrise-core 740,
-        # sunrise-crypto 296, sunrise-sync 94.
+        # crates makes a partial denominator. Populations, re-counted at
+        # `1d4b484` with `cargo mutants --list -p <crate> --all-features`:
+        # sunrise-domain 1356, sunrise-core 1259, sunrise-crypto 519,
+        # sunrise-sync 135. The figures here were 1352/740/296/94 and had
+        # drifted with the crates.
+        #
+        # Shard counts are not proportional to those populations, and should
+        # not be: per-mutant cost spans a factor of eight across the four, so
+        # the population is not the cost. The table above is what they balance
+        # against — sunrise-core at 4 shards is 315 mutants at ~15.4 s, the
+        # longest shard at about 81 minutes, where sunrise-domain at 6 is 226
+        # at ~5.3 s, about 20.
         #
         # `--shard k/n` is zero-based: cargo-mutants requires k < n and rejects
         # n/n outright ("shard k must be less than n"). So a crate split n ways
@@ -718,20 +792,48 @@ jobs:
           # `create output parent directory ... No such file or directory`
           # before it measured a single mutant.
           mkdir -p out/mutants
+          # The revision this shard is measured at, captured before the
+          # run and moved beside the outcomes after it. `--update` reads
+          # it from there, so the floor a nightly's artifacts produce is
+          # stamped with the revision the mutants actually ran against
+          # rather than with whatever HEAD was when someone downloaded
+          # them. Thirteen shards write thirteen stamps and the gate
+          # refuses if they do not agree on a revision.
+          .github/scripts/mutants-gate.py \
+            --record-revision out/mutants/revision.json
           rc=0
+          # `--all-features` for the reason mise.toml's `mutants` task spells
+          # out at length: cargo-mutants mutates the source file, cargo decides
+          # whether that file is compiled, and a module behind a non-default
+          # feature is mutated, not built, and then scored MISSED. That reads
+          # in outcomes.json exactly like a mutant the tests failed to kill.
+          # Without this flag every one of `sunrise-sync`'s 94 `src/sse.rs`
+          # mutants missed — 94 of 94 — and this job reported it as the crate's
+          # coverage. The two must stay in step; a matrix that measures
+          # something the local task does not is a floor nobody can reproduce.
           cargo mutants -p ${{ matrix.crate }} \
+            --all-features \
             --jobs 1 --shard ${{ matrix.shard }} \
             --output out/mutants || rc=$?
           case "$rc" in
             0 | 2 | 3) ;;
             *) exit "$rc" ;;
           esac
+          mv out/mutants/revision.json out/mutants/mutants.out/revision.json
       - name: Upload outcomes
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: mutants-${{ matrix.crate }}-${{ strategy.job-index }}
-          path: out/mutants/mutants.out/outcomes.json
+          # Both files, and they have to travel together: the gate looks
+          # for the revision stamp beside the outcomes it is reading, and
+          # an outcomes file that arrives alone is a measurement whose
+          # revision nobody recorded. Two paths under one directory make
+          # that directory the artifact root, so they land side by side
+          # again on download.
+          path: |
+            out/mutants/mutants.out/outcomes.json
+            out/mutants/mutants.out/revision.json
 
   mutants-gate:
     name: Mutation coverage gate
@@ -778,6 +880,54 @@ jobs:
       - uses: actions/checkout@v4
       - name: Exit-code contract
         run: python3 .github/scripts/test_mutants_gate.py
+
+  mutants-flags-gate:
+    name: Mutation flag gate
+    runs-on: ubuntu-latest
+    # Reads mise.toml and every *.yml, *.yaml and *.sh under .github/ as
+    # text — every line of them, lexed as shell — and asserts how many
+    # cargo-mutants invocations it found and that the two that matter are
+    # still in mise.toml and in this file. No toolchain, no cargo, no
+    # network past the checkout.
+    timeout-minutes: 5
+    # Deliberately without an `if:`, like the contract job above and unlike
+    # the `mutants` matrix. `--all-features` is written in three places —
+    # the `mutants` task in mise.toml, the `mutants` matrix in this file,
+    # and prose in docs/10-cross-cutting/testing.md §Features — and until
+    # now nothing kept them in step. The divergence this guards against
+    # gets introduced in a pull request, so it has to be caught in one:
+    # the matrix that would notice it for real is `schedule ||
+    # workflow_dispatch` and would not report until the next morning at
+    # 04:00, by which time a floor has already been compared against a
+    # population that was measured differently.
+    steps:
+      - uses: actions/checkout@v4
+      - name: Every cargo-mutants invocation carries --all-features
+        run: python3 .github/scripts/mutants-flags-gate.py
+
+  mutants-flags-gate-contract:
+    name: Mutation flag gate contract
+    runs-on: ubuntu-latest
+    # One Python script over two files it synthesises itself. Seconds.
+    timeout-minutes: 5
+    # The gate above reads this repository; this reads fixtures it
+    # synthesises, with one deliberate exception. Both are needed and
+    # neither substitutes for the other: the gate passing says the tree is
+    # in step, and says nothing about whether the gate would notice if it
+    # were not. The only way to watch it go red is to hand it two files
+    # that disagree, and the two files it reads in anger are ones nobody
+    # wants edited to find out.
+    #
+    # The exception is one case, which runs the gate against this
+    # repository and asserts it holds the number of invocations the gate
+    # states. That number is otherwise asserted nowhere blocking, because
+    # `Mutation flag gate` above is not a required check. Its cost: an
+    # untracked `.github/**/*.sh` holding a cargo-mutants line fails this
+    # suite locally while the tracked tree is fine.
+    steps:
+      - uses: actions/checkout@v4
+      - name: Exit-code contract
+        run: python3 .github/scripts/test_mutants_flags_gate.py
 
   core-filesystem-gate-contract:
     name: Core filesystem gate contract

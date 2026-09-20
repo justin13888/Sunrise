@@ -168,11 +168,13 @@ struct KeychainCredentialStore: CredentialStore {
     /// is what ends the state. `writeAcrossDomains` writes this domain and then
     /// deletes the other, so a *successful* sign-in collapses the disagreeing
     /// pair to one secret and the next launch loads cleanly. `clear` takes both
-    /// copies as well, but Sign out is rendered only under `.signedIn`, so it is
-    /// not the reachable remedy — and an earlier revision of this comment
-    /// inferred from that that there was no reachable remedy at all. A guard was
-    /// built on the strength of that inference, and it made this the one shape
-    /// with no way out of it.
+    /// copies as well, and the Account screen does now carry a Sign out outside
+    /// `.signedIn` — but only where a refused sign-out has left a residue
+    /// behind, which a refused *read* never does, so it is still not a remedy
+    /// this shape can reach. An earlier revision of this comment inferred from
+    /// the narrower reading that there was no reachable remedy at all. A guard
+    /// was built on the strength of that inference, and it made this the one
+    /// shape with no way out of it.
     /// See `KeychainItem.writeAcrossDomains`, including why the migration's own
     /// write must not do this.
     ///

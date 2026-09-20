@@ -7,8 +7,9 @@
 # `docs/10-cross-cutting/testing.md` §Mutation testing scopes this to
 # `sunrise-core`, `sunrise-crypto`, `sunrise-sync` and `sunrise-domain`, and to
 # release candidates rather than pull requests. The scoping is a cost decision
-# and it is the right one: those four crates alone generate ~2,500 mutants, and
-# each one is an incremental rebuild plus a test run.
+# and it is the right one: those four crates alone generate 3,269 mutants — the
+# sum of the four populations the campaign recorded below — and each one is an
+# incremental rebuild plus a test run.
 #
 # Run it with `mise run mutants <crate>`, never bare — the task pins `--jobs 1`
 # for a reason recorded there.
@@ -89,12 +90,24 @@ exclude_globs = [
 #   sunrise-sync      137 ->  135  (-2)
 #   sunrise-domain   1357 -> 1356  (-1)
 #
-# `mutants/baseline.json` is **not** re-recorded here. Its floors are absolute
-# counts plus a percentage, and which side of the caught/missed line each of
-# those 21 sat on is only knowable from a campaign, not from `--list`. The
-# floors for `sunrise-crypto` and `sunrise-sync` are the two recorded today and
-# both shrink by at most 9 and 2 respectively; the next nightly's artifacts are
-# what should set them.
+# `mutants/baseline.json` was **not** re-recorded when that change landed. Its
+# floors are absolute counts plus a percentage, and which side of the
+# caught/missed line each of those 21 sat on is only knowable from a campaign,
+# not from `--list`. That campaign has since been run, and the two floors are
+# recorded from it rather than from arithmetic — the deltas above are subsumed
+# and need no separate accounting.
+#
+# The populations that campaign found, at `1d4b484`, are not the ones above:
+#
+#   sunrise-core     1121 -> 1259  (+138, `src/blob_fetch.rs` landed)
+#   sunrise-crypto    516 ->  519  (+3)
+#   sunrise-sync      135 ->  135  (unchanged)
+#   sunrise-domain   1356 -> 1356  (unchanged)
+#
+# Two of the four match to the mutant, which is the corroboration the `--list`
+# measurement above could not give itself. The other two moved because the
+# crates did, and that is the distinction a floor has to keep visible: a
+# population change and a coverage change look identical in a percentage.
 #
 # Two patterns were removed from this list by #118, for opposite reasons, and
 # the reasoning is worth keeping.
