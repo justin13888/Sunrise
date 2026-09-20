@@ -129,15 +129,18 @@ struct KeychainCredentialStore: CredentialStore {
         //
         // A refusal throws, and `AccountModel.restore()` reports it instead
         // of reading it as an empty store: `.failed`, carrying the Keychain's
-        // own sentence, and a record that the last look was *refused* rather
-        // than answered. The Try again that state offers is spent on a second
-        // look at this store; a login is reached only once the store has
-        // answered, and answered nothing. That ordering is the repair: a fresh
-        // token written while an unreadable copy of the old one may still be
-        // sitting in the other keychain is the pair of disagreeing secrets
-        // `save` describes below. Throwing is still strictly better than
-        // handing back a token in the backup-bearing class — it just no longer
-        // costs a session to do it.
+        // own sentence, and a record of what *shape* the refusal was. For every
+        // shape that may have left a copy of the token unread, the Try again
+        // that state offers is spent on a second look at this store, and a
+        // login is reached only once the store has answered, and answered
+        // nothing. That ordering is the repair: a fresh token written while an
+        // unreadable copy of the old one may still be sitting in the other
+        // keychain is the pair of disagreeing secrets `save` describes below.
+        // `.migrationUnverified` is the one shape held out of that ordering,
+        // because there the pair already exists and the login is what collapses
+        // it; `AccountModel.mayHaveLeftACopyUnread` is where that is decided.
+        // Throwing is still strictly better than handing back a token in the
+        // backup-bearing class — it just no longer costs a session to do it.
         //
         // The move between keychains comes first, for the reason
         // `KeychainVaultRootStore.load` gives: the class only starts meaning
@@ -161,11 +164,15 @@ struct KeychainCredentialStore: CredentialStore {
     /// one, and every later launch with a correct probe reads two secrets that
     /// disagree and raises `.migrationUnverified`. `AccountModel.restore()`
     /// reports that one rather than swallowing it, so the user is told which
-    /// failure they are in and Try again re-reads this store instead of
-    /// writing a third token — but reporting a loop is not leaving it: the
-    /// only remedy is still a Sign out button rendered in a state the user
-    /// cannot reach, because `clear` is the one call that takes both copies
-    /// and `.failed` does not offer it.
+    /// failure they are in — and the Try again it offers goes to a login, which
+    /// is what ends the state. `writeAcrossDomains` writes this domain and then
+    /// deletes the other, so a *successful* sign-in collapses the disagreeing
+    /// pair to one secret and the next launch loads cleanly. `clear` takes both
+    /// copies as well, but Sign out is rendered only under `.signedIn`, so it is
+    /// not the reachable remedy — and an earlier revision of this comment
+    /// inferred from that that there was no reachable remedy at all. A guard was
+    /// built on the strength of that inference, and it made this the one shape
+    /// with no way out of it.
     /// See `KeychainItem.writeAcrossDomains`, including why the migration's own
     /// write must not do this.
     ///

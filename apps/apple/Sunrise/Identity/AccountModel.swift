@@ -75,7 +75,8 @@ final class AccountModel {
     private let openURL: @Sendable (URL) -> Void
     private var credentials: StoredCredentials?
 
-    /// Whether the last look at the store was *refused* rather than answered.
+    /// Whether the last look at the store was refused in a way that may have
+    /// left a copy of the token somewhere **nobody read**.
     ///
     /// Held rather than derived, because the two states it separates render the
     /// same: `signedOut` and a `failed` carrying a Keychain sentence both mean
@@ -83,6 +84,9 @@ final class AccountModel {
     /// remedy or whether signing in is. ``signIn(issuer:clientID:deviceID:nowMs:)``
     /// is its only reader; ``restore()`` sets it either way on every call, so it
     /// never outlives the condition it describes.
+    ///
+    /// **It is the shape of the refusal that sets it, not the fact of one**, and
+    /// the difference is a remedy: see ``mayHaveLeftACopyUnread(_:)``.
     private var storeRefusedToAnswer = false
 
     /// How long to wait for the browser redirect. Long enough for a password
@@ -126,8 +130,8 @@ final class AccountModel {
     /// under one `(service, account)` is `migrationUnverified` on every later
     /// launch — signed out in silence, for good, by the remedy the app itself
     /// held out. `KeychainCredentialStore.save` describes the same loop from the
-    /// writing end and calls its only remedy a Sign out button rendered in a
-    /// state the user cannot reach.
+    /// writing end, and names the one thing that ends it: a sign-in's
+    /// cross-domain write collapses the pair.
     ///
     /// So the refusal is reported. It renders through `failed`, which already
     /// carries a sentence — for `otherDomainUnreadable` one naming the *other*
@@ -137,6 +141,14 @@ final class AccountModel {
     /// difference a new case would encode is not one the view can act on
     /// differently: unlocking the keychain is the remedy either way, and Try
     /// again is how the app finds out it happened.
+    ///
+    /// **What Try again does with it is decided by the shape, not by the
+    /// throw**, and this is where that is recorded. For every shape that may
+    /// have left a copy unread it is a second look; for
+    /// ``KeychainError/migrationUnverified`` it is a sign-in, because there the
+    /// sign-in *is* the repair. ``mayHaveLeftACopyUnread(_:)`` is the whole of
+    /// the distinction, and gating on any throw instead is what made that one
+    /// shape a state with no way out of it at all.
     func restore() {
         do {
             credentials = try store.load()
@@ -145,8 +157,53 @@ final class AccountModel {
         } catch {
             credentials = nil
             accessToken = nil
-            storeRefusedToAnswer = true
+            storeRefusedToAnswer = Self.mayHaveLeftACopyUnread(error)
             state = .failed(error.localizedDescription)
+        }
+    }
+
+    /// Whether a refusal out of ``CredentialStore/load()`` may have left a copy
+    /// of the token somewhere **nobody read** — the one condition under which
+    /// offering a sign-in writes a *second* secret beside a first that survives.
+    ///
+    /// Exhaustive on purpose: a new ``KeychainError`` case has to be placed here
+    /// rather than inheriting a default, because the default is a user-visible
+    /// dead end in one direction and a lost session in the other.
+    ///
+    /// - ``KeychainError/otherDomainUnreadable(_:)`` is the condition by
+    ///   definition — the other keychain was reached, refused, and may be
+    ///   holding a copy.
+    /// - ``KeychainError/unexpected(_:)`` and ``KeychainError/malformedItem``
+    ///   leave an item that exists and was not read; so does an error from a
+    ///   ``CredentialStore`` this model knows nothing about, which is why the
+    ///   non-`KeychainError` answer is `true`.
+    /// - ``KeychainError/writtenButOtherDomainRefused(_:)`` names a surviving
+    ///   copy in as many words.
+    /// - ``KeychainError/accessibilityNotRaised(_:)`` belongs with them, and the
+    ///   grouping is the one that is not obvious.
+    ///   ``KeychainItem/upgradeAccessibilityIfNeeded()`` asks only for
+    ///   `kSecReturnAttributes`, so it establishes that an item **exists**
+    ///   without ever reading it, and
+    ///   ``KeychainMigration/loadMigratingIfNeeded()`` raises it one line before
+    ///   the cross-domain read that is the only thing that ever looks in the
+    ///   other keychain. Nor can a sign-in repair it: the write it runs is the
+    ///   same `SecItemUpdate` that was just refused. The remedy that method
+    ///   names for itself is the next look, which is exactly what this returns.
+    ///
+    /// ``KeychainError/migrationUnverified`` is the exception, and it is the
+    /// only one. There *both* copies were read and compared — that is what the
+    /// shape means — so nothing survives unread, and a sign-in's
+    /// ``KeychainItem/writeAcrossDomains(_:)`` writes this domain and deletes
+    /// the other, which is the collapse that ends the disagreement. Blocking the
+    /// login there does not prevent a second token; it prevents the repair.
+    private static func mayHaveLeftACopyUnread(_ error: any Error) -> Bool {
+        guard let refusal = error as? KeychainError else { return true }
+        switch refusal {
+        case .migrationUnverified:
+            return false
+        case .malformedItem, .unexpected, .accessibilityNotRaised,
+             .writtenButOtherDomainRefused, .otherDomainUnreadable:
+            return true
         }
     }
 
@@ -154,14 +211,21 @@ final class AccountModel {
     /// stamps it into a claim and the relay refuses a token whose claim names
     /// a different device, so one lifted off this Mac is useless elsewhere.
     func signIn(issuer: String, clientID: String, deviceID: String, nowMs: UInt64) async {
-        // A sign-in run while the store is unreadable is the second token
-        // ``restore()`` describes, and this is the only place it can be
-        // stopped — the view's Try again cannot know what the store answered.
-        // So look again first, and let the answer decide: still refused, and
-        // `restore()` has just re-stated the refusal with a current status;
-        // answered with a token, and the session is restored rather than
-        // replaced. Only "answered, and there is nothing there" falls through
-        // to a login, which is the one case where writing a token is safe.
+        // A sign-in run while the store may be holding a token nobody read is
+        // the second token `restore()` describes, and this is the only place it
+        // can be stopped — the view's Try again cannot know what the store
+        // answered. So look again first, and let the answer decide: still
+        // refused, and `restore()` has just re-stated the refusal with a
+        // current status; answered with a token, and the session is restored
+        // rather than replaced. Only "answered, and there is nothing there"
+        // falls through to a login from here.
+        //
+        // What is guarded is the *shape* of the last refusal, not the fact of
+        // one. `migrationUnverified` never sets the flag and so never reaches
+        // this block: there the two copies already exist and have both been
+        // read, and the login below is what collapses them. Gating on any throw
+        // is what left that shape with no remedy at all — every Try again
+        // re-threw and returned. See `mayHaveLeftACopyUnread(_:)`.
         if storeRefusedToAnswer {
             restore()
             guard !storeRefusedToAnswer, credentials == nil else { return }
