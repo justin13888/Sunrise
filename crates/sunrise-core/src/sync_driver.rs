@@ -3172,13 +3172,20 @@ mod tests {
     /// handshake against a peer that is already gone; attempt 2 is the one the
     /// relay answers, and it is the one that speaks.
     ///
-    /// Three mutations this fails that nothing else catches: moving
+    /// Four mutations this fails that nothing else catches: moving
     /// `note_marked_at_connect` back into `run`'s `Ok` arm (the event lands
     /// *before* attempt 1's `sync.session.closed`), deleting the call (no
-    /// event at all), and dropping the carry-forward — passing `None` to
+    /// event at all), dropping the carry-forward — passing `None` to
     /// `mark_renewals_current`, or `renewals.mark_current()` without the
     /// `.or(unreported)` — after which attempt 2 finds the handle current and
-    /// nothing is ever reported.
+    /// nothing is ever reported, and **dropping the `.take()`**, after which
+    /// the mark stays outstanding and session 3 reports the same version a
+    /// second time.
+    ///
+    /// The third session is what makes that last one reachable. Session 2 is
+    /// scripted to drop after its subscribe, because `run_fake_server` runs
+    /// until a `Close` or a dead peer and would otherwise hold the driver in
+    /// session 2 until shutdown, leaving nothing to re-report into.
     ///
     /// The driver is built here rather than through `Core::start_sync` so a
     /// subscriber can be attached to `run`'s own future. `captured_events`
@@ -3206,7 +3213,16 @@ mod tests {
             .unwrap(),
         );
 
-        let (inner, _server, _batch_rx, _subs, _refreshes) = harness_full(vec![], true);
+        // One script, and attempt 1 never reaches `inner` — it returns its own
+        // dead-peer transport — so the script is popped by attempt 2. Attempt 3
+        // gets `Script::default()` and stays up until shutdown.
+        let (inner, _server, _batch_rx, subs, _refreshes) = harness_full(
+            vec![Script {
+                close_after_subscribe: true,
+                ..Script::default()
+            }],
+            true,
+        );
         let attempts = Arc::new(AtomicU64::new(0));
         let renewing = credential.clone();
         let factory: TransportFactory = Arc::new(move || {
@@ -3243,6 +3259,11 @@ mod tests {
                 .with_subscriber(tracing_subscriber::registry().with(log.clone())),
         );
 
+        // Wait for the report, and then for session 3 to be past the point at
+        // which it could repeat it. `session` reports immediately after the
+        // handshake and subscribes immediately after that, so the second
+        // Subscribe frame the fake relay sees is session 3's, and by then
+        // session 3 has already had its turn to speak.
         timeout(Duration::from_secs(10), async {
             loop {
                 let seen = log
@@ -3250,14 +3271,14 @@ mod tests {
                     .lock()
                     .iter()
                     .any(|e| e.ev.as_deref() == Some(MARKED_AT_CONNECT));
-                if seen {
+                if seen && subs.load(Ordering::SeqCst) >= 2 {
                     return;
                 }
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         })
         .await
-        .expect("no attempt ever reported the renewal it consumed");
+        .expect("no attempt reported the renewal it consumed, or no third session opened");
 
         shared.request_shutdown();
         timeout(Duration::from_secs(10), driver)
@@ -3273,7 +3294,8 @@ mod tests {
         assert_eq!(
             reports.len(),
             1,
-            "the carried mark is reported exactly once, saw {events:?}"
+            "the carried mark is reported exactly once — session 3 handshook too \
+             and must not repeat it, saw {events:?}"
         );
         assert_eq!(
             reports[0].to_v,
