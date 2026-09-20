@@ -351,21 +351,47 @@ does is not:
   reporting nothing** (`KeychainItem.readAcrossDomains`). Once an item has
   moved, a single transient `SecItemAdd` failure at launch would otherwise make
   the app read an empty login keychain and present the lost-vault screen to a
-  user whose vault is intact. The second read can only turn a `nil` into bytes,
-  and a refusal from the other domain is swallowed there — the *read* is the one
-  place that swallow is still blanket. Not because a refusal in the unresolved
-  domain means there was nothing of ours to find: that premise is retired, see
-  the two mutations below. Because a refused read has changed nothing, so
-  swallowing it answers the `nil` the method would have answered without the
-  fallback at all, while propagating it would fail a genuine first run.
+  user whose vault is intact. **`nil` out of that method means both keychains
+  answered *not-found*, and nothing else** — a refusal from the other domain is
+  **raised**. An earlier revision wrapped the second read in a blanket `try?`,
+  and because `nil` is the one answer `SessionModel` reads as absence, a store
+  that was reached and *refused* — locked, or a prompt denied — produced the
+  lost-vault screen the fallback exists to prevent, for a condition an unlock
+  fixes.
 
-  **The entitlement is not what that `try?` defends against**, and an earlier
+  The argument that swallow rested on — a refused read has changed nothing, so
+  answering `nil` is no worse than the answer before the fallback existed — is
+  true about the **Keychain** and false about the **caller**: before the
+  fallback existed there was no second store to be wrong about, and once there
+  is one, `nil` asserts something about it. Its companion, that propagating
+  would fail a genuine first run, is false outright: not-found is a refusal in
+  neither domain, so nothing-anywhere still answers `nil`, and the first read
+  keeps `read()`'s contract in full. This page carried both arguments as the
+  reason for the shipped code for one round after the code stopped agreeing
+  with them.
+
+  The refusal is raised as `KeychainError.otherDomainUnreadable` rather than as
+  the bare status underneath, because a bare `unexpected` shows the *other*
+  keychain's sentence — "User interaction is not allowed." — under a header
+  naming the one that is working, which sends the user to unlock the wrong
+  store. `SessionModel` already maps any throw out of a `load` to
+  `.locked(.keychainUnavailable)`, the screen that offers Keychain Access, so
+  the vault root needed no new handling. `AccountModel.restore` did: it read the
+  credential store with `try?`, so a refusal arrived as a *signed-out* session,
+  and the one thing that screen offers is a sign-in that writes a second token
+  into the resolved domain while the unreadable copy stays where it is — two
+  secrets under one name, `.migrationUnverified` on every later launch, signed
+  out in silence for good. It now reports the refusal, and its Try again
+  re-reads the store instead of writing that second token.
+
+  **The entitlement is not what the second read has to survive**, and an earlier
   revision of this page said it was. Measured on the same ad-hoc Mac as the
   three results above: a `.dataProtection` **query** answers
   `errSecItemNotFound` (-25300). The -34018 refusal is on the *mutating* calls —
-  `SecItemAdd`, `SecItemUpdate` and `SecItemDelete`. The swallow earns its keep
-  on the entitled Mac, where one store can be locked or refuse a prompt while
-  the other answers; on the unsigned one the second read simply finds nothing.
+  `SecItemAdd`, `SecItemUpdate` and `SecItemDelete`. That is also why the raise
+  executes in no test here, item 7 of the seven below: every read this build can
+  make is answered rather than refused. It earns its keep on the entitled Mac,
+  where one store can be locked or refuse a prompt while the other answers.
 
   All three stores `clear` across both domains, for that same rule — whatever a
   read can reach, a clear removes, or signing out would leave a live refresh
@@ -618,8 +644,11 @@ does is not:
 
   Worse than vacuous, it is a statement about the **machine**: it asks whether
   anything at all sits under `probeService`, so a Sunrise app running beside the
-  suite, or a single orphan left by a probe whose process died between its
-  `SecItemAdd` and its cleanup, fails it on a tree that is green.
+  suite fails it on a tree that is green. An orphan left by a probe whose
+  process died between its `SecItemAdd` and its cleanup no longer does — the
+  sweep by service reclaims that one on the `probe()` the case itself runs,
+  before it looks — and this paragraph named it alongside the racing app for one
+  round after the sweep that fixed it landed in the same change.
   `aProbeReclaimsAnOrphanAnEarlierProbeLeftBehind` is the probe-level assertion
   beside it and the one that actually pins the sweep: it plants an item under
   `probeService` with an account no probe will mint again, runs `probe()`, and
