@@ -182,6 +182,24 @@ either: asserting a sentence is a check on the wording, not on the rule.
 It is named in the failure text so whoever is changing the flags knows the
 third copy exists.
 
+Two limits of the lexing, both latent here and both LOUD rather than
+silent if they ever fire. It cannot tell an executable line from prose
+that happens to lex: `- name: install the cargo mutants tool` is two
+adjacent words and would be counted as an invocation. Because the count
+is an equality, prose raises it and the gate goes red or exits 2 — it
+cannot produce a green on its own — and no such line exists here, since
+this repository writes "cargo-mutants" hyphenated in prose everywhere,
+which nothing enforces. Scoping the lexer structurally (a `run:` body
+in YAML, a task body in TOML) is the answer and is a new parsing
+surface. Second, quote state is per logical line, and `logical_lines`
+joins only on a trailing backslash, so a quotation that genuinely spans
+lines splits into halves that do not balance: a `--exclude-re
+"foo<newline>bar"` is exit 2 on a correct tree, and a `cargo mutants`
+inside a multi-line string in a `.sh` — which the shell never runs — is
+counted. The alternative is to declare that a quotation may not span a
+line, as the folded-scalar remedy below already declares about
+continuations.
+
 Two exit codes, because they are two different pieces of news
 -------------------------------------------------------------
 

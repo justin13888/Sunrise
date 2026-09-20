@@ -1110,9 +1110,12 @@ run = "python3 .github/scripts/test_mutants_gate.py"
 [tasks.mutants-flags-gate]
 description = "Assert every cargo-mutants invocation carries --all-features"
 # Reads mise.toml, plus every *.yml, *.yaml and *.sh under .github/, as
-# text, and never invokes cargo. It also asserts how many invocations it
-# expects to find, because moving one out of the files it reads leaves
-# the rest looking perfect. `--all-features` is stated in three places —
+# text — every line of it, lexed as shell — and never invokes cargo. It
+# also asserts how many invocations it expects to find, because moving
+# one out of the files it reads leaves the rest looking perfect, and
+# WHERE two of them have to be, because moving one from ci.yml into
+# mise.toml leaves the count looking perfect too. `--all-features` is
+# stated in three places —
 # the `mutants` task below, the `mutants` matrix in ci.yml, and prose in
 # docs/10-cross-cutting/testing.md §Features — and nothing kept them in
 # step. An invocation that loses it mutates modules behind non-default

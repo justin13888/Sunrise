@@ -247,8 +247,10 @@ runs, drops comments, and fails unless every `cargo mutants` invocation carries
 it read holds an invocation at all, because a gate reporting green on a matrix
 that no longer runs cargo-mutants is reporting on nothing.
 
-Four details in that are load-bearing, and every one of them was established by
-defeating an earlier version of the gate against real copies of these files.
+Five details in that are load-bearing — the unit it checks, lexing once, lexing
+everything, what satisfies the flag test, and the file set with its count and
+roles — and every one of them was established by defeating an earlier version of
+the gate against real copies of these files.
 
 The unit is an **invocation, not a line**. Shell puts several commands on one
 line, so asking whether `--all-features` appears anywhere in a line is satisfied
