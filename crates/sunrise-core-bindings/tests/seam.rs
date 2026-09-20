@@ -16,8 +16,10 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
-use sunrise_core::AttachmentFetchState;
-use sunrise_core_bindings::dto::{CaptureIssue, Constraint, TaskDraftIn, TaskEdit, TimeValue};
+use sunrise_core::{AttachmentFetchState, CommandResult, DeviceRow};
+use sunrise_core_bindings::dto::{
+    CaptureIssue, CommandOutcome, Constraint, DeviceListRow, TaskDraftIn, TaskEdit, TimeValue,
+};
 use sunrise_core_bindings::vocab::{
     constraint_summary, duration_clock, energy_label, relative_day, short_duration, today_section,
 };
@@ -26,6 +28,7 @@ use sunrise_core_bindings::{
 };
 use sunrise_domain::TodaySection::{Due, Overdue};
 use sunrise_domain::{ConstraintSeverity, Energy, TaskState};
+use sunrise_id::{EntityKind, EntityRef};
 
 const ROOT: [u8; 32] = [42u8; 32];
 
@@ -95,6 +98,12 @@ async fn a_command_lowers_into_the_core_and_the_result_comes_back() {
         out.revocation_unwound.is_empty(),
         "nothing has been revoked in this vault, so nothing can have been unwound"
     );
+    // Empty and false is only half the guard, and it is the half a constant
+    // satisfies: a `revocation_unwound` hardcoded to `Vec::new()` passes every
+    // assertion above. The other half — that a *populated* value survives the
+    // crossing — is
+    // `a_populated_disclosure_set_survives_the_lowering` below, which is where
+    // this comment's "mapped to a constant" case is actually caught.
 
     let CoreQueryResult::Tasks { tasks } = core.query(CoreQuery::Inbox).await.expect("inbox")
     else {
@@ -2278,4 +2287,96 @@ async fn a_recovery_blob_can_be_sealed_across_the_seam() {
             "{wrong} bytes gave {err:?}"
         );
     }
+}
+
+/// **A populated disclosure set survives the lowering, which emptiness cannot
+/// prove.**
+///
+/// `a_command_lowers_into_the_core_and_the_result_comes_back` asserts that
+/// `unrotated_streams`, `revocation_gated` and `revocation_unwound` cross the
+/// seam as empty and false, and its own comment names the case that defeats
+/// that: "a field mapped to a constant ... would not [fail the build]". It is
+/// exactly right, and `Vec::new()` is that constant. So the values here are
+/// non-empty and true, and every one of them is read back.
+///
+/// Driven through `From<&CommandResult>` rather than through a vault, because
+/// the state that makes `revocation_unwound` non-empty — a device the fold
+/// stopped calling revoked while `device_read_bounds` still holds it — needs
+/// two peers' `device_revoke` ops applied in one order, and this seam exposes
+/// no way to apply a remote op. What the lowering owes is that it carries what
+/// the core hands it, and that is what this pins.
+#[test]
+fn a_populated_disclosure_set_survives_the_lowering() {
+    let unwound = vec!["a1".repeat(16), "c1".repeat(16)];
+    let result = CommandResult::new(
+        EntityRef::new(EntityKind::Device, [0x11; 16]),
+        None,
+        [0x22; 16],
+        42,
+    )
+    .with_unrotated_streams(vec!["deadbeef".into()])
+    .with_revocation_gated(true)
+    .with_revocation_unwound(unwound.clone());
+
+    let out = CommandOutcome::from(&result);
+
+    assert_eq!(
+        out.unrotated_streams,
+        vec!["deadbeef".to_string()],
+        "an incomplete revocation must not be flattened to a complete one"
+    );
+    assert!(
+        out.revocation_gated,
+        "a gated revocation must cross as true, not as the default"
+    );
+    assert_eq!(
+        out.revocation_unwound, unwound,
+        "the standing unwound set must cross whole: a client that received an \
+         empty list here would paint an unwound device as an ordinary member"
+    );
+    assert_eq!(out.seq, 42);
+    assert_eq!(out.op_id, "22".repeat(16), "op id is 16 bytes of hex");
+}
+
+/// **`read_bounded: true, revoked: false` crosses the seam as itself.**
+///
+/// The unwind is the one state migration 0028 makes expressible and the one a
+/// user is most likely to be misled by: the account no longer calls the device
+/// revoked, and it receives no key this vault mints. A lowering that dropped
+/// `read_bounded`, or folded it into `revoked`, would put that device back on
+/// the list as an ordinary member — the outcome the field was added to prevent
+/// — and no existing seam assertion would notice, because every other case
+/// carries it as `false`.
+///
+/// All four flags are set to a combination no default produces, so a mapping
+/// that returned a constant or crossed two wires fails here rather than in an
+/// app.
+#[test]
+fn an_unwound_device_row_crosses_the_seam_as_itself() {
+    let row = DeviceRow {
+        device_id: [0xc1; 16],
+        nickname: "Old laptop".into(),
+        platform: "macos".into(),
+        revoked: false,
+        read_bounded: true,
+        current: true,
+        admitted_after_revocation: false,
+    };
+
+    let lowered = DeviceListRow::from(&row);
+
+    assert!(
+        lowered.read_bounded,
+        "the bound is the durable half of revocation and must reach the client"
+    );
+    assert!(
+        !lowered.revoked,
+        "and it must not be folded into `revoked`, which is the register and \
+         has stopped naming this device"
+    );
+    assert!(lowered.current);
+    assert!(!lowered.admitted_after_revocation);
+    assert_eq!(lowered.device_id, "c1".repeat(16));
+    assert_eq!(lowered.nickname, "Old laptop");
+    assert_eq!(lowered.platform, "macos");
 }
