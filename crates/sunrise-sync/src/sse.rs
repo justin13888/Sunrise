@@ -3413,6 +3413,75 @@ mod tests {
         );
     }
 
+    /// The stream route carries the *other two* binding-advice arms as well.
+    ///
+    /// The case above is the skew arm, which is deterministic there only
+    /// because [`signer`] is fixed at [`NOW_MS`], a date in the past. The arm a
+    /// registered user meets more often is the one that cannot blame a clock —
+    /// a clock that agrees with the relay's, and a key the relay still will not
+    /// take — and the fourth is a client that sent no binding at all. Both
+    /// reach a user through this route, and neither was executed on it.
+    ///
+    /// The clock that is *fine* is the load-bearing half: naming a skew there
+    /// would send someone to fix the one thing that is already right.
+    #[tokio::test]
+    async fn a_refused_stream_names_the_binding_cause_it_can_actually_measure() {
+        let refusal = || {
+            vec![
+                relay::Canned::json(200, SESSION_OK),
+                relay::Canned::json(401, r#"{"code":"AUTH_DEVICE_SIG_INVALID"}"#),
+            ]
+        };
+        let open = |mut t: SseTransport| async move {
+            t.send_frame(hello_frame()).await.expect("a session opens");
+            next_frame(&mut t)
+                .await
+                .expect("the ack is waiting")
+                .expect("a HelloAck");
+            next_frame(&mut t)
+                .await
+                .expect_err("the relay refused the stream")
+        };
+
+        // A clock that agrees with the relay's own `Date`, so the skew is
+        // measurable and inside the window.
+        //
+        // The one place this file reads the real wall clock, and the arm under
+        // test is why: the relay's `Date` is hyper's own wall clock, so a
+        // device clock fixed at [`NOW_MS`] — which is what every other case
+        // here signs with — can only ever produce the *skew* arm. That is
+        // exactly how this route came to execute one arm of three.
+        #[allow(clippy::disallowed_methods)]
+        let now_ms = u64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("a clock after the epoch")
+                .as_millis(),
+        )
+        .expect("a millisecond count that fits a u64");
+        let relay = relay::start(refusal()).await;
+        let message = message_of(
+            &open(SseTransport::connect(&relay.base).with_device_signer(signer(now_ms))).await,
+        );
+        assert!(
+            message.contains("may not be registered"),
+            "the remaining causes are listed when none can be measured: {message}"
+        );
+        assert!(
+            !message.contains("set the system clock"),
+            "and a clock that is fine is not blamed for it: {message}"
+        );
+
+        // And a transport carrying no signer at all is told so, rather than
+        // being sent to look at a binding it never sent.
+        let relay = relay::start(refusal()).await;
+        let message = message_of(&open(SseTransport::connect(&relay.base)).await);
+        assert!(
+            message.contains("sent no device binding"),
+            "an unbound client is told what it is missing: {message}"
+        );
+    }
+
     /// And a refusal carrying no code at all still lands on the status map,
     /// which is what keeps this client readable against a relay whose codes it
     /// does not know.
