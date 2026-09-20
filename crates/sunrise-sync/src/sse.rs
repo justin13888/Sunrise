@@ -142,14 +142,37 @@ const BODY_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2)
 /// unavailable. One gap per hundred megabytes is then a permanently
 /// unfetchable attachment.
 ///
-/// What this number costs, stated because it is ten times itself: a peer that
-/// accepts the connection and then says nothing holds a fetch for fifteen
-/// seconds per attempt and 150 s across all ten before the request parks.
-/// That is the reason it is no larger than its evidence allows —
-/// `crates/sunrise-cli/src/main.rs:934` gives one interactive download 300 s
-/// in total, and ten attempts at this bound stay inside it, so the caller is
-/// told the attachment is unavailable rather than being told the command ran
-/// out of time.
+/// What this number costs, stated because the cost is not one wait: a peer
+/// that accepts the connection and then says nothing holds a fetch for fifteen
+/// seconds, and `crates/sunrise-core/src/blob_fetch.rs:100` allows ten such
+/// attempts before the row is parked.
+///
+/// Those ten are **not consecutive**, and nothing here should be read as
+/// promising a total. A failed attempt reschedules nothing: `blob_fetch`'s
+/// `count_failure` records it and returns, and that crate's only `poke_sync()`
+/// fires once, when the request is made. The next attempt comes from the sync
+/// driver's anti-entropy backstop, which drains blob transfers and only then
+/// calls `deadlines.resynced()` (`crates/sunrise-core/src/sync_driver.rs:928`
+/// and `:929`) — so the next attempt is `DEFAULT_RESYNC_INTERVAL`, thirty
+/// seconds, after the last one *ended*. On a quiet vault the cycle is
+/// therefore this bound plus thirty seconds, and the tenth attempt parks the
+/// row between six and seven minutes after the request. On a busy one an
+/// inbound batch or a local submit re-drives the drain sooner, so the span is
+/// shorter and is not predictable from this constant at all.
+///
+/// That span is longer than the 300 s `crates/sunrise-cli/src/main.rs:934`
+/// gives one interactive download, so `sunrise attachment get` against a
+/// silent relay returns before the attempts are exhausted, around the seventh
+/// or eighth. That is neither the attachment being lost nor this bound's doing:
+/// the CLI states its own deadline as a report rather than a failure, because
+/// the request row is durable and the next `sunrise sync --once` finishes it,
+/// and the dominant term in the span is the thirty-second resync cycle rather
+/// than the fifteen. At two seconds the same ten attempts spanned roughly four
+/// to five minutes, which was inside that deadline by as little as ten
+/// seconds. A resumable fetch — a `Range` header, so an attempt continues
+/// rather than restarting — is what would make the attempt budget describe
+/// a bounded amount of work; until then it describes ten separate tries on a
+/// timer this module does not own.
 ///
 /// **Not for the live stream.** `recv_frame` reads its body with no idle bound
 /// at all, deliberately, and this constant must not be the one that changes
