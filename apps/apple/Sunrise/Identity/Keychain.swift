@@ -287,7 +287,8 @@ struct KeychainItem: Sendable {
     /// read finds the token and the session restores; then a background renewal
     /// writes the *fresh* token to `.login` while the stale one sits in
     /// `.dataProtection`. Every later launch with a correct probe compares the
-    /// two, disagrees, and signs the user out in silence.
+    /// two, disagrees, and refuses the load — which is reported rather than
+    /// silent, and which the next sign-in collapses by running this method.
     ///
     /// Write first, then delete, for ``KeychainMigration``'s invariant: a
     /// readable copy exists at every instant. This domain's write keeps
@@ -315,19 +316,18 @@ struct KeychainItem: Sendable {
     /// this method's own motivating path: the two-copy state it exists to
     /// collapse is exactly when the delete has something to refuse.
     ///
-    /// **What the case does not buy, said rather than left to be found.** The
-    /// stale copy survives, so the next load's
-    /// ``KeychainMigration/migrate(before:)`` finds destination and source
-    /// unequal and raises ``KeychainError/migrationUnverified``, which
-    /// ``KeychainMigration/loadMigratingIfNeeded()`` keeps outside its `do` and
-    /// lets through — the silent signed-out state, one launch later. The refused
-    /// delete creates that whether this throws or not, and the two outcomes
-    /// above are strictly worse, losing the session *now* and the good copy with
-    /// it. Closing it means teaching the migration that a just-written
-    /// destination is authoritative: its verify step, not this method. Writing
-    /// the fresh bytes into the other domain so the copies agree was rejected —
-    /// every status reaching this line, a locked keychain, a denied prompt, an
-    /// I/O failure, refuses a *write* there too.
+    /// **What the case does not buy, said rather than left to be found.** The stale
+    /// copy survives, so the next load's ``KeychainMigration/migrate(before:)`` finds
+    /// destination and source unequal and raises ``KeychainError/migrationUnverified``,
+    /// which ``KeychainMigration/loadMigratingIfNeeded()`` keeps outside its `do` and
+    /// lets through — a refused load one launch later, reported rather than silent. The
+    /// refused delete creates that whether this throws or not, and the two outcomes
+    /// above are strictly worse, losing the session *now* and the good copy with it.
+    /// Closing it means teaching the migration that a just-written destination is
+    /// authoritative: its verify step, not this method. Writing the fresh bytes into
+    /// the other domain so the copies agree was rejected — every status reaching this
+    /// line, a locked keychain, a denied prompt, an I/O failure, refuses a *write*
+    /// there too.
     ///
     /// **This half is untested by construction, and saying so is the point.**
     /// Two of the seven are here: the raise below, and the cross-domain delete's

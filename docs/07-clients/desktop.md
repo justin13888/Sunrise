@@ -381,8 +381,14 @@ does is not:
   and the one thing that screen offers is a sign-in that writes a second token
   into the resolved domain while the unreadable copy stays where it is — two
   secrets under one name, `.migrationUnverified` on every later launch, signed
-  out in silence for good. It now reports the refusal, and its Try again
-  re-reads the store instead of writing that second token.
+  out in silence for good. It now reports the refusal, and what its Try again
+  does with it is decided by the *shape* of the refusal: for every shape that
+  may have left a copy of the token unread it re-reads the store instead of
+  writing that second token, and for `.migrationUnverified` — where both copies
+  have already been read and are known to disagree — it goes to the login,
+  because there the sign-in's cross-domain write is what collapses the pair.
+  Gating on the fact of a throw rather than on its shape left that one shape
+  with no remedy at all.
 
   **The entitlement is not what the second read has to survive**, and an earlier
   revision of this page said it was. Measured on the same ad-hoc Mac as the
@@ -433,9 +439,10 @@ does is not:
   What that does **not** fix, and is worth having written down: the stale copy
   survives, so the next `load`'s migration compares a destination holding the
   fresh bytes against a source holding the stale ones and refuses with
-  `.migrationUnverified` — the silent signed-out state, one launch later. The
-  refused delete creates that state whether `save` rethrows or not; rethrowing
-  only adds the lost session on top of it. Closing it means teaching
+  `.migrationUnverified` — a refused load one launch later, reported rather than
+  silent, and collapsed by the next successful sign-in. The refused delete
+  creates that state whether `save` rethrows or not; rethrowing only adds the
+  lost session on top of it. Closing it means teaching
   `KeychainMigration` that a just-written destination is authoritative, which is
   a change to the verify step and not to either cross-domain mutation.
 
@@ -664,10 +671,12 @@ does is not:
   needs to. Its token is rewritten with no user action — `refreshIfNeeded`
   renews at 75% of the token's life — so one launch whose probe failed open
   leaves a fresh token in one keychain and a stale one in the other, and every
-  later launch with a correct probe reads two secrets under one name, raises
-  `.migrationUnverified`, and is signed out in silence. The vault root and the
-  relay device id are written once and never rewritten on the ordinary path, so
-  neither can diverge that way. `KeychainMigration`'s own write is deliberately
+  later launch with a correct probe reads two secrets under one name and raises
+  `.migrationUnverified`, which refuses the load rather than signing the user
+  out in silence — and which this same cross-domain `save`, run by the next
+  sign-in, is what collapses. The vault root and the relay device id are written
+  once and never rewritten on the ordinary path, so neither can diverge that
+  way. `KeychainMigration`'s own write is deliberately
   exempt too: it deletes its source only after the verify step, and a write that
   removed the other domain would take the source out from under it.
 - `KeychainMigration` — five resumable steps holding one invariant: **a
