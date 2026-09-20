@@ -6137,6 +6137,78 @@ fn a_revoked_devices_third_party_envelope_claim_is_not_recorded() {
     );
 }
 
+/// **An *unwound* device's third-party recipient claim is not recorded
+/// either.**
+///
+/// The gate in `apply_control_op` asks `is_read_bounded` and not `is_revoked`,
+/// and this is the case that separates the two. Its own justification names the
+/// sender class it exists to catch — a device whose *reads are bounded* by the
+/// rotation, so it could file these rows and could not read what they withhold
+/// — and since migration 0028 that class is `device_read_bounds`. A device the
+/// fold rehabilitated is `read_bounded: true, revoked: false`: it receives no
+/// key this vault mints, which is exactly the standing the comment describes,
+/// and under `is_revoked` it passed.
+///
+/// Widening the gate cannot withhold a key, for the reason
+/// `a_revoked_devices_third_party_envelope_claim_is_not_recorded` gives: a
+/// replica that declines the row finds no row, so `backfill_key_envelopes`
+/// emits the envelope. More senders refused means more backfill, never less.
+#[test]
+fn an_unwound_devices_third_party_envelope_claim_is_not_recorded() {
+    let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let ec = engine_seeded(ROOT, [3u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let er = engine_random_keys(ROOT, [4u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut db = db_root(ROOT);
+    let (a_id, c_id) = (ea.keychain.device_id(), ec.keychain.device_id());
+    let victim = [0x77u8; 16];
+    let stream = [0x5d; 16];
+
+    let claim = |db: &mut Db, epoch: u32| {
+        let inner = InnerOp::KeyEnvelope(KeyEnvelopePayload {
+            stream_id: stream,
+            epoch,
+            recipient: Recipient::Device(victim),
+            key_id: [0u8; 8],
+            hpke_ciphertext: vec![0u8; 48],
+        });
+        db.with_tx(|tx| er.apply_control_op(tx, &inner, &c_id, Hlc::at(T0 + 2), T0 + 2, 1))
+            .unwrap();
+    };
+    let filed = |db: &Db, epoch: u32| -> i64 {
+        db.conn()
+            .query_row(
+                "SELECT count(*) FROM key_envelope_recipients
+                 WHERE stream_id = ? AND epoch = ? AND recipient = ?",
+                params![&stream[..], epoch, &victim[..]],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+
+    // A retires laptop C; months later B retires A. The fold stops believing
+    // A's op, so C leaves the register — and stays in `device_read_bounds`.
+    revoke(&er, &mut db, &ea, c_id, T0);
+    revoke(&er, &mut db, &eb, a_id, T0 + 60_000);
+    assert_eq!(
+        revocation_row(&db, &c_id),
+        None,
+        "the register no longer calls C revoked: this is the unwind"
+    );
+    assert!(
+        read_bound_row(&db, &c_id).is_some(),
+        "and the bound is still C's, which is the whole of what 0028 buys"
+    );
+
+    claim(&mut db, 1);
+    assert_eq!(
+        filed(&db, 1),
+        0,
+        "a device that receives no key must not be able to say a key has \
+         already been delivered, whether or not the register still names it"
+    );
+}
+
 /// A third party's recipient claim is bounded in epoch before it is
 /// recorded.
 ///

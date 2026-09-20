@@ -670,8 +670,11 @@ impl Engine {
                     // recorder to verify a ciphertext it holds no key for.
                     //
                     // What *is* closed since ADR-0041 is the sender class the
-                    // comment two paragraphs up names: a revoked device's claim
-                    // is not recorded. It is defence in depth and it is free of
+                    // comment two paragraphs up names: a device whose reads are
+                    // bounded does not get its claim recorded. Since migration
+                    // 0028 that class is `device_read_bounds` and not the
+                    // register, so the gate below asks `is_read_bounded`.
+                    // It is defence in depth and it is free of
                     // the convergence question the rest of that record is
                     // about, because this table is a hint and not state. A
                     // replica that declines the row finds no row, so
@@ -680,15 +683,34 @@ impl Engine {
                     // replicas disagreeing about one row cannot withhold a key
                     // from anybody.
                     Recipient::Device(other) => {
-                        if self.is_revoked(tx, sender)? {
+                        // **`is_read_bounded` and not `is_revoked`**, because
+                        // the class the comment above names — "a revoked
+                        // device's *reads are bounded* by the rotation ... so
+                        // it could file these rows and could not read what
+                        // they withhold" — is the bounded set since migration
+                        // 0028, not the revoked set. An unwound device
+                        // (`read_bounded: true, revoked: false`) is precisely
+                        // the member that sentence describes, and the register
+                        // no longer names it.
+                        //
+                        // Widening the gate is safe in the one direction that
+                        // matters here, for the reason two paragraphs up: a
+                        // replica that declines the row finds no row, so
+                        // `backfill_key_envelopes` emits the envelope. More
+                        // senders refused can only mean *more* backfill, never
+                        // less. It is also why the bound being per-replica
+                        // (#282) costs nothing at this site: two replicas
+                        // disagreeing about one hint row cannot withhold a key
+                        // from anybody.
+                        if self.is_read_bounded(tx, sender)? {
                             tracing::warn!(
                                 ev = "core.key.recipient_claim_refused",
                                 sender_h = hex_short(sender),
                                 subject_h = hex_short(&other),
                                 stream_h = hex_short(&p.stream_id),
                                 epoch = p.epoch,
-                                "a revoked device claimed to have sealed this epoch to \
-                                 another device; the claim is not recorded"
+                                "a read-bounded device claimed to have sealed this epoch \
+                                 to another device; the claim is not recorded"
                             );
                             return Ok(Vec::new());
                         }
