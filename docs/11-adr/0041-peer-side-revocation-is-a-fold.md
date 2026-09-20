@@ -212,7 +212,7 @@ stops being believed the moment it learns its author had been revoked. That is
 the correct thing to say out loud, and
 `a_revocation_the_fold_stops_believing_is_announced` pins that it is said.
 
-### 2. A revoked device's third-party `key_envelope` claim is not recorded
+### 2. A read-bounded device's third-party `key_envelope` claim is not recorded
 
 `key_envelope_recipients` is what `backfill_key_envelopes` reads to decide a
 device has already been served, and the `Recipient::Device(other)` arm files a
@@ -221,6 +221,19 @@ about the claim is checkable. The comment there already named the sender class
 it could not argue away: a revoked device's reads are bounded by the rotation
 and its writes were bounded by nothing, so it could file these rows and could
 not read what they withhold. It is now refused.
+
+**The gate is the bounded set and not the revoked one, which is wider than
+"a revoked device".** The sentence above names a class by the property that
+makes it dangerous — *reads are bounded* — and since migration 0028 that
+property is `device_read_bounds`, which the register is only a subset of. So
+the refusal reaches the unwound device too: `read_bounded: true, revoked:
+false`, a device the fold has stopped calling revoked while the keys stay cut
+off, which is precisely the member the sentence describes and precisely the
+member the register no longer names. Read every "a revoked device" in this ADR
+about *this* gate as "a read-bounded device": each such sentence is true as
+written and strictly narrower than the code. Widening costs nothing here for
+the reason the next paragraph gives, and that is what makes it affordable to
+gate on a predicate that does not converge.
 
 This gate needs no fold and raises no convergence question, because the table is
 a **hint and not state**: a replica that declines the row finds no row and emits
@@ -249,9 +262,27 @@ less. Two replicas disagreeing about one row cannot withhold a key from anybody.
   contradiction was real and it is repaired in the code rather than talked
   away: migration 0028 gives the read bound its own monotone table, so
   `emit_key_envelopes` and `backfill_key_envelopes` no longer read anything the
-  fold can take a row out of. The republish restores `d_d_pub` and restores
-  nothing else. Both sentences are now true at once, and this is the one that
-  had to move.
+  fold can take a row out of. **On a replica that bounded the publisher**, the
+  republish restores `d_d_pub` and restores nothing else, and both sentences
+  are true at once. That qualification is the whole of what 0028 buys and it
+  is not decoration: §"What a user sees" item 5 works a replica that met two
+  ordinary retirements in the other order and **never wrote the bound**, and
+  says of the same code path that one `DeviceCertPublish` there "recovers
+  every held epoch of every stream". The two passages describe one path at two
+  replicas, and they must be read together.
+  [#282](https://github.com/justin13888/Sunrise/issues/282) is the gap.
+
+  **This bullet's own opening sentence stands as written**, and the reason is
+  worth stating rather than leaving as an omission: on that same replica the
+  publisher has no `device_revocations` row either, so it is not *locally* a
+  revoked device, and "a revoked device gains nothing by republishing its own
+  cert because it is a recipient of nothing" is **vacuous** there rather than
+  false. What fails on that replica is this paragraph's mechanical claim about
+  what the republish restores, which is unconditional, and not the membership
+  argument above, which is not. So the qualification lands here and the
+  decision itself is unchanged: nothing in the read bound's split touches the
+  republish path, and `backfill_key_envelopes`' early return is exactly the
+  per-replica test.
 - **`Command::RevokeDevice` locally.** No "this device is revoked, refuse the
   command" guard. The one revocation a revoked device must still be able to make
   is of the device that revoked it — that is the fold's exception, and it is the
@@ -555,8 +586,9 @@ discount has to guess at. Taken.
   the interim paragraph about the cursor waiting and the relay churning is
   replaced by what actually happens now.
 - **`threat-model.md` A3's revocation mitigation is narrower and truer**: a
-  revoked device cannot revoke another device, and cannot claim a key was
-  delivered to a third one.
+  revoked device cannot revoke another device, and a **read-bounded** device —
+  which is every revoked one and, after an unwind, more — cannot claim a key
+  was delivered to a third one.
 - **#82 closes.** Its three questions are answered here: enforcement is wanted
   and is not the relay's alone; an op skipped under a cut that later moves is
   kept and stays gated, and the remedy is to make the act again; a self-naming
@@ -575,12 +607,16 @@ discount has to guess at. Taken.
   (`0028_device_read_bounds.sql`). One `INSERT OR IGNORE` per surviving row runs
   immediately before the `DELETE` above, so no row passes through a window where
   it is in neither. `Engine::is_read_bounded` is the read, and the four
-  key-distribution sites are its only callers; `Engine::is_revoked` keeps the
-  three that ask the convergent question — the device list, a sender's
-  authority to claim a third-party `key_envelope` recipient row, and
-  `CommandResult::revocation_gated`. Which of the two a new call site wants is
-  the first question to ask of it, and `engine/revocation.rs`'s module doc is
-  where the two are stated side by side.
+  key-distribution sites are **not** its only askers: a **fifth** asks it
+  without distributing a key, a sender's authority to claim a third-party
+  `key_envelope` recipient row (§Decision 2 above), which is the one this ADR
+  first pointed at the register and then moved. `Engine::is_revoked` keeps the
+  **two** that ask the convergent question — the device list, which reads
+  `device_revocations` through a direct `LEFT JOIN` rather than through the
+  function, and `CommandResult::revocation_gated`. Which of the two a new call
+  site wants is the first question to ask of it, and `engine/revocation.rs`'s
+  module doc is where the two are stated side by side — and is authoritative
+  over this bullet, because it sits beside the functions and this does not.
 - **A gated revocation now does nothing at all.** It was the op being discarded
   and everything else proceeding: the relay intent was already guarded, but
   every stream still rotated and the account identity still rotated with it —
