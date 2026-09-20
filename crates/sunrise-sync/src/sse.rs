@@ -4139,6 +4139,99 @@ mod tests {
         );
     }
 
+    /// A refused blob fetch is a document, and is capped like one.
+    ///
+    /// `call_bytes` has the status in hand before it reads a byte, and the
+    /// bounds its caller passed describe the reply that caller asked for. A
+    /// `404` is not that reply. Reading it under the fetch's own bounds let a
+    /// relay answer "no such blob" with a hundred megabytes and have this
+    /// client hold all of it — [`super::SseTransport::blob_fetch`] would then
+    /// return `Ok(None)`, "not here, try later", having allocated a hundred
+    /// megabytes to be told so.
+    ///
+    /// A body one byte past [`super::MAX_EVENT_BYTES`] is what tells the two
+    /// caps apart here, the same byte and the same reasoning as the upload
+    /// route's ack: under the blob cap it is read whole and the fetch answers
+    /// `Ok(None)`; under the event cap the read is abandoned and the fetch
+    /// reports it. This is the upload route's defect of the round before, one
+    /// status along on the download route rather than one caller along.
+    #[tokio::test]
+    async fn a_refused_blob_fetch_is_capped_as_a_document_not_as_an_attachment() {
+        let oversized = format!(
+            r#"{{"code":"SYNC_BLOB_NOT_FOUND","detail":"{}"}}"#,
+            "x".repeat(FRAME_CAP)
+        );
+        assert!(
+            oversized.len() > FRAME_CAP,
+            "the refusal is past the event cap"
+        );
+        assert!(
+            oversized.len() < super::MAX_BLOB_BYTES,
+            "and far under the blob cap, so a fetch reading it as content reads it whole"
+        );
+        let relay = relay::start(vec![relay::Canned::json(404, &oversized)]).await;
+        let mut t = dial(&relay);
+
+        let err = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            t.blob_fetch(&[0x44; 16]),
+        )
+        .await
+        .expect("a capped read returns")
+        .expect_err("a refusal past the document cap is not read");
+
+        assert!(
+            matches!(&err, TransportError::Unavailable(_)),
+            "the relay sent more than a problem document is allowed to be, which is the \
+             relay's failure rather than a missing blob: {err}"
+        );
+    }
+
+    /// And a refused blob fetch is waited for on the document deadline.
+    ///
+    /// The deadline half of the same split, and the cheaper half to watch: the
+    /// document bound expires in two seconds where the attachment bound would
+    /// hold this caller for fifteen. That difference is not one wait.
+    /// `MAX_FETCHES_PER_DRAIN` is four and a drain's fetches run one after
+    /// another, and the drain is awaited inline in the sync driver's session
+    /// pump — so four stalled refusals are the difference between eight seconds
+    /// and a minute of a session that is reading nothing.
+    ///
+    /// The relay answers `503` rather than `404` so the refusal reaches
+    /// `refuse` rather than the deliberate-`404` arm above it; what is under
+    /// test is the read, and both arms are downstream of it.
+    #[tokio::test]
+    async fn a_stalled_blob_refusal_is_cut_off_on_the_document_deadline() {
+        let relay = relay::start(vec![relay::Canned::json_then_stall(
+            503,
+            r#"{"code":"RELAY_STORAGE"#,
+        )])
+        .await;
+        let mut t = dial(&relay);
+
+        let started = tokio::time::Instant::now();
+        let err = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            t.blob_fetch(&[0x55; 16]),
+        )
+        .await
+        .expect("the read is bounded by the client, not by this harness")
+        .expect_err("the relay refused and then went quiet");
+
+        assert!(
+            matches!(&err, TransportError::Unavailable(m) if m.contains("no data for 2s")),
+            "a problem document is a document on this route as on every other, so it is \
+             the two seconds that ran and not the attachment's fifteen: {err}"
+        );
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed >= std::time::Duration::from_millis(1_500)
+                && elapsed < std::time::Duration::from_secs(10),
+            "and it came back on that deadline's own value, which is what decides what a \
+             drain of four of these costs the session pump: {elapsed:?}"
+        );
+    }
+
     /// A refusal document is read up to the frame cap and no further.
     ///
     /// Both sides of the boundary, because a cap that refused everything would
@@ -4438,6 +4531,47 @@ mod tests {
             "and the route reached was the upload"
         );
         assert_eq!(seen[0].path, "/api/v1/blobs/up-1/0");
+    }
+
+    /// A chunk upload's ack is waited for on the *document* deadline.
+    ///
+    /// The other half of the bounds `blob_put_chunk` chooses, and the half
+    /// nothing reached: the cap it passes is pinned by the case above, and its
+    /// deadline was asserted nowhere at all, so a mutant passing
+    /// [`super::BLOB_IDLE_TIMEOUT`] here survived the whole suite. It is the
+    /// same omission one site along as the two the previous round carried a
+    /// lower bound to, on the more frequently driven of `call_bytes`' two
+    /// callers — an upload writes one of these per chunk.
+    ///
+    /// Pinned by the diagnostic rather than by a timing window alone, because
+    /// the window that separates two seconds from fifteen is exactly the window
+    /// a loaded machine eats. The window is asserted too, from below: an upper
+    /// bound on its own leaves every shorter value passing.
+    #[tokio::test]
+    async fn a_stalled_chunk_upload_ack_is_cut_off_on_the_document_deadline() {
+        let relay = relay::start(vec![relay::Canned::json_then_stall(200, r#"{"ok"#)]).await;
+        let mut t = dial(&relay);
+
+        let started = tokio::time::Instant::now();
+        let err = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            t.blob_put_chunk("up-1", 0, b"sealed-chunk-bytes"),
+        )
+        .await
+        .expect("the read is bounded by the client, not by this harness")
+        .expect_err("the relay acked and then went quiet");
+
+        assert!(
+            matches!(&err, TransportError::Unavailable(m) if m.contains("no data for 2s")),
+            "an ack is a document, so the deadline that ran is the document one — the \
+             attachment's fifteen seconds belongs to the body an attachment is: {err}"
+        );
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed >= std::time::Duration::from_millis(1_500)
+                && elapsed < std::time::Duration::from_secs(10),
+            "and it came back on that deadline's own value: {elapsed:?}"
+        );
     }
 
     /// A commit the relay under-described still names its blob, and reads as
