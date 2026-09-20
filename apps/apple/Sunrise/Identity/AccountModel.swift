@@ -217,17 +217,23 @@ final class AccountModel {
 
     /// How many times the session has been ended since this model was made.
     ///
-    /// A login is not atomic. ``signIn(issuer:clientID:deviceID:nowMs:)``
-    /// suspends at `driver.complete(...)` for up to ``redirectTimeoutMs`` with
-    /// the browser in front of the user, and the Account screen offers a
-    /// **Sign out** throughout that window — the retry row renders under
-    /// `.awaitingBrowser`. Nothing cancels the login when it is pressed: the
-    /// driver is a local of the suspended frame and the task that runs it is
-    /// unstructured and unstored. So the counter is what tells the resumed
-    /// login that the session it was establishing is not wanted any more.
+    /// A login is not atomic, and it suspends twice.
+    /// ``signIn(issuer:clientID:deviceID:nowMs:)`` waits at
+    /// `driver.begin(...)` for a discovery and an authorize round trip, and
+    /// again at `driver.complete(...)` for up to ``redirectTimeoutMs`` with
+    /// the browser in front of the user; the Account screen offers a **Sign
+    /// out** across both, the retry row under `.awaitingBrowser` and all three
+    /// controls under the `.signedOut` or `.failed` that precedes it. Nothing
+    /// cancels the login when it is pressed: the driver is a local of the
+    /// suspended frame and the task that runs it is unstructured and
+    /// unstored. So the counter is what tells the resumed login that the
+    /// session it was establishing is not wanted any more — checked before the
+    /// transient state as well as before the save, because a discarded login
+    /// that has already written `.awaitingBrowser` leaves a screen with no
+    /// control on it.
     ///
     /// Bumped in ``signOut()`` rather than at the button, so every caller is
-    /// covered — the three on the Account screen, the two inside
+    /// covered — the four on the Account screen, the two inside
     /// ``refreshIfNeeded(issuer:clientID:nowMs:)``, and any added later
     /// without this being noticed.
     private var sessionGeneration: UInt64 = 0
@@ -273,6 +279,17 @@ final class AccountModel {
         let driver = makeDriver(issuer.trimmed, clientID.trimmed)
         do {
             let url = try await driver.begin(deviceID: deviceID)
+            // The same rule as the guard below, on the suspension before it —
+            // and here the write order is inverted, which is why it needs its
+            // own check rather than the one after `complete`. `begin` is a
+            // discovery round trip and an authorize round trip, and every
+            // control that reaches ``signOut()`` is on screen throughout both.
+            // A sign-out that lands there has already written `.signedOut`;
+            // assigning `.awaitingBrowser` over it would leave the guard below
+            // returning into a spinner with no control on screen that can move
+            // it. Return before the transient state and before the browser: a
+            // login the user has already ended needs neither.
+            guard sessionGeneration == generation else { return }
             state = .awaitingBrowser
             openURL(url)
             let fresh = try await driver.complete(
