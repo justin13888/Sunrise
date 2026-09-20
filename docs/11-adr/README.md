@@ -58,6 +58,7 @@ ADRs are numbered sequentially (`0001`, `0002`, …) and never renumbered.
 | 0038 | [The macOS app updates itself through Sparkle, and the appcast's EdDSA key is subordinate to the Developer ID certificate in lifecycle, not in authority](./0038-macos-update-feed.md) | accepted (answers 0031's revisit trigger 4; amends `desktop.md` §Update channel and `releasing.md`) |
 | 0039 | [A tag uploads an iOS build to TestFlight; App Store submission is a separate, manual act](./0039-ios-distribution.md) | accepted (takes the channel half of 0028's Decision 6 slot and leaves the MUST-parity half reserved; amends the clients overview §Distribution) |
 | 0040 | [A predecessor's successor places are held by rank, not by arrival, and are re-judged when the predecessor is established](./0040-sibling-admission-is-a-rank.md) | accepted (amends 0037 §Consequences and key rotation §Verification; depends on 0034, 0037) |
+| 0041 | [Peer-side revocation enforcement covers the control ops whose effect can be re-derived, and the register becomes a fold](./0041-peer-side-revocation-is-a-fold.md) | accepted (amends 0034 corollary 3 and key rotation §Revocation and the threat model's A3; closes #82; `STORAGE_V` 28) |
 
 ## When to write a new ADR
 

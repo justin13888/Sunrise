@@ -385,10 +385,130 @@ struct AccountView: View {
                     .disabled(!settings.canSignIn)
             }
         }
+        // What the screen says about the last sign-out is one value on the
+        // model, switched over here in full. There is no rule left at this
+        // site to get wrong: no ordering, no pair of conditions that overlap,
+        // and no way to render both rows or neither. Which case wins is
+        // ``AccountModel/signOutDisclosure``, where a test reaches it.
+        switch account.signOutDisclosure {
+        case .none:
+            EmptyView()
+        case let .incomplete(message):
+            SignOutIncompleteRow(message: message, account: account)
+        case .retry:
+            SignOutRetryRow(account: account)
+        }
+        // The way out of a refusal the user has retired: the one combination
+        // the switch says nothing about while the credential is still stored.
+        if account.offersBareSignOut {
+            Button("Sign out") { account.signOut() }
+        }
     }
 
     private func expiry(_ ms: UInt64) -> String {
         let date = Date(timeIntervalSince1970: Double(ms) / 1000)
         return "expires \(date.formatted(date: .abbreviated, time: .shortened))"
+    }
+}
+
+/// The words the two sign-out rows carry.
+///
+/// Outside the bodies because what the disclosure NAMES is a decision — "the
+/// stored credential", not "the refresh token", which a public client may
+/// never have had — and a body no test can evaluate cannot pin a decision. A
+/// `String` can.
+enum SignOutCopy {
+    /// The headline: the device the session ended on, and the Keychain's own
+    /// refusal quoted. `@MainActor` for ``Platform/deviceName``, which reads
+    /// `UIDevice.current` and is isolated for it.
+    @MainActor
+    static func incompleteHeadline(message: String) -> String {
+        "Signed out on this \(Platform.deviceName), but the stored credential "
+            + "could not be removed: \(message)"
+    }
+
+    /// What it costs, and what to do about it.
+    static let incompleteCaption =
+        "The stored credential is still in the Keychain, so the next launch "
+            + "will sign you back in. Unlock your Keychain, then Sign out here "
+            + "to try removing it again."
+
+    /// The same instruction, for the reader who has already acknowledged the
+    /// headline and does not need it shouted twice.
+    static let retryCaption =
+        "A credential the last sign-out could not remove is still in the "
+            + "Keychain. Unlock your Keychain, then Sign out here to try again."
+}
+
+/// What a sign-out could not do: the Keychain kept the credential.
+///
+/// A file-scope view rather than another `@ViewBuilder` var on ``AccountView``
+/// because that type's body is the constrained one here, and because this reads
+/// the way ``DeviceListSection``'s revocation disclosure does — the fact, what
+/// it costs, and the actions that are honest about it.
+///
+/// It carries its own **Sign out** because the screen's other one does not
+/// reach here: ``AccountView/accountRow`` renders that button in the
+/// `.signedIn` arm alone, and this row renders under `.signedOut` and
+/// `.failed`. A caption telling the user to sign out again with no control to
+/// do it with would be an instruction the app does not offer.
+private struct SignOutIncompleteRow: View {
+    let message: String
+    let account: AccountModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label(
+                SignOutCopy.incompleteHeadline(message: message),
+                systemImage: "exclamationmark.triangle"
+            )
+            .foregroundStyle(.orange)
+            Text(SignOutCopy.incompleteCaption)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            HStack(spacing: 12) {
+                Button("Sign out") { account.signOut() }
+                Button("Dismiss") { account.dismissSignOutIncomplete() }
+            }
+        }
+        .accessibilityIdentifier("account.signOutIncomplete")
+    }
+}
+
+/// The retry an acknowledged disclosure leaves behind.
+///
+/// ``AccountModel/dismissSignOutIncomplete()`` clears the message, not the
+/// fact: the credential is still in the Keychain, and the caption the user
+/// just dismissed told them to unlock it and sign out again. Without this row
+/// the dismissal would destroy the only control that re-runs `store.clear()`,
+/// so acknowledging the warning would retire the affordance it tells the user
+/// to use.
+///
+/// It carries a **Dismiss** of its own for the opposite reason: otherwise it
+/// renders for the remainder of the process, clearing only on a `clear()` or
+/// a `save()` that succeeds — neither of which ever comes for the one user it
+/// exists for, who cannot unlock the Keychain.
+///
+/// It renders under `.signedOut`, `.failed` **and** `.awaitingBrowser` — every
+/// state whose own arm of ``AccountView/accountRow`` carries no **Sign out**,
+/// as ``AccountModel/signOutDisclosure`` decides. The third needs saying: that
+/// is not an idle screen but a login suspended in the browser, and the
+/// caption's promise — unlock, then Sign out here — holds there only because
+/// ``AccountModel/signOut()`` ends that login too, so the token it comes back
+/// with is dropped rather than saved over the removal.
+private struct SignOutRetryRow: View {
+    let account: AccountModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(SignOutCopy.retryCaption)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            HStack(spacing: 12) {
+                Button("Sign out") { account.signOut() }
+                Button("Dismiss") { account.dismissSignOutRetry() }
+            }
+        }
+        .accessibilityIdentifier("account.signOutRetry")
     }
 }
