@@ -1,4 +1,5 @@
 import Foundation
+import Security
 import Testing
 
 @testable import Sunrise
@@ -6,14 +7,33 @@ import Testing
 final class StubCredentialStore: CredentialStore, @unchecked Sendable {
     private let lock = NSLock()
     private var value: StoredCredentials?
+    private var failure: (any Error)?
     private(set) var clearCount = 0
 
-    init(value: StoredCredentials? = nil) { self.value = value }
+    init(value: StoredCredentials? = nil, loadError: (any Error)? = nil) {
+        self.value = value
+        failure = loadError
+    }
 
     var stored: StoredCredentials? { lock.withLock { value } }
 
-    func load() throws -> StoredCredentials? { lock.withLock { value } }
+    /// The refusal `load` raises, settable mid-case: what a refused read costs
+    /// is decided by the *next* look, so a case has to be able to unlock the
+    /// keychain between two of them.
+    var loadError: (any Error)? {
+        get { lock.withLock { failure } }
+        set { lock.withLock { failure = newValue } }
+    }
+
+    func load() throws -> StoredCredentials? {
+        try lock.withLock {
+            if let failure { throw failure }
+            return value
+        }
+    }
+
     func save(_ credentials: StoredCredentials) throws { lock.withLock { value = credentials } }
+
     func clear() throws { lock.withLock { value = nil; clearCount += 1 } }
 }
 
@@ -60,6 +80,10 @@ func credentials(
 
 @MainActor
 struct AccountModelTests {
+    /// The refusal the repair is about: the *other* keychain was reached and
+    /// would not answer, so whether a token is in it is unknown.
+    private static let refusal = KeychainError.otherDomainUnreadable(errSecInteractionNotAllowed)
+
     private func model(
         store: StubCredentialStore,
         driver: StubLoginDriver = StubLoginDriver(),
@@ -146,6 +170,75 @@ struct AccountModelTests {
         #expect(account.state == .signedIn(expiresAtMs: 4_000))
         #expect(account.accessToken == "access-old")
         #expect(opened.first == nil)
+    }
+
+    /// A store that *refuses* is not a store that answered nothing, and this
+    /// is the difference the whole cross-domain read exists to keep. Reading a
+    /// refusal as "signed out" offers Sign in, and signing in writes a second
+    /// token beside the one that may still be sitting in the unreadable
+    /// keychain — two secrets under one `(service, account)`, which is
+    /// `migrationUnverified` on every later launch.
+    @Test
+    func aRefusedReadIsReportedInsteadOfLookingLikeASignedOutSession() {
+        let store = StubCredentialStore(loadError: Self.refusal)
+        let account = model(store: store)
+
+        account.restore()
+
+        #expect(account.state == .failed(Self.refusal.localizedDescription))
+        #expect(account.state != .signedOut, "a refusal that renders as Sign in invites the second token")
+        #expect(account.accessToken == nil)
+    }
+
+    /// And the Try again that state offers has to mean "look again". The view
+    /// cannot know what the store answered, so the model is the only place the
+    /// second token can be stopped: a store that has started answering hands
+    /// back the session it was holding, without a browser and without writing
+    /// over it.
+    @Test
+    func tryingAgainAfterARefusalLooksAgainRatherThanSigningInAfresh() async {
+        let store = StubCredentialStore(
+            value: credentials(accessToken: "access-old"),
+            loadError: Self.refusal
+        )
+        let opened = OpenedURLs()
+        let account = model(store: store, opened: { opened.record($0) })
+        account.restore()
+        #expect(account.state == .failed(Self.refusal.localizedDescription))
+
+        store.loadError = nil
+        await account.signIn(
+            issuer: "https://issuer.example",
+            clientID: "client",
+            deviceID: "abcd",
+            nowMs: 0
+        )
+
+        #expect(account.state == .signedIn(expiresAtMs: 4_000))
+        #expect(account.accessToken == "access-old")
+        #expect(store.stored?.accessToken == "access-old", "a second token was written over the first")
+        #expect(opened.first == nil, "the refusal was spent on a login rather than a second look")
+    }
+
+    /// The other half of the same guard: the refusal is a reason to look
+    /// again, not a latch. Once the store answers and there is genuinely
+    /// nothing in it, signing in is safe and has to happen.
+    @Test
+    func aStoreThatAnswersNothingAfterARefusalStillReachesTheLogin() async {
+        let store = StubCredentialStore(loadError: Self.refusal)
+        let account = model(store: store)
+        account.restore()
+
+        store.loadError = nil
+        await account.signIn(
+            issuer: "https://issuer.example",
+            clientID: "client",
+            deviceID: "abcd",
+            nowMs: 0
+        )
+
+        #expect(account.state == .signedIn(expiresAtMs: 4_000))
+        #expect(store.stored?.accessToken == "access-1")
     }
 
     @Test
