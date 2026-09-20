@@ -44,18 +44,32 @@
 -- pure function of the op set for the question that has to converge, and the
 -- bound stays one-directional for the question that has to hold.
 --
--- Order dependence is the price and it is bounded to one direction. Two
--- replicas that have seen the same ops in different orders can hold different
--- `device_read_bounds` — one that believed a revocation before learning it was
--- unwound has the row, one that met them the other way round does not. That is
--- why the *register* could not be made the ratchet instead (ADR-0041's own
+-- Order dependence is the price, and it is **not** bounded to one direction.
+-- Two replicas that have seen the same ops in different orders can hold
+-- different `device_read_bounds`, and they do not converge: the ratchet runs
+-- over the register the fold has just computed, so it is monotone along one
+-- replica's own arrival order rather than a function of the op set, and a row
+-- gated at every fold a replica runs never enters that replica's bound at all.
+--
+-- The worked example above is the counterexample. A replica that applies
+-- `A -> C` before `B -> A` bounds C on the first fold and ends `{C, A}`. A
+-- replica that applies them the other way round folds `{B -> A}` to `{A}`,
+-- then gates `A -> C` on its second fold, so its register is `{A}` both times
+-- and its bound ends `{A}`: **C is never bounded there**, and no later
+-- propagation repairs it, because from then on both replicas compute the same
+-- register `{A}` forever. So the second replica goes on sealing C every epoch
+-- it mints. What this table does close is the single-replica unwind: once a
+-- replica has bounded a device, nothing here gives the bound back.
+-- `crates/sunrise-core/src/engine/revocation.rs` states the fork at the write
+-- itself, and issue #282 holds the unclosed half and the two design questions
+-- it turns on.
+--
+-- The *register* still could not be made the ratchet instead (ADR-0041's own
 -- revisit trigger 4 says a ratchet and a fold cannot both be true of one
 -- table): a ratcheted register makes two replicas paint **different device
 -- lists**, which is the user-visible divergence ADR-0034 corollary 3 forbids.
--- Here the divergence is confined to key distribution and is a floor rather
--- than a disagreement: a replica can only bound more, never less, so no replica
--- ever seals a key the strictest one would have withheld from a device it has
--- itself bounded. The set converges upward as the ops propagate.
+-- Here the divergence is confined to key distribution, which is why it ships
+-- with the gap named rather than hidden.
 --
 -- `first_bound_at_ms` is **when this replica first wrote the bound**, carried
 -- over from `device_revocations.recorded_at_ms` at the seed and from the
@@ -64,19 +78,30 @@
 -- same reason `Engine::is_revoked` is presence and nothing else — the only
 -- reading comparable with another device's cut is this device's own HLC, which
 -- a fresh `MonotonicHlc` reads as zero after any restart. What the column is
--- for is disclosure: it is the value the device list's read-bounded signal
--- renders, so a device the discount pass rehabilitated can be shown as "still
--- receives no keys, since <when>" rather than as an unexplained asymmetry.
+-- for is disclosure, and **nothing reads it yet**: no query selects it, no row
+-- type carries it, and neither client renders a "since" clause. It is kept
+-- rather than dropped because the seed already fills it and a column removed
+-- here would need a second migration to add back, at which point the vaults
+-- that mattered would have lost the value. The read-bounded signal both device
+-- lists do render is the presence of the row, not this column.
 --
 -- The seed
 -- --------
 --
 -- Straight out of `device_revocations`, which at this moment is the whole of
 -- what this vault has ever believed about who is bounded. It is exact for a
--- vault upgrading from 27 or below, because nothing before this migration could
+-- vault upgrading from **26 or below**, because nothing such a vault ran could
 -- delete a register row: pre-0027 the register was a running upsert with no
--- inverse, and a vault stamped 27 has not yet run a fold that could have
--- removed one — 0027 only creates and seeds the ledger.
+-- inverse, and 26 -> 28 runs both migrations in one pass of the runner, so the
+-- fold has not executed when this `SELECT` reads. Every released vault is that
+-- case, since 27 and 28 ship together.
+--
+-- It is **not** exact for a vault already stamped 27 that has since run folds
+-- under 0027's code, which deleted register rows. No released build produces
+-- one; a vault opened on this branch between `c23bcea` and `a4ecff9` does, and
+-- its seed is incomplete — silently, because there is nothing left to read the
+-- deleted rows from. The remedy is the one this family always has: revoke the
+-- device again from a device the account still trusts.
 --
 -- A bare `INSERT` and not `INSERT OR IGNORE`: `device_revocations` is keyed on
 -- `device_id`, so the rows it holds are distinct by construction and there is

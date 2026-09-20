@@ -19,10 +19,10 @@
 //!   rebuilds it from the ledger and a row can leave it when a revocation's
 //!   author turns out to have been revoked first. It has to converge on the op
 //!   set, because it is what the device list paints and what ADR-0034
-//!   corollary 3 requires two replicas holding the same ops to agree on. Three
-//!   sites ask it: the device list (`super::query`), a sender's authority to
-//!   claim a third-party `key_envelope` recipient row (`super::sync`), and
-//!   `CommandResult::revocation_gated` in [`Engine::revoke_device`] below.
+//!   corollary 3 requires two replicas holding the same ops to agree on. **Two**
+//!   sites ask it: the device list, which reads `device_revocations` directly
+//!   through a `LEFT JOIN` rather than through this function (`super::query`),
+//!   and `CommandResult::revocation_gated` in [`Engine::revoke_device`] below.
 //! - **"Is this device read-bounded?"** — `device_read_bounds`, via
 //!   [`Engine::is_read_bounded`]. A ratchet: written only by the fold's
 //!   `INSERT OR IGNORE`, never deleted. It has to be monotone or it is not a
@@ -30,7 +30,17 @@
 //!   `emit_key_envelopes`' anti-join and `backfill_key_envelopes`' early
 //!   return in [`super::oplog`], the survivor roster `rotate_identity` builds
 //!   in [`super::identity`], and the readmission signal the
-//!   `DeviceCertPublish` arm computes in [`super::sync`].
+//!   `DeviceCertPublish` arm computes in [`super::sync`]. A fifth site asks it
+//!   for the same reason without distributing a key: a sender's authority to
+//!   claim a third-party `key_envelope` recipient row (`super::sync`), whose
+//!   own record names the bounded class rather than the revoked one.
+//!
+//!   Monotone is **not** convergent, and the difference is load-bearing: the
+//!   bound ratchets over the registers *this* replica computed, so two
+//!   replicas holding one ledger in different arrival orders can settle on
+//!   permanently different bounds. [`Engine::refold_device_revocations`] works
+//!   the counterexample; [#282](https://github.com/justin13888/Sunrise/issues/282)
+//!   holds the unclosed half.
 //!
 //! They were one table until `migrations/0028_device_read_bounds.sql`, and
 //! while they were, an ordinary unwind released the read bound: the device
@@ -523,13 +533,15 @@ impl Engine {
     }
     /// Whether `device_id` is revoked: **is there a row**, and nothing else.
     ///
-    /// The read half of revocation calls this from
-    /// [`Self::backfill_key_envelopes`], and the same presence test is inlined
-    /// as an anti-join in [`Self::emit_key_envelopes`], which needs it per row
-    /// rather than per call. Since ADR-0041 the `key_envelope` arm of
-    /// [`Self::apply_control_op`] reads it too, to refuse a revoked device's
-    /// claim that a third party has already been served. The *register* it
-    /// reads is no longer written incrementally: see
+    /// **The read half of revocation no longer calls this.** It did, from
+    /// [`Self::backfill_key_envelopes`] and as an inlined anti-join in
+    /// [`Self::emit_key_envelopes`]; since migration 0028 both read
+    /// `device_read_bounds` through [`Self::is_read_bounded`], because a bound
+    /// a re-fold can release is not a bound. The module doc above lists what
+    /// still asks *this* question, which is the convergent one: the device
+    /// list, which reads the register directly, and
+    /// `CommandResult::revocation_gated` in [`Self::revoke_device`]. The
+    /// *register* it reads is no longer written incrementally: see
     /// [`Self::refold_device_revocations`].
     ///
     /// # Why there is no time comparison here
@@ -599,13 +611,28 @@ impl Engine {
     /// Presence and nothing else, for the reason [`Self::is_revoked`] gives at
     /// length: the only reading comparable with another device's cut is this
     /// device's own HLC, and a fresh [`crate::config::MonotonicHlc`] reads zero
-    /// after any restart. `first_bound_at_ms` is disclosure — it is what the
-    /// device list's read-bounded signal renders — and gates nothing.
+    /// after any restart. `first_bound_at_ms` gates nothing and, as things
+    /// stand, **nothing reads it**: the read-bounded signal both device lists
+    /// render is the presence of the row. The column is kept because the seed
+    /// already fills it and re-adding it later would not recover the value for
+    /// the vaults that had it; `migrations/0028_device_read_bounds.sql` says so
+    /// at the schema.
     ///
     /// Like the register, this is the *local* half: a replica that has not yet
     /// applied the `device_revoke` op has no row to read and will seal the
-    /// device a new epoch. That is propagation, and it converges upward,
-    /// because the only move this table makes is to bound one more device.
+    /// device a new epoch.
+    ///
+    /// **And unlike the register, it does not converge.** The only move this
+    /// table makes is to bound one more device, which makes it monotone along
+    /// *this replica's own arrival order* — not a function of the op set. Two
+    /// replicas that applied the same ops in different orders can settle on
+    /// permanently different bounds, because a row gated at every fold one of
+    /// them runs never reaches its `register` and so never reaches its bound.
+    /// [`Self::refold_device_revocations`] works the counterexample through;
+    /// [#282](https://github.com/justin13888/Sunrise/issues/282) is the open
+    /// question of what a converging derivation would be. So a caller may read
+    /// this as "has *this* replica bounded the device", and may not read it as
+    /// "has the account".
     pub(super) fn is_read_bounded(
         &self,
         conn: &rusqlite::Connection,
@@ -1142,13 +1169,48 @@ impl Engine {
         // rather than a second fold, and why making the register itself the
         // ratchet was rejected.
         //
-        // The cost, stated rather than deduced: two replicas that saw the same
-        // ops in different orders can hold different bounds. It is a floor and
-        // not a disagreement — a replica can only bound more, never less — so
-        // no replica seals a key the strictest one would have withheld, and the
-        // set converges upward as the ops propagate. A device the discount pass
-        // rehabilitates therefore reads `current` in the device list while
-        // receiving no keys; that asymmetry is real, and
+        // **The cost, and it is larger than a floor: the bound does not
+        // converge.** What this `INSERT OR IGNORE` buys is monotonicity along
+        // *this replica's own arrival order*, and nothing more. The bound is a
+        // union of the registers this replica happened to compute, so a row
+        // gated at every fold this replica runs never enters `register` and
+        // therefore never enters the bound — permanently, however far the ops
+        // propagate.
+        //
+        // The counterexample is 0028's own motivating scenario. A retires
+        // laptop C at `h1`; months later B retires A at `h2 > h1`.
+        //
+        // * A replica applying `A -> C` first folds it to the register `{C}`
+        //   and bounds C. The second op gates `A -> C`, rebuilding the register
+        //   as `{A}`, so the bound ends `{C, A}`.
+        // * A replica applying `B -> A` first folds it to `{A}` and bounds A.
+        //   Its second fold already gates `A -> C`, so `register` is `{A}`
+        //   again and this insert is a no-op. **The bound ends `{A}`, and C is
+        //   never bounded on that replica at all.**
+        //
+        // Identical op sets, identical registers, different fixed points — and
+        // both replicas compute `{A}` on every later fold, so no amount of
+        // further propagation repairs the second. It seals C every epoch it
+        // mints, and one `DeviceCertPublish` from C drives
+        // [`Self::backfill_key_envelopes`] to hand back every held epoch of
+        // every stream: the failure this split exists to close, surviving at
+        // the new site for a replica that met the ops the other way round.
+        // Nor is it adversarial — `PairingPayload` carries no revocation
+        // state, so a device that pairs today starts empty and learns the ops
+        // in whatever order the relay has them.
+        //
+        // What *is* closed here is the whole of what one replica can observe:
+        // once this replica has bounded a device, no later fold gives the bound
+        // back, so an unwind can no longer readmit it to a recipient set. The
+        // cross-replica half needs the bound to be a function of the op set,
+        // which is a derivation this table does not have and
+        // [#282](https://github.com/justin13888/Sunrise/issues/282) is where it
+        // belongs — with the two questions it turns on: whether the bound is a
+        // property of the account or of a replica's history, and whether
+        // `PairingPayload` should carry it.
+        //
+        // A device the discount pass rehabilitates reads `current` in the
+        // device list while receiving no keys; that asymmetry is real, and
         // `DeviceRow::read_bounded` is what puts it on screen instead of
         // leaving a user to infer it.
         {

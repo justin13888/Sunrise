@@ -395,12 +395,32 @@ there are five visible consequences:
    subsequent epoch, and one `DeviceCertPublish` from it drove
    `backfill_key_envelopes` to hand back every held epoch of every stream.
 
-   The price is order dependence on the bound, in one direction: a replica that
-   believed a revocation before learning it was unwound holds the row and one
-   that met them the other way round does not. It is a floor rather than a
-   disagreement — a replica can only bound more, never less — so no replica
-   seals a key the strictest one would have withheld, and the set converges
-   upward. The *register* could not be made the ratchet instead for the reason
+   The price is order dependence on the bound, and it is **not** one-directional
+   and **does not converge**. A replica that believed a revocation before
+   learning it was unwound holds the row; one that met the two ops the other way
+   round never held it and never will, because from then on both replicas
+   compute the same gated register and the `INSERT OR IGNORE` has nothing new to
+   write. Retire laptop C from desktop A, then months later retire A from phone
+   B: a replica applying `A -> C` first ends with the bound `{C, A}`, and a
+   replica applying `B -> A` first ends with `{A}` — C is never bounded there, so
+   it stays a recipient of every epoch that replica mints and one
+   `DeviceCertPublish` from it recovers every held epoch of every stream. That is
+   the same failure the split closes, at the new site, for a replica that met the
+   ops in the other order.
+
+   So the guarantee this decision earns is **per-replica** and is stated that
+   way: once a replica has bounded a device, no later fold on that replica gives
+   the bound back, which is the whole of the unwind as a single replica can
+   observe it. Making the bound a function of the op set — so that two replicas
+   converge — needs a derivation this ADR does not have: the naive ledger seed
+   lets a revoked device bound the whole account with N ordinary ops, and
+   ordering by the cut instead reintroduces the back-dating exposure §Decision 1
+   exists to close. [#282](https://github.com/justin13888/Sunrise/issues/282)
+   carries the counterexample, the `PairingPayload` consequence — a device that
+   pairs today inherits no revocation state and is the weakest replica in the
+   account — and the two questions the design turns on.
+
+   The *register* still could not be made the ratchet instead, for the reason
    §"What would force revisiting this" trigger 4 gives: a ratcheted register
    makes two replicas paint different device lists, which is the user-visible
    divergence ADR-0034 corollary 3 forbids. `DeviceRow::read_bounded` is what
