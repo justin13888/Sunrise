@@ -385,15 +385,17 @@ struct AccountView: View {
                     .disabled(!settings.canSignIn)
             }
         }
-        // Which states the disclosure is true in is
-        // ``AccountModel/shouldDiscloseSignOutIncomplete``, not a `switch`
-        // here: it is the change's correctness rule, and on the model a test
-        // can reach it. It is guarded rather than cleared in `publish()`
-        // because clearing would hide exactly the readmission this exists to
-        // disclose.
-        if account.shouldDiscloseSignOutIncomplete, let message = account.signOutIncomplete {
+        // What the screen says about the last sign-out is one value on the
+        // model, switched over here in full. There is no rule left at this
+        // site to get wrong: no ordering, no pair of conditions that overlap,
+        // and no way to render both rows or neither. Which case wins is
+        // ``AccountModel/signOutDisclosure``, where a test reaches it.
+        switch account.signOutDisclosure {
+        case .none:
+            EmptyView()
+        case let .incomplete(message):
             SignOutIncompleteRow(message: message, account: account)
-        } else if account.shouldOfferSignOutRetry {
+        case .retry:
             SignOutRetryRow(account: account)
         }
     }
@@ -404,6 +406,35 @@ struct AccountView: View {
     }
 }
 
+/// The words the two sign-out rows carry.
+///
+/// Outside the bodies because what the disclosure NAMES is a decision — "the
+/// stored credential", not "the refresh token", which a public client may
+/// never have had — and a body no test can evaluate cannot pin a decision. A
+/// `String` can.
+enum SignOutCopy {
+    /// The headline: the device the session ended on, and the Keychain's own
+    /// refusal quoted. `@MainActor` for ``Platform/deviceName``, which reads
+    /// `UIDevice.current` and is isolated for it.
+    @MainActor
+    static func incompleteHeadline(message: String) -> String {
+        "Signed out on this \(Platform.deviceName), but the stored credential "
+            + "could not be removed: \(message)"
+    }
+
+    /// What it costs, and what to do about it.
+    static let incompleteCaption =
+        "The stored credential is still in the Keychain, so the next launch "
+            + "will sign you back in. Unlock your Keychain, then Sign out here "
+            + "to try removing it again."
+
+    /// The same instruction, for the reader who has already acknowledged the
+    /// headline and does not need it shouted twice.
+    static let retryCaption =
+        "A credential the last sign-out could not remove is still in the "
+            + "Keychain. Unlock your Keychain, then Sign out here to try again."
+}
+
 /// What a sign-out could not do: the Keychain kept the credential.
 ///
 /// A file-scope view rather than another `@ViewBuilder` var on ``AccountView``
@@ -412,10 +443,10 @@ struct AccountView: View {
 /// it costs, and the actions that are honest about it.
 ///
 /// It carries its own **Sign out** because the screen's other one does not
-/// reach here: ``AccountView/accountRow`` renders that button only in the
-/// `.signedIn` arm, and this row renders under `.signedOut` and `.failed`. A
-/// caption telling the user to sign out again with no control to do it with
-/// would be an instruction the app does not offer.
+/// reach here: ``AccountView/accountRow`` renders that button in the
+/// `.signedIn` arm alone, and this row renders under `.signedOut` and
+/// `.failed`. A caption telling the user to sign out again with no control to
+/// do it with would be an instruction the app does not offer.
 private struct SignOutIncompleteRow: View {
     let message: String
     let account: AccountModel
@@ -423,18 +454,13 @@ private struct SignOutIncompleteRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Label(
-                "Signed out on this \(Platform.deviceName), but the stored credential "
-                    + "could not be removed: \(message)",
+                SignOutCopy.incompleteHeadline(message: message),
                 systemImage: "exclamationmark.triangle"
             )
             .foregroundStyle(.orange)
-            Text(
-                "The stored credential is still in the Keychain, so the next launch "
-                    + "will sign you back in. Unlock your Keychain, then Sign out here "
-                    + "to try removing it again."
-            )
-            .font(.caption)
-            .foregroundStyle(.secondary)
+            Text(SignOutCopy.incompleteCaption)
+                .font(.caption)
+                .foregroundStyle(.secondary)
             HStack(spacing: 12) {
                 Button("Sign out") { account.signOut() }
                 Button("Dismiss") { account.dismissSignOutIncomplete() }
@@ -450,21 +476,25 @@ private struct SignOutIncompleteRow: View {
 /// fact: the credential is still in the Keychain, and the caption the user
 /// just dismissed told them to unlock it and sign out again. Without this row
 /// the dismissal would destroy the only control that re-runs `store.clear()`,
-/// because ``AccountView/accountRow`` renders its other **Sign out** in the
-/// `.signedIn` arm alone — so acknowledging the warning would retire the
-/// affordance the warning tells the user to use.
+/// so acknowledging the warning would retire the affordance it tells the user
+/// to use.
+///
+/// It carries a **Dismiss** of its own for the opposite reason: otherwise it
+/// renders for the remainder of the process, clearing only on a `clear()` or
+/// a `save()` that succeeds — neither of which ever comes for the one user it
+/// exists for, who cannot unlock the Keychain.
 private struct SignOutRetryRow: View {
     let account: AccountModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(
-                "A credential the last sign-out could not remove is still in the "
-                    + "Keychain. Unlock your Keychain, then Sign out here to try again."
-            )
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            Button("Sign out") { account.signOut() }
+            Text(SignOutCopy.retryCaption)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            HStack(spacing: 12) {
+                Button("Sign out") { account.signOut() }
+                Button("Dismiss") { account.dismissSignOutRetry() }
+            }
         }
         .accessibilityIdentifier("account.signOutRetry")
     }

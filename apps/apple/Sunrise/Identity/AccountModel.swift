@@ -65,60 +65,116 @@ final class AccountModel {
         case failed(String)
     }
 
+    /// What a refused sign-out has left behind, and how far the user has got
+    /// with it.
+    ///
+    /// One value rather than a flag per row. As two independent booleans the
+    /// message and the retry were simultaneously true in the ordinary refused
+    /// state, so nothing here said which of the two rows the screen should
+    /// carry and the view had to invent the rule — off the model, where no
+    /// test reaches it. Every combination that can exist is a case here, and
+    /// no two of them are true at once.
+    enum SignOutResidue: Equatable {
+        /// The Keychain let go of the credential, or was never asked.
+        case none
+        /// It refused, and the message has not been acknowledged yet. The
+        /// payload is the Keychain's own localized prose.
+        case unread(String)
+        /// The message was acknowledged. The credential it named is still
+        /// stored, so the control that re-runs the removal stays.
+        case acknowledged
+        /// The retry was dismissed too, so the screen says nothing more about
+        /// this refusal. A sign-out refused again starts the sequence over.
+        case retired
+    }
+
+    /// What the Account screen renders about the last sign-out — the whole of
+    /// it, as one value.
+    ///
+    /// The view switches over this and keeps no rule of its own, so it cannot
+    /// render both rows, nor neither, nor the wrong one of the two when the
+    /// conditions behind them overlap.
+    enum SignOutDisclosure: Equatable {
+        /// The screen says nothing about the last sign-out.
+        case none
+        /// The full disclosure, carrying the Keychain's own message.
+        case incomplete(String)
+        /// The message has been read; the credential it named is still
+        /// stored, so the way to act on it is still offered.
+        case retry
+    }
+
     private(set) var state: State = .signedOut
 
     /// The bearer to present to the relay, or `nil` when signed out.
     private(set) var accessToken: String?
 
-    /// What the last sign-out could **not** do, until the user dismisses it.
+    /// What the last sign-out could **not** do, and how much of it the user
+    /// has acknowledged.
     ///
-    /// Non-`nil` means the local session ended and the stored credential did
-    /// not: the token is still in the Keychain, and the next launch's
-    /// ``restore()`` reads it back. Carried to the caller rather than logged,
-    /// because a log line is not a disclosure — the rule
+    /// Anything but ``SignOutResidue/none`` means the local session ended and
+    /// the stored credential did not: the token is still in the Keychain, and
+    /// the next launch's ``restore()`` reads it back. Carried to the caller
+    /// rather than logged, because a log line is not a disclosure — the rule
     /// `core.device.revoke_incomplete` states in
     /// `docs/10-cross-cutting/log-events.md`, and the one
     /// ``DeviceListModel/lastRevocation`` already follows in this app.
-    private(set) var signOutIncomplete: String?
-
-    /// Whether the Keychain has refused a sign-out in this process.
     ///
-    /// Separate from ``signOutIncomplete`` because
-    /// ``dismissSignOutIncomplete()`` consumes that one, and acknowledging a
-    /// message must not retire the only control that can act on it: the
-    /// caption tells the user to unlock the Keychain and sign out again, and
-    /// under `.signedOut` the Account screen has no other control that reaches
-    /// ``signOut()``. Session scoped, like the message — it says what happened
-    /// in this process, and the credential it refers to is still stored until
-    /// a `clear()` or a `save()` replaces it.
-    private(set) var signOutRefusedThisSession = false
+    /// Session scoped: it says what happened in this process, and the
+    /// credential it refers to is still stored until a `clear()` or a
+    /// `save()` replaces it. All three writes that replace it — ``signOut()``,
+    /// ``signIn(issuer:clientID:deviceID:nowMs:)`` and
+    /// ``refreshIfNeeded(issuer:clientID:nowMs:)`` — retire it.
+    private(set) var signOutResidue: SignOutResidue = .none
 
-    /// Whether the Account screen renders the disclosure.
-    ///
-    /// The pairing rule lives here rather than at the render site so that a
-    /// change to the state machine fails a test instead of only a screenshot.
-    /// The row's text asserts the user is signed out, while ``restore()`` and
-    /// ``publish()`` can pair a non-`nil` ``signOutIncomplete`` with
-    /// `.signedIn` — the one combination it must not be rendered under.
-    var shouldDiscloseSignOutIncomplete: Bool {
-        signOutIncomplete != nil && stateTheDisclosureIsTrueIn
+    /// The message a refused sign-out left unread, or `nil` once it has been
+    /// acknowledged, retired, or made untrue by a replaced credential.
+    var signOutIncomplete: String? {
+        if case let .unread(message) = signOutResidue { message } else { nil }
     }
 
-    /// Whether the Account screen still offers a way to re-run the removal.
+    /// Whether the Keychain has refused a sign-out whose credential is still
+    /// the stored one. Unlike ``signOutIncomplete`` this outlives
+    /// ``dismissSignOutIncomplete()`` and ``dismissSignOutRetry()``:
+    /// acknowledging a message does not remove the credential it is about.
+    var signOutRefusedThisSession: Bool { signOutResidue != .none }
+
+    /// What the Account screen renders about the last sign-out.
     ///
-    /// Outlives ``dismissSignOutIncomplete()``: dismissing says the message
-    /// has been read, and the credential it was about is still stored.
-    var shouldOfferSignOutRetry: Bool {
-        signOutRefusedThisSession && stateTheDisclosureIsTrueIn
+    /// Which of the cases wins is decided here rather than at the render site,
+    /// so a change to it fails a test instead of only a screenshot. The
+    /// message is suppressed under `.signedIn`, where its text would predict a
+    /// re-admission that has already happened, and stands aside under
+    /// `.awaitingBrowser` for the browser in front of it. The retry is
+    /// suppressed under `.signedIn` alone, whose own arm carries a **Sign
+    /// out**: an abandoned login parks `.awaitingBrowser` for
+    /// ``redirectTimeoutMs`` with no cancel and no other control that reaches
+    /// `store.clear()`.
+    var signOutDisclosure: SignOutDisclosure {
+        switch signOutResidue {
+        case .none, .retired:
+            return .none
+        case let .unread(message) where stateTheMessageIsTrueIn:
+            return .incomplete(message)
+        case .unread, .acknowledged:
+            return stateTheRetryIsUsefulIn ? .retry : .none
+        }
     }
 
-    /// The states the disclosure's own text is true in. `.awaitingBrowser` is
-    /// transient with the browser in front, and under `.signedIn` the text
-    /// would predict a re-admission that has already happened.
-    private var stateTheDisclosureIsTrueIn: Bool {
+    /// The states the message's own text is true and wanted in.
+    private var stateTheMessageIsTrueIn: Bool {
         switch state {
         case .signedOut, .failed: true
         case .signedIn, .awaitingBrowser: false
+        }
+    }
+
+    /// The states a retry is worth offering in: every one where the Account
+    /// screen has no other control that reaches ``signOut()``.
+    private var stateTheRetryIsUsefulIn: Bool {
+        switch state {
+        case .signedOut, .failed, .awaitingBrowser: true
+        case .signedIn: false
         }
     }
 
@@ -180,8 +236,7 @@ final class AccountModel {
             // entry instead would also fire on the `guard` above and the
             // `catch` below, neither of which establishes a session; there the
             // old credential is still stored and the warning is still true.
-            signOutIncomplete = nil
-            signOutRefusedThisSession = false
+            signOutResidue = .none
             credentials = fresh
             publish()
         } catch {
@@ -246,11 +301,12 @@ final class AccountModel {
     func signOut() {
         do {
             try store.clear()
-            signOutIncomplete = nil
-            signOutRefusedThisSession = false
+            signOutResidue = .none
         } catch {
-            signOutIncomplete = error.localizedDescription
-            signOutRefusedThisSession = true
+            // A fresh refusal starts the sequence over even where the user had
+            // retired an earlier one: this message is new and unread, and the
+            // credential it names is the one still in the Keychain now.
+            signOutResidue = .unread(error.localizedDescription)
         }
         credentials = nil
         accessToken = nil
@@ -259,10 +315,28 @@ final class AccountModel {
 
     /// Acknowledge ``signOutIncomplete``. The token it describes is still
     /// stored; dismissing says the user has read that, not that it is gone —
-    /// which is why it leaves ``signOutRefusedThisSession`` standing, and with
-    /// it the control that re-runs the removal.
+    /// which is why the residue moves to ``SignOutResidue/acknowledged``
+    /// rather than away, keeping the control that re-runs the removal.
     func dismissSignOutIncomplete() {
-        signOutIncomplete = nil
+        if case .unread = signOutResidue { signOutResidue = .acknowledged }
+    }
+
+    /// Dismiss the retry as well, and stop offering anything about this
+    /// refusal.
+    ///
+    /// The retry needs an exit of its own. It renders for the rest of the
+    /// process and is otherwise cleared only by a `clear()` or a `save()` that
+    /// SUCCEEDS — and the user it exists for is precisely the one who cannot
+    /// unlock the Keychain, for whom neither ever does. Without this it is the
+    /// alarming row with no way to clear it that this change rejected the
+    /// other shape for. The refusal itself is not forgotten:
+    /// ``signOutRefusedThisSession`` stands, and a sign-out refused again
+    /// re-arms the disclosure from the top.
+    func dismissSignOutRetry() {
+        switch signOutResidue {
+        case .unread, .acknowledged: signOutResidue = .retired
+        case .none, .retired: break
+        }
     }
 
     private func publish() {
