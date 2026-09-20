@@ -70,17 +70,23 @@ use sunrise_wire_protocol::{
 ///
 /// It has a second job, named here because it is not visible from the sentence
 /// above: it is also the cap on every response body that is a **document** —
-/// [`SseTransport::call`]'s replies, a refused stream's problem document, and a
-/// chunk upload's ack. Nothing legitimate on those routes is anywhere near
-/// eight mebibytes, so there it is not sizing the reply; it is denying a relay
-/// the choice of how much memory this client holds. The one route it does not
-/// bound is the blob fetch, which takes [`MAX_BLOB_BYTES`].
+/// [`SseTransport::call`]'s replies, a refused stream's problem document, a
+/// chunk upload's ack, and **a refused blob fetch's problem document**.
+/// Nothing legitimate on those routes is anywhere near eight mebibytes, so
+/// there it is not sizing the reply; it is denying a relay the choice of how
+/// much memory this client holds. The one body it does not bound is an
+/// attachment itself, which takes [`MAX_BLOB_BYTES`] — the blob route is
+/// bounded by both constants, one per side of `is_success`.
 const MAX_EVENT_BYTES: usize = 8 * 1024 * 1024;
 
 /// The largest *blob* this client will hold out of one reply.
 ///
 /// The blob surface is the one route whose body is content rather than a
 /// document: `blob_fetch` reads a whole committed attachment into a `Vec<u8>`.
+/// Its *successful* body, that is — a refused blob fetch answers with a problem
+/// document like every other route and is capped by [`MAX_EVENT_BYTES`] like
+/// every other route, so this number applies to one side of `is_success` and
+/// not to the route.
 /// `crates/sunrise-server/src/api/blobs.rs:62` refuses to commit one larger
 /// than this, so the number is the relay's own ceiling restated on the side
 /// that has to allocate it. Capping it at [`MAX_EVENT_BYTES`] instead would
@@ -127,7 +133,9 @@ const BODY_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2)
 /// with the promise being that a silent stream produces something "within
 /// 15 s". So the magnitude transfers rather than being borrowed by analogy: a
 /// client that treats fifteen seconds of silence as a live connection on one
-/// route cannot call it a dead peer on another.
+/// route cannot call it a dead peer on another. Like the cap beside it, this
+/// waits on an attachment and not on the route: a blob `GET` answered `404` or
+/// `503` is a document, and waits [`BODY_IDLE_TIMEOUT`].
 ///
 /// [`BODY_IDLE_TIMEOUT`]'s two seconds are right for a document and wrong
 /// here, because an idle bound is a **minimum inter-frame arrival rate** and
@@ -340,6 +348,16 @@ impl SseTransport {
     /// with a hundred megabytes and be waited on per frame for as long as a
     /// download deserves. Same shape as [`read_body`]'s parameters one level
     /// down, and for the same reason.
+    ///
+    /// They are the bounds on the reply the caller **asked for**, and only on
+    /// that one. A non-2xx reply is not content on any route: it is the problem
+    /// document [`SseTransport::refuse`] parses, the same few hundred bytes the
+    /// other five routes read, so it is read under the document bounds
+    /// whatever the caller passed. Splitting by caller alone left the blob
+    /// route's `404` — which [`SseTransport::blob_fetch`] handles as "not here,
+    /// try later" — being read under a hundred-megabyte cap and fifteen seconds
+    /// of patience per frame, which is the upload route's own defect one status
+    /// along.
     async fn call_bytes(
         &self,
         method: &str,
@@ -372,6 +390,15 @@ impl SseTransport {
             .map_err(|e| TransportError::Unavailable(e.to_string()))?;
         let status = response.status();
         let date = server_date(response.headers());
+        // The status is already in hand, so the kind of body about to arrive is
+        // known before a byte of it is read. The caller's bounds size the reply
+        // it asked for; a refusal is a document on every route, and is read
+        // like one.
+        let (cap, idle) = if status.is_success() {
+            (cap, idle)
+        } else {
+            (MAX_EVENT_BYTES, BODY_IDLE_TIMEOUT)
+        };
         let bytes = read_body(response.into_body(), cap, idle).await?;
         Ok(Reply {
             status,
@@ -1053,7 +1080,10 @@ impl Transport for SseTransport {
                 // document reply is — by [`MAX_EVENT_BYTES`], which denies a
                 // relay the choice of how much memory this client holds, and
                 // by [`BODY_IDLE_TIMEOUT`], because a relay that has already
-                // sent the head of an ack and then goes quiet has stalled.
+                // sent the head of an ack and then goes quiet has stalled. A
+                // refused `PUT` lands on the same two numbers, by a different
+                // route: `call_bytes` reads every non-2xx body under the
+                // document bounds regardless of what it was passed.
                 MAX_EVENT_BYTES,
                 BODY_IDLE_TIMEOUT,
             )
@@ -1119,11 +1149,17 @@ impl Transport for SseTransport {
                 &format!("/api/v1/blobs/blb_{}", hex::encode(blob_id)),
                 None,
                 &[],
-                // The one reply on this transport that is content rather than
-                // a document, and the only one either bound is sized for:
-                // [`MAX_BLOB_BYTES`] is the relay's own ceiling, and
+                // The bounds on a *fetched attachment*, which is the one
+                // reply on this transport that is content rather than a
+                // document: [`MAX_BLOB_BYTES`] is the relay's own ceiling, and
                 // [`BLOB_IDLE_TIMEOUT`] is what keeps an ordinary gap in a
                 // hundred-megabyte transfer from being read as a dead peer.
+                // They apply to a 2xx and nothing else. The `404` below and
+                // whatever `refuse` parses are problem documents, and
+                // `call_bytes` reads them under the document bounds — sizing
+                // them from here would let a relay answer a fetch `404` with a
+                // hundred megabytes, and be waited on for an attachment's
+                // patience per frame while it did.
                 MAX_BLOB_BYTES,
                 BLOB_IDLE_TIMEOUT,
             )
@@ -1177,11 +1213,14 @@ struct Reply {
 ///
 /// `cap` is a parameter because the routes carry different things — a problem
 /// document and an attachment are not bounded by the same number — and `idle`
-/// is one for the same reason and not merely as a courtesy: the blob route
-/// waits [`BLOB_IDLE_TIMEOUT`] where the two document routes wait
-/// [`BODY_IDLE_TIMEOUT`], because an idle bound is a minimum arrival rate and
-/// content and documents do not arrive alike. Both are now stated at the call
-/// rather than assembled out of a `timeout` and a `Limited` at each site.
+/// is one for the same reason and not merely as a courtesy: a fetched
+/// attachment is read under [`BLOB_IDLE_TIMEOUT`] where every document is read
+/// under [`BODY_IDLE_TIMEOUT`], because an idle bound is a minimum arrival
+/// rate and content and documents do not arrive alike. Both are now stated at
+/// the call rather than assembled out of a `timeout` and a `Limited` at each
+/// site. The split is by *body*, not by route: the blob route reaches this
+/// function with both pairs, one per side of `is_success`, which
+/// [`SseTransport::call_bytes`] chooses between.
 ///
 /// What a failure *means* is deliberately not decided here, because it differs:
 /// a refusal whose problem document did not arrive is still a refusal and
@@ -2262,15 +2301,19 @@ mod tests {
     ///
     /// The two deadlines are asserted together, and their *inequality* with
     /// them, because what this pair pins is not either value alone: it is that
-    /// one value does not serve both routes. [`BODY_IDLE_TIMEOUT`] applied to a
-    /// blob fetch is a minimum inter-frame arrival rate on a hundred megabytes,
-    /// and [`BLOB_IDLE_TIMEOUT`] applied to the handshake would slacken the one
-    /// route with nothing above it.
+    /// one value does not serve both kinds of body. [`BODY_IDLE_TIMEOUT`]
+    /// applied to a fetched attachment is a minimum inter-frame arrival rate on
+    /// a hundred megabytes, and [`BLOB_IDLE_TIMEOUT`] applied to the handshake
+    /// would slacken the one route with nothing above it. Both bodies reach the
+    /// blob route, so the split there is by status rather than by route.
     ///
     /// [`MAX_BLOB_BYTES`] is the relay's own ceiling
     /// (`crates/sunrise-server/src/api/blobs.rs:62`) restated on the side that
     /// allocates it. Lowering it would refuse attachments the relay accepted,
-    /// which is a failure no caller could diagnose from here.
+    /// which is a failure no caller could diagnose from here. It bounds a
+    /// fetched attachment and nothing else; a refused fetch is capped by
+    /// [`MAX_EVENT_BYTES`], which `the_frame_cap_is_the_documented_eight_mebibytes`
+    /// pins.
     #[test]
     fn the_body_bounds_are_the_numbers_they_are_documented_as() {
         assert_eq!(super::BODY_IDLE_TIMEOUT, std::time::Duration::from_secs(2));
