@@ -243,6 +243,14 @@ def logical_lines(text: str) -> list[tuple[int, str]]:
     precisely inverting what it is for. `#` starts a comment in TOML, in
     YAML and in the shell bodies of mise tasks alike.
 
+    A trailing backslash continues a line only when there is an odd
+    number of them. `--output out\\` ends the command — the two
+    backslashes are one escaped literal — and reading it as a
+    continuation joined the next line onto an invocation that does not
+    run it. Executed: an invocation ending `--output out\\` above an
+    `echo --all-features` was reported green with no flag on the command
+    that measures. The escape is counted, not looked for.
+
     Returns (1-based line number of where the logical line starts, text).
     """
     out: list[tuple[int, str]] = []
@@ -259,7 +267,7 @@ def logical_lines(text: str) -> list[tuple[int, str]]:
         stripped = raw.strip()
         if not pending:
             start = number
-        if stripped.endswith("\\"):
+        if (len(stripped) - len(stripped.rstrip("\\"))) % 2 == 1:
             pending.append(stripped[:-1].strip())
             continue
         pending.append(stripped)

@@ -187,6 +187,23 @@ class FlagsGateContract(unittest.TestCase):
         self.assert_code(result, 0)
         self.assertNotIn("missing", result.stderr)
 
+    def test_an_escaped_backslash_does_not_continue_the_line(self):
+        # The neighbour of the case above, one backslash along. A line
+        # ending `out\\` ends the command — the pair is one literal
+        # backslash — but a test that only asks whether the line ends in
+        # a backslash joins the next line onto it, and the escaped space
+        # then merges the words. Executed: an invocation ending
+        # `--output out\\` above an `echo --all-features` reported
+        # `OK: 2` with no flag on the command that measures.
+        self.assert_code(
+            self.run_gate(
+                MISE_WITH_FLAG.replace(
+                    ' --all-features --jobs 1 --output "out/x"',
+                    ' --jobs 1 --output out\\\\\necho --all-features'),
+                CI_WITH_FLAG,
+            ),
+            1, "--all-features is missing from 1 of 2")
+
     # --- 1: an invocation is missing the flag ----------------------------
 
     def test_mise_dropping_the_flag_is_1(self):
