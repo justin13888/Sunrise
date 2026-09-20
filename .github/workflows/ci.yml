@@ -1350,7 +1350,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
-      - name: Reject a backticked path:line citation that points at nothing
+      - name: Reject a backticked path:line#symbol citation that points at nothing
         # This repository cites its own source in inline code spans —
         # `crates/sunrise-sync/src/backoff.rs:31-63` — close to a thousand of
         # them, and until this gate not one was checked. That is not an
@@ -1370,6 +1370,38 @@ jobs:
         # counted and listable rather than guessed at. The extension set is
         # closed, or `task.update` and `Task.blocks` read as paths. The script
         # carries its own self-test and runs it as a precondition.
+        #
+        # A citation may also name the item it means —
+        # `crates/sunrise-core/src/engine/sync.rs:702#is_revoked` — and that
+        # form, `path:line#symbol`, is this repository's citation convention.
+        # The cited line must then fall inside that item's span, so a line that
+        # drifts onto unrelated code fails here instead of passing because the
+        # line still exists; that drift is what this gate was extended to
+        # catch, measured on ADR-0034, where eight of nine citations had rotted
+        # while the gate stayed green. `path#symbol` with no line checks only
+        # that the item is still declared.
+        #
+        # Three behaviours to know before writing one. A suffix that is not a
+        # bare Rust item name (`#Engine::f`, `#f()`) is a FAILURE, reported
+        # after the path and line checks have run on the same span, so it can
+        # never subtract a check the citation already had. A github.com
+        # permalink fragment — `#L702`, `#L702-L710` and the column forms —
+        # and any `#symbol` on a non-`.rs` target are DECLINED rather than
+        # failed, and what is declined is the SYMBOL check alone: the span
+        # keeps every other check and stays in the checked count. The
+        # DIRECTORY check is one of those others and is declined for
+        # nothing, so a path resolving to a directory fails with ANY suffix,
+        # whatever the extension and whatever the suffix spells — a directory
+        # declares no items and has no lines, which is what `dir:702` has
+        # always failed on. Neither an
+        # `impl` block nor a `mod` is a legal target, because `#Engine`
+        # spanned 97.7% of `sync.rs` and `mod tests` in `api/sync/suite.rs`
+        # spans 99.5% of it, so neither checked anything.
+        #
+        # The full rule lives in the script's own module docstring, and
+        # `mise.toml`'s `citations` task carries the same summary. All three
+        # move together or the records lag the code, which is the defect this
+        # gate exists to catch.
         run: .github/scripts/citation-gate.py
 
   citation-gate-contract:

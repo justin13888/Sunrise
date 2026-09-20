@@ -11,6 +11,32 @@ guarantee is stated, and the write bound is routed to the relay) and
 **Depends on:** [ADR-0024](./0024-key-hierarchy.md) — random wrapped stream keys
 are what make a read bound expressible at all.
 
+**Note, 2026-09-17 (citations only, at `e9a4c09`):** this file carried nine
+code-span references at `e9a4c09`, and eight of them had rotted onto unrelated
+code — the decision did not move, the code under it did. Seven of the eight
+were `path:line` citations. The remaining one was a bare `` `:381` `` with no
+path at all, leaning on the sentence before it; the gate's grammar rejects that
+form as a citation and never counted it, so no amount of checking could have
+caught that one, and it now carries its path. Each of the nine was repointed,
+or left alone where it was already correct, and each now names the symbol it
+means, `path:line#symbol`, which
+[`.github/scripts/citation-gate.py`](../../.github/scripts/citation-gate.py)
+checks for containment, so a line that drifts **out of the item it names** is a
+red check rather than a silent lie
+([#249](https://github.com/justin13888/Sunrise/issues/249)). Containment is not
+aboutness, and it gets weaker the larger the item: measured against the eight,
+the check catches five, and drift *within* a named item — three of these cite
+into `apply_control_op`, which is over seven hundred lines — stays green. That
+is a narrower hole than the line-existence check these citations rotted
+through, not the absence of one. Claims about
+the code were re-read against the code in the same pass: `Engine::is_revoked`
+has one non-test caller and not two; `git grep refused_ops` returns hits rather
+than nothing — every one of them a sentence in this file, this one included,
+which is why the claim below is now written without a count; and the apply path
+does reach the revocation register, by the chain the bullet below traces,
+though no read of it decides whether an op applies. **No conclusion here
+changed**, and every one of them was re-read against the code first.
+
 ## Context
 
 ### The question, and why the tree answers it differently than the issue asks
@@ -27,20 +53,50 @@ refusal as a derived view.
 the code rather than from the issue:
 
 - There is **no `refused_ops` table and no refusal record anywhere** —
-  `git grep refused_ops` returns nothing across the whole tree.
-- `Engine::is_revoked` (`crates/sunrise-core/src/engine/sync.rs:581`) has exactly two
-  non-test callers, and both are on the **key-distribution** side:
-  `emit_key_envelopes`'s anti-join against `device_revocations`
-  (`crates/sunrise-core/src/engine/oplog.rs:280`) and the early return in
-  `backfill_key_envelopes` (`:381`). Nothing in the apply path consults it.
+  `git grep refused_ops` matches nothing outside this file: no migration, no
+  query, no type, no record. Every hit it returns is a sentence in this ADR
+  naming the thing in order to say it is gone, so the grep is not silent and
+  the claim it is offered for still holds. Deliberately not stated as a
+  number: the previous wording ("returns nothing across the whole tree") was
+  false the day it was written, and a count here is falsified by the next
+  sentence that mentions the table.
+- Since migration 0028 the key-distribution side reads `device_read_bounds`
+  rather than the register, so the register's own predicate `Engine::is_revoked`
+  (`crates/sunrise-core/src/engine/revocation.rs:576#is_revoked`) has exactly
+  **one** non-test caller and it is not on the apply path at all: the revoking
+  command reads it to report whether its own row survived the fold
+  (`crates/sunrise-core/src/engine/revocation.rs:257#revoke_device`). What the
+  apply path reaches is the **bound**, twice, and both reads are on the
+  **key-distribution** side: the anti-join is `emit_key_envelopes`'s
+  `NOT EXISTS` against `device_read_bounds`
+  (`crates/sunrise-core/src/engine/oplog.rs:309-311#emit_key_envelopes`), which
+  is SQL and calls nothing, and the caller is the early return in
+  `backfill_key_envelopes`
+  (`crates/sunrise-core/src/engine/oplog.rs:418#backfill_key_envelopes`), which
+  tested `is_revoked` until 0028 gave the bound its own table.
+  The apply path does reach that early return, and inside a single
+  transaction: `apply_remote_all` opens one
+  (`crates/sunrise-core/src/engine/sync.rs:279#apply_remote_all`), routes a
+  control op into `apply_control_op`
+  (`crates/sunrise-core/src/engine/sync.rs:312#apply_remote_all`), and a
+  published device cert carries it on into `backfill_key_envelopes`
+  (`crates/sunrise-core/src/engine/sync.rs:968#apply_control_op`). What no
+  read of either table decides is whether an op **applies**; it decides which
+  device is sealed key material, and that is this whole decision in one
+  sentence. An earlier draft of this bullet said nothing in the apply path
+  consulted the register at all, which the call chain above falsifies.
 - `apply_remote_all` says so at step b
-  (`crates/sunrise-core/src/engine/sync.rs:359-361`): *"A revoked device's row is
-  found here like any other, and its op is applied like any other."*
-- `upsert_sync_cursor`'s doc (`crates/sunrise-core/src/engine/oplog.rs:575`) records
-  the removal directly: *"A refused op is **not** decided and does not appear
-  here. It was, briefly."*
+  (`crates/sunrise-core/src/engine/sync.rs:200-201#apply_remote_all`): *"A
+  revoked device's row is found here like any other, and its op is applied like
+  any other."*
+- `upsert_sync_cursor`'s doc
+  (`crates/sunrise-core/src/engine/oplog.rs#upsert_sync_cursor`) records the
+  removal directly: *"A refused op is **not** decided and does not appear here.
+  It was, briefly."* Cited without a line on purpose — that paragraph is being
+  rewritten, and a line number into it is a citation built to rot.
 - The test `a_revoked_devices_ops_still_apply_at_the_replica`
-  (`crates/sunrise-core/src/engine/tests.rs:5836`) revokes a device at a cut before
+  (`crates/sunrise-core/src/engine/tests.rs:7437-7439#a_revoked_devices_ops_still_apply_at_the_replica`)
+  revokes a device at a cut before
   every op it writes — the strongest form of the premise — and asserts the op
   applies, materializes and is passed by the cursor.
 
@@ -56,14 +112,18 @@ not one of its three options.
 Revocation today is a **register plus a read bound**:
 
 - `device_revoke` writes `device_revocations`, an LWW register on the op's own
-  HLC with `revoked_by` as the tie-break, and a device may not move its own cut
-  (`crates/sunrise-core/src/engine/sync.rs:936-979`).
+  HLC with `revoked_by` as the tie-break
+  (`crates/sunrise-core/src/engine/sync.rs:1091-1101#apply_control_op`). A device
+  may not move its own cut: the register's one edit it never accepts from the
+  party it is about, refused before the write with a
+  `core.device.revoke_refused` warning
+  (`crates/sunrise-core/src/engine/sync.rs:1058-1075#apply_control_op`).
 - The cut's `(cut_ms, cut_logical)` decides **which** revocation wins when two
   race. The **presence of the row** is the whole read test — there is no clock
   comparison in the path, and `is_revoked`'s own doc explains at length why a
   correct comparison is indistinguishable from presence and an incorrect one
   collapses to a bare wall clock after a restart, which `HlcClock::peek` makes
-  easy to reach (`crates/sunrise-core/src/config.rs:71-79`).
+  easy to reach (`crates/sunrise-core/src/config.rs:71-79#peek`).
 - Nothing bounds writes. `Command::RevokeDevice` makes no request of the relay,
   and cannot: `DELETE /api/v1/devices/{device_id}` names the **relay's** ULID for
   a device, minted at registration, while a vault knows only its own 16-byte
@@ -180,7 +240,8 @@ not, and that is what the relay bound is for.
   ([#105](https://github.com/justin13888/Sunrise/issues/105)); nothing here
   narrows that, and `key-rotation.md` already states it as unmitigated.
 - **No code changes.** The test doc at
-  `crates/sunrise-core/src/engine/tests.rs:5810` and `apply_remote_all`'s step b gain
+  `crates/sunrise-core/src/engine/tests.rs:7397#a_revoked_devices_ops_still_apply_at_the_replica`
+  and `apply_remote_all`'s step b gain
   a citation of this ADR in place of a bare issue number, so the next reader
   finds a decision rather than an open question.
 

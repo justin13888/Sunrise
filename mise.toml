@@ -428,7 +428,7 @@ description = "Reject a doc comment mangled into a shape rustdoc misreads (the C
 run = ".github/scripts/doc-comment-gate.py"
 
 [tasks.citations]
-description = "Reject a backticked path:line citation that points at nothing (the CI gate, run locally)"
+description = "Reject a backticked path:line#symbol citation that points at nothing (the CI gate, run locally)"
 # This repository cites its own source in inline code spans —
 # `crates/sunrise-sync/src/backoff.rs:31-63` — close to a thousand of them, and
 # nothing checked one. `docs-links` and `doc-comments` both *blank* inline code
@@ -443,6 +443,37 @@ description = "Reject a backticked path:line citation that points at nothing (th
 # bare filename has as many readings as there are directories, so it is
 # declined, counted and listable with `--list-unanchored` rather than guessed
 # at. The extension set is closed, or `task.update` reads as a path.
+#
+# A citation may also name the item it means —
+# `crates/sunrise-core/src/engine/sync.rs:702#is_revoked` — and that form,
+# `path:line#symbol`, is this repository's citation convention. The gate then
+# checks the cited line falls inside that item's span, so a line that drifts
+# onto unrelated code goes red instead of passing because the line still
+# exists. `path#symbol` with no line checks only that the item is still
+# declared, which is what a citation into a file somebody is rewriting this
+# week should say. Four declines and failures worth knowing before you write
+# one:
+#
+#   * A suffix that is not a bare Rust item name — `#Engine::f`, `#f()` — is a
+#     FAILURE, reported after the path and line checks have run on the span.
+#     It never removes a check the citation already had.
+#   * A github.com permalink fragment — `#L702`, `#L702-L710` and the column
+#     forms — and any `#symbol` on a target that is not `.rs`, are DECLINED
+#     rather than failed on a guess. What is declined is the SYMBOL check:
+#     the path and line checks run on the span as they always did, and the
+#     span stays in the checked count. Appending a fragment can never make a
+#     build greener.
+#   * The DIRECTORY check is one of the others the span keeps, and it is not
+#     declined for anything. A path that resolves to a directory fails with
+#     ANY suffix, whatever the path's extension and whatever the suffix
+#     spells — a directory declares no items under any grammar, and it has no
+#     lines either, which is the same ground `dir:702` has always failed on.
+#   * Neither an `impl` block nor a `mod` is a legal target. `#Engine` spanned
+#     97.7% of `sync.rs` and `mod tests` in `api/sync/suite.rs` spans 99.5%
+#     of it, which checks nothing; cite the `struct`, `trait` or `fn`.
+#
+# The full rule, and why each of those is the way it is, lives in the script's
+# own module docstring. Keep this comment and that docstring in step.
 run = ".github/scripts/citation-gate.py"
 
 # --- Apple clients (Swift / UniFFI) ---
