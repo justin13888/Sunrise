@@ -127,11 +127,17 @@ struct KeychainCredentialStore: CredentialStore {
         // went offline before this build would otherwise keep the old class for
         // as long as it stays offline.
         //
-        // A refusal throws, and `AccountModel` already reads this with `try?`:
-        // the user is signed out and signs in again. That is the correct
-        // failure for a session — unlike the vault root, nothing is lost —
-        // and it is strictly better than handing back a token that is still in
-        // the backup-bearing class.
+        // A refusal throws, and `AccountModel.restore()` reports it instead
+        // of reading it as an empty store: `.failed`, carrying the Keychain's
+        // own sentence, and a record that the last look was *refused* rather
+        // than answered. The Try again that state offers is spent on a second
+        // look at this store; a login is reached only once the store has
+        // answered, and answered nothing. That ordering is the repair: a fresh
+        // token written while an unreadable copy of the old one may still be
+        // sitting in the other keychain is the pair of disagreeing secrets
+        // `save` describes below. Throwing is still strictly better than
+        // handing back a token in the backup-bearing class — it just no longer
+        // costs a session to do it.
         //
         // The move between keychains comes first, for the reason
         // `KeychainVaultRootStore.load` gives: the class only starts meaning
@@ -153,9 +159,13 @@ struct KeychainCredentialStore: CredentialStore {
     /// life, so a single launch whose probe failed open writes the fresh token
     /// to the login keychain while the stale one stays in the data-protection
     /// one, and every later launch with a correct probe reads two secrets that
-    /// disagree, raises `.migrationUnverified`, and is signed out by
-    /// `AccountModel.restore()`'s `try?` without a word — a loop whose only
-    /// remedy is a Sign out button rendered in a state the user cannot reach.
+    /// disagree and raises `.migrationUnverified`. `AccountModel.restore()`
+    /// reports that one rather than swallowing it, so the user is told which
+    /// failure they are in and Try again re-reads this store instead of
+    /// writing a third token — but reporting a loop is not leaving it: the
+    /// only remedy is still a Sign out button rendered in a state the user
+    /// cannot reach, because `clear` is the one call that takes both copies
+    /// and `.failed` does not offer it.
     /// See `KeychainItem.writeAcrossDomains`, including why the migration's own
     /// write must not do this.
     ///
