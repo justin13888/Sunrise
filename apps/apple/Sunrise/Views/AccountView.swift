@@ -483,6 +483,14 @@ private struct SignOutIncompleteRow: View {
 /// renders for the remainder of the process, clearing only on a `clear()` or
 /// a `save()` that succeeds — neither of which ever comes for the one user it
 /// exists for, who cannot unlock the Keychain.
+///
+/// It renders under `.signedOut`, `.failed` **and** `.awaitingBrowser` — every
+/// state whose own arm of ``AccountView/accountRow`` carries no **Sign out**,
+/// as ``AccountModel/signOutDisclosure`` decides. The third needs saying: that
+/// is not an idle screen but a login suspended in the browser, and the
+/// caption's promise — unlock, then Sign out here — holds there only because
+/// ``AccountModel/signOut()`` ends that login too, so the token it comes back
+/// with is dropped rather than saved over the removal.
 private struct SignOutRetryRow: View {
     let account: AccountModel
 

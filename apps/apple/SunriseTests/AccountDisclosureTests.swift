@@ -28,9 +28,10 @@ struct AccountDisclosureTests {
 
     private func model(
         store: StubCredentialStore,
-        makeDriver: @escaping @Sendable (String, String) -> any LoginDriver
+        makeDriver: @escaping @Sendable (String, String) -> any LoginDriver,
+        opened: (@Sendable (URL) -> Void)? = nil
     ) -> AccountModel {
-        AccountModel(store: store, makeDriver: makeDriver, openURL: { _ in })
+        AccountModel(store: store, makeDriver: makeDriver, openURL: opened ?? { _ in })
     }
 
     /// The one sign-in every case in this file drives; only the driver differs.
@@ -192,9 +193,12 @@ struct AccountDisclosureTests {
     @Test
     func theRetryIsOfferedWhileAnAbandonedLoginIsParked() async {
         let probe = ParkedProbe()
-        let account = model(store: lockedStore(), opened: { _ in
-            MainActor.assumeIsolated { probe.sample() }
-        })
+        let store = lockedStore()
+        let account = model(
+            store: store,
+            makeDriver: { _, _ in AbandonedLoginDriver() },
+            opened: { _ in MainActor.assumeIsolated { probe.sample() } }
+        )
         probe.account = account
         account.signOut()
         account.dismissSignOutIncomplete()
@@ -203,6 +207,12 @@ struct AccountDisclosureTests {
 
         #expect(probe.state == .awaitingBrowser, "the probe ran with the browser open")
         #expect(probe.seen == .retry, "and the retry was on offer there")
+        // The end state, which a driver that completed instantly hid: the
+        // login really is abandoned, so it writes nothing, and the residue and
+        // the credential it names are exactly where the sign-out left them.
+        #expect(account.state == .failed("the redirect never came"))
+        #expect(store.stored?.accessToken == "access-old", "no save, so no new credential")
+        #expect(account.signOutDisclosure == .retry, "and the retry still stands under it")
     }
 
     /// The same window, with the message still unread: it steps aside for the
@@ -210,13 +220,22 @@ struct AccountDisclosureTests {
     /// takes its place. Dismissing that row retires the whole residue — the
     /// user has been told the fact the message carries.
     ///
+    /// The dismissal has to happen HERE, on the parked screen:
+    /// `.awaitingBrowser` is the only state a user can reach
+    /// ``AccountModel/dismissSignOutRetry()`` from while the message is still
+    /// unread, because everywhere else an unread residue renders the OTHER
+    /// row, whose **Dismiss** calls ``AccountModel/dismissSignOutIncomplete()``.
     @Test
     func theMessageStandsAsideForTheBrowserAndTheRetryTakesItsPlace() async {
         let probe = ParkedProbe()
-        let account = model(store: lockedStore(), opened: { _ in
-            MainActor.assumeIsolated { probe.sample() }
-        })
+        let store = lockedStore()
+        let account = model(
+            store: store,
+            makeDriver: { _, _ in AbandonedLoginDriver() },
+            opened: { _ in MainActor.assumeIsolated { probe.sample() } }
+        )
         probe.account = account
+        probe.act = { $0.dismissSignOutRetry() }
         account.signOut()
         #expect(account.signOutDisclosure == .incomplete(refusalText))
 
@@ -224,10 +243,12 @@ struct AccountDisclosureTests {
 
         #expect(probe.state == .awaitingBrowser)
         #expect(probe.seen == .retry, "the alarming row waits; the control does not")
-
-        account.signOut()
-        account.dismissSignOutRetry()
-        #expect(account.signOutDisclosure == .none, "dismissing the retry retires the message too")
+        #expect(probe.saidAfter(.none), "and its Dismiss retires the message it stood in for")
+        #expect(
+            account.signOutRefusedThisSession,
+            "retired, not un-refused — the credential it was about is still stored"
+        )
+        #expect(store.stored != nil, "because it is")
     }
 
     /// A renewal is a `save()`, and ``AccountModel/signOutResidue`` states the
@@ -373,6 +394,27 @@ struct RenewingButNotSigningInDriver: LoginDriver {
     }
 
     func refresh(refreshToken: String, nowMs: UInt64) async throws -> StoredCredentials { renewed }
+}
+
+/// A login the user walks away from: the browser opens, the redirect never
+/// comes, and `complete` gives up on `redirectTimeoutMs`.
+///
+/// `StubLoginDriver`'s single `failure` knob throws from `begin` too, so a
+/// driver built with it never reaches `.awaitingBrowser` at all — and one
+/// built without it returns a credential at once, which is a login completed,
+/// not one abandoned.
+struct AbandonedLoginDriver: LoginDriver {
+    /// Borrowed from ``StubLoginDriver``, so this holds no URL literal of its own.
+    private let authorizeURL = StubLoginDriver().authorizeURL
+    private let timedOut = AbandonedLoginError()
+
+    func begin(deviceID: String) async throws -> URL { authorizeURL }
+    func complete(timeoutMs: UInt64, nowMs: UInt64) async throws -> StoredCredentials { throw timedOut }
+    func refresh(refreshToken: String, nowMs: UInt64) async throws -> StoredCredentials { throw timedOut }
+}
+
+struct AbandonedLoginError: Error, LocalizedError {
+    let errorDescription: String? = "the redirect never came"
 }
 
 /// Looks at the model from inside `signIn()`'s `openURL` hook, which is the
