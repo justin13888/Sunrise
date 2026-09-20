@@ -1424,27 +1424,47 @@ class Symbols(GateCase):
             "names `heading`, but `schemas/bundle.json` is a directory.",
         )
 
-    def test_a_permalink_fragment_on_a_directory_is_exempt(self):
-        # The one exemption, and the only branch of the directory verdict that
-        # is not a failure. `#L702` names a LINE rather than an item, so
-        # "declares nothing" is not an answer to it and there is nothing for
-        # the message to name; the span falls through to the verdict its bare
-        # path carries, which for a directory has always been clean and
-        # counted.
+    def test_a_permalink_fragment_on_a_directory_fails_like_the_line_does(self):
+        # `#L702` names a LINE. A directory has none -- which is not this
+        # test's claim but the gate's own, made three lines earlier in
+        # `classify` about `dir:702` and reported as "cites a line, but ... is
+        # a directory".
         #
-        # Asserted on both extensions, because the exemption is the half of
-        # the rule that must NOT have become extension-dependent when the
-        # failure above stopped being so.
+        # So the two spellings of that one assertion get the one verdict. The
+        # fragment was briefly exempt here on the ground that "declares
+        # nothing" answers nothing about a line, which is true and answers the
+        # wrong objection: "has no lines either" is the answer, and the gate
+        # already gives it. Under the exemption `dir#L702` was a clean pass
+        # counted as an anchored citation -- verified, with nothing verified,
+        # which is the single shape this whole suffix exists to prevent.
+        #
+        # Asserted on both extensions, because the directory verdict must not
+        # become extension-dependent again on any of its arms.
         self.write("crates/c/src/mod.rs/inner.rs", "pub fn anything() {}\n")
         self.write("schemas/bundle.json/part.json", "{}\n")
-        self.write(
-            "docs/a.md",
-            "See `crates/c/src/mod.rs#L702`, `crates/c/src/mod.rs#L702-L710` "
-            "and `schemas/bundle.json#L702`.\n",
+        for body, message in (
+            ("crates/c/src/mod.rs#L702", "names `L702`, but `crates/c/src/mod.rs` is a directory."),
+            (
+                "crates/c/src/mod.rs#L702-L710",
+                "names `L702-L710`, but `crates/c/src/mod.rs` is a directory.",
+            ),
+            (
+                "schemas/bundle.json#L702",
+                "names `L702`, but `schemas/bundle.json` is a directory.",
+            ),
+        ):
+            with self.subTest(body=body):
+                self.write("docs/a.md", f"See `{body}`.\n")
+                self.assert_code(self.run_gate(), DANGLING, message)
+
+        # And the spelling that always failed, unchanged, so the pair is
+        # asserted rather than just the half that moved.
+        self.write("docs/a.md", "See `crates/c/src/mod.rs:702#L702`.\n")
+        self.assert_code(
+            self.run_gate(),
+            DANGLING,
+            "cites a line, but `crates/c/src/mod.rs` is a directory.",
         )
-        result = self.run_gate()
-        self.assert_code(result, CLEAN, "OK: citations clean.", "3 anchored citation(s)")
-        self.assertNotIn("path-like span(s) were NOT checked", result.stdout)
 
     def test_a_bare_hash_on_a_directory_fails_naming_no_symbol(self):
         # A trailing `#` with nothing after it parses, because the grammar
