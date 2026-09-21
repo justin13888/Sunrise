@@ -325,7 +325,11 @@ The guarantee, stated positively and in the terms a reader of
 > **is** built ([#80](https://github.com/justin13888/Sunrise/issues/80), closed
 > 2026-09-08) and is in force only where `require_device_sig` is true, which is
 > not the default. Its two **control** writes named above are refused at the
-> peer as well ([ADR-0041](./0041-peer-side-revocation-is-a-fold.md)).
+> peer as well ([ADR-0041](./0041-peer-side-revocation-is-a-fold.md)) — with
+> the gate's one exception and the discount pass's two residuals, which that
+> record states in §"What a user sees when an op is refused" item 4 and this
+> one does not restate, because no sentence of the form "it can no longer
+> revoke another device" holds for every ledger.
 
 Three corollaries, recorded so they are not rediscovered:
 
@@ -425,10 +429,15 @@ and that is what the relay bound is for.
   have since closed, #80 on 2026-09-08 and #82 through
   [ADR-0041](./0041-peer-side-revocation-is-a-fold.md), and the ordering this
   bullet asked for is the one they landed in.
-- **The unmitigated bypass is untouched and stays named.** A revoked device still
-  holds `ID_S_priv` and can self-certify a fresh device id
+- **The unmitigated bypass is untouched and stays named.** A revoked **creator**
+  still holds `ID_S_priv` and can self-certify a fresh device id
   ([#105](https://github.com/justin13888/Sunrise/issues/105)); nothing here
-  narrows that, and `key-rotation.md` already states it as unmitigated.
+  narrows that. The scope is the creator's alone, and `key-rotation.md`
+  §Revocation is where it is stated rather than here: a revoked device holds no
+  signing key unless it is the creator, and a revocation run from any other
+  device leaves the identity where it is. That file records #105 as closed
+  outright for a device admitted by pairing, which is the half this bullet is
+  not about.
 - **No code changes.** The test doc at
   `crates/sunrise-core/src/engine/tests.rs:7397#a_revoked_devices_ops_still_apply_at_the_replica`
   and `apply_remote_all`'s step b gain
@@ -456,21 +465,34 @@ and that is what the relay bound is for.
    selective-replay tool — the cost of retroactive revocation collapses and the
    trade should be re-taken.
 3. **Revocation being presented to a user as a security control that stops
-   writes.** The guarantee above is what the UI may promise, and it is now two
-   clauses rather than one. A screen that says "this device can no longer make
-   changes" is still wrong: #80 has landed and is the bound for **entity**
-   writes, but only where `require_device_sig` is true, and the peer-side gate
+   writes.** A screen that says "this device can no longer make changes" is
+   wrong: #80 has landed and is the bound for **entity** writes, but only where
+   `require_device_sig` is true, and the peer-side gate
    [ADR-0041](./0041-peer-side-revocation-is-a-fold.md) added reaches two
-   control ops and none of that family. A screen may say the device can no
-   longer revoke a **third** device, because every replica that applied the
-   revocation holds that. It may **not** say the device can no longer revoke
-   *this* one: where the only party to have revoked it is the device it is
-   now revoking, the fold's one exception seats that row on every replica, so
-   a stolen laptop still revokes the honest device that expelled it. ADR-0041
-   states the residual as "can no longer revoke anybody **else**"
-   ([ADR-0041 §What a user sees when an op is
+   control ops and none of that family.
+
+   **This record sanctions no screen copy about what a revoked device may still
+   revoke.** Three attempts at one have stood here and each was falsified by a
+   guard the one before it had not met: the `effective` guard in `revoke_device`
+   (`crates/sunrise-core/src/engine/revocation.rs:257#revoke_device`), which
+   withholds the cut where the local fold discards the op; then the fold's one
+   exception; then the **discount pass**
+   (`crates/sunrise-core/src/engine/revocation.rs:1040-1054#refold_device_revocations`),
+   which drops a revoker `S` out of `V`'s set whenever the ledger holds a row
+   revoking `S` from a sender that is not `V`. Three links of that — `O` revokes
+   `X`, `P` revokes `O`, `Q` revokes `P` — leave `X` **on the revoked list while
+   being ungated**, which is the pair of facts the gate exists to keep apart,
+   and `X` revokes third parties on every replica. The residual is stated
+   operationally, with the tests that pin it, at [ADR-0041 §What a user sees
+   when an op is
    refused](./0041-peer-side-revocation-is-a-fold.md#what-a-user-sees-when-an-op-is-refused),
-   item 4), and that is the form a screen may use.
+   item 4, and that text governs; what may be told to a user is held open by
+   [#248](https://github.com/justin13888/Sunrise/issues/248) and
+   [#252](https://github.com/justin13888/Sunrise/issues/252), and #252 is this
+   defect, already filed. What binds the client copy is #241's remit and not
+   this trigger. **The trigger itself stands unchanged**: revocation presented
+   as a control that stops writes is a reason to revisit this decision, whatever
+   a screen is eventually allowed to say.
 4. **A second control op growing an order-dependent effect.** Corollary 1 is a
    property of the whole control-op family, not of `device_revoke` alone. The
    first op whose effect depends on which stream drained first reopens the
