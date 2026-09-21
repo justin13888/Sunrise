@@ -1,0 +1,45 @@
+# Pins are only as good as the thing that moves them.
+#
+# Every `uses:` in this repository is a commit sha, which is what the
+# `Workflow hardening gate` enforces and what stops a tag being retargeted
+# under a green review. The cost of that is the mirror risk: a sha never picks
+# up its own action's security fixes, so a pin nobody moves is a vulnerability
+# nobody is told about. This file is the compensating control, and the pinning
+# change should not be read without it.
+#
+# Grouped into one pull request per ecosystem entry rather than one per action.
+# A pull request here costs a full CI run — thirty required contexts, two of
+# them on a runner class that bills at 10x — so ten separate bumps would cost
+# ten of those to deliver the same week's updates.
+#
+# Two entries, because `github-actions` resolves `directory` literally. `/`
+# reaches `.github/workflows/` and nothing else; a composite action is only
+# scanned when an entry names the directory its `action.yml` sits in. Without
+# the second entry the two refs in `rust-checks` would be pinned by the gate
+# and updated by nobody — the exact silence this file exists to prevent. A new
+# composite action under `.github/actions/` needs its own entry here.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: "chore(ci)"
+    open-pull-requests-limit: 1
+
+  - package-ecosystem: github-actions
+    directory: "/.github/actions/rust-checks"
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: "chore(ci)"
+    open-pull-requests-limit: 1

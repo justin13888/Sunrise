@@ -1248,6 +1248,21 @@ description = "Assert the proptest persistence gate's exit-code contract (fast, 
 # gate's own self-test cannot reach them from a string literal.
 run = "python3 .github/scripts/test_proptest_persistence_gate.py"
 
+[tasks.workflow-hardening]
+description = "Reject an unpinned action or a workflow with no declared token scope (the CI gate, run locally)"
+# Stdlib-only and offline: it reads `.github/workflows/*.yml` and every
+# `.github/actions/*/action.yml`, and resolves no ref against the network. A
+# sha it cannot reach is not its question — whether the ref *is* a sha is.
+run = ".github/scripts/workflow-hardening-gate.py"
+
+[tasks.workflow-hardening-gate-test]
+description = "Assert the workflow hardening gate's exit-code contract (fast, synthesised .github trees)"
+# The gate is a regex over YAML because nothing in CPython parses YAML and the
+# runners install nothing extra. These cases are where a regex is wrong if it
+# is wrong: a `uses:` inside a `run: |` block, and a job-level `permissions:`
+# mistaken for a top-level one.
+run = "python3 .github/scripts/test_workflow_hardening_gate.py"
+
 # --- Release artifacts ---
 #
 # Same Dockerfile and the same build args the release workflow uses, so a
