@@ -171,11 +171,14 @@ const FOCUS_PLAN_SCAN_CAP: u32 = 512;
 ///
 /// The residual is that a key genuinely more than 64 epochs ahead is refused
 /// and not retried. The refusal is a dropped *payload*, not a dropped op: the
-/// envelope still enters `ops` and the cursor still advances past it, so the
-/// relay will not re-send it and nothing re-offers the key. Ops sealed under
-/// that `(stream, epoch)` therefore stay unreadable on this replica until the
-/// device is re-paired, which is what hands it every Stream key the inviting
-/// device holds. That is the recovery, and it is the same one that covers a
+/// envelope still enters `ops`, and the op counts toward the contiguous prefix
+/// exactly like an applied one. Whether the cursor then moves past it is a
+/// question about the seqs *below* it and never about the refusal — see
+/// `crates/sunrise-core/src/engine/oplog.rs:916#upsert_sync_cursor`. Once it
+/// does, the relay will not re-send the op and nothing re-offers the key. Ops
+/// sealed under that `(stream, epoch)` therefore stay unreadable on this
+/// replica until the device is re-paired, which is what hands it every Stream
+/// key the inviting device holds. That is the recovery, and it is the same one that covers a
 /// device whose `deferred_ops` entry aged out.
 ///
 /// It is logged (`core.key.epoch_refused`) rather than swallowed, because the
