@@ -643,9 +643,7 @@ pub(super) fn remote_op_id(stream_id: &[u8; 16], device_id: &[u8; 16], seq: u64)
     out
 }
 
-/// The end of the run of `ops` seqs starting at `start`, or `start - 1` when
-/// `start` itself is absent.
-/// Note that `recipient` has been sent the key for `(stream_id, epoch)`.
+/// Record that `recipient` has been sent the key for `(stream_id, epoch)`.
 ///
 /// `INSERT OR IGNORE`: two devices can back-fill the same recipient
 /// concurrently, and both will record it. The row is a *hint* — being absent
@@ -667,6 +665,8 @@ pub(super) fn record_envelope_recipient(
     Ok(())
 }
 
+/// The end of the run of `ops` seqs for `(stream_id, device_id)` starting at
+/// `start`, or `start - 1` when `start` itself is absent.
 fn ops_run_end(
     tx: &Transaction<'_>,
     stream_id: &[u8; 16],
