@@ -73,7 +73,7 @@ The 192-bit random nonce gives a comfortable safety margin without needing per-k
   **True in code since [ADR-0024](../11-adr/0024-key-hierarchy.md).** `DeviceSigningKeyPair` and `DeviceDhKeyPair` are newtypes in `crates/sunrise-crypto/src/keys.rs`, not aliases of the identity types, so `DeviceCert::issue` cannot be handed a device key and `sign_envelope` cannot be handed an identity key. Both zeroize on drop and redact in `Debug`.
 - All key types implement zeroize-on-drop.
 - Versions are pinned in `Cargo.lock` and vendored at release.
-- `cargo-deny` and `cargo-audit` run in CI; new versions of crypto deps require explicit review by a designated reviewer (see `CODEOWNERS`).
+- `cargo-deny` runs in CI as `cargo deny --all-features check` (the flag is global, so it precedes the subcommand), which covers the RustSec advisory scan; there is no separate `cargo-audit` job. New versions of crypto deps get a security-focused review before they are proposed — see [testing.md §Security-review gate](../10-cross-cutting/testing.md#security-review-gate).
 
 ## Constant-time guarantees
 
