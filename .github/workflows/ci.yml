@@ -549,11 +549,11 @@ jobs:
       #
       # Said plainly because it has not been established: nothing here has
       # verified that an `.xcresult` survives the zip round trip
-      # `upload-artifact` performs. The framework step at `:306-320` earns
-      # that claim explicitly for its own payload — "no symlink and no
-      # executable bit, so a zip round trip loses nothing" — and no equivalent
-      # inspection has been made of a result bundle, which is a package with
-      # its own internal structure. The "Xcode opens it by double-click"
+      # `upload-artifact` performs. The framework step's own comment earns
+      # that claim explicitly for its payload at `:304-305` — "no symlink and
+      # no executable bit, so a zip round trip loses nothing" — and no
+      # equivalent inspection has been made of a result bundle, a package
+      # with its own internal structure. The "Xcode opens it by double-click"
       # sentence above rests on the directory-naming argument alone; the first
       # real failure this step catches is what will confirm or refute it.
       #
