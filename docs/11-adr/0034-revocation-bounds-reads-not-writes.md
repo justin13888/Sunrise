@@ -159,8 +159,8 @@ Revocation today is a **register plus a read bound**:
   `DELETE /api/v1/devices/by-vault-id/{vault_device_id}`
   (`crates/sunrise-server/src/api/devices.rs:310#revoke_by_vault_id`).
   `RevokeDevice` now inserts a `relay_revocation_intents` row in the op's own
-  transaction
-  (`crates/sunrise-core/src/engine/revocation.rs:311-318#revoke_device`) and
+  transaction, when the fold finds the revocation effective
+  (`crates/sunrise-core/src/engine/revocation.rs:311-318#revoke_device`), and
   `sync_driver::drain_relay_revocations` retries it on every session
   (`crates/sunrise-core/src/sync_driver.rs:1466#drain_relay_revocations`). The
   bound is real and **conditional**: the relay enforces only against a
@@ -259,8 +259,8 @@ is deliberately not
 gated](./0041-peer-side-revocation-is-a-fold.md#3-what-is-deliberately-not-gated);
 its header says the same at
 `docs/11-adr/0041-peer-side-revocation-is-a-fold.md:9-11`, which sits above
-every heading in that file and so is cited by line, unanchored). The decision
-itself has not changed for that family. What changed is its reach: two
+every section heading in that file and so is cited by line, unanchored). The
+decision itself has not changed for that family. What changed is its reach: two
 **control** ops are refused at the peer, listed in §"What is actually enforced,
 and what is not" above, so "no replica refuses an op" is false read across the
 whole op set and true read across entity writes.
