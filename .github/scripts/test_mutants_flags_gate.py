@@ -632,7 +632,7 @@ class FlagsGateContract(unittest.TestCase):
     # every `${{ … }}` first, and `&&` and `||` inside one are the
     # expression language's operators, gone before `bash` reads a
     # character. Latent in this repository rather than live — today's
-    # `ci.yml:849` is `-p ${{ matrix.crate }}`, which holds no operator —
+    # `ci.yml:880` is `-p ${{ matrix.crate }}`, which holds no operator —
     # and one edit away, since the `mutants` matrix is
     # `schedule || workflow_dispatch` and `ci.yml:17` already declares
     # the dispatch.

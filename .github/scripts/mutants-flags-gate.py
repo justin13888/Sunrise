@@ -297,7 +297,7 @@ GITHUB_GLOBS = ("**/*.yml", "**/*.yaml", "**/*.sh")
 # mutants -p ${{ inputs.crate`, on a workflow that runs correctly.
 #
 # LATENT, not live, and the distinction is worth keeping: today's
-# `ci.yml:849` is `cargo mutants -p ${{ matrix.crate }}`, which holds no
+# `ci.yml:880` is `cargo mutants -p ${{ matrix.crate }}`, which holds no
 # operator and is green. It is one operator away — the `mutants` matrix
 # is `if: schedule || workflow_dispatch`, `ci.yml:17` already declares
 # `workflow_dispatch`, and giving that dispatch a crate input with a
@@ -1083,7 +1083,7 @@ def report_unlexable(unlexable: int) -> None:
     * **3** in `.github/scripts/sparkle-tools.sh` at `:37`, `:42` and
       `:43` — one `awk` program whose single-quoted body spans three
       lines inside a `$( )`, which no trailing backslash joins.
-    * **2** in `.github/workflows/ci.yml` at `:1007` and `:1033`, and
+    * **2** in `.github/workflows/ci.yml` at `:1038` and `:1064`, and
       **1** in `.github/workflows/release.yml` at `:854`. All three are
       `- name:` prose whose English apostrophe is an unbalanced
       quotation: "the core's storage seam", "its package's threshold",
