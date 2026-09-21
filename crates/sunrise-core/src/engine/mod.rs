@@ -174,7 +174,7 @@ const FOCUS_PLAN_SCAN_CAP: u32 = 512;
 /// envelope still enters `ops`, and the op counts toward the contiguous prefix
 /// exactly like an applied one. Whether the cursor then moves past it is a
 /// question about the seqs *below* it and never about the refusal — see
-/// `crates/sunrise-core/src/engine/oplog.rs:874#upsert_sync_cursor`. Once it
+/// `crates/sunrise-core/src/engine/oplog.rs:916#upsert_sync_cursor`. Once it
 /// does, the relay will not re-send the op and nothing re-offers the key. Ops
 /// sealed under that `(stream, epoch)` therefore stay unreadable on this
 /// replica until the device is re-paired, which is what hands it every Stream
