@@ -747,7 +747,7 @@ fn ops_run_end(
 /// this still runs.
 ///
 /// Admission is settled at step b — by the `devices` lookup at
-/// `crates/sunrise-core/src/engine/sync.rs:210#apply_remote_all`, or, for the
+/// `crates/sunrise-core/src/engine/sync.rs:211#apply_remote_all`, or, for the
 /// `DeviceCertPublish` family that trace delivers, by
 /// [`Engine::self_authenticating_signer`] at
 /// `crates/sunrise-core/src/engine/sync.rs:216#apply_remote_all`, which checks
@@ -776,7 +776,7 @@ fn ops_run_end(
 ///
 /// A local emit that fails never reaches this. Three statements before it can
 /// fail — the seal at
-/// `crates/sunrise-core/src/engine/oplog.rs:122#ops_insert_at`, the
+/// `crates/sunrise-core/src/engine/oplog.rs:123#ops_insert_at`, the
 /// `OpLog::insert` error arm at
 /// `crates/sunrise-core/src/engine/oplog.rs:124#ops_insert_at`, and the
 /// `Outbox::enqueue` at
