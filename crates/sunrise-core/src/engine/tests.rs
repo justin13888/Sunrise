@@ -7725,6 +7725,146 @@ fn a_self_refused_revoke_still_advances_the_cursor() {
     );
 }
 
+/// **A read-bounded sender's third-party recipient claim is refused, and the
+/// cursor counts the op anyway.**
+///
+/// This is the delivery half of the gate at
+/// `crates/sunrise-core/src/engine/sync.rs:705#apply_control_op`. The two
+/// units that reach that gate today —
+/// `a_revoked_devices_third_party_envelope_claim_is_not_recorded` and
+/// `an_unwound_devices_third_party_envelope_claim_is_not_recorded` — call
+/// `apply_control_op` directly inside a test transaction, so there is no
+/// envelope, no op row and no cursor, and the only thing either can observe is
+/// the absent hint row.
+///
+/// `upsert_sync_cursor`'s doc names this site in its enumeration of the
+/// refusals that survive, and what it claims there is exactly the half a
+/// direct call cannot see: this refusal declines a `key_envelope_recipients`
+/// hint row and nothing else. The op row went in at the idempotence gate
+/// before the control op was dispatched, so it stands, and `upsert_sync_cursor`
+/// runs afterwards at step g and counts it. The delivery is seq 1, so the
+/// contiguous prefix is that one op and the stored number becomes 1.
+///
+/// All three are asserted, because no two of them constrain the third. An
+/// absent hint row is also what a delivery that never arrived looks like; a
+/// cursor at 1 is also what an *accepted* claim writes. The refusal's own log
+/// line is observed rather than assumed, for the reason
+/// `a_self_refused_revoke_still_advances_the_cursor` gives: asserting only the
+/// absent row would leave the `tracing::warn!` deletable with nothing red.
+#[test]
+fn a_read_bounded_senders_recipient_claim_is_refused_and_the_cursor_counts_the_op() {
+    let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let ec = engine_seeded(ROOT, [3u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut dba = db_root(ROOT);
+    let mut dbb = db_root(ROOT);
+    let a_id = ea.keychain.device_id();
+    let victim = [0x77u8; 16];
+
+    // B has admitted A, so `apply_remote_all`'s step b finds the sender's row
+    // and the delivery is an ordinary one rather than a rejected stranger.
+    trust(&eb, &mut dbb, &ea);
+
+    // C retires A at B. The gate reads `device_read_bounds` and not the
+    // register, so the premise is asserted on the table the gate reads.
+    revoke(&eb, &mut dbb, &ec, a_id, T0);
+    assert!(
+        eb.is_read_bounded(dbb.conn(), &a_id).unwrap(),
+        "the gate asks `is_read_bounded`, so that is what has to hold going in"
+    );
+
+    // A claims a third device already holds the key at (vault-meta, 1). That
+    // is the withhold the gate exists to refuse: a device that can file these
+    // rows and cannot read what they suppress.
+    let inner = encode_inner_op(&InnerOp::KeyEnvelope(KeyEnvelopePayload {
+        stream_id: META_STREAM,
+        epoch: 1,
+        recipient: Recipient::Device(victim),
+        key_id: [0u8; 8],
+        hpke_ciphertext: vec![0u8; 48],
+    }))
+    .expect("encode the inner op");
+    let (seq, env) = dba
+        .with_tx(|tx| -> rusqlite::Result<(u64, Vec<u8>)> {
+            // The epoch first, then the seq, for the reason
+            // `a_self_refused_revoke_still_advances_the_cursor` states.
+            let (epoch, key) = ea.ensure_stream_epoch(tx, &META_STREAM, T0)?;
+            let seq = ea.next_seq_tx(tx, &META_STREAM)?;
+            let env = ea
+                .keychain
+                .seal_op_at(
+                    META_STREAM,
+                    seq,
+                    ea.hlc.send(),
+                    &inner,
+                    ea.rng.as_ref(),
+                    epoch,
+                    &key,
+                )
+                .expect("seal under A's own live meta epoch");
+            Ok((seq, env))
+        })
+        .unwrap();
+    assert_eq!(
+        seq, 1,
+        "the cursor is the contiguous prefix from seq 1, so this op has to be it"
+    );
+
+    let filed = |db: &Db| -> i64 {
+        db.conn()
+            .query_row(
+                "SELECT count(*) FROM key_envelope_recipients
+                 WHERE stream_id = ? AND epoch = ? AND recipient = ?",
+                params![&META_STREAM[..], 1u32, &victim[..]],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    assert_eq!(filed(&dbb), 0, "nothing has filed a hint row yet");
+
+    let mut delivered = None;
+    let logged = events_emitted_by(|| {
+        delivered = Some(eb.apply_remote_all(&mut dbb, &env));
+    });
+    let events = delivered
+        .expect("the capture ran the delivery")
+        .expect("a refused recipient claim is still a well-formed delivery");
+    assert!(events.is_empty(), "a control op materializes no entity");
+    assert!(
+        logged
+            .iter()
+            .any(|ev| ev == "core.key.recipient_claim_refused"),
+        "the refusal is announced, not silent: replace the `tracing::warn!` at \
+         the `is_read_bounded` gate with nothing and this is what fails; got \
+         {logged:?}"
+    );
+
+    // What the refusal took: the hint row, and only the hint row.
+    assert_eq!(
+        filed(&dbb),
+        0,
+        "a read-bounded device must not be able to say a key has already been \
+         delivered"
+    );
+
+    // What it left behind: the op row, in at the idempotence gate before the
+    // control arm ever ran.
+    assert_eq!(
+        ops_at(dbb.conn(), &META_STREAM, &a_id, seq),
+        1,
+        "the refusal is the hint table's, not the delivery's: the op row is in"
+    );
+
+    // And the cursor counted it, which is the claim
+    // `upsert_sync_cursor`'s doc makes about this site.
+    assert_eq!(
+        cursor_for(&dbb, &META_STREAM, &a_id),
+        seq,
+        "`upsert_sync_cursor` runs at step g with that row in the log, so the \
+         contiguous prefix covers it"
+    );
+}
+
 /// The apply path reads the **read bound**, and what that read decides is
 /// keys — not whether the delivery applies.
 ///

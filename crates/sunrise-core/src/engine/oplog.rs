@@ -696,20 +696,33 @@ fn ops_run_end(
 /// A refused op is *not* decided and does not appear here. It was, briefly: an
 /// op refused for a revoked sender advanced this past it so the relay would
 /// stop resending. That is history, and what replaced it is not a narrower
-/// refusal but **no refusal**: nothing on this path declines an op for its
-/// sender's standing, so there is no refused op left for this to hold an
-/// opinion about.
+/// refusal of the op but a refusal of something else. **Nothing on this path
+/// declines the op itself**: no refusal below removes the op row, so the
+/// cursor counts the op whatever answer it got.
 ///
-/// The argument that removed it — that advancing made a reversible decision
-/// irreversible — is now settled rather than hedged, and settled in its
-/// favour. The register really is reversible:
+/// That is a weaker claim than "the apply path does not consult revocation",
+/// and deliberately so, because the apply path does consult it — in three
+/// places, and the enumeration of record is
+/// `docs/01-architecture/threat-model.md:73` rather than this comment, which
+/// would otherwise be a fourth copy of a list that has already drifted once.
+/// What each consultation settles is key distribution or a register row. The
+/// enumeration below names the ones a reader of *this* function has to know
+/// about, with exactly what each leaves behind.
+///
+/// The argument that removed the old behaviour — that advancing made a
+/// reversible decision irreversible — is now settled rather than hedged, and
+/// settled in its favour. The register really is reversible:
 /// `crates/sunrise-core/src/engine/revocation.rs:1225#refold_device_revocations`
 /// empties `device_revocations` and rebuilds it on every applied revocation,
-/// and
-/// `crates/sunrise-core/src/engine/revocation.rs:1269#apply_device_revoke`
-/// is last-writer-wins rather than `MIN` precisely so a cut from a slow clock
-/// is corrected by revoking again from a healthy device. Nothing below rests
-/// on that, because nothing below refuses anything.
+/// and what it rebuilds is last-writer-wins rather than `MIN` — the ledger is
+/// folded in ascending order at
+/// `crates/sunrise-core/src/engine/revocation.rs:1056#refold_device_revocations`
+/// so a later row simply overwrites an earlier one, written at
+/// `crates/sunrise-core/src/engine/revocation.rs:1117#refold_device_revocations`
+/// — precisely so a cut from a slow clock is corrected by revoking again from
+/// a healthy device. The rationale for choosing LWW over `MIN` is recorded at
+/// `crates/sunrise-core/src/engine/revocation.rs:1269#apply_device_revoke`.
+/// Nothing below rests on that, because nothing below un-writes an op row.
 ///
 /// # What the apply path consults, and what that read decides
 ///
@@ -740,9 +753,9 @@ fn ops_run_end(
 /// Whether the number this writes actually moves is a question about the seqs
 /// *below* that op and never about the answer the op got — see the
 /// out-of-order paragraph at the end.
-/// `crates/sunrise-core/src/engine/tests.rs:7758#a_revoked_device_cert_through_apply_remote_seals_no_keys`
+/// `crates/sunrise-core/src/engine/tests.rs:7898#a_revoked_device_cert_through_apply_remote_seals_no_keys`
 /// walks that trace from the envelope down to the early return, and
-/// `crates/sunrise-core/src/engine/tests.rs:8018#a_failed_backfill_is_logged_and_the_cert_delivery_still_applies`
+/// `crates/sunrise-core/src/engine/tests.rs:8158#a_failed_backfill_is_logged_and_the_cert_delivery_still_applies`
 /// holds the backfill-error answer: the error is logged, the cert stands, and
 /// this still runs.
 ///
@@ -750,7 +763,7 @@ fn ops_run_end(
 /// `crates/sunrise-core/src/engine/sync.rs:211#apply_remote_all`, or, for the
 /// `DeviceCertPublish` family that trace delivers, by
 /// [`Engine::self_authenticating_signer`] at
-/// `crates/sunrise-core/src/engine/sync.rs:216#apply_remote_all`, which checks
+/// `crates/sunrise-core/src/engine/sync.rs:217#apply_remote_all`, which checks
 /// the envelope against the cert it carries because that op is what *creates*
 /// the row the lookup reads. In neither case is it settled by the register or
 /// by the bound: a revoked device's row is found there like any other and its
@@ -760,7 +773,7 @@ fn ops_run_end(
 /// it writes lands.
 /// `crates/sunrise-core/src/engine/tests.rs:7495#a_revoked_devices_ops_still_apply_at_the_replica`
 /// holds the admitting half, and
-/// `crates/sunrise-core/src/engine/tests.rs:8287#a_stranger_cert_through_apply_remote_is_refused_and_writes_no_cursor`
+/// `crates/sunrise-core/src/engine/tests.rs:8427#a_stranger_cert_through_apply_remote_is_refused_and_writes_no_cursor`
 /// the refusing one — which never reaches this function at all, because step b
 /// returns before the transaction the op row would be written in.
 ///
@@ -781,7 +794,7 @@ fn ops_run_end(
 /// `crates/sunrise-core/src/engine/oplog.rs:124#ops_insert_at`, and the
 /// `Outbox::enqueue` at
 /// `crates/sunrise-core/src/engine/oplog.rs:146#ops_insert_at` — and
-/// `crates/sunrise-core/src/engine/tests.rs:8154#a_failed_local_emit_leaves_the_cursor_where_it_was`
+/// `crates/sunrise-core/src/engine/tests.rs:8294#a_failed_local_emit_leaves_the_cursor_where_it_was`
 /// walks the second and the third, inside the transaction rather than after
 /// the rollback. The seal is the one it does not walk. Nor could any of them
 /// move the number if it did: the prefix is read out of `ops`, never off the
@@ -789,8 +802,9 @@ fn ops_run_end(
 ///
 /// # The refusals that do survive
 ///
-/// One of them belongs to revocation, and it is not an op's.
-/// `crates/sunrise-core/src/engine/sync.rs:767#apply_control_op` hands a
+/// Two of them belong to revocation, and neither is an op's.
+///
+/// The first. `crates/sunrise-core/src/engine/sync.rs:767#apply_control_op` hands a
 /// `device_revoke` to
 /// `crates/sunrise-core/src/engine/revocation.rs:1293#apply_device_revoke`,
 /// which refuses one naming its own sender — logging
@@ -809,6 +823,26 @@ fn ops_run_end(
 /// `crates/sunrise-core/src/engine/tests.rs:7584#a_self_refused_revoke_still_advances_the_cursor`
 /// holds both halves — for a delivery at seq 1, where the contiguous prefix is
 /// that op alone — and observes the log line rather than assuming it.
+///
+/// The second, and it is the one keyed on the *sender's* standing that the
+/// premise at the top of this comment turns on.
+/// `crates/sunrise-core/src/engine/sync.rs:705#apply_control_op` refuses a
+/// read-bounded sender's claim that some third device already holds the key at
+/// a `(stream, epoch)`, logging `core.key.recipient_claim_refused`. What it
+/// declines is a `key_envelope_recipients` **hint** row and nothing else: the
+/// op row went in at the idempotence gate before the control op was
+/// dispatched, this function runs afterwards at step g, and the cursor counts
+/// that op exactly like an applied one. The recipients table is a hint rather
+/// than state, so a replica that declines the row finds no row and
+/// `backfill_key_envelopes` emits the envelope anyway — the gate can only ever
+/// cause *more* key distribution, never less, which is why it reads
+/// `crates/sunrise-core/src/engine/revocation.rs:636#is_read_bounded` and
+/// tolerates that predicate being per-replica
+/// ([#282](https://github.com/justin13888/Sunrise/issues/282)).
+/// `crates/sunrise-core/src/engine/tests.rs:7755#a_read_bounded_senders_recipient_claim_is_refused_and_the_cursor_counts_the_op`
+/// delivers one through `apply_remote_all` — the only route that can see this
+/// half at all — and holds all three: the declined hint row, the op row, and
+/// the cursor.
 ///
 /// Two further revocation refusals live on the local command path and neither
 /// reaches an op or this function: [`Engine::revoke_device`] refuses a
@@ -846,9 +880,12 @@ fn ops_run_end(
 /// `device_revocations`; the cursor is a fact about `ops`, and the op whose
 /// effect was unwound is still in the log and still counted. The stored value
 /// could not fall in any case — the `ON CONFLICT` arm below takes a `MAX` —
-/// but it does not even try to: no call site re-runs this when a fold changes
-/// its mind, and none needs to.
-/// `crates/sunrise-core/src/engine/tests.rs:8396#a_refold_that_unwinds_a_revocation_moves_no_cursor`
+/// but it does not even try to. The delivery that folded runs this once, for
+/// its own `(stream, device)` and at its step g like any other delivery; what
+/// no call site triggers is an *extra* run for the devices whose revocations
+/// that fold unwound, and none is needed, because their cursors are facts
+/// about `ops` that the fold did not touch.
+/// `crates/sunrise-core/src/engine/tests.rs:8536#a_refold_that_unwinds_a_revocation_moves_no_cursor`
 /// pins all of it, including the half that does *not* unwind:
 /// `device_read_bounds` keeps the device it bounded, which is the asymmetry
 /// `crates/sunrise-core/src/engine/revocation.rs:636#is_read_bounded` exists
@@ -863,13 +900,18 @@ fn ops_run_end(
 /// prevent it, so the cursor has to mean "I have everything through n", which
 /// is also how `CursorEntry.last_applied_seq` is read on the wire.
 ///
-/// That meaning is what bounds every "the cursor advances" above.
-/// `crates/sunrise-core/src/engine/oplog.rs:670#ops_run_end` starts its run at
-/// seq 1, so an op delivered with a gap below it is in the log and outside the
-/// prefix: with the log holding `{2}` the `ELSE ?3 - 1` arm writes 0, and with
+/// That meaning is what bounds every "the cursor advances" above. The run
+/// starts at seq 1 because this function asks for it there —
+/// `crates/sunrise-core/src/engine/oplog.rs:921#upsert_sync_cursor` is where
+/// the literal lives;
+/// `crates/sunrise-core/src/engine/oplog.rs:670#ops_run_end` is parameterised
+/// on `start` at
+/// `crates/sunrise-core/src/engine/oplog.rs:674#ops_run_end` and hard-codes
+/// nothing. So an op delivered with a gap below it is in the log and outside
+/// the prefix: with the log holding `{2}` the `ELSE ?3 - 1` arm writes 0, and with
 /// it holding `{1, 3}` the run ends at 1. Refused or applied makes no
 /// difference to either, which is what
-/// `crates/sunrise-core/src/engine/tests.rs:7899#a_self_refused_revoke_out_of_order_leaves_the_cursor_short`
+/// `crates/sunrise-core/src/engine/tests.rs:8039#a_self_refused_revoke_out_of_order_leaves_the_cursor_short`
 /// pins.
 pub(super) fn upsert_sync_cursor(
     tx: &Transaction<'_>,
