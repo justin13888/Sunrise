@@ -155,22 +155,38 @@ final class TabShellUITests: SunriseUITestCase {
         // 35446535264 was red on this line on a Rust-only diff, which is a
         // slow runner and not a broken commit.
         //
+        // That leaves `quick-capture.confirmation` asserted by no test in this
+        // repository, and that is deliberate rather than an oversight. The
+        // label exists for two seconds by design — `QuickCaptureView.swift:59-61`
+        // contrasts it with the failure label below it — and any assertion on a
+        // self-deleting element is the flake this change exists to remove: one
+        // that requires the label re-creates the two-second window, and one
+        // tolerant enough to pass without it constrains nothing.
+        //
         // `quick-capture.failure` is the durable half of the same state — set
-        // by `submit`'s catch arm and never cleared, deliberately, because it
-        // asks the user to do something and names the line still waiting in
-        // the field (`QuickCaptureView.swift:59-61`). Its absence is therefore
-        // checkable at any later moment, and what carries "the write landed"
-        // is the Inbox row at the end of this test rather than anything the
-        // sheet drew. Matched as any descendant rather than as a `staticText`
-        // for the reason the confirmation was: the label is a `Label`, and
-        // which element type SwiftUI folds that into is not a promise worth
-        // resting a test on.
+        // by `submit`'s catch arm, cleared only by a later successful commit
+        // (`QuickCaptureView.swift:145`, in the success arm) and never on a
+        // timer, because it asks the user to do something and names the line
+        // still waiting in the field (`QuickCaptureView.swift:59-61`). This
+        // test performs one submit, so nothing here can clear it. Matched as
+        // any descendant rather than as a `staticText` for the reason the
+        // confirmation was: the label is a `Label`, and which element type
+        // SwiftUI folds that into is not a promise worth resting a test on.
+        //
+        // Sampled once, here, and deliberately not a second time later. Quick
+        // capture is presented as a `.sheet(isPresented:)` whose content is
+        // built only while `surfaces.capture` is non-nil
+        // (`apps/apple/iOS/VaultSurfaces.swift:153-164`), and Cancel below is
+        // `Button("Cancel", action: dismiss)` (`QuickCaptureView.swift:79`)
+        // calling `captureDismissed()`. Every point after that press is one
+        // where `QuickCaptureView` is out of the hierarchy, so this label
+        // cannot exist there whatever the core did, and a second sample taken
+        // there would be a check that cannot fail. What carries "the write
+        // landed" at a later moment is the Inbox row at the end of this test,
+        // read back out of the core through the change stream after a tab
+        // switch — not anything the sheet drew.
         let refusal = app.descendants(matching: .any)["quick-capture.failure"]
         XCTAssertFalse(refusal.exists, "the core accepted the capture rather than refusing it")
-
-        // Sampled again, later: `failure` is never cleared, so a second look
-        // costs nothing and cannot pass where the one above would have failed.
-        XCTAssertFalse(refusal.exists, "the core still has not refused the capture")
 
         // Cancel takes the sheet and its keyboard away together, which is what
         // makes the tab bar tappable again.
