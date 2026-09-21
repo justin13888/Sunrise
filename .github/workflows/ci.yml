@@ -483,6 +483,41 @@ jobs:
       # to the machine's security posture, so there is nothing to opt into.
       - name: mise run ios-app
         run: mise run ios-app
+      # The bundle `mise run ios-app` leaves at `out/test-results/ios.xcresult`
+      # is the one thing a red run of this job produces that is worth
+      # anything, and until now it died with the runner. The task writes it
+      # (`mise.toml:731-744`) and then hands it to
+      # `.github/scripts/xcresult-failures.py`, which is why a failure here
+      # names a file and a line rather than only a test method. What the log
+      # cannot carry is the rest of the bundle: the automation activity
+      # timeline, with a timestamp on every tap, query and wait, and the
+      # screenshots taken at the moment of failure. Those are what separate
+      # "the element was never in the hierarchy" from "it was there and the
+      # poll missed it" — the question three of this job's last six failures
+      # turned on and none of them could settle from the log alone (#277).
+      #
+      # `if: failure()` and not `always()`: a green run's bundle answers
+      # nothing anyone asked and costs an upload on every build. The
+      # `if-no-files-found` setting below covers the case the first step in
+      # this job exists to make fast — an earlier step failing before
+      # `mise run ios-app` ever wrote a bundle — where a missing path is the
+      # expected outcome and not a second error to read. That pairing is the
+      # `fuzz` job's, at `:1631-1641`.
+      #
+      # `path:` is the directory holding the bundle rather than the bundle
+      # itself. An `.xcresult` is a directory, and naming it directly makes
+      # its loose contents the artifact root, which a maintainer then has to
+      # rebuild the folder around. Naming the parent keeps `ios.xcresult` as a
+      # name inside the zip, so the download unpacks into something Xcode
+      # opens by double-click.
+      - name: Keep the result bundle a failure leaves behind
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-xcresult
+          path: out/test-results
+          if-no-files-found: ignore
+          retention-days: 7
 
   rust-deny:
     name: cargo-deny
