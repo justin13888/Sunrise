@@ -665,8 +665,8 @@ pub(super) fn record_envelope_recipient(
     Ok(())
 }
 
-/// The end of the run of `ops` seqs starting at `start`, or `start - 1` when
-/// `start` itself is absent.
+/// The end of the run of `ops` seqs for `(stream_id, device_id)` starting at
+/// `start`, or `start - 1` when `start` itself is absent.
 fn ops_run_end(
     tx: &Transaction<'_>,
     stream_id: &[u8; 16],
