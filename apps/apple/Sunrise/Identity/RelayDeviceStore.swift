@@ -68,6 +68,7 @@ struct KeychainRelayDeviceIDStore: RelayDeviceIDStore {
     static let accessibility = KeychainAccessibility.afterFirstUnlockThisDeviceOnly
 
     private let item: KeychainItem
+    private let migration: KeychainMigration
 
     /// Per vault, like `KeychainVaultRootStore`: two vaults are two accounts at
     /// the relay and therefore two device rows.
@@ -75,16 +76,32 @@ struct KeychainRelayDeviceIDStore: RelayDeviceIDStore {
         item = KeychainItem(
             service: Self.service,
             account: vaultName,
-            accessibility: Self.accessibility
+            accessibility: Self.accessibility,
+            domain: KeychainDomain.current
+        )
+        migration = KeychainMigration(
+            source: KeychainItem(
+                service: Self.service,
+                account: vaultName,
+                accessibility: Self.accessibility,
+                domain: .login
+            ),
+            destination: item
         )
     }
 
     func load() throws -> String? {
-        // As `KeychainVaultRootStore.load` does: nothing on the ordinary path
-        // ever rewrites this item, so an id recorded by a build that used a
-        // weaker class would keep it for the life of the installation.
-        try item.upgradeAccessibilityIfNeeded()
-        guard let data = try item.read(),
+        // In this store's own `load`, not chained to the vault root's, because
+        // the two know nothing about each other — and they do not need to. The
+        // pairing invariant argued on the type is about loss and restore, and a
+        // migration that never leaves zero readable copies cannot lose either
+        // half while the other survives.
+        //
+        // As `KeychainVaultRootStore.load` does, through the same shared step:
+        // nothing on the ordinary path ever rewrites this item, so an id
+        // recorded by a build that used a weaker class would keep it for the
+        // life of the installation.
+        guard let data = try migration.loadMigratingIfNeeded(),
               let id = String(data: data, encoding: .utf8)?.trimmed,
               !id.isEmpty
         else { return nil }
@@ -97,7 +114,9 @@ struct KeychainRelayDeviceIDStore: RelayDeviceIDStore {
         try item.write(Data(trimmed.utf8))
     }
 
-    func clear() throws { try item.delete() }
+    /// Across both domains, so the id and the `D_S_priv` it names stay a pair:
+    /// an id `load` could still find is one this device is still bound by.
+    func clear() throws { try item.deleteAcrossDomains() }
 }
 
 enum RelayDeviceIDError: Error, Equatable {

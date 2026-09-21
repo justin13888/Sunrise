@@ -75,12 +75,41 @@ Usage
     mutants-gate.py OUTCOMES... [--baseline mutants/baseline.json]
                                 [--tolerance 0.5] [--update]
                                 [--expect-shards crate=N,...]
-                                [--allow-partial]
+                                [--allow-partial] [--command TEXT]
+    mutants-gate.py --record-revision PATH
 
 `--update` rewrites the baseline from this run instead of judging it. That is
 how the first baseline is recorded and how an intentional improvement is
 banked; it is deliberately a separate, explicit invocation rather than
 something the gate does on its own when the number goes up.
+
+Provenance, and why the revision is not this command's HEAD
+-----------------------------------------------------------
+
+Every floor records the revision it was measured at, and `--update` does not
+ask git for it. It reads it from a `revision.json` written beside each
+`outcomes.json` while the measurement was running — by `mise.toml`'s `mutants`
+task and by `ci.yml`'s `mutants` matrix, both of which call
+`--record-revision` — and refuses when an outcomes file carries no stamp, when
+a stamp is missing any of `sha`, `date` and `dirty`, or when two stamps name
+different revisions.
+
+The reason is the gap between the two. A `sunrise-core` pass is about five
+hours and a `sunrise-domain` pass about two; the tests that motivated the run
+get committed while it is going, and `mise run mutants-baseline` may not be run
+until the next day. A floor stamped with HEAD at recording time therefore names
+a revision that does not produce the number beside it, which is verbatim the
+defect this field was added to stop. The same stamp carries a `dirty` flag from
+`git status --porcelain`, because a floor taken on a modified tree does not
+reproduce at the named revision either — required rather than defaulted, so
+that a stamp nobody filled in cannot read as a tree nobody looked at being
+clean.
+
+`--command` is what gets banked as `provenance.command`. It exists so the field
+is a recipe rather than a trace: `mise run mutants-baseline --expect-shards
+sunrise-sync=1` is what a person runs, and this script's own argv is the inside
+of that. It defaults to the argv for the one caller that has no friendlier
+form — a person handing the gate a nightly's artifacts by hand.
 
 It writes whatever it is handed, which is the whole risk: one shard of a
 six-shard crate would be banked as that crate's floor, measured on a sixth of
@@ -121,9 +150,12 @@ tests are the half that cannot quietly stop being true.
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import os
 import pathlib
+import shlex
+import subprocess
 import sys
 
 # `summary` values cargo-mutants writes into outcomes.json.
@@ -131,6 +163,53 @@ CAUGHT = "CaughtMutant"
 MISSED = "MissedMutant"
 TIMEOUT = "Timeout"
 UNVIABLE = "Unviable"
+
+# What every recorded floor has to say about itself. Required by
+# `malformed()` and written by `--update` — one change, not two, because
+# the writer replaces each crate entry wholesale and a requirement without
+# a writer refuses the file the repository's own task produces.
+#
+# The three have fixed meanings, and they are fixed because the field is
+# only comparable across floors if they are:
+#
+# * `sha` — the full 40-hex revision the mutants were MEASURED at, not
+#   the one the floor was recorded at. Those are different revisions
+#   whenever the measurement is long enough to be worth recording, which
+#   is always: a `sunrise-domain` pass is two hours and a `sunrise-core`
+#   pass is five, and the tests that motivated the run get committed in
+#   between. A floor stamped with the recorder's HEAD names a revision
+#   that does not produce the number beside it.
+# * `date` — the day the MEASUREMENT ran, for the same reason.
+# * `command` — the invocation a human would run to reproduce it, not
+#   this script's own argv. `mise run mutants-baseline --expect-shards
+#   sunrise-sync=1` is a recipe; `mutants-gate.py out/…/outcomes.json
+#   --update --expect-shards sunrise-sync=1` is the inside of one.
+PROVENANCE_FIELDS = ("sha", "date", "command")
+
+# Written beside `outcomes.json` by whoever ran the measurement, and read
+# by `--update`. This file is the whole of the mechanism that makes `sha`
+# and `date` mean the measurement rather than the recording: cargo-mutants
+# records no revision of its own, so without it the two are not
+# correlatable by anything.
+REVISION_FILENAME = "revision.json"
+
+# Absent means unknown, not clean — everywhere, which takes saying twice
+# because the field appears in two files and they are not the same rule.
+#
+# In `mutants/baseline.json` it is optional and typed when present:
+# `--update` writes it for every floor it banks, and the floors recorded
+# before measurement-time capture existed carry no `dirty` at all,
+# because whether those working trees were clean is not something anybody
+# can now establish and writing `false` would be the invention the
+# provenance requirement exists to stop.
+#
+# In a `revision.json` stamp it is REQUIRED, for that same reason read
+# forwards. A stamp is written at the moment the question is answerable,
+# so a stamp that does not answer it is a stamp written by somebody who
+# did not look — and treating that as `false` banks a floor asserting a
+# clean tree on nobody's authority, which is the invention again, one
+# file along.
+DIRTY_FIELD = "dirty"
 
 
 class CannotRun(Exception):
@@ -155,7 +234,8 @@ def crate_of(path: str) -> str | None:
     return None
 
 
-def malformed(baseline: object) -> str | None:
+def malformed(baseline: object, skip: object = (),
+              require_provenance: bool = True) -> str | None:
     """Say how a parsed baseline fails to be one, or None if it is fine.
 
     `mutants/baseline.json` is hand-edited every time a floor moves, so it
@@ -166,8 +246,37 @@ def malformed(baseline: object) -> str | None:
     "coverage regressed". A typo in the floors would have been reported as
     a test regression, with a traceback where the crate names go.
 
+    A crate with a `caught_pct` must also carry a `provenance` object with
+    `sha`, `date` and `command`, each a non-empty string. A floor is a
+    standing constraint on every future run, and one that cannot say what
+    measured it cannot be compared with the one it replaced, re-taken, or
+    argued with. `--update` writes all three, so the requirement and the
+    writer are the same change; requiring it here without writing it there
+    would make `mise run mutants-baseline` emit a file this gate refuses.
+
     Structure only. Whether the numbers in it are the right numbers is not
-    something any check here can know.
+    something any check here can know. That limit is worth stating twice
+    now that provenance is required, because requiring it looks like more
+    than it is: this checks that a sha, a date and a command are *present
+    and well-formed*, and it cannot check that they are true. Whether the
+    named revision carried the tests the floor beside it is worth, and
+    whether a percentage quoted in prose was computed by the rule it names,
+    are both decidable only by re-running the campaign at that revision —
+    which is the work the floor exists to avoid. Those two defects are
+    real, they have both occurred here, and this gate does not catch them.
+
+    `skip` and `require_provenance` exist for the bootstrap, and only for
+    it. A baseline written before provenance was required cannot be
+    re-recorded at all if this runs in full before `--update` gets to
+    write: every crate the run did not measure fails the check and the
+    write never happens, so the only way out of a legacy file is to hand
+    edit the one field the design says must never be hand-added — after a
+    measurement that costs hours. Reachable by reverting a floor-recording
+    commit, by `--update` against a baseline restored from an older ref,
+    or by running this script against a release branch's baseline. So
+    `--update` validates the shape of the entries it is not replacing,
+    without the provenance requirement, and the full check runs again on
+    the merged document before the verdict is returned.
     """
     if not isinstance(baseline, dict):
         return f"top level is {type(baseline).__name__}, expected an object"
@@ -175,6 +284,8 @@ def malformed(baseline: object) -> str | None:
     if not isinstance(crates, dict):
         return f'"crates" is {type(crates).__name__}, expected an object'
     for crate, entry in crates.items():
+        if crate in skip:
+            continue
         if not isinstance(entry, dict):
             return (f'"crates.{crate}" is {type(entry).__name__}, '
                     "expected an object")
@@ -185,7 +296,241 @@ def malformed(baseline: object) -> str | None:
                                   or not isinstance(floor, (int, float))):
             return (f'"crates.{crate}.caught_pct" is '
                     f"{type(floor).__name__}, expected a number")
+        # Only a crate that carries a floor needs to say where the floor
+        # came from. An entry with no `caught_pct` constrains nothing, so
+        # there is nothing yet to account for.
+        if floor is None or not require_provenance:
+            continue
+        origin = entry.get("provenance")
+        if not isinstance(origin, dict):
+            return (f'"crates.{crate}.provenance" is '
+                    f"{type(origin).__name__}, expected an object with "
+                    f"{', '.join(PROVENANCE_FIELDS)}")
+        for field in PROVENANCE_FIELDS:
+            value = origin.get(field)
+            if not isinstance(value, str) or not value.strip():
+                return (f'"crates.{crate}.provenance.{field}" is '
+                        f"{type(value).__name__}, expected a non-empty "
+                        "string")
+        # Optional, because the floors taken before the measurement-time
+        # capture existed cannot answer it. Typed when present, so a
+        # string "false" — which is truthy, and would read as clean to a
+        # human and as dirty to the code — cannot get in.
+        if DIRTY_FIELD in origin and not isinstance(
+                origin[DIRTY_FIELD], bool):
+            return (f'"crates.{crate}.provenance.{DIRTY_FIELD}" is '
+                    f"{type(origin[DIRTY_FIELD]).__name__}, expected a "
+                    "boolean")
     return None
+
+
+def working_tree_revision() -> tuple[str, bool]:
+    """(full sha, dirty) for the tree this is called in.
+
+    Deliberately without `check=True`. With it, the only way `git
+    rev-parse HEAD` returns is with a sha, and the empty-stdout arm below
+    is unreachable — a guarded case no test can enter, which is worse
+    than no guard at all because it reads as one. Without it, every way
+    git can decline to answer arrives at the same place: a repository
+    with no commits exits 128, a directory that is not a repository exits
+    128, and both print nothing to stdout.
+
+    The `OSError` arm is separate and is not the same news: it means git
+    is not on `PATH` at all, so the caller has no repository tooling
+    rather than no repository.
+    """
+    try:
+        head = subprocess.run(
+            ["git", "rev-parse", "HEAD"], capture_output=True, text=True)
+        status = subprocess.run(
+            ["git", "status", "--porcelain"], capture_output=True, text=True)
+    except OSError as error:
+        raise CannotRun(
+            f"cannot run git to read the measurement revision: {error}. "
+            "A floor with blank provenance is what the placeholder rule in "
+            "mutants/baseline.json rejects, so nothing was written."
+        ) from error
+    sha = head.stdout.strip()
+    if not sha:
+        detail = head.stderr.strip() or "no output"
+        raise CannotRun(
+            f"`git rev-parse HEAD` printed nothing ({detail}); refusing to "
+            "record a measurement that cannot say which revision produced "
+            "it. An empty sha has the right shape and says nothing, which "
+            "is the placeholder mutants/baseline.json's own rule rejects."
+        )
+    # Any porcelain output at all means the measurement did not describe a
+    # committed tree. Which files differ is not worth banking; that it
+    # differed is, because a floor taken on a dirty tree names a revision
+    # that does not reproduce it — one of the two defects issue #246 cites.
+    return sha, bool(status.stdout.strip())
+
+
+def write_revision(path: pathlib.Path) -> dict[str, object]:
+    """Stamp a measurement with the revision it is being taken at.
+
+    Called by `mise.toml`'s `mutants` task and by `ci.yml`'s `mutants`
+    matrix, immediately around the cargo-mutants run, so the answer is
+    the tree that was mutated. `--update` runs later — minutes later in
+    CI, days later on a laptop, and after the commit whose tests
+    motivated the run — and has no way to recover this after the fact.
+    """
+    sha, dirty = working_tree_revision()
+    document = {
+        "sha": sha,
+        DIRTY_FIELD: dirty,
+        "date": datetime.date.today().isoformat(),
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(document, indent=4, sort_keys=True) + "\n")
+    return document
+
+
+def revision_beside(outcomes: pathlib.Path) -> pathlib.Path | None:
+    """Find the revision stamp for one outcomes file.
+
+    Two places, because the two producers lay out their output
+    differently and neither is wrong. cargo-mutants always writes
+    `mutants.out/` under the directory it is given, so the stamp sits
+    either in `mutants.out/` beside `outcomes.json` or one level up in
+    the run directory the task created.
+    """
+    for directory in (outcomes.parent, outcomes.parent.parent):
+        candidate = directory / REVISION_FILENAME
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def measurement_revision(paths: list[pathlib.Path]) -> dict[str, object]:
+    """The revision every one of these outcomes was measured at.
+
+    Refuses rather than guessing, in both directions. An outcomes file
+    with no stamp beside it is a measurement whose revision nobody
+    recorded, and the previous answer to that — `git rev-parse HEAD` at
+    recording time — is precisely the defect: run at A for five hours,
+    commit the tests that motivated it, record at B, and the file claims
+    B for numbers produced at A. Two stamps naming different revisions
+    are a floor assembled from two different trees, which is not one
+    measurement at all.
+
+    Disagreement is judged on the sha alone. Thirteen CI shards start
+    together and can finish either side of midnight UTC, so differing
+    dates are ordinary; the earliest is the day the measurement began.
+    `dirty` is true if any shard saw a modified tree, because one shard
+    measuring something uncommitted is enough to make the whole floor
+    unreproducible at the named revision — and it is required of every
+    stamp rather than defaulted, so that "no shard saw a modified tree"
+    cannot be produced by no shard having been asked.
+    """
+    stamps: dict[str, list[dict]] = {}
+    unstamped: list[pathlib.Path] = []
+    for path in paths:
+        candidate = revision_beside(path)
+        if candidate is None:
+            unstamped.append(path)
+            continue
+        try:
+            document = json.loads(candidate.read_text())
+        except (OSError, json.JSONDecodeError) as error:
+            raise CannotRun(
+                f"cannot read {candidate}: {error}") from error
+        sha = document.get("sha") if isinstance(document, dict) else None
+        date = document.get("date") if isinstance(document, dict) else None
+        dirty = document.get(DIRTY_FIELD) if isinstance(document, dict) \
+            else None
+        if not isinstance(sha, str) or not sha.strip():
+            raise CannotRun(
+                f'{candidate} records no "sha"; it cannot say which '
+                "revision the outcomes beside it were measured at.")
+        if not isinstance(date, str) or not date.strip():
+            raise CannotRun(
+                f'{candidate} records no "date"; it cannot say when the '
+                "outcomes beside it were measured.")
+        # Required of a stamp, exactly as `sha` and `date` are, and for
+        # the same reason. A missing key read as `false` is an assertion
+        # nobody made: the refusal text below invites a hand-written
+        # stamp, a hand-written stamp is the one that leaves this out,
+        # and the floor it produced said `"dirty": false` — the tree was
+        # clean — on the strength of nobody having looked. Absent means
+        # unknown wherever else this file reads it, and a stamp is not
+        # allowed to be the one place where it means clean.
+        if not isinstance(dirty, bool):
+            raise CannotRun(
+                f'{candidate} records no boolean "{DIRTY_FIELD}"; it '
+                "cannot say whether the tree it measured had uncommitted "
+                "changes.\n\n"
+                "A floor taken on a modified tree names a revision that "
+                "does not reproduce it, which is one of the two things "
+                "the provenance requirement exists to catch. Leaving the "
+                "key out does not make that question go away, it records "
+                f'"{DIRTY_FIELD}": false against a tree nobody looked '
+                "at.\n\n"
+                "`mise run mutants <crate>` writes this field. A stamp "
+                f'written by hand needs `"{DIRTY_FIELD}": true` or '
+                f'`"{DIRTY_FIELD}": false` in it, whichever `git status '
+                "--porcelain` said at the time the mutants ran.")
+        stamps.setdefault(sha.strip(), []).append(document)
+
+    if unstamped:
+        raise CannotRun(
+            "these outcomes carry no measurement revision:\n"
+            + "".join(f"    {path}\n" for path in unstamped)
+            + f"\nA floor is stamped with the revision it was MEASURED "
+            f"at, which is written to {REVISION_FILENAME} beside "
+            "outcomes.json\nwhile the run happens. Recording HEAD now "
+            "would name the revision this\ncommand is being run at, "
+            "which is a different tree whenever the\nmeasurement was long "
+            "enough to be worth recording.\n"
+            "\n"
+            "Re-run the measurement with `mise run mutants <crate>`, which "
+            "writes the\nstamp, or write one by hand beside each outcomes "
+            "file naming the revision\nthe numbers actually came from. A "
+            f'hand-written one needs "sha", "date" and\n"{DIRTY_FIELD}" — '
+            "all three, because a stamp that leaves one out is a\nquestion "
+            "nobody answered rather than an answer.")
+
+    if len(stamps) > 1:
+        listing = "".join(
+            f"    {sha}  ({len(documents)} outcomes file(s))\n"
+            for sha, documents in sorted(stamps.items()))
+        raise CannotRun(
+            "the outcomes were measured at more than one revision:\n"
+            + listing
+            + "\nOne floor cannot be stamped with two revisions, and a "
+            "crate scored across\ntwo trees is not a measurement of "
+            "either. Re-run the shards that are behind,\nor record only "
+            "the outcomes from one revision.")
+
+    sha, documents = next(iter(stamps.items()))
+    return {
+        "sha": sha,
+        "date": min(str(document["date"]).strip() for document in documents),
+        # Every document here carries a boolean `dirty`; the loop above
+        # refuses anything else. `any` is the union of what the shards
+        # saw, not a default for what they did not say.
+        DIRTY_FIELD: any(document[DIRTY_FIELD] for document in documents),
+    }
+
+
+def provenance(paths: list[pathlib.Path],
+               command: str | None) -> dict[str, object]:
+    """What produced the floors this run is about to bank.
+
+    `command` is the human-facing invocation, supplied by whoever called
+    this — `mise.toml`'s task passes the `mise run mutants-baseline …`
+    line a person would type. The fallback is this process's own argv,
+    which is the right answer for the one caller that has no friendlier
+    form: `mutants-gate.py outcomes/*/outcomes.json --update …` run by
+    hand against a nightly's artifacts is itself the reproduction recipe.
+    """
+    origin = measurement_revision(paths)
+    return {
+        "sha": origin["sha"],
+        "date": origin["date"],
+        DIRTY_FIELD: origin[DIRTY_FIELD],
+        "command": command if command else shlex.join(sys.argv),
+    }
 
 
 def parse_expect_shards(spec: str) -> dict[str, int]:
@@ -271,7 +616,17 @@ def caught_pct(bucket: dict[str, int]) -> float | None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("outcomes", nargs="+", type=pathlib.Path)
+    parser.add_argument("outcomes", nargs="*", type=pathlib.Path)
+    parser.add_argument("--record-revision", type=pathlib.Path,
+                        metavar="PATH",
+                        help="write the current revision and dirty flag to "
+                             "PATH and exit; run beside a measurement so "
+                             "--update can stamp its floors with the "
+                             "revision they were measured at")
+    parser.add_argument("--command", metavar="TEXT",
+                        help="with --update, the human-facing invocation to "
+                             "record as each floor's provenance.command; "
+                             "defaults to this process's argv")
     parser.add_argument("--baseline", type=pathlib.Path,
                         default=pathlib.Path("mutants/baseline.json"))
     parser.add_argument("--tolerance", type=float, default=0.5)
@@ -286,6 +641,24 @@ def main() -> int:
                              "completeness check; the floors then describe "
                              "exactly what ran and nothing more")
     args = parser.parse_args()
+
+    # Before anything else, and it scores nothing: this mode exists to be
+    # called from inside the task that runs the measurement, where there
+    # are no outcomes yet.
+    if args.record_revision is not None:
+        try:
+            document = write_revision(args.record_revision)
+        except CannotRun as error:
+            print(error, file=sys.stderr)
+            return 2
+        state = "dirty" if document[DIRTY_FIELD] else "clean"
+        print(f"{args.record_revision}: {document['sha']} ({state})")
+        return 0
+
+    if not args.outcomes:
+        parser.error(
+            "at least one outcomes file is required unless "
+            "--record-revision is given")
 
     # First, and on argv alone. This asks nothing about the run: it is the
     # question of whether the caller is in a position to record a floor at all,
@@ -464,7 +837,19 @@ def main() -> int:
     # Same exit as an unreadable one, for the same reason: a baseline the
     # gate cannot use is a run nobody scored, and the one thing it must not
     # do with that is return a verdict.
-    problem = malformed(baseline)
+    #
+    # `--update` is held to less here and to the same thing afterwards.
+    # The entries it is about to replace wholesale are not worth
+    # validating — whatever is wrong with them is about to be gone — and
+    # the provenance requirement is deferred to the merged document,
+    # because applying it now to a baseline written before provenance
+    # existed makes that file impossible to repair by re-recording, which
+    # is the only way the design allows it to be repaired at all.
+    problem = malformed(
+        baseline,
+        skip=set(counts) if args.update else (),
+        require_provenance=not args.update,
+    )
     if problem is not None:
         print(f"cannot use {args.baseline}: {problem}", file=sys.stderr)
         return 2
@@ -476,16 +861,60 @@ def main() -> int:
             print(f"--allow-partial: recording from {len(args.outcomes)} "
                   "outcomes file(s) with no completeness check. These floors "
                   "describe what ran, not the crates.")
+        # Taken once, before anything is written, so every crate banked by
+        # one invocation names one revision — and so a failure to read it
+        # aborts before the file is touched rather than halfway through it.
+        try:
+            origin = provenance(unique, args.command)
+        except CannotRun as error:
+            print(error, file=sys.stderr)
+            return 2
+        if origin[DIRTY_FIELD]:
+            # Recorded, not refused. A floor measured on a dirty tree is
+            # still a measurement of something, and refusing it would
+            # throw away hours of work over a stray file in `out/`. What
+            # it is not is reproducible at the revision beside it, and
+            # that has to be visible in the file rather than only here.
+            print(f"warning: measured at {origin['sha']} with a modified "
+                  "working tree; recording the floor with "
+                  f'"{DIRTY_FIELD}": true, which says the named revision '
+                  "does not reproduce it on its own.", file=sys.stderr)
         for crate, bucket in sorted(counts.items()):
+            # Wholesale replacement, as before: an entry merged into would
+            # keep the previous run's counts beside this run's rate. That
+            # is why `provenance` has to be written here — a key added by
+            # hand does not survive the next `mise run mutants-baseline`.
             recorded[crate] = {
                 "caught": bucket[CAUGHT],
                 "missed": bucket[MISSED],
                 "timeout": bucket[TIMEOUT],
                 "unviable": bucket[UNVIABLE],
                 "caught_pct": caught_pct(bucket),
+                "provenance": dict(origin),
             }
         args.baseline.write_text(json.dumps(baseline, indent=4, sort_keys=True) + "\n")
         print(f"{args.baseline}: recorded {len(counts)} crate(s)")
+
+        # The deferred half. The write went in first on purpose: a
+        # legacy baseline is repaired one recorded crate at a time, and
+        # discarding the crate this run measured because a crate it did
+        # not measure is still unaccounted would make the repair
+        # impossible by the only route the design allows.
+        problem = malformed(baseline)
+        if problem is not None:
+            print(
+                f"\n{args.baseline} was written and is not yet a usable "
+                f"baseline: {problem}\n"
+                "\n"
+                "The crates this run measured are recorded. The rest date "
+                "from before a floor\nhad to say what produced it, and a "
+                "`provenance` added by hand does not survive\nthe next "
+                "`mise run mutants-baseline` — the update path replaces "
+                "each crate entry\nwholesale. Re-record them: measure each "
+                "one and run this again. Until then the\nnightly "
+                "`Mutation coverage gate` cannot read this file.",
+                file=sys.stderr)
+            return 2
         return 0
 
     failures = []

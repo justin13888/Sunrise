@@ -44,3 +44,8 @@ sunrise-test-seed = { workspace = true }
 # routine timer can be driven deterministically instead of slept through.
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
 tempfile = "3"
+# `sync.credential.marked_at_connect` is this crate's only user-visible log
+# surface with a branch in its trigger, and both branches are asserted against
+# a real subscriber rather than argued. Capture pattern per
+# `crates/sunrise-log/tests/redaction.rs`.
+tracing-subscriber = { workspace = true }

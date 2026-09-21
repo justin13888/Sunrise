@@ -88,6 +88,7 @@ mod notify;
 mod oplog;
 mod query;
 mod review;
+mod revocation;
 mod routine;
 mod stream;
 mod sync;

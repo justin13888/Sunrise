@@ -16,8 +16,10 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
-use sunrise_core::AttachmentFetchState;
-use sunrise_core_bindings::dto::{CaptureIssue, Constraint, TaskDraftIn, TaskEdit, TimeValue};
+use sunrise_core::{AttachmentFetchState, CommandResult, DeviceRow};
+use sunrise_core_bindings::dto::{
+    CaptureIssue, CommandOutcome, Constraint, DeviceListRow, TaskDraftIn, TaskEdit, TimeValue,
+};
 use sunrise_core_bindings::vocab::{
     constraint_summary, duration_clock, energy_label, relative_day, short_duration, today_section,
 };
@@ -26,6 +28,7 @@ use sunrise_core_bindings::{
 };
 use sunrise_domain::TodaySection::{Due, Overdue};
 use sunrise_domain::{ConstraintSeverity, Energy, TaskState};
+use sunrise_id::{EntityKind, EntityRef};
 
 const ROOT: [u8; 32] = [42u8; 32];
 
@@ -71,11 +74,36 @@ async fn a_command_lowers_into_the_core_and_the_result_comes_back() {
     assert!(out.entity.to_str().starts_with("tsk_"));
     assert_eq!(out.op_id.len(), 32, "op id is 16 bytes of hex");
     assert!(out.soft_violations.is_empty());
-    // Both "it must not vanish" fields cross the seam, and both are empty for
-    // a command that neither schedules nor revokes. Asserted here because the
-    // seam is where a field added to `CommandResult` and forgotten in
-    // `CommandOutcome` would otherwise be lost in silence.
+    // Every "it must not vanish" field crosses the seam, and every one of them
+    // is empty or false for a command that neither schedules nor revokes.
+    // Asserted here because the seam is where a field added to `CommandResult`
+    // and forgotten in `CommandOutcome` would otherwise be lost in silence —
+    // `impl From<&CommandResult> for CommandOutcome` destructures exhaustively,
+    // so a *missing* field fails the build, but a field mapped to a constant or
+    // dropped on the Swift side would not, and neither would one nobody ever
+    // read back out here.
+    //
+    // All three are disclosure fields of the same family: `unrotated_streams`
+    // says the revocation was incomplete, `revocation_gated` says there was
+    // none, and `revocation_unwound` says an older one stopped being recorded.
+    // A client that printed a bare "removed" over any of them would be making a
+    // claim the account does not support.
     assert!(out.unrotated_streams.is_empty());
+    assert!(
+        !out.revocation_gated,
+        "a CreateTask cannot be gated, and the flag must cross the seam as false \
+         rather than not cross it"
+    );
+    assert!(
+        out.revocation_unwound.is_empty(),
+        "nothing has been revoked in this vault, so nothing can have been unwound"
+    );
+    // Empty and false is only half the guard, and it is the half a constant
+    // satisfies: a `revocation_unwound` hardcoded to `Vec::new()` passes every
+    // assertion above. The other half — that a *populated* value survives the
+    // crossing — is
+    // `a_populated_disclosure_set_survives_the_lowering` below, which is where
+    // this comment's "mapped to a constant" case is actually caught.
 
     let CoreQueryResult::Tasks { tasks } = core.query(CoreQuery::Inbox).await.expect("inbox")
     else {
@@ -2259,4 +2287,168 @@ async fn a_recovery_blob_can_be_sealed_across_the_seam() {
             "{wrong} bytes gave {err:?}"
         );
     }
+}
+
+/// **A populated disclosure set survives the lowering, which emptiness cannot
+/// prove.**
+///
+/// `a_command_lowers_into_the_core_and_the_result_comes_back` asserts that
+/// `unrotated_streams`, `revocation_gated` and `revocation_unwound` cross the
+/// seam as empty and false, and its own comment names the case that defeats
+/// that: "a field mapped to a constant ... would not [fail the build]". It is
+/// exactly right, and `Vec::new()` is that constant. So the values here are
+/// non-empty and true, and every one of them is read back.
+///
+/// Driven through `From<&CommandResult>` rather than through a vault, because
+/// the state that makes `revocation_unwound` non-empty — a device the fold
+/// stopped calling revoked while `device_read_bounds` still holds it — needs
+/// two peers' `device_revoke` ops applied in one order, and this seam exposes
+/// no way to apply a remote op. What the lowering owes is that it carries what
+/// the core hands it, and that is what this pins.
+#[test]
+fn a_populated_disclosure_set_survives_the_lowering() {
+    let unwound = vec!["a1".repeat(16), "c1".repeat(16)];
+    let result = CommandResult::new(
+        EntityRef::new(EntityKind::Device, [0x11; 16]),
+        None,
+        [0x22; 16],
+        42,
+    )
+    .with_unrotated_streams(vec!["deadbeef".into()])
+    .with_revocation_gated(true)
+    .with_revocation_unwound(unwound.clone());
+
+    let out = CommandOutcome::from(&result);
+
+    assert_eq!(
+        out.unrotated_streams,
+        vec!["deadbeef".to_string()],
+        "an incomplete revocation must not be flattened to a complete one"
+    );
+    assert!(
+        out.revocation_gated,
+        "a gated revocation must cross as true, not as the default"
+    );
+    assert_eq!(
+        out.revocation_unwound, unwound,
+        "the standing unwound set must cross whole: a client that received an \
+         empty list here would paint an unwound device as an ordinary member"
+    );
+    assert_eq!(out.seq, 42);
+    assert_eq!(out.op_id, "22".repeat(16), "op id is 16 bytes of hex");
+}
+
+/// **`read_bounded: true, revoked: false` crosses the seam as itself.**
+///
+/// The unwind is the one state migration 0028 makes expressible and the one a
+/// user is most likely to be misled by: the account no longer calls the device
+/// revoked, and it receives no key this vault mints. A lowering that dropped
+/// `read_bounded`, or folded it into `revoked`, would put that device back on
+/// the list as an ordinary member — the outcome the field was added to prevent
+/// — and no existing seam assertion would notice, because every other case
+/// carries it as `false`.
+///
+/// All four flags are set to a combination no default produces, so a mapping
+/// that returned a constant fails here rather than in an app. **Crossed wires
+/// need the second row and cannot be caught by this one**, and the reason is
+/// counting rather than effort: four booleans admit six pairs, and any
+/// assignment of four booleans repeats at least one value, so some pair is
+/// always equal and a lowering that swapped that pair would satisfy every
+/// assertion here. This row separates four of the six —
+/// `(revoked, read_bounded)`, `(revoked, current)`, `(read_bounded,
+/// admitted_after_revocation)` and `(current, admitted_after_revocation)` —
+/// and leaves `(revoked, admitted_after_revocation)`, both `false`, and
+/// `(read_bounded, current)`, both `true`.
+///
+/// `a_plainly_revoked_device_row_crosses_the_seam_as_itself` carries the row
+/// that separates those two, and the property the **pair** establishes is the
+/// one the docstring used to claim alone: no swap of two of `DeviceListRow`'s
+/// four flags leaves both tests' assertions satisfied.
+#[test]
+fn an_unwound_device_row_crosses_the_seam_as_itself() {
+    let row = DeviceRow {
+        device_id: [0xc1; 16],
+        nickname: "Old laptop".into(),
+        platform: "macos".into(),
+        revoked: false,
+        read_bounded: true,
+        current: true,
+        admitted_after_revocation: false,
+    };
+
+    let lowered = DeviceListRow::from(&row);
+
+    assert!(
+        lowered.read_bounded,
+        "the bound is the durable half of revocation and must reach the client"
+    );
+    assert!(
+        !lowered.revoked,
+        "and it must not be folded into `revoked`, which is the register and \
+         has stopped naming this device"
+    );
+    assert!(lowered.current);
+    assert!(!lowered.admitted_after_revocation);
+    assert_eq!(lowered.device_id, "c1".repeat(16));
+    assert_eq!(lowered.nickname, "Old laptop");
+    assert_eq!(lowered.platform, "macos");
+}
+
+/// **The plainly revoked row, which separates the two pairs the unwind cannot.**
+///
+/// `an_unwound_device_row_crosses_the_seam_as_itself` leaves `(revoked,
+/// admitted_after_revocation)` and `(read_bounded, current)` equal, so a
+/// lowering that swapped either pair passes it. This row is `revoked: true,
+/// read_bounded: true, current: false, admitted_after_revocation: false`,
+/// which separates both, and together the two tests admit no swap of any two
+/// of the four flags.
+///
+/// Every flag here is the state the engine actually produces for an ordinary
+/// revocation rather than a combination chosen to make the count work.
+/// `revoked: true, read_bounded: true` is the invariant `DeviceRow::read_bounded`'s
+/// own doc states — "`read_bounded: false, revoked: true` cannot happen: the
+/// fold takes the bound over the register it is about to write" — so the
+/// revoked set is always a subset of the bounded one. `current: false` is what
+/// `sunrise-core`'s `engine::query` device-list statement yields from
+/// `d.identity_id = ?1` once the revocation has rotated the account identity
+/// away from the device. And
+/// `admitted_after_revocation: false` is the ordinary member's value: the
+/// column records how the row was *first seen*, which for a device revoked
+/// later has nothing to do with the revocation.
+#[test]
+fn a_plainly_revoked_device_row_crosses_the_seam_as_itself() {
+    let row = DeviceRow {
+        device_id: [0xa2; 16],
+        nickname: "Retired phone".into(),
+        platform: "ios".into(),
+        revoked: true,
+        read_bounded: true,
+        current: false,
+        admitted_after_revocation: false,
+    };
+
+    let lowered = DeviceListRow::from(&row);
+
+    assert!(
+        lowered.revoked,
+        "the register names this device and the client must be able to say so"
+    );
+    assert!(
+        lowered.read_bounded,
+        "and the bound must not be folded into `revoked`: they are two tables \
+         since migration 0028 and this row is the case where they agree"
+    );
+    assert!(
+        !lowered.current,
+        "a revocation rotates the identity away from the device, so `current` \
+         must not be crossed with `read_bounded`"
+    );
+    assert!(
+        !lowered.admitted_after_revocation,
+        "how the row was first seen is independent of its revocation, so this \
+         must not be crossed with `revoked`"
+    );
+    assert_eq!(lowered.device_id, "a2".repeat(16));
+    assert_eq!(lowered.nickname, "Retired phone");
+    assert_eq!(lowered.platform, "ios");
 }

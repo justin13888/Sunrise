@@ -362,6 +362,15 @@ impl Engine {
             // The surviving set, on the recipient rule. This device is always
             // in it — it is emitting — and is not in the `devices` query
             // because that one deliberately excludes self.
+            //
+            // The anti-join is `device_read_bounds`, the same table
+            // `emit_key_envelopes` reads and for the same reason: this roster
+            // decides who receives an HPKE share of the successor
+            // `ID_S_priv`, which is key distribution and has to be bounded
+            // monotonically. The derived register would have let a device an
+            // unwind rehabilitated back onto the roster of every subsequent
+            // transition, which is a strictly larger grant than a stream key.
+            // See `Engine::is_read_bounded`.
             let mut survivors: Vec<Survivor> = Vec::new();
             {
                 let mut stmt = tx.prepare(
@@ -370,8 +379,8 @@ impl Engine {
                      WHERE d.d_d_pub IS NOT NULL
                        AND d.identity_id = ?1
                        AND NOT EXISTS (
-                           SELECT 1 FROM device_revocations r
-                           WHERE r.device_id = d.device_id
+                           SELECT 1 FROM device_read_bounds b
+                           WHERE b.device_id = d.device_id
                        )
                      ORDER BY d.device_id",
                 )?;
