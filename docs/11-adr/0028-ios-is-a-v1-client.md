@@ -56,7 +56,7 @@ This ADR answers the question that was left open.
 
 Read from the tree rather than from a plan:
 
-- **`apps/apple/project.yml:188-243` defines `SunriseiOS`**, a full application
+- **`apps/apple/project.yml:349-408` defines `SunriseiOS`**, a full application
   target: iOS 26.0 (`:32`, matching the Mac's major so the shared tree needs no
   `@available` forks), `TARGETED_DEVICE_FAMILY: "1,2"` (`:222`, iPhone and
   iPad), a `sunrise://` registration of its own (`:229-232`), and
@@ -68,13 +68,18 @@ Read from the tree rather than from a plan:
   `PRODUCT_MODULE_NAME: Sunrise` precisely so `@testable import Sunrise`
   resolves in either bundle. The claim this buys is not "the iOS app compiles"
   but "the shared half behaves the same on both platforms".
-- **`SunriseiOSUITests` (`:281-293`) is not skipped** in the `SunriseiOS`
-  scheme (`:368-382`), unlike `SunriseUITests`, which is `skipped: true` in the
-  macOS scheme (`:349-350`) because a macOS XCUITest needs
-  `sudo DevToolsSecurity -enable` on the machine. Five cases run on the
-  simulator on every build (`SunriseiOSUITests/TabShellUITests.swift:24`,
-  `:46`, `:77`, `:98`, `:133`). **iOS is the only Apple product where CI proves
-  a tap reaches the core.**
+- **`SunriseiOSUITests` (`:446-458`) is not skipped** in the `SunriseiOS`
+  scheme (`:533-547`), unlike `SunriseUITests`, which is `skipped: true` in the
+  macOS scheme (`:514-515`) because a macOS XCUITest needs
+  `sudo DevToolsSecurity -enable` on the machine. The scheme runs the target
+  whole — `mise.toml:686-691` records that `mise run ios-app` passes no
+  `-only-testing` — so what the simulator runs on every build is every case in
+  the six files under `apps/apple/SunriseiOSUITests/`, seventeen `func test`
+  declarations at this revision, and not only the tab shell's.
+  `TabShellUITests.swift` holds six of them, in two classes:
+  `SunriseiOSUITests/TabShellUITests.swift:24`, `:44`, `:73`, `:94` and `:134`
+  in `TabShellUITests`, and `:229` in `SidebarAddButtonTests`. **iOS is the
+  only Apple product where CI proves a tap reaches the core.**
 - **`.github/workflows/ci.yml`'s `ios-app` job gates it no further than the
   workflow itself** — the job has no `if:` and no path filter, so it runs every
   time CI runs, which the triggers define as pushes to `master` and
@@ -180,7 +185,7 @@ and it carries no MUSTs until an iOS release ships.**
      `NewMenuItems`, `IcalMenuItems`, `PrintMenuItems`, `GoMenuItems` — and
      declares no `Commands`-conforming type, as nothing in the tree does. The
      `SunriseiOS` target's `sources:` are `Sunrise` and `iOS`
-     (`project.yml:191-195`), so it compiles neither file. That is a
+     (`project.yml:352-354`), so it compiles neither file. That is a
      keyboard-navigation narrowness, recorded there, not a second menu-bar
      row.)
    - ***deferred*** four times: the three [ADR-0020](./0020-v1-must-demotions.md)
@@ -411,18 +416,30 @@ is tested, and has not been released.
    *deferred* and against MAY is evidential — a UI test drives the shell on a
    simulator in CI on every pull request that can affect it. Delete the job,
    mark `SunriseiOSUITests` `skipped: true` the way the macOS scheme marks its
-   own (`project.yml:350`), or narrow the condition described below, and every
-   row here falls back to "it compiles", which this file says is not evidence.
+   own (`project.yml:514-515`), or narrow the condition described below, and
+   every row here falls back to "it compiles", which this file says is not
+   evidence.
 
    That condition is the amendment to this clause. The job now carries an
-   `if:` and a changed-paths filter, which this clause originally named as
+   `if:` and a changed-paths filter — `needs: [changes, apple-xcframework]`
+   with `if: ${{ !cancelled() && needs.changes.outputs.apple != 'false' }}`
+   (`.github/workflows/ci.yml:439-440`) — which this clause originally named as
    disqualifying on its face. The evidential claim survives because of what the
    filter is keyed on: it skips the job only when a pull request touches
    **nothing the app is built from** — no `crates/`, `tools/` or `schemas/`, no
    manifest, no `rust-toolchain`, no `.cargo/`, no `apps/apple/`, no
    `mise.toml`, no generated `tokens.swift`. A change that could move the
    tap-to-core path cannot satisfy that, so the runs the filter removes are
-   exactly the runs whose result was already determined. What motivated it was
+   exactly the runs whose result was already determined.
+
+   The converse is worth stating plainly, because it is the half a reader
+   assumes away: `crates/**` is the filter's first prefix
+   (`.github/workflows/ci.yml:85`), so a pull request that changes only Rust
+   **does** still run `ios-app`, and a flaky iOS UI test can block a diff that
+   touches no Swift at all. That is not a defect in the filter — the workspace
+   is what the xcframework is built from, and narrowing it to `apps/apple/`
+   would fire this clause as written — but it is why this job's reliability is
+   a whole-repository concern rather than an Apple one. What motivated it was
    not cost in the abstract: GitHub caps this account at five concurrent macOS
    jobs, and the queue those three Apple jobs created was delaying every
    pull request in the repository by up to two hours. If the filter is ever

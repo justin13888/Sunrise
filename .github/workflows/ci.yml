@@ -483,6 +483,103 @@ jobs:
       # to the machine's security posture, so there is nothing to opt into.
       - name: mise run ios-app
         run: mise run ios-app
+      # The bundle `mise run ios-app` leaves at `out/test-results/ios.xcresult`
+      # is the one thing a red run of this job produces that is worth
+      # anything, and until now it died with the runner. The task writes it
+      # (`mise.toml:731-744`) and then hands it to
+      # `.github/scripts/xcresult-failures.py`, which is why a failure here
+      # names a file and a line rather than only a test method. What the log
+      # cannot carry is the rest of the bundle: the automation activity
+      # timeline, with a timestamp on every tap, query and wait, and the
+      # screenshots taken at the moment of failure. Those are what separate
+      # "the element was never in the hierarchy" from "it was there and the
+      # poll missed it" — the question three of this job's last six failures
+      # turned on and none of them could settle from the log alone (#277).
+      #
+      # `failure() || cancelled()` and not `always()`: a green run's bundle
+      # answers nothing anyone asked and costs an upload on every build, and
+      # neither of these two functions is ever true on a job that succeeded.
+      #
+      # The `cancelled()` half is load-bearing, not decoration. GitHub
+      # documents `jobs.<job_id>.timeout-minutes` — `timeout-minutes: 60`
+      # above — as "the maximum number of minutes to let a job run before
+      # GitHub automatically cancels it", so a wedged simulator that eats the
+      # hour ends this job *cancelled* rather than failed, and `if: failure()`
+      # alone would skip this step on exactly the shape #277 calls its class E
+      # and the hardest to read from a log. `cancelled()` is a job-status
+      # check and not a workflow-status one, which is what makes it fire for a
+      # job that timed out inside a workflow nobody cancelled: actions/runner
+      # evaluates it as `JobContext.Status == ActionResult.Cancelled`
+      # (`src/Runner.Worker/Expressions/CancelledFunction.cs`), and
+      # `FailureFunction.cs` reads that same job status for a job-level step,
+      # so on a cancelled job `failure()` is false and `cancelled()` is true.
+      # GitHub's "Workflow cancellation reference" supplies the rest: on
+      # cancellation the unfinished steps' `if:` conditions are re-evaluated
+      # and a step whose condition evaluates true continues to run, bounded by
+      # a five-minute cancellation timeout.
+      #
+      # What that costs, recorded rather than discovered later: `concurrency`
+      # at `:19-21` sets `cancel-in-progress` for pull requests, so a run
+      # superseded by a new push now uploads whatever bundle exists at the
+      # moment it is killed. That is the price of covering the timeout, and it
+      # is bounded — nothing is written until `mise run ios-app` reaches the
+      # test phase, and `if-no-files-found: ignore` below absorbs the rest.
+      #
+      # That `if-no-files-found: ignore` setting covers the case where a
+      # missing path is the expected outcome and not a second error to read.
+      # Its commonest shape is not an earlier *step* failing — it is an
+      # earlier phase inside this same step. `mise run ios-app` runs
+      # `swiftlint lint --strict` (`mise.toml:685`) before it ever reaches
+      # `xcodebuild`, and a strict-lint red is a frequent way for this job to
+      # go down; at that point no bundle has been written at all. Uploading
+      # nothing, silently, on a SwiftLint failure is the intended behaviour
+      # here and not a gap in it. Pairing it with a condition that never fires
+      # on success is the `fuzz` job's shape, at
+      # `:1693-1703`. `retention-days: 7` is not inherited from there — that
+      # step carries no such key — and is this step's own choice: a red run's
+      # bundle has to outlive a weekend plus a maintainer's attention, and
+      # seven days is what the framework artefact at `:320` already uses.
+      #
+      # `path:` is the directory holding the bundle rather than the bundle
+      # itself. An `.xcresult` is a directory, and naming it directly makes
+      # its loose contents the artifact root, which a maintainer then has to
+      # rebuild the folder around. Naming the parent keeps `ios.xcresult` as a
+      # name inside the zip, so the download unpacks into something Xcode
+      # opens by double-click.
+      #
+      # Said plainly because it has not been established: nothing here has
+      # verified that an `.xcresult` survives the zip round trip
+      # `upload-artifact` performs. The framework step's own comment earns
+      # that claim explicitly for its payload at `:304-305` — "no symlink and
+      # no executable bit, so a zip round trip loses nothing" — and no
+      # equivalent inspection has been made of a result bundle, a package
+      # with its own internal structure. The "Xcode opens it by double-click"
+      # sentence above rests on the directory-naming argument alone; the first
+      # real failure this step catches is what will confirm or refute it.
+      #
+      # `compression-level: 1` for the reason recorded at `:300-305`, which
+      # applies here unchanged: both ends of this round trip are 10x-billed
+      # macOS runners, and a result bundle off the same runner class runs to
+      # hundreds of megabytes. It was inherited by omission before, not
+      # chosen.
+      #
+      # `name:` carries `github.run_attempt` because `upload-artifact@v4`
+      # fails outright when an artifact of that name already exists in the run
+      # and `overwrite:` is unset — and `:315-319` records this repository's
+      # own finding that "Re-run failed jobs" re-enters the *same* run, so
+      # attempt 1's artefact is still present when attempt 2 uploads. The
+      # suffix rather than `overwrite: true`: comparing two red attempts side
+      # by side is what diagnoses a flake, and overwriting destroys whichever
+      # half of that evidence arrived first.
+      - name: Keep the result bundle a failed or cancelled run leaves behind
+        if: ${{ failure() || cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-xcresult-${{ github.run_attempt }}
+          path: out/test-results
+          if-no-files-found: ignore
+          compression-level: 1
+          retention-days: 7
 
   rust-deny:
     name: cargo-deny
