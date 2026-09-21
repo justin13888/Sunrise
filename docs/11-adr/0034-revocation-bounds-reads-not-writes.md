@@ -12,20 +12,10 @@ guarantee is stated, and the write bound is routed to the relay) and
 are what make a read bound expressible at all.
 
 **Amended by:** [ADR-0041](./0041-peer-side-revocation-is-a-fold.md) — corollary
-3's reservation has been taken up, and what stopped holding is §"Why re-adding
-a peer-side refusal is not free" as a statement about *every* op. Peer-side
-enforcement now exists for the two **control** ops whose effect this engine can
-re-derive, and it meets corollary 3 by **deriving the register** from a kept
-ledger rather than by refusing an op where it lands, so no replica's delivery
-order decides anything. Corollary 3's *prediction* did not hold, and that is
-recorded at revisit trigger 1 below rather than left for a reader to notice: it
-expected peer-side enforcement to arrive as defence in depth "not as the only
-line", and with `require_device_sig` at its default the relay bound is not in
-force, so it is the only line there is. The decision below about a revoked
-device's **entity**
-writes — a task edit, a note, a focus session — is unchanged; ADR-0041 says so
-itself (`docs/11-adr/0041-peer-side-revocation-is-a-fold.md:9-11`), and it is
-now load-bearing in a narrower place.
+3's reservation has been taken up, and what stopped holding is §Decision and
+§"Why re-adding a peer-side refusal is not free" as statements about *every*
+op. Both are now scoped to **entity** writes, whose decision is unchanged; the
+dated scope notes in those two sections say what moved and what did not.
 
 **Note, 2026-09-17 (citations only, at `e9a4c09`):** this file carried nine
 code-span references at `e9a4c09`, and eight of them had rotted onto unrelated
@@ -117,9 +107,11 @@ the code rather than from the issue:
   applies, materializes and is passed by the cursor.
 
 So the divergence #78 describes **requires the refusal that no longer exists**.
-With no replica refusing anything, delivery order stops being an input to the
-task table: every replica applies every op it can decrypt, and the effect
-converges for the same reason every other op's effect converges. The question
+With no replica refusing an **entity** op — and since
+[ADR-0041](./0041-peer-side-revocation-is-a-fold.md) the two control ops it
+gates are the only refusals in the tree — delivery order stops being an input to
+the task table: every replica applies every entity op it can decrypt, and the
+effect converges for the same reason every other op's effect converges. The question
 #78 asks is therefore live but its premise has moved, and the honest answer is
 not one of its three options.
 
@@ -157,11 +149,34 @@ Revocation today is a **register plus a read bound**:
   correct comparison is indistinguishable from presence and an incorrect one
   collapses to a bare wall clock after a restart, which `HlcClock::peek` makes
   easy to reach (`crates/sunrise-core/src/config.rs:71-79#peek`).
-- Nothing bounds writes. `Command::RevokeDevice` makes no request of the relay,
-  and cannot: `DELETE /api/v1/devices/{device_id}` names the **relay's** ULID for
-  a device, minted at registration, while a vault knows only its own 16-byte
-  device id and no peer's relay id
-  ([#80](https://github.com/justin13888/Sunrise/issues/80)).
+- **Entity writes are bounded at the relay, conditionally.** This bullet said
+  until [#80](https://github.com/justin13888/Sunrise/issues/80) landed that
+  nothing bounds writes and that `Command::RevokeDevice` *cannot* ask the relay
+  for one, because `DELETE /api/v1/devices/{device_id}` names the **relay's**
+  ULID for a device while a vault knows only its own 16-byte device id and no
+  peer's relay id. That was the obstacle, and #80 removed it by adding the route
+  that takes the id a vault has:
+  `DELETE /api/v1/devices/by-vault-id/{vault_device_id}`
+  (`crates/sunrise-server/src/api/devices.rs:310#revoke_by_vault_id`).
+  `RevokeDevice` now inserts a `relay_revocation_intents` row in the op's own
+  transaction
+  (`crates/sunrise-core/src/engine/revocation.rs:311-318#revoke_device`) and
+  `sync_driver::drain_relay_revocations` retries it on every session
+  (`crates/sunrise-core/src/sync_driver.rs:1466#drain_relay_revocations`). The
+  bound is real and **conditional**: the relay enforces only against a
+  device-signed request, and `require_device_sig` defaults to false, so in the
+  default deployment it is not in force
+  ([ADR-0041 §#80 landed, read out of the
+  tree](./0041-peer-side-revocation-is-a-fold.md#80-landed-read-out-of-the-tree)).
+- **Two control ops are refused at the peer; entity writes are not.** A
+  `device_revoke` whose sender the ledger revokes is skipped by the fold
+  (`crates/sunrise-core/src/engine/revocation.rs:1106-1116#refold_device_revocations`),
+  one naming its own sender is refused at ingest
+  (`crates/sunrise-core/src/engine/revocation.rs:1292#apply_device_revoke`), and
+  a read-bounded sender's third-party `key_envelope` recipient claim is not
+  recorded (`crates/sunrise-core/src/engine/sync.rs:705#apply_control_op`). That
+  is [ADR-0041](./0041-peer-side-revocation-is-a-fold.md), and it reaches no
+  entity write.
 
 ### Why re-adding a peer-side refusal is not free
 
@@ -171,11 +186,17 @@ takes neither: [ADR-0041](./0041-peer-side-revocation-is-a-fold.md) gates the
 two control ops whose effect this engine can re-derive by deriving the register
 from a kept ledger, so nothing turns on a cursor and no op is refused where it
 lands. What survives below is the pricing for **entity** writes, and it is live
-rather than historical — ADR-0041 §3 rests on it when it declines to gate them
-(`docs/11-adr/0041-peer-side-revocation-is-a-fold.md:244-249`), and ADR-0041's
-alternatives (b) and (c) reject exactly these two horns "for the reason ADR-0034
-rejects it"
-(`docs/11-adr/0041-peer-side-revocation-is-a-fold.md:468-477`). The first horn's
+rather than historical — ADR-0041 §3 cites ADR-0034 when it declines to gate
+them ([ADR-0041 §3. What is deliberately not
+gated](./0041-peer-side-revocation-is-a-fold.md#3-what-is-deliberately-not-gated)),
+and its alternative **(b)** rejects the first of these two horns "for the reason
+ADR-0034 rejects it" ([ADR-0041
+§Alternatives considered](./0041-peer-side-revocation-is-a-fold.md#alternatives-considered),
+under (b)). Alternative (c) rejects the second horn on its own grounds — an
+unbounded stall, `evicted_through` passing the frozen cursor, `mark_degraded()`
+latching — and does not cite this record, which is worth saying because §3's
+stated reason is the no-projection-rebuild argument, and that argument is
+Alternative (a) below rather than either horn. The first horn's
 mechanism is rewritten against the tree; its conclusion is unchanged, and now
 rests on a different reason than the one it was written for.
 
@@ -217,8 +238,8 @@ took five review rounds to bottom out, and it is not about convergence:
   [#80](https://github.com/justin13888/Sunrise/issues/80) has since landed and
   takes most of this horn's premise away **where the relay bound is in force**,
   and none of it in the default deployment, where `require_device_sig` is false
-  and no device is resolved to check
-  (`docs/11-adr/0041-peer-side-revocation-is-a-fold.md:53-59`).
+  and no device is resolved to check ([ADR-0041 §#80 landed, read out of the
+  tree](./0041-peer-side-revocation-is-a-fold.md#80-landed-read-out-of-the-tree)).
 
 Both halves are correct about their own case, which is the tell that the choice
 is wrong rather than the implementation — for the family where both still apply,
@@ -230,28 +251,75 @@ which is now entity writes alone.
 replica refuses an op on account of its sender's revocation, and the effect
 converges precisely because of that.**
 
+**Scope, 2026-09-20.** As written that is a claim about *every* op, and
+[ADR-0041](./0041-peer-side-revocation-is-a-fold.md) stopped it being one. Read
+it as a claim about **entity** writes — a task edit, a note, a focus session —
+which is the scope ADR-0041 preserves and says it preserves ([ADR-0041 §3. What
+is deliberately not
+gated](./0041-peer-side-revocation-is-a-fold.md#3-what-is-deliberately-not-gated);
+its header says the same at
+`docs/11-adr/0041-peer-side-revocation-is-a-fold.md:9-11`, which sits above
+every heading in that file and so is cited by line, unanchored). The decision
+itself has not changed for that family. What changed is its reach: two
+**control** ops are refused at the peer, listed in §"What is actually enforced,
+and what is not" above, so "no replica refuses an op" is false read across the
+whole op set and true read across entity writes.
+
+**Corollary 3 is met for one of those two gates and not the other, and the
+difference is worth carrying rather than rounding off.** The `device_revoke`
+gate derives `device_revocations` from a kept ledger rather than refusing an op
+where it lands, and it reads no cut at all, so no replica's delivery order
+decides who is revoked. The recipient-claim gate does not have that property: it
+reads `device_read_bounds`, a ratchet over the registers *this* replica computed
+along its own arrival order rather than a function of the op set — "a derivation
+this table does not have"
+(`crates/sunrise-core/src/engine/revocation.rs:1202-1210#refold_device_revocations`),
+a predicate that "does not converge across replicas"
+([`key-rotation.md` §Revocation](../03-crypto/key-rotation.md#revocation)), and
+a concession ADR-0041 makes for itself ([ADR-0041 §2. A read-bounded device's
+third-party `key_envelope` claim is not
+recorded](./0041-peer-side-revocation-is-a-fold.md#2-a-read-bounded-devices-third-party-key_envelope-claim-is-not-recorded)).
+It can afford that because declining a row can only cause *more* key
+distribution and never less, which is not a general licence;
+[#282](https://github.com/justin13888/Sunrise/issues/282) is the open question
+of what a converging derivation would be. Corollary 3's *prediction* also did
+not hold — it expected peer-side enforcement as defence in depth "not as the
+only line", and with `require_device_sig` at its default it is the only line
+there is — which is recorded at revisit trigger 1 below.
+
 The guarantee, stated positively and in the terms a reader of
 `key-rotation.md` needs:
 
 > Once a replica has applied a `device_revoke`, it seals the revoked device no
 > key envelope for any epoch minted at or after the cut, so the device can read
-> nothing written after it. Every replica applies every op it can decrypt,
-> whatever its sender's revocation state and whatever order the `device_revoke`
-> and the op arrive in, so two replicas holding the same op set hold the same
-> task table. Revocation is **eventually consistent and forward-only on reads,
-> and is not a write bound at all**: what stops a revoked device writing is the
-> relay refusing its uploads, which is not built
-> ([#80](https://github.com/justin13888/Sunrise/issues/80)).
+> nothing written after it. Every replica applies every **entity** op it can
+> decrypt, whatever its sender's revocation state and whatever order the
+> `device_revoke` and the op arrive in, so two replicas holding the same op set
+> hold the same task table. Revocation is **eventually consistent and
+> forward-only on reads, and is not a write bound on entity ops at all**: what
+> stops a revoked device writing those is the relay refusing its uploads, which
+> **is** built ([#80](https://github.com/justin13888/Sunrise/issues/80), closed
+> 2026-09-08) and is in force only where `require_device_sig` is true, which is
+> not the default. Its two **control** writes named above are refused at the
+> peer as well ([ADR-0041](./0041-peer-side-revocation-is-a-fold.md)).
 
 Three corollaries, recorded so they are not rediscovered:
 
 1. **Delivery order is not an input to the materialized state.** The meta stream
    and the task streams have independent delivery and always will; the design
    answer is that neither gates the other, not that they be ordered.
-2. **A cut correction is lossless.** Because nothing was refused under the old
-   cut, a revocation re-issued from a healthy device changes what is *sealed
-   next* and destroys nothing that was already applied. This is what makes the
-   LWW register safe to move in both directions.
+2. **A cut correction is lossless for entity writes.** Because nothing a user
+   typed was refused under the old cut, a revocation re-issued from a healthy
+   device changes what is *sealed next* and destroys nothing that was already
+   applied. This is what makes the LWW register safe to move in both directions.
+   **The premise is entity-scoped since
+   [ADR-0041](./0041-peer-side-revocation-is-a-fold.md)**: the two control ops
+   it gates *are* refused, and a correction does not un-skip one, because the
+   gate reads no cut at all and a correction leaves its answer exactly as it was
+   (`crates/sunrise-core/src/engine/revocation.rs:877-889#refold_device_revocations`).
+   The remedy there is to revoke again from a device the account still trusts,
+   which is tolerable for an administrative act and would not be for a task
+   edit.
 3. **Peer-side enforcement, when it is built, must not reintroduce order
    dependence.** It arrives after the relay bound
    ([#82](https://github.com/justin13888/Sunrise/issues/82) depends on
@@ -307,9 +375,12 @@ not, and that is what the relay bound is for.
   that closed [#76](https://github.com/justin13888/Sunrise/issues/76); what
   remained open was whether the resulting behaviour is the intended end state.
   It is, for v1.
-- **#80 and #82 keep their scope and gain a reason.** #80 is the write bound;
-  #82 is peer-side defence in depth *after* it. Neither is a convergence fix,
-  and filing them as one is what this record prevents.
+- **#80 and #82 kept their scope and gained a reason.** #80 was the write
+  bound; #82 was peer-side defence in depth *after* it. Neither was a
+  convergence fix, and filing them as one is what this record prevented. Both
+  have since closed, #80 on 2026-09-08 and #82 through
+  [ADR-0041](./0041-peer-side-revocation-is-a-fold.md), and the ordering this
+  bullet asked for is the one they landed in.
 - **The unmitigated bypass is untouched and stays named.** A revoked device still
   holds `ID_S_priv` and can self-certify a fresh device id
   ([#105](https://github.com/justin13888/Sunrise/issues/105)); nothing here
@@ -341,9 +412,14 @@ not, and that is what the relay bound is for.
    selective-replay tool — the cost of retroactive revocation collapses and the
    trade should be re-taken.
 3. **Revocation being presented to a user as a security control that stops
-   writes.** The guarantee above is what the UI may promise. A screen that says
-   "this device can no longer make changes" makes this ADR wrong rather than the
-   screen, and the fix is #80, not a peer-side gate.
+   writes.** The guarantee above is what the UI may promise, and it is now two
+   clauses rather than one. A screen that says "this device can no longer make
+   changes" is still wrong: #80 has landed and is the bound for **entity**
+   writes, but only where `require_device_sig` is true, and the peer-side gate
+   [ADR-0041](./0041-peer-side-revocation-is-a-fold.md) added reaches two
+   control ops and none of that family. A screen may say the device can no
+   longer revoke another device, because every replica that applied the
+   revocation holds that.
 4. **A second control op growing an order-dependent effect.** Corollary 1 is a
    property of the whole control-op family, not of `device_revoke` alone. The
    first op whose effect depends on which stream drained first reopens the
