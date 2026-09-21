@@ -1644,6 +1644,53 @@ jobs:
       - name: Exit-code contract
         run: python3 .github/scripts/test_proptest_persistence_gate.py
 
+  workflow-hardening:
+    name: Workflow hardening gate
+    runs-on: ubuntu-latest
+    # One Python script over three YAML files, stdlib only. Under a second.
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - name: Reject an unpinned action or an unscoped workflow
+        # Two rules that rot the same way if nothing holds them. Every `uses:`
+        # ref must be a commit sha, because a tag or a branch is a name its
+        # owner can move after the review that approved it — which is what
+        # CVE-2025-30066 was, and this repository had ninety-six such refs. And
+        # every workflow must state its own `permissions:`, because otherwise
+        # the token's scope lives in a settings page that changes with no
+        # commit and no diff.
+        #
+        # Neither rule is enforceable by review alone: both are one deleted
+        # line away from gone, and a reviewer reading a 1700-line workflow will
+        # not notice the line that is missing.
+        run: .github/scripts/workflow-hardening-gate.py
+
+  workflow-hardening-gate-contract:
+    name: Workflow hardening gate contract
+    runs-on: ubuntu-latest
+    # Thirty-two cases over `.github/` trees it synthesises in a temp
+    # directory: no toolchain, no cargo, no network past the checkout. About a
+    # second.
+    timeout-minutes: 5
+    # Deliberately without an `if:`, like the other gate contracts, so it runs
+    # on pull requests. The gate is a regex over YAML rather than a parser —
+    # nothing in CPython parses YAML and the runners install nothing extra —
+    # so the cases that matter are the ones where a regex is wrong. Two kinds.
+    #
+    # Wrong and red on a green tree: a `uses:` inside a `run: |` block, of
+    # which this file has hundreds of lines.
+    #
+    # Wrong and green on a bad tree, which is the larger set, because `uses:`
+    # is a mapping key and YAML spells a key more ways than one: in a flow
+    # mapping, under a quoted key, with the value on the next line, or as a
+    # block scalar. Actions accepts all four and `actionlint` passes all four.
+    # A job-level `permissions:` read as a top-level one belongs to the same
+    # set — it would pass a workflow scoped for one job out of seven.
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - name: Exit-code contract
+        run: python3 .github/scripts/test_workflow_hardening_gate.py
+
 
   fuzz:
     name: Fuzz (${{ matrix.target }})
