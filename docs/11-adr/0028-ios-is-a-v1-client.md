@@ -56,7 +56,7 @@ This ADR answers the question that was left open.
 
 Read from the tree rather than from a plan:
 
-- **`apps/apple/project.yml:188-243` defines `SunriseiOS`**, a full application
+- **`apps/apple/project.yml:349-408` defines `SunriseiOS`**, a full application
   target: iOS 26.0 (`:32`, matching the Mac's major so the shared tree needs no
   `@available` forks), `TARGETED_DEVICE_FAMILY: "1,2"` (`:222`, iPhone and
   iPad), a `sunrise://` registration of its own (`:229-232`), and
@@ -77,8 +77,8 @@ Read from the tree rather than from a plan:
   the six files under `apps/apple/SunriseiOSUITests/`, seventeen `func test`
   declarations at this revision, and not only the tab shell's.
   `TabShellUITests.swift` holds six of them, in two classes:
-  `SunriseiOSUITests/TabShellUITests.swift:24`, `:44`, `:73`, `:94` and `:133`
-  in `TabShellUITests`, and `:231` in `SidebarAddButtonTests`. **iOS is the
+  `SunriseiOSUITests/TabShellUITests.swift:24`, `:44`, `:73`, `:94` and `:134`
+  in `TabShellUITests`, and `:229` in `SidebarAddButtonTests`. **iOS is the
   only Apple product where CI proves a tap reaches the core.**
 - **`.github/workflows/ci.yml`'s `ios-app` job gates it no further than the
   workflow itself** — the job has no `if:` and no path filter, so it runs every
@@ -185,7 +185,7 @@ and it carries no MUSTs until an iOS release ships.**
      `NewMenuItems`, `IcalMenuItems`, `PrintMenuItems`, `GoMenuItems` — and
      declares no `Commands`-conforming type, as nothing in the tree does. The
      `SunriseiOS` target's `sources:` are `Sunrise` and `iOS`
-     (`project.yml:191-195`), so it compiles neither file. That is a
+     (`project.yml:352-354`), so it compiles neither file. That is a
      keyboard-navigation narrowness, recorded there, not a second menu-bar
      row.)
    - ***deferred*** four times: the three [ADR-0020](./0020-v1-must-demotions.md)
@@ -416,8 +416,9 @@ is tested, and has not been released.
    *deferred* and against MAY is evidential — a UI test drives the shell on a
    simulator in CI on every pull request that can affect it. Delete the job,
    mark `SunriseiOSUITests` `skipped: true` the way the macOS scheme marks its
-   own (`project.yml:350`), or narrow the condition described below, and every
-   row here falls back to "it compiles", which this file says is not evidence.
+   own (`project.yml:514-515`), or narrow the condition described below, and
+   every row here falls back to "it compiles", which this file says is not
+   evidence.
 
    That condition is the amendment to this clause. The job now carries an
    `if:` and a changed-paths filter — `needs: [changes, apple-xcframework]`

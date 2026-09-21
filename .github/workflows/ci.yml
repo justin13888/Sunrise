@@ -525,12 +525,17 @@ jobs:
       # is bounded — nothing is written until `mise run ios-app` reaches the
       # test phase, and `if-no-files-found: ignore` below absorbs the rest.
       #
-      # That `if-no-files-found` setting covers the case the first step in
-      # this job exists to make fast — an earlier step failing before
-      # `mise run ios-app` ever wrote a bundle — where a missing path is the
-      # expected outcome and not a second error to read. Pairing it with a
-      # condition that never fires on success is the `fuzz` job's shape, at
-      # `:1662-1672`. `retention-days: 7` is not inherited from there — that
+      # That `if-no-files-found: ignore` setting covers the case where a
+      # missing path is the expected outcome and not a second error to read.
+      # Its commonest shape is not an earlier *step* failing — it is an
+      # earlier phase inside this same step. `mise run ios-app` runs
+      # `swiftlint lint --strict` (`mise.toml:685`) before it ever reaches
+      # `xcodebuild`, and a strict-lint red is a frequent way for this job to
+      # go down; at that point no bundle has been written at all. Uploading
+      # nothing, silently, on a SwiftLint failure is the intended behaviour
+      # here and not a gap in it. Pairing it with a condition that never fires
+      # on success is the `fuzz` job's shape, at
+      # `:1693-1703`. `retention-days: 7` is not inherited from there — that
       # step carries no such key — and is this step's own choice: a red run's
       # bundle has to outlive a weekend plus a maintainer's attention, and
       # seven days is what the framework artefact at `:320` already uses.
@@ -541,13 +546,39 @@ jobs:
       # rebuild the folder around. Naming the parent keeps `ios.xcresult` as a
       # name inside the zip, so the download unpacks into something Xcode
       # opens by double-click.
+      #
+      # Said plainly because it has not been established: nothing here has
+      # verified that an `.xcresult` survives the zip round trip
+      # `upload-artifact` performs. The framework step at `:306-320` earns
+      # that claim explicitly for its own payload — "no symlink and no
+      # executable bit, so a zip round trip loses nothing" — and no equivalent
+      # inspection has been made of a result bundle, which is a package with
+      # its own internal structure. The "Xcode opens it by double-click"
+      # sentence above rests on the directory-naming argument alone; the first
+      # real failure this step catches is what will confirm or refute it.
+      #
+      # `compression-level: 1` for the reason recorded at `:300-305`, which
+      # applies here unchanged: both ends of this round trip are 10x-billed
+      # macOS runners, and a result bundle off the same runner class runs to
+      # hundreds of megabytes. It was inherited by omission before, not
+      # chosen.
+      #
+      # `name:` carries `github.run_attempt` because `upload-artifact@v4`
+      # fails outright when an artifact of that name already exists in the run
+      # and `overwrite:` is unset — and `:315-319` records this repository's
+      # own finding that "Re-run failed jobs" re-enters the *same* run, so
+      # attempt 1's artefact is still present when attempt 2 uploads. The
+      # suffix rather than `overwrite: true`: comparing two red attempts side
+      # by side is what diagnoses a flake, and overwriting destroys whichever
+      # half of that evidence arrived first.
       - name: Keep the result bundle a failed or cancelled run leaves behind
         if: ${{ failure() || cancelled() }}
         uses: actions/upload-artifact@v4
         with:
-          name: ios-xcresult
+          name: ios-xcresult-${{ github.run_attempt }}
           path: out/test-results
           if-no-files-found: ignore
+          compression-level: 1
           retention-days: 7
 
   rust-deny:

@@ -129,7 +129,8 @@ final class TabShellUITests: SunriseUITestCase {
     /// (`AppSurfaces.commitCapture`, which has no local refresh and repaints
     /// through the change stream). The Inbox row at the end is what proves the
     /// write landed — read back out of the core, not a label the sheet drew —
-    /// and the sheet is checked for a refusal rather than for a confirmation.
+    /// and neither of the sheet's own two labels is asserted on at all, for
+    /// the reasons set out where the Add press used to sample them.
     func testTheCaptureSheetCommitsFromAScreenWithNoBar() throws {
         createVault()
 
@@ -163,30 +164,27 @@ final class TabShellUITests: SunriseUITestCase {
         // that requires the label re-creates the two-second window, and one
         // tolerant enough to pass without it constrains nothing.
         //
-        // `quick-capture.failure` is the durable half of the same state — set
-        // by `submit`'s catch arm, cleared only by a later successful commit
-        // (`QuickCaptureView.swift:145`, in the success arm) and never on a
-        // timer, because it asks the user to do something and names the line
-        // still waiting in the field (`QuickCaptureView.swift:59-61`). This
-        // test performs one submit, so nothing here can clear it. Matched as
-        // any descendant rather than as a `staticText` for the reason the
-        // confirmation was: the label is a `Label`, and which element type
-        // SwiftUI folds that into is not a promise worth resting a test on.
+        // `quick-capture.failure`, the durable half of the same state, is not
+        // sampled here either, and no line of this test witnesses a refusal.
+        // A sample taken at this point cannot observe one: the label is set by
+        // `submit`'s catch arm (`QuickCaptureView.swift:153`), which runs
+        // inside the detached `_Concurrency.Task` opened at `:142` and only
+        // once `try await commit(draft)` at `:144` has resumed. `activate`
+        // ends at `element.tap()`, and the quiescence XCUITest waits out after
+        // a tap is the app's main run loop — not a Task suspended across
+        // SwiftUI, a view model, UniFFI, Rust and SQLite. `exists` is an
+        // instantaneous query with no wait of its own, so an assertion here is
+        // sampled before `failure` is ever assigned, and passes under a
+        // refusal exactly as it passes under an acceptance.
         //
-        // Sampled once, here, and deliberately not a second time later. Quick
-        // capture is presented as a `.sheet(isPresented:)` whose content is
-        // built only while `surfaces.capture` is non-nil
-        // (`apps/apple/iOS/VaultSurfaces.swift:153-164`), and Cancel below is
-        // `Button("Cancel", action: dismiss)` (`QuickCaptureView.swift:79`)
-        // calling `captureDismissed()`. Every point after that press is one
-        // where `QuickCaptureView` is out of the hierarchy, so this label
-        // cannot exist there whatever the core did, and a second sample taken
-        // there would be a check that cannot fail. What carries "the write
-        // landed" at a later moment is the Inbox row at the end of this test,
-        // read back out of the core through the change stream after a tab
-        // switch — not anything the sheet drew.
-        let refusal = app.descendants(matching: .any)["quick-capture.failure"]
-        XCTAssertFalse(refusal.exists, "the core accepted the capture rather than refusing it")
+        // The only witness this test has is the Inbox row at the end of it
+        // (`TabShellUITests.swift:209-212`). It reads the captured line back
+        // out of the core through the change stream after a tab switch, so it
+        // constrains the write rather than a label the sheet drew — and it has
+        // no window to miss, because the row is never taken away again, where
+        // both of the sheet's labels are states the view drops. The negative
+        // case — a refusal actually observed — needs a seam that can fail a
+        // commit on demand, and is issue #295.
 
         // Cancel takes the sheet and its keyboard away together, which is what
         // makes the tab bar tappable again.
