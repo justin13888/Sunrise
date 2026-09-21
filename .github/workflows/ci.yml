@@ -16,6 +16,35 @@ on:
     - cron: "0 4 * * *"
   workflow_dispatch:
 
+# The whole scope this workflow needs, stated where it can be read. Every job
+# below checks out, and `actions/checkout` wants `contents: read` and nothing
+# more. No `run:` step in this file reads `GITHUB_TOKEN` and none reads a
+# secret. Two actions read the token without being asked to — `oven-sh/setup-bun`
+# and `taiki-e/install-action` each default an input to `github.token` — and
+# both spend it on public GitHub API reads to dodge the anonymous rate limit,
+# which a `contents: read` token already satisfies.
+#
+# `release.yml` states its scope as `permissions: {}` and re-grants per job,
+# which is right for that file because its seven jobs are not alike — one of
+# them holds `packages: write`, `id-token: write` and `attestations: write`, and
+# a default-deny makes every grant a thing somebody had to write down. The jobs
+# here are alike: not one of them needs a scope another does not. So one line
+# says it for all of them, and a job that later needs more has to add a block
+# and say why.
+#
+# The repository default is already `read`, so this does not close a write hole
+# that was standing open. What it closes is the indirection: until now the only
+# statement of what a pull request's token could do lived in a settings page,
+# changeable without a commit, a review or a diff, and every job in this file
+# ran on whatever that page happened to say that day.
+#
+# It does narrow one thing. An explicit block sets every scope it does not name
+# to `none`, so the read access the repository default also handed out —
+# `actions`, `checks`, `packages`, `pull-requests`, `statuses` — is gone. No job
+# here used any of them.
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
