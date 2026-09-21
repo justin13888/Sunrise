@@ -8,7 +8,7 @@
 # change should not be read without it.
 #
 # Grouped into one pull request per ecosystem entry rather than one per action.
-# A pull request here costs a full CI run — thirty required contexts, two of
+# A pull request here costs a full CI run — every required context, three of
 # them on a runner class that bills at 10x — so ten separate bumps would cost
 # ten of those to deliver the same week's updates.
 #

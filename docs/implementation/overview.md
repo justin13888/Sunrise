@@ -429,8 +429,10 @@ Recorded because each presented as something other than what it was:
   file would be wrong the first time one moves. It currently carries
   `sunrise-crypto` and `sunrise-sync`; `sunrise-domain` and `sunrise-core` get
   theirs from the first nightly and until then fail the gate for having none.
-  `CODEOWNERS` now encodes the security-review gate, though GitHub only enforces
-  it once branch protection requires code-owner review.
+  The security-review gate has no automated half and cannot have one here:
+  `require_code_owner_review` would deadlock the sole maintainer's own pull
+  requests, so `CODEOWNERS` only ever requested a reviewer — never gated one.
+  `testing.md` §Security-review gate is the scope for a reviewer, not a check.
 - **`cargo-fuzz` targets** — all six now exist under `fuzz/`, which is its own
   cargo workspace because `cargo-fuzz` needs a nightly rustc for
   `-Zsanitizer=address` and this one is pinned to 1.91.1. `mise run fuzz-build`

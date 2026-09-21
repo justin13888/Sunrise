@@ -841,12 +841,20 @@ A scoped external penetration test runs once per quarter. The standing scope cov
 
 ### Security-review gate
 
-Changes to any of these modules require a security-focused review (a reviewer from the security-reviewers group) in addition to the normal code review:
+Changes to any of these modules get a security-focused review in addition to the normal one:
 
 - `sunrise-crypto`
 - `sunrise-sync`
 - `sunrise-server::auth`
 - `sunrise-storage::migrations`
 - pairing/onboarding code paths in `sunrise-core`
+- the gates themselves: `.github/workflows/`, `.github/scripts/`, `clippy.toml`,
+  `deny.toml` — a change that weakens a check is as visible as a change to what
+  it checks
 
-CI enforces the gate via a `CODEOWNERS` rule on these directories.
+Nothing *requires* this review: `require_code_owner_review` is off in the
+`Protect master` ruleset, and turning it on would deadlock the sole maintainer's
+own pull requests rather than add a reviewer — GitHub does not let an author
+satisfy a review requirement on their own. `CODEOWNERS` only ever requested one,
+and only on the pull requests the maintainer did not author. The list above is
+the standing scope for a review held by the reviewer, not a check.
