@@ -7630,7 +7630,7 @@ fn a_self_refused_revoke_still_advances_the_cursor() {
     );
 
     // Captured, because a paragraph in `upsert_sync_cursor`'s doc rests on this
-    // event by name and tells the reader to grep for it. Asserting only the
+    // event by name and names both of its emitters. Asserting only the
     // absent register row would leave the log line deletable with nothing red.
     let mut delivered = None;
     let logged = events_emitted_by(|| {
