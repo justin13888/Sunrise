@@ -496,13 +496,44 @@ jobs:
       # poll missed it" — the question three of this job's last six failures
       # turned on and none of them could settle from the log alone (#277).
       #
-      # `if: failure()` and not `always()`: a green run's bundle answers
-      # nothing anyone asked and costs an upload on every build. The
-      # `if-no-files-found` setting below covers the case the first step in
+      # `failure() || cancelled()` and not `always()`: a green run's bundle
+      # answers nothing anyone asked and costs an upload on every build, and
+      # neither of these two functions is ever true on a job that succeeded.
+      #
+      # The `cancelled()` half is load-bearing, not decoration. GitHub
+      # documents `jobs.<job_id>.timeout-minutes` — `timeout-minutes: 60`
+      # above — as "the maximum number of minutes to let a job run before
+      # GitHub automatically cancels it", so a wedged simulator that eats the
+      # hour ends this job *cancelled* rather than failed, and `if: failure()`
+      # alone would skip this step on exactly the shape #277 calls its class E
+      # and the hardest to read from a log. `cancelled()` is a job-status
+      # check and not a workflow-status one, which is what makes it fire for a
+      # job that timed out inside a workflow nobody cancelled: actions/runner
+      # evaluates it as `JobContext.Status == ActionResult.Cancelled`
+      # (`src/Runner.Worker/Expressions/CancelledFunction.cs`), and
+      # `FailureFunction.cs` reads that same job status for a job-level step,
+      # so on a cancelled job `failure()` is false and `cancelled()` is true.
+      # GitHub's "Workflow cancellation reference" supplies the rest: on
+      # cancellation the unfinished steps' `if:` conditions are re-evaluated
+      # and a step whose condition evaluates true continues to run, bounded by
+      # a five-minute cancellation timeout.
+      #
+      # What that costs, recorded rather than discovered later: `concurrency`
+      # at `:19-21` sets `cancel-in-progress` for pull requests, so a run
+      # superseded by a new push now uploads whatever bundle exists at the
+      # moment it is killed. That is the price of covering the timeout, and it
+      # is bounded — nothing is written until `mise run ios-app` reaches the
+      # test phase, and `if-no-files-found: ignore` below absorbs the rest.
+      #
+      # That `if-no-files-found` setting covers the case the first step in
       # this job exists to make fast — an earlier step failing before
       # `mise run ios-app` ever wrote a bundle — where a missing path is the
-      # expected outcome and not a second error to read. That pairing is the
-      # `fuzz` job's, at `:1631-1641`.
+      # expected outcome and not a second error to read. Pairing it with a
+      # condition that never fires on success is the `fuzz` job's shape, at
+      # `:1662-1672`. `retention-days: 7` is not inherited from there — that
+      # step carries no such key — and is this step's own choice: a red run's
+      # bundle has to outlive a weekend plus a maintainer's attention, and
+      # seven days is what the framework artefact at `:320` already uses.
       #
       # `path:` is the directory holding the bundle rather than the bundle
       # itself. An `.xcresult` is a directory, and naming it directly makes
@@ -510,8 +541,8 @@ jobs:
       # rebuild the folder around. Naming the parent keeps `ios.xcresult` as a
       # name inside the zip, so the download unpacks into something Xcode
       # opens by double-click.
-      - name: Keep the result bundle a failure leaves behind
-        if: failure()
+      - name: Keep the result bundle a failed or cancelled run leaves behind
+        if: ${{ failure() || cancelled() }}
         uses: actions/upload-artifact@v4
         with:
           name: ios-xcresult
