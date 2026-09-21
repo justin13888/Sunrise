@@ -7629,10 +7629,22 @@ fn a_self_refused_revoke_still_advances_the_cursor() {
         "the cursor is the contiguous prefix from seq 1, so this op has to be it"
     );
 
-    let events = eb
-        .apply_remote_all(&mut dbb, &env)
+    // Captured, because a paragraph in `upsert_sync_cursor`'s doc rests on this
+    // event by name and tells the reader to grep for it. Asserting only the
+    // absent register row would leave the log line deletable with nothing red.
+    let mut delivered = None;
+    let logged = events_emitted_by(|| {
+        delivered = Some(eb.apply_remote_all(&mut dbb, &env));
+    });
+    let events = delivered
+        .expect("the capture ran the delivery")
         .expect("a self-naming revoke is still a well-formed delivery");
     assert!(events.is_empty(), "a control op materializes no entity");
+    assert!(
+        logged.iter().any(|ev| ev == "core.device.revoke_refused"),
+        "the refusal is announced, not silent: replace the `tracing::warn!` in \
+         `apply_device_revoke` with nothing and this is what fails; got {logged:?}"
+    );
 
     // The register refused it.
     assert_eq!(
@@ -7713,28 +7725,35 @@ fn a_self_refused_revoke_still_advances_the_cursor() {
     );
 }
 
-/// The apply path reads the revocation register, and what that read decides
-/// is keys — not whether the delivery applies.
+/// The apply path reads the **read bound**, and what that read decides is
+/// keys — not whether the delivery applies.
 ///
 /// This walks the trace `upsert_sync_cursor`'s doc describes, as a delivery
 /// and end to end: `apply_remote_all` dispatches the control op into
 /// `apply_control_op`, whose `DeviceCertPublish` arm calls
-/// `backfill_key_envelopes`, which consults `is_revoked` before sealing
-/// anything and returns early. Nothing else in this suite walks it. Every other
+/// `backfill_key_envelopes`, which asks `is_read_bounded` over
+/// `device_read_bounds` and returns before it seals anything.
+///
+/// It is **not** the revocation register, and since ADR-0041 the difference
+/// is the point: the register is a fold that can hand a device back, and
+/// `device_read_bounds` only ever grows. Revoking still writes both, so the
+/// premise here is set by the ordinary command and then asserted on the
+/// table the gate actually reads.
+///
+/// Nothing else in this suite walks that trace. Every other
 /// `InnerOp::DeviceCertPublish` here — the `trust` and `trust_at` helpers,
 /// and the impostor-cert cases — calls `apply_control_op` directly inside a
-/// test transaction, so there is no envelope, no op row, and no cursor, and
-/// the reachability of the register check from a remote delivery goes
-/// unpinned. That gap is how the doc came to say the apply path consults the
-/// register nowhere: nothing disagreed.
+/// test transaction, so there is no envelope, no op row and no cursor, and
+/// the reachability of the bound check from a remote delivery goes unpinned.
+/// That gap is how the doc came to describe this trace against the wrong
+/// table for a whole release: nothing disagreed.
 ///
-/// So this holds all three halves. The revoked device is sealed nothing,
+/// So this holds all three halves. The read-bounded device is sealed nothing,
 /// which is the security-relevant end of ADR-0034's "revocation bounds
-/// reads". Its cert is recorded and this replica's cursor advances over the
-/// delivery anyway, which is the "not writes" end. And an unrevoked device
-/// taking the identical route **is** sealed, without which the first
-/// assertion would hold for the trivial reason that this vault had no key to
-/// seal to anyone.
+/// reads". Its cert is recorded and this replica's cursor covers the delivery
+/// anyway, which is the "not writes" end. And an unbounded device taking the
+/// identical route **is** sealed, without which the first assertion would
+/// hold for the trivial reason that this vault had no key to seal to anyone.
 #[test]
 fn a_revoked_device_cert_through_apply_remote_seals_no_keys() {
     // Real random Stream keys, so `stream_keys` holds rows and
@@ -7769,8 +7788,9 @@ fn a_revoked_device_cert_through_apply_remote_seals_no_keys() {
     // the same stream with no ordering guarantee between them.
     revoke(&ea, &mut dba, &ea, b_id, T0);
     assert!(
-        ea.is_revoked(dba.conn(), &b_id).unwrap(),
-        "the premise: the register holds a row for B before the delivery"
+        ea.is_read_bounded(dba.conn(), &b_id).unwrap(),
+        "the premise, on the table the gate reads: revoking B bounded its reads \
+         before the delivery below"
     );
 
     // The meta epoch A is on. A peer seals under the key a `key_envelope`
@@ -7811,11 +7831,11 @@ fn a_revoked_device_cert_through_apply_remote_seals_no_keys() {
         .expect("a revoked device's cert is still a well-formed delivery");
     assert!(events.is_empty(), "a control op materializes no entity");
 
-    // The register was consulted, and it stopped the backfill.
+    // The bound was consulted, and it stopped the backfill.
     assert!(
         envelopes_to(&ea, &dba, &b_id).is_empty(),
-        "a revoked device republished its cert through a delivery and was handed the \
-         keys the revocation had just rotated away"
+        "a read-bounded device republished its cert through a delivery and was handed \
+         the keys the revocation had just rotated away"
     );
 
     // It did not stop the op. The cert is recorded and the cursor covers it —
@@ -7832,7 +7852,7 @@ fn a_revoked_device_cert_through_apply_remote_seals_no_keys() {
     assert_eq!(
         recorded, 1,
         "the backfill is refused, the delivery is not: the cert belongs in `devices` \
-         whatever the register says"
+         whatever the bound says"
     );
     assert_eq!(
         cursor_for(&dba, &META_STREAM, &b_id),
@@ -7852,8 +7872,8 @@ fn a_revoked_device_cert_through_apply_remote_seals_no_keys() {
     want.sort_unstable();
     assert_eq!(
         sealed, want,
-        "the same delivery route seals every epoch A holds to an unrevoked device, \
-         which is what makes B's empty list the register's doing"
+        "the same delivery route seals every epoch A holds to an unbounded device, \
+         which is what makes B's empty list the bound's doing"
     );
 }
 
@@ -8055,10 +8075,23 @@ fn a_failed_backfill_is_logged_and_the_cert_delivery_still_applies() {
         })
         .unwrap();
 
-    let events = ea
-        .apply_remote_all(&mut dba, &b_env)
+    // Captured, so the name of this unit is a claim it proves. Without it the
+    // `tracing::warn!` in the `DeviceCertPublish` arm could be deleted and
+    // every assertion below would still pass — the partial seal, the recorded
+    // cert and the cursor are all true of a backfill that failed silently.
+    let mut delivered = None;
+    let logged = events_emitted_by(|| {
+        delivered = Some(ea.apply_remote_all(&mut dba, &b_env));
+    });
+    let events = delivered
+        .expect("the capture ran the delivery")
         .expect("a backfill error is logged, not raised: the delivery is not failed by it");
     assert!(events.is_empty(), "a control op materializes no entity");
+    assert!(
+        logged.iter().any(|ev| ev == "core.device.backfill_failed"),
+        "the arm swallows the `Err` into a log line, and the log line is the whole \
+         of what the operator gets; got {logged:?}"
+    );
 
     // The backfill did fail, and part-way: it emitted for the epoch it was on
     // and never reached the rest. Were this list complete, the trigger had not
@@ -8222,6 +8255,257 @@ fn a_failed_local_emit_leaves_the_cursor_where_it_was() {
         "and the rollback leaves the cursor where the code path already had it"
     );
     assert_eq!(outbox_rows(&db), queued_before, "the outbox likewise");
+}
+
+/// A stranger's cert through `apply_remote_all` is refused at step b, and the
+/// refusal costs the cursor nothing because there is no op row yet.
+///
+/// `upsert_sync_cursor`'s doc says admission is settled at step b — by the
+/// `devices` lookup, or for the `DeviceCertPublish` family by
+/// `self_authenticating_signer` — and never by the revocation register. Only
+/// the *accepting* half of that function was reached through a delivery:
+/// `a_revoked_device_cert_through_apply_remote_seals_no_keys` walks an
+/// unknown sender whose cert does verify. The refusing half was reached by
+/// nothing. The impostor-cert cases next to this one call `apply_control_op`
+/// directly, which is past the point this function is consulted at.
+///
+/// The sender here is a device this vault has never admitted, publishing
+/// **another device's** cert. Both halves are deliberate. A sender already in
+/// `devices` never reaches this function at all — step b's lookup answers
+/// first — and a sender publishing its own genuine cert is admitted, which is
+/// the half already covered. What is left is the impostor test: a well-formed
+/// cert that names somebody other than the envelope's signer, which is the
+/// rebinding `Command::TrustDevice` could not refuse.
+///
+/// The cursor half is the reason this unit sits here rather than beside the
+/// other cert cases. A refusal at step b happens **before** the `with_tx`
+/// block, so the op row is never inserted and `upsert_sync_cursor` is never
+/// reached — unlike the refusals inside `apply_control_op`, which run after
+/// the row is in. The doc's two kinds of refusal are only distinguishable by
+/// what they leave behind, and this is the one that leaves nothing.
+#[test]
+fn a_stranger_cert_through_apply_remote_is_refused_and_writes_no_cursor() {
+    let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    // Neither of these is in A's `devices`, so the envelope's sender falls
+    // through step b's lookup into `self_authenticating_signer`.
+    let stranger = engine_seeded(ROOT, [9u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let victim = engine_seeded(ROOT, [8u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut dba = db_root(ROOT);
+    let mut dbs = db_root(ROOT);
+    let s_id = stranger.keychain.device_id();
+
+    ea.apply(
+        &mut dba,
+        Command::CreateTask(TaskDraft {
+            title: "written before the stranger knocked".into(),
+            ..Default::default()
+        }),
+    )
+    .unwrap();
+
+    // The meta key A holds, handed to the stranger the way a leaked or
+    // retained key reaches one. This is what gets the delivery past step d and
+    // into the cert check, which is the whole subject.
+    let (meta_epoch, meta_key) = dba
+        .with_tx(|tx| ea.ensure_stream_epoch(tx, &META_STREAM, T0))
+        .expect("A's live vault-meta epoch");
+
+    // The cert of a *third* device, published under the stranger's own
+    // envelope. Genuine bytes, wrong signer.
+    let inner = encode_inner_op(&InnerOp::DeviceCertPublish(victim.keychain.cert_blob()))
+        .expect("encode the cert publish");
+    let (s_seq, s_env) = dbs
+        .with_tx(|tx| -> rusqlite::Result<(u64, Vec<u8>)> {
+            let seq = stranger.next_seq_tx(tx, &META_STREAM)?;
+            let env = stranger
+                .keychain
+                .seal_op_at(
+                    META_STREAM,
+                    seq,
+                    stranger.hlc.send(),
+                    &inner,
+                    stranger.rng.as_ref(),
+                    meta_epoch,
+                    &meta_key,
+                )
+                .expect("seal under the meta epoch A holds");
+            Ok((seq, env))
+        })
+        .unwrap();
+
+    let err = ea
+        .apply_remote_all(&mut dba, &s_env)
+        .expect_err("a cert naming another device is refused");
+    assert!(
+        matches!(&err, EngineError::RemoteOpInvalid(m)
+            if m.contains("published cert names another device")),
+        "refused by the impostor test in `self_authenticating_signer`, which is the \
+         half no delivery reached before; got {err:?}"
+    );
+
+    // Nothing was admitted.
+    let recorded: i64 = dba
+        .conn()
+        .query_row(
+            "SELECT count(*) FROM devices WHERE device_id = ?",
+            params![&s_id[..]],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(recorded, 0, "and the stranger is not in `devices`");
+
+    // And the cursor was never reached: this refusal is the kind that runs
+    // before the op row exists, so there is no row for the prefix to count and
+    // no cursor row at all.
+    assert_eq!(
+        ops_at(dba.conn(), &META_STREAM, &s_id, s_seq),
+        0,
+        "a step-b refusal returns before the `with_tx` block, so no op row was \
+         inserted"
+    );
+    assert_eq!(
+        cursor_row(&dba, &META_STREAM, &s_id),
+        None,
+        "and `upsert_sync_cursor` was never reached, so there is no row — which is \
+         what tells this refusal apart from the ones inside `apply_control_op`"
+    );
+}
+
+/// What the cursor means across a re-fold: nothing the fold does reaches it.
+///
+/// Since ADR-0041 the revocation register is derived, and it **shrinks**:
+/// applying one `device_revoke` can unwind another already believed, and
+/// `core.device.revocation_unwound` is a routine event rather than an alarm.
+/// `upsert_sync_cursor`'s doc asserts the cursor is a fact about `ops` and
+/// never about any judgement passed on one, so the re-fold is the sharpest
+/// case that claim has: a delivery that *retracts* a decision this replica
+/// had already made.
+///
+/// Nothing pinned it. Every unwind unit in this suite drives
+/// `apply_control_op` directly through the `revoke` helper, so there is no
+/// envelope, no op row and no cursor to observe; every cursor unit here
+/// delivers something the fold does not disturb.
+///
+/// So this delivers both revocations as remote ops and holds three things at
+/// once. The register did unwind — C is off the list and the event fired.
+/// The read bound did not, because it only ever grows, which is the
+/// asymmetry `Engine::is_read_bounded` exists for. And both cursors stand
+/// exactly where the op rows put them: the fold rewrote `device_revocations`
+/// and touched neither `ops` nor `sync_cursors`.
+#[test]
+fn a_refold_that_unwinds_a_revocation_moves_no_cursor() {
+    let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let ec = engine_seeded(ROOT, [3u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let er = engine_seeded(ROOT, [4u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut dba = db_root(ROOT);
+    let mut dbb = db_root(ROOT);
+    let mut dbr = db_root(ROOT);
+    let (a_id, b_id, c_id) = (
+        ea.keychain.device_id(),
+        eb.keychain.device_id(),
+        ec.keychain.device_id(),
+    );
+
+    // R has admitted both senders, so step b finds each row and the deliveries
+    // are ordinary ones.
+    trust(&er, &mut dbr, &ea);
+    trust(&er, &mut dbr, &eb);
+
+    // The meta epoch R is on; both peers seal under the key R holds.
+    let (meta_epoch, meta_key) = dbr
+        .with_tx(|tx| er.ensure_stream_epoch(tx, &META_STREAM, T0))
+        .expect("R's live vault-meta epoch");
+
+    let revoke_env = |e: &Engine, db: &mut Db, target: [u8; 16]| -> (u64, Vec<u8>) {
+        let inner = encode_inner_op(&InnerOp::DeviceRevoke(DeviceRevokePayload {
+            revoked_device_id: target,
+            reason_code: RevokeReason::Lost,
+        }))
+        .expect("encode the revoke");
+        db.with_tx(|tx| -> rusqlite::Result<(u64, Vec<u8>)> {
+            let seq = e.next_seq_tx(tx, &META_STREAM)?;
+            let env = e
+                .keychain
+                .seal_op_at(
+                    META_STREAM,
+                    seq,
+                    e.hlc.send(),
+                    &inner,
+                    e.rng.as_ref(),
+                    meta_epoch,
+                    &meta_key,
+                )
+                .expect("seal under the meta epoch R holds");
+            Ok((seq, env))
+        })
+        .unwrap()
+    };
+
+    // A revokes C, delivered. R believes it.
+    let (a_seq, a_env) = revoke_env(&ea, &mut dba, c_id);
+    er.apply_remote_all(&mut dbr, &a_env)
+        .expect("a revoke is a well-formed delivery");
+    assert!(
+        er.is_revoked(dbr.conn(), &c_id).unwrap(),
+        "the premise: R believes C is revoked before the second delivery"
+    );
+    assert_eq!(
+        cursor_for(&dbr, &META_STREAM, &a_id),
+        a_seq,
+        "and the cursor covers A's op"
+    );
+
+    // Then B revokes A. The fold discounts every row A wrote, so C comes back
+    // off the register — the retraction this unit is about.
+    let (b_seq, b_env) = revoke_env(&eb, &mut dbb, a_id);
+    let mut delivered = None;
+    let logged = events_emitted_by(|| {
+        delivered = Some(er.apply_remote_all(&mut dbr, &b_env));
+    });
+    delivered
+        .expect("the capture ran the delivery")
+        .expect("revoking the revoker is a well-formed delivery too");
+
+    assert!(
+        er.is_revoked(dbr.conn(), &a_id).unwrap(),
+        "B's revocation of A stands"
+    );
+    assert_eq!(
+        revocation_row(&dbr, &c_id),
+        None,
+        "and A's revocation of C was unwound by the fold, which is the premise the \
+         rest of this unit needs"
+    );
+    assert!(
+        logged
+            .iter()
+            .any(|ev| ev == "core.device.revocation_unwound"),
+        "a device leaving the revoked list is announced; got {logged:?}"
+    );
+
+    // The read bound did not unwind. It is the monotone half, which is why the
+    // four key-distribution sites ask it and not the register.
+    assert!(
+        er.is_read_bounded(dbr.conn(), &c_id).unwrap(),
+        "C stays read-bounded however the register folds: `device_read_bounds` has \
+         no `DELETE`"
+    );
+
+    // And neither cursor moved with the register. This is the answer the doc
+    // owed a reader: the cursor is the contiguous prefix of `ops`, the fold
+    // rewrites `device_revocations`, and the two never meet.
+    assert_eq!(
+        cursor_for(&dbr, &META_STREAM, &a_id),
+        a_seq,
+        "A's op is still in the log and still counted, though the decision it \
+         carried has been retracted"
+    );
+    assert_eq!(
+        cursor_for(&dbr, &META_STREAM, &b_id),
+        b_seq,
+        "and B's op is counted like any other applied op"
+    );
 }
 
 /// A device certified *after* an epoch was minted still receives that
