@@ -73,7 +73,7 @@ Read from the tree rather than from a plan:
   macOS scheme (`:349-350`) because a macOS XCUITest needs
   `sudo DevToolsSecurity -enable` on the machine. Five cases run on the
   simulator on every build (`SunriseiOSUITests/TabShellUITests.swift:24`,
-  `:46`, `:77`, `:98`, `:133`). **iOS is the only Apple product where CI proves
+  `:44`, `:73`, `:94`, `:133`). **iOS is the only Apple product where CI proves
   a tap reaches the core.**
 - **`.github/workflows/ci.yml`'s `ios-app` job gates it no further than the
   workflow itself** — the job has no `if:` and no path filter, so it runs every
