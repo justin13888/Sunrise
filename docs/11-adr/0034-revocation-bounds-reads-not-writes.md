@@ -95,7 +95,7 @@ the code rather than from the issue:
   It was, briefly."* Cited without a line on purpose — that paragraph is being
   rewritten, and a line number into it is a citation built to rot.
 - The test `a_revoked_devices_ops_still_apply_at_the_replica`
-  (`crates/sunrise-core/src/engine/tests.rs:7437-7439#a_revoked_devices_ops_still_apply_at_the_replica`)
+  (`crates/sunrise-core/src/engine/tests.rs:7504-7506#a_revoked_devices_ops_still_apply_at_the_replica`)
   revokes a device at a cut before
   every op it writes — the strongest form of the premise — and asserts the op
   applies, materializes and is passed by the cursor.
@@ -240,7 +240,7 @@ not, and that is what the relay bound is for.
   ([#105](https://github.com/justin13888/Sunrise/issues/105)); nothing here
   narrows that, and `key-rotation.md` already states it as unmitigated.
 - **No code changes.** The test doc at
-  `crates/sunrise-core/src/engine/tests.rs:7397#a_revoked_devices_ops_still_apply_at_the_replica`
+  `crates/sunrise-core/src/engine/tests.rs:7464#a_revoked_devices_ops_still_apply_at_the_replica`
   and `apply_remote_all`'s step b gain
   a citation of this ADR in place of a bare issue number, so the next reader
   finds a decision rather than an open question.
