@@ -20,8 +20,9 @@ description: Format, lint, test and document both cargo workspaces on the pinned
 runs:
   using: composite
   steps:
-    - uses: dtolnay/rust-toolchain@stable
+    - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # v1
       with:
+        toolchain: stable
         components: rustfmt, clippy
     # First, and before the cache is restored, because it is the cheapest
     # failure in the file and everything after it assumes the answer.
@@ -73,7 +74,7 @@ runs:
           echo "::error::msrv: the toolchain pin disagrees with itself — rust-toolchain.toml=${channel}, Cargo.toml=${rust_version}, Dockerfile=${docker_version}, rustc=${actual}; ADR-0026 requires one version in all four"
           exit 1
         fi
-    - uses: Swatinem/rust-cache@v2
+    - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
       with:
         # Two cargo workspaces, two target directories. `fuzz/` is its own
         # workspace root (see `fuzz/Cargo.toml`) and the clippy and rustdoc
