@@ -715,7 +715,7 @@ fn ops_run_end(
 ///
 /// The read bound, and not the revocation register. A `DeviceCertPublish`
 /// dispatched out of
-/// `crates/sunrise-core/src/engine/sync.rs:318#apply_remote_all` reaches
+/// `crates/sunrise-core/src/engine/sync.rs:312#apply_remote_all` reaches
 /// `crates/sunrise-core/src/engine/oplog.rs:418#backfill_key_envelopes`,
 /// which returns early on a device
 /// `crates/sunrise-core/src/engine/revocation.rs:636#is_read_bounded` names —
