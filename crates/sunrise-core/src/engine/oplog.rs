@@ -696,9 +696,12 @@ fn ops_run_end(
 /// A refused op is *not* decided and does not appear here. It was, briefly: an
 /// op refused for a revoked sender advanced this past it so the relay would
 /// stop resending. That is history, and what replaced it is not a narrower
-/// refusal of the op but a refusal of something else. **Nothing on this path
-/// declines the op itself**: no refusal below removes the op row, so the
-/// cursor counts the op whatever answer it got.
+/// refusal of the op but a refusal of something else. **Nothing below the
+/// idempotence gate declines the op itself**: once the op row is in, no refusal
+/// removes it, so the cursor counts the op whatever answer it got. Refusals
+/// above it return before the transaction opens and leave no op row and no
+/// cursor, the half pinned by
+/// `crates/sunrise-core/src/engine/tests.rs:8427#a_stranger_cert_through_apply_remote_is_refused_and_writes_no_cursor`.
 ///
 /// That is a weaker claim than "the apply path does not consult revocation",
 /// and deliberately so, because the apply path does consult it — in three
@@ -727,9 +730,8 @@ fn ops_run_end(
 /// # What the apply path consults, and what that read decides
 ///
 /// The read bound, and not the revocation register. A `DeviceCertPublish`
-/// dispatched out of
-/// `crates/sunrise-core/src/engine/sync.rs:312#apply_remote_all` reaches
-/// `crates/sunrise-core/src/engine/oplog.rs:418#backfill_key_envelopes`,
+/// dispatched out of `crates/sunrise-core/src/engine/sync.rs:312#apply_remote_all`
+/// reaches `crates/sunrise-core/src/engine/oplog.rs:418#backfill_key_envelopes`,
 /// which returns early on a device
 /// `crates/sunrise-core/src/engine/revocation.rs:636#is_read_bounded` names —
 /// a presence test over `device_read_bounds`, inside the apply transaction, on
@@ -745,9 +747,8 @@ fn ops_run_end(
 /// sealed: on a bounded one it returns early and seals none. What it does
 /// *not* decide is whether the op applies. The op row went in at the
 /// idempotence gate before the control op was dispatched, the `devices` row is
-/// written before the backfill is attempted, and a backfill error is logged
-/// rather than raised
-/// (`crates/sunrise-core/src/engine/sync.rs:968#apply_control_op`). Not one of
+/// written before the backfill is attempted, and a backfill error is logged rather than
+/// raised (`crates/sunrise-core/src/engine/sync.rs:968#apply_control_op`). Not one of
 /// those answers skips this function: it runs on the delivery like any other,
 /// and the op row it left behind counts toward the prefix like any other.
 /// Whether the number this writes actually moves is a question about the seqs
@@ -774,8 +775,7 @@ fn ops_run_end(
 /// `crates/sunrise-core/src/engine/tests.rs:7495#a_revoked_devices_ops_still_apply_at_the_replica`
 /// holds the admitting half, and
 /// `crates/sunrise-core/src/engine/tests.rs:8427#a_stranger_cert_through_apply_remote_is_refused_and_writes_no_cursor`
-/// the refusing one — which never reaches this function at all, because step b
-/// returns before the transaction the op row would be written in.
+/// the refusing one, which never reaches this function at all.
 ///
 /// # Where this sits relative to the op row
 ///
@@ -860,9 +860,9 @@ fn ops_run_end(
 /// drops a payload with the op row already in, so the op counts toward the
 /// prefix exactly like an applied one.
 ///
-/// Nor would resending recover anything, here or anywhere. An op's id is
-/// derived from `(stream_id, device_id, seq)` by [`remote_op_id`], so a resent
-/// op carries the op log's same primary key, collides on insert, and
+/// Nor would resending recover anything **for an op that reached the op log**:
+/// its id is derived from `(stream_id, device_id, seq)` by [`remote_op_id`], so
+/// a resent op carries the op log's same primary key, collides on insert, and
 /// [`Engine::apply_remote_all`] returns at its idempotence gate without
 /// re-running materialization or [`Engine::apply_control_op`] at all. That is
 /// `crates/sunrise-core/src/engine/tests.rs:5960#apply_remote_is_idempotent`
@@ -878,9 +878,9 @@ fn ops_run_end(
 /// unwind another, and `core.device.revocation_unwound` is a routine event.
 /// **Nothing the fold does reaches this number.** The fold rewrites
 /// `device_revocations`; the cursor is a fact about `ops`, and the op whose
-/// effect was unwound is still in the log and still counted. The stored value
-/// could not fall in any case — the `ON CONFLICT` arm below takes a `MAX` —
-/// but it does not even try to. The delivery that folded runs this once, for
+/// effect was unwound is still in the log and still counted. This function never
+/// lowers it — the `ON CONFLICT` arm below takes a `MAX` — but it does not even
+/// try to. The delivery that folded runs this once, for
 /// its own `(stream, device)` and at its step g like any other delivery; what
 /// no call site triggers is an *extra* run for the devices whose revocations
 /// that fold unwound, and none is needed, because their cursors are facts
