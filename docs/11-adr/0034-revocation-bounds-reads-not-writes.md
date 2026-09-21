@@ -183,11 +183,8 @@ Revocation today is a **register plus a read bound**:
   ([ADR-0041 §#80 landed, read out of the
   tree](./0041-peer-side-revocation-is-a-fold.md#80-landed-read-out-of-the-tree)).
 - **Two control ops are refused at the peer; entity writes are not.** A
-  `device_revoke` whose sender the ledger revokes is skipped by the fold —
-  **unless the only party to have revoked that sender is the very device the
-  row is about**, which is the gate's one exception and keeps two devices
-  revoking each other converging on *both* revocations instead of letting a
-  back-dated op silence its target
+  `device_revoke` whose sender is revoked **in the fold's own discounted view
+  of the ledger** is skipped
   (`crates/sunrise-core/src/engine/revocation.rs:1106-1116#refold_device_revocations`),
   one naming its own sender is refused at ingest
   (`crates/sunrise-core/src/engine/revocation.rs:1292#apply_device_revoke`), and
@@ -195,6 +192,25 @@ Revocation today is a **register plus a read bound**:
   recorded (`crates/sunrise-core/src/engine/sync.rs:705#apply_control_op`). That
   is [ADR-0041](./0041-peer-side-revocation-is-a-fold.md), and it reaches no
   entity write.
+
+  **That discounted view is not the ledger, and the gap between them is the
+  whole of what this record says here.** Two things separate them. The gate
+  forgives a sender whose *only* revoker is the very device its row is about,
+  which keeps two devices revoking each other converging on *both* revocations
+  instead of letting a back-dated op silence its target. And the discount pass
+  that builds the view
+  (`crates/sunrise-core/src/engine/revocation.rs:1040-1054#refold_device_revocations`)
+  drops a revoker `S` out of `V`'s set whenever the ledger holds a row revoking
+  `S` from a sender that is not `V`. So a device **the ledger revokes** can
+  still seat rows: `O` revokes `X`, `P` revokes `O`, `Q` revokes `P`, and `X`
+  goes on revoking third parties on every replica. No sentence of the form "a
+  revoked device can no longer revoke another device" holds here, and this
+  record states none. The residuals are stated operationally, with the tests
+  that pin them, at [ADR-0041 §What a user sees when an op is
+  refused](./0041-peer-side-revocation-is-a-fold.md#what-a-user-sees-when-an-op-is-refused),
+  item 4, and that text governs; what may be told to a user is held open by
+  [#248](https://github.com/justin13888/Sunrise/issues/248) and
+  [#252](https://github.com/justin13888/Sunrise/issues/252).
 
 ### Why re-adding a peer-side refusal is not free
 
