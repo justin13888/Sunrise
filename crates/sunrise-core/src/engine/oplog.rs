@@ -813,7 +813,7 @@ fn ops_run_end(
 /// `crates/sunrise-core/src/engine/revocation.rs:1352#apply_device_revoke`,
 /// `reason = "revoked_sender"`, and that one is not a refusal to record at
 /// all: the ledger row stands and the fold declines to believe it. A reader
-/// who greps `revoke_refused` finds two and should expect two.
+/// who wants every emitter of `revoke_refused` has both of them here.
 ///
 /// What is refused in the first case is a *register write* rather than the
 /// delivery: the op row went in before the control op was dispatched, so this
