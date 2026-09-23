@@ -475,7 +475,7 @@ extension AccountModel {
     /// bounds how late after that point the renewal starts. A look that is
     /// not due is one clock read and one comparison; thirty seconds is far
     /// inside the quarter of a token's life that is left when it comes due.
-    static let renewalCheckInterval: Duration = .seconds(30)
+    nonisolated static let renewalCheckInterval: Duration = .seconds(30)
 
     /// Renew the session for as long as the calling task runs.
     ///
@@ -497,7 +497,7 @@ extension AccountModel {
         issuer: @escaping @MainActor () -> String,
         clientID: @escaping @MainActor () -> String,
         now: @escaping @MainActor () async -> UInt64,
-        every interval: Duration = renewalCheckInterval,
+        every interval: Duration = AccountModel.renewalCheckInterval,
         sleep: @escaping (Duration) async throws -> Void = { try await _Concurrency.Task.sleep(for: $0) }
     ) async {
         while !_Concurrency.Task.isCancelled {

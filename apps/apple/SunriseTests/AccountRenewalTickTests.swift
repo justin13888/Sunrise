@@ -39,7 +39,7 @@ struct AccountRenewalTickTests {
             clientID: { "client" },
             now: { clock.nowMs },
             every: .seconds(1),
-            sleep: { try await clock.sleep($0) }
+            sleep: { try clock.sleep($0) }
         )
     }
 
