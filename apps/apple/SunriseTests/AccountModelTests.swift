@@ -234,8 +234,11 @@ struct AccountModelTests {
         #expect(account.state == .signedIn(expiresAtMs: 4_000))
     }
 
+    /// The bearer goes and the failure shows, but the refresh token stays: an
+    /// offline issuer and a refusal arrive as the same error, and a network
+    /// failure must not cost the user a browser sign-in.
     @Test
-    func anExpiredTokenThatCannotBeRenewedSignsOut() async {
+    func anExpiredTokenThatCannotBeRenewedKeepsItsRefreshToken() async {
         let store = StubCredentialStore(value: credentials(accessToken: "access-old"))
         let driver = StubLoginDriver(failure: StubLoginError())
         let account = model(store: store, driver: driver)
@@ -244,11 +247,10 @@ struct AccountModelTests {
         await account.refreshIfNeeded(issuer: "https://issuer.example", clientID: "c", nowMs: 4_001)
 
         #expect(account.accessToken == nil)
-        #expect(store.stored == nil)
-        #expect(
-            account.state == .failed("the issuer refused"),
-            "why the session ended was overwritten by the sign-out that followed it"
-        )
+        #expect(store.stored?.refreshToken == "refresh-1")
+        #expect(store.clearCount == 0)
+        #expect(account.state == .failed("the issuer refused"))
+        #expect(account.offersBareSignOut, "the .failed row's only other control opens the browser")
     }
 
     @Test

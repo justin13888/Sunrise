@@ -114,8 +114,16 @@ extension AccountModel {
     /// do not want to be told again; and unlike the row it replaces it does
     /// clear, because a sign-out that succeeds sets the residue to
     /// ``SignOutResidue/none`` and this with it.
+    ///
+    /// It also stands under a `.failed` that still holds a credential: an
+    /// expired session whose renewal failed keeps its refresh token so the
+    /// next tick can try again (see
+    /// ``refreshIfNeeded(issuer:clientID:nowMs:)``), and that row's only
+    /// other control is **Try again**, which opens the browser.
     var offersBareSignOut: Bool {
-        guard signOutRefusedThisSession, signOutDisclosure == .none else { return false }
+        guard signOutDisclosure == .none else { return false }
+        if case .failed = state, credentials != nil { return true }
+        guard signOutRefusedThisSession else { return false }
         switch state {
         // The two settled states. Not `.signedIn`, whose arm has a **Sign
         // out** already, and not `.awaitingBrowser`, where a login is in front

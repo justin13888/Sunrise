@@ -93,7 +93,7 @@ final class AccountModel {
     private let store: any CredentialStore
     private let makeDriver: @Sendable (String, String) -> any LoginDriver
     private let openURL: @Sendable (URL) -> Void
-    private var credentials: StoredCredentials?
+    private(set) var credentials: StoredCredentials?
 
     /// Whether the last look at the store was refused in a way that may have
     /// left a copy of the token somewhere **nobody read**.
@@ -371,20 +371,20 @@ final class AccountModel {
             // again. Dropping it here would sign the user out early, every
             // time the network blinked.
             //
-            // Nor is it one when a sign-out has already ended the session:
-            // `current` was captured at entry and that sign-out has already
-            // invalidated it, so without this guard a renewal failing in the
-            // background calls ``signOut()`` a SECOND time — a `store.clear()`
-            // nobody asked for, and on a refusal a fresh `.unread` re-arming
-            // the disclosure the user retired, with no user action behind it.
-            guard sessionGeneration == generation else { return }
-            if current.hasExpired(nowMs: nowMs) {
-                // `signOut()` assigns `.signedOut` last, so the renewal error
-                // has to be written after it or it is never shown. It used to
-                // be written first, which made this assignment dead.
-                signOut()
-                state = .failed(error.localizedDescription)
-            }
+            // A sign-out that landed meanwhile already chose the screen: `.failed`
+            // written over its `.signedOut` would report a session it ended.
+            guard sessionGeneration == generation, current.hasExpired(nowMs: nowMs) else { return }
+            // Expired and not renewed. The bearer goes, since the relay refuses
+            // it now anyway, but the refresh token stays, here and in the
+            // Keychain: the binding reports an unreachable issuer and a refusal
+            // as the same `BindingError.Login` string, and deleting the token on
+            // a network failure made every offline launch, and every Mac waking
+            // before its network, end in a browser sign-in. The next tick asks
+            // again and a success publishes as usual; until then
+            // ``offersBareSignOut`` keeps a **Sign out** on the `.failed` row.
+            // A login already in the browser keeps its spinner.
+            accessToken = nil
+            if state != .awaitingBrowser { state = .failed(error.localizedDescription) }
         }
     }
 
