@@ -810,10 +810,10 @@ fn ops_run_end(
 /// which refuses one naming its own sender — logging
 /// `core.device.revoke_refused` with `reason = "self"` — and writes no
 /// register row. That event has a second emitter at
-/// `crates/sunrise-core/src/engine/revocation.rs:1353#apply_device_revoke`,
-/// `reason = "revoked_sender"`, and that one is not a refusal to record at
-/// all: the ledger row stands and the fold declines to believe it. A reader
-/// who wants every emitter of `revoke_refused` has both of them here.
+/// `crates/sunrise-core/src/engine/revocation.rs:1364#apply_device_revoke`,
+/// `reason = "revoked_sender"`: the fold declines to believe the row. A third,
+/// `crates/sunrise-core/src/engine/revocation.rs:1346#apply_device_revoke`,
+/// `reason = "sender_over_cap"`, drops a pair past its sender's cap.
 ///
 /// What is refused in the first case is a *register write* rather than the
 /// delivery: the op row went in before the control op was dispatched, so this
