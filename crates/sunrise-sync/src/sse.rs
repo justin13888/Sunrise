@@ -112,8 +112,10 @@ const MAX_BLOB_BYTES: usize = 100 * 1000 * 1000;
 ///
 /// The alternative to expiring is not a slower read; it is no return at all. A
 /// stall is not a failure the body reports, and nothing above supplies a bound:
-/// there is no timeout on the client (see [`SseTransport::connect_with_bearer`]),
-/// and `crates/sunrise-core/src/sync_driver.rs:723` awaits the `Hello` send
+/// the client carries no timeout of its own (see
+/// [`SseTransport::connect_with_bearer`]), [`HEAD_TIMEOUT`] ends when the head
+/// arrives and so bounds none of the body, and
+/// `crates/sunrise-core/src/sync_driver.rs:723` awaits the `Hello` send
 /// bare, outside any `tokio::select!`. An unbounded read under that await parks
 /// the driver task with no error, no `SessionEnd::Disconnected`, no backoff and
 /// no log line. On the stream route the driver's `tokio::select!` *cancels*
@@ -191,6 +193,54 @@ const BODY_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2)
 /// it is a separate decision from this one.
 const BLOB_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
+/// How long this client will wait for a response **head** on every route but
+/// the chunk upload.
+///
+/// The body bounds above start only once a head has arrived, and until this
+/// bound nothing started before it: `self.client.request(request).await`
+/// resolves when the status line and headers arrive and not before, and the
+/// pinned `hyper-util` legacy client has no request or response timeout to
+/// set. A relay, proxy or captive portal that completes TLS and then sends
+/// nothing therefore parked the awaiting task for good. On the `Hello` route
+/// that task is the sync driver, which awaits the send bare
+/// (`crates/sunrise-core/src/sync_driver.rs:723`), so the symptom was silence:
+/// no error, no `SessionEnd::Disconnected`, no backoff and no log line.
+///
+/// A **total** bound, not an idle one, because a head is not a stream: it is
+/// one short document the relay writes once it has decided the answer. What it
+/// covers is everything before that — resolving the name, the TCP and TLS
+/// handshakes, writing the request, and the relay's own work — which is why it
+/// is not [`BODY_IDLE_TIMEOUT`]'s two seconds. A lost SYN alone is retried at
+/// 1 s, 3 s and 7 s on a lossy link, and two seconds would turn an ordinary
+/// mobile reconnect into a refused one.
+///
+/// Fifteen seconds for the reason [`BLOB_IDLE_TIMEOUT`] is: `KEEP_ALIVE_SECS`
+/// (`crates/sunrise-server/src/api/sync/stream.rs:31`) is the only value in
+/// this repository that says how long silence from the relay is normal, and
+/// a client that tolerates fifteen seconds of it on one route cannot call less
+/// a dead peer on another. It applies to the event stream's open too: the
+/// relay answers that head before it has anything to stream, so the head is a
+/// document there as everywhere, and the stream's own silence — which this
+/// bound never touches — begins after it.
+///
+/// A connect timeout on the connector is deliberately not added beside it.
+/// This bound already contains the connect, and a connect bound alone would
+/// not have fixed anything: the failure is a connection that succeeds and then
+/// says nothing.
+const HEAD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// How long this client will wait for the head of a **chunk upload's** reply.
+///
+/// The one route where the request, not the relay, is most of the wait. The
+/// head of a chunk `PUT` cannot arrive before the relay has read the whole
+/// chunk — up to `SEALED_CHUNK_LEN` (`crates/sunrise-crypto/src/blob_chunk.rs`),
+/// a quarter of a mebibyte of ciphertext — and stored it, so [`HEAD_TIMEOUT`]
+/// here is a throughput floor of roughly 140 kbit/s on the uplink, which a
+/// congested mobile connection does not always clear. Sixty seconds lowers
+/// that floor to about 35 kbit/s while still ending a silent relay's hold on
+/// the upload in a minute rather than never.
+const CHUNK_HEAD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// SSE + `POST` client transport over `http://` / `https://`.
 pub struct SseTransport {
     client: Client<
@@ -248,6 +298,12 @@ impl SseTransport {
     /// the `Hello` — `Backoff::reset`'s own precondition, "call after a
     /// successful operation" — so a relay that refuses it is retried on the
     /// published schedule rather than on its first step forever (#283).
+    ///
+    /// The client built here carries no timeout of its own, because the pinned
+    /// `hyper-util` legacy client has none to set; every bound this transport
+    /// has is stated per request instead — `HEAD_TIMEOUT` and
+    /// `CHUNK_HEAD_TIMEOUT` on the head, and `BODY_IDLE_TIMEOUT` and
+    /// `BLOB_IDLE_TIMEOUT` on the body.
     #[must_use]
     pub fn connect_with_bearer(base: &str, bearer: Option<&str>) -> Self {
         let https = hyper_rustls::HttpsConnectorBuilder::new()
@@ -365,12 +421,19 @@ impl SseTransport {
     /// try later" — being read under a hundred-megabyte cap and fifteen seconds
     /// of patience per frame, which is the upload route's own defect one status
     /// along.
+    ///
+    /// `head` is the caller's for the same reason, one await earlier: the
+    /// chunk upload's head waits on the chunk being sent and stored, and a
+    /// bodiless fetch's does not, so the upload waits [`CHUNK_HEAD_TIMEOUT`]
+    /// and the fetch waits [`HEAD_TIMEOUT`]. Unlike `cap` and `idle` it cannot
+    /// be chosen by status, because until it arrives there is no status.
     async fn call_bytes(
         &self,
         method: &str,
         path: &str,
         content_type: Option<&str>,
         body: &[u8],
+        head: std::time::Duration,
         cap: usize,
         idle: std::time::Duration,
     ) -> Result<Reply, TransportError> {
@@ -390,11 +453,7 @@ impl SseTransport {
             .body(Full::new(Bytes::copy_from_slice(body)))
             .map_err(|e| protocol(&e))?;
 
-        let response = self
-            .client
-            .request(request)
-            .await
-            .map_err(|e| TransportError::Unavailable(e.to_string()))?;
+        let response = await_head(self.client.request(request), head).await?;
         let status = response.status();
         let date = server_date(response.headers());
         // The status is already in hand, so the kind of body about to arrive is
@@ -443,11 +502,10 @@ impl SseTransport {
         }
         .map_err(|e| protocol(&e))?;
 
-        let response = self
-            .client
-            .request(request)
-            .await
-            .map_err(|e| TransportError::Unavailable(e.to_string()))?;
+        // Bounded for the reason the body read below is, one await earlier: a
+        // relay that completes TLS and never sends a status line would
+        // otherwise park the `Hello` send, and the driver with it.
+        let response = await_head(self.client.request(request), HEAD_TIMEOUT).await?;
         let status = response.status();
         let date = server_date(response.headers());
         // Every reply on this route is a small JSON document, so the event cap
@@ -537,11 +595,12 @@ impl SseTransport {
             .body(Full::new(Bytes::new()))
             .map_err(|e| protocol(&e))?;
 
-        let response = self
-            .client
-            .request(request)
-            .await
-            .map_err(|e| TransportError::Unavailable(e.to_string()))?;
+        // The head, not the stream: once it arrives the body is handed to
+        // `self.events` and read with no idle bound, deliberately (see
+        // [`BLOB_IDLE_TIMEOUT`]'s last paragraph). Without this a silent open
+        // was only ever cancelled by the driver's `tokio::select!`, never
+        // failed, so nothing reported it and no backoff engaged.
+        let response = await_head(self.client.request(request), HEAD_TIMEOUT).await?;
         if !response.status().is_success() {
             // A stream refusal is diagnosed from its status, its code and the
             // relay's `Date`, so the body is read rather than dropped: the
@@ -1081,6 +1140,9 @@ impl Transport for SseTransport {
                 &format!("/api/v1/blobs/{upload_id}/{chunk_idx}"),
                 Some("application/octet-stream"),
                 bytes,
+                // The head waits on the chunk arriving at the relay, so it
+                // gets the upload's own patience rather than a document's.
+                CHUNK_HEAD_TIMEOUT,
                 // The *request* carries a chunk; the *reply* is an ack, and
                 // these bounds are the reply's. An ack is an empty `204` or a
                 // short JSON document, so it is bounded exactly as every other
@@ -1156,6 +1218,8 @@ impl Transport for SseTransport {
                 &format!("/api/v1/blobs/blb_{}", hex::encode(blob_id)),
                 None,
                 &[],
+                // A bodiless `GET`: its head is a document like any other.
+                HEAD_TIMEOUT,
                 // The bounds on a *fetched attachment*, which is the one
                 // reply on this transport that is content rather than a
                 // document: [`MAX_BLOB_BYTES`] is the relay's own ceiling, and
@@ -1267,6 +1331,36 @@ where
         if let Ok(data) = frame.into_data() {
             out.extend_from_slice(&data);
         }
+    }
+}
+
+/// Await a response head, under a total deadline.
+///
+/// The one place this client waits for a head, for the reason [`read_body`] is
+/// the one place it reads a body: three routes dial, and a bound stated once
+/// per route is a bound one of them goes without. `bound` is a parameter
+/// because the chunk upload waits [`CHUNK_HEAD_TIMEOUT`] where every other
+/// route waits [`HEAD_TIMEOUT`].
+///
+/// Both failures are [`TransportError::Unavailable`], which is what the sync
+/// driver turns into a disconnect and a backoff: a relay that never answered
+/// is as unreachable as one that refused the connection. Dropping the pending
+/// request on expiry also drops its connection rather than returning it to
+/// the pool, so the next attempt dials afresh instead of inheriting the peer
+/// that went quiet.
+async fn await_head<F, B, E>(
+    pending: F,
+    bound: std::time::Duration,
+) -> Result<hyper::Response<B>, TransportError>
+where
+    F: std::future::Future<Output = Result<hyper::Response<B>, E>>,
+    E: std::fmt::Display,
+{
+    match tokio::time::timeout(bound, pending).await {
+        Ok(response) => response.map_err(|e| TransportError::Unavailable(e.to_string())),
+        Err(_) => Err(TransportError::Unavailable(format!(
+            "no response head within {bound:?}"
+        ))),
     }
 }
 
@@ -2330,6 +2424,97 @@ mod tests {
             "the route that carries content waits longer than the routes that carry documents"
         );
         assert_eq!(super::MAX_BLOB_BYTES, 100 * 1000 * 1000);
+    }
+
+    /// The head bounds are pinned for the reason the body bounds are: every
+    /// relay-backed case below that spends one does so in real wall clock, so
+    /// the values themselves are asserted here rather than inferred from a
+    /// timing window.
+    ///
+    /// The ordering is the half that states a decision. A chunk upload's head
+    /// cannot arrive before the chunk has been sent, so the route whose
+    /// request carries a quarter of a mebibyte waits longer than the routes
+    /// whose requests carry a document — and neither head bound is the body's
+    /// two seconds, which would refuse an ordinary slow connect.
+    #[test]
+    fn the_head_bounds_are_the_numbers_they_are_documented_as() {
+        assert_eq!(super::HEAD_TIMEOUT, std::time::Duration::from_secs(15));
+        assert_eq!(
+            super::CHUNK_HEAD_TIMEOUT,
+            std::time::Duration::from_secs(60)
+        );
+        assert!(
+            super::CHUNK_HEAD_TIMEOUT > super::HEAD_TIMEOUT,
+            "the route whose request is a chunk waits longer for its head"
+        );
+        assert!(
+            super::HEAD_TIMEOUT > super::BODY_IDLE_TIMEOUT,
+            "a head bound contains the connect, which the body's idle bound never does"
+        );
+    }
+
+    /// A head that never comes is reported on the bound, and names it.
+    ///
+    /// The mechanism, in milliseconds, against a future that never resolves —
+    /// which is exactly what `Client::request` is while a peer that finished
+    /// TLS says nothing. The relay-backed case further down proves the wiring
+    /// on the handshake route at the shipped value; this one proves the bound
+    /// is the one it was given rather than some other, from both sides.
+    #[tokio::test]
+    async fn a_head_that_never_comes_is_reported_on_its_own_bound() {
+        let bound = std::time::Duration::from_millis(200);
+        let started = tokio::time::Instant::now();
+        let err = super::await_head(
+            std::future::pending::<Result<hyper::Response<()>, std::convert::Infallible>>(),
+            bound,
+        )
+        .await
+        .expect_err("a head that never arrived is not a response");
+        let elapsed = started.elapsed();
+
+        assert!(
+            matches!(&err, TransportError::Unavailable(m) if m == "no response head within 200ms"),
+            "unavailable, which the driver turns into a disconnect and a backoff, and naming \
+             the bound that ran: {err}"
+        );
+        assert!(
+            elapsed >= bound && elapsed < std::time::Duration::from_secs(5),
+            "it came back on the bound it was given: {elapsed:?}"
+        );
+    }
+
+    /// A head that does come is passed through untouched, and a failed dial
+    /// is still reported as the failure it was.
+    ///
+    /// The two arms the deadline must not disturb: wrapping the request must
+    /// not turn a prompt answer into a refusal, nor a refused connection into
+    /// a timeout the caller would misreport.
+    #[tokio::test]
+    async fn a_head_that_comes_or_a_dial_that_fails_is_reported_as_itself() {
+        let bound = std::time::Duration::from_secs(5);
+        let response = super::await_head(
+            std::future::ready(Ok::<_, std::convert::Infallible>(
+                hyper::Response::builder()
+                    .status(204)
+                    .body(())
+                    .expect("a response"),
+            )),
+            bound,
+        )
+        .await
+        .expect("a head that arrived in time is the response");
+        assert_eq!(response.status(), hyper::StatusCode::NO_CONTENT);
+
+        let err = super::await_head(
+            std::future::ready(Err::<hyper::Response<()>, _>("connection refused")),
+            bound,
+        )
+        .await
+        .expect_err("a dial that failed is not a response");
+        assert!(
+            matches!(&err, TransportError::Unavailable(m) if m == "connection refused"),
+            "the dial's own error, not a deadline it never reached: {err}"
+        );
     }
 
     /// The cap is a ceiling, not a limit one byte lower — and what it refuses
@@ -4007,6 +4192,67 @@ mod tests {
         assert!(
             t.session.is_none(),
             "no session is recorded out of a reply that never arrived"
+        );
+    }
+
+    /// A handshake whose reply never *starts* is reported rather than waited on
+    /// for good.
+    ///
+    /// The case above, one await earlier. There the head arrived and the body
+    /// stalled; here the peer accepts the connection and then sends nothing at
+    /// all — no status line — which is what a relay, forward proxy or captive
+    /// portal that completes the handshake and then goes quiet looks like from
+    /// this side. The body bound never starts, because there is no body, and
+    /// before [`super::HEAD_TIMEOUT`] nothing else did either: the `Hello` send
+    /// parked the driver with silence as its only symptom.
+    ///
+    /// The peer holds every connection it accepts and reads nothing, so the
+    /// request sits in the socket buffer and the client is left waiting on the
+    /// head alone. It spends [`super::HEAD_TIMEOUT`] of real wall clock, for the
+    /// reason [`a_stalled_blob_fetch_is_reported_rather_than_parking_the_caller`]
+    /// spends its fifteen seconds; the mechanism is pinned in milliseconds by
+    /// `a_head_that_never_comes_is_reported_on_its_own_bound`.
+    #[tokio::test]
+    async fn a_handshake_whose_reply_never_starts_is_reported_rather_than_parking_the_driver() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("a loopback port");
+        let base = format!(
+            "http://{}",
+            listener.local_addr().expect("the bound address")
+        );
+        let silent = tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((stream, _)) = listener.accept().await {
+                held.push(stream);
+            }
+        });
+        let mut t = SseTransport::connect(&base).with_device_signer(signer(NOW_MS));
+
+        let started = tokio::time::Instant::now();
+        let err = tokio::time::timeout(
+            std::time::Duration::from_secs(60),
+            t.send_frame(hello_frame()),
+        )
+        .await
+        .expect("the wait is bounded by the client, not by this harness")
+        .expect_err("the peer never answered");
+        silent.abort();
+
+        assert!(
+            matches!(&err, TransportError::Unavailable(m) if m == "no response head within 15s"),
+            "a silent peer is reported as unavailable, which is what the driver turns into a \
+             disconnect and a backoff, and the diagnostic names the head bound that ran: {err}"
+        );
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed >= std::time::Duration::from_secs(11)
+                && elapsed < std::time::Duration::from_secs(30),
+            "it came back on the head bound, and on that bound's own value: {elapsed:?}"
+        );
+        assert!(
+            t.session.is_none(),
+            "no session is recorded out of a reply that never began"
         );
     }
 

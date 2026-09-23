@@ -202,15 +202,14 @@ struct AccountDiscardTests {
         #expect(store.stored == nil, "the Keychain let go when they asked, and stays empty")
     }
 
-    /// The other `catch`, where the same shape is worse in kind: it does not
-    /// only write, it calls ``AccountModel/signOut()`` a second time.
+    /// The other `catch`. It once called ``AccountModel/signOut()`` on an
+    /// expired token, and so a second time after the user's own sign-out: a
+    /// `store.clear()` nobody asked for, re-arming a retired disclosure. It no
+    /// longer signs out at all, but it still writes `.failed`, and the guard
+    /// keeps that write off the `.signedOut` the user chose.
     ///
     /// `hasExpired` is tested against the credential captured at entry, which a
-    /// concurrent sign-out has already invalidated. Unguarded, a renewal that
-    /// fails on the network after that sign-out runs `store.clear()` again —
-    /// nobody asked for it, and under a lock that refuses it the refusal is
-    /// fresh, re-arming from the top a disclosure the user may have retired,
-    /// from a background event with no user action behind it.
+    /// concurrent sign-out has already invalidated.
     @Test
     func aRenewalFailingAfterASignOutDoesNotSignTheUserOutAgain() async {
         let probe = ParkedProbe()
