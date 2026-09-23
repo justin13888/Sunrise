@@ -16559,3 +16559,138 @@ fn an_unwound_device_is_not_on_the_next_identity_rotations_roster() {
          register would carry C, and C would hold a share of the successor ID_S_priv"
     );
 }
+
+/// Read `devices.(cert_blob, d_d_pub, identity_id)` for one device.
+fn device_key_row(db: &Db, id: &[u8; 16]) -> (Vec<u8>, Option<Vec<u8>>, Vec<u8>) {
+    db.conn()
+        .query_row(
+            "SELECT cert_blob, d_d_pub, identity_id FROM devices WHERE device_id = ?",
+            params![&id[..]],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap()
+}
+
+/// **#281.** A device's own republish cannot rebind its `d_d_pub`.
+///
+/// `a_device_cannot_publish_a_cert_naming_another_device` stops a *sibling*
+/// redirecting C's envelopes; it does not stop C's own id doing it, because
+/// `device_id` is derived from `D_S_pub` alone. A holder of `ID_S_priv` and
+/// C's `D_S_priv` can mint a cert for C's id under a fresh `D_D_pub`, and
+/// before this the upsert took it and the backfill on the next line sealed
+/// every held epoch to the new key.
+#[test]
+fn a_republished_cert_cannot_rebind_the_device_key() {
+    let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let ec = engine_seeded(ROOT, [3u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut dbb = db_root(ROOT);
+    trust(&eb, &mut dbb, &ec);
+    let c_id = ec.keychain.device_id();
+    let before = device_key_row(&dbb, &c_id);
+    let ops_before = op_count(&dbb);
+
+    let rebound = ec
+        .keychain
+        .issue_cert_for(
+            c_id,
+            ec.keychain.device_signing_pub(),
+            [0x42; 32],
+            "device",
+            "macos",
+            T0,
+        )
+        .expect("issue the rebinding cert");
+    apply_control_at(
+        &eb,
+        &mut dbb,
+        &InnerOp::DeviceCertPublish(rebound),
+        &c_id,
+        Hlc::at(T0),
+        1,
+    );
+
+    assert_eq!(
+        device_key_row(&dbb, &c_id),
+        before,
+        "the whole cert is refused, so cert_blob and d_d_pub still agree"
+    );
+    assert_eq!(
+        before.1.as_deref(),
+        Some(&ec.keychain.device_dh_pub()[..]),
+        "and C's envelopes are still sealed to C's own key"
+    );
+    assert_eq!(op_count(&dbb), ops_before, "and nothing was backfilled");
+
+    // The honest republish, same key, still lands.
+    trust_at(&eb, &mut dbb, &ec, T0 + 1);
+    assert_eq!(device_key_row(&dbb, &c_id).1, before.1);
+}
+
+/// A NULL `d_d_pub` is filled rather than refused: that is the legacy-adoption
+/// row, and filling it is what `DeviceCertPublish` is for.
+#[test]
+fn a_cert_fills_a_null_device_key() {
+    let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let ec = engine_seeded(ROOT, [3u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut dbb = db_root(ROOT);
+    trust(&eb, &mut dbb, &ec);
+    let c_id = ec.keychain.device_id();
+    dbb.conn()
+        .execute(
+            "UPDATE devices SET d_d_pub = NULL WHERE device_id = ?",
+            params![&c_id[..]],
+        )
+        .unwrap();
+
+    trust_at(&eb, &mut dbb, &ec, T0 + 1);
+    assert_eq!(
+        device_key_row(&dbb, &c_id).1.as_deref(),
+        Some(&ec.keychain.device_dh_pub()[..])
+    );
+}
+
+/// The roster is the other upsert of `d_d_pub`, and it holds the same rule: an
+/// entry carrying a different key for a device this vault holds is skipped,
+/// which leaves the device on its old row exactly as an omission would.
+#[test]
+fn a_roster_entry_cannot_rebind_the_device_key() {
+    let ea = engine_random_keys(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eb = engine_random_keys(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut dba = db_root(ROOT);
+    trust(&ea, &mut dba, &eb);
+    let b_id = eb.keychain.device_id();
+    let before = device_key_row(&dba, &b_id);
+
+    let successor = ea.keychain.mint_successor_identity(&SystemRng);
+    let entry = |d_d_pub: [u8; 32]| RosterEntry {
+        cert: Keychain::issue_roster_cert(
+            &successor,
+            b_id,
+            eb.keychain.device_signing_pub(),
+            d_d_pub,
+            "device",
+            "test",
+            T0,
+        )
+        .expect("roster cert"),
+    };
+    let to = successor.identity_id();
+
+    dba.with_tx(|tx| ea.apply_roster(tx, &[entry([0x42; 32])], &to))
+        .unwrap();
+    assert_eq!(
+        device_key_row(&dba, &b_id),
+        before,
+        "a rebinding entry moves nothing"
+    );
+
+    dba.with_tx(|tx| ea.apply_roster(tx, &[entry(eb.keychain.device_dh_pub())], &to))
+        .unwrap();
+    let after = device_key_row(&dba, &b_id);
+    assert_eq!(after.1, before.1);
+    assert_eq!(
+        after.2,
+        to.to_vec(),
+        "an honest entry still moves the device"
+    );
+}
