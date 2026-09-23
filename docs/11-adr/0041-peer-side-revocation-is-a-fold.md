@@ -623,10 +623,14 @@ discount has to guess at. Taken.
   and the device doing the minting is, necessarily, the revoked one. It wrote
   each fresh key into its own `stream_keys` and sealed it to every honest peer,
   whose next writes were then readable by it. `Command::RevokeDevice` guards the
-  rotation on the same `effective` predicate as the relay intent. This closes
-  one route and not the mechanism: `Command::RotateStreamKey` reaches the same
-  mint-and-distribute chain with no gate of any kind, and
-  `Keychain::absorb_stream_key` checks no sender standing.
+  rotation on the same `effective` predicate as the relay intent.
+  `Command::RotateStreamKey` reaches the same mint-and-distribute chain one
+  stream at a time, and refuses outright when the local register calls this
+  device revoked ([#279](https://github.com/justin13888/Sunrise/issues/279)) —
+  the local "refuse if revoked" guard §Decision 3 declines for
+  `RevokeDevice`, taken here because rotating a key is no recovery path. Both
+  guards are local, and `Keychain::absorb_stream_key` still checks no sender
+  standing, so a replica that has not applied the revocation is not covered.
 - **An upgraded vault folds *from* what it already held, and not necessarily
   back to it.** 0027 seeds the ledger from the register, and what the seed
   preserves is the fold's **input**, not its output. It folds back to the same

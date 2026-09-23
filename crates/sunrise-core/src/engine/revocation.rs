@@ -364,9 +364,10 @@ impl Engine {
             // re-revocation of a device the account has cut, and rotating
             // again is harmless and keeps the command's meaning uniform.
             //
-            // This closes one route and not the mechanism:
-            // `Command::RotateStreamKey` reaches the same
-            // mint-and-distribute chain with no gate at all.
+            // `Command::RotateStreamKey` reaches the same mint-and-distribute
+            // chain one stream at a time, and is gated on this device's own
+            // standing in `rotate_stream_key` — there as a plain refusal,
+            // because it has no recovery path to keep open.
             if effective {
                 let set = self.keychain.rotation_set(tx)?;
                 unrotatable = set.unrotatable;
@@ -852,20 +853,20 @@ impl Engine {
     /// *authenticated* device and not a value the op chose. Neither this
     /// function nor `apply_device_revoke` checks that, and neither could: the
     /// column is written from `env.device_id`
-    /// (`crates/sunrise-core/src/engine/sync.rs:745`), and what binds that id to
+    /// (`crates/sunrise-core/src/engine/sync.rs:348`), and what binds that id to
     /// a key lives in the sync path and in `sunrise-crypto`. Cited rather than
     /// assumed, because it is the load-bearing bound of this whole function and
     /// it is enforced in another module:
     ///
-    /// - `crates/sunrise-core/src/engine/sync.rs:211-217` resolves the signing
+    /// - `crates/sunrise-core/src/engine/sync.rs:247-253` resolves the signing
     ///   key **by** `env.device_id` — the cert stored under that id, or, for a
     ///   device publishing its first cert,
     ///   [`Self::self_authenticating_signer`].
-    /// - `crates/sunrise-core/src/engine/sync.rs:221` verifies the envelope
+    /// - `crates/sunrise-core/src/engine/sync.rs:257` verifies the envelope
     ///   under that key before the op is decrypted or applied, and
     ///   `crates/sunrise-crypto/src/op_envelope.rs:491-497` is the check
     ///   itself: an Ed25519 verify over the envelope's own signed bytes.
-    /// - `crates/sunrise-core/src/engine/sync.rs:375` closes the
+    /// - `crates/sunrise-core/src/engine/sync.rs:411` closes the
     ///   self-authenticating half, refusing a published cert whose
     ///   `body.device_id` is not `env.device_id` — so a device cannot present
     ///   another device's cert and author rows under its id.
