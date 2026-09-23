@@ -941,6 +941,31 @@ impl Engine {
             let Ok(cert) = DeviceCert::from_cbor(&entry.cert) else {
                 continue;
             };
+            // The same set-once rule `DeviceCertPublish` applies to `d_d_pub`
+            // (#281). An honest roster copies each survivor's stored `D_D_pub`
+            // into its re-issued cert, so a different one here is a holder of
+            // the outgoing `ID_S_priv` redirecting that device's envelopes.
+            // The entry is skipped, which is what an omission from the roster
+            // already means: the device keeps its old row and is not current.
+            let stored_d_d: Option<Option<Vec<u8>>> = tx
+                .query_row(
+                    "SELECT d_d_pub FROM devices WHERE device_id = ?",
+                    params![&cert.body.device_id[..]],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if let Some(Some(stored)) = stored_d_d {
+                if stored.as_slice() != cert.body.d_d_pub.as_slice() {
+                    tracing::warn!(
+                        ev = "core.identity.roster_entry_rejected",
+                        reason = "rebinds_key",
+                        subject_h = hex_short(&cert.body.device_id),
+                        "a roster entry carries a different D_D_pub than the one this \
+                         vault already holds for that device; the device was not moved"
+                    );
+                    continue;
+                }
+            }
             tx.execute(
                 "INSERT INTO devices
                  (device_id, cert_blob, nickname, platform, created_at_ms,
@@ -951,7 +976,7 @@ impl Engine {
                     nickname = excluded.nickname,
                     platform = excluded.platform,
                     identity_id = excluded.identity_id,
-                    d_d_pub = excluded.d_d_pub",
+                    d_d_pub = COALESCE(devices.d_d_pub, excluded.d_d_pub)",
                 params![
                     &cert.body.device_id[..],
                     entry.cert,
