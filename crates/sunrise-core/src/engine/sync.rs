@@ -847,6 +847,40 @@ impl Engine {
                          retired; the device is recorded but confers no membership"
                     );
                 }
+                // A device's `D_D` is minted once and never replaced
+                // (`docs/03-crypto/key-rotation.md` §Device key rotation), and
+                // `device_id` is derived from `D_S_pub` alone, so the id does
+                // not pin `d_d_pub` by itself. A second cert that verifies for
+                // an id this vault already holds with a *different* `d_d_pub`
+                // is therefore no rotation anybody performs: it is a holder of
+                // `ID_S_priv` and the device's `D_S_priv` redirecting where
+                // that device's `key_envelope`s are sealed, and the backfill
+                // below would hand every held epoch to the new key at once
+                // ([#281](https://github.com/justin13888/Sunrise/issues/281)).
+                // The whole cert is refused rather than half-applied, so
+                // `cert_blob` and the `d_d_pub` column never disagree. A NULL
+                // column is filled, not rebound: that is the legacy-adoption
+                // row `Keychain::adopt_legacy_vault` describes, and filling it
+                // is what this arm exists to do.
+                let stored_d_d: Option<Option<Vec<u8>>> = tx
+                    .query_row(
+                        "SELECT d_d_pub FROM devices WHERE device_id = ?",
+                        params![&cert.body.device_id[..]],
+                        |r| r.get(0),
+                    )
+                    .optional()?;
+                if let Some(Some(stored)) = stored_d_d {
+                    if stored.as_slice() != cert.body.d_d_pub.as_slice() {
+                        tracing::warn!(
+                            ev = "core.device.cert_rejected",
+                            reason = "rebinds_key",
+                            sender_h = hex_short(sender),
+                            "a published device cert carries a different D_D_pub \
+                             than the one this vault already holds for that device"
+                        );
+                        return Ok(Vec::new());
+                    }
+                }
                 // A device id nobody has seen before, appearing in an
                 // account that has revoked something, is the observable
                 // signature of the one bypass revocation does not close: a
@@ -919,7 +953,10 @@ impl Engine {
                 // leaves it alone: `readmission` is false whenever the row
                 // already exists (`known` is true), so carrying `excluded`'s
                 // value across would let a device clear its own mark by
-                // re-publishing its certificate.
+                // re-publishing its certificate. `d_d_pub` is held the same
+                // way: the check above refuses a different key, and the
+                // `COALESCE` keeps the column set-once even if that check is
+                // ever moved.
                 tx.execute(
                     "INSERT INTO devices
                      (device_id, cert_blob, nickname, platform, created_at_ms,
@@ -930,7 +967,7 @@ impl Engine {
                         nickname = excluded.nickname,
                         platform = excluded.platform,
                         identity_id = excluded.identity_id,
-                        d_d_pub = excluded.d_d_pub",
+                        d_d_pub = COALESCE(devices.d_d_pub, excluded.d_d_pub)",
                     params![
                         &cert.body.device_id[..],
                         cert_cbor,
