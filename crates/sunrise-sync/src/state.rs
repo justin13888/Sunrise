@@ -15,7 +15,8 @@
 //! Any connected state ──terminal Close──> Stopped ──new credential──> Disconnected
 //! ```
 //!
-//! A terminal `Close` is one whose code `ClosePayload::is_recoverable` rejects.
+//! A terminal `Close` is one whose code is not `retryable` in
+//! `crates/sunrise-error/codes.toml`.
 //!
 //! The transitions themselves are driven by `sunrise-core::sync_driver`,
 //! which owns the connection lifecycle; this module only names the states so

@@ -51,8 +51,8 @@ Sync moves encrypted ops between devices that participate in the same identity (
 
 Two states sit outside the diagram. `Degraded` is connected but told by the
 relay that ops it can no longer supply are missing. `Stopped` follows a relay
-`Close` the client cannot recover from on its own (`AUTH_DEVICE_REVOKED`,
-`RELAY_STORAGE_UNAVAILABLE`, or a code it cannot read): unlike `Disconnected`
+`Close` whose code the error catalogue marks not retryable (`AUTH_DEVICE_REVOKED`,
+`AUTH_TOKEN_INVALID`, or a code it cannot read): unlike `Disconnected`
 it does not retry, and leaves only when the credential is replaced or the app
 restarts. `crates/sunrise-sync/src/state.rs` is the authority for the set.
 

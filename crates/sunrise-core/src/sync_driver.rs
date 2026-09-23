@@ -76,7 +76,7 @@ use crate::core::Core;
 use crate::engine::hex_short;
 use crate::events::{DomainEvent, SyncStatus};
 use sunrise_cbor::version::{CRYPTO_SUITE_V, DOC_SCHEMA_FLOOR, DOC_SCHEMA_V, WIRE_PROTO_V};
-use sunrise_error::ErrorCode;
+use sunrise_error::{ErrorCode, ErrorKind};
 use sunrise_id::EntityKind;
 use sunrise_sync::{Backoff, RevokeOutcome, SyncState, Transport, TransportError};
 
@@ -426,9 +426,10 @@ enum SessionEnd {
     /// code reaches `sync.session.error` instead of being discarded with the
     /// error that carried it.
     Refused { code: &'static str, message: String },
-    /// The relay sent a `Close`. [`ClosePayload::is_recoverable`] decides what
-    /// happens next: a recoverable close reconnects after backoff, a terminal
-    /// one parks the driver in [`SyncState::Stopped`].
+    /// The relay sent a `Close`. The code's catalogue `retryable` flag decides
+    /// what happens next: a retryable close reconnects after backoff, any
+    /// other parks the driver in [`SyncState::Stopped`]. See
+    /// [`SessionEnd::is_terminal`].
     Closed(ClosePayload),
 }
 
@@ -454,8 +455,19 @@ impl SessionEnd {
     }
 
     /// Whether this end must stop the driver reconnecting until the user acts.
+    ///
+    /// A close is terminal exactly when its code is not `retryable` in
+    /// `crates/sunrise-error/codes.toml` ([`ErrorCode::retryable`]). That is
+    /// the question the driver is asking — will reconnecting help? — and it
+    /// is not the one [`ClosePayload::is_recoverable`] answers, which is
+    /// whether the client can repair its *credential* on its own. The two
+    /// differ at `RELAY_STORAGE_UNAVAILABLE`: a failed durable-log read on the
+    /// relay, `transient` and `retryable` in the catalogue and logged that
+    /// way by the relay that sends the close. Parking on it would strand every
+    /// device that opened a stream during the fault until its user signed in
+    /// again, for a condition that fixes itself.
     fn is_terminal(&self) -> bool {
-        matches!(self, Self::Closed(close) if !close.is_recoverable())
+        matches!(self, Self::Closed(close) if !close.code.retryable())
     }
 
     /// The state the driver is in once this session is over.
@@ -856,9 +868,7 @@ fn log_session_end(end: &SessionEnd) {
         SessionEnd::Shutdown => ("ok", None),
         SessionEnd::Disconnected => ("failed", None),
         SessionEnd::Refused { code, .. } => ("failed", Some(*code)),
-        SessionEnd::Closed(close) if !close.is_recoverable() => {
-            ("stopped", Some(close.code.as_str()))
-        }
+        SessionEnd::Closed(close) if end.is_terminal() => ("stopped", Some(close.code.as_str())),
         SessionEnd::Closed(close) => ("failed", Some(close.code.as_str())),
     };
     tracing::info!(
@@ -893,10 +903,12 @@ fn log_session_end(end: &SessionEnd) {
             cause = %message,
             "relay refused the event stream"
         ),
-        SessionEnd::Closed(close) if close.is_recoverable() => tracing::warn!(
+        // `err_kind` and `retryable` are the catalogue's for the relay's code,
+        // so this line agrees with the relay's own log of the same close.
+        SessionEnd::Closed(close) if !end.is_terminal() => tracing::warn!(
             ev = "sync.session.error",
             err_code = close.code.as_str(),
-            err_kind = "transient",
+            err_kind = error_kind_str(close.code.default_kind()),
             retryable = true,
             result = "failed",
             cause = %close.reason,
@@ -905,12 +917,22 @@ fn log_session_end(end: &SessionEnd) {
         SessionEnd::Closed(close) => tracing::warn!(
             ev = "sync.session.error",
             err_code = close.code.as_str(),
-            err_kind = "permanent",
+            err_kind = error_kind_str(close.code.default_kind()),
             retryable = false,
             result = "stopped",
             cause = %close.reason,
             "relay closed the session for a reason reconnecting cannot fix; waiting for a new credential"
         ),
+    }
+}
+
+/// The `err_kind` log value for `kind`, spelled as `codes.toml` spells it.
+const fn error_kind_str(kind: ErrorKind) -> &'static str {
+    match kind {
+        ErrorKind::Transient => "transient",
+        ErrorKind::Permanent => "permanent",
+        ErrorKind::User => "user",
+        ErrorKind::Internal => "internal",
     }
 }
 
@@ -3179,9 +3201,19 @@ mod tests {
         /// the session-end tests below read.
         err_code: Option<String>,
         result: Option<String>,
+        /// `sync.session.error`'s `err_kind` and `retryable`, which must agree
+        /// with the catalogue entry for its `err_code`.
+        err_kind: Option<String>,
+        retryable: Option<bool>,
     }
 
     impl tracing::field::Visit for LoggedEvent {
+        fn record_bool(&mut self, field: &tracing::field::Field, value: bool) {
+            if field.name() == "retryable" {
+                self.retryable = Some(value);
+            }
+        }
+
         fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
             match field.name() {
                 "to_v" => self.to_v = Some(value),
@@ -3196,6 +3228,7 @@ mod tests {
                 "ev" => self.ev = Some(value.to_string()),
                 "err_code" => self.err_code = Some(value.to_string()),
                 "result" => self.result = Some(value.to_string()),
+                "err_kind" => self.err_kind = Some(value.to_string()),
                 _ => {}
             }
         }
@@ -4667,10 +4700,11 @@ mod tests {
 
     /// The mapping itself, against the codes the relay's stream closes with
     /// (`AUTH_TOKEN_EXPIRED`, `AUTH_DEVICE_REVOKED`,
-    /// `RELAY_STORAGE_UNAVAILABLE`) and the one the transport substitutes for
-    /// a code it cannot read.
+    /// `RELAY_STORAGE_UNAVAILABLE`), `AUTH_TOKEN_INVALID`, and the one the
+    /// transport substitutes for a code it cannot read. A close parks the
+    /// driver exactly when the catalogue says retrying will not help.
     #[test]
-    fn only_an_expired_token_close_is_recoverable() {
+    fn only_a_non_retryable_close_is_terminal() {
         let end_for = |code| {
             let Ok(Some(frame)) = close_frame(code) else {
                 unreachable!()
@@ -4678,10 +4712,18 @@ mod tests {
             let (_, payload) = decode_frame(&frame).unwrap();
             SessionEnd::from_close(&payload)
         };
-        assert!(!end_for(ErrorCode::AuthTokenExpired).is_terminal());
+        for code in [
+            ErrorCode::AuthTokenExpired,
+            ErrorCode::RelayStorageUnavailable,
+        ] {
+            assert!(
+                !end_for(code).is_terminal(),
+                "{code} is retryable and must reconnect"
+            );
+        }
         for code in [
             ErrorCode::AuthDeviceRevoked,
-            ErrorCode::RelayStorageUnavailable,
+            ErrorCode::AuthTokenInvalid,
             ErrorCode::InternalUnknownCode,
         ] {
             assert!(end_for(code).is_terminal(), "{code} must stop the driver");
@@ -4712,6 +4754,15 @@ mod tests {
     /// the virtual hour below instead of none. The second session closes
     /// before its handshake completes, which is the handshake's own `Close`
     /// arm, and must stop the driver too.
+    ///
+    /// The third session is the one that answers its handshake, and it is
+    /// there for the renewal the park consumed. `park_until_renewed` moves the
+    /// driver's watch handle to the new version, so the next connect's mark
+    /// finds nothing outstanding; only `run` carrying that version forward as
+    /// `marked_at_connect` makes the handshake report it. Drop the carry and
+    /// `sync.credential.marked_at_connect` never appears. The second session
+    /// never handshakes, so it must leave the mark outstanding rather than
+    /// report it, and the third reports the version it actually presented.
     #[tokio::test(start_paused = true)]
     async fn a_terminal_close_parks_the_driver_until_the_credential_is_replaced() {
         let dir = tempfile::tempdir().unwrap();
@@ -4731,7 +4782,8 @@ mod tests {
         );
         let (factory, connects) = scripted(vec![
             vec![hello_ack(), close_frame(ErrorCode::AuthDeviceRevoked)],
-            vec![close_frame(ErrorCode::RelayStorageUnavailable)],
+            vec![close_frame(ErrorCode::AuthTokenInvalid)],
+            vec![hello_ack(), close_frame(ErrorCode::AuthDeviceRevoked)],
         ]);
         let (shared, log, _rx, driver) = drive(&core, factory);
         let n = || connects.load(AtomicOrdering::SeqCst);
@@ -4757,6 +4809,13 @@ mod tests {
             "and it stops again when that session is refused too"
         );
 
+        credential.set(Some("third-token".into()));
+        until("the reconnect the third credential buys", || n() == 3).await;
+        until("the third terminal close", || {
+            shared.current_state() == SyncState::Stopped
+        })
+        .await;
+
         shared.request_shutdown();
         timeout(Duration::from_secs(60), driver)
             .await
@@ -4767,26 +4826,43 @@ mod tests {
             fields_of(&log, "sync.session.closed"),
             vec![
                 named("stopped", Some(ErrorCode::AuthDeviceRevoked)),
-                named("stopped", Some(ErrorCode::RelayStorageUnavailable)),
+                named("stopped", Some(ErrorCode::AuthTokenInvalid)),
+                named("stopped", Some(ErrorCode::AuthDeviceRevoked)),
             ]
         );
-        let resumed: Vec<Option<u64>> = log
+        // The credential events in order, with the version each names.
+        let credential_events: Vec<(String, Option<u64>)> = log
             .0
             .lock()
             .iter()
-            .filter(|e| e.ev.as_deref() == Some("sync.session.resumed"))
-            .map(|e| e.to_v)
+            .filter_map(|e| match e.ev.as_deref() {
+                Some(ev @ ("sync.session.resumed" | MARKED_AT_CONNECT)) => {
+                    Some((ev.to_owned(), e.to_v))
+                }
+                _ => None,
+            })
             .collect();
         assert_eq!(
-            resumed,
-            vec![Some(1)],
-            "one resume, naming the new credential"
+            credential_events,
+            vec![
+                ("sync.session.resumed".to_owned(), Some(1)),
+                ("sync.session.resumed".to_owned(), Some(2)),
+                (MARKED_AT_CONNECT.to_owned(), Some(2)),
+            ],
+            "each resume names its credential, the unanswered second session \
+             reports nothing, and the answered third reports the renewal the \
+             park consumed"
         );
         core.shutdown().await;
     }
 
-    /// Driver-level: a recoverable close reconnects, and so does a close
-    /// whose payload does not decode. Neither may ever read as `Stopped`.
+    /// Driver-level: a retryable close reconnects, and so does a close
+    /// whose payload does not decode. None may ever read as `Stopped`.
+    ///
+    /// `RELAY_STORAGE_UNAVAILABLE` is in the set because the relay sends it
+    /// for a failed durable-log read and logs it `transient`/`retryable`
+    /// itself: a driver that parked on it would strand every device that
+    /// opened a stream during the fault until its user signed in again.
     #[tokio::test(start_paused = true)]
     async fn a_recoverable_close_reconnects_and_names_its_code() {
         let dir = tempfile::tempdir().unwrap();
@@ -4797,11 +4873,12 @@ mod tests {
         let (factory, connects) = scripted(vec![
             vec![hello_ack(), close_frame(ErrorCode::AuthTokenExpired)],
             vec![hello_ack(), garbage],
+            vec![hello_ack(), close_frame(ErrorCode::RelayStorageUnavailable)],
         ]);
         let (shared, log, mut rx, driver) = drive(&core, factory);
 
-        until("two reconnects", || {
-            connects.load(AtomicOrdering::SeqCst) >= 3
+        until("three reconnects", || {
+            connects.load(AtomicOrdering::SeqCst) >= 4
         })
         .await;
         shared.request_shutdown();
@@ -4813,14 +4890,38 @@ mod tests {
         let states = states_seen(&mut rx);
         assert!(
             !states.contains(&SyncState::Stopped),
-            "neither close is terminal, saw {states:?}"
+            "no close here is terminal, saw {states:?}"
         );
         assert_eq!(
-            fields_of(&log, "sync.session.closed")[..2],
+            fields_of(&log, "sync.session.closed")[..3],
             [
                 named("failed", Some(ErrorCode::AuthTokenExpired)),
                 named("failed", None),
+                named("failed", Some(ErrorCode::RelayStorageUnavailable)),
             ]
+        );
+        assert_eq!(
+            fields_of(&log, "sync.session.error")[..2],
+            [
+                named("failed", Some(ErrorCode::AuthTokenExpired)),
+                named("failed", Some(ErrorCode::RelayStorageUnavailable)),
+            ],
+            "a retryable close is logged as one, never as `stopped`"
+        );
+        let storage_error = log
+            .0
+            .lock()
+            .iter()
+            .find(|e| {
+                e.ev.as_deref() == Some("sync.session.error")
+                    && e.err_code.as_deref() == Some(ErrorCode::RelayStorageUnavailable.as_str())
+            })
+            .cloned()
+            .expect("the storage close is logged");
+        assert_eq!(
+            (storage_error.err_kind.as_deref(), storage_error.retryable),
+            (Some("transient"), Some(true)),
+            "the client's line agrees with codes.toml and with the relay's own log"
         );
         core.shutdown().await;
     }
