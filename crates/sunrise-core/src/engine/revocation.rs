@@ -877,7 +877,7 @@ impl Engine {
     ///
     /// # Recoverability: a cut correction does **not** un-skip a revocation
     ///
-    /// Nothing is discarded — a skipped op is still in the ledger, so there is
+    /// Nothing the fold reads is discarded — a skipped op's pair stays, so there is
     /// nothing to re-request — but the skip is not undone by correcting a cut
     /// either, and the reason is the paragraphs above: **the gate reads no cut
     /// of any kind**. `revokers_all`, the discount and the walk's condition are
@@ -957,9 +957,9 @@ impl Engine {
         // **Defensive against a future writer, not against rows that exist.**
         // No self-naming row can reach `device_revoke_ops` at HEAD — see the
         // walk below, which states both sources — so nothing reaches this
-        // `continue` today. It is kept because the ledger is append-only and
-        // permanent: a writer that admitted one would put the device it named
-        // beyond revoking anything, on every replica, for good.
+        // `continue` today. It is kept because no ledger pair is ever dropped
+        // (compaction keeps each one's max): a writer admitting one would put
+        // the device it named beyond revoking anything, everywhere, for good.
         //
         // The walk below holds the same condition and it is **not** a
         // duplicate: this one bounds the *gate*, that one bounds the
@@ -1078,7 +1078,7 @@ impl Engine {
             // refuses a self-naming op before the insert
             // (`apply_device_revoke` returns early), and 0027's seed reads
             // `device_revocations`, which the pre-ADR-0041 arm also refused to
-            // write for one. The ledger is append-only and permanent, so the
+            // write for one. No ledger pair is ever dropped, so the
             // cost of a writer that admitted one is not recoverable — which is
             // why the checks are kept and said to be unreachable rather than
             // quietly relied on.
@@ -1357,6 +1357,72 @@ impl Engine {
                 "a device the account had already revoked tried to revoke another"
             );
         }
+        // After the fold and the skip check, so both read the op this call
+        // stored even when it is one the compaction below removes.
+        Self::compact_device_revoke_ops(tx)?;
         Ok(Vec::new())
+    }
+
+    /// Delete every ledger row the fold can never read the value of: all but
+    /// the greatest-stamped row of each `(sender, revoked_device_id)` pair.
+    ///
+    /// # Why this changes no fold
+    ///
+    /// [`Self::refold_device_revocations`] reads a row in two places, and
+    /// neither can tell a pair's lesser rows from its greatest:
+    ///
+    /// - **The gate** is built from `(sender, revoked)` pairs and nothing else
+    ///   — `revokers_all`, the discount, and the walk's condition. Deleting a
+    ///   row whose pair survives in another row leaves every one of them
+    ///   unchanged, and so leaves every row gated or ungated as it was.
+    /// - **The register** takes, per revoked device, the greatest ungated row in
+    ///   the canonical order. Whether a row is gated depends only on its pair,
+    ///   so a pair's rows are gated or ungated together; and within one pair
+    ///   `sender` and `revoked_device_id` are equal, so the canonical order is
+    ///   the HLC alone. If any row of a pair could win, the pair's greatest row
+    ///   sorts after it and wins instead. A lesser row never wins.
+    ///
+    /// So the fold is the same function of the compacted ledger as of the full
+    /// one, every register it produces is the same register, and
+    /// `device_read_bounds` — which ratchets over those registers — takes the
+    /// same rows it would have. That is the property ADR-0034 corollary 3 and
+    /// ADR-0041 need from the ledger, and it is why this can delete from a
+    /// table whose whole design is keeping ops: it deletes only rows the fold
+    /// provably ignores.
+    ///
+    /// The compacted ledger is also itself a function of the op set rather
+    /// than of arrival order: whichever order the ops came in, what remains is
+    /// each pair's greatest stamp. A lesser op that arrives after its pair's
+    /// greatest is stored, folded, reported on if gated, and removed here in
+    /// the same transaction.
+    ///
+    /// # What it bounds, and what it does not
+    ///
+    /// The ledger holds at most one row per distinct `(sender, target)` pair.
+    /// Repeating a revocation — a cut correction, a re-sent op with a new
+    /// stamp, or a revoked device naming the same target over and over — no
+    /// longer grows it. What it does not bound is the number of distinct
+    /// targets an authenticated sender names: `apply_device_revoke` stores a
+    /// row for an id no device on the account has, deliberately, because a
+    /// cert can arrive after the revocation of its device. That remainder and
+    /// the per-op fold's cost over it are ADR-0041 §Consequences' to state.
+    ///
+    /// Global rather than scoped to the pair the caller just wrote, so a vault
+    /// that accumulated lesser rows before this existed is compacted by its
+    /// next `device_revoke`, and one pass costs the same order as the fold's
+    /// own sorted read.
+    fn compact_device_revoke_ops(tx: &Transaction<'_>) -> rusqlite::Result<usize> {
+        tx.execute(
+            "DELETE FROM device_revoke_ops WHERE rowid IN (
+                 SELECT rowid FROM (
+                     SELECT rowid, ROW_NUMBER() OVER (
+                         PARTITION BY sender, revoked_device_id
+                         ORDER BY op_hlc_ms DESC, op_hlc_logical DESC
+                     ) AS pos
+                     FROM device_revoke_ops
+                 ) WHERE pos > 1
+             )",
+            [],
+        )
     }
 }

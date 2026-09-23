@@ -98,8 +98,10 @@ Two gates, and a shape.
 
 Every `device_revoke` op is **stored whatever its sender's standing**, in
 `device_revoke_ops` (migration 0027), and the register is recomputed from it
-each time one lands. Before the walk the fold builds `revokers_all` — for each
-device, the set of *other* devices the ledger records as having revoked it,
+each time one lands. The ledger holds one row per `(sender, revoked_device_id)`
+pair, the one with the highest stamp, because the fold reads nothing from the
+pair's other rows (§Consequences). Before the walk the fold builds
+`revokers_all` — for each device, the set of *other* devices the ledger records as having revoked it,
 over every row and not over any part of one — and then makes a **second pass
 over that frozen map, discounting `s` from `v`'s set when the ledger holds a
 row revoking `s` whose sender is not `v`**. Both passes read the row set and
@@ -319,9 +321,11 @@ there are five visible consequences:
    honest options — re-request the op, or accept the loss and say so where a
    user can see it — and this takes the second, because the first is not even
    needed: the op was never discarded, it is simply still gated. Correcting a
-   cut appends a second revocation of the same sender by the same party, which
+   cut adds a second revocation of the same sender by the same party, which
    changes which row wins the register and changes nothing about who has
-   revoked whom — so the gate answers the same question the same way.
+   revoked whom, so the gate answers the same question the same way. The
+   ledger keeps only one row for the pair, the one with the higher stamp, and
+   that row's gate answer is the same as the other's.
    `a_cut_correction_does_not_re_fold_a_skipped_revocation` pins it.
 
    This is tolerable **here and would not be tolerable for a task edit**, and
@@ -600,9 +604,31 @@ discount has to guess at. Taken.
   §Decision 1 is the argument and `key-rotation.md` §"What converges, and what
   does not" is where a reader of the crypto docs meets it.
 - **The register is rewritten on every `device_revoke`.** `DELETE` plus one
-  `INSERT` per surviving row, inside the transaction that is already open. The
-  ledger is bounded by the number of revocation ops an account ever makes, which
-  is a handful, and both are in the same order of magnitude as the device list.
+  `INSERT` per surviving row, inside the transaction that is already open, after
+  a read of the whole ledger. So each applied op costs time proportional to the
+  ledger, and what bounds the ledger is not "the number of revocation ops an
+  account ever makes", which this bullet used to say. Nothing bounds that
+  number: any member can send `device_revoke` ops, a revoked one included,
+  because its ops are stored whatever its standing
+  ([#250](https://github.com/justin13888/Sunrise/issues/250)).
+  `Engine::compact_device_revoke_ops` keeps **one row per `(sender,
+  revoked_device_id)` pair**: after each fold it deletes every row of a pair
+  except the one with the highest stamp. The fold never reads the value of those
+  rows. The gate reads pairs, all of a pair's rows are gated or ungated
+  together, and a pair's highest stamp always outranks its other rows for the
+  register. So every register comes out the same, and so does every read bound.
+  Sending the same revocation again, correcting a cut, or a revoked device
+  naming one target over and over no longer grows the table. **What is still
+  unbounded is the number of distinct targets.** `apply_device_revoke` stores a
+  row for an id no device on this account has ever had, on purpose: a cert can
+  arrive after the revocation of its device. So an authenticated sender can
+  grow the ledger by one row per id it makes up, and the per-op fold's cost
+  grows with it. Refusing an unknown target when it is applied (#250's option
+  (b)) would make the register depend on delivery order. Capping or aging the
+  ledger (option (c)) would change registers that a pure function of the op
+  set has to preserve. The remaining bound belongs to the relay's per-sender
+  quota, which the server does not have yet.
+  [#315](https://github.com/justin13888/Sunrise/issues/315) tracks it.
 - **The read bound is a second table and is never rewritten**, only added to
   (`0028_device_read_bounds.sql`). One `INSERT OR IGNORE` per surviving row runs
   immediately before the `DELETE` above, so no row passes through a window where
