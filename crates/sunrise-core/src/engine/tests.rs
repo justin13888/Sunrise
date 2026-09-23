@@ -7729,7 +7729,7 @@ fn a_self_refused_revoke_still_advances_the_cursor() {
 /// cursor counts the op anyway.**
 ///
 /// This is the delivery half of the gate at
-/// `crates/sunrise-core/src/engine/sync.rs:705#apply_control_op`. The two
+/// `crates/sunrise-core/src/engine/sync.rs:741#apply_control_op`. The two
 /// units that reach that gate today —
 /// `a_revoked_devices_third_party_envelope_claim_is_not_recorded` and
 /// `an_unwound_devices_third_party_envelope_claim_is_not_recorded` — call
@@ -11390,6 +11390,74 @@ fn revoke_device_reports_that_the_fold_discarded_its_own_op() {
         !pending_relay_revocations(&dba).contains(&c_id),
         "telling the relay to cut a device every replica still shows as current is \
          the disclosure failure #160 fixed in the other direction"
+    );
+}
+
+/// `Command::RotateStreamKey` is the one-stream form of the mint-and-distribute
+/// chain `revoke_device` keeps a revoked device out of, and it refuses the same
+/// device outright.
+///
+/// Without the guard, a device its own register calls revoked mints a fresh
+/// epoch into its own `stream_keys` and seals it to every unbounded peer, whose
+/// `absorb_stream_key` takes it and whose next write is sealed under it. The
+/// refusal is checked before anything can mint, so the failed command leaves
+/// no key, no op, and no envelope behind. The positive half — an unrevoked
+/// device rotates and every current peer is sealed the new epoch — is
+/// `a_requested_rotation_keeps_every_current_device` and its neighbours.
+#[test]
+fn a_revoked_device_cannot_rotate_a_stream_key() {
+    let ea = engine_random_keys(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eb = engine_random_keys(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut dba = db_root(ROOT);
+    trust(&ea, &mut dba, &eb);
+    let a_id = ea.keychain.device_id();
+    let b_id = eb.keychain.device_id();
+
+    // This vault is itself revoked, by an op it has absorbed from B.
+    revoke(&ea, &mut dba, &eb, a_id, T0);
+    assert!(ea.is_revoked(dba.conn(), &a_id).unwrap());
+
+    let inbox_keys = |db: &Db| -> i64 {
+        db.conn()
+            .query_row(
+                "SELECT count(*) FROM stream_keys WHERE stream_id = ?",
+                params![&INBOX_STREAM_BYTES[..]],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    let ops = |db: &Db| -> i64 {
+        db.conn()
+            .query_row("SELECT count(*) FROM ops", [], |r| r.get(0))
+            .unwrap()
+    };
+    let keys_before = inbox_keys(&dba);
+    let ops_before = ops(&dba);
+    let to_b_before = envelopes_to(&ea, &dba, &b_id).len();
+
+    let err = ea
+        .apply(
+            &mut dba,
+            Command::RotateStreamKey {
+                stream: EntityRef::new(EntityKind::Stream, INBOX_STREAM_BYTES),
+            },
+        )
+        .expect_err("a revoked device must not mint an epoch every honest peer adopts");
+    assert!(
+        matches!(err, EngineError::Invalid(_)),
+        "refused as a policy violation, not a storage failure: {err:?}"
+    );
+
+    assert_eq!(
+        inbox_keys(&dba),
+        keys_before,
+        "no epoch was minted into this device's own keychain"
+    );
+    assert_eq!(ops(&dba), ops_before, "and nothing was emitted");
+    assert_eq!(
+        envelopes_to(&ea, &dba, &b_id).len(),
+        to_b_before,
+        "so no honest peer was sealed a key this device chose"
     );
 }
 

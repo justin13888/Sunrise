@@ -512,7 +512,8 @@ struct SessionSchedule {
 
 /// The credential state a session borrows from the driver, for the same reason
 /// [`SessionSchedule`] exists: `session` is at the `too-many-arguments`
-/// threshold, and these three are one concern.
+/// threshold, and these are one concern: which bearer this attempt carries,
+/// and whether the relay answered it.
 ///
 /// They are the driver's, not the session's — each outlives every session and
 /// is borrowed for the length of one.
@@ -527,6 +528,13 @@ struct SessionCredential<'a> {
     /// hand it back outstanding, for the attempt that does. See
     /// [`note_marked_at_connect`].
     marked_at_connect: &'a mut Option<u64>,
+    /// Set once the relay answers the handshake — the same moment the mark
+    /// above is reported, because both ask whether this attempt's bearer
+    /// reached the relay. [`SessionEnd`] cannot carry it:
+    /// `Disconnected` is returned both by an attempt the relay never answered
+    /// and by a session that was live for an hour, and `run` resets its
+    /// reconnect backoff only for the second.
+    answered: &'a mut bool,
 }
 
 /// Deadlines a live session is waiting on, and the loss evidence that pulls
@@ -653,19 +661,12 @@ pub(crate) async fn run(
                 // renewal is not reported here. `session` reports it once the
                 // handshake comes back.
                 //
-                // The `reset` below rests on the premise those sentences
-                // refute, and is wrong for the same reason: because no factory
-                // here can resolve to `Err`, this arm is taken on **every**
-                // attempt, so the reconnect counter is zeroed before it can
-                // advance and the driver never leaves the first step of the
-                // schedule `docs/05-sync/offline-queue.md` §Backoff publishes.
-                // The line predates this change and is byte-identical on
-                // `master`; moving it to the handshake — where the relay has
-                // demonstrably answered, which is `reset`'s own documented
-                // precondition — needs `session` to report whether it ever
-                // handshook, and `SessionEnd::Disconnected` cannot say that
-                // today. Filed as #283, and not repaired here.
-                backoff.reset();
+                // Nor is the reconnect counter reset here, for the same
+                // reason: this arm is taken on **every** attempt, so a reset
+                // here zeroes the counter before it can advance and pins the
+                // driver to the first step of the schedule
+                // `docs/05-sync/offline-queue.md` §Backoff publishes (#283).
+                // It is reset below, once `session` says the relay answered.
                 t
             }
             Err(e) => {
@@ -717,6 +718,8 @@ pub(crate) async fn run(
 
         // A session needs the Core alive; if it's gone, stop.
         let Some(core) = weak.upgrade() else { break };
+        // Per attempt: set by `session` once the relay answers the handshake.
+        let mut answered = false;
         let end = session(
             &core,
             &shared,
@@ -730,9 +733,21 @@ pub(crate) async fn run(
                 source: &credential,
                 renewals: &mut renewals,
                 marked_at_connect: &mut marked_at_connect,
+                answered: &mut answered,
             },
         )
         .await;
+        // `reset`'s documented precondition is a successful operation, and a
+        // constructed transport is not one: the handshake is the first round
+        // trip the relay answers. An attempt that never got that far keeps
+        // climbing the schedule, so an unreachable relay is retried in bursts
+        // of five and then every 30 s rather than every 100 ms. A session that
+        // did handshake — even one that then dropped at once — starts the
+        // next reconnect from the first step, because a client connected for
+        // a day that drops once should retry immediately.
+        if answered {
+            backoff.reset();
+        }
         drop(core);
         shared.set_state(SyncState::Disconnected);
         tracing::info!(
@@ -947,11 +962,13 @@ async fn session(
         source: credential,
         renewals,
         marked_at_connect,
+        answered,
     } = credential;
     let refresh_negotiated = match handshake(core, shared, &mut transport).await {
         Ok(negotiated) => negotiated,
         Err(end) => return end,
     };
+    *answered = true;
     // The handshake is the first round trip this attempt makes: its
     // `Authorization` header has now reached the relay and been answered. That
     // is what the report claims, so it is made here and not at the connect,
@@ -2997,12 +3014,19 @@ mod tests {
     struct LoggedEvent {
         ev: Option<String>,
         to_v: Option<u64>,
+        /// `sync.backoff`'s two fields, which
+        /// [`an_unanswered_reconnect_climbs_the_backoff_schedule`] reads.
+        attempt: Option<u64>,
+        delay_ms: Option<u64>,
     }
 
     impl tracing::field::Visit for LoggedEvent {
         fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
-            if field.name() == "to_v" {
-                self.to_v = Some(value);
+            match field.name() {
+                "to_v" => self.to_v = Some(value),
+                "attempt" => self.attempt = Some(value),
+                "delay_ms" => self.delay_ms = Some(value),
+                _ => {}
             }
         }
 
@@ -3073,6 +3097,7 @@ mod tests {
             vec![LoggedEvent {
                 ev: Some("sync.credential.marked_at_connect".into()),
                 to_v: Some(2),
+                ..LoggedEvent::default()
             }],
             "the connect carried both writes, and the event says which version it reached"
         );
@@ -3157,6 +3182,7 @@ mod tests {
             vec![LoggedEvent {
                 ev: Some("sync.credential.marked_at_connect".into()),
                 to_v: Some(1),
+                ..LoggedEvent::default()
             }],
             "the connect that actually presented the bearer is the one that reports it"
         );
@@ -3331,6 +3357,129 @@ mod tests {
             reported > failed,
             "the report belongs to the attempt the relay answered, not the one it did not: {names:?}"
         );
+        core.shutdown().await;
+    }
+
+    /// Driver-level: an attempt the relay never answers climbs the reconnect
+    /// schedule, and one it does answer starts the next reconnect from its
+    /// first step (#283).
+    ///
+    /// `Backoff` and `next_backoff_delay` are tested in isolation elsewhere,
+    /// and both were correct while `run` retried every ~100 ms forever: the
+    /// defect was in the composition, where a `reset` in the connect-`Ok` arm
+    /// — taken on every attempt, since no factory here resolves `Err` — zeroed
+    /// the counter before it could advance. So this drives `run` itself and
+    /// reads the `sync.backoff` events an operator would.
+    ///
+    /// Attempts 1-3 and 5-10 get a transport whose peer is already gone, so
+    /// the connect resolves `Ok` and the `Hello` fails; attempt 4 handshakes
+    /// with the fake relay and is dropped after its subscribe. The expected
+    /// `attempt` sequence is therefore `1, 2, 3` (climbing), `1` (reset by
+    /// attempt 4's handshake), `2, 3, 4, 5` (climbing), `0` (exhausted: the
+    /// flat 30 s), `1` (the cycle again). Resetting on the connect reads
+    /// `1, 1, 1, ...`; never resetting on the handshake reads `1, 2, 3, 4, ...`.
+    ///
+    /// Paused time, so the thirty-second exhaustion arm costs nothing. The
+    /// core is opened first; nothing past that point does blocking I/O.
+    #[tokio::test(start_paused = true)]
+    async fn an_unanswered_reconnect_climbs_the_backoff_schedule() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        use tracing::instrument::WithSubscriber as _;
+        use tracing_subscriber::layer::SubscriberExt as _;
+
+        const ANSWERED_ATTEMPT: u64 = 3; // zero-based: the fourth connect
+        const WANT: [u64; 10] = [1, 2, 3, 1, 2, 3, 4, 5, 0, 1];
+
+        let dir = tempfile::tempdir().unwrap();
+        let core = open_arc(dir.path()).await;
+
+        let (inner, server, _batch_rx, subs, _refreshes) = harness_full(
+            vec![Script {
+                close_after_subscribe: true,
+                ..Script::default()
+            }],
+            true,
+        );
+        let attempts = Arc::new(AtomicU64::new(0));
+        let factory: TransportFactory = Arc::new(move || {
+            if attempts.fetch_add(1, Ordering::SeqCst) == ANSWERED_ATTEMPT {
+                return inner();
+            }
+            // A relay that is unreachable, as the shipped factory presents
+            // one: the connect still resolves `Ok`, and the `Hello` fails.
+            let (client, server) = duplex();
+            drop(server);
+            Box::pin(async move { Ok(Box::new(client) as BoxTransport) }) as ConnectFuture
+        });
+
+        let log = EventLog::default();
+        let (status_tx, _status_rx) = broadcast::channel(64);
+        let shared = SyncShared::new(status_tx, 0);
+        shared.mark_active();
+        let rng: Arc<dyn Rng> = Arc::new(SystemRng);
+        let driver = tokio::spawn(
+            run(Arc::downgrade(&core), Arc::clone(&shared), factory, rng)
+                .with_subscriber(tracing_subscriber::registry().with(log.clone())),
+        );
+
+        let backoffs = || -> Vec<LoggedEvent> {
+            log.0
+                .lock()
+                .iter()
+                .filter(|e| e.ev.as_deref() == Some("sync.backoff"))
+                .cloned()
+                .collect()
+        };
+        // Virtual time: the schedule to the tenth reconnect is ~35 s.
+        timeout(Duration::from_secs(600), async {
+            while backoffs().len() < WANT.len() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the driver stopped reconnecting");
+
+        shared.request_shutdown();
+        timeout(Duration::from_secs(60), driver)
+            .await
+            .expect("the driver never stopped")
+            .unwrap();
+
+        assert_eq!(
+            server.lock().connect_count,
+            1,
+            "exactly one attempt must have reached the fake relay"
+        );
+        assert!(
+            subs.load(Ordering::SeqCst) >= 1,
+            "the answered attempt must have got past its handshake"
+        );
+
+        let seen = backoffs();
+        let got: Vec<u64> = seen[..WANT.len()]
+            .iter()
+            .map(|e| e.attempt.expect("sync.backoff carries attempt"))
+            .collect();
+        assert_eq!(
+            got, WANT,
+            "sync.backoff attempts must climb across unanswered reconnects and \
+             restart after a handshake"
+        );
+        for (e, attempt) in seen.iter().zip(WANT) {
+            let delay = e.delay_ms.expect("sync.backoff carries delay_ms");
+            if attempt == 0 {
+                assert_eq!(
+                    delay, 30_000,
+                    "the exhausted arm is a flat, un-jittered 30 s"
+                );
+            } else {
+                let base = 100u64 << (attempt - 1);
+                assert!(
+                    (base * 8 / 10..=base * 12 / 10).contains(&delay),
+                    "attempt {attempt} waited {delay} ms, outside ±20% of {base} ms"
+                );
+            }
+        }
         core.shutdown().await;
     }
 
