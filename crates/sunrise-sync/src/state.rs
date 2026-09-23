@@ -11,7 +11,11 @@
 //!                            missing range           ▲
 //!                                    ▼               │
 //!                                Degraded ──disconnect┘
+//!
+//! Any connected state ──terminal Close──> Stopped ──new credential──> Disconnected
 //! ```
+//!
+//! A terminal `Close` is one whose code `ClosePayload::is_recoverable` rejects.
 //!
 //! The transitions themselves are driven by `sunrise-core::sync_driver`,
 //! which owns the connection lifecycle; this module only names the states so
@@ -39,4 +43,16 @@ pub enum SyncState {
     /// it — the ops are gone from the relay — so it persists for the rest of
     /// the session and is resolved out of band.
     Degraded,
+    /// The relay closed the session for a reason the client cannot recover
+    /// from on its own — a revoked device, relay storage that is unavailable,
+    /// or a close code this build cannot read — and the driver has stopped
+    /// reconnecting.
+    ///
+    /// Distinct from `Disconnected`, which retries on its own: reconnecting
+    /// here would present the same device to a relay that has already said it
+    /// will not take it, which is the "retries forever against a revoked
+    /// device" loop `docs/05-sync/wire-protocol.md` forbids. The driver leaves
+    /// this state when the credential is replaced (the user signed in again)
+    /// or the app restarts; both are the user's act, not a timer's.
+    Stopped,
 }

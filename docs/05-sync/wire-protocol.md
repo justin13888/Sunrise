@@ -384,6 +384,15 @@ client would record a completeness it has no basis for. A session whose
 credential is about to lapse renews it with `POST /sync/session/refresh`, which
 must name the same principal and the same device; the open stream keeps running.
 
+The reference client (`crates/sunrise-core/src/sync_driver.rs`) tells the three
+close reasons apart by `ClosePayload::is_recoverable`, as the `RefreshToken`
+section above requires: `AUTH_TOKEN_EXPIRED` reconnects on the backoff
+schedule, and `AUTH_DEVICE_REVOKED`, `RELAY_STORAGE_UNAVAILABLE` or a code it
+cannot read moves it to `SyncState::Stopped`, where it makes no further attempt
+until the credential is replaced or the app restarts. A refused
+`GET /sync/events` is not a close — its code may be derived from an HTTP status
+— so the client logs the relay's code and reconnects as it does for a drop.
+
 **A non-zero `Last-Event-ID` takes precedence over the cursors for frame
 selection.** Replayed `ops` events carry the relay's durable per-channel id, so
 a reconnect that presents the last id it saw resumes after that frame instead of

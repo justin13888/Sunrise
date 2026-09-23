@@ -26,11 +26,11 @@ struct SyncPresentationTests {
         #expect(degraded.detail?.isEmpty == false, "a user must be told what is missing")
     }
 
-    /// Four states, four badges. A collision here means two different
+    /// Five states, five badges. A collision here means two different
     /// conditions look identical on screen.
     @Test
     func everyStateIsDistinguishable() {
-        let all: [SyncState] = [.disconnected, .catchingUp, .live, .degraded]
+        let all: [SyncState] = [.disconnected, .catchingUp, .live, .degraded, .stopped]
         let labels = all.map { SyncPresentation(snapshot($0)).label }
         #expect(Set(labels).count == all.count, "two states share a label: \(labels)")
 
@@ -47,6 +47,19 @@ struct SyncPresentationTests {
         #expect(!SyncPresentation(snapshot(.catchingUp)).isKnownIncomplete)
         #expect(!SyncPresentation(snapshot(.live)).isKnownIncomplete)
         #expect(SyncPresentation(snapshot(.degraded)).isKnownIncomplete)
+        #expect(!SyncPresentation(snapshot(.stopped)).isKnownIncomplete)
+    }
+
+    /// A stopped driver will not retry on its own, so it must not read as
+    /// Offline, which does. The user has to be told there is something to do.
+    @Test
+    func stoppedAsksTheUserToAct() {
+        let stopped = SyncPresentation(snapshot(.stopped))
+        let offline = SyncPresentation(snapshot(.disconnected))
+
+        #expect(stopped.label != offline.label)
+        #expect(stopped.tone == .alert)
+        #expect(stopped.detail?.contains("Sign in again") == true)
     }
 
     /// Connected with an unsent backlog is not "Synced" either.
