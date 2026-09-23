@@ -219,6 +219,7 @@ struct VaultWindow: View {
             deviceID = await bridge.deviceId()
             account.restore()
             await startSync()
+            await renewSession()
         }
         .task { await sync.poll(from: bridge) }
         // The schedule is only correct until the next write. A task created on
@@ -410,13 +411,31 @@ struct VaultWindow: View {
         ) else { return }
         try? await bridge.startSync(url: url, bearer: bearer, relayDeviceID: relayDeviceID)
     }
+}
 
+// The account's two drivers, in an extension so the window's own body stays
+// inside the length this project lints for.
+extension VaultWindow {
     private func signIn() async {
         await account.signIn(
             issuer: settings.oidcIssuer,
             clientID: settings.oidcClientID,
             deviceID: deviceID,
             nowMs: await bridge.nowMs()
+        )
+    }
+
+    /// Keep the session renewed for as long as this window is open.
+    ///
+    /// Called after `restore()` on purpose, from the same task: a `.task` of
+    /// its own could take its first look before the token is back. Scoped to
+    /// this window like everything else `models` drives — closing it tears the
+    /// models down, and cancels this with them.
+    private func renewSession() async {
+        await account.renewWhileRunning(
+            issuer: { settings.oidcIssuer },
+            clientID: { settings.oidcClientID },
+            now: { await bridge.nowMs() }
         )
     }
 }
