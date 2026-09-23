@@ -76,16 +76,16 @@ use crate::core::Core;
 use crate::engine::hex_short;
 use crate::events::{DomainEvent, SyncStatus};
 use sunrise_cbor::version::{CRYPTO_SUITE_V, DOC_SCHEMA_FLOOR, DOC_SCHEMA_V, WIRE_PROTO_V};
-use sunrise_error::ErrorCode;
+use sunrise_error::{ErrorCode, ErrorKind};
 use sunrise_id::EntityKind;
 use sunrise_sync::{Backoff, RevokeOutcome, SyncState, Transport, TransportError};
 
 pub use sunrise_sync::{TokenSource, TokenWatch};
 use sunrise_wire_protocol::{
     decode_frame, encode_frame, AckPayload, Capability, CapabilityBits, CaughtUpPayload,
-    ErrorPayload, FrameFlags, Hello, HelloAck, MsgKind, OpBatchPayload, RefreshTokenAckPayload,
-    RefreshTokenPayload, SubscribeEntry, SubscribePayload, REQUIRED_CLIENT_BITS,
-    REQUIRED_SERVER_BITS,
+    ClosePayload, ErrorPayload, FrameFlags, Hello, HelloAck, MsgKind, OpBatchPayload,
+    RefreshTokenAckPayload, RefreshTokenPayload, SubscribeEntry, SubscribePayload,
+    REQUIRED_CLIENT_BITS, REQUIRED_SERVER_BITS,
 };
 
 /// Boxed transport produced by a [`TransportFactory`].
@@ -417,8 +417,67 @@ struct InflightBatch {
 enum SessionEnd {
     /// Shutdown requested; stop the driver.
     Shutdown,
-    /// Transport dropped / closed; reconnect after backoff.
+    /// Transport dropped, or the session failed locally; reconnect after
+    /// backoff.
     Disconnected,
+    /// The relay refused the stream and said why: `recv_frame` returned
+    /// [`TransportError::Server`] with the relay's own code. Reconnects after
+    /// backoff exactly as `Disconnected` does; it is a separate variant so the
+    /// code reaches `sync.session.error` instead of being discarded with the
+    /// error that carried it.
+    Refused { code: &'static str, message: String },
+    /// The relay sent a `Close`. The code's catalogue `retryable` flag decides
+    /// what happens next: a retryable close reconnects after backoff, any
+    /// other parks the driver in [`SyncState::Stopped`]. See
+    /// [`SessionEnd::is_terminal`].
+    Closed(ClosePayload),
+}
+
+impl SessionEnd {
+    /// The end a failed `recv_frame` means. A relay refusal keeps its code;
+    /// every other transport error is a drop.
+    fn from_recv_error(e: TransportError) -> Self {
+        match e {
+            TransportError::Server { code, message } => Self::Refused { code, message },
+            _ => Self::Disconnected,
+        }
+    }
+
+    /// The end a `Close` frame's payload means.
+    ///
+    /// A payload that does not decode is a drop, not a terminal close: the
+    /// transport already maps an unreadable *code* to `INTERNAL_UNKNOWN_CODE`
+    /// (which is terminal), so reaching here means the frame itself is
+    /// malformed — the same answer the transport gives a close with no code at
+    /// all, which is a protocol error and therefore a reconnect.
+    fn from_close(payload: &[u8]) -> Self {
+        ClosePayload::decode(payload).map_or(Self::Disconnected, Self::Closed)
+    }
+
+    /// Whether this end must stop the driver reconnecting until the user acts.
+    ///
+    /// A close is terminal exactly when its code is not `retryable` in
+    /// `crates/sunrise-error/codes.toml` ([`ErrorCode::retryable`]). That is
+    /// the question the driver is asking — will reconnecting help? — and it
+    /// is not the one [`ClosePayload::is_recoverable`] answers, which is
+    /// whether the client can repair its *credential* on its own. The two
+    /// differ at `RELAY_STORAGE_UNAVAILABLE`: a failed durable-log read on the
+    /// relay, `transient` and `retryable` in the catalogue and logged that
+    /// way by the relay that sends the close. Parking on it would strand every
+    /// device that opened a stream during the fault until its user signed in
+    /// again, for a condition that fixes itself.
+    fn is_terminal(&self) -> bool {
+        matches!(self, Self::Closed(close) if !close.code.retryable())
+    }
+
+    /// The state the driver is in once this session is over.
+    fn state_after(&self) -> SyncState {
+        if self.is_terminal() {
+            SyncState::Stopped
+        } else {
+            SyncState::Disconnected
+        }
+    }
 }
 
 /// One event the session pump reacts to.
@@ -677,11 +736,13 @@ pub(crate) async fn run(
                 // `err_code` describes the *error*, not what the driver does
                 // next. A device-signature refusal is permanent — reconnecting
                 // re-presents the same wrong clock or the same wrong key — and
-                // the driver still backs off and retries, because the only
-                // alternative is a new `SyncState` variant and the Swift
-                // presentation switches on that set exhaustively. Naming the
-                // code here is what lets an operator tell "the relay is down"
-                // from "this device will never connect" without that change.
+                // the driver still backs off and retries. `SyncState::Stopped`
+                // exists, but only a relay's own terminal `Close` parks the
+                // driver in it: a refusal's code can be one the transport
+                // derived from an HTTP status, and parking on a guess would
+                // strand a device the relay never meant to turn away. Naming
+                // the code here is what lets an operator tell "the relay is
+                // down" from "this device will never connect".
                 match &e {
                     TransportError::Server { code, .. }
                         if *code == ErrorCode::AuthDeviceSigInvalid.as_str() =>
@@ -749,25 +810,130 @@ pub(crate) async fn run(
             backoff.reset();
         }
         drop(core);
-        shared.set_state(SyncState::Disconnected);
-        tracing::info!(
-            ev = "sync.session.closed",
-            result = match end {
-                SessionEnd::Shutdown => "ok",
-                SessionEnd::Disconnected => "failed",
-            },
-            "sync session ended"
-        );
-        match end {
-            SessionEnd::Shutdown => break,
-            SessionEnd::Disconnected => {
-                if !backoff_sleep(&mut backoff, rng.as_ref(), &shared).await {
-                    break;
-                }
-            }
+        shared.set_state(end.state_after());
+        log_session_end(&end);
+        if matches!(end, SessionEnd::Shutdown) {
+            break;
+        }
+        if end.is_terminal() {
+            let Some(to_v) = park_until_renewed(&shared, &mut renewals).await else {
+                break;
+            };
+            // The wait consumed the renewal, so the next connect's mark finds
+            // the handle current. Carry it as a renewal from the offline
+            // window, which is what it is, so the handshake that presents it
+            // still reports it.
+            marked_at_connect = Some(to_v);
+            continue;
+        }
+        if !backoff_sleep(&mut backoff, rng.as_ref(), &shared).await {
+            break;
         }
     }
     shared.set_state(SyncState::Disconnected);
+}
+
+/// Wait in [`SyncState::Stopped`] for the credential to be replaced.
+///
+/// The relay has said reconnecting will not help, so nothing on a timer does.
+/// What can help is the user: signing in again replaces the credential, and
+/// that write is what this waits for. An app restart builds a new driver,
+/// which is the other way out.
+///
+/// `Some(version)` of the new credential, after moving back to
+/// `Disconnected` for the reconnect that follows; `None` on shutdown.
+async fn park_until_renewed(shared: &SyncShared, renewals: &mut TokenWatch) -> Option<u64> {
+    let to_v = tokio::select! {
+        biased;
+        () = shared.shutdown_notified() => return None,
+        v = renewals.changed() => v,
+    };
+    shared.set_state(SyncState::Disconnected);
+    tracing::info!(
+        ev = "sync.session.resumed",
+        to_v,
+        "credential replaced after a terminal close; reconnecting"
+    );
+    Some(to_v)
+}
+
+/// `sync.session.closed` for every end, and `sync.session.error` for the ends
+/// the relay chose and named.
+///
+/// The code is the point. A refused stream, a dropped connection and a close
+/// for a revoked device used to produce the same line, so an operator could
+/// not tell "the relay is down" from "this device will never be let back in".
+fn log_session_end(end: &SessionEnd) {
+    let (result, err_code) = match end {
+        SessionEnd::Shutdown => ("ok", None),
+        SessionEnd::Disconnected => ("failed", None),
+        SessionEnd::Refused { code, .. } => ("failed", Some(*code)),
+        SessionEnd::Closed(close) if end.is_terminal() => ("stopped", Some(close.code.as_str())),
+        SessionEnd::Closed(close) => ("failed", Some(close.code.as_str())),
+    };
+    tracing::info!(
+        ev = "sync.session.closed",
+        result,
+        err_code,
+        "sync session ended"
+    );
+    match end {
+        SessionEnd::Shutdown | SessionEnd::Disconnected => {}
+        // Worded like the connect path's arm for the same code, because it
+        // is the same refusal arriving by the other route.
+        SessionEnd::Refused { code, message }
+            if *code == ErrorCode::AuthDeviceSigInvalid.as_str() =>
+        {
+            tracing::warn!(
+                ev = "sync.session.error",
+                err_code = *code,
+                err_kind = "permanent",
+                retryable = false,
+                result = "failed",
+                cause = %message,
+                "relay refused this device's signature; check the clock, not the token"
+            );
+        }
+        SessionEnd::Refused { code, message } => tracing::warn!(
+            ev = "sync.session.error",
+            err_code = *code,
+            err_kind = "transient",
+            retryable = true,
+            result = "failed",
+            cause = %message,
+            "relay refused the event stream"
+        ),
+        // `err_kind` and `retryable` are the catalogue's for the relay's code,
+        // so this line agrees with the relay's own log of the same close.
+        SessionEnd::Closed(close) if !end.is_terminal() => tracing::warn!(
+            ev = "sync.session.error",
+            err_code = close.code.as_str(),
+            err_kind = error_kind_str(close.code.default_kind()),
+            retryable = true,
+            result = "failed",
+            cause = %close.reason,
+            "relay closed the session; reconnecting"
+        ),
+        SessionEnd::Closed(close) => tracing::warn!(
+            ev = "sync.session.error",
+            err_code = close.code.as_str(),
+            err_kind = error_kind_str(close.code.default_kind()),
+            retryable = false,
+            result = "stopped",
+            cause = %close.reason,
+            "relay closed the session for a reason reconnecting cannot fix; waiting for a new credential"
+        ),
+    }
+}
+
+/// The `err_kind` log value for `kind`, spelled as `codes.toml` spells it.
+const fn error_kind_str(kind: ErrorKind) -> &'static str {
+    match kind {
+        ErrorKind::Transient => "transient",
+        ErrorKind::Permanent => "permanent",
+        ErrorKind::User => "user",
+        ErrorKind::Internal => "internal",
+    }
 }
 
 /// Sleep for the next backoff delay, interruptible by shutdown. Returns
@@ -939,11 +1105,17 @@ async fn handshake(
                     }));
                 }
                 Ok((h, _)) if h.msg_kind == MsgKind::Error => return Err(SessionEnd::Disconnected),
+                // A close before the handshake completes is still a close, and
+                // its code decides the same thing it decides mid-session.
+                Ok((h, payload)) if h.msg_kind == MsgKind::Close => {
+                    return Err(SessionEnd::from_close(&payload));
+                }
                 // Any other frame before HelloAck: keep waiting.
                 Ok(_) => {}
                 Err(_) => return Err(SessionEnd::Disconnected),
             },
-            Ok(None) | Err(_) => return Err(SessionEnd::Disconnected),
+            Ok(None) => return Err(SessionEnd::Disconnected),
+            Err(e) => return Err(SessionEnd::from_recv_error(e)),
         }
     }
 }
@@ -1128,7 +1300,7 @@ async fn session(
                 }
             }
             SessionEvent::Recv(Ok(Some(bytes))) => {
-                if handle_frame(
+                if let Err(end) = handle_frame(
                     core,
                     shared,
                     &bytes,
@@ -1140,9 +1312,8 @@ async fn session(
                     &mut deadlines,
                 )
                 .await
-                .is_err()
                 {
-                    return SessionEnd::Disconnected;
+                    return end;
                 }
                 // An inbound batch is the only way an attachment created on
                 // another device becomes known here, so it is the trigger the
@@ -1153,7 +1324,8 @@ async fn session(
                 drain_blob_transfers(core, transport.as_mut()).await;
                 maybe_live(core, shared, &subscribed, &caught_up);
             }
-            SessionEvent::Recv(Ok(None) | Err(_)) => return SessionEnd::Disconnected,
+            SessionEvent::Recv(Ok(None)) => return SessionEnd::Disconnected,
+            SessionEvent::Recv(Err(e)) => return SessionEnd::from_recv_error(e),
         }
     }
 }
@@ -1262,7 +1434,7 @@ fn retransmit_due(
     true
 }
 
-/// Process one inbound frame. `Err(())` signals a disconnect (reconnect);
+/// Process one inbound frame. `Err(end)` ends the session with `end`;
 /// malformed / non-fatal frames are logged-and-skipped as `Ok(())`.
 #[allow(clippy::too_many_arguments)]
 async fn handle_frame(
@@ -1275,7 +1447,7 @@ async fn handle_frame(
     inflight_ops: &mut HashSet<[u8; 16]>,
     pending_sends: &mut Vec<Vec<u8>>,
     deadlines: &mut Deadlines,
-) -> Result<(), ()> {
+) -> Result<(), SessionEnd> {
     let Ok((header, payload)) = decode_frame(bytes) else {
         // Junk frame: keep the session, but a frame that will not decode means
         // the link mangled it — and whatever mangled this one may have
@@ -1294,7 +1466,9 @@ async fn handle_frame(
                     for id in &batch.op_ids {
                         inflight_ops.remove(id);
                     }
-                    let pending = core.sync_mark_acked(&batch.op_ids).map_err(|_| ())?;
+                    let pending = core
+                        .sync_mark_acked(&batch.op_ids)
+                        .map_err(|_| SessionEnd::Disconnected)?;
                     shared.set_pending(pending);
                     shared.mark_synced(core.now_ms());
                 }
@@ -1343,8 +1517,11 @@ async fn handle_frame(
                 pending_sends.push(frame);
             }
         }
-        // Server-initiated close: reconnect.
-        MsgKind::Close => return Err(()),
+        // Server-initiated close. Its code decides whether to reconnect:
+        // `AUTH_TOKEN_EXPIRED` does, and a revoked device, unavailable relay
+        // storage or an unreadable code parks the driver in `Stopped`
+        // (`docs/05-sync/wire-protocol.md` §Connection lifecycle).
+        MsgKind::Close => return Err(SessionEnd::from_close(&payload)),
         MsgKind::Error => {
             let Ok(err) = ErrorPayload::decode(&payload) else {
                 deadlines.note_loss(LossEvidence::UndecodableFrame);
@@ -2227,13 +2404,15 @@ mod tests {
 
     use super::{
         drain_relay_revocations, mark_renewals_current, note_marked_at_connect, run, BoxTransport,
-        ConnectFuture, SyncConfig, SyncShared, TokenSource, TransportFactory,
+        ClosePayload, ConnectFuture, SessionEnd, SyncConfig, SyncShared, TokenSource,
+        TransportFactory,
     };
     use crate::config::{Clock, Rng};
     use crate::{Command, Core, CoreConfig, DomainEvent, Query, QueryResult, SystemRng, Unlock};
     use async_trait::async_trait;
     use std::collections::{HashSet, VecDeque};
     use std::path::Path;
+    use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
     use std::sync::Arc;
     use std::time::Duration;
     use sunrise_crypto::keys::VaultRootKey;
@@ -3018,9 +3197,23 @@ mod tests {
         /// [`an_unanswered_reconnect_climbs_the_backoff_schedule`] reads.
         attempt: Option<u64>,
         delay_ms: Option<u64>,
+        /// `sync.session.closed` and `sync.session.error`'s two fields, which
+        /// the session-end tests below read.
+        err_code: Option<String>,
+        result: Option<String>,
+        /// `sync.session.error`'s `err_kind` and `retryable`, which must agree
+        /// with the catalogue entry for its `err_code`.
+        err_kind: Option<String>,
+        retryable: Option<bool>,
     }
 
     impl tracing::field::Visit for LoggedEvent {
+        fn record_bool(&mut self, field: &tracing::field::Field, value: bool) {
+            if field.name() == "retryable" {
+                self.retryable = Some(value);
+            }
+        }
+
         fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
             match field.name() {
                 "to_v" => self.to_v = Some(value),
@@ -3031,8 +3224,12 @@ mod tests {
         }
 
         fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
-            if field.name() == "ev" {
-                self.ev = Some(value.to_string());
+            match field.name() {
+                "ev" => self.ev = Some(value.to_string()),
+                "err_code" => self.err_code = Some(value.to_string()),
+                "result" => self.result = Some(value.to_string()),
+                "err_kind" => self.err_kind = Some(value.to_string()),
+                _ => {}
             }
         }
 
@@ -4354,5 +4551,422 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         panic!("outbox never drained");
+    }
+
+    // ---- session ends the relay chooses (#278) ----
+
+    /// One scripted answer to `recv_frame`.
+    type Recv = Result<Option<Vec<u8>>, TransportError>;
+
+    /// A transport that answers `recv_frame` from a script, then waits
+    /// forever, and accepts every send.
+    ///
+    /// The fake relay above cannot stand in here: its duplex only ever yields
+    /// `Ok`, and a refused stream is a [`TransportError::Server`] out of
+    /// `recv_frame`, which is the value these tests are about.
+    struct ScriptedTransport(VecDeque<Recv>);
+
+    #[async_trait]
+    impl Transport for ScriptedTransport {
+        async fn send_frame(&mut self, _frame: Vec<u8>) -> Result<(), TransportError> {
+            Ok(())
+        }
+        async fn recv_frame(&mut self) -> Recv {
+            match self.0.pop_front() {
+                Some(r) => r,
+                None => std::future::pending().await,
+            }
+        }
+        async fn close(&mut self) -> Result<(), TransportError> {
+            Ok(())
+        }
+    }
+
+    // Returns a script entry, so it is shaped like one: the `Ok` is what the
+    // scripted transport hands `recv_frame`, not a fallibility this has.
+    #[allow(clippy::unnecessary_wraps)]
+    fn hello_ack() -> Recv {
+        let ack = HelloAck {
+            server_app_v: "scripted".into(),
+            wire_proto: 1,
+            crypto_suite: 1,
+            doc_schema_floor: 1,
+            capabilities: 0,
+            server_time_ms: T0,
+        };
+        let mut buf = Vec::new();
+        ciborium::ser::into_writer(&ack, &mut buf).unwrap();
+        Ok(Some(
+            encode_frame(MsgKind::HelloAck, FrameFlags::EMPTY, &buf).unwrap(),
+        ))
+    }
+
+    #[allow(clippy::unnecessary_wraps)] // a script entry; see `hello_ack`
+    fn close_frame(code: ErrorCode) -> Recv {
+        let payload = ClosePayload {
+            code,
+            reason: format!("scripted {code}"),
+        }
+        .encode()
+        .unwrap();
+        Ok(Some(
+            encode_frame(MsgKind::Close, FrameFlags::EMPTY, &payload).unwrap(),
+        ))
+    }
+
+    fn refusal(code: ErrorCode) -> Recv {
+        Err(TransportError::Server {
+            code: code.as_str(),
+            message: "scripted refusal".into(),
+        })
+    }
+
+    /// A factory that hands each connect the next script (an empty one once
+    /// they run out), and the number of connects it has served.
+    fn scripted(scripts: Vec<Vec<Recv>>) -> (TransportFactory, Arc<AtomicU64>) {
+        let scripts = Arc::new(parking_lot::Mutex::new(
+            scripts.into_iter().collect::<VecDeque<_>>(),
+        ));
+        let connects = Arc::new(AtomicU64::new(0));
+        let counted = Arc::clone(&connects);
+        let factory: TransportFactory = Arc::new(move || {
+            counted.fetch_add(1, AtomicOrdering::SeqCst);
+            let script = scripts.lock().pop_front().unwrap_or_default();
+            Box::pin(async move {
+                Ok(Box::new(ScriptedTransport(script.into_iter().collect())) as BoxTransport)
+            }) as ConnectFuture
+        });
+        (factory, connects)
+    }
+
+    /// `run` against `factory`, under a subscriber the test can read, with a
+    /// receiver that sees every state the driver broadcasts.
+    fn drive(
+        core: &Arc<Core>,
+        factory: TransportFactory,
+    ) -> (
+        Arc<SyncShared>,
+        EventLog,
+        broadcast::Receiver<crate::SyncStatus>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        use tracing::instrument::WithSubscriber as _;
+        use tracing_subscriber::layer::SubscriberExt as _;
+
+        let log = EventLog::default();
+        let (status_tx, status_rx) = broadcast::channel(256);
+        let shared = SyncShared::new(status_tx, 0);
+        shared.mark_active();
+        let rng: Arc<dyn Rng> = Arc::new(SystemRng);
+        let driver = tokio::spawn(
+            run(Arc::downgrade(core), Arc::clone(&shared), factory, rng)
+                .with_subscriber(tracing_subscriber::registry().with(log.clone())),
+        );
+        (shared, log, status_rx, driver)
+    }
+
+    async fn until(what: &str, cond: impl Fn() -> bool) {
+        timeout(Duration::from_secs(600), async {
+            while !cond() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("never saw: {what}"));
+    }
+
+    /// Every state the driver broadcast so far.
+    fn states_seen(rx: &mut broadcast::Receiver<crate::SyncStatus>) -> Vec<SyncState> {
+        let mut out = Vec::new();
+        while let Ok(s) = rx.try_recv() {
+            out.push(s.state);
+        }
+        out
+    }
+
+    /// `(result, err_code)` of every `ev` event, in order.
+    fn fields_of(log: &EventLog, ev: &str) -> Vec<(Option<String>, Option<String>)> {
+        log.0
+            .lock()
+            .iter()
+            .filter(|e| e.ev.as_deref() == Some(ev))
+            .map(|e| (e.result.clone(), e.err_code.clone()))
+            .collect()
+    }
+
+    fn named(result: &str, code: Option<ErrorCode>) -> (Option<String>, Option<String>) {
+        (Some(result.into()), code.map(|c| c.as_str().to_owned()))
+    }
+
+    /// The mapping itself, against the codes the relay's stream closes with
+    /// (`AUTH_TOKEN_EXPIRED`, `AUTH_DEVICE_REVOKED`,
+    /// `RELAY_STORAGE_UNAVAILABLE`), `AUTH_TOKEN_INVALID`, and the one the
+    /// transport substitutes for a code it cannot read. A close parks the
+    /// driver exactly when the catalogue says retrying will not help.
+    #[test]
+    fn only_a_non_retryable_close_is_terminal() {
+        let end_for = |code| {
+            let Ok(Some(frame)) = close_frame(code) else {
+                unreachable!()
+            };
+            let (_, payload) = decode_frame(&frame).unwrap();
+            SessionEnd::from_close(&payload)
+        };
+        for code in [
+            ErrorCode::AuthTokenExpired,
+            ErrorCode::RelayStorageUnavailable,
+        ] {
+            assert!(
+                !end_for(code).is_terminal(),
+                "{code} is retryable and must reconnect"
+            );
+        }
+        for code in [
+            ErrorCode::AuthDeviceRevoked,
+            ErrorCode::AuthTokenInvalid,
+            ErrorCode::InternalUnknownCode,
+        ] {
+            assert!(end_for(code).is_terminal(), "{code} must stop the driver");
+        }
+        assert!(
+            matches!(SessionEnd::from_close(&[0xff]), SessionEnd::Disconnected),
+            "an undecodable close is a drop, not a verdict"
+        );
+        assert!(matches!(
+            SessionEnd::from_recv_error(TransportError::Unavailable("gone".into())),
+            SessionEnd::Disconnected
+        ));
+        assert!(matches!(
+            SessionEnd::from_recv_error(TransportError::Server {
+                code: ErrorCode::AuthDeviceSigInvalid.as_str(),
+                message: String::new(),
+            }),
+            SessionEnd::Refused { code, .. } if code == "AUTH_DEVICE_SIG_INVALID"
+        ));
+    }
+
+    /// Driver-level: a terminal close stops the reconnect loop, and a new
+    /// credential — the user signing in again — is what restarts it.
+    ///
+    /// Before #278 the `Close` arm returned the same value as a dropped
+    /// socket, so this driver would have reconnected on the backoff schedule
+    /// against a relay that had revoked the device: hundreds of attempts in
+    /// the virtual hour below instead of none. The second session closes
+    /// before its handshake completes, which is the handshake's own `Close`
+    /// arm, and must stop the driver too.
+    ///
+    /// The third session is the one that answers its handshake, and it is
+    /// there for the renewal the park consumed. `park_until_renewed` moves the
+    /// driver's watch handle to the new version, so the next connect's mark
+    /// finds nothing outstanding; only `run` carrying that version forward as
+    /// `marked_at_connect` makes the handshake report it. Drop the carry and
+    /// `sync.credential.marked_at_connect` never appears. The second session
+    /// never handshakes, so it must leave the mark outstanding rather than
+    /// report it, and the third reports the version it actually presented.
+    #[tokio::test(start_paused = true)]
+    async fn a_terminal_close_parks_the_driver_until_the_credential_is_replaced() {
+        let dir = tempfile::tempdir().unwrap();
+        let credential = TokenSource::new(Some("first-token".into()));
+        let mut cfg = make_cfg(dir.path());
+        cfg.sync = Some(SyncConfig::new("ws://unused/sync").with_credential(credential.clone()));
+        let core = Arc::new(
+            Core::open(
+                cfg,
+                Unlock::DevicePaired {
+                    root: VaultRootKey::from_bytes(ROOT),
+                    paired: None,
+                },
+            )
+            .await
+            .unwrap(),
+        );
+        let (factory, connects) = scripted(vec![
+            vec![hello_ack(), close_frame(ErrorCode::AuthDeviceRevoked)],
+            vec![close_frame(ErrorCode::AuthTokenInvalid)],
+            vec![hello_ack(), close_frame(ErrorCode::AuthDeviceRevoked)],
+        ]);
+        let (shared, log, _rx, driver) = drive(&core, factory);
+        let n = || connects.load(AtomicOrdering::SeqCst);
+
+        until("the first terminal close", || {
+            shared.current_state() == SyncState::Stopped
+        })
+        .await;
+        tokio::time::sleep(Duration::from_secs(3600)).await;
+        assert_eq!(n(), 1, "a stopped driver must not reconnect on a timer");
+        assert_eq!(shared.current_state(), SyncState::Stopped);
+
+        credential.set(Some("second-token".into()));
+        until("the reconnect a new credential buys", || n() == 2).await;
+        until("the second terminal close", || {
+            shared.current_state() == SyncState::Stopped
+        })
+        .await;
+        tokio::time::sleep(Duration::from_secs(3600)).await;
+        assert_eq!(
+            n(),
+            2,
+            "and it stops again when that session is refused too"
+        );
+
+        credential.set(Some("third-token".into()));
+        until("the reconnect the third credential buys", || n() == 3).await;
+        until("the third terminal close", || {
+            shared.current_state() == SyncState::Stopped
+        })
+        .await;
+
+        shared.request_shutdown();
+        timeout(Duration::from_secs(60), driver)
+            .await
+            .expect("a stopped driver must still honour shutdown")
+            .unwrap();
+
+        assert_eq!(
+            fields_of(&log, "sync.session.closed"),
+            vec![
+                named("stopped", Some(ErrorCode::AuthDeviceRevoked)),
+                named("stopped", Some(ErrorCode::AuthTokenInvalid)),
+                named("stopped", Some(ErrorCode::AuthDeviceRevoked)),
+            ]
+        );
+        // The credential events in order, with the version each names.
+        let credential_events: Vec<(String, Option<u64>)> = log
+            .0
+            .lock()
+            .iter()
+            .filter_map(|e| match e.ev.as_deref() {
+                Some(ev @ ("sync.session.resumed" | MARKED_AT_CONNECT)) => {
+                    Some((ev.to_owned(), e.to_v))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            credential_events,
+            vec![
+                ("sync.session.resumed".to_owned(), Some(1)),
+                ("sync.session.resumed".to_owned(), Some(2)),
+                (MARKED_AT_CONNECT.to_owned(), Some(2)),
+            ],
+            "each resume names its credential, the unanswered second session \
+             reports nothing, and the answered third reports the renewal the \
+             park consumed"
+        );
+        core.shutdown().await;
+    }
+
+    /// Driver-level: a retryable close reconnects, and so does a close
+    /// whose payload does not decode. None may ever read as `Stopped`.
+    ///
+    /// `RELAY_STORAGE_UNAVAILABLE` is in the set because the relay sends it
+    /// for a failed durable-log read and logs it `transient`/`retryable`
+    /// itself: a driver that parked on it would strand every device that
+    /// opened a stream during the fault until its user signed in again.
+    #[tokio::test(start_paused = true)]
+    async fn a_recoverable_close_reconnects_and_names_its_code() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = open_arc(dir.path()).await;
+        let garbage = Ok(Some(
+            encode_frame(MsgKind::Close, FrameFlags::EMPTY, &[0xff]).unwrap(),
+        ));
+        let (factory, connects) = scripted(vec![
+            vec![hello_ack(), close_frame(ErrorCode::AuthTokenExpired)],
+            vec![hello_ack(), garbage],
+            vec![hello_ack(), close_frame(ErrorCode::RelayStorageUnavailable)],
+        ]);
+        let (shared, log, mut rx, driver) = drive(&core, factory);
+
+        until("three reconnects", || {
+            connects.load(AtomicOrdering::SeqCst) >= 4
+        })
+        .await;
+        shared.request_shutdown();
+        timeout(Duration::from_secs(60), driver)
+            .await
+            .expect("the driver never stopped")
+            .unwrap();
+
+        let states = states_seen(&mut rx);
+        assert!(
+            !states.contains(&SyncState::Stopped),
+            "no close here is terminal, saw {states:?}"
+        );
+        assert_eq!(
+            fields_of(&log, "sync.session.closed")[..3],
+            [
+                named("failed", Some(ErrorCode::AuthTokenExpired)),
+                named("failed", None),
+                named("failed", Some(ErrorCode::RelayStorageUnavailable)),
+            ]
+        );
+        assert_eq!(
+            fields_of(&log, "sync.session.error")[..2],
+            [
+                named("failed", Some(ErrorCode::AuthTokenExpired)),
+                named("failed", Some(ErrorCode::RelayStorageUnavailable)),
+            ],
+            "a retryable close is logged as one, never as `stopped`"
+        );
+        let storage_error = log
+            .0
+            .lock()
+            .iter()
+            .find(|e| {
+                e.ev.as_deref() == Some("sync.session.error")
+                    && e.err_code.as_deref() == Some(ErrorCode::RelayStorageUnavailable.as_str())
+            })
+            .cloned()
+            .expect("the storage close is logged");
+        assert_eq!(
+            (storage_error.err_kind.as_deref(), storage_error.retryable),
+            (Some("transient"), Some(true)),
+            "the client's line agrees with codes.toml and with the relay's own log"
+        );
+        core.shutdown().await;
+    }
+
+    /// Driver-level: a refused stream reaches the log under the relay's own
+    /// code, whether the refusal lands during the handshake or mid-session,
+    /// and the driver reconnects as it does for a drop.
+    ///
+    /// Before #278 both `recv_frame` sites discarded the error unread, so
+    /// these two sessions logged exactly what a dropped TCP connection logs.
+    #[tokio::test(start_paused = true)]
+    async fn a_refused_stream_is_logged_under_the_relays_code() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = open_arc(dir.path()).await;
+        let (factory, connects) = scripted(vec![
+            vec![refusal(ErrorCode::AuthTokenInvalid)],
+            vec![hello_ack(), refusal(ErrorCode::AuthDeviceSigInvalid)],
+        ]);
+        let (shared, log, mut rx, driver) = drive(&core, factory);
+
+        until("two reconnects", || {
+            connects.load(AtomicOrdering::SeqCst) >= 3
+        })
+        .await;
+        shared.request_shutdown();
+        timeout(Duration::from_secs(60), driver)
+            .await
+            .expect("the driver never stopped")
+            .unwrap();
+
+        assert!(!states_seen(&mut rx).contains(&SyncState::Stopped));
+        assert_eq!(
+            fields_of(&log, "sync.session.closed")[..2],
+            [
+                named("failed", Some(ErrorCode::AuthTokenInvalid)),
+                named("failed", Some(ErrorCode::AuthDeviceSigInvalid)),
+            ]
+        );
+        assert_eq!(
+            fields_of(&log, "sync.session.error")[..2],
+            [
+                named("failed", Some(ErrorCode::AuthTokenInvalid)),
+                named("failed", Some(ErrorCode::AuthDeviceSigInvalid)),
+            ]
+        );
+        core.shutdown().await;
     }
 }
