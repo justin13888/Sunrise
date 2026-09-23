@@ -56,7 +56,7 @@ struct VaultWindow: View {
         self.bridge = bridge
         self.session = session
         self.surfaces = surfaces
-        _models = State(initialValue: VaultModels(bridge: bridge))
+        _models = State(initialValue: VaultModels(bridge: bridge, account: session.account))
     }
 
     var body: some View {
@@ -217,7 +217,9 @@ struct VaultWindow: View {
         }
         .task {
             deviceID = await bridge.deviceId()
-            account.restore()
+            // The session's one account: a second window or a vault switch
+            // must not re-read a credential a sign-out left behind (#276).
+            account.restoreIfUnread()
             await startSync()
             await renewSession()
         }

@@ -61,7 +61,8 @@ extension VaultTabs {
             content
                 .task {
                     deviceID = await bridge.deviceId()
-                    models.account.restore()
+                    // The session's one account — see the macOS twin (#276).
+                    models.account.restoreIfUnread()
                     await startSync()
                     // Renews the session for as long as the vault is open;
                     // after `restore()`, in this task, so its first look sees
