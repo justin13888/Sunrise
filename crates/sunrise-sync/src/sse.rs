@@ -241,18 +241,13 @@ impl SseTransport {
     /// handshake to fail at construction: the first request is the `Hello` the
     /// driver sends, and that is where its failure is reported.
     ///
-    /// It is **not** where the driver's backoff accounts for one, which is the
-    /// premise the sentence above used to end on. `sunrise_core::sync_driver`'s
-    /// `run` resets the attempt counter in its connect-`Ok` arm, before the
-    /// handshake has run. No attempt can take any other arm, and returning
-    /// `Self` rather than a `Result` is necessary but not sufficient for that:
-    /// what makes it hold is that every one of the nine `TransportFactory`
-    /// closures in this workspace wraps this constructor in `Ok(…)` with no
-    /// fallible step before it. So a relay that refuses the `Hello` is retried
-    /// on the first step of the schedule, forever, and `Backoff::reset`'s own
-    /// stated precondition — "call after a successful operation",
-    /// `backoff.rs:70` — is not met.
-    /// Carried as #283; the repair is the driver's, not this constructor's.
+    /// Because nothing fails here, every `TransportFactory` closure in this
+    /// workspace wraps this constructor in `Ok(…)`, and a connect that resolves
+    /// `Ok` says nothing about the relay. `sunrise_core::sync_driver`'s `run`
+    /// therefore resets its reconnect backoff only once the relay has answered
+    /// the `Hello` — `Backoff::reset`'s own precondition, "call after a
+    /// successful operation" — so a relay that refuses it is retried on the
+    /// published schedule rather than on its first step forever (#283).
     #[must_use]
     pub fn connect_with_bearer(base: &str, bearer: Option<&str>) -> Self {
         let https = hyper_rustls::HttpsConnectorBuilder::new()
