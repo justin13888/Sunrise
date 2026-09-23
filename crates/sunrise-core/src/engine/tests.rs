@@ -7729,7 +7729,7 @@ fn a_self_refused_revoke_still_advances_the_cursor() {
 /// cursor counts the op anyway.**
 ///
 /// This is the delivery half of the gate at
-/// `crates/sunrise-core/src/engine/sync.rs:705#apply_control_op`. The two
+/// `crates/sunrise-core/src/engine/sync.rs:741#apply_control_op`. The two
 /// units that reach that gate today —
 /// `a_revoked_devices_third_party_envelope_claim_is_not_recorded` and
 /// `an_unwound_devices_third_party_envelope_claim_is_not_recorded` — call
