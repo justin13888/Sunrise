@@ -313,8 +313,8 @@ final class SessionModel {
     /// a fresh one would re-read a credential this process's sign-out could
     /// not delete and upload under it (#276). It is read only on a first look.
     private func makeRecoveryCeremony() -> RecoveryCodeModel {
-        let settings = settings
-        let account = account
+        let settings = self.settings
+        let account = self.account
         account.restoreIfUnread()
         let nickname = Platform.deviceName
         return RecoveryCodeModel { [weak self] in
