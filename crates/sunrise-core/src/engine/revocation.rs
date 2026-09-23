@@ -877,7 +877,7 @@ impl Engine {
     ///
     /// # Recoverability: a cut correction does **not** un-skip a revocation
     ///
-    /// Nothing is discarded — a skipped op is still in the ledger, so there is
+    /// Nothing the fold reads is discarded — a skipped op's pair stays, so there is
     /// nothing to re-request — but the skip is not undone by correcting a cut
     /// either, and the reason is the paragraphs above: **the gate reads no cut
     /// of any kind**. `revokers_all`, the discount and the walk's condition are
@@ -957,9 +957,9 @@ impl Engine {
         // **Defensive against a future writer, not against rows that exist.**
         // No self-naming row can reach `device_revoke_ops` at HEAD — see the
         // walk below, which states both sources — so nothing reaches this
-        // `continue` today. It is kept because the ledger is append-only and
-        // permanent: a writer that admitted one would put the device it named
-        // beyond revoking anything, on every replica, for good.
+        // `continue` today. It is kept because no ledger pair is ever dropped
+        // (compaction keeps each one's max): a writer admitting one would put
+        // the device it named beyond revoking anything, everywhere, for good.
         //
         // The walk below holds the same condition and it is **not** a
         // duplicate: this one bounds the *gate*, that one bounds the
@@ -1078,7 +1078,7 @@ impl Engine {
             // refuses a self-naming op before the insert
             // (`apply_device_revoke` returns early), and 0027's seed reads
             // `device_revocations`, which the pre-ADR-0041 arm also refused to
-            // write for one. The ledger is append-only and permanent, so the
+            // write for one. No ledger pair is ever dropped, so the
             // cost of a writer that admitted one is not recoverable — which is
             // why the checks are kept and said to be unreachable rather than
             // quietly relied on.

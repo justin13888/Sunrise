@@ -6968,19 +6968,12 @@ fn a_cut_correction_does_not_re_fold_a_skipped_revocation() {
     // and a fourth row revoking A can only add to A's gating set. What does
     // discriminate is a cut sorting above the op with none below it, in
     // `a_revoked_device_cannot_revoke_a_third_party_however_it_dates_the_op`.
-    //
-    // The ledger holds two rows and not four: B's three revocations of A are
-    // one `(sender, target)` pair, and compaction keeps its greatest stamp,
-    // the T0 + 120s one. The back-dated op was still stored and folded before
-    // it was compacted away, and a lesser row of a pair is one the fold never
-    // reads the value of — `Engine::compact_device_revoke_ops` — so the
-    // assertion below is about the same register four rows would fold to.
     revoke(&er, &mut db, &eb, a_id, T0 - 30_000);
     assert_eq!(
         ledger_rows(&db),
         2,
-        "one row per (sender, target) pair: B -> A at its greatest stamp, and \
-         A -> C"
+        "B's three ops on A compact to their greatest stamp (#250), which folds \
+         exactly as all three do: see Engine::compact_device_revoke_ops"
     );
     assert_eq!(
         revocation_row(&db, &c_id),
