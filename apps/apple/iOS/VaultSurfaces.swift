@@ -65,7 +65,7 @@ extension VaultTabs {
                     models.account.restoreIfUnread()
                     await startSync()
                     // Renews the session for as long as the vault is open;
-                    // after `restore()`, in this task, so its first look sees
+                    // after `restoreIfUnread()`, in this task, so its first look sees
                     // the restored token. See the macOS window for the twin.
                     await models.account.renewWhileRunning(
                         issuer: { models.settings.oidcIssuer },
