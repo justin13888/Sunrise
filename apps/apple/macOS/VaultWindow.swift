@@ -219,6 +219,15 @@ struct VaultWindow: View {
             deviceID = await bridge.deviceId()
             account.restore()
             await startSync()
+            // After `restore()` on purpose, in the same task: a separate
+            // `.task` could take its first look before the token is back.
+            // Scoped to this window, like everything else `models` drives —
+            // closing it tears the models down, and this with them.
+            await account.renewWhileRunning(
+                issuer: { settings.oidcIssuer },
+                clientID: { settings.oidcClientID },
+                now: { await bridge.nowMs() }
+            )
         }
         .task { await sync.poll(from: bridge) }
         // The schedule is only correct until the next write. A task created on

@@ -331,7 +331,8 @@ final class AccountModel {
     }
 
     /// Renew if the token has reached its renewal point. A no-op otherwise, so
-    /// it is safe to call on every tick.
+    /// it is safe to call on every tick — and
+    /// ``renewWhileRunning(issuer:clientID:now:every:sleep:)`` is the tick.
     ///
     /// Renewal is silent by design: the point of a refresh token is that the
     /// user is not interrupted, and interrupting them at 75% of a token's life
@@ -460,5 +461,53 @@ final class AccountModel {
         }
         accessToken = credentials.accessToken
         state = .signedIn(expiresAtMs: credentials.expiresAtMs)
+    }
+}
+
+// MARK: - The renewal tick
+
+extension AccountModel {
+    /// How often ``renewWhileRunning(issuer:clientID:now:every:sleep:)``
+    /// looks at the clock.
+    ///
+    /// ``refreshIfNeeded(issuer:clientID:nowMs:)`` decides *whether* to renew
+    /// — at the token's own renewal point, 75% of its life — so this only
+    /// bounds how late after that point the renewal starts. A look that is
+    /// not due is one clock read and one comparison; thirty seconds is far
+    /// inside the quarter of a token's life that is left when it comes due.
+    static let renewalCheckInterval: Duration = .seconds(30)
+
+    /// Renew the session for as long as the calling task runs.
+    ///
+    /// The one production caller of ``refreshIfNeeded(issuer:clientID:nowMs:)``.
+    /// Each shell runs it from a `.task` on the view that owns ``VaultModels``,
+    /// so it ends when that view does — a closed Mac window or a torn-down
+    /// vault — and never outlives the model it renews. Cancellation stops it
+    /// at the next sleep; a renewal already in flight finishes under the
+    /// model's own ``sessionGeneration`` rules.
+    ///
+    /// Looks once before the first sleep, so a launch that restored a token
+    /// already past its renewal point renews it at once rather than an
+    /// interval later.
+    ///
+    /// The settings are read on every look rather than captured once, so an
+    /// issuer edited in Settings is the one the next renewal asks. `now` and
+    /// `sleep` are parameters so a test drives the loop on a fake clock.
+    func renewWhileRunning(
+        issuer: @escaping @MainActor () -> String,
+        clientID: @escaping @MainActor () -> String,
+        now: @escaping @MainActor () async -> UInt64,
+        every interval: Duration = renewalCheckInterval,
+        sleep: @escaping (Duration) async throws -> Void = { try await _Concurrency.Task.sleep(for: $0) }
+    ) async {
+        while !_Concurrency.Task.isCancelled {
+            let nowMs = await now()
+            await refreshIfNeeded(issuer: issuer(), clientID: clientID(), nowMs: nowMs)
+            do {
+                try await sleep(interval)
+            } catch {
+                return
+            }
+        }
     }
 }
