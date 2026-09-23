@@ -41,6 +41,11 @@ impl Engine {
     /// The narrow form of what [`Self::revoke_device`] does to everything: used
     /// when a Stream key is believed exposed without a device being at fault,
     /// and as the seam a share-revocation will hang off.
+    ///
+    /// # Errors
+    /// [`EngineError::Invalid`] when this replica's register calls **this
+    /// device** revoked; nothing is minted, sealed, or emitted. Storage
+    /// failures otherwise.
     pub(super) fn rotate_stream_key(
         &self,
         db: &mut Db,
@@ -53,7 +58,33 @@ impl Engine {
         // [`Self::revoke_device`]: resolving the meta epoch can emit ops into
         // the very stream this number counts.
         let mut seq = 0u64;
+        let mut refused = false;
         db.with_tx(|tx| -> rusqlite::Result<()> {
+            // **A revoked device holds no pen.** `mint_epoch` writes the fresh
+            // key into this device's own `stream_keys`, `emit_key_envelopes`
+            // seals it to every unbounded peer, `Keychain::absorb_stream_key`
+            // stores it with no check on the sender's standing, and
+            // `current_epoch_tx` is `MAX(epoch)` — so a revoked device that
+            // could run this would choose the key every honest peer seals its
+            // next write under. `revoke_device` keeps such a device out of the
+            // same chain on its `effective` predicate; this is the other door.
+            //
+            // Unlike `revoke_device`, this *is* a local "refuse if revoked"
+            // guard, and ADR-0041 §Decision 3's reason for refusing one there
+            // does not transfer. That reason is the recovery path: a revoked
+            // device must still be able to revoke the device that revoked it.
+            // Rotating a stream key recovers nothing — it cannot unwind a
+            // revocation — so the guard closes no path anyone needs.
+            //
+            // It is checked first, before `ensure_stream_epoch` can mint the
+            // vault-meta stream's first epoch, so a refusal writes nothing.
+            // And it is only the local half: a replica that has not applied
+            // the revocation has no row to read. The peer-side half is gating
+            // what `absorb_stream_key` accepts, which is its own question.
+            if self.is_revoked(tx, &self.keychain.device_id())? {
+                refused = true;
+                return Ok(());
+            }
             let seal_under = self.ensure_stream_epoch(tx, &META_STREAM, now_ms)?;
             seq = self.next_seq_tx(tx, &META_STREAM)?;
             let (epoch, key) =
@@ -62,6 +93,11 @@ impl Engine {
             minted = epoch;
             self.emit_key_envelopes(tx, &stream_id, epoch, &key, now_ms, Some(&seal_under))
         })?;
+        if refused {
+            return Err(EngineError::Invalid(
+                "this device is revoked and cannot rotate a stream key".into(),
+            ));
+        }
         Ok(CommandResult::new(
             stream,
             None,

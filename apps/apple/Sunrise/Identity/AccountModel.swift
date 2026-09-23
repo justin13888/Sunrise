@@ -93,7 +93,7 @@ final class AccountModel {
     private let store: any CredentialStore
     private let makeDriver: @Sendable (String, String) -> any LoginDriver
     private let openURL: @Sendable (URL) -> Void
-    private var credentials: StoredCredentials?
+    private(set) var credentials: StoredCredentials?
 
     /// Whether the last look at the store was refused in a way that may have
     /// left a copy of the token somewhere **nobody read**.
@@ -331,7 +331,8 @@ final class AccountModel {
     }
 
     /// Renew if the token has reached its renewal point. A no-op otherwise, so
-    /// it is safe to call on every tick.
+    /// it is safe to call on every tick — and
+    /// ``renewWhileRunning(issuer:clientID:now:every:sleep:)`` is the tick.
     ///
     /// Renewal is silent by design: the point of a refresh token is that the
     /// user is not interrupted, and interrupting them at 75% of a token's life
@@ -370,20 +371,20 @@ final class AccountModel {
             // again. Dropping it here would sign the user out early, every
             // time the network blinked.
             //
-            // Nor is it one when a sign-out has already ended the session:
-            // `current` was captured at entry and that sign-out has already
-            // invalidated it, so without this guard a renewal failing in the
-            // background calls ``signOut()`` a SECOND time — a `store.clear()`
-            // nobody asked for, and on a refusal a fresh `.unread` re-arming
-            // the disclosure the user retired, with no user action behind it.
-            guard sessionGeneration == generation else { return }
-            if current.hasExpired(nowMs: nowMs) {
-                // `signOut()` assigns `.signedOut` last, so the renewal error
-                // has to be written after it or it is never shown. It used to
-                // be written first, which made this assignment dead.
-                signOut()
-                state = .failed(error.localizedDescription)
-            }
+            // A sign-out that landed meanwhile already chose the screen: `.failed`
+            // written over its `.signedOut` would report a session it ended.
+            guard sessionGeneration == generation, current.hasExpired(nowMs: nowMs) else { return }
+            // Expired and not renewed. The bearer goes, since the relay refuses
+            // it now anyway, but the refresh token stays, here and in the
+            // Keychain: the binding reports an unreachable issuer and a refusal
+            // as the same `BindingError.Login` string, and deleting the token on
+            // a network failure made every offline launch, and every Mac waking
+            // before its network, end in a browser sign-in. The next tick asks
+            // again and a success publishes as usual; until then
+            // ``offersBareSignOut`` keeps a **Sign out** on the `.failed` row.
+            // A login already in the browser keeps its spinner.
+            accessToken = nil
+            if state != .awaitingBrowser { state = .failed(error.localizedDescription) }
         }
     }
 
@@ -460,5 +461,53 @@ final class AccountModel {
         }
         accessToken = credentials.accessToken
         state = .signedIn(expiresAtMs: credentials.expiresAtMs)
+    }
+}
+
+// MARK: - The renewal tick
+
+extension AccountModel {
+    /// How often ``renewWhileRunning(issuer:clientID:now:every:sleep:)``
+    /// looks at the clock.
+    ///
+    /// ``refreshIfNeeded(issuer:clientID:nowMs:)`` decides *whether* to renew
+    /// — at the token's own renewal point, 75% of its life — so this only
+    /// bounds how late after that point the renewal starts. A look that is
+    /// not due is one clock read and one comparison; thirty seconds is far
+    /// inside the quarter of a token's life that is left when it comes due.
+    nonisolated static let renewalCheckInterval: Duration = .seconds(30)
+
+    /// Renew the session for as long as the calling task runs.
+    ///
+    /// The one production caller of ``refreshIfNeeded(issuer:clientID:nowMs:)``.
+    /// Each shell runs it from a `.task` on the view that owns ``VaultModels``,
+    /// so it ends when that view does — a closed Mac window or a torn-down
+    /// vault — and never outlives the model it renews. Cancellation stops it
+    /// at the next sleep; a renewal already in flight finishes under the
+    /// model's own ``sessionGeneration`` rules.
+    ///
+    /// Looks once before the first sleep, so a launch that restored a token
+    /// already past its renewal point renews it at once rather than an
+    /// interval later.
+    ///
+    /// The settings are read on every look rather than captured once, so an
+    /// issuer edited in Settings is the one the next renewal asks. `now` and
+    /// `sleep` are parameters so a test drives the loop on a fake clock.
+    func renewWhileRunning(
+        issuer: @escaping @MainActor () -> String,
+        clientID: @escaping @MainActor () -> String,
+        now: @escaping @MainActor () async -> UInt64,
+        every interval: Duration = AccountModel.renewalCheckInterval,
+        sleep: @escaping (Duration) async throws -> Void = { try await _Concurrency.Task.sleep(for: $0) }
+    ) async {
+        while !_Concurrency.Task.isCancelled {
+            let nowMs = await now()
+            await refreshIfNeeded(issuer: issuer(), clientID: clientID(), nowMs: nowMs)
+            do {
+                try await sleep(interval)
+            } catch {
+                return
+            }
+        }
     }
 }

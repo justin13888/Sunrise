@@ -63,6 +63,14 @@ extension VaultTabs {
                     deviceID = await bridge.deviceId()
                     models.account.restore()
                     await startSync()
+                    // Renews the session for as long as the vault is open;
+                    // after `restore()`, in this task, so its first look sees
+                    // the restored token. See the macOS window for the twin.
+                    await models.account.renewWhileRunning(
+                        issuer: { models.settings.oidcIssuer },
+                        clientID: { models.settings.oidcClientID },
+                        now: { await bridge.nowMs() }
+                    )
                 }
                 .task { await models.sync.poll(from: bridge) }
                 .task { await surfaces.reminders?.follow() }
