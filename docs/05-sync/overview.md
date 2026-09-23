@@ -49,6 +49,13 @@ Sync moves encrypted ops between devices that participate in the same identity (
 
 `Catching up` and `Live` are both functional states from the user's perspective; the indicator differs.
 
+Two states sit outside the diagram. `Degraded` is connected but told by the
+relay that ops it can no longer supply are missing. `Stopped` follows a relay
+`Close` the client cannot recover from on its own (`AUTH_DEVICE_REVOKED`,
+`RELAY_STORAGE_UNAVAILABLE`, or a code it cannot read): unlike `Disconnected`
+it does not retry, and leaves only when the credential is replaced or the app
+restarts. `crates/sunrise-sync/src/state.rs` is the authority for the set.
+
 ## Latency targets
 
 | Action | p50 | p95 |

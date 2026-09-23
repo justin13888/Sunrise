@@ -176,7 +176,7 @@ Revocation today is a **register plus a read bound**:
   transaction, when the fold finds the revocation effective
   (`crates/sunrise-core/src/engine/revocation.rs:311-318#revoke_device`), and
   `sync_driver::drain_relay_revocations` retries it on every session
-  (`crates/sunrise-core/src/sync_driver.rs:1466#drain_relay_revocations`). The
+  (`crates/sunrise-core/src/sync_driver.rs:1621#drain_relay_revocations`). The
   bound is real and **conditional**: the relay enforces only against a
   device-signed request, and `require_device_sig` defaults to false, so in the
   default deployment it is not in force
