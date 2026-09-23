@@ -6968,12 +6968,19 @@ fn a_cut_correction_does_not_re_fold_a_skipped_revocation() {
     // and a fourth row revoking A can only add to A's gating set. What does
     // discriminate is a cut sorting above the op with none below it, in
     // `a_revoked_device_cannot_revoke_a_third_party_however_it_dates_the_op`.
+    //
+    // The ledger holds two rows and not four: B's three revocations of A are
+    // one `(sender, target)` pair, and compaction keeps its greatest stamp,
+    // the T0 + 120s one. The back-dated op was still stored and folded before
+    // it was compacted away, and a lesser row of a pair is one the fold never
+    // reads the value of — `Engine::compact_device_revoke_ops` — so the
+    // assertion below is about the same register four rows would fold to.
     revoke(&er, &mut db, &eb, a_id, T0 - 30_000);
     assert_eq!(
         ledger_rows(&db),
-        4,
-        "the back-dated correction is in the ledger, so the next assertion is \
-         about a row that exists"
+        2,
+        "one row per (sender, target) pair: B -> A at its greatest stamp, and \
+         A -> C"
     );
     assert_eq!(
         revocation_row(&db, &c_id),
@@ -12248,6 +12255,192 @@ fn two_revocations_at_one_hlc_from_one_sender_are_two_ledger_rows() {
     assert!(
         er.is_revoked(db.conn(), &two).unwrap(),
         "and so is the second: neither op is the other's duplicate"
+    );
+}
+
+/// Every `device_revocations` row, ordered, for comparing two replicas' whole
+/// registers rather than one device's entry.
+fn whole_register(db: &Db) -> Vec<(Vec<u8>, RevocationRow)> {
+    let conn = db.conn();
+    let mut stmt = conn
+        .prepare(
+            "SELECT device_id, cut_ms, cut_logical, revoked_by, reason
+             FROM device_revocations ORDER BY device_id",
+        )
+        .unwrap();
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((r.get(0)?, (r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    rows
+}
+
+/// Every `device_revoke_ops` row, ordered.
+fn whole_ledger(db: &Db) -> Vec<(i64, i64, Vec<u8>, Vec<u8>)> {
+    let conn = db.conn();
+    let mut stmt = conn
+        .prepare(
+            "SELECT op_hlc_ms, op_hlc_logical, sender, revoked_device_id
+             FROM device_revoke_ops
+             ORDER BY op_hlc_ms, op_hlc_logical, sender, revoked_device_id",
+        )
+        .unwrap();
+    let rows = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    rows
+}
+
+/// **Repeating a revocation does not grow the ledger** (#250).
+///
+/// Before compaction every `device_revoke` op was a row for good, and the
+/// whole ledger was re-folded on every applied op — so a device naming one
+/// target over and over, with a fresh stamp each time, grew the table and the
+/// per-op fold without bound. A revoked device can do it too: its ops are
+/// stored unconditionally and gated only in the fold.
+///
+/// Both a believed sender and a gated one are exercised, and the register is
+/// checked to be the one the greatest stamp would have produced, so this pins
+/// the bound and not only a row count.
+#[test]
+fn repeating_a_revocation_keeps_one_ledger_row_per_pair() {
+    let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let ec = engine_seeded(ROOT, [3u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let er = engine_seeded(ROOT, [4u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut db = db_root(ROOT);
+    let (a_id, c_id) = (ea.keychain.device_id(), ec.keychain.device_id());
+
+    // B revokes A fifty times, stamps alternating either side of T0: the
+    // greatest is T0 + 48s (index 48), and index 49 arrives after it,
+    // back-dated to T0 - 49s.
+    for i in 0..50u64 {
+        let at = if i % 2 == 0 {
+            T0 + i * 1_000
+        } else {
+            T0 - i * 1_000
+        };
+        revoke(&er, &mut db, &eb, a_id, at);
+    }
+    assert_eq!(ledger_rows(&db), 1, "fifty ops on one pair are one row");
+    assert_eq!(
+        revocation_row(&db, &a_id).unwrap().0,
+        i64::try_from(T0 + 48_000).unwrap(),
+        "and it is the greatest stamp, which is the row the fold would pick"
+    );
+
+    // A, now revoked, names C fifty times. Every op is gated, and every op
+    // is still one row.
+    for i in 0..50u64 {
+        revoke(&er, &mut db, &ea, c_id, T0 + 100_000 + i);
+    }
+    assert_eq!(
+        ledger_rows(&db),
+        2,
+        "a gated sender repeating itself costs one row, not fifty"
+    );
+    assert_eq!(
+        revocation_row(&db, &c_id),
+        None,
+        "and compaction kept it gated: the pair survives, so the gate does"
+    );
+    assert!(er.is_revoked(db.conn(), &a_id).unwrap());
+}
+
+/// **Compaction changes no fold, and reaches rows written before it existed.**
+///
+/// Replica `full` has the whole op set written straight into the ledger — the
+/// shape a vault that accumulated repeats before compaction holds — and then
+/// takes one more op through the ordinary path, so its fold runs over every
+/// row. Replica `live` takes every op through the ordinary path, in the
+/// opposite order, and compacts at each one. If deleting a pair's lesser rows
+/// could change a register, the two would disagree; they must hold the same
+/// register and, afterwards, the same ledger.
+///
+/// The op set has a gated pair with repeats (A, revoked by B, naming C), a
+/// believed pair whose repeats bracket the gate's other rows (B -> A), and a
+/// believed pair that wins C with its greatest, not its first, stamp (D -> C).
+#[test]
+fn compaction_changes_no_fold_and_heals_an_uncompacted_ledger() {
+    let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let ec = engine_seeded(ROOT, [3u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let ed = engine_seeded(ROOT, [5u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let ee = engine_seeded(ROOT, [6u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let ef = engine_seeded(ROOT, [7u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let er = engine_seeded(ROOT, [4u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let (a_id, c_id, f_id) = (
+        ea.keychain.device_id(),
+        ec.keychain.device_id(),
+        ef.keychain.device_id(),
+    );
+
+    let ops: Vec<(&Engine, [u8; 16], u64)> = vec![
+        (&eb, a_id, T0),
+        (&ea, c_id, T0 + 60_000),
+        (&eb, a_id, T0 - 30_000),
+        (&ea, c_id, T0 + 10_000),
+        (&ed, c_id, T0 + 1_000),
+        (&eb, a_id, T0 + 120_000),
+        (&ed, c_id, T0 + 5_000),
+    ];
+
+    let mut full = db_root(ROOT);
+    for (sender, target, at) in &ops {
+        full.conn()
+            .execute(
+                "INSERT INTO device_revoke_ops
+                 (op_hlc_ms, op_hlc_logical, sender, revoked_device_id, reason,
+                  recorded_at_ms)
+                 VALUES (?1, 0, ?2, ?3, ?4, ?1)",
+                params![
+                    i64::try_from(*at).unwrap(),
+                    &sender.keychain.device_id()[..],
+                    &target[..],
+                    RevokeReason::Lost.as_str(),
+                ],
+            )
+            .unwrap();
+    }
+    assert_eq!(ledger_rows(&full), 7, "uncompacted, as written");
+    revoke(&er, &mut full, &ee, f_id, T0 + 200_000);
+
+    let mut live = db_root(ROOT);
+    for (sender, target, at) in ops.iter().rev() {
+        revoke(&er, &mut live, sender, *target, *at);
+    }
+    revoke(&er, &mut live, &ee, f_id, T0 + 200_000);
+
+    assert_eq!(
+        whole_register(&full),
+        whole_register(&live),
+        "a fold over every row and a fold over each pair's greatest agree"
+    );
+    assert_eq!(
+        revocation_row(&live, &a_id).unwrap().0,
+        i64::try_from(T0 + 120_000).unwrap()
+    );
+    assert_eq!(
+        revocation_row(&live, &c_id).unwrap().0,
+        i64::try_from(T0 + 5_000).unwrap(),
+        "D's greatest stamp wins C, and A's gated rows do not"
+    );
+    assert!(er.is_revoked(live.conn(), &f_id).unwrap());
+
+    assert_eq!(
+        whole_ledger(&full),
+        whole_ledger(&live),
+        "the next op compacted the uncompacted ledger to the same rows"
+    );
+    assert_eq!(
+        ledger_rows(&live),
+        4,
+        "one row per pair: B->A, A->C, D->C, E->F"
     );
 }
 
