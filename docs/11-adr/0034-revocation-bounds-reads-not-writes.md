@@ -106,7 +106,7 @@ the code rather than from the issue:
   sentence. An earlier draft of this bullet said nothing in the apply path
   consulted the register at all, which the call chain above falsifies.
 - `apply_remote_all` says so at step b
-  (`crates/sunrise-core/src/engine/sync.rs:200-201#apply_remote_all`): *"A
+  (`crates/sunrise-core/src/engine/sync.rs:236-237#apply_remote_all`): *"A
   revoked device's row is found here like any other, and its op is applied like
   any other."*
 - `upsert_sync_cursor`'s doc
