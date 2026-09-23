@@ -364,9 +364,10 @@ impl Engine {
             // re-revocation of a device the account has cut, and rotating
             // again is harmless and keeps the command's meaning uniform.
             //
-            // This closes one route and not the mechanism:
-            // `Command::RotateStreamKey` reaches the same
-            // mint-and-distribute chain with no gate at all.
+            // `Command::RotateStreamKey` reaches the same mint-and-distribute
+            // chain one stream at a time, and is gated on this device's own
+            // standing in `rotate_stream_key` — there as a plain refusal,
+            // because it has no recovery path to keep open.
             if effective {
                 let set = self.keychain.rotation_set(tx)?;
                 unrotatable = set.unrotatable;
