@@ -1366,7 +1366,7 @@ class FlagsGateContract(unittest.TestCase):
         # And the two kinds inside `mise.toml`: 40 unbalanced quotations
         # to a shell lexer — 38 fences, plus the opening and closing lines
         # of the single-quoted `python3 -c` program `ios-app` picks its
-        # simulator with — and `:530` alone, which is an unclosed `$(`
+        # simulator with — and `:561` alone, which is an unclosed `$(`
         # continued with `\\` inside a `"""` string. They are counted
         # together by the gate and stated separately by its docstring, so
         # they are asserted separately here.

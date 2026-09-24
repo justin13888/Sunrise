@@ -367,7 +367,7 @@ merge for one is how a gate gets switched off. The tally is printed rather than
 kept quiet, so that a number which grew from forty-odd to four hundred would say
 so. On this repository it is 47: **38** of `mise.toml`'s triple-quote fences,
 the first and last lines of the single-quoted `python3 -c` program `ios-app`
-picks its simulator with, and `mise.toml:530`; **three** in
+picks its simulator with, and `mise.toml:561`; **three** in
 `.github/scripts/sparkle-tools.sh` where one
 `awk` program's single-quoted body spans three lines inside a `$( )`, and
 **three** `- name:` scalars whose English apostrophe is an unbalanced quotation
