@@ -50,9 +50,18 @@ No if-this-then-that rules, no scripting, no cron-driven actions, no outbound we
 
 No `you@in.sunrise.example` capture address. Reason: inbound email is operationally heavy (DKIM/SPF/DMARC, abuse handling, attachment storage) and breaks the E2EE story (the receiving server sees plaintext). The native share sheets on iOS / Android and a browser extension cover the "save this for later" use case.
 
-## Not a calendar protocol server, not a CalDAV client
+## Not a calendar protocol server, and not a calendar editor
 
-We integrate with **Google Calendar** and **iCalendar (.ics) import/export**, full stop. No CalDAV, no Exchange, no Apple iCloud direct, no Office 365 direct. Reason: each protocol is its own quirks-museum, and Google Calendar already proxies most of them for users who care. CalDAV may return post-v1 if there's loud demand from self-hosters.
+We **read** Google Calendar, Microsoft 365 / Outlook / Exchange (through
+Microsoft Graph) and CalDAV servers (iCloud, Fastmail, Nextcloud, …), and we
+import and export iCalendar (.ics) files
+([ADR-0049](../11-adr/0049-calendar-integrations-per-device-oauth.md)). We do
+not serve CalDAV, and we do not write to anyone's calendar: no creating,
+editing, moving or responding to external events. Reason: a calendar protocol
+server is its own product, and write access to someone's calendar is a much
+larger trust request and a conflict-resolution problem per provider. Sunrise
+plans *around* the calendar; the calendar stays the source of truth for
+meetings.
 
 ## Not a custom auth stack
 

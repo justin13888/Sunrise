@@ -7,11 +7,12 @@ status: accepted
 **One-shot file import and export. There are no subscription URLs.** `URL` is
 explicitly unsupported by the parser — it raises a notice like any other
 unmodelled property — and nothing in the workspace fetches an `.ics` over the
-network. Google Calendar is deferred and unreachable
-([`google-calendar.md`](./google-calendar.md)), and CalDAV is an explicit
-non-goal ([`../00-product/non-goals.md`](../00-product/non-goals.md)
-§"Not a calendar protocol server, not a CalDAV client"), so this is the only
-calendar path a v1 user can actually take.
+network. The read-only calendar integrations (Google Calendar, Microsoft Graph
+and CalDAV, [ADR-0049](../11-adr/0049-calendar-integrations-per-device-oauth.md))
+are not built; they are ranked on the roadmap ([`../roadmap.md`](../roadmap.md))
+as [#4](https://github.com/justin13888/Sunrise/issues/4), and they write
+read-only `ExternalEvent`s, never Blocks. So this is the only calendar path a
+user can actually take today, and the only one that creates Blocks.
 
 > **Status: partly implemented. This document is the target; the list below is
 > what ships.** `crates/sunrise-integrations` implements the syntax layer
@@ -82,11 +83,11 @@ calendar path a v1 user can actually take.
 
 ## Mapping rules
 
-**There is no CalDAV mapping table.** This section used to say "same as CalDAV
-mapping table"; CalDAV is an explicit v1 non-goal
-([`../00-product/non-goals.md`](../00-product/non-goals.md)), the document that
-would have held that table was never written, and the sentence had therefore
-never pointed at anything. The mapping is below, and it is read off
+**This is not the CalDAV mapping.** This section used to say "same as CalDAV
+mapping table", a table that was never written. CalDAV is now a read-only
+integration ([`caldav.md`](./caldav.md)), and it maps events onto
+`ExternalEvent`, not onto Blocks, so it shares no table with this file. The
+`.ics` file mapping is below, and it is read off
 `crates/sunrise-integrations/src/ical_map.rs` — `event_to_block` (line 65) and
 `block_to_event` (line 146) — which is the only place it exists.
 
@@ -199,7 +200,7 @@ Two deliberate carve-outs:
   - A TZID that the bundled IANA tzdb does not know falls back to UTC and logs `int.import.tz_unknown`.
   - Floating times (no TZID) are stored as `tz: floating` and treated as user-local on each device.
 
-## Subscribed `.ics` URLs — not in v1
+## Subscribed `.ics` URLs — not implemented
 
 **There is no subscription mechanism, and `URL` is not even parsed.** The
 importer takes a file; there is no HTTP client in `crates/sunrise-integrations`
