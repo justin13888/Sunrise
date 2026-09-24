@@ -98,6 +98,22 @@ struct SyncPresentation: Equatable {
                 tone: .alert,
                 isKnownIncomplete: true
             )
+        case .stopped:
+            // Not "Offline": offline retries on its own and this does not.
+            // The relay closed the session for a reason reconnecting cannot
+            // fix — this device was revoked, or the relay could not read its
+            // storage — so the driver waits for the user. Not known
+            // incomplete either: nothing was lost, it just is not moving.
+            self.init(
+                label: "Sync stopped",
+                detail: """
+                    The relay ended this device's session and will not reconnect \
+                    it on its own. Sign in again or reopen Sunrise to retry.
+                    """,
+                symbol: "xmark.icloud",
+                tone: .alert,
+                isKnownIncomplete: false
+            )
         }
     }
 

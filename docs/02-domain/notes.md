@@ -6,14 +6,14 @@ status: accepted
 
 Notes are rich-text bodies attached to a parent entity (Task, Stream, Block). Notes do not exist as standalone entities.
 
-> **Status: the `Note` entity is unreachable in v1.** `crates/sunrise-domain/src/note.rs`
+> **Status: the `Note` entity is unreachable today.** `crates/sunrise-domain/src/note.rs`
 > defines the struct and `0013_baseline.sql` creates a `notes` table, and
 > nothing in between exists: **zero ops, zero commands, zero queries, zero
 > writers** — no `InnerOp` variant, no `Command`, no `Query`, no UniFFI
 > surface, and nothing that writes the table. `Query::EntityById` refuses
 > `EntityKind::Note`, though not by name: it falls through to the generic
 > refusal, the wildcard arm at `crates/sunrise-core/src/engine/query.rs:206-209`
-> ("EntityById not supported for kind {:?} in v1"). What *is* live is `NoteBody`
+> ("EntityById not supported for kind {:?}"). What *is* live is `NoteBody`
 > as a **field**, reached three ways — `Task.body`
 > (`crates/sunrise-domain/src/task.rs:97`), `Stream.description`
 > (`stream.rs:124`, given a column by migration
@@ -22,9 +22,10 @@ Notes are rich-text bodies attached to a parent entity (Task, Stream, Block). No
 > (`routine.rs:68-88`, `body` at `:87`) reached through `Routine.template`
 > (`routine.rs:149`) rather than a field of `Routine` itself. Two of the three
 > are not called `body` at the path you would guess. A `NoteBody` field is a
-> different thing from a `Note`. [ADR-0020](../11-adr/0020-v1-must-demotions.md) §(c) deferred the
-> free-standing entity while keeping notes-as-a-field a v1 MUST, and kept the
-> struct and the table deliberately rather than deleting them. See also
+> different thing from a `Note`. The free-standing entity is not built;
+> [ADR-0020](../11-adr/0020-v1-must-demotions.md) §(c) took it out of the MUST
+> set while keeping notes-as-a-field a MUST, and kept the struct and the table
+> deliberately rather than deleting them. See also
 > [`../implementation/overview.md`](../implementation/overview.md).
 
 ## Why constrained rich text (not Markdown)
@@ -119,9 +120,9 @@ up names this file specifically. Character-level merge is the target state.
 | Platform | Editor |
 |---|---|
 | macOS | SwiftUI text editing, schema-locked to NoteBody |
-| Web (deferred, [ADR-0012](../11-adr/0012-web-wasm-deferred.md)) | Tiptap or ProseMirror, schema-locked to NoteBody |
+| Web (not built; ranked as [#52](https://github.com/justin13888/Sunrise/issues/52), [ADR-0012](../11-adr/0012-web-wasm-deferred.md)) | Tiptap or ProseMirror, schema-locked to NoteBody |
 | iOS / iPadOS | The same SwiftUI `NoteBodyEditor` the Mac uses, schema-locked to NoteBody. The one deliberate difference is the checklist tick: macOS draws `.checkbox`, which iOS does not have, and iOS's default `Toggle` is a switch — so it draws a circle that fills instead, because a switch says "this setting is on" where a checklist row means "this is done" |
-| Android (deferred) | Native EditText with custom toolbar |
+| Android (not built) | Native EditText with custom toolbar |
 | `sunrise` CLI | Plain text only; no structured-body editing |
 
 All editors emit and consume the same `NoteBody` bytes.

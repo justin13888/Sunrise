@@ -4,172 +4,335 @@ status: accepted
 
 # Schema Versioning
 
-Domain entities evolve. Devices on different versions must keep syncing.
+> **Amended by [ADR-0044](../11-adr/0044-per-field-ops.md) and
+> [ADR-0045](../11-adr/0045-schema-identity-and-feature-gating.md).** Entity
+> ops write individual fields, and each field merges by its declared CRDT
+> type. A schema version has a fingerprint. Nothing that verifies is dropped.
+> A vault declares the features it requires. The per-device hash chain and
+> state digest in [ADR-0043](../11-adr/0043-commit-tree.md) are **proposed**,
+> and nothing here depends on them.
+>
+> **Rules marked *Today* describe the tree before those ADRs are built.** Each
+> one names the issue that closes the gap.
 
-## Three layers, three versions
+Domain entities evolve, and devices on different builds have to keep syncing
+the same vault. Every rule on this page serves one invariant:
+
+> **Merging vaults across client versions MUST NEVER break and MUST NEVER lose
+> data.**
+
+"Never break" means an older build never errors out, never stops syncing, and
+never refuses a vault because a newer build has written to it. "Never lose"
+means every field a writer set is still in the merged state of every replica,
+unless a later concurrent write to *that same field* won under its CRDT rule.
+
+## Versioned layers
 
 | Layer | Constant | Bump on |
 |---|---|---|
-| **Wire protocol** | `WIRE_PROTO_V` | Sync protocol changes (new message kinds, framing) |
-| **Envelope container format** | `ENVELOPE_FORMAT_V` | The `OpEnvelope` field layout, canonical ordering, AAD, or signature input |
-| **Document schema** | `DOC_SCHEMA_V` | Entity/field additions or removals |
-| **Local DB schema** | `STORAGE_V` | SQLite tables/indexes for materialized views |
+| **Wire protocol** | `WIRE_PROTO_V` | Sync protocol changes: new message kinds, framing |
+| **Envelope container format** | `ENVELOPE_FORMAT_V` (floor `ENVELOPE_FORMAT_FLOOR`) | A change to the `OpEnvelope` field layout, canonical ordering, AAD or signature input. An additive field does not bump it ([ADR-0045](../11-adr/0045-schema-identity-and-feature-gating.md) §5). |
+| **Document schema** | `DOC_SCHEMA_V` (floor `DOC_SCHEMA_FLOOR`, identity = fingerprint) | Any change to an entity, a nested struct, an enum's variant set, an op kind, a field's CRDT type, or the feature registry |
+| **Local DB schema** | `STORAGE_V` | SQLite tables and indexes for the materialized projection |
 
-These are independent. Adding a new task field bumps `DOC_SCHEMA_V` only. Switching from WebSocket to QUIC bumps `WIRE_PROTO_V` only.
+The layers are independent. Adding a task field bumps `DOC_SCHEMA_V` only.
+Switching transports bumps `WIRE_PROTO_V` only. The full table of constants,
+and the rules for each, is
+[`../10-cross-cutting/protocol-versioning.md`](../10-cross-cutting/protocol-versioning.md).
+
+Every layer is a monotonic `u16`. Semantic versioning and date versions are
+rejected, for the reasons in
+[ADR-0045](../11-adr/0045-schema-identity-and-feature-gating.md) §1. The
+product version (`0.MINOR.PATCH`, per [ADR-0042](../11-adr/0042-v0-forever.md))
+carries no compatibility meaning and MUST NOT be consulted.
 
 The envelope container is versioned **separately from the schema it carries**
 ([ADR-0015](../11-adr/0015-envelope-doc-schema-split.md)), and the two have
-opposite failure rules: a container mismatch is a hard reject, because the
-reader cannot find the payload, while a newer document schema is *accepted*,
-because the reader can find, authenticate and decrypt the payload and merely may
-not understand every field inside it. Before the split both roles were played by
-one number, so bumping the schema to add a field changed the magic prefix and
-made every already-signed envelope undecodable — the exact opposite of the
-"infinite forward compat" promised below.
+opposite failure rules:
 
-`DOC_SCHEMA_FLOOR` is the lowest schema this build can still interpret. It moves
-only when a shape stops being *readable*, never merely because a newer one
-exists.
+- **A container this reader cannot implement is refused**, because the reader
+  cannot find the payload.
+- **A newer document schema is accepted**, because the reader can find,
+  authenticate and decrypt the payload. It merely may not understand every
+  part of it.
 
-## Compatibility windows
+`DOC_SCHEMA_FLOOR` is the lowest schema this build can still interpret. It
+moves only when a shape stops being *readable*, never merely because a newer
+one exists. Every op ever written stays in logs and on relays and remains the
+source of truth for a rebuild. So the floor stays at `1`, and raising it needs
+its own ADR showing that no live vault or snapshot still holds an op below the
+new floor.
 
-- **Wire protocol:** N and N-1 must interoperate. N-2 is rejected with a clear "please update your client" error.
-- **Doc schema:** forward compat down to `DOC_SCHEMA_FLOOR`. Newer fields on older clients are *preserved* but ignored, and re-emitted verbatim. See [`../10-cross-cutting/protocol-versioning.md` §7](../10-cross-cutting/protocol-versioning.md#7-document-schema-forward-compat) for the precise rules and the `forward-compat/v1-reads-v2.cbor` fixture.
+## Schema identity: the fingerprint
 
-  The rule has three halves and **all three are required**, because two of them
-  hold on their own and still lose the field:
+A `DOC_SCHEMA_V` names exactly one schema. The canonical schema covers:
 
-  1. **Every entity carries `#[serde(flatten)] unknown: Unknowns`**, so an
-     unmodelled key survives decode. The sole exception is `Interruption`,
-     whose whole value is its primary key.
-  2. **Every entity persists that map**, so the key survives the projection as
-     well as the decode. On an entity-level LWW model
-     ([ADR-0014](../11-adr/0014-entity-level-lww-merge.md)) this is not
-     cosmetic: every op is full-state, so a device that merely reads and
-     re-saves an entity emits the truncated version, and that op wins on every
-     peer. A struct field with no column is a field that survives exactly one
-     transaction.
-  3. **`encode_canonical` sorts map keys**, so the preserved field is
-     re-emitted in the position its author put it in — without which
-     byte-exact re-emission, and therefore the signature, is impossible.
+- every entity, nested struct and enum, with its variant set
+- every op kind
+- every field, with its name, value type, CRDT type and default
+- every feature id
 
-  Persistence is per-entity storage, not one mechanism: `tasks.extra`,
-  `blocks.extra` and `attachments.extra` are dedicated `BLOB` columns;
-  `review_snapshots.body` holds the whole entity's canonical CBOR and so
-  carries its unknowns without a column of its own. The remaining five
-  column-projected entities — `Stream`, `Context`, `Routine`, `FocusStart`
-  and `FocusEnd` — get their `extra BLOB` from
-  `crates/sunrise-storage/migrations/0015_entity_extra_columns.sql`. Naming
-  `tasks.extra` alone, as an earlier revision of this line did, describes one
-  column and implies a mechanism that was not universal.
-- **DB schema:** local-only; runs migrations in-place on first launch of a new version.
+It is generated from the entity registry ([#328](https://github.com/justin13888/Sunrise/issues/328)), not written by hand. It is
+committed under `schemas/doc-schema/`. Its fingerprint is:
+
+```
+BLAKE3::derive_key("sunrise.doc_schema.fingerprint.v1", JCS(schema))
+```
+
+- **A committed registry** maps every shipped version to its fingerprint, and
+  it is append-only.
+- **A test fails** when the generated schema's fingerprint differs from the
+  registry entry for the build's `DOC_SCHEMA_V`. Changing a shape without a
+  bump therefore cannot pass CI.
+- **Every envelope binds the fingerprint.** It carries
+  `(doc_schema_v, first 8 bytes of the fingerprint)` in fields 12 and 13, and
+  both fields are covered by the signature and the AEAD associated data.
+- **A receiver compares them against its registry.** A known version whose
+  fingerprint disagrees is parked, not applied.
+
+The details are in
+[ADR-0045](../11-adr/0045-schema-identity-and-feature-gating.md) §2–§3.
+
+*Today:* there is no canonical schema, no fingerprint and no field 13. The
+integer is bound under the signature but means only what the doc comment on
+`DOC_SCHEMA_V` in `crates/sunrise-cbor/src/version.rs` says ([#323](https://github.com/justin13888/Sunrise/issues/323)).
+
+## How fields merge
+
+Each field has a CRDT type, declared in the entity registry
+([ADR-0044](../11-adr/0044-per-field-ops.md) §3):
+
+| CRDT type | Used for | Merge |
+|---|---|---|
+| LWW register | scalars, optionals, and every nested value type as one value | the greatest `(hlc, device_id, seq)` wins, field by field; the register also records whether that write was by generation or by the user |
+| Map | map-valued fields such as `Preferences.values` | one LWW register per key; the key set grows, and a key is removed by a tombstone |
+| OR-set | `Task.contexts`, `Task.blocked_by`, `Block.tasks`, `Routine.skipped_keys`, `Routine.streak_keys` (`Task.blocks` is derived from `Block.tasks`) | add-wins, observed-remove |
+| PN-counter | `Task.deferred_count` | sum of deltas |
+
+- **An op carries only the fields its command wrote.** It is a `Patch` of
+  field ops. Invariants that relate two fields or two entities are evaluated
+  at read time and never reject a merged op (ADR-0044 §6).
+- **Full-state ops already in logs stay readable forever**, as writes to every
+  field they carry (ADR-0044 §7).
+- **A field's CRDT type never changes.** Changing it is a new field under a new
+  name.
+
+*Today:* every entity merges by entity-level LWW over full-state ops
+([ADR-0014](../11-adr/0014-entity-level-lww-merge.md), superseded). A
+concurrent edit to a different field, a set addition or a counter increment
+can be lost ([#319](https://github.com/justin13888/Sunrise/issues/319)).
+
+## Compatibility rules
+
+- **Wire protocol.** N and N−1 must interoperate. N−2 is refused with a clear
+  "please update" error.
+- **Document schema: nothing that verifies is dropped.** An envelope that
+  passes the signature check and the AEAD open is either applied or
+  **parked**. A parked op is stored durably in `ops`, has no TTL, advances the
+  cursor, and is replayed through the full apply path after an upgrade. The
+  reasons to park are:
+  - an unknown op kind
+  - an unknown field-op kind
+  - a payload this build cannot decode at a newer `doc_schema_v`
+  - a schema-fingerprint mismatch
+
+  See [ADR-0045](../11-adr/0045-schema-identity-and-feature-gating.md) §4.
+  *Today:* an unknown op kind is reported as `RemoteOpInvalid`, classed as
+  corruption and dropped ([#320](https://github.com/justin13888/Sunrise/issues/320)).
+- **Document schema: unknowns are lossless at every level.** Three rules, all
+  required:
+  1. **Every struct that crosses the wire keeps an unknown map.** That means
+     every entity, every nested value type, and the `Patch` op's own map. Each
+     carries `#[serde(flatten)] unknown: Unknowns`, and re-emits the map
+     byte-exact through `encode_canonical`'s sorted keys. The sole exception is
+     `Interruption`, whose whole value is its primary key.
+  2. **Every enum that crosses the wire or storage keeps an `Unknown(raw)`
+     arm.** Logic reads it as the named safe fallback: an unknown task state is
+     `todo`, never `done`, and an unknown constraint severity is `soft`, never
+     `hard`. Encoding and storage write back `raw` unchanged. An unknown
+     `Frequency` or `Weekday` makes the routine generate no occurrences, and
+     flags it, rather than failing the op or recurring on a wrong schedule.
+     `SunriseTime` gains `Unknown { kind, raw }` in the same way.
+  3. **Every entity persists its unknown state.** An `extra` blob that cannot
+     be parsed is kept as opaque bytes, never read as "no unknowns".
+
+  Persistence is per entity:
+  - `tasks.extra`, `blocks.extra` and `attachments.extra` are dedicated `BLOB`
+    columns.
+  - `review_snapshots.body` holds the whole entity's canonical CBOR, so it
+    carries its unknowns without a column of its own.
+  - `Stream`, `Context`, `Routine`, `FocusStart` and `FocusEnd` get their
+    `extra BLOB` from
+    `crates/sunrise-storage/migrations/0015_entity_extra_columns.sql`.
+
+  *Today:* rule 1 holds at the top level of an entity only ([#322](https://github.com/justin13888/Sunrise/issues/322)). Rule 2 is
+  lossy, because `lossy_enum!` writes the fallback back
+  (`lossy_enum!` in `crates/sunrise-domain/src/unknown.rs`, [#321](https://github.com/justin13888/Sunrise/issues/321)). `StreamColor`,
+  `Frequency` and `Weekday` still reject unknown values.
+- **Document schema: a missing feature makes a build read-only, not broken.**
+  A vault lists the features its data requires in a signed, grow-only
+  `vault_requires` set. A build that lacks one of them:
+  - keeps syncing
+  - parks what it cannot read
+  - refuses local writes to the affected entity kinds, or to the whole vault
+    for a structural feature, with `DOC_FEATURE_MISSING`
+  - shows **"Update Sunrise to edit"**
+
+  A feature is only added to `vault_requires` once every non-revoked device
+  has advertised it, or once the user confirms. See
+  [ADR-0045](../11-adr/0045-schema-identity-and-feature-gating.md) §7–§8.
+  *Today:* nothing records which features a vault uses ([#324](https://github.com/justin13888/Sunrise/issues/324)).
+- **DB schema.** It is local only. Migrations run in place on the first launch
+  of a new build, under the rules in
+  [`../04-storage/migrations.md`](../04-storage/migrations.md) §Migration rigor.
 
 ## Adding a field
 
-1. Add to the CDDL spec in `02-domain/`.
-2. Add a Rust struct field with `#[serde(default)]` and an `Option`/sensible default.
-3. Append a migration under `crates/sunrise-storage/migrations/` (for materialized indexes if needed).
-4. Nothing to do for round-tripping — provided the entity's `unknown` map has a
-   column behind it. That is the universal rule, not a per-entity favour: an
-   entity whose reader hardcodes `Unknowns::new()` silently destroys the field
-   on the next full-state op it emits. See §Compatibility windows.
-5. Bump `DOC_SCHEMA_V`. Leave `DOC_SCHEMA_FLOOR` alone — the older shape is still readable.
+1. Declare it in the entity registry, with a name that has never been used,
+   its value type, its CRDT type and its default. Add it to the CDDL block in
+   the entity's `02-domain/` spec.
+2. Add the Rust field with `#[serde(default)]` and an `Option` or a sensible
+   default.
+3. Add a storage migration if the projection needs a column. Until then, the
+   field lives in the entity's `extra`.
+4. Decide whether it needs a **feature id**. It does when an older build
+   editing the entity's *other* fields would produce wrong data because it
+   ignores this one. Otherwise an older build merges and preserves the field
+   without understanding it (ADR-0044 §8), and no gate is needed.
+   - A field that changes what an existing field means needs a feature id. For
+     example, a new `planned_at` that takes over part of `scheduled_at`'s role
+     does (`task.deadlines_v2`).
+   - A purely additive attribute does not.
+5. Bump `DOC_SCHEMA_V`, regenerate the canonical schema, and append the new
+   fingerprint to the registry. Leave `DOC_SCHEMA_FLOOR` alone.
+6. Add a case to the cross-version harness ([#326](https://github.com/justin13888/Sunrise/issues/326)): an older build merges
+   ops that set the field, and the field survives.
+
+## Adding an op kind or a field-op kind
+
+A new op kind, or a new field-op kind such as a text CRDT, **always** needs a
+feature id. Older builds park it. A new op kind that writes an existing entity
+kind has that entity kind as its scope. A new entity kind has itself as its
+scope. Anything that changes how every entity merges is `structural`. Emit
+`vault_requires` before the first op of the new kind.
+
+Feature ids follow one scheme. An entity-scoped feature is
+`<entity>.<feature>`, and a new entity kind is `<entity>.entity`: for example
+`task.optional_stream`, `task.deadlines_v2`, `preferences.entity`,
+`place.entity`, `external_event.entity` and `attachment.thumbnail`. A
+structural feature is `core.<feature>`, for example `core.field_ops`
+([ADR-0045](../11-adr/0045-schema-identity-and-feature-gating.md) §7).
+
+## Adding an enum variant
+
+Bump `DOC_SCHEMA_V`. Older builds keep the raw value and read it as the safe
+fallback. Choose the fallback reading when the enum is first defined, not when
+the variant is added, because older builds are already compiled against it. If
+the fallback would make an older build's *writes* wrong, the variant needs a
+feature id with the entity kind as its scope.
 
 ## Removing a field
 
-1. Mark deprecated in CDDL **and on the Rust field** with a comment and a deadline (≥2 minor versions). `Routine.skip_dates` is the worked example: deprecated in favour of `skipped_keys`, stage A complete, removal dated at `DOC_SCHEMA_FLOOR = 3` — the **floor**, not the current version. Stage B is "stop writing", and a field may only stop being written once no reader below the floor can still need it; `DOC_SCHEMA_V` moving past 3 says nothing about that.
-2. Stop reading. Continue writing for the deprecation window so older clients that need it still get it.
-3. After the window, stop writing. Older clients fall back to the field's default.
-4. Bump `doc_schema_version`.
+A field is never removed from data. It is removed from what builds *write*.
+
+1. Mark it deprecated in the CDDL **and on the Rust field**, with the
+   replacement named. `Routine.skip_dates` is the worked example. It is
+   deprecated in favour of `skipped_keys`, and stage A is complete.
+2. Stop reading it for new logic. Keep writing it for as long as any build
+   below the floor might need it.
+3. Stop writing it. Values already written stay in the merged state and in the
+   entity's unknown state after the field leaves the registry. Nothing deletes
+   them.
+4. Bump `DOC_SCHEMA_V`. The name stays reserved forever.
 
 ## Renaming a field
 
-Treated as add + remove. Don't reuse names.
+A rename is an add plus a removal. Names are never reused.
 
 ## Breaking changes
 
-Avoid. If unavoidable:
+A change that an older build cannot read goes through parking and feature
+gating. Nothing else is allowed.
 
-- Coordinate a flag-day version that both halves understand for a transition period.
-- Provide an automatic migration path on the user's data.
-- Coordinate a managed-cloud release that gates older clients to read-only until they update.
+- There are no flag days. Older builds keep syncing and go read-only for the
+  affected scope.
+- There is no version-stage licence. "No older build exists" is never a
+  justification ([ADR-0042](../11-adr/0042-v0-forever.md) §2).
+- A change that cannot be expressed as an additive field, a gated op kind or a
+  gated field-op kind needs its own ADR. That ADR must show how both halves of
+  the invariant still hold.
 
-## What this means for the v1 launch
+## Compatibility testing
 
-- **The CDDL specs in `02-domain/` are authoritative again.** All nine were
-  re-derived against `crates/sunrise-domain/src/` at `DOC_SCHEMA_V = 4`, and
-  re-checked at `5` without change — see the version note at the end of this
-  section for why `5` could not move them. An
-  earlier revision of this section recorded eight of the nine as drifted;
-  every item on that list is closed, and the repairs are listed below so the
-  closure can be re-checked rather than taken on trust.
+- **Cross-version merge ([#326](https://github.com/justin13888/Sunrise/issues/326)).** Two different builds, a pinned older tag
+  and `HEAD`, run as replicas over an in-process relay under a property test.
+  - *No break:* the older build never errors, never classes an op as
+    corruption, and never stops syncing.
+  - *No loss:* after the older build upgrades and replays its parked ops, both
+    projections equal a `HEAD`-only run of the same op set.
+- **Per-entity round trip.** Each entity is decoded and re-encoded with random
+  unknown keys injected at every nesting level, and must produce identical
+  bytes.
+- **Per-enum round trip.** Any string must survive decode, storage and
+  re-encode unchanged.
+- **Schema drift.** The fingerprint test above. The older per-entity
+  `serde_json_shape_matches_cddl` pattern (in `constraint.rs`) is subsumed once
+  the CDDL blocks are generated from the same registry.
 
-  | Spec | Was | Repair |
-  |---|---|---|
-  | `scheduling-constraints.md` | matched | Left alone, except the tiebreak key, which ADR-0016 changed to `(hlc, device_id, seq)`. Still pinned by `serde_json_shape_matches_cddl` in `constraint.rs`. |
-  | `tasks.md` | drifted | Added `reminder_lead_s`; `estimated_duration` → `estimated_duration_s` (seconds); dropped the `blocked` state and the `blocks_others` field, neither of which is serialized; `deferred_count` is `int`, not `uint`. |
-  | `streams.md` | drifted | Added `reminder_lead_s`; deleted the `integrations` map and the `StreamIcon`/`IntegrationConfig` types; `icon` is a free `tstr`; `review_cadence` is required. |
-  | `contexts-and-tags.md` | drifted | Deleted the `color` field and `ContextColor`. |
-  | `routines-and-recurrence.md` | drifted | `rrule` is the structured `RRule` map, with `Frequency`/`Weekday`; added all six streak/forgiveness fields and `skipped_keys`; `estimated_duration_s` on `TaskTemplate`. |
-  | `time-blocks.md` | drifted | CDDL block now carries only the ten modelled fields; `stream_id` required; no `timezone`; the eight unmodelled fields moved to a separate, explicitly-not-on-the-wire block. |
-  | `attachments.md` | drifted | Same split: four thumbnail fields moved out of the live block. `parent` narrowed to Task, which is what validation enforces. |
-  | `notes.md` | drifted | `NoteBody` is declared as the `bstr` it is, with the block grammar relabelled a renderer contract; the `Note` entity gained a CDDL block. |
-  | `people-and-sharing.md` | drifted | `linked_identity` → `identity_id`; deleted `handle`/`avatar`/`notes`/`contact_methods` and `ContactMethod`. |
+## Record: the CDDL re-derivation at `DOC_SCHEMA_V` 4–6
 
-  The global drift is closed too: every persisted entity's CDDL block now
-  declares `unknown-fields`, defined once in
-  [`overview.md` §Common CDDL types](./overview.md#common-cddl-types) along
-  with `entity-ref`, `timestamp` and the civil types. `Interruption` correctly
-  declares none, and neither do the two value types (`SchedulingConstraint`,
-  `stime`).
+The CDDL specs in `02-domain/` were re-derived against
+`crates/sunrise-domain/src/` at `DOC_SCHEMA_V = 4`, and re-checked at `5` and
+`6` without change. Versions 5 and 6 added only control op families, which
+carry no domain entity. The repairs made then are listed so the result can be
+re-checked:
 
-  Two conventions changed in the process, both because the old spelling was
-  wrong rather than merely terse. `tdate` became `timestamp`: `tdate` is the
-  prelude's *tagged* date and nothing in the domain emits a CBOR tag. And
-  `[A-Z0-9]{26}` became `[0-9A-HJKMNP-TV-Z]{26}`: ULIDs are Crockford base32,
-  which excludes `I`, `L`, `O` and `U`, so the old character class matched ids
-  that cannot exist.
+| Spec | Was | Repair |
+|---|---|---|
+| `scheduling-constraints.md` | matched | Left alone, except the tiebreak key, which ADR-0016 changed to `(hlc, device_id, seq)`. Still pinned by `serde_json_shape_matches_cddl` in `constraint.rs`. |
+| `tasks.md` | drifted | Added `reminder_lead_s`. `estimated_duration` → `estimated_duration_s` (seconds). Dropped the `blocked` state and the `blocks_others` field, neither of which is serialized. `deferred_count` is `int`, not `uint`. |
+| `streams.md` | drifted | Added `reminder_lead_s`. Deleted the `integrations` map and the `StreamIcon`/`IntegrationConfig` types. `icon` is a free `tstr`. `review_cadence` is required. |
+| `contexts-and-tags.md` | drifted | Deleted the `color` field and `ContextColor`. |
+| `routines-and-recurrence.md` | drifted | `rrule` is the structured `RRule` map, with `Frequency`/`Weekday`. Added all six streak/forgiveness fields and `skipped_keys`. `estimated_duration_s` on `TaskTemplate`. |
+| `time-blocks.md` | drifted | The CDDL block carries only the ten modelled fields. `stream_id` is required. No `timezone`. The unmodelled fields moved to a separate, explicitly-not-on-the-wire block. |
+| `attachments.md` | drifted | Same split: four thumbnail fields moved out of the live block. `parent` narrowed to Task, which is what validation enforces. |
+| `notes.md` | drifted | `NoteBody` is declared as the `bstr` it is, with the block grammar relabelled a renderer contract. The `Note` entity gained a CDDL block. |
+| `people-and-sharing.md` | drifted | `linked_identity` → `identity_id`. Deleted `handle`/`avatar`/`notes`/`contact_methods` and `ContactMethod`. |
 
-  **What remains unpinned rather than undrifted.** Only
-  `scheduling-constraints.md` has a test that fails when the Rust and the CDDL
-  disagree. The other eight are now correct and will stay correct only as long
-  as someone re-reads them. Extending the `serde_json_shape_matches_cddl`
-  pattern is the fix — it is one `to_value` and a handful of `assert_eq!` per
-  entity, and it catches exactly the class of drift this section spent two
-  revisions describing. It is not done here because this stream owns `docs/`
-  and not `crates/`; it is worth a follow-up issue.
+Every persisted entity's CDDL block declares `unknown-fields`, defined once in
+[`overview.md` §Common CDDL types](./overview.md#common-cddl-types), along with
+`entity-ref`, `timestamp` and the civil types.
 
-  Version 1 differed from 2 only in the five `SunriseTime` fields
-  ([ADR-0017](../11-adr/0017-sunrise-time-representation.md)), which were bare
-  instants and still decode as `instant`. Versions 3 and 4 added op families and
-  changed the delete ops to full-state
-  ([ADR-0014](../11-adr/0014-entity-level-lww-merge.md)); neither is reflected
-  in the CDDL — they are op-family and op-shape changes, not entity-field
-  changes, so the entity blocks above are unaffected by them.
+- `tdate` became `timestamp`, because nothing in the domain emits a CBOR tag.
+- `[A-Z0-9]{26}` became `[0-9A-HJKMNP-TV-Z]{26}`, because ULIDs are Crockford
+  base32.
 
-  Version 5 is the same class of change again, which is why the re-check above
-  found nothing to repair. It added three **control** op families —
-  `KeyEnvelope`, `DeviceRevoke` and `DeviceCertPublish`
-  ([ADR-0024](../11-adr/0024-key-hierarchy.md)). None of the three
-  carries a domain entity: they take `KeyEnvelopePayload`, `DeviceRevokePayload`
-  and a raw `bstr` respectively, and `sunrise_core::inner_op` states the
-  distinction directly — they "carry key material and trust", not entity state.
-  No entity gained, lost or changed a field at `5`, so all nine blocks stand as
-  re-derived at `4`.
-- We expect rapid iteration in the first 6 months. Therefore, and these are
-  implemented rather than planned:
-  - Every entity carries an `unknown` map (`#[serde(flatten)]`) that preserves
-    and re-emits fields it does not model. The one exception is `Interruption`,
-    whose whole value is its primary key.
-  - Every enum that rides the wire has an unknown fallback, so a future
-    `state: "delegated"` degrades instead of rejecting the op it arrived in.
-    The fallback is chosen to be the SAFE reading — an unknown task state is
-    `todo`, never `done`; an unknown constraint severity is `soft`, never
-    `hard` — because rejecting one field's value rejects the whole op, and two
-    replicas would then diverge permanently over one string. `RRule`'s
-    `Frequency` and `Weekday` are deliberately excluded: silently recurring on
-    the wrong schedule is worse than failing the routine.
+Version history, for reading old ops:
+
+| `DOC_SCHEMA_V` | What changed |
+|---|---|
+| 1 | The five `SunriseTime` fields were bare instants. They still decode, as `instant`. |
+| 2 | `SunriseTime` tagged ([ADR-0017](../11-adr/0017-sunrise-time-representation.md)). |
+| 3 | The `blk_` and `att_` op families were added. |
+| 4 | The six delete ops changed shape to full-state. |
+| 5 | Added the control families `KeyEnvelope`, `DeviceRevoke` and `DeviceCertPublish` ([ADR-0024](../11-adr/0024-key-hierarchy.md)). |
+| 6 | Added the control family `IdentityTransition`. |
+
+Versions 3, 4, 5 and 6 each shipped a change an older build could not decode.
+Each relied on a pre-release licence that
+[ADR-0042](../11-adr/0042-v0-forever.md) withdraws. The next such change goes
+through parking and `vault_requires`.
 
 ## Encryption granularity
 
-Encryption is at the **op envelope** level, not the field level. The entire op (any field set, any payload) is encrypted as one unit under the Stream key. There are no field-level encryption sub-keys; "indexable plaintext metadata" does not exist on the server. See [`../03-crypto/data-encryption-format.md`](../03-crypto/data-encryption-format.md) for the envelope structure. Schema additions therefore never expand the server's ciphertext-visibility surface.
+Encryption is at the **op envelope** level, not the field level. The entire op
+is encrypted as one unit under the Stream key, whatever field set or payload it
+carries. There are no field-level encryption sub-keys, and "indexable plaintext
+metadata" does not exist on the server. See
+[`../03-crypto/data-encryption-format.md`](../03-crypto/data-encryption-format.md)
+for the envelope structure.
+
+Schema additions never expand what the server can see inside the ciphertext.
+The envelope header is cleartext, and it gains only the schema-fingerprint
+prefix (field 13). That prefix reveals no more than `doc_schema_v`, which the
+header already carries.

@@ -78,7 +78,7 @@ impl Engine {
     ) -> Result<QueryResult, EngineError> {
         // Today = (a) tasks scheduled within today's local-day window OR
         //         (b) tasks due_at <= now + 24h, AND not done/deleted.
-        // For v1 we use a simple rolling 24h window forward from `now_ms`.
+        // Currently we use a simple rolling 24h window forward from `now_ms`.
         let window_end = now_ms.saturating_add(24 * 60 * 60 * 1000);
 
         // `contexts` is an OR-set filter per docs/02-domain/contexts-and-tags.md:
@@ -204,7 +204,7 @@ impl Engine {
                 Ok(QueryResult::Attachments(vec![a]))
             }
             _ => Err(EngineError::Invalid(format!(
-                "EntityById not supported for kind {:?} in v1",
+                "EntityById not supported for kind {:?}",
                 r.kind()
             ))),
         }

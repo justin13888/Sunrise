@@ -637,7 +637,7 @@ mod tests {
     /// A Sunday-start grid, so the `week_start` parameter is something other
     /// than the `Weekday::Mo` every caller passes.
     ///
-    /// **Unobserved in v1.** No product surface is known to set a non-Monday
+    /// **Unobserved today.** No product surface is known to set a non-Monday
     /// week start: every call site in the workspace passes `Weekday::Mo`, and
     /// there is no setting that would produce anything else. This pins the
     /// parameter's arithmetic so a later reader can trust it, and says plainly

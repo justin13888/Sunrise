@@ -7,7 +7,7 @@
 //! # The source of truth is the op log, not a new table
 //!
 //! Every mutation in Sunrise already lands in the op log with a timestamp, a
-//! device id, and — because v1 ops are *full-state* (see
+//! device id, and — because entity ops are *full-state* (see
 //! `sunrise_core::inner_op`) — the entity's complete value after the write.
 //! Two consecutive full states are a diff, so "what changed and how many
 //! fields" is recoverable from data that already exists. Nothing here is

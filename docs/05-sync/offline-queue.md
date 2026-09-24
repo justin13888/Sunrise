@@ -44,18 +44,18 @@ One policy, in memory, used in two places
 at 30 000 ms, jittered ×[0.8, 1.2], `max_retries = 5`.
 
 **Reconnect.** The session loop backs off between connection attempts
-(`crates/sunrise-core/src/sync_driver.rs:712` and `:764`, `ev = "sync.backoff"`).
+(`crates/sunrise-core/src/sync_driver.rs:761` and `:817`, `ev = "sync.backoff"`).
 Exhausting the policy here does *not* give up — it **cycles**. Five jittered
 delays of 100, 200, 400, 800 and 1600 ms; on the sixth call `next_delay` returns
 `None`, so `backoff_sleep` resets the policy and sleeps a flat, un-jittered 30 s
-(`sync_driver.rs:804-814`, `next_backoff_delay`); the attempt counter is then
+(`sync_driver.rs:948-958`, `next_backoff_delay`); the attempt counter is then
 back at zero and the
 sequence starts again at 100 ms. A client that cannot reach its relay for an hour
 therefore retries roughly every 30 s in bursts of five, forever, on the reasoning
 that a long-lived client should never stop trying.
 
 The counter is otherwise reset only when the relay **answers the handshake**
-(`sync_driver.rs:748`), not when a transport is constructed: no transport
+(`sync_driver.rs:797`), not when a transport is constructed: no transport
 factory dials at construction, so a reset there would zero the counter on every
 attempt and pin the driver to the 100 ms step
 ([#283](https://github.com/justin13888/Sunrise/issues/283)). A session that did
@@ -140,7 +140,7 @@ the cloud yet" warning shown to the user — a misleading framing for local-firs
 
 The exception: when an op references a peer-side resource that hasn't propagated
 yet (e.g. accepting a share that the granter hasn't yet pushed), the UI shows
-"waiting for peer." Sharing is post-v1
+"waiting for peer." Sharing is not built
 ([ADR-0027](../11-adr/0027-v1-self-host-first.md)), so this path is unreachable
 today.
 

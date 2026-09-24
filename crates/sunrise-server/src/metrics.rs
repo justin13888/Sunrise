@@ -1,6 +1,6 @@
 //! Prometheus-compatible metrics.
 //!
-//! v1 self-host ships an in-process counter registry with a `/metrics`
+//! The self-host build ships an in-process counter registry with a `/metrics`
 //! exposition endpoint that emits the Prometheus text format
 //! (<https://prometheus.io/docs/instrumenting/exposition_formats/>).
 //! Production swaps in a full client (`prometheus`, `metrics`) without

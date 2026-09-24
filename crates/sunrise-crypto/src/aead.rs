@@ -33,7 +33,7 @@ pub enum AeadError {
 ///
 /// # Errors
 /// Returns [`AeadError::PlaintextTooLarge`] if the input cannot be sealed
-/// (extremely unlikely in v1 since envelope max is 1 MiB).
+/// (extremely unlikely since the envelope max is 1 MiB).
 pub fn aead_seal_xchacha(
     key: &[u8; AEAD_KEY_LEN],
     nonce: &[u8; AEAD_NONCE_LEN],

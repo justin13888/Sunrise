@@ -135,7 +135,7 @@ struct DeepLinkTests {
             // task is the sidebar's own destination written as a URL.
             "sunrise://focus/\(block)",
             "sunrise://focus",
-            // Sharing is deferred from v1 by ADR-0020: there is no grant a
+            // Sharing is deferred by ADR-0020: there is no grant a
             // token could name, so the link is dropped rather than routed.
             "sunrise://share/abc123"
         ]

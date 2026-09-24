@@ -287,7 +287,7 @@ Four things about these that the table above does not say:
 
 - **An `identity_transition` is sealed under the epoch its own rotation minted**, unlike the key envelopes beside it. That is deliberate and not circular: the `key_envelope` carrying the new meta epoch is sealed under the *old* one, so a device that was offline can always open that first, and then the transition. The epoch is also the fold's primary ordering key, which is why it has to be the one the rotation reached rather than the one it started from — see [`key-rotation.md`](./key-rotation.md) §Ordering.
 
-An op whose `(stream_id, epoch)` key has not arrived yet is **parked**, not refused: it goes to `deferred_ops` and is retried after every absorbed key. There is no per-epoch barrier.
+An op whose `(stream_id, epoch)` key has not arrived yet is **deferred**, not refused: it goes to `deferred_ops` and is retried after every absorbed key. There is no per-epoch barrier. (A *parked* op is a different thing: one that opened, but that this build cannot understand, per [ADR-0045](../11-adr/0045-schema-identity-and-feature-gating.md) §4.)
 
 ## HPKE single-shot
 

@@ -210,7 +210,7 @@ pub(super) fn upsert_attachment_row(
     Ok(())
 }
 
-/// The `parent_kind` discriminator. v1 validates Task-only parents on the
+/// The `parent_kind` discriminator. The core validates Task-only parents on the
 /// command path; a remote op from a build that widened it still stores its own
 /// kind rather than being coerced to `task`.
 fn attachment_parent_kind(parent: EntityRef) -> &'static str {

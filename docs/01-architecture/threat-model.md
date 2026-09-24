@@ -25,7 +25,7 @@ status: accepted
 **Goal denied.** Reading or modifying user data; impersonating a user or device.
 
 **Mitigations.**
-- TLS 1.3. **Certificate pinning is not implemented** and is deferred past v1 — [`../03-crypto/pairing-and-onboarding.md`](../03-crypto/pairing-and-onboarding.md) says so for the pairing relay, and the same holds for sync: `rustls` validates against the webpki/Mozilla root bundle, with no pinned key anywhere in the tree.
+- TLS 1.3. **Certificate pinning is not implemented** — [`../03-crypto/pairing-and-onboarding.md`](../03-crypto/pairing-and-onboarding.md) says so for the pairing relay, and the same holds for sync: `rustls` validates against the webpki/Mozilla root bundle, with no pinned key anywhere in the tree.
 - All sync ops are E2E-encrypted *under TLS*; TLS compromise alone yields ciphertext.
 - Replay defense via per-device monotonic op counters.
 
@@ -83,7 +83,7 @@ What this slice delivers is the **key hierarchy that makes any of it expressible
 
 **Goal denied.** *Not within scope.* If the user unlocks, content is exposed.
 
-**Mitigation (partial).** "Plausible deniability" subkey vault is a possible future feature but not scoped for v1.
+**Mitigation (partial).** "Plausible deniability" subkey vault is a possible future feature; it is not designed or built.
 
 ### A5: Malicious client peer (sharing scenario)
 

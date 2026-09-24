@@ -43,7 +43,7 @@ pub enum ErrorCode {
     /// would make the code an account/device enumeration oracle.
     AuthDeviceSigInvalid,
     // `AuthQuotaExceeded` (203) and `StorageQuotaExceeded` (300) were removed
-    // with ADR-0027, which takes per-account quotas out of v1; nothing ever
+    // with ADR-0027, which takes per-account quotas out of the product; nothing ever
     // emitted either. Both ids stay burned in `codes.toml`.
 
     // Storage

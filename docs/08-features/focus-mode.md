@@ -6,7 +6,7 @@ status: accepted
 
 A dedicated mode that takes one task and removes everything else.
 
-> **v1 scope.** The core half of this spec is implemented: the session record
+> **Current scope.** The core half of this spec is implemented: the session record
 > ([ADR-0013](../11-adr/0013-focus-session-op-representation.md)), the planner,
 > adaptive session length and chunking, the unblock cascade, interruption
 > capture, and estimate calibration all live in `sunrise-core` /
@@ -14,7 +14,7 @@ A dedicated mode that takes one task and removes everything else.
 > everything that needs a platform surface — notification suppression, the iOS
 > Live Activity, the macOS dim, the Android foreground service, and the audible
 > cue — plus `timeboxed to my next Block`, which has no target because `Block`
-> has no command path in v1, and the **per-Stream** pomodoro override, which
+> has no command path today, and the **per-Stream** pomodoro override, which
 > would need a new field on `Stream`. The 25/5/15-after-4 defaults are
 > `sunrise_domain::focus` constants and are configurable per *session* through
 > `SessionLength`. `docs/implementation/overview.md` is the authority on what is
@@ -39,7 +39,8 @@ task, the planner proposes a ranked queue by walking the task graph:
   the planner is never a dead end.
 - **Ranked by leverage.** Each candidate is scored by how much it releases —
   its *downstream unblock weight* / position on the critical path — then by
-  `due_at`, `priority`, and `scheduled_at`.
+  `hard_due_at`, `priority`, and `planned_at`
+  ([ADR-0047](../11-adr/0047-deadlines-and-lateness.md)).
 - **Energy-matched.** Sorted against the session's declared energy budget using
   `Task.energy`, so high-energy work lands in high-energy windows.
 

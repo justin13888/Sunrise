@@ -69,7 +69,7 @@ The target, unchanged: server-side push-token encryption using
 **ChaCha20-Poly1305 with a 32-byte key** generated at server initialization and
 written to `<data_dir>/push_key.bin` (mode 0600). Operators **MUST** exclude
 this file from backups; a backup leak then does not leak push tokens. There is
-no key rotation in v1 — key loss invalidates all stored push tokens, and clients
+no key rotation — key loss invalidates all stored push tokens, and clients
 re-register on next sync.
 
 ## Push fanout flow (not implemented)
@@ -166,7 +166,7 @@ Sent with `Urgency: high` for `alert`, `Urgency: normal` for `silent`. Body is t
 
 ### Android data-only without foreground service
 
-FCM data-only messages CAN wake the app on most devices, rate-limited by Android's Doze and battery optimizations. v1 accepts occasional latency during deep Doze. v1.x adds an optional foreground service for "always-on" sync as a per-device opt-in (deferred — see [`overview.md`](./overview.md)).
+FCM data-only messages CAN wake the app on most devices, rate-limited by Android's Doze and battery optimizations. The design accepts occasional latency during deep Doze. An optional foreground service for "always-on" sync as a per-device opt-in is not built (deferred — see [`overview.md`](./overview.md)).
 
 ## Quiet hours
 

@@ -705,8 +705,8 @@ Security testing is a first-class layer alongside unit and property tests. It ha
 
 ### Continuous fuzz targets
 
-`cargo-fuzz` harnesses live in `fuzz/`, one binary per target. **All six of the
-v1 target set are built and run.** Each drives a workspace crate through its
+`cargo-fuzz` harnesses live in `fuzz/`, one binary per target. **All six
+targets are built and run.** Each drives a workspace crate through its
 ordinary public API — nothing was widened to `pub` for the fuzzer's benefit,
 because a surface only a fuzzer can reach is one no attacker reaches either.
 

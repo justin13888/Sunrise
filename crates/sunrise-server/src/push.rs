@@ -1,6 +1,6 @@
 //! Push notification fanout interface (APNs / FCM / WebPush).
 //!
-//! v1 self-host: `LoggingProvider` echoes intents to the metrics
+//! Self-host build: `LoggingProvider` echoes intents to the metrics
 //! registry. Production binds `apns2` / `fcm` / `web-push` clients.
 //! The trait is async so HTTP delivery doesn't block the relay loop.
 
@@ -50,7 +50,7 @@ pub struct PushTokenRegistration {
 pub struct PushIntent {
     /// Receiver registration.
     pub registration: PushTokenRegistration,
-    /// Wakeup payload (opaque to v1; clients re-fetch on wake).
+    /// Wakeup payload (opaque today; clients re-fetch on wake).
     pub payload: String,
 }
 

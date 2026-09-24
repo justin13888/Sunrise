@@ -4,7 +4,7 @@ status: accepted
 
 # Encrypted Search
 
-Search runs **entirely on-device** against the decrypted vault. The server never sees queries, query strings, results, or index contents. There is no Searchable Symmetric Encryption (SSE) component in v1.
+Search runs **entirely on-device** against the decrypted vault. The server never sees queries, query strings, results, or index contents. There is no Searchable Symmetric Encryption (SSE) component.
 
 ## Decision
 
@@ -59,7 +59,7 @@ The web client uses `wa-sqlite` (WASM SQLite) with FTS5 against OPFS for persist
 ## Attachments and search
 
 - Filename and user-set caption are indexed.
-- Document text extraction (PDF, OCR, etc.) is **not in v1**. If shipped later, extraction runs on-device and produces additional ops that flow through the normal indexing path; nothing about extraction touches the server.
+- Document text extraction (PDF, OCR, etc.) is **not implemented**. If shipped later, extraction runs on-device and produces additional ops that flow through the normal indexing path; nothing about extraction touches the server.
 
 ## Privacy boundary
 

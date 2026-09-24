@@ -1412,7 +1412,7 @@ impl Keychain {
     /// deliberately a second question rather than the same one: that answers
     /// for `ID_D_priv` and bounds what this device can *read*, this answers for
     /// `ID_S_priv` and bounds what it can *say*. They happen to agree on every
-    /// vault v1 produces, and the reason they are two methods is that nothing
+    /// vault this build produces, and the reason they are two methods is that nothing
     /// enforces the agreement.
     ///
     /// Callers should branch on this rather than provoke the error: a "pair

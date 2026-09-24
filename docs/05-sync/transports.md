@@ -4,7 +4,7 @@ status: accepted
 
 # Transports
 
-**v1's transport is an SSE stream downstream and typed `POST` operations
+**The transport is an SSE stream downstream and typed `POST` operations
 upstream** ([ADR-0023](../11-adr/0023-sse-sync-transport.md), which supersedes
 [ADR-0005](../11-adr/0005-sync-transport.md)). That is no longer a decision
 waiting on an implementation: it is what runs. The client is `SseTransport`
@@ -17,9 +17,9 @@ was deleted, and neither `axum` nor `tokio-tungstenite` resolves in `Cargo.lock`
 any more. Earlier revisions of this page described the WebSocket as "what runs
 today"; it does not, and this revision is the correction.
 
-This page previously said "v1 ships **WebSocket only**" and deferred HTTP
-fallbacks to v2, which contradicted ADR-0005's own "primary WebSocket, fallback
-HTTP/2 long-poll" on the record for the whole of v1. ADR-0023 settled it in a
+This page previously said the transport was "**WebSocket only**" and deferred
+HTTP fallbacks to a later version, which contradicted ADR-0005's own "primary
+WebSocket, fallback HTTP/2 long-poll" then on the record. ADR-0023 settled it in a
 third direction and retired both statements.
 
 ## The decided transport (ADR-0023)
@@ -85,8 +85,8 @@ The migration closed that, exactly as the page predicted it would.
 | Platform | Library / API |
 |---|---|
 | Rust core (macOS, iOS, CLI) | `hyper` + `hyper-rustls`, framed by `SseTransport` |
-| Web | Browser `EventSource` — deferred with the client itself ([ADR-0012](../11-adr/0012-web-wasm-deferred.md)) |
-| Android | Deferred; no client exists |
+| Web | Browser `EventSource` — not built, with the client itself ([#52](https://github.com/justin13888/Sunrise/issues/52), [ADR-0012](../11-adr/0012-web-wasm-deferred.md)) |
+| Android | Not built; no client exists |
 
 ## Reconnect on failure
 
@@ -123,13 +123,13 @@ description of the client.
 
 Push is *not a transport*. Push is an out-of-band wakeup: the server sends a content-less push telling a device "you have ops; wake up and connect." See [`../06-server/push-notifications.md`](../06-server/push-notifications.md). Push is **best-effort**: the server retries delivery up to 3 times with 30 s spacing; if all fail, the next foreground or background-fetch (~15 min) catches up. The client SHOULD NOT depend on push for correctness, only for latency.
 
-## Explicit non-goals (v1)
+## Explicit non-goals
 
-- **HTTP long-poll / short-poll fallbacks.** ADR-0005's original fallback, withdrawn here and formally rejected by ADR-0023: higher latency and more overhead than SSE with no compensating advantage. v1 expects working connectivity to the relay.
+- **HTTP long-poll / short-poll fallbacks.** ADR-0005's original fallback, withdrawn here and formally rejected by ADR-0023: higher latency and more overhead than SSE with no compensating advantage. Sync expects working connectivity to the relay.
 - **WebTransport over HTTP/3.** The better *transport* on the technical merits — connection migration, no TCP head-of-line blocking, native binary framing — and rejected for the same reason as the WebSocket: `kynos` excludes it, so sync would still sit outside the OpenAPI document. It also mandates real TLS, which would remove the plaintext loopback path the CLI and e2e suite use. See ADR-0023's alternatives table.
 - **LAN / mDNS direct sync.** Devices on the same network always relay through the server. Rationale: partition-tolerance complexity, peer-discovery security, key distribution to peers without a central relay, and NAT traversal all add risk for marginal user benefit. Self-hosters who want LAN-only operation run the server on the LAN.
 - **USB / BLE pairing.**
-- **Peer-to-peer.** No NAT-traversal, no direct device-to-device sockets. The architecture (per-Stream encryption + relay-agnostic protocol) is compatible with future P2P, but v1 does not ship it.
+- **Peer-to-peer.** No NAT-traversal, no direct device-to-device sockets. The architecture (per-Stream encryption + relay-agnostic protocol) is compatible with future P2P, but none is built.
 
 ## Pairing does not run over the relay
 

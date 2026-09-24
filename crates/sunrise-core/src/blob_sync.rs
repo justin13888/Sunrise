@@ -56,8 +56,8 @@
 //! Resuming from the first missing chunk rather than from zero would be a
 //! further optimisation and is deliberately not done:
 //! `docs/02-domain/attachments.md` §Lazy fetch already specifies "re-tapping a
-//! `partial: true` attachment retries from byte 0 ... resume-from-partial is
-//! not implemented in v1", and the relay exposes no way to ask which chunks it
+//! `partial: true` attachment retries from byte 0 ... resume from a partial
+//! transfer is not part of the design", and the relay exposes no way to ask which chunks it
 //! already holds, so a client-side guess would be a second source of truth.
 //!
 //! *A finalize that never arrives.* Either it never reached the relay, in which

@@ -8,17 +8,18 @@ A Person represents either a Sunrise identity (someone the user shares with) or 
 
 ## Fields
 
-> **Status: the `Person` entity is unreachable in v1.**
+> **Status: the `Person` entity is unreachable today.**
 > `crates/sunrise-domain/src/person.rs` defines the struct and
 > `0013_baseline.sql` creates a `persons` table; there are **zero ops, zero
 > commands, zero queries, zero writers** — no `InnerOp` variant, no `Command`,
 > no `Query`, no UniFFI surface, and nothing that writes the table.
 > `Query::EntityById` refuses `EntityKind::Person`. The only live use of a
 > `prs_` reference is `Task.assignee`, which the core carries as an opaque
-> label. [ADR-0020](../11-adr/0020-v1-must-demotions.md) §(a) deferred stream
-> sharing out of the v1 MUST set, which is why the rows below have no
-> implementation to describe, and kept `Person` and `persons` rather than
-> deleting them. Everything below the field list is the sharing model as
+> label. Stream sharing is a MUST in the
+> [parity matrix](../07-clients/parity-matrix.md), not built, and ranked on the
+> roadmap ([`../roadmap.md`](../roadmap.md)) as [#133](https://github.com/justin13888/Sunrise/issues/133), which is why the rows below have no
+> implementation to describe; `Person` and `persons` are kept for it rather
+> than deleted. Everything below the field list is the sharing model as
 > designed, not as shipped — see also
 > [`../implementation/overview.md`](../implementation/overview.md).
 
@@ -81,7 +82,7 @@ People records are **per-vault** and never sent to the server in plaintext. Link
 | Unshare | Stream | Future ops not delivered to recipient; recipient retains last-seen state locally (we cannot exfiltrate from their device) |
 | Transfer ownership *(target state)* | Stream | New owner becomes responsible; permissions reset; original owner's access becomes "shared with". No op kind, no command and no route exists for this; per the banner above, none of this table is built. |
 
-Roles in v1: `viewer`, `editor`. No `commenter` (no comments). No `admin` (no team admin surface).
+Roles as designed: `viewer`, `editor`. No `commenter` (no comments). No `admin` (no team admin surface).
 
 ### Capability matrix
 
@@ -110,7 +111,7 @@ Elevation is **prospective**: ops the recipient already received as a viewer are
 ## What sharing is *not*
 
 - Not realtime collaborative editing of a Note like Google Docs. It is a
-  single-cursor model with merged saves — and under v1's entity-level LWW
+  single-cursor model with merged saves — and under today's entity-level LWW
   ([ADR-0014](../11-adr/0014-entity-level-lww-merge.md)) that is not a
   prioritisation call but a capability the merge model does not have. Two
   people typing in one body produce one survivor.

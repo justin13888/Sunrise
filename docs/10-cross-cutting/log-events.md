@@ -97,8 +97,9 @@ See [`logging.md`](./logging.md) for the record schema and grammar, and
 | `sync.blob.fetch_cancelled` | info | A client cancelled a download; the request is marked `partial` and a later one restarts from byte 0; `attachment_h`, `blob_h`, `mode` (`discarded` when chunks from an interrupted write had to be swept, `clean` otherwise). `discarded` is the interesting one: it means a previous attempt died inside the blob store's write loop. |
 | `sync.blob.fetch_abandoned` | warn | A requested download is out of attempts and is marked `partial`; `attachment_h`, `blob_h`, `reason`. The user was told. Distinct from `sync.blob.fetch_failed`, which is one attempt of many and says the request still stands. |
 | `sync.session.opened` | info | Every subscribed stream caught up and the outbox drained — the driver is `Live`; `n_streams`. |
-| `sync.session.closed` | info | Session ended; `result` distinguishes a clean shutdown from a drop. |
-| `sync.session.error` | warn | Connect or start failed; `err_code`, `cause`. Answers "why is my client not syncing". |
+| `sync.session.closed` | info | Session ended; `result` is `ok` for a clean shutdown, `failed` for a drop or a refusal the driver retries, and `stopped` for a terminal relay `Close`. `err_code` is present when the relay named why: the code of a refused stream or of a `Close`. |
+| `sync.session.error` | warn | Connect or start failed, the relay refused the event stream, or the relay closed the session; `err_code`, `cause`. Answers "why is my client not syncing". For a close, `err_kind` and `retryable` are the catalogue's for its code. `retryable = false` with `result = "stopped"` is a terminal close (`AUTH_DEVICE_REVOKED`, `AUTH_TOKEN_INVALID`, or a code this build cannot read): the driver is `Stopped` and waits for a new credential. `RELAY_STORAGE_UNAVAILABLE` and `AUTH_TOKEN_EXPIRED` are retryable, so they reconnect. |
+| `sync.session.resumed` | info | A new credential arrived while the driver was `Stopped` after a terminal close, so it reconnects; `to_v` is the credential version it will present. |
 | `sync.session.off` | info | No relay configured; running offline. |
 | `sync.credential.marked_at_connect` | debug | A renewal that landed while the driver was disconnected was carried by this connect's own credential read, so the driver consumed it instead of re-announcing it; `to_v` is the credential version the handle was brought forward to. Emitted once the relay has answered the handshake, so it names the session whose `Authorization` header actually reached the relay — which may be carrying a renewal an earlier attempt consumed and never got to present. A steady reconnect loop with no renewal behind it is silent, so the presence of one is how an operator tells "this connect swallowed a renewal" from "no renewal happened"; read it against the session it sits in rather than as a claim about that session's own handle. |
 | `sync.credential.renewed` | debug | A renewed bearer is being sent to the relay in a `0x12 RefreshToken` frame, on the live session. |
@@ -165,7 +166,7 @@ them until code uses them.
 
 ### `crypto` (sunrise-crypto)
 
-Deliberately unimplemented in v1. Per-envelope logging in the crypto path is
+Deliberately unimplemented. Per-envelope logging in the crypto path is
 the highest-risk, lowest-yield instrumentation in the workspace: it sits in the
 hot loop, and every field it could add is either a constant or one refactor
 away from being a plaintext handle.
@@ -208,19 +209,19 @@ away from being a plaintext handle.
 | `sync.batch.rejected` | warn | Op batch rejected. |
 | `sync.snapshot.req` | debug | Snapshot requested. |
 | `sync.snapshot.applied` | debug | Snapshot applied. |
-| `sync.transport.fallback` | warn | Reserved for a future fallback transport; unused in v1. There is one transport — an SSE stream downstream and typed POSTs upstream ([ADR-0023](../11-adr/0023-sse-sync-transport.md), which supersedes ADR-0005 and the WebSocket-plus-long-poll pair it specified) — and nothing falls back off it. |
+| `sync.transport.fallback` | warn | Reserved for a future fallback transport; unused today. There is one transport — an SSE stream downstream and typed POSTs upstream ([ADR-0023](../11-adr/0023-sse-sync-transport.md), which supersedes ADR-0005 and the WebSocket-plus-long-poll pair it specified) — and nothing falls back off it. |
 
 ### `srv` (auth outcome and push)
 
 Held names, none of them emitted. `srv.auth.ok` and `srv.auth.rejected` sat in
-the Implemented table for the whole of v1 while nothing in
+the Implemented table while nothing in
 `crates/sunrise-server/src` produced either: the bearer path logs nothing on
 success, and a refusal is visible as the `srv.req.end` record's status. They are
 worth keeping as names — an operator asking "who authenticated" is a real
 question — but not as a claim about running code.
 
 `srv.quota.warning` and `srv.quota.exceeded` are **deleted rather than
-reserved**: ADR-0027 takes per-account quotas out of v1, and the codes they
+reserved**: ADR-0027 takes per-account quotas out of scope, and the codes they
 would have carried are gone from the registry with their ids burned.
 
 The push events are unimplemented because the feature is: the only provider is
@@ -251,7 +252,7 @@ logs or a pure function that unit-tests without any of it.
 
 ### `int` (sunrise-integrations)
 
-No provider is wired in v1.
+No provider is wired today.
 
 | Event | Level | Meaning |
 |---|---|---|

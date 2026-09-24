@@ -2,7 +2,7 @@
 
 This directory is the design source of truth for Sunrise: a local-first, end-to-end encrypted productivity system for people running many parallel streams of work (multiple jobs, household, relationships, travel, side projects, etc.).
 
-The live v1 implementation is `crates/` (shared Rust core) plus `apps/` (clients and server). The earlier prototype now lives in `legacy/` and is not load-bearing for this design.
+The live implementation is `crates/` (shared Rust core) plus `apps/` (clients and server). The earlier prototype now lives in `legacy/` and is not load-bearing for this design.
 
 This tree fully covers the design from first principles; every design decision is asserted with a brief justification; exact dependency pins live in `01-architecture/dependencies.md` (and the ADRs).
 
@@ -25,6 +25,7 @@ Read top-down, 00 → 11, then `implementation/`. Each numbered section builds o
 | 10 | [`10-cross-cutting/`](./10-cross-cutting) | A11y, i18n, telemetry, logging, versioning, testing, perf. |
 | 11 | [`11-adr/`](./11-adr) | Architecture Decision Records — *why*, not *what*. |
 | — | [`implementation/`](./implementation) | Living tracker of the build against this design. |
+| — | [`roadmap.md`](./roadmap.md) | The ranked order of all open work (phases P0–P6), mirrored on the project board. |
 
 [`03-crypto/`](./03-crypto) is the cryptographic design of record: algorithms, parameters, wire formats, key lifecycles, and protocol fixtures are byte-exact. Any change to an `accepted` doc requires a superseding ADR in [`11-adr/`](./11-adr), and wire-format changes additionally require a version bump per [`10-cross-cutting/protocol-versioning.md`](./10-cross-cutting/protocol-versioning.md).
 
@@ -35,7 +36,7 @@ Two cross-cutting substrates every section depends on:
 
 ## Conventions
 
-- **Status legend** — YAML frontmatter on every doc: `status: accepted` (frozen design, change-controlled per the rule above), `status: living` (tracks implementation), or `status: proposed` (design of record for work not scheduled in v1; see [ADR-0027](./11-adr/0027-v1-self-host-first.md)). A number quoted from a `proposed` doc is not a contract, and citing one from an `accepted` doc is a defect. ADRs use a `**Status:** accepted` line instead.
+- **Status legend** — YAML frontmatter on every doc: `status: accepted` (frozen design, change-controlled per the rule above), `status: living` (tracks implementation), or `status: proposed` (design of record not yet built; ranked on the [roadmap](./roadmap.md), see [ADR-0042](./11-adr/0042-v0-forever.md)). A number quoted from a `proposed` doc is not a contract, and citing one from an `accepted` doc is a defect. ADRs use a `**Status:** accepted` line instead.
 - **MUST / SHOULD / MAY** follow [RFC 2119](https://www.rfc-editor.org/rfc/rfc2119).
 - **Cross-references** use relative paths: `[envelope format](./03-crypto/data-encryption-format.md)`.
 - **Diagrams** are ASCII first.

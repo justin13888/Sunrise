@@ -4,7 +4,7 @@ status: accepted
 
 # Migrations
 
-> **Pre-1.0 baseline, and appends on top of it.** `BASELINE_STORAGE_V` is
+> **One-time baseline, and appends on top of it.** `BASELINE_STORAGE_V` is
 > **13**: migrations 0001–0012 were collapsed into
 > `crates/sunrise-storage/migrations/0013_baseline.sql` and deleted, and a vault
 > stamped `0 < storage_v < 13` is **refused**
@@ -28,7 +28,7 @@ status: accepted
 > any of them — which is exactly the append-only rule the reset reinstated. The
 > runner, the ordering rule and the single-transaction guarantee are unchanged.
 > See [ADR-0018](../11-adr/0018-storage-baseline-reset.md) for why the collapse
-> was done once, and why it does not happen again after 1.0.
+> was done once, and why it is not repeated.
 
 Two kinds of migrations:
 
@@ -103,7 +103,143 @@ Migrations run in a single transaction; failure rolls back; the app refuses to l
   1. **Retry** — re-run the migration; useful for transient I/O errors.
   2. **Restore from backup** — if user has an external backup of the vault directory.
   3. **Reset and resync** — delete local vault, re-pair the device; remote ops are intact.
-- Downgrades require an explicit reverse migration with its own ADR; v1 ships no reverse migrations.
+- Downgrades require an explicit reverse migration with its own ADR; no reverse migrations exist today.
+
+## Migration rigor
+
+> **Normative, and not yet built** ([#327](https://github.com/justin13888/Sunrise/issues/327)). Every rule in this section is a
+> MUST that the tree does not meet today. The *Today* notes say where it falls
+> short. The rules exist because the one invariant every versioned surface
+> serves ([ADR-0042](../11-adr/0042-v0-forever.md)) applies to a device's own
+> vault file as much as to the merge:
+>
+> **Merging vaults across client versions MUST NEVER break and MUST NEVER lose
+> data.**
+
+A storage migration runs once, unattended, on a user's only local copy. So the
+rules below make every migration testable before it ships, recoverable if it
+goes wrong, and unable to destroy anything the op log cannot regenerate.
+
+### 1. Every fixture runs through every migration in CI
+
+- **Fixtures.** There MUST be a committed old-vault fixture
+  (§Old-vault fixtures) for **every `STORAGE_V` that has shipped in a tagged
+  release**, from `BASELINE_STORAGE_V` (13) onward. This replaces the narrower
+  "oldest plus data-moving versions" rule below for every version from now on.
+  A migration that looks schema-only today has been wrong before. The cost of a
+  fixture is one generator function.
+- **The CI job.** A dedicated job opens a copy of every fixture with the
+  ordinary `Db::open`, which migrates it to the current `STORAGE_V`. It then
+  asserts on **row contents**, not on the open succeeding. Each fixture states
+  the rows it holds, and the assertions check that every one of them survives
+  in its migrated shape.
+- **The gate.** Adding a migration `NNNN` without a fixture at `NNNN − 1` fails
+  CI.
+- **Rebuild equivalence.** After migrating, the job also runs the projection
+  rebuild (rule 4). It asserts that the rebuilt projection equals the migrated
+  one. A migration that transforms data differently from how the op log would
+  re-derive it is a bug, whichever side is wrong.
+
+*Today:* two fixtures exist, `vault_storage_v13.db` and `vault_storage_v17.db`
+(`V13_FIXTURE` and `V17_FIXTURE` in
+`crates/sunrise-storage/src/vault_fixtures.rs`). They run as
+ordinary unit tests, and no gate ties a new migration to a fixture.
+
+### 2. A backup is taken before any migration
+
+- Before `Db::run_migrations` applies a batch, the vault MUST be copied with
+  `VACUUM INTO` or the SQLite online-backup API. The copy goes into the vault's
+  own directory as `<vault>.pre-v<from>.bak`, encrypted under the same SQLCipher
+  key, and it is fsynced.
+- **No backup, no migration.** If the copy cannot be made, for example because
+  the disk is full, the open fails with a typed error and the vault is left
+  untouched at its old version. Migrating without the copy is the one failure
+  that cannot be undone.
+- The copy is kept until the **next** successful open at the new version, and
+  removed then. That second open is the first one to prove the migrated vault
+  is usable.
+- §Failure recovery's "Restore from backup" option restores this copy. The user
+  does not need an external backup.
+
+*Today:* migrations run in place with no copy
+(`crates/sunrise-storage/src/db.rs#run_migrations`).
+
+### 3. Integrity is checked on open
+
+- `PRAGMA quick_check` MUST run on every open, before any migration, and again
+  after a migration batch commits.
+- A failure is reported as a typed storage-integrity error, not as a generic
+  SQLite error. The app offers the rebuild in rule 4. When a backup from rule 2
+  exists, it also offers to restore it.
+- A failed check MUST NOT start a migration. Migrating a damaged file turns a
+  recoverable page into an unrecoverable schema.
+
+*Today:* no `quick_check` or `integrity_check` call exists in `crates/`.
+
+### 4. The projection can be rebuilt from the local op log
+
+Every table in the local schema is classified, next to its `CREATE TABLE`, as
+one of two kinds:
+
+- **Source.** The table is never cleared. This covers `ops` (including parked
+  ops, per [ADR-0045](../11-adr/0045-schema-identity-and-feature-gating.md)
+  §4), key material, identity, and local-only state such as relay intents and
+  settings.
+- **Projection.** The table is fully derivable from the source tables. This
+  covers entity rows, per-field merge state
+  ([ADR-0044](../11-adr/0044-per-field-ops.md)), control-op registers that are
+  folds, FTS, and indexes.
+
+A test fails if any table is unclassified.
+
+**The rebuild** runs in one transaction, under a rule-2 backup:
+
+1. Clear every projection table.
+2. Replay `ops` in canonical `(hlc, device_id, seq)` order through the ordinary
+   apply path.
+3. Retry parked ops.
+4. Rebuild FTS.
+
+Under ADR-0044 the result does not depend on order. The canonical order keeps
+side tables deterministic. A test asserts the rebuilt projection is
+byte-identical to the live one for a vault built by random command sequences.
+
+**Where it is exposed.** The rebuild is exposed over UniFFI. Account recovery
+from the relay (`crates/sunrise-cli/src/recover.rs#rebuild_vault`) is exposed
+next to it. The macOS app has a path to each. The rebuild is offered on a
+rule-3 failure and on a migration failure. It runs automatically, in the same
+open, after any migration that changes materialization semantics. Adopting
+per-field ops is the first such migration.
+
+*Today:* the rebuild does not exist (§Materialized state rebuild below).
+`rebuild_vault` is CLI-only, and it recovers an account from the relay into an
+empty vault. It is not a local rebuild.
+
+### 5. Additive and destructive changes
+
+- **Additive changes are always allowed.** These are `ADD COLUMN`,
+  `CREATE TABLE`, `CREATE INDEX`, and a backfill that writes only new columns.
+- **Destructive changes are allowed only on projection data**, and only when
+  the same batch, or the rebuild that follows it, re-derives what was
+  destroyed. A destructive change is a `DROP`, a narrowing type change, or a
+  row rewrite or delete. Source data MUST NOT be dropped or rewritten by a
+  migration.
+  - Migration 0017 is the precedent: it dropped pre-hierarchy `stream_keys`
+    rows only because `Keychain::open` re-derives the legacy keys it needs.
+- **Old columns MAY remain indefinitely.** A column that nothing reads any more
+  costs a few bytes per row. A column dropped too early costs a value nobody
+  can get back. When in doubt, stop reading it and leave it in place.
+- **Never drop storage for data that any client version could still write.**
+  A field some build in the field can still put into an op must stay stored
+  somewhere, either in its column or in the entity's `extra`. That holds even
+  after this build stops modelling the field. Values that arrive from other
+  devices are never the migration's to discard.
+  - Example: removing `Routine.skip_dates` from the registry does not license
+    dropping the data it holds. Those values move into `extra`, or the column
+    stays.
+- **Downgrades stay unsupported.** A newer `STORAGE_V` is refused by an older
+  binary (`STORAGE_V_TOO_NEW`). Because of rule 2, the user still holds the
+  pre-migration copy, and the relay still holds every op.
 
 ## Doc-schema migrations
 
@@ -118,7 +254,7 @@ These are coordinated:
 
 The user's vault stores the highest `doc_schema_version` it has seen any op produced under. Devices on older versions will refuse to *originate* ops under a newer version — they read but don't write past their max.
 
-This produces a property: a v1 device and a v2 device coexist, with the v1 device gracefully degrading.
+This produces a property: a device writing schema 1 and a device writing schema 2 coexist, with the older one gracefully degrading.
 
 > **Neither half of that paragraph is implemented.** The vault records
 > `storage_v` in `schema_meta` and nothing else: **there is no stored highest
@@ -152,13 +288,17 @@ The "minimum `DOC_SCHEMA_V` across all known devices" is determined from device-
 > the recovery answer for a corrupt projection is §Failure recovery's option 3,
 > "reset and resync".
 
+The design of record for the rebuild is §Migration rigor rule 4, which
+supersedes the outline below where they differ (canonical order, parked ops,
+source/projection classification).
+
 If a migration is irrecoverable (a corrupt index, a bug), the user can trigger "rebuild from log":
 
 1. Wipe materialized tables.
 2. Re-apply ops in causal order.
 3. Rebuild FTS index.
 
-This is an internal capability used by the app on first launch after major-version upgrades when materialization logic changes.
+This is an internal capability used by the app on first launch after an upgrade that changes materialization logic.
 
 ## No op-log migration
 
@@ -177,14 +317,25 @@ with opposite consequences:
   migration that can help, because the bytes describe an operation this binary
   has no code for.
 
+> **Amended by [ADR-0045](../11-adr/0045-schema-identity-and-feature-gating.md).**
+> An op this build cannot decode is no longer "reported as an invalid remote
+> op". It is **parked**: stored in `ops`, kept forever, and replayed through
+> the full apply path after an upgrade. A new op family also carries a feature
+> id in `vault_requires`, so an older build goes read-only for that scope
+> rather than writing around data it cannot see. The op log is still never
+> migrated. Parking is what makes that safe. *Today:* not built ([#320](https://github.com/justin13888/Sunrise/issues/320),
+> [#324](https://github.com/justin13888/Sunrise/issues/324)).
+
 [ADR-0024](../11-adr/0024-key-hierarchy.md) has landed three of them —
 `key_envelope`, `device_revoke` and `device_cert`, at `DOC_SCHEMA_V = 5` — and
 [ADR-0025](../11-adr/0025-integration-account-entity.md) (the
 `IntegrationAccount` family) will add another, so both are breaking changes to
-the op vocabulary. That is acceptable pre-1.0 under
-[ADR-0018](../11-adr/0018-storage-baseline-reset.md), where no older build
-exists — and it is recorded here rather than discovered later, because after
-1.0 the same change needs a flag day.
+the op vocabulary. The first three shipped on a pre-release licence that
+[ADR-0042](../11-adr/0042-v0-forever.md) withdraws. No such licence exists any
+more, and no flag day is available: **a migration, and any new op family, MUST
+keep every older build able to merge the vault**, by parking what it cannot
+read and going read-only for a scope it lacks the feature for (the amendment
+above), never by assuming that no older build exists.
 
 Migration `0017` is the storage half of the same ADR, and it is the one
 migration so far that **drops** rows rather than adding to them: `stream_keys`
@@ -245,7 +396,9 @@ Three decisions are worth knowing before adding one.
   schema is no longer old, and the chain it exists to exercise then runs over
   nothing. One test asserts the v13 file is still stamped 13 for exactly that
   reason.
-- **Not every version needs one.** The rule is the oldest supported version,
+- **Not every version needs one** — superseded going forward by
+  §Migration rigor rule 1, which requires a fixture for every shipped
+  `STORAGE_V`. The historical rule was the oldest supported version,
   plus any later version whose successor migrations move *data* the older
   fixture cannot contain. That is 13 and 17 today. Of the appended migrations,
   five move data rather than only schema — 0014's `sort_order` backfill,
