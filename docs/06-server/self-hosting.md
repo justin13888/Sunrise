@@ -150,7 +150,7 @@ The intended subcommand:
 | Feature | Managed | Self-host |
 |---|---|---|
 | Push reliability | High (Sunrise-operated APNs/FCM) | Operator-managed; optional. **No push delivery is implemented in either deployment** — see [`push-notifications.md`](./push-notifications.md). |
-| Cross-server sharing | n/a (v1 only same-server) | n/a |
+| Cross-server sharing | n/a (same-server only) | n/a |
 | Capacity scaling | Auto | Operator-driven |
 | Backups | Sunrise-managed | Operator-managed |
 

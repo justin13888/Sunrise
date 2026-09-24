@@ -119,7 +119,7 @@ fn matches_bymonth(date: Date, rrule: &RRule) -> bool {
 }
 
 /// Does `date` satisfy the `BYDAY` filter (empty list = no constraint)?
-/// `BYDAY` in the v1 subset carries no ordinal prefix; ordinals are expressed
+/// `BYDAY` in the supported subset carries no ordinal prefix; ordinals are expressed
 /// via `BYSETPOS`.
 fn matches_byday(date: Date, rrule: &RRule) -> bool {
     if rrule.by_day.is_empty() {

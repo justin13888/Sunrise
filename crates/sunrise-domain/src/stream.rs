@@ -7,7 +7,7 @@ use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use sunrise_id::EntityRef;
 
-/// Fixed Stream colors per the spec's palette. v1: 8 fixed values.
+/// Fixed Stream colors per the spec's palette. Currently 8 fixed values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum StreamColor {

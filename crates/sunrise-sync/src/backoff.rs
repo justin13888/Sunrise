@@ -28,7 +28,7 @@ impl Default for Backoff {
 }
 
 impl Backoff {
-    /// The canonical v1 policy: 5 retries, base 100 ms, max 30 s.
+    /// The canonical policy: 5 retries, base 100 ms, max 30 s.
     #[must_use]
     pub const fn canonical() -> Self {
         Self {

@@ -4,9 +4,9 @@ status: proposed
 
 # Billing (Managed Cloud Only)
 
-> **Status: proposed. Not scheduled for v1.**
-> [ADR-0027](../11-adr/0027-v1-self-host-first.md) places managed cloud, plan
-> tiers and billing after v1. This document is the design of record for that
+> **Status: proposed. Not built, and not ranked on the roadmap ([`../roadmap.md`](../roadmap.md)).**
+> [ADR-0027](../11-adr/0027-v1-self-host-first.md) leaves out managed cloud,
+> plan tiers and billing. This document is the design of record for that
 > work, not a description of anything that ships.
 >
 > **What exists in the tree:** `accounts.tier`, a `TEXT NOT NULL DEFAULT 'free'`
@@ -16,13 +16,13 @@ status: proposed
 > no Stripe client, no `processed_stripe_events` table, no webhook route, no
 > quota accounting.
 >
-> **Why it is not v1:** v1 ships one server shape, the self-host single binary,
-> which needs none of this. The deferred work is not the Stripe integration —
+> **Why it is not built:** there is one server shape, the self-host single binary,
+> which needs none of this. The unbuilt work is not the Stripe integration —
 > it is per-account accounting and enforcement paths through every write route,
 > and none of it exists. The `429`/`202` responses below cannot be produced:
 > `error.rs`'s `codes` module defines no quota code.
 >
-> **What holds regardless:** nothing in this file constrains v1 code. Its
+> **What holds regardless:** nothing in this file constrains current code. Its
 > numbers are **not** citable from an `accepted` spec; ADR-0027 removed the
 > citations that existed.
 
@@ -35,7 +35,7 @@ Self-host has no billing. Skip this spec for self-host operators.
 | Free | $0 | 100 MB / 1 GB blobs | 5 | 5 (in+out) | 100 |
 | Pro | $5/mo | 5 GB / 50 GB blobs | 50 | unlimited | 10k |
 
-> Family plan is deferred to v2; v1 ships Free and Pro tiers only.
+> There is no Family plan; the proposed tiers are Free and Pro only.
 
 Numbers are placeholders pending real cost analysis; do not promote them externally until pricing is finalized.
 
@@ -57,7 +57,7 @@ exists and is reported in `AccountInfo`, but nothing compares it to a device
 cap.
 
 There is also no longer a code to report a breach with. ADR-0027 takes
-per-account quotas out of v1, so `AUTH_QUOTA_EXCEEDED` and
+per-account quotas out of scope, so `AUTH_QUOTA_EXCEEDED` and
 `STORAGE_QUOTA_EXCEEDED` were removed from `crates/sunrise-error/codes.toml`
 and their ids (203, 300) are burned. The table below therefore describes the
 *shape* a quota surface would take, not a wire contract: building it starts
@@ -88,12 +88,12 @@ The 7-day soft-grace window covers transient overages before the hard cap engage
 
 A managed-cloud user can switch to self-host with no plan obligations. Their data stays with them (it's local-first, after all).
 
-## Future plan ideas (tracked, not v1)
+## Future plan ideas (tracked, not built)
 
 - Per-shared-stream quotas (so one heavily-shared Stream doesn't eat the owner's quota).
 - "Pay what you can" tier (community).
 - Annual billing discount.
-- Family plan (deferred to v2).
+- Family plan (not built).
 
 ## What we do not monetize
 

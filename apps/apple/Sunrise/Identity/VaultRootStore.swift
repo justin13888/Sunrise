@@ -135,7 +135,7 @@ enum VaultRoot {
     /// A fresh root from the system CSPRNG.
     ///
     /// Generated here and nowhere else. There is no passphrase derivation in
-    /// v1: the key is random, the Keychain holds it, and a second device gets
+    /// today: the key is random, the Keychain holds it, and a second device gets
     /// it by pairing rather than by the user retyping anything.
     static func generate() throws -> Data {
         try SystemRandom.bytes(byteCount)

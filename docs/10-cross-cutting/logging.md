@@ -211,7 +211,7 @@ and the salt has to come back.
 
 ### 6.2 IP addresses
 
-- Server access logs: **no client address is logged at all** in v1. The request
+- Server access logs: **no client address is logged at all** today. The request
   span records method and templated endpoint and nothing else, which is
   stricter than the `/24` / `/48` truncation this section allows. Truncated
   prefixes become relevant when there is a rate limiter to explain.

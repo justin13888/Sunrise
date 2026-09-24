@@ -235,7 +235,7 @@ fn done_refuses_something_that_is_not_a_task_id() {
 // ---------------------------------------------------------------------------
 // Writes beyond capture and done
 //
-// "Read/write tasks" is a CLI MUST that the v1 audit graded partial:
+// "Read/write tasks" is a CLI MUST that the parity audit graded partial:
 // `CreateTask` and `CompleteTask` were the only two mutations this binary
 // could reach, so a task's fields could be set at capture time and never
 // again. `edit`, `defer` and `drop` are the triage half.

@@ -32,7 +32,7 @@ Codes are stable across versions; new codes can be added but never repurposed.
 - The Rust enum at `crates/sunrise-error/src/codes.rs` mirrors that manifest. It is *intended* to be generated; until the build script lands it is hand-maintained, and `crates/sunrise-error/tests/manifest_in_sync.rs` is what holds the two together. The TypeScript mirror this section used to place at `packages/sunrise-error-ts` does not exist — nothing in TypeScript reads the registry yet.
 - Codes are added at minor-version boundaries; never reused, never renamed.
 - Adding a code requires updating the manifest. CI checks that ids are monotonically increasing and never re-used.
-- Ids 203 (`AUTH_QUOTA_EXCEEDED`) and 300 (`STORAGE_QUOTA_EXCEEDED`) were removed under ADR-0027 (self-host first), which takes per-account quotas out of v1; nothing ever emitted either. Both ids are **burned** — never re-issued under another name — which is why the auth block continues at 204 (`AUTH_DEVICE_SIG_INVALID`) and the storage block at 304.
+- Ids 203 (`AUTH_QUOTA_EXCEEDED`) and 300 (`STORAGE_QUOTA_EXCEEDED`) were removed under ADR-0027 (self-host first), which takes per-account quotas out of scope; nothing ever emitted either. Both ids are **burned** — never re-issued under another name — which is why the auth block continues at 204 (`AUTH_DEVICE_SIG_INVALID`) and the storage block at 304.
 - An older client receiving an unknown code maps it to `INTERNAL_UNKNOWN_CODE` and preserves the original wire string in `diagnostic` for support tooling.
 
 ## Error envelope (core → UI)
@@ -78,7 +78,7 @@ jitter_pct       = ±20%
 max_retries      = 5
 ```
 
-Applies only to errors with `kind: transient` AND `retryable: true`, and only to idempotent operations. v1 op writes are eligible because **the receiver** is idempotent, not because the request carries a key: a re-sent op is an `INSERT OR IGNORE` on an `op_id` derived from `(stream_id, device_id, seq)`, so a second copy materializes nothing and raises no event. `batch_id` is a correlation id and the relay dedups on nothing — see [05-sync/wire-protocol.md](../05-sync/wire-protocol.md). An operation whose receiver has no such gate never auto-retries.
+Applies only to errors with `kind: transient` AND `retryable: true`, and only to idempotent operations. Op writes are eligible because **the receiver** is idempotent, not because the request carries a key: a re-sent op is an `INSERT OR IGNORE` on an `op_id` derived from `(stream_id, device_id, seq)`, so a second copy materializes nothing and raises no event. `batch_id` is a correlation id and the relay dedups on nothing — see [05-sync/wire-protocol.md](../05-sync/wire-protocol.md). An operation whose receiver has no such gate never auto-retries.
 
 ## Uncaught panics
 

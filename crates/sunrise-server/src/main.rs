@@ -4,7 +4,7 @@
 //! ./sunrise-server -c sunrise.toml
 //! ```
 //!
-//! v1 self-host scope: the typed REST surface plus ADR-0023's SSE sync.
+//! Self-host scope: the typed REST surface plus ADR-0023's SSE sync.
 //! Configuration via TOML; defaults bind 127.0.0.1:8443.
 //!
 //! Logging is installed first, before anything that could want to log. A

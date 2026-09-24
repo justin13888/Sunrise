@@ -73,10 +73,10 @@ struct KeychainCredentialStore: CredentialStore {
     ///   presented. `api::signed::verify_bytes` returns `Ok(None)` before
     ///   reaching the claim comparison when neither `X-Sunrise-Device` header
     ///   is present and `require_device_sig` is off — and off is the default,
-    ///   and is forced in the single-tenant self-host mode ADR-0027 makes v1's
+    ///   and is forced in the single-tenant self-host mode ADR-0027 makes today's
     ///   shape.
     ///
-    /// So on the deployment v1 actually ships, a refresh token lifted out of an
+    /// So on the deployment that actually ships, a refresh token lifted out of an
     /// encrypted backup opens a live session against the account. That is the
     /// defect class #42 named: a credential outliving the device it was issued
     /// to.

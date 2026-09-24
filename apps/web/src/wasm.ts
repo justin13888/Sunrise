@@ -1,7 +1,7 @@
 /**
  * WASM Core bridge.
  *
- * v1 Web: the Rust `sunrise-core` is compiled to wasm32-unknown-unknown
+ * Web target: the Rust `sunrise-core` is compiled to wasm32-unknown-unknown
  * via `wasm-bindgen` (build pipeline owned by the developer:
  * `cargo build -p sunrise-core --target wasm32-unknown-unknown`).
  * Until that pipeline runs, `loadCore` returns a stub that mirrors the
@@ -29,7 +29,7 @@ export interface CoreApi {
 let cached: CoreApi | null = null;
 
 /**
- * Returns a Core API. v1 returns a stub that lives in localStorage so
+ * Returns a Core API. Today it returns a stub that lives in localStorage so
  * the PWA shell renders something during early development; the real
  * WASM build replaces this implementation when the bindgen output
  * lands at `apps/web/src/wasm/sunrise_core_bg.wasm`.

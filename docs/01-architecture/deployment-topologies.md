@@ -4,9 +4,9 @@ status: accepted
 
 # Deployment Topologies
 
-Two topologies are designed. **v1 ships T2 only** ([ADR-0027](../11-adr/0027-v1-self-host-first.md)); T1 is retained as a post-v1 target. A user can move between them without data loss.
+Two topologies are designed. **Only T2 is built** ([ADR-0027](../11-adr/0027-v1-self-host-first.md)); T1 is retained as a future target, not built yet and ranked on the roadmap ([`../roadmap.md`](../roadmap.md)). A user can move between them without data loss.
 
-## T1: Managed cloud — post-v1
+## T1: Managed cloud — not built
 
 ```
 [Devices] ── TLS ─▶ [Sunrise Cloud relay + blob store + push gw]
@@ -16,7 +16,7 @@ Two topologies are designed. **v1 ships T2 only** ([ADR-0027](../11-adr/0027-v1-
                            └── push providers (APNs, FCM, Web Push)
 ```
 
-- Sunrise operates the relay. **Not a v1 deliverable** ([ADR-0027](../11-adr/0027-v1-self-host-first.md)): v1 ships the self-host single binary only, and there are no plan tiers.
+- Sunrise operates the relay. **Not built** ([ADR-0027](../11-adr/0027-v1-self-host-first.md)): the self-host single binary is the only server shape today, and there are no plan tiers.
 - E2EE applies; Sunrise cannot read content.
 - Recommended for users who don't want to operate infrastructure.
 
@@ -42,8 +42,8 @@ Two topologies are designed. **v1 ships T2 only** ([ADR-0027](../11-adr/0027-v1-
 
 The wire protocol is the same in both topologies. Only the server URL and OIDC issuer change.
 
-> **No-server / LAN-only mode is not supported in v1.** Pairing and sync always go through a server (managed or self-hosted). Self-hosters who want LAN-only operation run the server on the LAN.
+> **No-server / LAN-only mode is not supported.** Pairing and sync always go through a server (managed or self-hosted). Self-hosters who want LAN-only operation run the server on the LAN.
 
 ## Federation note
 
-There is no federation between Sunrise servers, and cross-server delivery is not part of v1 — nor is the sharing it would carry. The one answer, including what happens when sharing does land, is in [`trust-and-server-role.md`](./trust-and-server-role.md) §Cross-server delivery.
+There is no federation between Sunrise servers, and cross-server delivery is not implemented — nor is the sharing it would carry. The one answer, including what happens when sharing does land, is in [`trust-and-server-role.md`](./trust-and-server-role.md) §Cross-server delivery.

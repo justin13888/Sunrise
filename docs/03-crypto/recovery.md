@@ -47,8 +47,8 @@ device's UID key, so an encrypted backup cannot re-key it for other hardware.
 - **macOS does not have this guarantee yet.** The Mac app uses the file-based login keychain,
   which accepts `kSecAttrAccessible` and stores nothing (`SecItemAdd` with
   `kSecUseDataProtectionKeychain` returns `errSecMissingEntitlement` for an app with neither the
-  App Sandbox nor a keychain-access-group entitlement, both deferred to release work in
-  `apps/apple/project.yml`). A Mac moved by Migration Assistant or restored from Time Machine
+  App Sandbox nor a keychain-access-group entitlement, neither of which
+  `apps/apple/project.yml` configures yet). A Mac moved by Migration Assistant or restored from Time Machine
   carries the login keychain and therefore the vault root. The Apple client declares the right
   class on both platforms; only iOS enforces it. Closing the gap is not a one-line entitlement:
   an ad-hoc-signed build carrying `keychain-access-groups` is killed at launch by AMFI, which is
@@ -80,7 +80,7 @@ recovery_code = bip39_encode(recovery_seed)   // "abandon ability ... yellow"  (
 
 ## Server-side material
 
-### Argon2id parameters (frozen for v1)
+### Argon2id parameters (frozen)
 
 - **Algorithm:** Argon2id, **version 0x13** (RFC 9106).
 - **Memory:** `m = 65536` KiB (64 MiB).
@@ -141,7 +141,7 @@ The server can serve `upload` to anyone who proves access to the account email (
 
 ### Versioning and previous-blob retention
 
-`blob_v` is an unsigned integer. **v1 reads only `blob_v == 1`**; any other value yields `RECOVERY_VERSION_UNKNOWN` and the UI prompts an upgrade.
+`blob_v` is an unsigned integer. **The current implementation reads only `blob_v == 1`**; any other value yields `RECOVERY_VERSION_UNKNOWN` and the UI prompts an upgrade.
 
 When a client uploads a new blob (e.g. on passphrase or recovery-code rotation), the server retains the **previous** blob for **30 days** under `recovery/<account_id>/<uploaded_at>.blob`. The client UI offers "restore from previous recovery key" within that window. After 30 days the previous blob is hard-deleted.
 
@@ -197,7 +197,9 @@ If the user thinks the recovery code has been compromised:
 
 This is a heavy operation (re-signs DeviceCerts, re-issues every share grant, invalidates previous shares pending peer re-acceptance). It is documented and not encouraged casually.
 
-## Deferred (not v1)
+## Not built
+
+None of these is ranked on the roadmap ([`../roadmap.md`](../roadmap.md)).
 
 - **Social recovery / Shamir-split** of the recovery seed across trusted contacts. The recovery flow is designed to admit this: an alternate path can produce `recovery_seed` from M-of-N shares without changing the server-side blob format.
 - **Hardware-key backup** (FIDO2 / YubiKey holding the wrapping key as a second path).

@@ -122,7 +122,7 @@ A persistent UI element in advanced settings:
 
 A `red` state offers a "save forensic bundle" affordance that exports the relevant envelopes, checkpoints, and roots in a sealed encrypted file the user can share with support or with peers for cross-verification.
 
-## Out of scope (v1)
+## Out of scope
 
-- **Transparency logs** (Certificate-Transparency-style public log of identity-key events). Tracked for v2 with federation.
+- **Transparency logs** (Certificate-Transparency-style public log of identity-key events). Not designed; it would pair with federation, which does not exist either.
 - **Multi-party verification of relay integrity** (oblivious transfers, third-party auditor). Out of scope.

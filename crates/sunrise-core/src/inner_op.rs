@@ -26,8 +26,8 @@
 //! classed `OpEffect::Control` so the compiler keeps them out of the entity
 //! materializer. See [`crate::control_op`], ADR-0024 and ADR-0032.
 //!
-//! v1 uses *full-state* ops: `TaskCreate`/`TaskUpdate` carry the entire `Task`,
-//! not a field-level delta. This is the accepted v1 approximation of the CRDT
+//! The core uses *full-state* ops: `TaskCreate`/`TaskUpdate` carry the entire `Task`,
+//! not a field-level delta. This is the accepted current approximation of the CRDT
 //! model in `docs/05-sync/conflict-resolution.md`: entity-level last-writer-wins
 //! rather than per-field merge. `*Delete` ops are full-state too: each carries
 //! its entity with `deleted` set, never a bare id — see `InnerOp::TaskDelete`

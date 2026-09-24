@@ -4,7 +4,7 @@ status: accepted
 
 # Op Log
 
-The op log is the canonical history. Materialized state is derivable from the log. The log is append-only (in v1; compaction is a controlled rewrite, see [`compaction.md`](./compaction.md)).
+The op log is the canonical history. Materialized state is derivable from the log. The log is append-only (today; compaction is a controlled rewrite, see [`compaction.md`](./compaction.md)).
 
 > **`deps` are specified, not implemented — and every section below that rests
 > on them describes the target.** `OpLog::insert` in

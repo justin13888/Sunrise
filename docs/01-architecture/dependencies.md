@@ -103,7 +103,7 @@ parsing is a
 **hand-written parser at `crates/sunrise-domain/src/rrule.rs`**. This is
 deliberate:
 
-- the v1 supported subset is narrow (`FREQ`, `INTERVAL`, `BYDAY`, `BYMONTHDAY`,
+- the supported subset is narrow (`FREQ`, `INTERVAL`, `BYDAY`, `BYMONTHDAY`,
   `BYMONTH`, `BYSETPOS`, `COUNT`, `UNTIL`, `WKST`), so a full RFC 5545 engine is
   unnecessary;
 - it adds **zero unvetted transitive dependencies** to a security-frozen
