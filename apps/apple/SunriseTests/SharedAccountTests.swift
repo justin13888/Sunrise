@@ -118,13 +118,22 @@ struct SharedAccountTests {
         FileManager.default.temporaryDirectory.appending(path: "sunrise-tests-\(UUID().uuidString)")
     }
 
+    /// A private defaults suite, so no case writes the developer's own settings.
+    private func scratchDefaults() throws -> UserDefaults {
+        try #require(UserDefaults(suiteName: "sunrise-tests-\(UUID().uuidString)"))
+    }
+
     /// Settings under which the ceremony gets as far as asking for a bearer.
-    private func configuredSettings() throws -> AppSettings {
-        let defaults = try #require(UserDefaults(suiteName: "sunrise-tests-\(UUID().uuidString)"))
+    private func configure(_ defaults: UserDefaults) {
         let settings = AppSettings(defaults: defaults)
         settings.relayURL = "wss://relay.invalid/sync"
         settings.accountEmail = "user@example.com"
-        return settings
+    }
+
+    private func configuredDefaults() throws -> UserDefaults {
+        let defaults = try scratchDefaults()
+        configure(defaults)
+        return defaults
     }
 
     /// The issue's sequence end to end: signed in, a sign-out the Keychain
@@ -140,7 +149,7 @@ struct SharedAccountTests {
             location: VaultLocation(directory: directory),
             rootStore: StubRootStore(),
             appVersion: "test",
-            settings: try configuredSettings(),
+            settingsDefaults: try configuredDefaults(),
             account: account
         )
         #expect(session.account === account)
@@ -173,7 +182,7 @@ struct SharedAccountTests {
             location: VaultLocation(directory: directory),
             rootStore: StubRootStore(),
             appVersion: "test",
-            settings: try configuredSettings(),
+            settingsDefaults: try configuredDefaults(),
             account: account
         )
 
@@ -182,6 +191,36 @@ struct SharedAccountTests {
         _ = try #require(session.recoveryCeremony)
 
         #expect(account.accessToken == "access-old", "the ceremony restored the session's own model")
+        await session.lock()
+    }
+
+    /// Settings entered after launch — the Settings screen writes through its
+    /// own ``AppSettings`` — reach the ceremony built afterwards. With no
+    /// stored credential the ceremony then stops at the bearer, not at the
+    /// configuration it would have seen had it kept the launch-time snapshot.
+    @Test
+    func theCeremonyReadsSettingsEnteredAfterLaunch() async throws {
+        let directory = scratchDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let defaults = try scratchDefaults()
+        let session = SessionModel(
+            location: VaultLocation(directory: directory),
+            rootStore: StubRootStore(),
+            appVersion: "test",
+            settingsDefaults: defaults,
+            account: model(store: StubCredentialStore())
+        )
+        await session.start()
+        configure(defaults)
+
+        await session.createVault()
+        let ceremony = try #require(session.recoveryCeremony)
+        await ceremony.start()
+
+        #expect(
+            ceremony.phase == .failed(SessionModel.RecoverySetupError.signedOut.localizedDescription),
+            "past the settings guard: the relay and email entered after launch were read"
+        )
         await session.lock()
     }
 }

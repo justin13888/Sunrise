@@ -80,8 +80,11 @@ final class SessionModel {
     /// sync driver's bearer and the recovery ceremony all read this instance,
     /// so a sign-out the Keychain refused reaches all three.
     let account: AccountModel
-    /// Per-device settings, read by the recovery ceremony when it runs.
-    private let settings: AppSettings
+    /// Where per-device settings live. The recovery ceremony reads them afresh
+    /// each time it is built rather than holding an ``AppSettings`` from
+    /// launch: the Settings screen edits its own instance, and a relay or
+    /// email entered there before the vault was created must reach the upload.
+    private let settingsDefaults: UserDefaults
 
     /// Both `var`: switching vaults replaces them together, and replacing only
     /// one would file a vault's key under another vault's name.
@@ -112,7 +115,7 @@ final class SessionModel {
         appVersion: String,
         configurationError: String? = nil,
         relayDeviceStore: any RelayDeviceIDStore = InMemoryRelayDeviceIDStore(),
-        settings: AppSettings? = nil,
+        settingsDefaults: UserDefaults = .standard,
         account: AccountModel? = nil,
         openBridge: @escaping @Sendable (URL, Data, String, Data?) async throws -> CoreBridge = {
             try await CoreBridge.open(
@@ -124,7 +127,7 @@ final class SessionModel {
         }
     ) {
         vaults = nil
-        self.settings = settings ?? AppSettings()
+        self.settingsDefaults = settingsDefaults
         self.account = account ?? AccountModel()
         resolve = { descriptor in throw VaultLocationError.unusableIdentifier(descriptor.id) }
         self.location = location
@@ -151,7 +154,7 @@ final class SessionModel {
         }
     ) {
         self.vaults = vaults
-        settings = AppSettings()
+        settingsDefaults = .standard
         account = AccountModel()
         self.resolve = resolve
         self.appVersion = appVersion
@@ -312,8 +315,10 @@ final class SessionModel {
     /// The bearer is the session's own ``account``, never a model built here:
     /// a fresh one would re-read a credential this process's sign-out could
     /// not delete and upload under it (#276). It is read only on a first look.
+    /// The settings, by contrast, are read fresh here, so edits made in
+    /// Settings since launch are the ones the ceremony uses.
     private func makeRecoveryCeremony() -> RecoveryCodeModel {
-        let settings = self.settings
+        let settings = AppSettings(defaults: settingsDefaults)
         let account = self.account
         account.restoreIfUnread()
         let nickname = Platform.deviceName
