@@ -7876,7 +7876,7 @@ fn a_read_bounded_senders_recipient_claim_is_refused_and_the_cursor_counts_the_o
 ///
 /// It is **not** the revocation register, and since ADR-0041 the difference
 /// is the point: the register is a fold that can hand a device back, and
-/// `device_read_bounds` only ever grows. Revoking still writes both, so the
+/// `device_read_bounds` keeps a certified one. Revoking writes both, so the
 /// premise here is set by the ordinary command and then asserted on the
 /// table the gate actually reads.
 ///
@@ -8528,7 +8528,7 @@ fn a_stranger_cert_through_apply_remote_is_refused_and_writes_no_cursor() {
 ///
 /// So this delivers both revocations as remote ops and holds three things at
 /// once. The register did unwind — C is off the list and the event fired.
-/// The read bound did not, because it only ever grows, which is the
+/// The read bound did not, because a ledger row still names C: the
 /// asymmetry `Engine::is_read_bounded` exists for. And both cursors stand
 /// exactly where the op rows put them: the fold rewrote `device_revocations`
 /// and touched neither `ops` nor `sync_cursors`.

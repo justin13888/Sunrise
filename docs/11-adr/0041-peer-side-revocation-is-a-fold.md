@@ -651,6 +651,24 @@ discount has to guess at. Taken.
   A dropped op logs `core.device.revoke_refused` with
   `reason = "sender_over_cap"`, and unlike the other two reasons it is not kept.
 
+  **The cap makes the read bound order-dependent a second way.** The ledger and
+  the register converge; the read bound does not, and the cap adds a path to
+  that beside [#282](https://github.com/justin13888/Sunrise/issues/282)'s. Take
+  a pair naming a device this replica holds a cert for. On a replica where the
+  pair lands before 256 newer pairs from the same sender, the fold writes the
+  device's read bound, and the later eviction withdraws the revocation from the
+  register but leaves the bound, because the device has a cert here. On a
+  replica where the 256 newer pairs arrive first, the cap drops the pair before
+  any fold sees it, and that replica never bounds the device. Both replicas then
+  agree that the device is current, and only the first one withholds keys from
+  it. This is taken, not fixed: releasing the bound on eviction would let a
+  sender unbound any device it revoked by naming 256 fresh ids, which is the
+  readmission the read bound exists to prevent, and bounding every pair a
+  sender ever named is the unbounded table the cap exists to remove. The cost
+  falls only on a device a flooding sender revoked, and it is the same
+  per-replica shape #282 already leaves open, so closing #282 with a bound
+  derived from the op set would close this path too.
+
   **Why not the relay.** A per-sender upload quota at the relay was the other
   way to settle #315, and it cannot bound this. Envelopes are opaque to the
   relay, so a quota counts uploads of every kind, not revocations. With
