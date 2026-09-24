@@ -2,6 +2,10 @@
 
 **Status:** accepted
 
+**Amended by:** [ADR-0046](./0046-optional-stream.md) — the hierarchy gains
+one reserved per-vault key domain that is not a Stream, the private domain for
+stream-less content, under the same rules as a Stream key.
+
 **Amends** [`docs/03-crypto/identity-and-device-keys.md`](../03-crypto/identity-and-device-keys.md),
 [`key-rotation.md`](../03-crypto/key-rotation.md) and
 [`recovery.md`](../03-crypto/recovery.md), which specify the target hierarchy this
