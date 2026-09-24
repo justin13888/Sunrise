@@ -65,7 +65,7 @@ jobs:
   # The two are not interchangeable here: a job skipped by a conditional
   # reports a check run GitHub counts as successful, whereas a workflow filtered
   # out by `paths:` reports nothing at all — and `macOS app (…)` and
-  # `iOS app (…)` are required contexts in the `Protect master` ruleset, so
+  # `iOS app (…)` are required status checks on `master`, so
   # that second shape would leave every docs-only pull request permanently
   # unmergeable.
   #
@@ -193,7 +193,7 @@ jobs:
   # The Rust gate runs twice, as two jobs naming one composite action, rather
   # than as the two-leg matrix this used to be. The names below are
   # byte-identical to the legs they replace because both are required status
-  # checks in the `Protect master` ruleset, and the mechanism that keeps the
+  # checks on `master`, and the mechanism that keeps the
   # macOS one off the pull-request path only works on a whole job. See the
   # header of .github/actions/rust-checks/action.yml for why.
   #
