@@ -10,12 +10,18 @@ import XCTest
 /// Run it with `mise run apple-shots`, which extracts the attachments into
 /// `out/shots/ios/`.
 ///
-/// Unlike its macOS twin, this **also runs on every `mise run ios-app`** and so
-/// in CI, because `SunriseiOSUITests` is not skipped in the `SunriseiOS`
-/// scheme. That costs about a minute and buys two things: the walk cannot rot
-/// unnoticed, and every CI run leaves a full set of screenshots in its result
-/// bundle. If that minute ever stops being worth it, `-skip-testing:` on the
-/// `ios-app` task is the lever — not deleting the suite.
+/// Unlike its macOS twin, this **also runs on `mise run ios-app`** and so in
+/// CI, because `SunriseiOSUITests` is not skipped in the `SunriseiOS` scheme —
+/// but not on a pull request. It measured 128 s in CI. The screenshots only
+/// outlive the runner when the run fails, because a green run's result bundle
+/// is never uploaded; what a pull request gives up is the walk's own reach —
+/// it is the only iOS UI test that opens the Search tab, seeds a fixture
+/// through five captures and dismisses the keyboard, so a break only it would
+/// catch goes red on master after the merge rather than on the pull request.
+/// CI sets `SUNRISE_SKIP_SCREENSHOT_WALK` on pull requests, which
+/// the `ios-app` task turns into `-skip-testing:` for this class alone, and
+/// the walk runs on every push to master, nightly and on dispatch. A
+/// developer's `mise run ios-app` sets nothing and still walks.
 @MainActor
 final class ScreenshotWalkTests: SunriseUITestCase {
 
