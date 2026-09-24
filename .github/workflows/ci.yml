@@ -596,10 +596,10 @@ jobs:
       # cases is the intended behaviour here and not a gap in it: each one
       # prints its cause to the log. Pairing it with a condition that never fires
       # on success is the `fuzz` job's shape, at
-      # `:1693-1703`. `retention-days: 7` is not inherited from there — that
+      # `:1817-1827`. `retention-days: 7` is not inherited from there — that
       # step carries no such key — and is this step's own choice: a red run's
       # bundle has to outlive a weekend plus a maintainer's attention, and
-      # seven days is what the framework artefact at `:320` already uses.
+      # seven days is what the framework artefact at `:358` already uses.
       #
       # `path:` is the directory holding the bundle rather than the bundle
       # itself. An `.xcresult` is a directory, and naming it directly makes
@@ -611,14 +611,14 @@ jobs:
       # Said plainly because it has not been established: nothing here has
       # verified that an `.xcresult` survives the zip round trip
       # `upload-artifact` performs. The framework step's own comment earns
-      # that claim explicitly for its payload at `:304-305` — "no symlink and
+      # that claim explicitly for its payload at `:341-342` —"no symlink and
       # no executable bit, so a zip round trip loses nothing" — and no
       # equivalent inspection has been made of a result bundle, a package
       # with its own internal structure. The "Xcode opens it by double-click"
       # sentence above rests on the directory-naming argument alone; the first
       # real failure this step catches is what will confirm or refute it.
       #
-      # `compression-level: 1` for the reason recorded at `:300-305`, which
+      # `compression-level: 1` for the reason recorded at `:337-342`, which
       # applies here unchanged: both ends of this round trip are 10x-billed
       # macOS runners, and a result bundle off the same runner class runs to
       # hundreds of megabytes. It was inherited by omission before, not
@@ -626,7 +626,7 @@ jobs:
       #
       # `name:` carries `github.run_attempt` because `upload-artifact@v4`
       # fails outright when an artifact of that name already exists in the run
-      # and `overwrite:` is unset — and `:315-319` records this repository's
+      # and `overwrite:` is unset — and `:353-357` records this repository's
       # own finding that "Re-run failed jobs" re-enters the *same* run, so
       # attempt 1's artefact is still present when attempt 2 uploads. The
       # suffix rather than `overwrite: true`: comparing two red attempts side
