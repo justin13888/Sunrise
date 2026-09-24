@@ -17028,10 +17028,13 @@ fn a_sender_keeps_at_most_the_cap_of_distinct_revocation_targets() {
 ///
 /// The same ops, one sender over the cap with stamps interleaved around a
 /// second sender's, applied forwards on one replica and backwards on the
-/// other, must leave the same ledger and the same register. A repeated pair
-/// whose greatest stamp arrives after its pair was evicted is in the set too,
-/// which is the case the merge argument in `cap_device_revoke_targets` turns
-/// on.
+/// other, must leave the same ledger and the same register. Each order also
+/// meets a pair the cap evicts before that pair's greatest row arrives, which
+/// is the case the merge argument in `cap_device_revoke_targets` turns on:
+/// forwards it is X, whose flood row sorts below 274 others and whose
+/// greatest row follows the flood; backwards it is Y, whose lesser row
+/// arrives first and whose greatest row arrives last. The replay asserts
+/// each eviction before the greatest row lands.
 #[test]
 fn the_revocation_target_cap_is_the_same_whichever_order_the_ops_arrive() {
     use super::revocation::REVOKE_TARGETS_PER_SENDER as CAP;
@@ -17039,35 +17042,51 @@ fn the_revocation_target_cap_is_the_same_whichever_order_the_ops_arrive() {
     let ed = engine_seeded(ROOT, [5u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
     let er = engine_seeded(ROOT, [4u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
     let cap = u64::try_from(CAP).unwrap();
+    let (x, y) = (made_up_device(3), made_up_device(cap + 20));
 
-    let mut ops: Vec<(&Engine, [u8; 16], u64)> = Vec::new();
+    let mut ops: Vec<(&Engine, [u8; 16], u64)> = vec![(&eb, y, T0 + 100_001)];
     for n in 0..cap + 20 {
         // Stamps not in id order, so rank is decided by stamp and not by id.
-        let at = T0 + ((n * 7919) % (cap + 20)) * 10;
+        // X's flood row sorts above only n = 0, so the flood evicts it.
+        let at = if n == 3 {
+            T0 + 5
+        } else {
+            T0 + ((n * 7919) % (cap + 20)) * 10
+        };
         ops.push((&eb, made_up_device(n), at));
     }
-    ops.push((&eb, made_up_device(3), T0 + 100_000));
-    ops.push((&eb, made_up_device(3), T0 + 1));
+    ops.push((&eb, x, T0 + 100_000));
+    ops.push((&eb, x, T0 + 1));
     for n in 0..5 {
         ops.push((&ed, made_up_device(1_000 + n), T0 + n * 500));
     }
+    ops.push((&eb, y, T0 + 2));
 
-    let mut forward = db_root(ROOT);
-    for (sender, target, at) in &ops {
-        revoke(&er, &mut forward, sender, *target, *at);
-    }
-    let mut backward = db_root(ROOT);
-    for (sender, target, at) in ops.iter().rev() {
-        revoke(&er, &mut backward, sender, *target, *at);
-    }
+    let replay = |order: Vec<&(&Engine, [u8; 16], u64)>, head: ([u8; 16], u64)| {
+        let mut db = db_root(ROOT);
+        for &&(sender, target, at) in &order {
+            if (target, at) == head {
+                assert!(
+                    !whole_ledger(&db).iter().any(|row| row.3 == target),
+                    "the cap evicted this pair before its greatest row arrived"
+                );
+            }
+            revoke(&er, &mut db, sender, target, at);
+        }
+        db
+    };
+    let forward = replay(ops.iter().collect(), (x, T0 + 100_000));
+    let backward = replay(ops.iter().rev().collect(), (y, T0 + 100_001));
 
     assert_eq!(whole_ledger(&forward), whole_ledger(&backward));
     assert_eq!(whole_register(&forward), whole_register(&backward));
     assert_eq!(ledger_rows(&forward), CAP + 5);
-    assert!(
-        er.is_revoked(forward.conn(), &made_up_device(3)).unwrap(),
-        "the pair whose greatest stamp is B's newest is kept, in both orders"
-    );
+    for target in [x, y] {
+        assert!(
+            er.is_revoked(forward.conn(), &target).unwrap(),
+            "a pair whose greatest stamp is among B's newest is kept, in both orders"
+        );
+    }
 }
 
 /// **A gated sender cannot use the cap to escape its gate** (#315).
