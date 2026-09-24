@@ -48,7 +48,7 @@ pub enum Capability {
     SrvIntegrationGcal,
     //
     // Bit 6 was `SrvBillingStripe`, "server enforces Stripe-backed quotas".
-    // ADR-0027 takes per-account quotas out of v1, so the *name* is retired —
+    // ADR-0027 takes per-account quotas out of the product, so the *name* is retired —
     // but the *position* is not freed. A peer that ever set bit 6 asserted the
     // Stripe meaning, and handing that position to something else would make
     // an old peer's honest claim read as a new one. Nothing is renumbered; 6
@@ -71,10 +71,10 @@ pub enum Capability {
     // Bits 32, 33 and 34 originally asserted three Loro CRDT capabilities:
     // `CliLoroLwwRegister`, `CliLoroOrSet` and `CliFractionalIndex`. ADR-0014
     // replaced CRDT merge with entity-level LWW and deleted Loro, so for the
-    // whole of v1 these REQUIRED bits asserted that a client implemented three
+    // whole of wire protocol 1 these REQUIRED bits asserted that a client implemented three
     // things nothing in the codebase does. A peer setting them was telling the
     // truth about nothing; a peer refusing them was refused for the wrong
-    // reason. They are redefined here to what v1 actually requires of a client,
+    // reason. They are redefined here to what wire protocol 1 requires of a client,
     // and the redefinition is safe precisely because nothing ever shipped that
     // read the old meanings.
     /// `32` Client resolves concurrent writes by entity-level LWW over
@@ -177,7 +177,7 @@ mod tests {
         Capability::CliDiagnosticMode,
     ];
 
-    /// Bit 6 named `SRV_BILLING_STRIPE` until ADR-0027 took quotas out of v1.
+    /// Bit 6 named `SRV_BILLING_STRIPE` until ADR-0027 took quotas out of the product.
     /// Retiring the name is a documentation fix; reissuing the position would
     /// be a wire break, because a peer that set bit 6 meant the old thing. So
     /// the hole is asserted, not merely left.

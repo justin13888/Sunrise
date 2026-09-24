@@ -1,6 +1,6 @@
 //! Google Calendar OAuth + read-only event import.
 //!
-//! Scope for v1 is **read-only import** (GitHub issue #4): events flow from
+//! Scope is **read-only import** (GitHub issue #4): events flow from
 //! Google into Sunrise, never the other way. Nothing here writes to Google, so
 //! there is no `events.patch` / `events.delete` surface and no Google-vs-CRDT
 //! write conflict to resolve.
@@ -348,7 +348,7 @@ pub struct EventPage {
 
 /// Per-platform HTTP-bound read interface.
 ///
-/// Read-only by design: v1 imports from Google and never writes back, so there
+/// Read-only by design: this imports from Google and never writes back, so there
 /// is deliberately no insert/patch/delete here.
 #[async_trait]
 pub trait EventSyncer: Send + Sync + std::fmt::Debug {

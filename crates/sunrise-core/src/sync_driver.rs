@@ -1558,7 +1558,7 @@ async fn handle_frame(
             }
         }
         MsgKind::RefreshTokenAck => note_refresh_ack(&payload),
-        // Nack and every other kind are non-fatal in v1 self-host: they fall
+        // Nack and every other kind are non-fatal in the self-host build: they fall
         // through to a no-op.
         _ => {}
     }

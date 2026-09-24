@@ -1,6 +1,6 @@
 //! Sunrise sync relay server library surface.
 //!
-//! Implements the foundation of `docs/06-server/`. v1 ships:
+//! Implements the foundation of `docs/06-server/`. It ships:
 //!
 //! - REST endpoints under `/api/v1/`: account and device lifecycle, blob 2PC,
 //!   meta, health.

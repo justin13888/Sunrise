@@ -4,9 +4,9 @@ status: proposed
 
 # Backpressure and Quotas
 
-> **Status: proposed. Not scheduled for v1.**
-> [ADR-0027](../11-adr/0027-v1-self-host-first.md) places per-account quotas
-> after v1. This document is the design of record for that work, not a
+> **Status: proposed. Not yet built; ranked on the roadmap ([`../roadmap.md`](../roadmap.md)).**
+> [ADR-0027](../11-adr/0027-v1-self-host-first.md) defers per-account
+> quotas. This document is the design of record for that work, not a
 > description of anything that ships.
 >
 > **What exists in the tree:** nothing. No quota accounting, no `Throttle`
@@ -16,8 +16,8 @@ status: proposed
 > [`wire-protocol.md`](./wire-protocol.md)`:233-238` lists it among the nine
 > names the enum does not contain.
 >
-> **Why it is not v1:** quotas presuppose plan tiers, and plan tiers presuppose
-> billing; ADR-0027 defers all three. What v1 enforces instead is a small set of
+> **Why it is not built:** quotas presuppose plan tiers, and plan tiers presuppose
+> billing; ADR-0027 defers all three. What the relay enforces instead is a small set of
 > fixed operator constants that need no per-account state: a 2 MiB request body
 > (`crates/sunrise-server/src/config/model.rs:104-105,110-112`), a 1 MiB ciphertext chunk /
 > 4096 chunks / 100 MB blob (`api/blobs.rs:53,57,61`), and 30-day / 256 MiB

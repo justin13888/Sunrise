@@ -78,7 +78,7 @@ civil-time     = tstr .regexp "([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]"
 epoch-ms = int
 
 ; ---------------------------------------------------------------------------
-; Rich text. v1 stores a NoteBody as an opaque byte string; the structured
+; Rich text. A NoteBody is stored as an opaque byte string; the structured
 ; block grammar in notes.md is the *rendering* contract, not the wire shape.
 ; ---------------------------------------------------------------------------
 NoteBody = bstr
@@ -123,7 +123,7 @@ bytes) — the rule `validate_title` enforces.
   addressing already implies. `AttachFile` and `DetachFile` are the only two
   commands, and there is deliberately no patch type. See
   [`attachments.md`](./attachments.md) §Write-once metadata.
-- **People** are first-class identities, including the local user. A Task assigned to a non-self Person is a "watching/waiting" annotation in v1, not a delegation primitive.
+- **People** are first-class identities, including the local user. A Task assigned to a non-self Person is a "watching/waiting" annotation today, not a delegation primitive.
 - A **Task** or **Routine** may carry **scheduling constraints** — requirement windows (time-of-day / days-of-week / date-range, each `hard` or `soft`) restricting when it should be scheduled. These are a *value type*, not an entity: they mint no ID (see [`scheduling-constraints.md`](./scheduling-constraints.md)) and add no prefix to [`identifiers.md`](./identifiers.md).
 
 ## Identity vs. identity
@@ -137,24 +137,28 @@ When sharing, only Persons with linked cryptographic identities can be granted a
 
 ## Relationship to CRDT shape
 
-> **Target state, not v1.** Everything in this section describes the deferred
-> per-field merge design. v1 merges each entity as one unit by last-writer-wins
-> ([ADR-0014](../11-adr/0014-entity-level-lww-merge.md)); each entity spec's
-> §Merge mapping is the shipped behaviour.
+> **Superseded in part by [ADR-0044](../11-adr/0044-per-field-ops.md) (per-field
+> ops).** The merge model of record is ADR-0044's, not built yet
+> ([#319](https://github.com/justin13888/Sunrise/issues/319)). Today the core
+> merges each entity as one unit by last-writer-wins
+> ([ADR-0014](../11-adr/0014-entity-level-lww-merge.md), superseded), and the
+> rules in force are
+> [`../05-sync/conflict-resolution.md`](../05-sync/conflict-resolution.md).
 
-**Target state, none of it implemented.** ADR-0003 is superseded by
-[ADR-0014](../11-adr/0014-entity-level-lww-merge.md): v1 merges at entity
-granularity with LWW in SQLite and ships **no CRDT library**, so no entity maps
-to a CRDT subtree today and none of the per-field types below exists. The
-deferred design is [`../05-sync/crdt-design.md`](../05-sync/crdt-design.md)
-(`proposed`); the rules actually in force are
-[`../05-sync/conflict-resolution.md`](../05-sync/conflict-resolution.md). Read
-the list in the conditional:
+Under ADR-0044 the workspace still ships **no CRDT library**. Each entity is a
+row, and each of its fields merges by the type the entity registry declares
+for it (the catalogue is [`../05-sync/crdt-design.md`](../05-sync/crdt-design.md)):
 
-- Entities would be *maps* keyed by ID.
-- Each entity would itself be a map of fields.
-- Lists (e.g. an ordered child-task list) would be CRDT lists (RGA-flavored).
-- Sets (e.g. contexts on a task) would be observed-remove sets.
-- Counters (e.g. routine streak) would be PN-counters.
+- Scalars, optional fields and nested values edited as a unit are LWW
+  registers, compared by `(hlc, device_id, seq)`.
+- Map-valued fields (for example `Preferences.values`) are one register per
+  key, with tombstoned keys.
+- Sets (for example `Task.contexts`, `Task.blocked_by`, `Block.tasks`) are
+  observed-remove sets. `Task.blocks` is derived from `Block.tasks`.
+- `deferred_count` is a PN-counter.
+- Routine streaks are derived at read time from the `streak_keys` and
+  `skipped_keys` sets, not stored as counters.
+- Ordering is a `sort_order` fractional key, one register per entity. There is
+  no list CRDT.
 
-That model is Loro's (see [`../11-adr/0003-crdt-loro-vs-automerge.md`](../11-adr/0003-crdt-loro-vs-automerge.md)), and `loro` is in no `Cargo.toml` in the workspace.
+Each entity spec's §Merge mapping names its fields' types.

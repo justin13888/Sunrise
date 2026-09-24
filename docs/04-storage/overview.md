@@ -42,8 +42,8 @@ The op envelope is encrypted (per [`../03-crypto/data-encryption-format.md`](../
 | Linux | `${XDG_DATA_HOME:-~/.local/share}/sunrise/<account>/` |
 | Windows | `%LOCALAPPDATA%\Sunrise\<account>\` |
 | iOS | App container `Library/Sunrise/` (excluded from iCloud, included in iOS device backup if user opts in) |
-| Android *(post-v1, [ADR-0027](../11-adr/0027-v1-self-host-first.md))* | `Context.filesDir/sunrise/<account>/` (private) |
-| Web *(deferred, [ADR-0012](../11-adr/0012-web-wasm-deferred.md))* | OPFS root + per-origin IndexedDB; same logical structure |
+| Android *(not built, [ADR-0027](../11-adr/0027-v1-self-host-first.md))* | `Context.filesDir/sunrise/<account>/` (private) |
+| Web *(not built; ranked as [#52](https://github.com/justin13888/Sunrise/issues/52), [ADR-0012](../11-adr/0012-web-wasm-deferred.md))* | OPFS root + per-origin IndexedDB; same logical structure |
 | CLI | `$SUNRISE_VAULT`, default `~/.sunrise/vault` |
 
 ## Multi-account

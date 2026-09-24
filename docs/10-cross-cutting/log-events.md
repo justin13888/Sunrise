@@ -166,7 +166,7 @@ them until code uses them.
 
 ### `crypto` (sunrise-crypto)
 
-Deliberately unimplemented in v1. Per-envelope logging in the crypto path is
+Deliberately unimplemented. Per-envelope logging in the crypto path is
 the highest-risk, lowest-yield instrumentation in the workspace: it sits in the
 hot loop, and every field it could add is either a constant or one refactor
 away from being a plaintext handle.
@@ -209,19 +209,19 @@ away from being a plaintext handle.
 | `sync.batch.rejected` | warn | Op batch rejected. |
 | `sync.snapshot.req` | debug | Snapshot requested. |
 | `sync.snapshot.applied` | debug | Snapshot applied. |
-| `sync.transport.fallback` | warn | Reserved for a future fallback transport; unused in v1. There is one transport — an SSE stream downstream and typed POSTs upstream ([ADR-0023](../11-adr/0023-sse-sync-transport.md), which supersedes ADR-0005 and the WebSocket-plus-long-poll pair it specified) — and nothing falls back off it. |
+| `sync.transport.fallback` | warn | Reserved for a future fallback transport; unused today. There is one transport — an SSE stream downstream and typed POSTs upstream ([ADR-0023](../11-adr/0023-sse-sync-transport.md), which supersedes ADR-0005 and the WebSocket-plus-long-poll pair it specified) — and nothing falls back off it. |
 
 ### `srv` (auth outcome and push)
 
 Held names, none of them emitted. `srv.auth.ok` and `srv.auth.rejected` sat in
-the Implemented table for the whole of v1 while nothing in
+the Implemented table while nothing in
 `crates/sunrise-server/src` produced either: the bearer path logs nothing on
 success, and a refusal is visible as the `srv.req.end` record's status. They are
 worth keeping as names — an operator asking "who authenticated" is a real
 question — but not as a claim about running code.
 
 `srv.quota.warning` and `srv.quota.exceeded` are **deleted rather than
-reserved**: ADR-0027 takes per-account quotas out of v1, and the codes they
+reserved**: ADR-0027 takes per-account quotas out of scope, and the codes they
 would have carried are gone from the registry with their ids burned.
 
 The push events are unimplemented because the feature is: the only provider is
@@ -252,7 +252,7 @@ logs or a pure function that unit-tests without any of it.
 
 ### `int` (sunrise-integrations)
 
-No provider is wired in v1.
+No provider is wired today.
 
 | Event | Level | Meaning |
 |---|---|---|

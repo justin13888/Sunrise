@@ -1,6 +1,6 @@
-//! RFC 5545 RRULE parser (v1 subset) per `docs/02-domain/routines-and-recurrence.md`.
+//! RFC 5545 RRULE parser (supported subset) per `docs/02-domain/routines-and-recurrence.md`.
 //!
-//! Supported in v1: `FREQ`, `INTERVAL`, `BYDAY`, `BYMONTHDAY`, `BYMONTH`,
+//! Supported today: `FREQ`, `INTERVAL`, `BYDAY`, `BYMONTHDAY`, `BYMONTH`,
 //! `BYSETPOS`, `COUNT`, `UNTIL`, `WKST`. NOT supported: `BYYEARDAY`,
 //! `BYWEEKNO`. Extensions (floating windows, adaptive cadence) are out of
 //! scope here.
@@ -208,7 +208,7 @@ impl RRule {
                 }
                 "BYYEARDAY" | "BYWEEKNO" => {
                     return Err(RRuleParseError::UnknownPart(format!(
-                        "{k} not in v1 subset"
+                        "{k} not in the supported subset"
                     )));
                 }
                 other => return Err(RRuleParseError::UnknownPart(other.into())),

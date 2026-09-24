@@ -4,8 +4,8 @@ status: proposed
 
 # Compaction
 
-> **Status: proposed. Not scheduled for v1.**
-> [ADR-0027](../11-adr/0027-v1-self-host-first.md) places compaction after v1.
+> **Status: proposed. Not yet built; ranked on the roadmap ([`../roadmap.md`](../roadmap.md)).**
+> [ADR-0027](../11-adr/0027-v1-self-host-first.md) defers compaction.
 > This document is the design of record for that work, not a description of
 > anything that ships.
 >
@@ -15,7 +15,7 @@ status: proposed
 > [`../implementation/overview.md`](../implementation/overview.md) for what is
 > live.
 >
-> **Why it is not v1:** two blockers, and the first is inside this document.
+> **Why it is not built:** two blockers, and the first is inside this document.
 >
 > 1. **`doc_state` is undecided** (§Snapshot format below). The field was
 >    specified as `loro::Doc::export_snapshot()` bytes, which cannot be produced
@@ -32,7 +32,7 @@ status: proposed
 >    it leaves, and this document does not.
 >
 > **What holds regardless:** the retention *pressure* is real — the op log
-> genuinely grows without bound, and that is a v1 operational fact, bounded on
+> genuinely grows without bound, and that is a current operational fact, bounded on
 > the relay side only by the 30-day / 256 MiB per-channel relay-log retention
 > (`crates/sunrise-server/src/relay_log.rs:121,130`), which trims the relay's copy
 > and not the client's.

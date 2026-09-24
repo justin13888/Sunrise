@@ -5,7 +5,7 @@
 //! tracking, and outbound queueing — lives in `sunrise-core::sync_driver`,
 //! and the durable outbox is `sunrise_storage::Outbox`.
 //!
-//! v1 surface:
+//! Surface:
 //! - [`SyncState`] — the session state a driver reports to the UI.
 //! - [`Backoff`] — exponential backoff with jitter.
 //! - [`TokenSource`] — the shared, swappable bearer a session presents.

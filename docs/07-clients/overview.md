@@ -11,18 +11,19 @@ so they cannot disagree about what a task is or when a routine fires.
 
 | Client | Tech | Status | Spec |
 |---|---|---|---|
-| macOS | Swift + SwiftUI, core via UniFFI | **v1** | [`desktop.md`](./desktop.md) |
-| CLI | Rust, core linked in-process | **v1** | this page, §CLI |
-| iOS / iPadOS | Swift + SwiftUI + UniFFI core | **v1** at SHOULD level ([ADR-0028](../11-adr/0028-ios-is-a-v1-client.md)) | [`mobile-ios.md`](./mobile-ios.md) |
-| Android | Kotlin + Jetpack Compose + UniFFI core | deferred | [`mobile-android.md`](./mobile-android.md) |
-| Web (PWA) | React + WASM core | deferred ([ADR-0012](../11-adr/0012-web-wasm-deferred.md)) | [`web.md`](./web.md) |
+| macOS | Swift + SwiftUI, core via UniFFI | **shipping** | [`desktop.md`](./desktop.md) |
+| CLI | Rust, core linked in-process | **shipping** | this page, §CLI |
+| iOS / iPadOS | Swift + SwiftUI + UniFFI core | **shipping** at SHOULD level ([ADR-0028](../11-adr/0028-ios-is-a-v1-client.md)) | [`mobile-ios.md`](./mobile-ios.md) |
+| Android | Kotlin + Jetpack Compose + UniFFI core | not built | [`mobile-android.md`](./mobile-android.md) |
+| Web (PWA) | React + WASM core | not built; ranked as [#52](https://github.com/justin13888/Sunrise/issues/52) (core) and [#11](https://github.com/justin13888/Sunrise/issues/11) (deploy) | [`web.md`](./web.md) |
 | Terminal (TUI) | — | **removed** ([ADR-0019](../11-adr/0019-swiftui-macos-client.md)) | — |
 
-"Deferred" means specified, not scheduled, and carrying no MUSTs — that is
-Android and Web. macOS and the CLI carry the v1 MUSTs. The remaining client is
-neither: iOS / iPadOS ships, and carries SHOULDs rather than MUSTs until a
-release is cut ([ADR-0028](../11-adr/0028-ios-is-a-v1-client.md)). See
-[`parity-matrix.md`](./parity-matrix.md).
+"Not built" means specified and carrying no MUSTs — that is Android and Web,
+each ranked on the roadmap ([`../roadmap.md`](../roadmap.md)) where an issue
+exists. macOS and the CLI carry the MUSTs. The remaining client is neither:
+iOS / iPadOS ships, and carries SHOULDs rather than MUSTs
+([ADR-0028](../11-adr/0028-ios-is-a-v1-client.md)); moving it to parity is
+roadmap phase P5. See [`parity-matrix.md`](./parity-matrix.md).
 
 Windows and Linux desktop were specified in an earlier revision of this
 directory and never built. [ADR-0019](../11-adr/0019-swiftui-macos-client.md)
@@ -194,7 +195,7 @@ Considered and rejected in
 changed: the integrations that matter — global hotkey, menu bar, notification
 actions, Spotlight — are exactly the ones a cross-platform toolkit makes
 hardest. The shared core gets the de-duplication; the UI being native preserves
-quality. Compose Multiplatform remains the strongest contender for a v2.
+quality. Compose Multiplatform remains the strongest contender if that choice is revisited.
 
 ## Distribution
 
@@ -204,8 +205,8 @@ quality. Compose Multiplatform remains the strongest contender for a v2.
 | CLI | Cargo, Homebrew, prebuilt binaries on GitHub releases |
 | iOS / iPadOS | App Store Connect. A `vX.Y.Z` tag builds, signs and uploads a build, which lands in TestFlight; submitting one for App Store review and releasing it are manual acts outside this repository, so the App Store version stream runs on its own cadence — [ADR-0039](../11-adr/0039-ios-distribution.md), built by `release.yml`'s `ios-release` job. That job **no-ops visibly** until the six secrets and the App Store Connect app record exist, which only the account holder can create. Locally it still installs ad-hoc on the simulator (`CODE_SIGN_IDENTITY=-`) via `mise run ios-run`; ad-hoc signing is not optional, because iOS gates the Keychain on an application-identifier entitlement only a signed binary carries |
 
-Channels for the deferred clients (Android and Web) are decided when they are
-scheduled.
+Channels for the clients that are not built (Android and Web) are decided when
+they are built.
 
 ## Versioning
 

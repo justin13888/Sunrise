@@ -6,9 +6,9 @@ status: accepted
 
 A user shares a **Stream** (and all its descendant entities) with one or more other identities. The Stream is the unit; there is no per-Task ACL.
 
-## Implementation status: documented only, and demoted from v1
+## Implementation status: a MUST in the parity matrix, not built
 
-**Nothing in this document is implemented, and it is no longer in the v1 MUST set.** [ADR-0020](../11-adr/0020-v1-must-demotions.md) deferred the "accept invite" and "view shared stream as editor" parity rows for exactly this reason; [ADR-0024](../11-adr/0024-key-hierarchy.md) explains the cryptographic blocker underneath it.
+**Nothing in this document is implemented.** The "accept invite" and "view shared stream as editor" rows are MUST in the [parity matrix](../07-clients/parity-matrix.md), not built, and ranked on the roadmap ([`../roadmap.md`](../roadmap.md)) as [#133](https://github.com/justin13888/Sunrise/issues/133); [ADR-0024](../11-adr/0024-key-hierarchy.md) explains the cryptographic blocker underneath it.
 
 * `share_grant`, `share_revoke` and `share_decline` appear in no Rust or Swift file. They are not among the 21 `InnerOp` variants in `crates/sunrise-core/src/inner_op.rs`.
 * `ShareGrantPayload` field 6 is an HPKE single-shot seal. `hpke = "0.13"` is declared in `[workspace.dependencies]` and **no member crate depends on it**; it is not in `Cargo.lock`.
@@ -24,7 +24,7 @@ The primitives this spec composes *are* real and frozen: Ed25519 identity signat
 | `viewer` | yes | no (ops emitted are dropped client-side; sync layer rejects them) | Read-only |
 | `editor` | yes | yes | Ops carry the editor's device_id and identity ID; merged by entity LWW like any other op |
 
-There is no `admin` and no `commenter` in v1. Granting and revoking is a privilege of the Stream's **owner identity** only.
+There is no `admin` and no `commenter` role. Granting and revoking is a privilege of the Stream's **owner identity** only.
 
 ## Granting access
 
@@ -91,7 +91,7 @@ On op emission, the **owner's device** runs egress scrubbing per recipient cohor
 
 1. Walk the Note's outbound payload before encryption.
 2. For every `{kind: "ref", ref}` whose `ref` is in a Stream this cohort does not share, replace with `{kind: "redacted", reason: "private_ref", placeholder_text: "—"}` ([`../02-domain/notes.md`](../02-domain/notes.md) §In-app references defines the shape). The original ref is preserved in the owner's local copy of the op (unscrubbed); the scrubbed form is what gets encrypted for this cohort.
-3. If multiple recipients have heterogeneous access sets, the owner's device emits one envelope per cohort under the same Stream key. v1 ships with a uniform "all share-grants on a Stream see the same content" model, so this is an edge case for cross-Stream refs only.
+3. If multiple recipients have heterogeneous access sets, the owner's device emits one envelope per cohort under the same Stream key. The design uses a uniform "all share-grants on a Stream see the same content" model, so this is an edge case for cross-Stream refs only.
 
 A scrubbed envelope is detectable to the **owner** (they retain the original). Recipients cannot tell whether their envelope was scrubbed; this is by design (no leak of the existence of private references).
 
@@ -99,7 +99,7 @@ There is no editor→owner re-scrubbing path: editors cannot author cross-stream
 
 ## Cross-relay sharing
 
-Not in v1, and the single answer — the owner's relay is authoritative, there is
+Not implemented, and the single answer — the owner's relay is authoritative, there is
 no federation, and the credential question is open — lives in
 [`../01-architecture/trust-and-server-role.md`](../01-architecture/trust-and-server-role.md)
 §Cross-server delivery.
@@ -112,7 +112,7 @@ When an editor modifies a shared Stream:
 2. Ops are published to the granter's relay (or, in the cross-relay case above, the relay both parties agree to use).
 3. Ops carry the editor's `device_id` (whose `DeviceCert` is in the editor's vault-meta log, which is fetched on first share). Authorship is preserved on every op.
 
-There is no "merge request" model: an editor's op applies on arrival and merges by entity-level LWW ([ADR-0014](../11-adr/0014-entity-level-lww-merge.md)), which means two editors changing the same Note concurrently keep one version, not a union of both. A future "review mode" toggle is tracked as v2.
+There is no "merge request" model: an editor's op applies on arrival and merges by entity-level LWW ([ADR-0014](../11-adr/0014-entity-level-lww-merge.md)), which means two editors changing the same Note concurrently keep one version, not a union of both. A future "review mode" toggle is not designed or built.
 
 ## Privacy implications
 
@@ -122,4 +122,4 @@ Every party — owner, recipient, relay — sees:
 - Op counts and timestamps in the shared Stream (visible to the relay).
 - The granting identity's public-key bundle (the recipient verifies it against an OOB fingerprint).
 
-We do not hide the sharing graph from the relay in v1. Reducing this leakage is tracked in `11-adr/` as future work (oblivious access patterns).
+The design does not hide the sharing graph from the relay. Reducing this leakage is tracked in `11-adr/` as future work (oblivious access patterns).

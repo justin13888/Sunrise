@@ -242,7 +242,7 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.productivity
         INFOPLIST_KEY_NSHumanReadableCopyright: ""
-        # No App Sandbox in v1. Sandboxing moves Keychain items into an
+        # No App Sandbox yet (#247). Sandboxing moves Keychain items into an
         # app-scoped group, which would have to land together with the
         # entitlement and a signing identity; both are release work.
         #

@@ -44,7 +44,7 @@
 //! # Not implemented: defrag
 //!
 //! Repeatedly inserting at the same position lengthens the key by roughly one
-//! digit per insertion, and nothing in v1 shortens it again:
+//! digit per insertion, and nothing today shortens it again:
 //! `docs/02-domain/streams.md` specifies a `stream.list.defrag` op that
 //! rewrites a whole list once a key reaches [`DEFRAG_THRESHOLD_BYTES`], and
 //! that op does not exist in the op-kind registry
@@ -66,7 +66,7 @@ const LAST: u8 = BASE - 1;
 /// Key length at which `docs/02-domain/streams.md` says a device should
 /// trigger `stream.list.defrag`.
 ///
-/// **Unobserved in v1.** There is no defrag op to trigger, so this documents
+/// **Unobserved today.** There is no defrag op to trigger, so this documents
 /// the bound rather than enforcing it. See the module docs.
 pub const DEFRAG_THRESHOLD_BYTES: usize = 64;
 

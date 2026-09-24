@@ -2,6 +2,11 @@
 
 **Status:** accepted
 
+**Amended by:** [ADR-0052](./0052-search-v2.md) — every entity kind is
+indexed twice (words and trigrams), the query grammar is parsed in Rust, and
+the index has a memory budget. The decision here, that all search runs locally
+over an FTS5 index inside the vault, stands.
+
 ## Context
 
 Search is a core flow for multi-stream operators. The server can't see plaintext, but a usable productivity app must search across thousands of items in <100ms.

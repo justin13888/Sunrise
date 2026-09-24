@@ -49,9 +49,40 @@ All platforms: ≤100ms p95.
 - Mobile: ≤30 s.
 - Web (cold OPFS): ≤60 s.
 
+## Sync propagation (commit on one device → applied on another)
+
+The end-to-end number, and the one the user feels. **p99 < 500 ms** for a peer that is online and
+subscribed, over a relay with ≤ 50 ms RTT to each device. That is the typical case: the same
+city, or the same network. The clock starts when the authoring device's local commit returns. It
+stops when the receiving device's engine has applied the op and published it on its change feed,
+because the UI repaints from that feed.
+
+| Leg | Budget (p99) | Measured by |
+|---|---|---|
+| Author: commit → batch on the wire | 50 ms | client sync-driver span ([#366](https://github.com/justin13888/Sunrise/issues/366)) |
+| Relay: batch accepted → flushed to the last subscriber | 100 ms | `sunrise_sync_fanout_latency_seconds` ([`metrics.md`](../06-server/metrics.md)) |
+| Network, both hops | 2 × RTT (≤ 100 ms at the stated RTT) | harness-injected |
+| Receiver: frame read → applied and published | 50 ms | client engine span |
+| Headroom | 200 ms | — |
+
+The budget is enforced by the two-client harness [#366](https://github.com/justin13888/Sunrise/issues/366) specifies: two engines and a real relay on
+loopback, with injected RTT and a steady op rate, asserting the p99 over at least 10 000 ops. The
+wider-network rows in [`../05-sync/overview.md`](../05-sync/overview.md) §Latency targets (LTE, a
+phone woken by push) are budgets for those conditions, not relaxations of this one.
+
+## Planner preview
+
+`plan_preview` ([`../08-features/planner.md`](../08-features/planner.md)) runs whenever a drag
+crosses a snap boundary, at most once per frame, so it has a frame budget: **≤ 16 ms p95, ≤ 33 ms p99** on Baseline A for a typical week
+(200 open tasks, 60 blocks, 40 external events, 20 dependencies). On Baseline B the ceiling is
+2 ×. A preview over budget is a bug in the solver's incrementality, not a reason to throttle the drag.
+
 ## Search
 
-- p95 ≤100 ms over 10k tasks on all platforms.
+- p95 ≤100 ms over 10k tasks on all platforms, and ≤ 250 ms over 100k tasks on Baseline A and B,
+  across every indexed entity kind ([`../08-features/search.md`](../08-features/search.md)).
+- The index's memory, resident while searching, counts against the ceilings below. A 100k-task
+  vault MUST NOT push iOS past its 200 MB ceiling.
 
 ## Memory ceiling (steady-state)
 
@@ -105,6 +136,11 @@ All platforms: ≤100ms p95.
   window alone. A gate that red-lights on noise is ignored within a week, and
   then it protects nothing. The 5% figure assumes the dedicated hardware named
   under "Calibration cadence" below, which the project does not have yet.
+- **A comparison that silently compares nothing:** `crates/sunrise-bench/src/bin/baseline.rs:180`
+  still lists the retired `ws_handshake` bench, and the bench that replaced it is
+  `crates/sunrise-bench/benches/sync_session.rs`. So the sync bench's result is never compared
+  against anything, and nothing reports that. Every `darwin-aarch64` value in `bench/baseline.json` is null. Both
+  are fixed by [#366](https://github.com/justin13888/Sunrise/issues/366).
 - Until it does, a budget regression is something a human notices in the
   nightly report, not something that stops a merge or a release. Tracked in
   [#33](https://github.com/justin13888/Sunrise/issues/33).

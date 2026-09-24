@@ -4,23 +4,31 @@ status: accepted
 
 # Conflict Resolution
 
-> **Target state.** v1 resolves *every* field by entity-level LWW over
-> `(hlc, device_id, seq)` — the "Scalar" row below applied to the whole entity.
-> The OR-Set, PN-counter, list, and RichText policies are not implemented; see
-> [ADR-0014](../11-adr/0014-entity-level-lww-merge.md).
+> **Superseded in part by [ADR-0044](../11-adr/0044-per-field-ops.md) (per-field
+> ops).** The merge model of record is ADR-0044's: ops carry only the fields a
+> command wrote, and each field merges by its own type (register, map, OR-set or
+> PN-counter). Where this page and ADR-0044 disagree, ADR-0044 wins. The
+> comparison key and the HLC rules below are unchanged.
+>
+> **Today** the implementation still resolves *every* field by entity-level LWW
+> over `(hlc, device_id, seq)`, the "Register" row below applied to the whole
+> entity ([ADR-0014](../11-adr/0014-entity-level-lww-merge.md), superseded).
+> The per-field model is tracked by
+> [#319](https://github.com/justin13888/Sunrise/issues/319).
 
-The merge layer resolves every concurrent edit deterministically, with no user prompt. This spec documents the *deliberate* policy choices; in v1 the single policy in force is the entity-level LWW described in the banner above.
+The merge layer resolves every concurrent edit deterministically, with no user prompt. This spec documents the *deliberate* policy choices; today the single policy in force is the entity-level LWW described in the banner above.
 
 ## Default policies
 
 | Field type | Policy |
 |---|---|
-| Scalar (title, due_at, priority, …) | LWW with `(hlc, device_id, seq)` tiebreak |
-| Set membership (contexts, blocks↔tasks) | OR-Set: add wins over concurrent remove of an *earlier* add |
-| Counter (deferred_count, streak) | PN-counter (commutative add/sub) |
-| List (ordered children of a Stream) | Loro List with fractional indices; concurrent inserts at the same anchor get tiebroken by `device_id` |
-| Rich text (notes) | Loro RichText (CRDT character merge) |
-| Map (entity itself) | Map of the above types |
+| Register (title, `planned_at`, `target_at`, `hard_due_at`, priority, `sort_order`, each nested value as a whole, …) | LWW per field with the `(hlc, device_id, seq)` tiebreak |
+| Map (entries edited independently, such as `Preferences.values` and day-schedule entries) | One LWW register per key; a key is removed by a tombstone, never forgotten |
+| Set membership (`Task.contexts`, `Task.blocked_by`, `Block.tasks`, a routine's `skipped_keys` and `streak_keys`) | Observed-remove OR-set: a concurrent add survives a remove that did not observe it. `Task.blocks` is derived from `Block.tasks`, not merged. |
+| Counter (`deferred_count`) | PN-counter (commutative add/sub) |
+| Streaks | Derived at read time from `streak_keys` and `skipped_keys`; never stored or merged |
+| Ordering (children of a Stream) | `sort_order` fractional key, one LWW register per entity |
+| Rich text (notes) | Not specified. A text CRDT would arrive as a new field-op kind under its own ADR (ADR-0044 §What would force revisiting this). No CRDT library is in the workspace. |
 
 ## The comparison key
 
@@ -79,13 +87,16 @@ A and B both transition a task on the same op-window:
 | `done` | `done` | Same value. Idempotent. `completed_at` is LWW. |
 | `done` | `in_progress` | Later wins; user can "redo" it as `done` if they intended that. |
 
-### Concurrent due_at edits
+### Concurrent deadline edits
 
-Both set `due_at`. LWW, on the whole entity. Nothing is logged: the merge journal that would have recorded it was removed (see below).
+Both set `hard_due_at`. Under ADR-0044 the `hard_due_at` register takes the
+later write, and a concurrent edit to any *other* field on either side
+survives. Today the later write wins on the whole entity. Nothing is logged:
+the merge journal that would have recorded it was removed (see below).
 
 ### Concurrent task moves across streams
 
-**In v1 a move is not delete-plus-create — it is one op.** `Task.stream_id`
+**Today a move is not delete-plus-create — it is one op.** `Task.stream_id`
 (`crates/sunrise-domain/src/task.rs`) is a field on the entity, and moving a
 task emits a single `InnerOp::TaskUpdate` carrying the whole task with its new
 `stream_id`. There is no `TaskMove` variant and no delete/create pair in
@@ -97,7 +108,13 @@ entity-level LWW settles them with the comparison key above: the later
 replica picks the same one. **No duplicate is ever created, so nothing needs
 tombstoning.**
 
-*Target state.* Duplicate-and-tombstone is what would be needed
+Under ADR-0044 a move is one `stream_id` register write, so the same holds per
+field: the later move wins and no other field is touched. A move between key
+domains also re-seals the task's field state under the destination with each
+field's original stamp ([ADR-0046](../11-adr/0046-optional-stream.md) §2),
+which is a carry, not a new write, so it cannot make a stale field win.
+
+*Not planned.* Duplicate-and-tombstone is what would be needed
 if a move ever becomes a delete-source + create-destination pair — sort copies
 by `(create_op.hlc, create_op.device_id_lex, create_op.seq)`, keep the last,
 auto-tombstone the rest, extending to N-way. It is **not implemented**, because
@@ -118,11 +135,11 @@ every remote replica while the originating replica kept it.
 Two devices complete occurrence O of a routine R at nearly the same time:
 
 - Both emit `complete(occurrence_id)` op with the same `occurrence_id` (deterministically derived from `routine_id || occurrence_date`).
-- Receivers see both, and application is idempotent on `op_id`, so the streak advances once rather than twice. *Target state:* the PN-counter this rule was written for; the streak is an ordinary field on the Routine row today and merges with it under entity-level LWW (banner above).
+- Receivers see both, and both add the same occurrence key to the routine's `streak_keys` OR-set, which counts it once. The streak is derived at read time from `streak_keys` and `skipped_keys` (ADR-0044 §3), so it advances once rather than twice. Today the streak is an ordinary field on the Routine row and merges with it under entity-level LWW (banner above).
 
 ### Concurrent list reorders
 
-*Target state:* a fractional-index list handles this, and concurrent moves of the same item produce one final position, deterministic across replicas. In v1 the containing entity merges as a unit, so the later writer's ordering wins wholesale.
+Each entity's position is its own `sort_order` register (ADR-0044 §3), so concurrent moves of the same item produce one final position, the later write's, deterministic across replicas, and moves of different items both survive. Today the containing entity merges as a unit, so the later writer's whole row wins.
 
 ### Concurrent share-then-revoke
 
@@ -148,10 +165,10 @@ automatically this week" review surface has no data behind it — and neither do
 the UI state that used to exist for it.
 [`../07-clients/shared-ui-system.md`](../07-clients/shared-ui-system.md)
 §Three-state view contract dropped its `conflict` state on exactly this ground:
-a view cannot raise a toast about a loss nothing recorded. Reinstating that
-UI means designing a journal for an entity-level model — one row per losing
-*entity version*, not per field — and an ADR superseding 0018's removal, not
-restoring the schema above.
+a view cannot raise a toast about a loss nothing recorded. Under
+[ADR-0044](../11-adr/0044-per-field-ops.md) a losing *field* write is well
+defined again, so a per-field journal is possible. Reinstating it still needs
+its own ADR superseding 0018's removal, not a restore of the schema above.
 
 ## Atomic batches
 
@@ -162,7 +179,7 @@ restoring the schema above.
 > if the process dies mid-loop. `OpBatchPayload` itself is only exercised
 > end-to-end by the server's own tests. Convergence survives — every apply is
 > idempotent and entity-level LWW — but the all-or-nothing guarantee below is
-> not one v1 provides.
+> not one the current implementation provides.
 
 `OpBatch` (see [`wire-protocol.md`](./wire-protocol.md)) carries multiple ops as one transactional unit. Intended receiver behavior:
 

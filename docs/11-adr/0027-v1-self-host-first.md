@@ -2,6 +2,10 @@
 
 **Status:** accepted
 
+**Amended by:** [ADR-0042](./0042-v0-forever.md) — "post-v1" is release
+framing, now withdrawn: each item is ranked on the roadmap or out of scope.
+Clauses 6 and 7 stand unchanged.
+
 **Amends:** seven specs demoted to `status: proposed`, and **twenty-four
 `accepted` specs materially edited**. Both lists are enumerated in
 §Consequences; nothing this ADR changes is left to be discovered by diffing.

@@ -17,7 +17,7 @@ that is no longer what is built.
 
 ## Status
 
-**The app ships and is in CI, and it is a v1 client at SHOULD level.**
+**The app ships and is in CI, and it is held to SHOULD level.**
 [`parity-matrix.md`](./parity-matrix.md) now carries a filled iOS column and
 [ADR-0028](../11-adr/0028-ios-is-a-v1-client.md) is the record of why: every
 row the shell reaches is a **SHOULD**, and none of them is a MUST until an iOS
@@ -163,7 +163,7 @@ System share sheet → Sunrise → captures the shared text/URL/image as an atta
 
 ### Apple Watch (MAY)
 
-If shipped: a glance for Today, ability to capture via voice. Syncs to phone via WatchConnectivity. Not v1.
+If shipped: a glance for Today, ability to capture via voice. Syncs to phone via WatchConnectivity. Not built.
 
 ## Background sync
 
@@ -221,7 +221,7 @@ would have had to catch a travelling token, neither of which does:
   `api::signed::verify_bytes` returns before the comparison when the
   `X-Sunrise-Device` headers are absent and `require_device_sig` is off — which
   is the default, and is *required* to be off in the single-tenant self-host
-  mode [ADR-0027](../11-adr/0027-v1-self-host-first.md) makes v1's shape.
+  mode [ADR-0027](../11-adr/0027-v1-self-host-first.md) makes the only shape.
 
 So a refresh token lifted out of an encrypted backup opens a live session
 against the account from hardware the account never authorized. What it reaches

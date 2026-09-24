@@ -122,7 +122,7 @@ pub enum VaultError {
     /// every such vault keyed by a constant compiled into a binary anyone can
     /// download, which is the condition this module exists to end, and would
     /// hide from the user that their two "accounts" were never separate. The
-    /// break is pre-1.0 and follows ADR-0018's precedent — `STORAGE_V = 13`
+    /// break follows ADR-0018's precedent — `STORAGE_V = 13`
     /// already refuses older vaults outright — but unlike that one it is
     /// recoverable without data loss: the old root is a known constant, so the
     /// message hands it over and the vault opens with [`ENV_VAULT_ROOT`].

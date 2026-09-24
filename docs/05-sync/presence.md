@@ -4,9 +4,9 @@ status: proposed
 
 # Presence
 
-> **Status: proposed. Not scheduled for v1.**
-> [ADR-0027](../11-adr/0027-v1-self-host-first.md) clause 3 places presence
-> after v1, and fixes the condition for its return: an ADR that states the
+> **Status: proposed. Not yet built; ranked on the roadmap ([`../roadmap.md`](../roadmap.md)).**
+> [ADR-0027](../11-adr/0027-v1-self-host-first.md) clause 3 defers presence,
+> and fixes the condition for its return: an ADR that states the
 > behavioural-metadata leak outright and amends
 > [`../06-server/overview.md`](../06-server/overview.md) §Non-responsibilities
 > in the same change. This document is the design of record for that work, not
@@ -15,7 +15,7 @@ status: proposed
 > **What exists in the tree:** two message-kind discriminators and nothing
 > behind them (below).
 >
-> **Why it is not v1:** two blockers, one mechanical and one architectural.
+> **Why it is not built:** two blockers, one mechanical and one architectural.
 >
 > *Mechanical — there is no frame to carry it.*
 > `PresenceBeacon` (`0x0A`) and `PresenceUpdate` (`0x0B`) exist as message-kind
@@ -46,7 +46,7 @@ status: proposed
 > non-responsibilities list MUST be amended to match. Do not treat this page as
 > having settled that.
 >
-> **What holds regardless:** nothing in this file constrains v1 code. The
+> **What holds regardless:** nothing in this file constrains current code. The
 > *posture* statement does bind: until an ADR says otherwise, the relay reads no
 > user data in the clear, and presence is the design that would change it.
 
@@ -56,7 +56,7 @@ Lightweight indicators of which of the user's other devices are online and which
 
 - Show the user "Phone is online; Laptop is online; Desktop was last seen 12 minutes ago."
 - For shared streams with editor peers, show "Alice is viewing this stream now."
-- *Not* show typing indicators, cursor positions, or fine-grained co-presence in v1.
+- *Not* show typing indicators, cursor positions, or fine-grained co-presence.
 
 ## Implementation
 

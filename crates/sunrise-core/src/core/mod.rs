@@ -1,10 +1,10 @@
 //! `Core` — the user-facing facade.
 //!
-//! v1 surface: `open` → returns `Core` once the vault lock + DB are ready;
+//! Surface: `open` → returns `Core` once the vault lock + DB are ready;
 //! `submit` / `query` route to the storage + CRDT layers; `changes` /
 //! `sync_status` return broadcast streams; `close` runs graceful shutdown.
 //!
-//! v1 implementation depth: the public API is wired and the lifecycle is
+//! Implementation depth: the public API is wired and the lifecycle is
 //! correct. The actual command-application engine that translates a
 //! [`crate::Command`] into op envelopes + CRDT mutations + storage rows
 //! lives behind a small `Engine` trait that subsequent phases populate

@@ -22,10 +22,10 @@ Recognized syntax:
 |---|---|
 | `#name` | Stream — exact match if exists; ambiguous matches → suggestions |
 | `@name` | Context — exact match preferred |
-| `^when` | Scheduled at; "when" parsed by date library |
+| `^when` | Planned at (`planned_at`); "when" parsed by date library, kind per [`time.md`](../10-cross-cutting/time.md) §1 |
 | `!N` (1..5) | Priority |
 | `~Xm` / `~Xh` | Estimated duration |
-| `*due:when*` | Due (less common, more verbose to avoid collision with markdown) |
+| `*due:when*` | Hard deadline (`hard_due_at`; less common, more verbose to avoid collision with markdown) |
 | Naked text | Title (everything else) |
 
 Examples:
@@ -39,8 +39,8 @@ Parser runs *as the user types*; an inline preview shows the structured interpre
 ## Capture UX patterns
 
 - **Single field.** No labels, no required form fields beyond the title.
-- **Stream default.** Capture always lands in Inbox **unless** the user is actively typing into a specific Stream's task list at the moment of capture (in which case that Stream is the implicit target — overridable inline with `#inbox`). Capture from outside the app (share sheets, hotkeys, widgets, Siri/Tasker, CLI subcommand) **always** lands in Inbox. There is no per-device "respect current stream" preference.
-- **Today default.** The same rule for the field Today selects on. Capturing into the bar at the top of an unfiltered Today gives an otherwise-undated line `scheduled_at = now`, so the row appears where it was typed. An explicit `^` in the line still wins, exactly as an explicit `#stream` overrides the Stream default above. Without this the line is filed in Inbox — correct, and invisible on the screen that just accepted it, with nothing on screen to say where it went. This is the *only* other implicit target; a Today narrowed by contexts offers no capture bar at all, because a captured line carries none of the contexts the filter names and would be written and filtered straight back out.
+- **Stream default.** Capture writes **no stream** (or the vault's `capture_default_stream` preference when set, [`../02-domain/preferences.md`](../02-domain/preferences.md)), so an undated capture lands in the Inbox view, **unless** the user is actively typing into a specific Stream's task list at the moment of capture (in which case that Stream is the implicit target — overridable inline with `#inbox`, which writes no stream). Capture from outside the app (share sheets, hotkeys, widgets, Siri/Tasker, CLI subcommand) **always** follows the no-stream rule. There is no per-device "respect current stream" preference.
+- **Today default.** The same rule for the field Today selects on. Capturing into the bar at the top of an unfiltered Today gives an otherwise-undated line `planned_at` = today (an `all_day` value), so the row appears where it was typed. An explicit `^` in the line still wins, exactly as an explicit `#stream` overrides the Stream default above. Without this the line is filed in Inbox — correct, and invisible on the screen that just accepted it, with nothing on screen to say where it went. This is the *only* other implicit target; a Today narrowed by contexts offers no capture bar at all, because a captured line carries none of the contexts the filter names and would be written and filtered straight back out.
 - **Voice capture** on supporting platforms (iOS Siri, Android voice, watchOS). Voice goes through the same parser.
 - **Batch capture.**
   - Web/Desktop: paste of multi-line text auto-detects line-separated batch; a modal preview shows parsed items with checkboxes; user confirms.
@@ -50,10 +50,17 @@ Parser runs *as the user types*; an inline preview shows the structured interpre
 
 ## Inbox view
 
-The Inbox is one Stream, under the well-known id
-[`INBOX_STREAM_ID`](../../crates/sunrise-domain/src/inbox.rs)
-(`str_0000076XBEE9MQ6S9ED5Q64VVR`) — three zero bytes followed by the ASCII
-`sunrise.inbox`, not a literal spelling of the word.
+The Inbox is a **view**, not a Stream
+([ADR-0046](../11-adr/0046-optional-stream.md) §3). It lists every **untriaged**
+task: open, with no effective stream (`stream_id IS NULL` after re-homing), none
+of `planned_at`, `target_at` or `hard_due_at`, and no `triaged_at`. Giving a
+task a stream or any of the three times moves it out of the Inbox because the
+predicate stops holding; **Mark triaged** sets `triaged_at` for a task that
+belongs to no stream and has no date, and **Return to Inbox** clears it.
+
+> **Today's build** still keeps the Inbox as a Stream under the fixed id
+> [`INBOX_STREAM_ID`](../../crates/sunrise-domain/src/inbox.rs); ADR-0046 §5
+> migrates it to the view above.
 
 Inbox view characteristics:
 
@@ -74,12 +81,12 @@ more than the row itself.
 | iOS Siri / Shortcuts | Voice → parser → task | **live** — `CaptureTaskIntent` behind the **Capture Task** App Shortcut, shared with macOS |
 | iOS Lock Screen widget | Capture sheet | **not built** — no `WidgetKit` in `apps/apple` and no widget extension target ([#14](https://github.com/justin13888/Sunrise/issues/14)) |
 | iOS Share Sheet | Task with attached link/file/text | **not built** — no share extension target ([#31](https://github.com/justin13888/Sunrise/issues/31)) |
-| Android Quick Settings tile | Capture sheet | **not built** — deferred client |
-| Android share intent | Task with attached link/file/text | **not built** — deferred client |
-| Android Tasker | Task with arbitrary fields | **not built** — deferred client |
-| Web bookmarklet / extension | Capture sheet pre-filled | **not built** — deferred client |
+| Android Quick Settings tile | Capture sheet | **not built**; ranked ([`../roadmap.md`](../roadmap.md)) |
+| Android share intent | Task with attached link/file/text | **not built**; ranked |
+| Android Tasker | Task with arbitrary fields | **not built**; ranked |
+| Web bookmarklet / extension | Capture sheet pre-filled | **not built**; ranked |
 | CLI subcommand | One-shot commit | **live** — `sunrise capture`, the same parser |
-| Email-to-Sunrise | — | deferred to v2 |
+| Email-to-Sunrise | — | **not built**; ranked |
 
 ## Performance constraints
 

@@ -47,4 +47,4 @@ User-visible feature specs. Each spec defines the user contract; implementations
 
 ## No feature flags
 
-v1 has no per-user feature gates and no flag-service plumbing. The product is opinionated: every feature listed above ships on every supported platform, or it doesn't ship at all. Platform capability is detected at runtime (e.g. iOS web push lights up on Safari 16.4+ automatically); it isn't user-configurable.
+There are no per-user feature gates and no flag-service plumbing. The product is opinionated: every feature listed above ships on every supported platform, or it doesn't ship at all. Platform capability is detected at runtime (e.g. iOS web push lights up on Safari 16.4+ automatically); it isn't user-configurable.
