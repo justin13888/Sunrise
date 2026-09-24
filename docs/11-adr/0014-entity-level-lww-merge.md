@@ -1,15 +1,18 @@
 # 0014 — Entity-level LWW in SQLite is the v1 merge model (supersedes 0003)
 
-**Status:** accepted
+**Status:** superseded by 0044
+
+**Superseded by:** [ADR-0044 — Per-field ops](./0044-per-field-ops.md) on the
+merge model. The deletion of `sunrise-crdt` and Loro, and the record of why a
+delete op must not be a bare id, stand. The body below is kept as history.
 
 **Supersedes:** [ADR-0003 — CRDT: Loro over Automerge](./0003-crdt-loro-vs-automerge.md)
 
 **Amended by:** [ADR-0016 — Hybrid logical clocks](./0016-hlc-timestamps.md),
 which replaces the comparison key `(ts_ms, device_id)` used throughout this
 document with `(hlc, device_id, seq)` and fixes the skewed-clock defect recorded
-under *Consequences*. The merge model itself — entity-level, one survivor — is
-unchanged, and per-field LWW remains deferred; see *Per-field LWW, revisited*
-at the end.
+under *Consequences*. The entity-level merge model itself was unchanged by
+ADR-0016; see *Per-field LWW, revisited* at the end.
 
 **Amends:** [ADR-0013 — Focus session op representation](./0013-focus-session-op-representation.md),
 whose chosen representation named an OR-Set on a Loro Stream doc. Removing the
