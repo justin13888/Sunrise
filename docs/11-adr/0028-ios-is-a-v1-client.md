@@ -2,6 +2,9 @@
 
 **Status:** accepted
 
+**Amended by:** [ADR-0042](./0042-v0-forever.md) — iOS parity is a ranked
+roadmap phase and a per-device-class parity target, not a release gate.
+
 > **Later change, recorded rather than edited in.** The Context below reads the
 > CI triggers as they stood when this ADR was written, and names the hole it
 > found on its way past: *"a pull request stacked on another feature branch is

@@ -32,7 +32,7 @@ enum DeepLink: Equatable, Sendable {
     /// Parse a URL, or refuse it.
     ///
     /// One documented shape is deliberately **not** parsed:
-    /// `sunrise://share/<token>`. Sharing is deferred from v1 by ADR-0020, so
+    /// `sunrise://share/<token>`. Sharing is deferred by ADR-0020, so
     /// there is no grant this app could resolve a token against — and a
     /// parser case whose router arm does nothing is a link that silently
     /// fails rather than one that is honestly ignored.

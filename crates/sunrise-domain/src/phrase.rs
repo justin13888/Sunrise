@@ -11,7 +11,7 @@
 //! CLI and the app should not have to translate. The rendering — colour,
 //! width, truncation — stays with whoever is drawing.
 //!
-//! Locale is deliberately out of scope in v1: these are English, and
+//! Locale is deliberately out of scope today: these are English, and
 //! localisation is a later, whole-product decision rather than a per-string
 //! one.
 

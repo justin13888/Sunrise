@@ -111,7 +111,7 @@ content addressing without it would be a cross-tenant read primitive, since one
 account could name another's blob by its hash. A grantee naming an owner's
 `blb_…` therefore gets `404 BLOB_NOT_FOUND` — "No committed blob under that id
 **for this account**" ([`../06-server/api.md`](../06-server/api.md) §Blobs). This
-is one of the reasons cross-user sharing is post-v1
+is one of the reasons cross-user sharing is not built
 ([ADR-0027](../11-adr/0027-v1-self-host-first.md)).
 
 The manifest (`"<chunk_count> <size_bytes>"`) is written **after** every chunk
@@ -144,15 +144,24 @@ A device decides per-attachment when to fetch. Default policies:
 | Image referenced in a Note currently rendering | Yes |
 | Attachment on Today's tasks | Yes |
 | Older attachment | On click |
-| Mobile on metered network | "On click" only by default |
+| Mobile on metered network | "On click" only by default (`attachments.auto_fetch_on_cellular`, default off) |
 
 ## Cache eviction
 
-Per-device LRU. Default cap: 1 GB on desktop, 200 MB on mobile, 50 MB in browser. Evicted blobs can be re-fetched; eviction does not affect the metadata or the user's logical "this attachment exists" state.
+A core-owned, per-device least-recently-used cache, as decided in
+[ADR-0053](../11-adr/0053-attachment-thumbnails-and-native-rendering.md) §5 and
+specified in [`../02-domain/attachments.md`](../02-domain/attachments.md) §Local
+cache. The limit is the device-scoped preference `attachments.cache_limit_bytes`
+([`../02-domain/preferences.md`](../02-domain/preferences.md)): default **1 GB
+on desktop, 200 MB on phone and tablet**, configurable from a minimum of
+**100 MB** up to 50 GB. Recency is the last-access time stamped on each preview
+or open. Evicted blobs can be re-fetched; eviction does not affect the metadata
+or the user's logical "this attachment exists" state. It never evicts a blob
+with an upload pending, a thumbnail, or a blob open in a preview.
 
 A chunk's cache row has a `state` field: `absent | downloading | cached | partial | evict_pending`.
 
-- Eviction targets `cached` rows oldest-first; `downloading` rows are never evicted.
+- Eviction targets `cached` rows least recently used first; `downloading` rows are never evicted.
 - If a `cached` row would be evicted but a fetch references it, eviction is skipped and the row stays.
 - A `downloading` row's bytes are kept on disk until either completion (→ `cached`) or cancellation (→ `partial`); a partial row may be GC'd after 7 days unreferenced.
 

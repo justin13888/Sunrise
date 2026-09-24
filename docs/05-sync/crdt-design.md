@@ -4,122 +4,104 @@ status: proposed
 
 # CRDT Design
 
-> **Status: proposed. Not scheduled for v1.**
-> [ADR-0014](../11-adr/0014-entity-level-lww-merge.md) supersedes ADR-0003 and
-> makes v1's merge model entity-level last-writer-wins; this document is the
-> design of record for the per-field design that was deferred, not a description
-> of anything that ships. It is demoted alongside the six specs in
-> [ADR-0027](../11-adr/0027-v1-self-host-first.md) §Consequences, on its own
-> ground: it is a per-field type catalogue for a merge model the tree does not
-> have.
+> **Superseded in part by [ADR-0044](../11-adr/0044-per-field-ops.md) (per-field
+> ops).** ADR-0044 is the design of record for per-field merge. It adopts no
+> CRDT library: ops carry only the fields a command wrote, and each field
+> merges as a register, a map of registers, an OR-set or a PN-counter. This page
+> restates that model as a type catalogue. Where it and ADR-0044 disagree,
+> ADR-0044 wins. The earlier Loro-based design (one Loro doc per Stream, Loro
+> lists and rich text, Loro snapshots) is withdrawn; it survives only in
+> [ADR-0003](../11-adr/0003-crdt-loro-vs-automerge.md) as history.
 >
-> **What exists in the tree:** nothing from this document. `loro` appears in no
-> `Cargo.toml` in the workspace; there is no `StreamCore`, no
-> `StreamCore::mutate`, and no `CROSS_STREAM_REF` error anywhere in `crates/`;
-> no snapshot op exists; the "CRDT properties tested" at the end are tested for
-> the LWW engine, not for a CRDT.
+> **Status: proposed.** Not yet built; ranked on the roadmap
+> ([`../roadmap.md`](../roadmap.md)) and tracked by
+> [#319](https://github.com/justin13888/Sunrise/issues/319).
 >
-> **Why it is not v1:** ADR-0014 removed the CRDT layer and gives the reasoning.
-> What v1 ships instead is `sunrise-core::engine` merging whole entities by
+> **What exists in the tree:** entity-level last-writer-wins
+> ([ADR-0014](../11-adr/0014-entity-level-lww-merge.md), superseded by
+> ADR-0044). `sunrise-core::engine` merges whole entities by
 > `(hlc, device_id, seq)`, with the `lww_*` columns arriving in
 > `0013_baseline.sql` ([ADR-0018](../11-adr/0018-storage-baseline-reset.md)'s
-> collapse, which later migrations append to rather than replace). The rules in
-> force are [`conflict-resolution.md`](./conflict-resolution.md).
->
-> **What holds regardless:** the *shape* of the per-field question — which
-> entities would want which merge type — is what a future per-field design
-> starts from, and ADR-0014 §What would force revisiting this names the triggers.
-> **Read every section below in the conditional, whatever tense it is written in.**
+> collapse, which later migrations append to rather than replace). `loro`
+> appears in no `Cargo.toml` in the workspace. The rules in force today are
+> [`conflict-resolution.md`](./conflict-resolution.md)'s banner.
 
-## Choice of CRDT library
+## No CRDT library
 
-**Loro** (Rust, with WASM bindings). See [`../11-adr/0003-crdt-loro-vs-automerge.md`](../11-adr/0003-crdt-loro-vs-automerge.md).
+ADR-0044 §Alternatives considered rejects Loro and Automerge: the four merge
+types are each a few dozen lines, and a library would bring back the
+dependency and advisories ADR-0014 removed, and put merge state in a format the
+schema fingerprint ([ADR-0045](../11-adr/0045-schema-identity-and-feature-gating.md))
+cannot describe field by field. Collaborative rich text in notes is the one
+case that could still justify a library. It would arrive as a new field-op kind
+under its own ADR, parked by older builds (ADR-0044 §8).
 
-Reasons:
+## Key domains, not documents
 
-- Native Rust; cleanly bindable to mobile and WASM with the same crate.
-- Supports map, list, text, counter, movable list — a superset of what we need.
-- Compact binary encoding.
-- Active development; reasonable benchmarks.
+There is no per-Stream document. Every entity is a row whose ops are sealed
+under one key domain: a Stream, the vault's private domain for stream-less
+content, or vault-meta
+([ADR-0046](../11-adr/0046-optional-stream.md) §2 lists which entity kind goes
+where). Sharing, per-stream sync and compaction follow the key domain.
 
-Automerge was the alternative; rejected for v1 due to slower mobile performance and a heavier op encoding.
+## Mapping domain entities to field types
 
-### Version pinning
-
-**No `loro` pin exists.** The dependency was removed by [ADR-0014](../11-adr/0014-entity-level-lww-merge.md) and no `Cargo.toml` in the workspace declares a CRDT library. What follows is the pinning policy that *would* apply if one were reintroduced, stated in the conditional throughout:
-
-- The pin would be major+minor (it was `loro = "1.12"`, resolving to 1.12.0; see [`../01-architecture/dependencies.md`](../01-architecture/dependencies.md)), and moving it would require a superseding ADR.
-- `loro::Doc::export_snapshot()` / `import_snapshot()` would be the canonical persistence formats — which is exactly the assumption [`../04-storage/compaction.md`](../04-storage/compaction.md) is blocked on, since it specified `doc_state` as those bytes.
-- Format compatibility within a `1.x` line would be the library's guarantee; a major bump would require re-encoding every snapshot under a migration ADR.
-
-## Document layout
-
-We do **not** use one giant CRDT doc. Instead:
-
-- One Loro doc per **Stream**.
-- Plus one "vault meta" doc per identity for: device certs, stream registry, contexts, person registry, settings.
-- Plus per-attachment metadata is part of the parent Stream's doc.
-
-Why per-Stream:
-
-- **Sharing maps cleanly.** One Stream → one doc → one set of access keys.
-- **Sync per-stream is independent.** A heavily-edited Stream doesn't drag a quiet one.
-- **Compaction is per-stream.** No global rewrite events.
-
-## Mapping domain entities to CRDT shapes
-
-| Domain field | CRDT type |
+| Domain field | Field type (ADR-0044 §3) |
 |---|---|
-| Scalar (title, state, due_at, …) | LWW-register, with `(timestamp, device_id)` tiebreak |
-| `contexts` (Set<ContextId>) | Observed-Remove Set |
-| `tasks` on a Block (Set<TaskId>) | Observed-Remove Set |
-| `body` (NoteBody) | Loro RichText |
-| `stream_order` (parent → ordered children) | Loro List with fractional indices |
-| `streak_counter` | PN-counter |
+| Scalars and optional fields (`title`, `state`, `planned_at`, `target_at`, `hard_due_at`, `stream_id`, `sort_order`, `deleted`, …) | LWW register, compared by `(hlc, device_id, seq)`, with an origin (`generated` or `user`) |
+| Nested values edited as a unit (`scheduling_constraints`, `rrule`, each `template.*` field) | One LWW register for the whole value |
+| Map-valued fields (`Preferences.values`, day-schedule entries) | Map: one LWW register per key, tombstoned keys |
+| `Task.contexts`, `Task.blocked_by`, `Block.tasks` | Observed-remove OR-set (add-wins) |
+| `Routine.skipped_keys`, `Routine.streak_keys` | Observed-remove OR-set (add-wins) |
+| `Task.blocks` | Derived from `Block.tasks` on read; not merged |
 | `deferred_count` | PN-counter |
-| `scheduling_constraints` (Task, Routine) | LWW-register over the **whole list** (edited as a unit; no per-element identity) — see [`../02-domain/scheduling-constraints.md`](../02-domain/scheduling-constraints.md) |
+| Streak count, `streak_started_at`, `last_completed_at` | Derived at read time from `streak_keys` and `skipped_keys`; not stored |
+| Ordering of a stream's children | `sort_order` fractional key, one register per entity |
+| `updated_at` | Derived: the greatest `hlc.physical_ms` among applied ops that touched the entity |
 
-### OR-Set merge rules
+### OR-set merge rules
 
-For an OR-Set field (`blocked_by`, `tags`, `assignees`, etc.):
-
-- An add carries `(value, add_op_id)`.
-- A remove carries `(value, [observed_add_op_ids])` — the set of add op ids the removing device has observed for `value`.
-- A remove **only removes** the listed add op ids. Concurrent adds with op ids the remover did not observe survive.
-- Concurrent same-value adds produce one logical entry (Loro deduplicates by value).
-- Tie-breaker on simultaneous final state: not needed; OR-Set is deterministic.
-
-### Cross-stream isolation enforcement
-
-Per-Stream isolation is enforced at the application layer in `sunrise-domain`: every CRDT-mutating call goes through `StreamCore::mutate(stream_id, |doc| …)`, which inspects all entity ids appearing in mutation arguments. Non-conforming calls return `DomainError::CROSS_STREAM_REF { from_stream, to_stream }` and the mutation is rolled back. Loro itself has no such check; the application owns isolation.
+- An add carries the element, and is tagged with the adding op's `op-ref`,
+  `(stream_id, device_id, seq)`.
+- A remove carries the element and the add-tags the removing device had
+  observed for it.
+- A remove removes only the listed tags. A concurrent add, whose tag the
+  remover never saw, survives.
+- The value is every element with at least one tag not removed, so it is a pure
+  function of the two sets, whatever the order of application.
 
 ## Concurrent writes — concrete cases
 
 | Scenario | Result |
 |---|---|
-| Device A renames task; Device B renames task | LWW; later timestamp wins; if equal, lexicographic device_id wins |
-| Device A adds context X; Device B removes context X | OR-Set semantics; the **add** wins if the remove's "observed-add" reference is to an *earlier* add; otherwise remove wins |
-| Device A marks done; Device B edits title | Both apply; task is done with new title |
-| Device A deletes task; Device B edits same task | Task remains deleted (delete is "all-fields-tombstoned"); B's edit becomes effectively no-op once tombstone is observed |
-| Two devices independently complete a routine occurrence | Both completions counted? PN-counter is increment-only here; we model "completed" as a state, not a counter. So: LWW on `state=done`, with one `completed_at`; the streak counter increments by 1 (idempotent on op id) |
+| Device A renames a task; device B renames it | The `title` register takes the greater `(hlc, device_id, seq)` |
+| Device A renames a task; device B sets its priority | Both survive: they are different registers |
+| Device A adds context X; device B removes context X | The add survives if B had not observed A's add-tag; otherwise X is removed |
+| Device A marks done; device B edits the title | Both apply; the task is done with the new title |
+| Device A deletes a task; device B edits it | The task stays deleted. B's edit is kept inside the tombstoned entity, and a restore shows it (ADR-0044 §5) |
+| Two devices complete the same routine occurrence | Both add the same key to `streak_keys`; the set counts it once, and the derived streak advances once |
+| Device A adds `x → y` to `blocked_by`; device B adds `y → x` | Both edges stay in the OR-sets. The edge whose earliest surviving add-tag is newer is suppressed at read time ([`../02-domain/scheduling-constraints.md`](../02-domain/scheduling-constraints.md) §Dependencies) |
 
 ## Op encoding
 
-We do *not* use Loro's native binary directly on the wire. Instead, we wrap Loro ops inside our own envelope:
-
-- Loro op produced by domain mutation.
-- Serialized via Loro's encoding to bytes.
-- Wrapped in a Sunrise op envelope (encrypted, signed) — see [`../03-crypto/data-encryption-format.md`](../03-crypto/data-encryption-format.md).
-- Stored and transported as the envelope.
-
-Receivers unwrap, verify, decrypt, then feed the inner Loro op to the local Loro doc.
+A per-field op is the `Patch` inner-op variant (ADR-0044 §1), sealed in the
+ordinary Sunrise envelope — see
+[`../03-crypto/data-encryption-format.md`](../03-crypto/data-encryption-format.md).
+Envelope, AAD and signature are unchanged. Legacy full-state ops stay readable
+forever, as writes to every field they carry (ADR-0044 §7).
 
 ## Snapshots
 
-For sync efficiency on cold-start and for compaction, we periodically emit Loro doc snapshots wrapped in a snapshot op (see [`../04-storage/compaction.md`](../04-storage/compaction.md)).
+Every field type is a pure function of the set of applied ops, so a projection
+is rebuildable from `ops` in any order. A compaction snapshot carries that
+state; its format is [`../04-storage/compaction.md`](../04-storage/compaction.md)'s
+to define ([#330](https://github.com/justin13888/Sunrise/issues/330)).
 
-## CRDT properties tested
+## Properties tested
 
-- **Convergence.** Property test: random op sequences applied in any order across N simulated devices produce identical final state.
-- **Causal preservation.** Receivers never expose state derived from an op whose deps haven't been applied.
-- **Determinism.** Same op set, same final state, byte-for-byte.
+- **Convergence.** Random interleavings, duplications and reorders of mixed
+  legacy and `Patch` ops across N simulated devices produce identical
+  canonical projections.
+- **No lost concurrent write.** One property per field type: no concurrent
+  write to a different field, and no concurrent add or increment, is lost.
+- **Determinism.** Same op set, same final state, byte for byte.

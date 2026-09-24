@@ -38,8 +38,23 @@ Overlapping Blocks coexist (the user might intend to be at two places). UI shade
 
 ## External calendar integration
 
-- **Import (read-only Blocks).** *Target state for the Google half* — Google Calendar is deferred out of v1 ([ADR-0020](../11-adr/0020-v1-must-demotions.md) §(b), issue #4) and no toggle exists on any client. Toggle per integration: pull events from Google Calendar. Imported Blocks are tagged `source = import:gcal`. They are read-only (cannot edit or bind tasks). User can convert one to a Sunrise Block (snapshot to a new editable Block; the import remains). One-shot `.ics` import is also supported and yields `source = import:ics` Blocks.
-- **Export (push to external).** *Target state.* Per-Stream toggle. When on, Sunrise-created Blocks within that Stream are pushed as events to a designated Google Calendar. Edits propagate. Conflict policy: external is updated on change; if the external event is deleted out-of-band, we drop the binding and surface a notification.
+Calendar integrations are **read-only**
+([ADR-0049](../11-adr/0049-calendar-integrations-per-device-oauth.md)).
+
+- **Fetched events are `ExternalEvent`s, never Blocks.** Events from Google
+  Calendar, Microsoft Graph and CalDAV become read-only `ExternalEvent`
+  entities: recurring events are stored as the occurrences the provider
+  expanded inside the fetch window, each with a deterministic id. The grid draws
+  them beside Blocks, the planner treats them as fixed, and no client edits
+  them or binds a Task to them. Not built; ranked on the roadmap
+  ([`../roadmap.md`](../roadmap.md)) as
+  [#4](https://github.com/justin13888/Sunrise/issues/4).
+- **Nothing is pushed out.** Sunrise writes to no external calendar, and there
+  is no `import:gcal` source.
+- **`.ics` files are the one path that writes Blocks.** One-shot `.ics` import
+  yields `fixed` Blocks with `source = import:ics`, and `.ics` export writes
+  Blocks back out; `external_id` serves only this round trip
+  ([`../09-integrations/icalendar.md`](../09-integrations/icalendar.md)).
 
 ## Why not a native calendar server inside Sunrise
 

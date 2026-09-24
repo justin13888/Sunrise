@@ -140,7 +140,7 @@ the cloud yet" warning shown to the user — a misleading framing for local-firs
 
 The exception: when an op references a peer-side resource that hasn't propagated
 yet (e.g. accepting a share that the granter hasn't yet pushed), the UI shows
-"waiting for peer." Sharing is post-v1
+"waiting for peer." Sharing is not built
 ([ADR-0027](../11-adr/0027-v1-self-host-first.md)), so this path is unreachable
 today.
 

@@ -51,7 +51,7 @@ pub enum DbError {
         /// Version the binary needs.
         binary_v: u32,
     },
-    /// The vault predates the pre-1.0 storage baseline reset (ADR-0018).
+    /// The vault predates the storage baseline reset (ADR-0018).
     ///
     /// Distinct from [`DbError::StorageVTooOld`] because it is not a
     /// "run the migrations" condition: the migrations that would upgrade such
@@ -59,7 +59,7 @@ pub enum DbError {
     /// the only remedy is a fresh vault.
     #[error(
         "vault predates the storage baseline: db is storage_v {db_v}, \
-         this build's baseline is {baseline_v}; pre-1.0 vaults are not upgraded"
+         this build's baseline is {baseline_v}; older vaults are not upgraded"
     )]
     StorageVPreBaseline {
         /// Version found in the DB.

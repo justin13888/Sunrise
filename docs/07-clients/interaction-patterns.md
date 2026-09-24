@@ -62,7 +62,7 @@ none in [`../02-domain/tasks.md`](../02-domain/tasks.md). There is nothing to
 write, so there is nothing to sync, and a hand-arranged task list is a fact
 about the machine it was arranged on — kept beside the other device facts, lost
 with the device, and never mistaken for the user's data. Giving Tasks their own
-`sort_order` is a `DOC_SCHEMA_V` bump and is not in v1.
+`sort_order` is a `DOC_SCHEMA_V` bump and is not built.
 
 A per-device task order also has to answer a question the synced one does not:
 what happens to a row it has never seen. Rows the order knows come first, in
@@ -251,8 +251,8 @@ are one shared file
 (`apps/apple/Sunrise/Notifications/NotificationCenterClient.swift:88-113`
 for the category and its buttons, `:235-264` for the delegate)
 compiled into both products. The iOS column carries SHOULDs rather than MUSTs
-([ADR-0028](../11-adr/0028-ios-is-a-v1-client.md)). Android and Web remain
-[deferred clients](./parity-matrix.md) and carry no MUSTs at all.
+([ADR-0028](../11-adr/0028-ios-is-a-v1-client.md)). Android and Web are
+[not built](./parity-matrix.md) and carry no MUSTs at all.
 
 The app intercepts `sunrise://` URIs (or the equivalent intent / click) and translates to an op without opening UI when possible.
 
@@ -288,12 +288,12 @@ was deleted elsewhere is an ordinary event, not a failure.
 ### `sunrise://share/<token>` — specified, not built
 
 > **Specified, not built.** The parser refuses this shape, and nothing in
-> either app writes one. Sharing is deferred from v1 by
-> [ADR-0020](../11-adr/0020-v1-must-demotions.md): a token names a grant, there
+> either app writes one. Sharing is a MUST in the parity matrix, not built,
+> and ranked as [#133](https://github.com/justin13888/Sunrise/issues/133): a token names a grant, there
 > is no grant model to name, and a route that accepted the token and then had
 > nowhere to take it would be the one failure this section rules out — a link
 > that goes somewhere plausible and wrong. The shape is kept because it is
-> still the design; it will be built with the sharing model ADR-0020 defers,
+> still the design; it will be built with the sharing model,
 > and is tracked by [#133](https://github.com/justin13888/Sunrise/issues/133),
 > which is closed by whatever change introduces that model rather than on its
 > own.

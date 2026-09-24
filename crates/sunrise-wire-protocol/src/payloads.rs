@@ -137,7 +137,7 @@ pub struct CursorEntry {
 /// Fields are ordered for canonical CBOR: `cursors` (7), `stream_id` (9).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SubscribeEntry {
-    /// Per-device cursors. v1 relay replays everything retained, so cursors
+    /// Per-device cursors. The relay today replays everything retained, so cursors
     /// are carried but may be unused server-side.
     pub cursors: Vec<CursorEntry>,
     /// 16-byte stream id to subscribe to.

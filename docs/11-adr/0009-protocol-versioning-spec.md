@@ -2,6 +2,11 @@
 
 **Status:** accepted
 
+**Amended by:** [ADR-0045](./0045-schema-identity-and-feature-gating.md) —
+each document-schema version gains a fingerprint, a vault declares the
+features it requires, and an op a build cannot understand is parked rather than
+reported invalid.
+
 ## Context
 
 ADR-0004 established the crypto suite and noted that op envelopes carry `aead_alg`, `sig_alg`, and `epoch` fields "so future rotation is a clean version transition." Section 05-sync/wire-protocol.md mentions a `PROTOCOL_VERSION_MISMATCH` error code. Section 02-domain/schema-versioning.md describes forward-compat rules for unknown CRDT fields.

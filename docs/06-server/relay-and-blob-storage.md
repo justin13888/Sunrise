@@ -196,9 +196,9 @@ step 3b before any commit.
 
 ## Retention
 
-All retention numbers are unified to **30 days** (or shorter) in v1:
+All retention numbers are unified to **30 days** (or shorter):
 
-- Op envelopes: retained until eligible for compaction; post-compaction retention is **30 days** (see [`../04-storage/compaction.md`](../04-storage/compaction.md)).
+- Op envelopes: the relay keeps a frame for at most **30 days** from arrival, or less when the channel's count bound evicts it first. This is the current relay retention, set in code by `DEFAULT_MAX_AGE_MS` (`crates/sunrise-server/src/relay_log.rs:123`) and applied on every append; it does not wait on compaction, which is proposed and not built ([`../04-storage/compaction.md`](../04-storage/compaction.md)).
 - Op metadata rows: retained at least **30 days** regardless of compaction state, providing a recovery window if compaction logic produces a defective snapshot.
 - Blob GC grace: `gc_grace_days = 30` (configurable). Tombstoned blobs are deleted from the object store on day 31. This is independent of post-compaction retention.
 - Pending-blob outbox rows: 24 h (described above).

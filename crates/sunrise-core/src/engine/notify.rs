@@ -59,7 +59,7 @@ impl Engine {
 
     /// Everything worth scheduling with the OS between `now` and the horizon.
     ///
-    /// Two sources in v1: a Task's `scheduled_at` and a Block's start. A
+    /// Two sources today: a Task's `scheduled_at` and a Block's start. A
     /// routine occurrence is already a Task by the time it is due — that is
     /// what materialization produces — so it needs no separate source, and
     /// having one would double every routine reminder.

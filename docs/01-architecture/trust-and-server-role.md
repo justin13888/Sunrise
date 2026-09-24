@@ -13,7 +13,7 @@ The single most-asked question about an E2EE app is: *"if the server can't read 
 3. **Encrypted blob storage.** Attachments larger than the op-log payload limit are stored as encrypted blobs; the server holds them but cannot read them.
 4. **Authentication for sync.** Verifies an OIDC access token (issued by a separate IdP) plus a registered device ID. See [`../06-server/auth.md`](../06-server/auth.md).
 5. **Fixed request and size limits.** Anti-DoS bounds that need no per-account state: request body, blob chunk/count/size, relay-log retention. There are no per-account quotas — [ADR-0027](../11-adr/0027-v1-self-host-first.md).
-6. **Coordination for sharing — post-v1.** Invites and key-exchange envelopes between identities (the keys themselves are wrapped end-to-end). Nothing implements this; sharing is deferred ([ADR-0020](../11-adr/0020-v1-must-demotions.md) §(a), [ADR-0027](../11-adr/0027-v1-self-host-first.md) clause 5).
+6. **Coordination for sharing — not built.** Invites and key-exchange envelopes between identities (the keys themselves are wrapped end-to-end). Nothing implements this; sharing is a MUST in the [parity matrix](../07-clients/parity-matrix.md), not built, and ranked on the roadmap ([`../roadmap.md`](../roadmap.md)) as [#133](https://github.com/justin13888/Sunrise/issues/133).
 
 ## What the server explicitly does *not* do
 
@@ -22,7 +22,7 @@ The single most-asked question about an E2EE app is: *"if the server can't read 
 - It does not enforce business rules on content. It treats ops as opaque, signed, ordered ciphertext.
 - It does not evaluate a role, a grant, a revocation or an expiry. Every such check is a signature check performed by a *receiving client* against a record in that client's own vault. Where a spec says "the server also checks", it is wrong; the relay cannot reach the grant, the cert or the payload. (The one revocation the relay does act on is its own `devices.revoked` flag, which gates authentication — account metadata it already holds, not a content decision.)
 - It does not generate notifications based on content. Push payloads are wake-ups only — content is fetched and decrypted on device.
-- It does not run integrations on the user's behalf with their cleartext credentials. Integration tokens for third-party APIs (Google Calendar, etc.) live in the encrypted vault and run *on device*, with the server never holding them. (Exception: optional server-side cron for stable-rotated integrations is **out of scope for v1**.)
+- It does not run integrations on the user's behalf with their cleartext credentials. Integration tokens for third-party APIs (Google Calendar, etc.) live in the encrypted vault and run *on device*, with the server never holding them. (Exception: optional server-side cron for stable-rotated integrations is **out of scope today**.)
 
 ## What the server *can* see (metadata)
 
@@ -57,22 +57,21 @@ Two limits on that, stated rather than left to be discovered:
 
 ## Self-hosted vs managed distinction
 
-**v1 ships one profile: self-hosted.** Managed cloud is post-v1
+**One profile is built: self-hosted.** Managed cloud is not built
 ([ADR-0027](../11-adr/0027-v1-self-host-first.md)).
 
 | Profile | Auth | Push | Geo |
 |---|---|---|---|
-| Self-hosted (v1) | Operator-chosen OIDC issuer (Keycloak, Authelia, Auth0, …) | Optional, operator's own certs | Wherever the operator runs |
-| Managed (post-v1) | Sunrise-operated OIDC issuer | APNs/FCM via shared cert | Global |
+| Self-hosted (built) | Operator-chosen OIDC issuer (Keycloak, Authelia, Auth0, …) | Optional, operator's own certs | Wherever the operator runs |
+| Managed (not built) | Sunrise-operated OIDC issuer | APNs/FCM via shared cert | Global |
 
 ### Cross-server delivery
 
 This is the single answer; other specs point here rather than restating it.
 
-**Cross-server delivery is not in v1.** Sharing itself is deferred
-([ADR-0020](../11-adr/0020-v1-must-demotions.md) §(a),
-[ADR-0027](../11-adr/0027-v1-self-host-first.md) clause 5), so there is no
-cross-server case to answer yet.
+**Cross-server delivery is not implemented.** Sharing itself is a MUST in the
+[parity matrix](../07-clients/parity-matrix.md), not built, and ranked on the
+roadmap ([`../roadmap.md`](../roadmap.md)) as [#133](https://github.com/justin13888/Sunrise/issues/133), so there is no cross-server case to answer yet.
 
 When sharing lands, the rule is that **the owner's relay is authoritative**: the
 recipient's client adds an outbound connection to it alongside its own relay
@@ -95,10 +94,10 @@ contract.
 
 ## Rationale
 
-The alternative to having a server is pure peer-to-peer. We considered it and rejected it for v1 because:
+The alternative to having a server is pure peer-to-peer. We considered it and rejected it because:
 
 - Mobile devices cannot be reliable peers (background limits, NAT, battery).
 - Sharing across networks needs a rendezvous; that rendezvous is a server even if we call it something else.
 - Self-hosting a tiny relay is operationally simpler than running a P2P NAT-traversal stack.
 
-v1 has no P2P or LAN-direct transport. See [`../05-sync/transports.md`](../05-sync/transports.md).
+There is no P2P or LAN-direct transport. See [`../05-sync/transports.md`](../05-sync/transports.md).

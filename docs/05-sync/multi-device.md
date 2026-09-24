@@ -20,7 +20,7 @@ A user runs Sunrise on N devices. All N see the same data and converge.
    └───────┘       └───────┘       └───────┘
 ```
 
-All sync goes through the server in v1. LAN / mDNS direct sync is deferred to v2+ (see [`transports.md`](./transports.md) non-goals): partition-tolerance complexity, peer-discovery security, key-distribution to peers without a central relay, and NAT traversal all add risk for marginal user benefit.
+All sync goes through the server. LAN / mDNS direct sync is not built and is a non-goal (see [`../00-product/non-goals.md`](../00-product/non-goals.md) §No LAN-only / no-server topology and [`transports.md`](./transports.md) non-goals): partition-tolerance complexity, peer-discovery security, key-distribution to peers without a central relay, and NAT traversal all add risk for marginal user benefit.
 
 ## Bootstrapping a new device
 
@@ -128,13 +128,13 @@ Ops for unsubscribed Streams are not delivered; if the user later subscribes, th
 
 ## Device limits
 
-**There is no device cap, and none is planned for v1.**
+**There is no device cap, and none is planned.**
 `Store::active_device_count` exists and is reported as `device_count` on the
 account resource, but nothing compares it to a threshold and device registration
 never refuses. Earlier revisions named a soft limit of 10 and a hard limit of 50;
 those were plan-tier numbers sourced from `billing.md`, and
-[ADR-0027](../11-adr/0027-v1-self-host-first.md) removes per-account quotas from
-v1 entirely.
+[ADR-0027](../11-adr/0027-v1-self-host-first.md) removes per-account quotas
+entirely.
 
 What remains true is the cost curve a future cap would answer to: cursor tracking
 and key-envelope re-wrapping are O(devices), a cost that only becomes real with

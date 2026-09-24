@@ -2,6 +2,10 @@
 
 **Status:** accepted
 
+**Amended by:** [ADR-0049](./0049-calendar-integrations-per-device-oauth.md) —
+no credential is written to the vault: each device holds its own OAuth token
+in its keychain. The `IntegrationAccount` entity and its rationale stand.
+
 **Depends on** [ADR-0024](./0024-key-hierarchy.md).
 **Amends** [`docs/09-integrations/overview.md`](../09-integrations/overview.md),
 [`google-calendar.md`](../09-integrations/google-calendar.md) and

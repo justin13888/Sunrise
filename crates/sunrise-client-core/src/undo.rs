@@ -1,7 +1,7 @@
 //! Undo and redo, built from **inverse commands**.
 //!
 //! `docs/08-features/keyboard.md` lists `u` and `Ctrl-r` on every platform.
-//! The core has no undo: v1 is entity-level LWW over an append-only op log
+//! The core has no undo: it merges by entity-level LWW over an append-only op log
 //! ([ADR-0014]), and adding a real one means either an inverse-op journal in
 //! the protocol or a snapshot per write. Neither is a client's decision to
 //! make.

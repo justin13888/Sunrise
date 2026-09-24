@@ -2,6 +2,11 @@
 
 **Status:** accepted
 
+**Amended by:** [ADR-0045](./0045-schema-identity-and-feature-gating.md) —
+envelope field 13 carries the schema fingerprint, and the container version
+gains a floor, so an additive container change no longer strands older
+readers.
+
 **Amends:** [ADR-0009 — Protocol versioning spec](./0009-protocol-versioning-spec.md),
 which enumerated four version constants and gave them one refusal rule. This
 ADR splits one of them in two and gives the halves different rules.

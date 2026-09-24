@@ -493,7 +493,7 @@ impl Engine {
         Ok(())
     }
 
-    /// Regeneration policy (v1): after a structural routine edit, delete future
+    /// Regeneration policy (current): after a structural routine edit, delete future
     /// routine-materialized tasks that are still untouched (Todo, non-deferred)
     /// and whose deterministic id no longer matches any current future
     /// occurrence. Started, completed, deferred, or user-moved tasks are kept.

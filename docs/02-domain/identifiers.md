@@ -17,7 +17,7 @@ ctx_01HZX2W8P6E5Q4R7Y9N1M0AGHI
 …
 ```
 
-Prefixes (`tsk_`, `str_`, `ctx_`, `rtn_`, `blk_`, `not_`, `att_`, `prs_`, `dev_`, `idn_`, `fcs_`, `rvw_`).
+Prefixes (`tsk_`, `str_`, `ctx_`, `rtn_`, `blk_`, `not_`, `att_`, `prs_`, `dev_`, `idn_`, `fcs_`, `rvw_`). Reserved and not yet built: `prf_` for the `Preferences` singleton ([ADR-0050](../11-adr/0050-preferences-and-day-schedule.md)), `plc_` for a `Place` ([ADR-0051](../11-adr/0051-places.md)), `evt_` for an `ExternalEvent` and `iac_` for an `IntegrationAccount` ([ADR-0049](../11-adr/0049-calendar-integrations-per-device-oauth.md)), and `svw_` for a `SavedView` ([#341](https://github.com/justin13888/Sunrise/issues/341)). An `evt_` id is not a random ULID: ADR-0049 derives its 16 bytes deterministically, as `BLAKE3-128("sunrise.external-event.v1" ‖ account_subject ‖ calendar_id ‖ uid ‖ recurrence_id_utc_or_empty)`, so two devices fetching the same occurrence mint the same id (the same fold §Foreign IDs describes for `.ics` Blocks). It therefore carries no time-ordered prefix.
 
 ## Why ULID, not UUID
 
@@ -35,7 +35,7 @@ Prefixes (`tsk_`, `str_`, `ctx_`, `rtn_`, `blk_`, `not_`, `att_`, `prs_`, `dev_`
 
 - Generated **client-side** (devices), never server-side. The server has no concept of "next ID."
 - Each device draws the ULID's random tail from its own OS CSPRNG, but reaches it through the injected `CoreConfig::rng` seam rather than calling it directly: `sunrise-id` takes caller-supplied randomness (`Ulid::from_timestamp_and_random`) and has no RNG dependency at all, `Engine::fresh_id` fills those ten bytes from `CoreConfig::rng`, and the production binding `SystemRng` is `OsRng` — i.e. `getrandom`. That indirection is determinism rule 1, and it is what lets a test mint reproducible ids without a fake clock fighting a real RNG.
-- ULID has 80 bits of randomness; with `n` IDs minted in a single millisecond on a single device, the per-millisecond birthday-bound collision probability is ≈ `n² / 2^81`. At `n = 10` (a heavy capture burst on one device): ≈ 4.1 × 10⁻²². Across devices, distinct millisecond-prefix windows make cross-device collision strictly less likely than the worst-case same-device bound. Treat collisions as cryptographically impossible; do not write fallback paths for them. v1 does not implement runtime collision detection; if a collision is ever reported in the wild, it is a sev-1 incident, and recovery uses the audit-log root to identify which entity is the original.
+- ULID has 80 bits of randomness; with `n` IDs minted in a single millisecond on a single device, the per-millisecond birthday-bound collision probability is ≈ `n² / 2^81`. At `n = 10` (a heavy capture burst on one device): ≈ 4.1 × 10⁻²². Across devices, distinct millisecond-prefix windows make cross-device collision strictly less likely than the worst-case same-device bound. Treat collisions as cryptographically impossible; do not write fallback paths for them. Runtime collision detection is not implemented; if a collision is ever reported in the wild, it is a sev-1 incident, and recovery uses the audit-log root to identify which entity is the original.
 
 ## Stability
 
@@ -65,12 +65,14 @@ Parsing a string ID:
 
 **No foreign id is stored alongside a Sunrise id today.** This section used to
 say external ids are "stored alongside the Sunrise ID, never replacing it" when
-integrating with Google Calendar or CalDAV. All three parts of that were
-untrue: CalDAV is an explicit v1 non-goal
-([`../00-product/non-goals.md`](../00-product/non-goals.md)), Google Calendar is
-implemented but wired to nothing and deferred from the v1 MUST set
-([`../09-integrations/google-calendar.md`](../09-integrations/google-calendar.md)),
-and the `external_id` field that would hold such an id has not landed —
+integrating with Google Calendar or CalDAV. That was untrue, and the design
+has since moved: calendar integrations (Google Calendar, Microsoft Graph and
+CalDAV) are read-only and write `ExternalEvent`s, whose ids are derived from
+the provider's own identifiers rather than stored beside them
+([ADR-0049](../11-adr/0049-calendar-integrations-per-device-oauth.md)). None of
+that is built; it is ranked on the roadmap ([`../roadmap.md`](../roadmap.md)) as
+[#4](https://github.com/justin13888/Sunrise/issues/4). The `external_id` field
+serves only `.ics` export and import, and it has not landed either —
 `crates/sunrise-domain/src/import.rs:7-9` says so at the point it matters.
 
 What the one shipping integration does instead — `.ics` import — is fold the

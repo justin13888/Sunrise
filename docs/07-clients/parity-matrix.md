@@ -4,88 +4,97 @@ status: accepted
 
 # Client Feature Parity Matrix
 
-Marks: **MUST** = ships in v1; **SHOULD** = v1 if feasible, otherwise v1.x;
-**MAY** = future; **N/A** = doesn't apply on the platform; ***deferred*** =
-specified, not scheduled for v1, with the reason recorded in
-[`../11-adr/`](../11-adr/).
+Marks: **MUST** = part of the parity target for that client's **device class**;
+**SHOULD** = worth building once the class's MUSTs are met; **MAY** = optional;
+**N/A** = does not apply on the platform. Sunrise has no product release to gate
+on: it stays at v0.x ([ADR-0042](../11-adr/0042-v0-forever.md)). An unmet mark is
+therefore a ranked issue on the [roadmap](../roadmap.md), not a release gate or
+a deferral.
 
-> **The marks are requirement levels, not status.** A MUST says "v1 does not
-> ship without this"; it does not claim the capability exists today. The
-> [v1 status audit](#v1-status-audit) below is the separate, measured record of
-> what is actually reachable from a running binary, and it is the one to read if
-> the question is "is it built yet". Keeping the two apart is deliberate: a
-> requirement edited to match the tree stops being a requirement.
+> **The marks are requirement levels, not status.** A MUST says "a client of
+> this class is not at parity without this"; it does not claim the capability
+> exists today. The [status audit](#status-audit) below is the separate,
+> measured record of what is actually reachable from a running binary, and it is
+> the one to read if the question is "is it built yet". Keeping the two apart is
+> deliberate: a requirement edited to match the tree stops being a requirement.
 
-**Three** clients ship in v1: the **macOS** app, the **iOS / iPadOS** app and
-the **CLI**. macOS and the CLI carry the MUSTs. iOS carries **SHOULDs and no
-MUSTs** until a release ships — [ADR-0028](../11-adr/0028-ios-is-a-v1-client.md)
-is the record of why, and it is also why iOS has a filled column here rather
-than a row of dashes. **Android** and **Web** are ***deferred*** — specified,
-not scheduled, and carrying no MUSTs, because a deferred client cannot regress
-one. The **TUI** was removed by
-[ADR-0019](../11-adr/0019-swiftui-macos-client.md); its column is kept for one
-release so the table records what was withdrawn rather than quietly losing it.
+**Device classes and parity.** Every client belongs to one class, and all
+clients in a class carry the **same marks**:
+
+| Class | Clients | Status |
+|---|---|---|
+| Desktop | macOS; Windows and Linux when built | macOS built |
+| Phone / tablet | iOS / iPadOS; Android when built | iOS built |
+| CLI | `sunrise` | built |
+| Web | browser client | not built ([#52](https://github.com/justin13888/Sunrise/issues/52), [#11](https://github.com/justin13888/Sunrise/issues/11)) |
+
+macOS leads: a capability is firmed up on the desktop first, then moved into the
+narrower phone form factor, where iOS carries MUSTs on the same terms as macOS.
+The phone/tablet marks started as SHOULDs under [ADR-0028](../11-adr/0028-ios-is-a-v1-client.md);
+ADR-0042 made them MUSTs. A later platform in a class (Windows, Linux, Android)
+inherits its class's column in full, and its gaps are ranked issues. The
+portability CI that keeps those clients reachable is tracked in [#369](https://github.com/justin13888/Sunrise/issues/369). The
+**TUI** was removed by [ADR-0019](../11-adr/0019-swiftui-macos-client.md); its
+column is kept so the table records what was withdrawn rather than quietly
+losing it.
 
 | Capability | macOS | CLI | iOS | Android | Web | TUI |
 |---|---|---|---|---|---|---|
-| | | | **v1** ([ADR-0028](../11-adr/0028-ios-is-a-v1-client.md)) | *deferred* | *deferred* | *removed* |
-| Read/write tasks | MUST | MUST | SHOULD | — | — | — |
-| Streams, contexts, routines | MUST | MUST (read + capture) | SHOULD | — | — | — |
-| Today / Inbox / Stream views | MUST | MUST (list form) | SHOULD | — | — | — |
-| Focus mode | MUST | MUST (`next`, `focus <id>`) | SHOULD | — | — | — |
-| Time-blocking on calendar grid | MUST | N/A | SHOULD | — | — | — |
-| Notes (rich text) | MUST (a Task's `body`; scope per [ADR-0020](../11-adr/0020-v1-must-demotions.md)) | MAY | SHOULD (a Task's `body`; scope per [ADR-0020](../11-adr/0020-v1-must-demotions.md)) | — | — | — |
-| Attachments — view image/PDF | MUST | N/A | SHOULD | — | — | — |
-| Attachments — upload | MUST | MAY | SHOULD | — | — | — |
-| Search (FTS) | MUST | MUST | SHOULD | — | — | — |
-| Saved searches / views | MUST | MAY | SHOULD | — | — | — |
-| Keyboard navigation | MUST (full) | N/A (non-interactive) | SHOULD (the list keymap, on an attached keyboard) | — | — | — |
-| Drag-and-drop | MUST | N/A | SHOULD (long-press) | — | — | — |
-| Quick capture (global hotkey / system surface) | MUST (global hotkey, menu bar) | MUST (`sunrise capture`) | SHOULD (capture sheet, inline bar, App Shortcut) | — | — | — |
-| Reminders / scheduled local notifications | MUST | N/A (one-shot process) | SHOULD | — | — | — |
-| Multi-account | MUST | MUST (`SUNRISE_VAULT`) | SHOULD | — | — | — |
-| Pairing — scan QR | MUST (camera or paste) | MAY (manual code entry) | SHOULD (camera or paste) | — | — | — |
-| Pairing — show QR | MUST | MAY (ASCII QR) | SHOULD | — | — | — |
-| Sharing — accept invite | *deferred* ([ADR-0020](../11-adr/0020-v1-must-demotions.md)) | MAY | *deferred* ([ADR-0020](../11-adr/0020-v1-must-demotions.md)) | — | — | — |
-| Sharing — view shared stream as editor | *deferred* ([ADR-0020](../11-adr/0020-v1-must-demotions.md)) | *deferred* ([ADR-0020](../11-adr/0020-v1-must-demotions.md)) | *deferred* ([ADR-0020](../11-adr/0020-v1-must-demotions.md)) | — | — | — |
-| Calendar integration (Google) | *deferred* ([ADR-0020](../11-adr/0020-v1-must-demotions.md), [#4](https://github.com/justin13888/Sunrise/issues/4)) | MAY | *deferred* ([ADR-0020](../11-adr/0020-v1-must-demotions.md), [#4](https://github.com/justin13888/Sunrise/issues/4)) | — | — | — |
-| iCal import / export | MUST | MUST | SHOULD | — | — | — |
-| Background sync | MUST (while running) | N/A (`sync --once` for cron) | SHOULD (while frontmost) | — | — | — |
+| | *desktop* | *CLI* | *phone / tablet* | *phone / tablet, not built* | *web, not built* | *removed* |
+| Read/write tasks | MUST | MUST | MUST | — | — | — |
+| Streams, contexts, routines | MUST | MUST (read + capture) | MUST | — | — | — |
+| Today / Inbox / Stream views | MUST | MUST (list form) | MUST | — | — | — |
+| Focus mode | MUST | MUST (`next`, `focus <id>`) | MUST | — | — | — |
+| Time-blocking on calendar grid | MUST | N/A | MUST | — | — | — |
+| Notes (rich text) | MUST (a Task's `body`; scope per [ADR-0020](../11-adr/0020-v1-must-demotions.md)) | MAY | MUST (a Task's `body`; scope per [ADR-0020](../11-adr/0020-v1-must-demotions.md)) | — | — | — |
+| Attachments — view image/PDF | MUST | N/A | MUST | — | — | — |
+| Attachments — upload | MUST | MAY | MUST | — | — | — |
+| Search (FTS) | MUST | MUST | MUST | — | — | — |
+| Saved searches / views | MUST | MAY | MUST | — | — | — |
+| Keyboard navigation | MUST (full) | N/A (non-interactive) | MUST (the list keymap, on an attached keyboard) | — | — | — |
+| Drag-and-drop | MUST | N/A | MUST (long-press) | — | — | — |
+| Quick capture (global hotkey / system surface) | MUST (global hotkey, menu bar) | MUST (`sunrise capture`) | MUST (capture sheet, inline bar, App Shortcut) | — | — | — |
+| Reminders / scheduled local notifications | MUST | N/A (one-shot process) | MUST | — | — | — |
+| Multi-account | MUST | MUST (`SUNRISE_VAULT`) | MUST | — | — | — |
+| Pairing — scan QR | MUST (camera or paste) | MAY (manual code entry) | MUST (camera or paste) | — | — | — |
+| Pairing — show QR | MUST | MAY (ASCII QR) | MUST | — | — | — |
+| Sharing — accept invite | MUST ([#133](https://github.com/justin13888/Sunrise/issues/133)) | MAY | MUST ([#133](https://github.com/justin13888/Sunrise/issues/133)) | — | — | — |
+| Sharing — view shared stream as editor | MUST ([#133](https://github.com/justin13888/Sunrise/issues/133)) | MUST ([#133](https://github.com/justin13888/Sunrise/issues/133)) | MUST ([#133](https://github.com/justin13888/Sunrise/issues/133)) | — | — | — |
+| Calendar integration (Google, Microsoft, CalDAV; read-only) | MUST ([#4](https://github.com/justin13888/Sunrise/issues/4)) | MAY | MUST ([#4](https://github.com/justin13888/Sunrise/issues/4)) | — | — | — |
+| iCal import / export | MUST | MUST | MUST | — | — | — |
+| Background sync | MUST (while running) | N/A (`sync --once` for cron) | MUST (while frontmost) | — | — | — |
 | Menu bar | MUST | N/A | N/A | — | — | — |
-| Lock screen / home screen widget | N/A | N/A | *deferred* ([#14](https://github.com/justin13888/Sunrise/issues/14)) | — | — | — |
+| Lock screen / home screen widget | MUST (Notification Center widget, [#14](https://github.com/justin13888/Sunrise/issues/14)) | N/A | MUST ([#14](https://github.com/justin13888/Sunrise/issues/14)) | — | — | — |
 | Watch app | N/A | N/A | MAY | — | — | — |
-| OS automation surface (App Intents / Shortcuts) | MUST | MUST (the CLI *is* one) | SHOULD | — | — | — |
-| Vim-style modal navigation | SHOULD (opt-in) | N/A | SHOULD (opt-in; attached keyboard) | — | — | — |
+| OS automation surface (App Intents / Shortcuts) | MUST | MUST (the CLI *is* one) | MUST | — | — | — |
+| Vim-style modal navigation | SHOULD (opt-in) | N/A | MUST (opt-in; attached keyboard) | — | — | — |
 | Mouse | MUST | N/A | MAY (iPadOS pointer) | — | — | — |
-| Touch | MAY | N/A | SHOULD | — | — | — |
+| Touch | MAY | N/A | MUST | — | — | — |
 | Print / PDF export | SHOULD | MAY (`export`) | MAY | — | — | — |
-| First-run pairing | MUST | SHOULD | SHOULD | — | — | — |
+| First-run pairing | MUST | SHOULD | MUST | — | — | — |
 
-## The v1 scoping pass (ADR-0020)
+## Scoping history (ADR-0020, amended by ADR-0042)
 
-Five cells above changed as part of defining v1 — four lose a MUST, one keeps it
-and gains a scope note. [ADR-0020](../11-adr/0020-v1-must-demotions.md) is the
-record of why.
+[ADR-0020](../11-adr/0020-v1-must-demotions.md) once took five cells out of a
+release definition: four lost a MUST and one kept it with a scope note. There is
+no release definition any more ([ADR-0042](../11-adr/0042-v0-forever.md)), so
+the three demoted capabilities, **sharing** (two rows) and **calendar
+integration**, are MUSTs again and sit on the [roadmap](../roadmap.md) as
+[#133](https://github.com/justin13888/Sunrise/issues/133) and [#4](https://github.com/justin13888/Sunrise/issues/4). They are unmet, and the
+audit below says so. The reasoning ADR-0020 recorded about *why* each is hard
+still stands, and is kept here:
 
-**This is not a regression, and a later reader should not read it as one.** The
-hard rule below governs a *released* capability: a v1.0 → v1.1 release cannot
-remove a MUST. v1 has not shipped. These marks are a pre-1.0 v1 definition being
-set once, before anything was promised to a user — no shipped capability is
-being withdrawn, because none of these ever shipped. Had v1.0 been out, the
-answer would have been to build them.
-
-- **Sharing — accept invite** (macOS) and **Sharing — view shared stream as
-  editor** (macOS and CLI) → *deferred*. The crypto and domain designs are
+- **Sharing — accept invite** and **Sharing — view shared stream as
+  editor.** The crypto and domain designs are
   specified in full and the underlying primitives are frozen and tested, but the
   entity the design operates on does not exist: nothing anywhere reads or writes
   the `persons` table, and no `share_grant` op is implemented. Closing it is a
   second, security-critical epic — a sharing model that is almost right in an
   end-to-end-encrypted product is a vulnerability, not a partial feature.
-- **Calendar integration (Google)** (macOS) → *deferred*. Already decided:
-  [issue #4](https://github.com/justin13888/Sunrise/issues/4) was deferred out of
-  the v1 epic, and two accepted specs cannot disagree about whether it ships. The
-  provider itself is implemented and tested; what is missing is the wiring and
-  storage around it.
+- **Calendar integration.** Only the Google request and response codec
+  exists (`crates/sunrise-integrations/src/gcal.rs`), with no consumer. The
+  design is now read-only Google, Microsoft and CalDAV with per-device OAuth
+  ([ADR-0049](../11-adr/0049-calendar-integrations-per-device-oauth.md)).
 - **Notes (rich text)** (macOS) stays a **MUST**, and it is now **met** — this is
   a scope clarification, not a deferral. The row means a **Task's `body`**:
   persisted, FTS-indexed, and editable across the seam as structured blocks
@@ -102,9 +111,9 @@ answer would have been to build them.
   **read-only** instead of being rewritten, so an editor that does not
   understand a future block shape cannot silently flatten it on the next save.
 
-## v1 status audit
+## Status audit
 
-Re-measured on the v1 rewrite line, now merged to `master`, by tracing each
+Measured on `master` by tracing each
 capability from a
 **user-reachable surface** — a view something presents, a menu command, a
 subcommand, an OS entry point — down to a real seam or core call. A file that
@@ -119,10 +128,12 @@ surface covers, so that the narrowness never has to be re-derived. It is not a
 *partial*, which is reserved for a row whose core action a user cannot
 complete.
 
-**Every MUST is met.** The MUSTs live in two columns — macOS and the CLI. iOS
-ships too and carries none: [ADR-0028](../11-adr/0028-ios-is-a-v1-client.md) puts it at
-SHOULD level until a release, and its rows are graded in an **iOS** section of
-[this audit](#v1-status-audit) below. The previous revision of
+**Every MUST graded below is met, except the four that ADR-0042 restored or
+added:** sharing (two rows), calendar integration, and widgets. None of those
+has a reachable surface, and each is a ranked issue. The graded MUSTs live in
+three columns: macOS, the CLI, and iOS. iOS's rows were SHOULDs under
+[ADR-0028](../11-adr/0028-ios-is-a-v1-client.md) when they were last graded,
+and became MUSTs under ADR-0042 without any verdict changing. The previous revision of
 this audit recorded one unmet macOS MUST (iCal import/export), one partial macOS
 MUST (drag-and-drop) and three partial CLI MUSTs (read/write tasks, the Stream
 view, multi-account); all five were closed in code, and each was re-traced from
@@ -141,7 +152,7 @@ around it is recorded in the cells below and in
 | Focus mode | met | sidebar → `FocusView` → `FocusModel` (plan, start, interrupt, cascade) |
 | Time-blocking on calendar grid | met | sidebar → `CalendarView` → `CalendarModel`; day and week |
 | Notes (rich text) | met | task editor → Notes pane → `NoteBodyEditor`; scope per ADR-0020 |
-| Attachments — view image/PDF | met *(bytes this device can get)* | task editor → Attachments pane; `PDFKit` inline, images inline. The scope note narrowed with [#227](https://github.com/justin13888/Sunrise/issues/227): what it can draw is no longer only what is *stored* here. Under the 10 MiB auto-fetch threshold the sync driver fetches an attachment unasked ([#176](https://github.com/justin13888/Sunrise/issues/176)); over it, the row is the placeholder [`../02-domain/attachments.md`](../02-domain/attachments.md) §Lazy fetch specifies — file name, size, and a **Download** button (`AttachmentsView.swift:99`) → `AttachmentsModel.download(_:)` (`AttachmentsModel.swift:159`) → `CoreBridge.fetchAttachment` (`CoreBridge.swift:144`) → the seam (`sunrise-core-bindings/src/lib.rs:656`) → `Core::fetch_attachment` (`sunrise-core/src/blob_fetch.rs:207`), which queues the request and lets the driver, which owns the transport, fetch it with no size predicate. During the transfer the row draws progress and a **Cancel** button, which marks the attachment `partial` and needs no relay to do it. What stays outside the row: `auto_fetch_on_cellular`, resume-from-partial (excluded from v1 by §Lazy fetch itself — a cancelled transfer restarts from byte 0), and the LRU cache with its configurable size |
+| Attachments — view image/PDF | met *(bytes this device can get)* | task editor → Attachments pane; `PDFKit` inline, images inline. The scope note narrowed with [#227](https://github.com/justin13888/Sunrise/issues/227): what it can draw is no longer only what is *stored* here. Under the 10 MiB auto-fetch threshold the sync driver fetches an attachment unasked ([#176](https://github.com/justin13888/Sunrise/issues/176)); over it, the row is the placeholder [`../02-domain/attachments.md`](../02-domain/attachments.md) §Lazy fetch specifies — file name, size, and a **Download** button (`AttachmentsView.swift:99`) → `AttachmentsModel.download(_:)` (`AttachmentsModel.swift:159`) → `CoreBridge.fetchAttachment` (`CoreBridge.swift:144`) → the seam (`sunrise-core-bindings/src/lib.rs:656`) → `Core::fetch_attachment` (`sunrise-core/src/blob_fetch.rs:207`), which queues the request and lets the driver, which owns the transport, fetch it with no size predicate. During the transfer the row draws progress and a **Cancel** button, which marks the attachment `partial` and needs no relay to do it. What stays outside the row: `auto_fetch_on_cellular`, resume-from-partial (excluded by §Lazy fetch itself — a cancelled transfer restarts from byte 0), and the LRU cache with its configurable size |
 | Attachments — upload | met | `Attach…` file importer (`AttachmentsView.swift:38`) **and** a drop target on the pane (`:32`) → `AttachmentsModel.attach(contentsOf:)` (`AttachmentsModel.swift:130`) → `CoreBridge.attachFile` (`CoreBridge.swift:109`) → the seam (`sunrise-core-bindings/src/lib.rs:589`) → `Core::attach_file` (`sunrise-core/src/attach.rs:148`), which mints a per-blob key, seals each chunk into **this vault's** blob store (`sunrise-storage/src/blob_store.rs:31`, `:46`), submits `Command::AttachFile`, and queues the blob in `blob_uploads`. The sync driver drains that queue over `POST /blobs/init` → `PUT` → `finalize`, and a paired device fetches the ciphertext back with `GET /blobs/{id}` ([#176](https://github.com/justin13888/Sunrise/issues/176), `crates/sunrise-core/src/blob_sync.rs`, proven end to end by `crates/sunrise-e2e/tests/attachment_bytes_round_trip.rs`). The upload needs no network at attach time: the row is durable and the next session drains it |
 | Search (FTS) | met *(plain-text half)* | sidebar / `⌘F` / `⌘K` → `SearchView`, 150 ms debounce. The query that reaches FTS5 is a literal AND of quoted terms over tasks; the operator grammar, negation and by-kind grouping in [search.md](../08-features/search.md) are specified and not built ([#28](https://github.com/justin13888/Sunrise/issues/28)) |
 | Saved searches / views | met | toolbar → `SavedViewsMenu`; the same `views.toml` the CLI reads |
@@ -228,13 +239,14 @@ moved. Refusing and then telling the user exactly how to proceed is the point:
 guessing would have left every such vault readable by anyone holding a copy of
 `sunrise`.
 
-### iOS — 23 SHOULDs
+### iOS — 23 MUSTs
 
 Measured the same way, and against the same two trees the iOS product compiles:
 `apps/apple/iOS/` for the shell, and the shared `apps/apple/Sunrise/` for
-everything below it. **23 met.** iOS carries no MUSTs
-([ADR-0028](../11-adr/0028-ios-is-a-v1-client.md)), so nothing here is a v1 release gate;
-it is the record of what a user can actually reach on a phone.
+everything below it. **23 met.** These rows were graded as SHOULDs under
+[ADR-0028](../11-adr/0028-ios-is-a-v1-client.md) and are MUSTs of the
+phone/tablet class under ADR-0042. It is the record of what a user can
+actually reach on a phone.
 
 | Capability | Verdict | Reached from |
 |---|---|---|
@@ -262,7 +274,7 @@ it is the record of what a user can actually reach on a phone.
 | Touch | met | tap-to-select on tagged rows, which iOS does **not** give for free and which left every `BrowseSidebar` entry inert until it was added (`PlatformKit.swift:133-159`); swipe actions (`TaskListView.swift:199-203`); a **Done** toolbar to put the software keyboard away, since a phone has no Escape (`CaptureBar.swift:84-85`); **Cancel** / **Add** in the capture sheet, where the Mac has only Return and Escape (`QuickCaptureView.swift:66-85`); haptic refusal feedback where the Mac beeps (`PlatformKit.swift:122-128`) |
 | First-run pairing | met | `OnboardingView`'s **Pair with that device** (`:63`), and the same route out of `LockedView` (`:62`) |
 
-**The three MAYs are in prose because none of them is a v1 ask.** *Watch app*
+**The three MAYs are in prose because the audit grades MUSTs only.** *Watch app*
 is unbuilt: `apps/apple` contains no `WatchConnectivity` and `project.yml`
 declares no watch extension target. *Mouse* is met by inheritance rather than
 by intent — an iPad with a pointer gets the shared controls, the row's
@@ -301,7 +313,7 @@ over:
   fetches under-threshold attachments as if it were on Wi-Fi — and the
   **per-device LRU cache**, whose configurable size is specified and whose
   eviction does not exist: a fetched blob is kept for the life of the vault.
-  Resume-from-partial is *not* on this list; §Lazy fetch excludes it from v1 by
+  Resume-from-partial is *not* on this list; §Lazy fetch excludes it by
   name, and a cancelled transfer's chunks are discarded so the next attempt
   starts from byte 0, which is the behaviour that section describes. Search
   reaches
@@ -325,7 +337,7 @@ over:
   narrowness — the operator grammar
   [search.md](../08-features/search.md) specifies is matched literally; see
   the macOS note above.
-- **iOS.** No SHOULD is unmet. The two that were — **saved views** and **iCal
+- **iOS.** No MUST is unmet. The two that were — **saved views** and **iCal
   import / export**, a working, tested shared model with no iOS caller in each
   case — now have one: a toolbar menu on the screens a saved view can name, and
   a document importer and exporter behind Browse's overflow where the Mac has a
@@ -380,27 +392,23 @@ capability and each capability is reachable. They are written down so that
 
 ## Hard rules
 
-- A capability MUST not regress mid-version. A v1.0 → v1.1 release cannot
-  remove a MUST.
+- **A met MUST cannot regress silently.** A pull request that takes a row
+  graded **met** in the audit above back to unmet updates that audit row in the
+  same pull request, and files a ranked issue to restore it. There is no release
+  line to protect ([ADR-0042](../11-adr/0042-v0-forever.md)), so the rule
+  protects what a user already has.
 - A capability marked N/A is a deliberate choice; if revisited, document the
   change in [`../11-adr/`](../11-adr/).
-- A capability marked *deferred* carries no MUST, exactly as a deferred client
-  does. A capability may only become *deferred* **before** the version that
-  would have carried it ships, and only with the reason recorded in
-  [`../11-adr/`](../11-adr/) — never to make this table agree with the code
-  after the fact.
+- **No capability is "deferred".** An unbuilt MUST is a ranked issue on the
+  [roadmap](../roadmap.md). Its rank can change and its mark cannot drift to
+  match the code: a mark changes only with the reason recorded in
+  [`../11-adr/`](../11-adr/).
+- **Clients in one device class carry the same column.** A capability is not
+  at parity until every built client of its class reaches it. A platform-specific
+  surface (menu bar, Live Activity) maps to the class-level capability it
+  serves, not to a column of its own.
 - A user can run **without** any specific OS feature (Live Activities,
   Spotlight, etc.); fallbacks via plain notifications must exist.
-- **A deferred client has no MUSTs.** When one is scheduled, its column is
-  filled in and the fill-in is the commitment — not this table's history.
-- **A v1 client below MUST level has no MUSTs either — and its *met* SHOULDs
-  cannot regress silently.** A pull request that takes an iOS SHOULD graded
-  **met** in the audit above back to unmet updates that audit row in the same
-  pull request. Deliberately weaker than the MUST rule — no ADR is required,
-  because there is no release to protect; a rule at all, because a green audit
-  row is a claim that somebody traced a surface down to a seam, and deleting
-  the surface without touching the row throws that work away and leaves the
-  table lying ([ADR-0028](../11-adr/0028-ios-is-a-v1-client.md)).
 - **A qualified *met* is still a met.** A verdict written with a parenthetical
   qualifier — `met *(paste half)*`, `met *(plain-text half)*`,
   `met *(list keymap)*`, `met *(frontmost only)*`,
@@ -434,7 +442,7 @@ capability and each capability is reachable. They are written down so that
   views (list form)* names the output shape, so the missing `today` context
   filter is a different shortfall and still earns its qualifier. And a recorded
   shortfall with **no verdict cell** cannot carry a qualifier at all: the
-  audits grade the macOS and CLI MUSTs and the iOS SHOULDs, so a narrowness
+  audits grade the macOS, CLI and iOS MUSTs, so a narrowness
   belonging to a capability this column grades at any *other* level has nothing
   to attach to and stays in prose. The test is mechanical — find the capability
   in the requirement table above, and if its mark in that column is not the one
@@ -465,12 +473,9 @@ the day the core's tests stop describing a usable system.
 
 ## Capture-surface portability
 
-macOS and the CLI MUST implement their native capture surface (macOS global
-hotkey + menu bar; CLI subcommand). iOS SHOULD implement its own — the capture
-sheet, the inline bar and the capture App Shortcut — and carries no MUST here
-until an iOS release ships, which is the level
-[ADR-0028](../11-adr/0028-ios-is-a-v1-client.md) puts every iOS row at. Any
-platform MAY implement additional surfaces. There is no requirement for
+Every client MUST implement its native capture surface: macOS the global
+hotkey and menu bar; the CLI a subcommand; iOS the capture sheet, the inline
+bar and the capture App Shortcut. Any platform MAY implement additional surfaces. There is no requirement for
 cross-platform parity *of capture surfaces*; the
 requirement is parity of *capture semantics* — the resulting Task is identical
 regardless of capture origin, because every surface calls the same parser
