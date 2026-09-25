@@ -411,16 +411,23 @@ there are five visible consequences:
    reaches this with a single op: O revoked X1 and X2; X1 revokes O; the mutual
    exception lands it; O goes out, which both unwinds O's revocation of X2 and
    discounts O out of X2's set; and X2 then revokes the rest of the account.
-   The remedy is the mutual pair's and no better — a device X2 reaches revokes
-   it back and is left revoked itself, so what the account needs is a current
-   device the attacker never reached.
+   A device X2 reaches revokes it back and is left revoked itself.
    `the_discount_lets_one_of_two_devices_revoked_together_ungate_the_other`
-   pins it. It is narrower than what the discount closes — that cost one op
-   from *one* revoked device and was permanent and account-wide — but it is
-   not nothing. What settles it is that current device revoking X2: it is a
-   revoker of X2 nobody discounts, so X2 is gated again.
-   `the_discount_lets_one_of_two_devices_revoked_together_ungate_the_other`
-   pins that too: after T revokes X2, X2's next revocation does not land.
+   pins it. A current device T the attacker never reached then revokes X2,
+   and X2 is gated again: that test pins this too.
+
+   **That remedy lasts one op.** X1 names T. X1 is gated, so the op revokes
+   nobody. But the discount counts every stored row, gated or not, and this
+   one revokes T from a sender other than X2. So T is discounted out of X2's
+   set, X2's set is empty again, and X2 revokes the account, T included.
+   `a_second_expelled_device_discounts_the_third_device_that_revoked_the_first`
+   pins it. Each honest revoker costs the attacker one op, so no current
+   device settles this shape through the ledger. That is where it is worse
+   than the mutual pair, which a third current device does settle, because a
+   single expelled device can never discount a revoker out of its own set.
+   It is still narrower than what the discount closes: that cost one op from
+   *one* revoked device, and this needs two devices the same revoker
+   expelled.
 
    *The chain, which is the hole.* One link further — O revokes X, P revokes
    O, Q revokes P — and Q's row gates P's, so O's revocation of X stands and X
@@ -442,6 +449,24 @@ there are five visible consequences:
    bypass with the arrow reversed. §Alternatives (f) and (h) price both.
    `a_mutual_pair_locks_both_devices_out_of_third_party_revocation` pins the
    behaviour so that it stays deliberate.
+
+   Against two expelled devices one attacker holds, the ledger stays
+   symmetric however many rows the account adds, because each honest row is
+   answered by one gated row. Two rules that look like they close it do not:
+
+   - **Counting a discounting row only when its sender is ungated under the
+     first discount.** One more attacker op beats it: X2 revokes O, which
+     ungates X1 at that level. Every finite number of levels falls the same
+     way, and the limit is the fixpoint (f) declines.
+   - **Counting a discounting row only when its sender has no revoker but
+     the device it discounts.** This reopens §Alternatives (i)'s account-wide
+     lockout for two attackers: once X1 and X2 both name O, O discounts
+     neither of them out of anybody's set.
+
+   What would settle it is an authority for membership that the ledger does
+   not hold. ADR-0056 §"What would force revisiting this" item 4 names the
+   candidate, and [#394](https://github.com/justin13888/Sunrise/issues/394)
+   carries it.
 
 5. **An unwound device shows as current and still receives nothing.** The keys
    are *not* given back, and that is the one place this design deliberately
@@ -608,7 +633,11 @@ an attacker's reach either, where the attacker holds a second device the same
 revoker expelled. The question the discount has to guess at is settled by a
 revocation from a current device outside the relationship, which is a revoker
 nobody discounts; no un-revoke is needed for it
-([ADR-0056](./0056-a-revocation-is-withdrawn-only-by-its-author.md) §3). Taken.
+([ADR-0056](./0056-a-revocation-is-withdrawn-only-by-its-author.md) §3). That
+holds against one expelled device. Against two that one attacker holds, it
+does not: the second device's gated row discounts that current device, and
+§"What a user sees" item 4 states it with its test and
+[#394](https://github.com/justin13888/Sunrise/issues/394). Taken.
 
 ## Consequences
 
