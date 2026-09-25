@@ -288,6 +288,10 @@ pub fn parse(
     let words: Vec<&str> = input.split_whitespace().collect();
     let mut i = 0usize;
     while i < words.len() {
+        // Every arm below consumes at least the word it matched, so the cursor
+        // strictly advances each turn. Asserted rather than assumed: a cursor
+        // that stops advancing is otherwise noticed only by the wall clock.
+        let start = i;
         let w = words[i];
         i += 1;
         if let Some(body) = w.strip_prefix('#') {
@@ -331,6 +335,7 @@ pub fn parse(
         } else {
             edit.errors.push(EditError::NotAToken(w.into()));
         }
+        debug_assert!(i > start, "annotate::parse cursor did not advance");
     }
     edit
 }
@@ -598,6 +603,24 @@ mod tests {
         assert!(c.errors.is_empty(), "{:?}", c.errors);
         assert_eq!(c.patch_for(&[]).priority, Some(Some(1)));
         assert!(c.patch_for(&[]).scheduled_at.is_some());
+    }
+
+    #[test]
+    fn a_date_spanning_words_consumes_them_and_only_them() {
+        // Both date sigils take a second word here, so the cursor has to skip
+        // it: re-reading "friday" or "monday" as a token would report
+        // `NotAToken`, and stepping back would re-read the sigil itself.
+        let e = edit("^next friday !1 due:next monday @home");
+        assert!(e.errors.is_empty(), "{:?}", e.errors);
+        let p = e.patch_for(&[]);
+        assert_eq!(
+            p.scheduled_at,
+            edit("^next friday").patch_for(&[]).scheduled_at
+        );
+        assert_eq!(p.due_at, edit("due:next monday").patch_for(&[]).due_at);
+        assert_ne!(p.scheduled_at, edit("^next").patch_for(&[]).scheduled_at);
+        assert_eq!(p.priority, Some(Some(1)));
+        assert_eq!(p.contexts, Some(vec![cid(1)]));
     }
 
     #[test]
