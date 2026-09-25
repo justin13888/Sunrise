@@ -226,18 +226,21 @@ document's intent, not yet implemented).
   the class, because the class only starts meaning anything once the item is
   somewhere that implements one. Which keychain that is comes from
   `KeychainDomain.probe()`, which asks the platform rather than assuming from
-  `#if os(…)`. On every **Mac** build this repository can make the probe
-  answers `.login`, so both halves are inert on this platform today; see below.
+  `#if os(…)`. On a **Mac** the probe answers `.login` for every Debug build
+  and for any Release build no team's provisioning profile authorises, and
+  `.dataProtection` only for a Release signed by the team with a profile that
+  grants `keychain-access-groups`. No such build has been made yet, so both
+  halves are inert on this platform today; see below.
   On iOS it answers `.dataProtection` — the only keychain that platform has —
   which `KeychainDomainTests` pins, and there the migration is a no-op for
   the other reason: one keychain means the source and destination name one
   stored item.
 
-  **The Mac does not honour the class**: without the App Sandbox or a
-  keychain-access-group entitlement the app uses the file-based login keychain,
-  which stores no protection class at all, so a Mac moved by Migration
-  Assistant or restored from Time Machine carries all three items with it. iOS
-  enforces the class; see
+  **The Mac does not honour the class yet**: without the App Sandbox or an
+  authorised keychain-access-group entitlement the app uses the file-based
+  login keychain, which stores no protection class at all, so a Mac moved by
+  Migration Assistant or restored from Time Machine carries all three items
+  with it. iOS enforces the class; see
   [`../03-crypto/recovery.md`](../03-crypto/recovery.md#device-backups-do-not-carry-the-vault-root).
 - **built — App Intents / Shortcuts.** Six intents — capture, complete, today,
   inbox, start focus, end focus — plus a `TaskEntity` with an
@@ -327,15 +330,59 @@ what that costs:
    because an ad-hoc signature carries no team id for the group to be validated
    against.
 
-So the entitlement is not a setting that can be committed on its own: a build
-carrying it will not launch without a real signing identity, and
-`mise run macos-app` builds `CODE_SIGNING_ALLOWED=NO` — which is what keeps the
+So the entitlement cannot be on every build: a build carrying it will not
+launch without a real signing identity and a profile that grants it, and every
+Debug consumer is team-less by design. `mise run macos-app` and
+`mise run macos-run` build `CODE_SIGNING_ALLOWED=NO`, which is what keeps the
 Mac app buildable by a contributor with no Apple account, the same thing
-`DEVELOPMENT_TEAM: ""` exists for.
+`DEVELOPMENT_TEAM: ""` exists for; `mise run macos-uitest` and a Run from
+`mise run macos-open` sign ad-hoc, and would die at AMFI.
 
-**The migration that has to go with it is built; the entitlement is not.** The
-half that does not need a signing identity is in the tree, and the half that
-does is not:
+It is therefore on **Release only**: `apps/apple/macOS/Sunrise.entitlements`
+carries `keychain-access-groups` with the one group
+`$(AppIdentifierPrefix)dev.sunrise.Sunrise`, and `apps/apple/project.yml` sets
+`CODE_SIGN_ENTITLEMENTS` on the `Sunrise` target's Release configuration and
+nowhere else. Release is the configuration the team signs: `release.yml`
+archives Release with the Developer ID identity. Its one team-less caller,
+the workflow's `unsigned_macos_dmg` dry run, archives
+`CODE_SIGNING_ALLOWED=NO`, which embeds no entitlements, so it is unaffected. A
+local `xcodebuild archive` without a team signs ad-hoc and now dies at AMFI,
+which is the measured configuration 2 above; such a bundle was never one that
+could ship.
+
+What is still missing is outside this repository's files: an Apple Developer
+Program team for `DEVELOPMENT_TEAM`, and a Developer ID provisioning profile
+that grants the group. The release pipeline does not yet install one, and the
+signed path cannot produce a launchable app until it does; that is
+[#389](https://github.com/justin13888/Sunrise/issues/389), and it has to land
+before the macOS signing secrets are created.
+
+#### Debug and Release keep separate keychains
+
+The Release-only entitlement has a price, and it falls on developers rather
+than users. On one Mac, against one vault, a signed Release build probes
+`.dataProtection` and moves the three items there on their first `load`; a
+Debug build of the same bundle identifier probes `.login`, cannot read the
+data-protection keychain at all, and so finds none of them. What it shows is
+the lost-vault screen for a vault that is intact, which is the failure this
+page warns about everywhere else, reproduced on purpose.
+
+Nothing is lost, and nothing should be done from that screen. In particular,
+**do not recover or re-pair from it**: the root is still in the data-protection
+keychain, and the next signed Release build reads it. The remedies are to point
+the Debug build at a scratch vault (`mise run macos-run <dir>`, which also uses
+an in-memory key store) or to keep one Mac's real vault on one configuration.
+The reverse direction is harmless: a Release build that finds an item only in
+the login keychain migrates it.
+
+The alternative — the entitlement on Debug as well, with every contributor
+signing with a team — was rejected because it makes an Apple Developer Program
+membership the price of building the app, which `DEVELOPMENT_TEAM: ""` exists
+to avoid.
+
+**The migration that has to go with it is built, and so is the entitlement;
+the signature is not.** Everything that does not need a signing identity is in
+the tree:
 
 - `KeychainDomain` — `.login` and `.dataProtection`, and a memoised
   `probe()` that adds one fixed non-secret byte under a probe-only service in
@@ -699,21 +746,30 @@ does is not:
   There is no launch-time pass over all three: the OIDC credential is keyed per
   account and the other two per vault, so "all three" is not one set.
 
-None of it changes behaviour on any build this repository can produce. The
+None of it changes behaviour on any build this repository can produce yet. The
 probe answers `.login` on an unsigned or ad-hoc-signed Mac, and iOS has only
 one keychain, so in both cases the migration's source and destination are two
 names for one stored item and it does nothing at all — a case the code checks
 for explicitly and the tests pin, because a migration that missed it would
 verify that item against itself and then delete it.
 
-What is left for whoever holds an Apple team is the entitlements file,
-`DEVELOPMENT_TEAM`, turning the probe's answer over on macOS — **and eight
-things in the suite: five test assertions to rewrite, and three tests to
-write.**
-The *shipping* code needs no further change on this side; the suite does, and
-"no further code change is needed" said without that qualification is not
-exact. Five assertions encode the fact that this build reaches exactly one
-domain, and each is a true statement today that a team makes false:
+The entitlements file is in, on Release. What is left for whoever holds an
+Apple team is `DEVELOPMENT_TEAM`, the Developer ID profile and the release
+pipeline that installs it (#389), which together turn the probe's answer over
+on a shipped Mac. The *shipping* code needs no further change on this side;
+the suite does, and "no further code change is needed" said without that
+qualification is not exact.
+
+**The suite does not run where the entitlement is.** Every scheme's `test`
+action is Debug, and Debug stays unentitled, so a team on its own flips none
+of what follows: the five assertions below stay true of the build they run
+in, and the cross-domain move a signed Release performs is exercised by no
+test at all. Reaching it needs a test run hosted by an entitled build — a
+configuration signed with the team and the profile — and that run is where
+**eight things in the suite** belong: five test assertions that assert the
+entitled behaviour there, and three tests to write. Five assertions encode the
+fact that this build reaches exactly one domain, and each is a true statement
+of every Debug build that an entitled host makes false:
 
 - `theProbeAnswersWhatThisBuildCanActuallyReach` — `KeychainDomainTests`
 - `aDestinationThisBuildCannotReachFallsBackToTheSource`
@@ -731,17 +787,20 @@ build this repository can make. It pins the one arrangement where
 a service and an account and differing only by domain, which is the shape all
 three stores build and which no `.login` → `.login` case can construct. Swap
 that write for `writeAcrossDomains(_:)` and the destination's cross-domain
-delete takes the source with it — and until an entitlement lands, nothing
-anywhere will say so.
+delete takes the source with it — and until a test run is hosted by an
+entitled build, nothing anywhere will say so. The Release entitlement does not
+change that, because no test runs on Release.
 
 The last four are in the `KeychainMigrationFallbackTests` suite, which is
 `macOS`-only — the `KeychainErrorMessageTests` suite sharing its file sits
 outside that gate on purpose and is not one of the five.
-Each of the five is **rewritten to assert the entitled behaviour** — not
-deleted, and not guarded by an availability check. Deleting them drops the
-coverage exactly when the path first runs for real, and four of the five are
-the only pins on their behaviour; guarding them leaves the entitled
-configuration asserting nothing. (The two platform-conditional accessibility
+Each of the five is **extended to assert the entitled behaviour** on an
+entitled host — not deleted, not skipped there, and not rewritten away from
+the Debug answer, which stays the right answer on every Debug run. Deleting
+them drops the coverage exactly when the path first runs for real, and four of
+the five are the only pins on their behaviour; skipping them on the entitled
+host leaves that configuration asserting nothing; and rewriting them outright
+would turn every Debug run red. (The two platform-conditional accessibility
 expectations in `VaultRootStoreTests` flip with them and already say so where
 they sit; they are constants rather than assertions, and are not part of the
 five.)
@@ -755,7 +814,7 @@ about what they do; none has executed on any platform this repository builds
 for, which is why they sit in the untestable set rather than in a gap someone
 forgot to fill.
 
-**Only one of the three is writable the day a team lands**, and an earlier
+**Only one of the three is writable the day an entitled host exists**, and an earlier
 revision of this page promised all three of them to the entitlement. That one
 is item 2: plant a copy in `.dataProtection`, address the item at `.login`, and
 assert the other domain's copy gone after the write. It wants reach and nothing
