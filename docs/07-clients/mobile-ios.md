@@ -238,7 +238,7 @@ the user is already standing in front of.
 registration, per vault, in the same class — so on iOS a restore onto new
 hardware leaves neither the vault root nor the device id behind, and the two
 halves of the binding stay consistent. The argument for the Keychain over
-`UserDefaults` or the vault, and the fact that the app cannot yet register
+`UserDefaults` or the vault, and the two routes by which the app registers
 itself, are in
 [`desktop.md`](./desktop.md#device-binding); the store is shared code and the
 reasoning does not differ by platform.

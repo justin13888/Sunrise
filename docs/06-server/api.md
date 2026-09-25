@@ -122,6 +122,28 @@ Two things gate it.
 
 The `recovery_blob` is stored opaquely. The server does not validate its internal format or version. The 10 MiB cap and the "signed by an active device" precondition below describe the unbuilt `PUT` route: on the live `POST /accounts` path the blob rides the bootstrap exemption, so it is bounded only by `[server] max_body_bytes` and needs no device signature. Recovery blobs follow the uniform 5-byte magic prefix from [`../10-cross-cutting/protocol-versioning.md`](../10-cross-cutting/protocol-versioning.md) §3 — the server stores opaque bytes and does not introspect.
 
+#### Terms acceptance
+
+`terms_at_ms` records when the account's holder accepted the operator's terms.
+Sunrise presents no terms of its own. Sign-up belongs to the OIDC issuer
+([`auth.md`](./auth.md) §Account model;
+[`../00-product/non-goals.md`](../00-product/non-goals.md)), so an operator
+that imposes terms presents them there, before the holder has any bearer. A
+bearer is therefore the evidence of acceptance. A client with no terms surface
+of its own sends the moment it publishes under that bearer. A client that shows
+terms sends the moment its user accepted them. The relay keeps the first value
+it receives (`COALESCE`), so a retry or a second device cannot move it.
+
+The client supplies the value. `SunriseCore::bootstrap_account` takes it as a
+parameter and never reads its own clock for it, so each client decides what
+acceptance means where its product surface is. A device joining an account
+that already exists should send no `POST /accounts`: it calls
+`POST /api/v1/devices` alone and asserts nothing on the holder's behalf. The
+Apple app's paired devices do (`register_relay_device` across the UniFFI seam),
+and so does `sunrise recover` (`sunrise_relay_client::register_device`).
+`sunrise bootstrap` run on a paired device still sends the `POST`, and
+`COALESCE` keeps the founding device's value.
+
 #### Account errors
 
 | HTTP | Code | When | Retry |

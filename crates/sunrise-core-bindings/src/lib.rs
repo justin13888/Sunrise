@@ -907,6 +907,22 @@ impl SunriseCore {
     /// pairing, which holds no `ID_D_priv`. That is not an error and the app
     /// must not present it as one: the device that created the account is the
     /// one that can produce a code, and this device's account already has one.
+    /// A paired device that only needs its relay device id should call
+    /// [`Self::register_relay_device`] instead, which publishes nothing about
+    /// the account and asserts no terms.
+    ///
+    /// `terms_accepted_at_ms` is the `terms_at_ms` the relay records, and it is
+    /// the **caller's** to supply because it is a product fact, not a clock
+    /// reading: the moment this account's holder accepted the relay operator's
+    /// terms. `docs/06-server/api.md` §Terms acceptance defines it. This method
+    /// used to fill it with its own `now_ms()`, which decided on every caller's
+    /// behalf that an acceptance had happened
+    /// ([#183](https://github.com/justin13888/Sunrise/issues/183)). The relay
+    /// keeps the first value it is sent, so a retry does not move it.
+    ///
+    /// The relay device id comes back in [`dto::AccountBootstrap::device_id`],
+    /// and the caller must record it: the relay never sends it again, and it is
+    /// what [`Self::start_sync`]'s `relay_device_id` names.
     ///
     /// # Errors
     ///
@@ -918,6 +934,7 @@ impl SunriseCore {
         bearer: String,
         email: String,
         nickname: String,
+        terms_accepted_at_ms: u64,
     ) -> Result<dto::AccountBootstrap, BindingError> {
         use sunrise_core::Rng as _;
 
@@ -941,24 +958,9 @@ impl SunriseCore {
                 identity_signing_pub: self.inner.identity_signing_pub(),
                 identity_dh_pub: self.inner.identity_dh_pub(),
                 recovery_blob,
-                terms_at_ms: self.inner.now_ms(),
+                terms_at_ms: terms_accepted_at_ms,
             },
-            sunrise_relay_client::DeviceIdentity {
-                device_pub_s: self.inner.device_signing_pub(),
-                device_pub_d: None,
-                device_cert: None,
-                // The only name a sibling can revoke this device by: the relay
-                // mints its own id and never sends it back through the op
-                // stream. A device that omits it cannot be revoked at all.
-                vault_device_id: Some(sunrise_id::crockford::encode_bytes(&self.inner.device_id())),
-                nickname,
-                platform: if cfg!(target_os = "ios") {
-                    "ios".to_owned()
-                } else {
-                    "macos".to_owned()
-                },
-                app_version: Some(env!("CARGO_PKG_VERSION").to_owned()),
-            },
+            self.relay_device_identity(nickname),
         )
         .await
         .map_err(|e| BindingError::Relay(e.to_string()))?;
@@ -971,6 +973,45 @@ impl SunriseCore {
             // ever returns is a code the stored blob opens.
             recovery_code: code.map(|c| c.reveal().to_owned()),
         })
+    }
+
+    /// Register this device on an account that already exists, and return the
+    /// id the relay minted for it.
+    ///
+    /// The second half of [`Self::bootstrap_account`] on its own — exactly what
+    /// `sunrise recover` does with `sunrise_relay_client::register_device`, and
+    /// for the same reason. A device admitted by pairing joins an account its
+    /// sponsor already published: it holds no `ID_D_priv` to seal, has no
+    /// identity keys to add that the relay does not already hold, and has no
+    /// business asserting a terms acceptance on the account holder's behalf.
+    /// Before this existed such a device could reach the relay only through
+    /// `bootstrap_account`, which the Apple app never called for it, so it held
+    /// no relay device id and a relay with `require_device_sig` refused it
+    /// ([#183](https://github.com/justin13888/Sunrise/issues/183)).
+    ///
+    /// Also the path a founding device takes when its id was never recorded:
+    /// the relay treats a second registration of the same key as a second row
+    /// rather than an error, so this cannot fail for having run before.
+    ///
+    /// The returned id is the caller's to record, for the reason
+    /// [`dto::AccountBootstrap::device_id`] gives.
+    ///
+    /// # Errors
+    ///
+    /// [`BindingError::Relay`] with what the relay said.
+    pub async fn register_relay_device(
+        &self,
+        relay_url: String,
+        bearer: String,
+        nickname: String,
+    ) -> Result<String, BindingError> {
+        sunrise_relay_client::register_device(
+            &relay_url,
+            &bearer,
+            self.relay_device_identity(nickname),
+        )
+        .await
+        .map_err(|e| BindingError::Relay(e.to_string()))
     }
 
     /// Start the live-sync driver against `url` (a relay `/sync` endpoint:
@@ -1076,6 +1117,29 @@ impl SunriseCore {
             touched.push(self.inner.submit(cmd.clone()).await?.entity);
         }
         Ok(touched)
+    }
+
+    /// What this device tells `POST /api/v1/devices` about itself.
+    ///
+    /// One builder for both registration paths, so a founding device and a
+    /// paired one cannot come to describe themselves differently.
+    fn relay_device_identity(&self, nickname: String) -> sunrise_relay_client::DeviceIdentity {
+        sunrise_relay_client::DeviceIdentity {
+            device_pub_s: self.inner.device_signing_pub(),
+            device_pub_d: None,
+            device_cert: None,
+            // The only name a sibling can revoke this device by: the relay
+            // mints its own id and never sends it back through the op
+            // stream. A device that omits it cannot be revoked at all.
+            vault_device_id: Some(sunrise_id::crockford::encode_bytes(&self.inner.device_id())),
+            nickname,
+            platform: if cfg!(target_os = "ios") {
+                "ios".to_owned()
+            } else {
+                "macos".to_owned()
+            },
+            app_version: Some(env!("CARGO_PKG_VERSION").to_owned()),
+        }
     }
 }
 
