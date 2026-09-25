@@ -65,7 +65,7 @@ struct DeviceListSection: View {
     /// The confirmation dialog's title. A nickname is a non-optional `String`,
     /// so "no nickname" is the empty one, not only the absent row: both get the
     /// unnamed title rather than "Remove ?".
-    static func removeConfirmTitle(nickname: String?) -> String {
+    nonisolated static func removeConfirmTitle(nickname: String?) -> String {
         guard let nickname, !nickname.isEmpty else { return L10n.Devices.removeConfirmTitleUnnamed }
         return L10n.Devices.removeConfirmTitle(name: nickname)
     }
