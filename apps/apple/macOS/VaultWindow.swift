@@ -56,7 +56,7 @@ struct VaultWindow: View {
         self.bridge = bridge
         self.session = session
         self.surfaces = surfaces
-        _models = State(initialValue: VaultModels(bridge: bridge))
+        _models = State(initialValue: VaultModels(bridge: bridge, account: session.account))
     }
 
     var body: some View {
@@ -217,7 +217,9 @@ struct VaultWindow: View {
         }
         .task {
             deviceID = await bridge.deviceId()
-            account.restore()
+            // The session's one account: a second window or a vault switch
+            // must not re-read a credential a sign-out left behind (#276).
+            account.restoreIfUnread()
             await startSync()
             await renewSession()
         }
@@ -427,10 +429,10 @@ extension VaultWindow {
 
     /// Keep the session renewed for as long as this window is open.
     ///
-    /// Called after `restore()` on purpose, from the same task: a `.task` of
-    /// its own could take its first look before the token is back. Scoped to
-    /// this window like everything else `models` drives — closing it tears the
-    /// models down, and cancels this with them.
+    /// Called after `restoreIfUnread()` on purpose, from the same task: a
+    /// `.task` of its own could take its first look before the token is back.
+    /// Scoped to this window: closing it cancels this loop. The account itself
+    /// is the session's and outlives the window.
     private func renewSession() async {
         await account.renewWhileRunning(
             issuer: { settings.oidcIssuer },

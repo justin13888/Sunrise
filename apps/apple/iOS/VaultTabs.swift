@@ -43,7 +43,7 @@ struct VaultTabs: View {
         self.bridge = bridge
         self.session = session
         self.surfaces = surfaces
-        _models = State(initialValue: VaultModels(bridge: bridge))
+        _models = State(initialValue: VaultModels(bridge: bridge, account: session.account))
     }
 
     var body: some View {

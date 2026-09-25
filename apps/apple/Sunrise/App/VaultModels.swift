@@ -31,18 +31,22 @@ final class VaultModels {
     let devices: DeviceListModel
 
     /// Per-device and vault-independent, so they are built here too rather
-    /// than by each shell: settings, the signed-in account, the sync banner
-    /// and the saved-view list are the same objects whichever shell is drawing
-    /// them.
+    /// than by each shell: settings, the sync banner and the saved-view list
+    /// are the same objects whichever shell is drawing them.
     let settings = AppSettings()
-    let account = AccountModel()
+    /// The signed-in account is handed in rather than built, and it is
+    /// ``SessionModel/account``: one per process, not one per window or per
+    /// vault. A model of its own here would be a second reader of the Keychain
+    /// that never heard about a sign-out the Keychain refused (#276).
+    let account: AccountModel
     let sync = SyncStatusModel()
     let savedViews = SavedViewsModel()
 
     private let bridge: CoreBridge
 
-    init(bridge: CoreBridge) {
+    init(bridge: CoreBridge, account: AccountModel) {
         self.bridge = bridge
+        self.account = account
         list = TaskListModel(bridge: bridge)
         capture = CaptureModel(bridge: bridge)
         browse = BrowseModel(bridge: bridge)
