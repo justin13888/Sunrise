@@ -56,8 +56,8 @@ final class WidgetPublisher {
 
     /// Project Today and the Inbox into what the widgets draw.
     ///
-    /// Pure apart from the two seam functions it calls, which are pure
-    /// themselves; `WidgetPublisherTests` drives it with rows it made up.
+    /// Pure: `today_section`, the one seam function it calls, reads nothing
+    /// but its arguments, and neither does `DeepLink.url`.
     static func snapshot(
         today: [TaskItem],
         inbox: [TaskItem],
@@ -164,7 +164,6 @@ final class WidgetPublisher {
     func stop() {
         isStopped = true
     }
-
 }
 
 /// The widgets' side of ``AppSurfaces``: one publisher per attached vault, and

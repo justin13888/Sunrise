@@ -195,7 +195,11 @@ document's intent, not yet implemented).
   Group is **`$(TeamIdentifierPrefix)dev.sunrise`**, not iOS's
   `group.dev.sunrise`: a Developer ID build is granted a group prefixed with
   its own team without a provisioning profile, and `release.yml` exports
-  with none. No build this repository makes today has a team, so whether
+  with none. On a Mac, `containerURL` returns a path whether or not the
+  group was granted. So the app first reads the grant off its own signature
+  (`WidgetSnapshotStore.isGranted`), and a build with no entitlements, such
+  as the one `mise run macos-app` makes, writes nothing. No build this
+  repository makes today has a team, so whether
   the Mac offers the widget and grants its container has **not been
   observed** ([#376](https://github.com/justin13888/Sunrise/issues/376)).
 - **built — Quick capture** — a borderless window on a global hotkey (⌘⇧N).

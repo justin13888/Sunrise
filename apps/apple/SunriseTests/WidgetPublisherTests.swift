@@ -287,6 +287,16 @@ struct WidgetPublisherTests {
         #expect(group.hasSuffix("dev.sunrise"))
         #endif
     }
+
+    /// macOS hands out a container path for any group, granted or not, so
+    /// the store reads the grant off the process's signature instead. A
+    /// group nobody granted is refused.
+    #if os(macOS)
+    @Test
+    func aGroupThisProcessWasNotGrantedIsRefused() {
+        #expect(!WidgetSnapshotStore.isGranted("dev.sunrise.not-granted"))
+    }
+    #endif
 }
 
 @MainActor

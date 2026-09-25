@@ -1,4 +1,7 @@
 import Foundation
+#if os(macOS)
+import Security
+#endif
 
 /// What the widgets draw: the head of Today, as the app last read it.
 ///
@@ -13,7 +16,8 @@ import Foundation
 /// §Widgets for what that costs and why it is bounded.
 ///
 /// Compiled into both apps *and* both widget extensions, so it may import
-/// Foundation and nothing else: no seam types, no SwiftUI, no `DeepLink`. The
+/// system frameworks and nothing else: no seam types, no SwiftUI, no
+/// `DeepLink`. The
 /// links a row opens are therefore carried as finished URLs the app built with
 /// `DeepLink.url`, rather than re-derived here from a second copy of the
 /// scheme.
@@ -94,15 +98,39 @@ struct WidgetSnapshotStore: Sendable {
     var file: URL { directory.appending(path: Self.fileName) }
 
     /// The store in this process's App Group container, or `nil` when the
-    /// bundle declares no group or the system will not hand its container
-    /// over (an unsigned iOS build has no entitlement to name).
+    /// bundle declares no group or the process was not granted it.
+    ///
+    /// **Granted, not merely named.** iOS enforces that itself: its
+    /// `containerURL` answers `nil` to a process without the entitlement.
+    /// macOS answers with a path either way, so there the grant is read off
+    /// this process's own signature. That keeps a build with no entitlements
+    /// (`mise run macos-app` signs nothing) from writing into a group
+    /// container it was never given — which is also the container a signed,
+    /// installed Sunrise's widgets read.
     static func appGroup(bundle: Bundle = .main) -> WidgetSnapshotStore? {
         guard let group = bundle.object(forInfoDictionaryKey: groupInfoKey) as? String,
               !group.isEmpty,
+              isGranted(group),
               let directory = FileManager.default.containerURL(
                   forSecurityApplicationGroupIdentifier: group
               ) else { return nil }
         return WidgetSnapshotStore(directory: directory)
+    }
+
+    static func isGranted(_ group: String) -> Bool {
+        #if os(macOS)
+        guard let task = SecTaskCreateFromSelf(nil),
+              let value = SecTaskCopyValueForEntitlement(
+                  task,
+                  "com.apple.security.application-groups" as CFString,
+                  nil
+              ),
+              let groups = value as? [String] else { return false }
+        return groups.contains(group)
+        #else
+        // `containerURL` is the check on iOS; see above.
+        return true
+        #endif
     }
 
     /// The snapshot on disk, or `nil` for none, an unreadable one, or one
