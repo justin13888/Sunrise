@@ -39,6 +39,7 @@
 )]
 
 use sunrise_cbor::version::{CRYPTO_SUITE_V, DOC_SCHEMA_V, WIRE_PROTO_V};
+use sunrise_cli::i18n::strings;
 use sunrise_cli::{livesync, login, pair, vault};
 use sunrise_core::commands::FocusStartDraft;
 use sunrise_core::{
@@ -270,19 +271,17 @@ fn print_revocation_unwound(unwound: &[String]) {
     if unwound.is_empty() {
         return;
     }
+    // The indentation is this report's layout, not the message's: it stays
+    // here, and the catalog holds only the words.
     println!(
-        "  - NOTE: the account no longer records a removal of {} other device(s), because \
-         the device that removed them was itself removed:",
-        unwound.len()
+        "  - {}",
+        strings::devices::unwound(i64::try_from(unwound.len()).unwrap_or(i64::MAX))
     );
+    let row_note = strings::devices::unwound_row();
     for id in unwound {
-        println!("      {id}  (shows as current; still receives no keys)");
+        println!("      {id}  {row_note}");
     }
-    println!(
-        "    They are not back in: they receive no keys and cannot read anything written \
-         since. But the account does not say they were removed. Remove each of them again \
-         from a device you still trust."
-    );
+    println!("    {}", strings::devices::unwound_remedy());
 }
 
 /// The value after `--name`, if the flag is present with one.
@@ -352,7 +351,7 @@ fn vaults() {
         // there is nothing to list is a note for the human.
         #[allow(clippy::print_stderr)]
         {
-            eprintln!("no vaults keyed in {}", keystore.display());
+            eprintln!("{}", strings::vaults::none(&keystore.display().to_string()));
         }
         return;
     }
@@ -494,16 +493,19 @@ async fn dispatch(
             let store = login::store_for(vault_dir);
             let device_id = login::device_id_hex(core);
             let mut announce = |line: &str| println!("{line}");
-            println!("Opening your browser to sign in. If it does not open, visit:");
+            println!("{}", strings::login::opening_browser());
             let creds =
                 login::login(&cfg, &device_id, &store, core.now_ms(), &mut announce).await?;
             let secs = creds.expires_at_ms.saturating_sub(core.now_ms()) / 1000;
-            println!("Signed in. Access token valid for {secs}s.");
+            println!(
+                "{}",
+                strings::login::signed_in(i64::try_from(secs).unwrap_or(i64::MAX))
+            );
             return Ok(());
         }
         "logout" => {
             login::logout(&login::store_for(vault_dir))?;
-            println!("Signed out.");
+            println!("{}", strings::login::signed_out());
             return Ok(());
         }
         "whoami" => {
@@ -1589,7 +1591,7 @@ async fn next(core: &Core, start: bool) -> Result<(), Box<dyn std::error::Error>
         return Err("unexpected query result".into());
     };
     if rows.is_empty() {
-        println!("nothing actionable — everything is blocked, done, or unscheduled");
+        println!("{}", strings::focus::nothing_actionable());
         return Ok(());
     }
     for (i, r) in rows.iter().enumerate() {
@@ -1610,7 +1612,7 @@ async fn next(core: &Core, start: bool) -> Result<(), Box<dyn std::error::Error>
             energy: None,
         }))
         .await?;
-        println!("focus started on {}", top.task.title);
+        println!("{}", strings::focus::started_on(&top.task.title));
     }
     Ok(())
 }
@@ -1891,12 +1893,15 @@ async fn sync_once(core: &Core, rest: &[String]) -> Result<(), Box<dyn std::erro
             return Err("unexpected query result".into());
         };
         if s.outbox_pending == 0 && s.state == sunrise_sync::SyncState::Live {
-            println!("sync: live, outbox empty");
+            println!("{}", strings::sync::live());
             return Ok(());
         }
         if s.outbox_pending != last {
             last = s.outbox_pending;
-            println!("sync: {} pending ({:?})", s.outbox_pending, s.state);
+            println!(
+                "{}",
+                strings::sync::pending(i64::from(s.outbox_pending), &format!("{:?}", s.state))
+            );
         }
         tokio::time::sleep(POLL).await;
     }
@@ -2055,7 +2060,7 @@ async fn recover(rest: &[String]) -> Result<(), Box<dyn std::error::Error>> {
 fn print_recovery_code(code: &sunrise_crypto::bip39::RecoveryCode) {
     #![allow(clippy::print_stdout)]
     println!();
-    println!("Your recovery code — write it down now, on paper:");
+    println!("{}", strings::recover::code_heading());
     println!();
     // Six lines of four, because twenty-four words on one wrapped terminal
     // line is what a transcription error looks like before it happens.

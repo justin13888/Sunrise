@@ -112,12 +112,12 @@ live = "sync: live, outbox empty"
 pending = "sync: {count, plural, one {# pending} other {# pending}} ({state})"
 
 [cli.devices]
-# Printed under a removal. {count} earlier removals the account no longer
-# records; their ids are listed after it, one per line.
-unwound = "{count, plural, one {  - NOTE: the account no longer records a removal of one other device, because the device that removed it was itself removed:} other {  - NOTE: the account no longer records a removal of # other devices, because the device that removed them was itself removed:}}"
+# A bullet under a removal's report. {count} earlier removals the account no
+# longer records; their ids are listed after it, one per line.
+unwound = "{count, plural, one {NOTE: the account no longer records a removal of one other device, because the device that removed it was itself removed:} other {NOTE: the account no longer records a removal of # other devices, because the device that removed them was itself removed:}}"
 # Printed after each id listed under `unwound`.
 unwound_row = "(shows as current; still receives no keys)"
-unwound_remedy = "    They are not back in: they receive no keys and cannot read anything written since. But the account does not say they were removed. Remove each of them again from a device you still trust."
+unwound_remedy = "They are not back in: they receive no keys and cannot read anything written since. But the account does not say they were removed. Remove each of them again from a device you still trust."
 
 [cli.recover]
 # Printed above the 24 words, which follow in rows of four.

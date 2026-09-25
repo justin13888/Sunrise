@@ -116,16 +116,16 @@ pub mod sync {
 pub mod devices {
     use super::rt;
 
-    /// {count, plural, one {  - NOTE: the account no longer records a removal of one other device, because the device that removed it was itself removed:} other {  - NOTE: the account no longer records a removal of # other devices, because the device that removed them was itself removed:}}
+    /// {count, plural, one {NOTE: the account no longer records a removal of one other device, because the device that removed it was itself removed:} other {NOTE: the account no longer records a removal of # other devices, because the device that removed them was itself removed:}}
     #[must_use]
     pub fn unwound(count: i64) -> String {
         let mut out = String::new();
         match rt::plural("en", count) {
             rt::Category::One => {
-                out.push_str("  - NOTE: the account no longer records a removal of one other device, because the device that removed it was itself removed:");
+                out.push_str("NOTE: the account no longer records a removal of one other device, because the device that removed it was itself removed:");
             }
             _ => {
-                out.push_str("  - NOTE: the account no longer records a removal of ");
+                out.push_str("NOTE: the account no longer records a removal of ");
                 out.push_str(&rt::number("en", count));
                 out.push_str(" other devices, because the device that removed them was itself removed:");
             }
@@ -141,11 +141,11 @@ pub mod devices {
         out
     }
 
-    ///     They are not back in: they receive no keys and cannot read anything written since. But the account does not say they were removed. Remove each of them again from a device you still trust.
+    /// They are not back in: they receive no keys and cannot read anything written since. But the account does not say they were removed. Remove each of them again from a device you still trust.
     #[must_use]
     pub fn unwound_remedy() -> String {
         let mut out = String::new();
-        out.push_str("    They are not back in: they receive no keys and cannot read anything written since. But the account does not say they were removed. Remove each of them again from a device you still trust.");
+        out.push_str("They are not back in: they receive no keys and cannot read anything written since. But the account does not say they were removed. Remove each of them again from a device you still trust.");
         out
     }
 }
