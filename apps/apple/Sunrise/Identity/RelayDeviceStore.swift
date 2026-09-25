@@ -157,9 +157,9 @@ struct KeychainRelayDeviceIDStore: RelayDeviceIDStore {
         // half while the other survives.
         //
         // As `KeychainVaultRootStore.load` does, through the same shared step:
-        // nothing on the ordinary path ever rewrites this item, so an id
-        // recorded by a build that used a weaker class would keep it for the
-        // life of the installation.
+        // only a change of relay or account rewrites this item, so an id
+        // recorded by a build that used a weaker class would otherwise keep it
+        // for as long as the device stays where it registered.
         //
         // A value that does not decode — a bare id, with no scope recorded —
         // reads as nothing: an id whose relay and account are unknown cannot
@@ -171,10 +171,45 @@ struct KeychainRelayDeviceIDStore: RelayDeviceIDStore {
         return RelayDeviceBinding(id: binding.id.trimmed, scope: binding.scope)
     }
 
+    /// Across both domains, as `KeychainCredentialStore.save` is, because this
+    /// store has a second writer and so the same divergence (#254). The id is
+    /// not written once: ``RelayDeviceRegistration/bind(store:scope:environment:register:)``
+    /// runs at every sync start and **replaces** a binding minted for another
+    /// relay or another account's bearer (#183), with no user action beyond
+    /// the sign-in or relay change that moved the scope. On an entitled Mac, one
+    /// launch whose probe failed open finds the old binding through `load`'s
+    /// cross-domain read, registers, and — with a plain `write` — records the
+    /// new id in the login keychain while the old one stays in the
+    /// data-protection one. Every later launch with a correct probe then
+    /// raises `.migrationUnverified`, `RelayDeviceID.resolve` reads that as no
+    /// id, and `bind` registers again and writes a third id beside the second:
+    /// a fresh relay row per sync start, for ever. `writeAcrossDomains` removes
+    /// the other domain's copy after writing this one, so the first rewrite
+    /// never leaves the pair and a later one collapses it.
+    ///
+    /// Deleting the other copy is safe here where it is not for the vault
+    /// root, and that asymmetry is the whole decision: the copy this removes
+    /// is a binding this write is replacing, and the worst a wrongly removed
+    /// one costs is a re-registration. `KeychainVaultRootStore.store` records
+    /// the opposite trade.
+    ///
+    /// `writtenButOtherDomainRefused` is passed through rather than caught as
+    /// `KeychainCredentialStore.save` catches it, and that is not an
+    /// oversight. `save` has to catch it because its callers act on a throw —
+    /// keep the stale credential, report a failed sign-in. Both callers here,
+    /// `publish` and `bind`, record with `try?` and act on nothing: the id is
+    /// returned either way and the next sync start resolves whatever landed.
+    /// A catch would change no behaviour and add a line no configuration this
+    /// repository builds can execute, beside the seven
+    /// `docs/07-clients/desktop.md` already declares. A caller that ever does act on this throw has to catch that
+    /// case first, as `save` does.
+    ///
+    /// `KeychainMigration` keeps the plain `write` whatever this does: its
+    /// source is this item in the other domain.
     func store(_ binding: RelayDeviceBinding) throws {
         let trimmed = binding.id.trimmed
         guard !trimmed.isEmpty else { throw RelayDeviceIDError.empty }
-        try item.write(JSONEncoder().encode(RelayDeviceBinding(id: trimmed, scope: binding.scope)))
+        try item.writeAcrossDomains(JSONEncoder().encode(RelayDeviceBinding(id: trimmed, scope: binding.scope)))
     }
 
     /// Across both domains, so the id and the `D_S_priv` it names stay a pair:

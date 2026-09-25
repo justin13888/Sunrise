@@ -720,18 +720,40 @@ the tree:
   account would have inverted it, by making a second concurrent probe's add fail
   with `errSecDuplicateItem` and answer `.login` on iOS.
 
-  The **credential** store also `save`s across both, and it is the only one that
-  needs to. Its token is rewritten with no user action — `refreshIfNeeded`
-  renews at 75% of the token's life — so one launch whose probe failed open
-  leaves a fresh token in one keychain and a stale one in the other, and every
-  later launch with a correct probe reads two secrets under one name and raises
-  `.migrationUnverified`, which refuses the load rather than signing the user
-  out in silence — and which this same cross-domain `save`, run by the next
-  sign-in, is what collapses. The vault root and the relay device id are written
-  once and never rewritten on the ordinary path, so neither can diverge that
-  way. `KeychainMigration`'s own write is deliberately
-  exempt too: it deletes its source only after the verify step, and a write that
-  removed the other domain would take the source out from under it.
+  The **credential** store also `save`s across both. Its token is rewritten
+  with no user action — `refreshIfNeeded` renews at 75% of the token's life —
+  so one launch whose probe failed open leaves a fresh token in one keychain and
+  a stale one in the other, and every later launch with a correct probe reads
+  two secrets under one name and raises `.migrationUnverified`, which refuses
+  the load rather than signing the user out in silence — and which this same
+  cross-domain `save`, run by the next sign-in, is what collapses.
+
+  The **relay device id** store does too (#254), because it is not written once:
+  `RelayDeviceRegistration.bind` runs at every sync start and replaces a
+  binding minted for another relay or another account (#183). The same
+  failed-open launch leaves the new id in one keychain and the old one in the
+  other; every later launch's load then refuses, `RelayDeviceID.resolve` reads
+  the refusal as no id, and `bind` registers again — a fresh relay row per sync
+  start, with no end. The copy the cross-domain write removes is the binding it
+  is replacing, and the worst a wrongly removed one costs is a re-registration.
+  Unlike `save`, it lets `writtenButOtherDomainRefused` through: both of its
+  callers record with `try?` and act on nothing, so catching it would change no
+  behaviour and add an eighth line no build here can execute.
+
+  The **vault root** deliberately does not. A stale token or binding is
+  recovered by a sign-in or a re-registration; a root in the other domain is not
+  stale, it may be the key the vault on disk is sealed under, and no second copy
+  of it exists anywhere. Left alone it costs a `.migrationUnverified` refused
+  load with both roots still readable; deleted, it costs the vault. Today's
+  writers gain nothing from it either: `createVault` stores only after both
+  domains answered not-found, and `adoptPairing` runs from
+  `.locked(.keychainUnavailable)` — a load that threw — which is exactly where
+  the other domain may hold a root nobody has read. A future re-key or rotation
+  has to choose between two read roots, not inherit a delete.
+
+  `KeychainMigration`'s own write is exempt whatever the stores do: it deletes
+  its source only after the verify step, and a write that removed the other
+  domain would take the source out from under it.
 - `KeychainMigration` — five resumable steps holding one invariant: **a
   readable copy exists at every instant.** Read the destination, read the
   source, write the destination, read it back and compare byte-for-byte, and
