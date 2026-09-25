@@ -669,6 +669,13 @@ fn a_v13_vaults_revoked_device_becomes_a_device_revocations_row() {
         "`devices.revoked_at_ms` is superseded by `device_revocations`"
     );
 
+    // `query_row` reads the first row and ignores the rest, so the count is
+    // what establishes "exactly one".
+    assert_eq!(
+        row_count(&db, "device_revocations"),
+        1,
+        "the one revoked device becomes exactly one revocation"
+    );
     let (device, cut_ms, cut_logical, reason): (Vec<u8>, i64, i64, String) = db
         .conn()
         .query_row(
@@ -676,7 +683,7 @@ fn a_v13_vaults_revoked_device_becomes_a_device_revocations_row() {
             [],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
-        .expect("exactly one revocation");
+        .expect("read the revocation");
     assert_eq!(device, DEVICE_RETIRED.to_vec());
     assert_eq!(cut_ms, RETIRED_AT_MS, "the cut is the old stamp, not now");
     assert_eq!(
