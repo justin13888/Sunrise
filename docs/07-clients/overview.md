@@ -204,9 +204,9 @@ quality. Compose Multiplatform remains the strongest contender if that choice is
 | macOS | Direct `.dmg`, Developer ID-signed, notarized and stapled, attached to the GitHub Release beside the CLI tarballs. **Not** the Mac App Store, which would require the App Sandbox and so cost global-hotkey reliability — decided in [ADR-0031](../11-adr/0031-macos-distribution.md); built by `release.yml`'s `macos-app` job; operated per [`releasing.md`](./releasing.md). Updates afterwards go through Sparkle over an EdDSA-signed `appcast.xml` on the same Release, `stable` and `beta` — [ADR-0038](../11-adr/0038-macos-update-feed.md), and [`desktop.md`](./desktop.md) §Update channel |
 | CLI | Cargo, Homebrew, prebuilt binaries on GitHub releases |
 | iOS / iPadOS | App Store Connect. A `vX.Y.Z` tag builds, signs and uploads a build, which lands in TestFlight; submitting one for App Store review and releasing it are manual acts outside this repository, so the App Store version stream runs on its own cadence — [ADR-0039](../11-adr/0039-ios-distribution.md), built by `release.yml`'s `ios-release` job. That job **no-ops visibly** until the six secrets and the App Store Connect app record exist, which only the account holder can create. Locally it still installs ad-hoc on the simulator (`CODE_SIGN_IDENTITY=-`) via `mise run ios-run`; ad-hoc signing is not optional, because iOS gates the Keychain on an application-identifier entitlement only a signed binary carries |
+| Web | Static assets on Cloudflare Pages, Pages project `sunrise-web` (`apps/web/wrangler.toml`). A `vX.Y.Z` tag builds and deploys them via `release.yml`'s `web-pages` job; a prerelease tag goes to the `prerelease` preview alias, never production. That job **no-ops visibly** until the owner creates the Pages project and the `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` secrets — the intended state while the web core cannot sync. The relay is chosen per browser at run time, so one deployment serves every self-hosted relay — [`web.md`](./web.md) §Self-host vs managed cloud |
 
-Channels for the clients that are not built (Android and Web) are decided when
-they are built.
+The channel for Android, which is not built, is decided when it is built.
 
 ## Versioning
 
