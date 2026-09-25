@@ -13,6 +13,10 @@ dist-ssr
 # VitePress's pre-bundled dependencies (apps/docs, `cacheDir`). Written by
 # every `dev` run; Biome would otherwise lint them.
 apps/docs/.vitepress/cache/
+# The web core bundle, `wasm-bindgen` output written by `mise run web-wasm`
+# (ADR-0055). Built from `crates/sunrise-core-wasm`, never edited; Biome would
+# otherwise lint its generated JS.
+apps/web/public/wasm/
 *.local
 
 # TypeScript incremental build info
