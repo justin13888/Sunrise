@@ -42,6 +42,9 @@ zeroize = { workspace = true }
 [dev-dependencies]
 proptest = { workspace = true }
 sunrise-crypto-test-vectors = { workspace = true }
+# `test_util::events_emitted_by`, so an engine test that asserts an `ev` fired
+# shares the one tracing interest-cache pin instead of carrying its own.
+sunrise-log = { workspace = true }
 sunrise-test-seed = { workspace = true }
 # `test-util` gives paused-clock tests (`start_paused`, `time::advance`) so the
 # routine timer can be driven deterministically instead of slept through.
