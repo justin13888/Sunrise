@@ -748,7 +748,7 @@ impl Engine {
     /// believed when it learns its author had been revoked. That is the
     /// correct signal and it is why it is said out loud.
     ///
-    /// # The mutual exception's cost: a permanent third-party lockout
+    /// # The mutual exception's cost: a third-party lockout a third device lifts
     ///
     /// Stated here rather than left to be deduced from the gate, because it is
     /// a behaviour a user can reach and not an implementation detail.
@@ -765,8 +765,8 @@ impl Engine {
     /// half is current and ungated again. Pinned by
     /// `a_third_current_device_settles_which_half_of_a_mutual_pair_the_account_meant`.
     /// Until then, one op from a device the account has already expelled costs
-    /// the device that expelled it the ability to revoke third parties. In a
-    /// two-device account there is no third device, so it is for good.
+    /// the device that expelled it third-party revocation, no withdrawal by the
+    /// pair lifts it (ADR-0041 item 4), and without a third device it stays.
     ///
     /// **What it does not cost, stated as the bound rather than as a hope.**
     /// This paragraph claimed that every other current device in the account
