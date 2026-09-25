@@ -3092,6 +3092,7 @@ dependencies = [
  "sunrise-domain",
  "sunrise-error",
  "sunrise-id",
+ "sunrise-log",
  "sunrise-pairing",
  "sunrise-storage",
  "sunrise-sync",
