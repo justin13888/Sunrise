@@ -7089,9 +7089,9 @@ fn a_revocation_written_before_the_senders_own_cut_is_unwound_when_the_sender_is
 /// for the takeover it prevents. Its cost is here. Once X and O have revoked
 /// each other, each one's revoker set holds exactly one entry and it is the
 /// other, so each is forgiven for revoking the other and gated for revoking
-/// anyone else — including the honest device of the pair, and permanently,
-/// because revocation has no inverse
-/// ([#241](https://github.com/justin13888/Sunrise/issues/241)).
+/// anyone else — including the honest device of the pair, until a third
+/// current device says which of the two it meant
+/// (`a_third_current_device_settles_which_half_of_a_mutual_pair_the_account_meant`).
 ///
 /// What it costs is *third-party* revocation, and it costs it to the two
 /// devices in the relationship and to nobody else. That bound was asserted
@@ -7177,6 +7177,63 @@ fn a_mutual_pair_locks_both_devices_out_of_third_party_revocation() {
     );
 }
 
+/// **A third current device already says which half of a mutual pair the
+/// account meant. That is why an un-revoke op is not what settles the
+/// lockout.**
+///
+/// ADR-0041 said an un-revoke op would let the account say which reading of
+/// a mutual pair it meant. ADR-0055
+/// (`docs/11-adr/0055-a-revocation-is-withdrawn-only-by-its-author.md`) §3
+/// rests on the claim that a revocation says it already. A current device T
+/// revokes X, the half it believes compromised:
+///
+/// - X's revoker set becomes `{O, T}`. Nobody revokes T, so T is not
+///   discounted, and X's revocation of O is gated.
+/// - T's row revokes X from a sender other than O, so X is discounted out of
+///   O's set. O's set is then empty, so O is current and ungated again.
+///
+/// The last assertion is the residual ADR-0055 §4 states. O's standing comes
+/// back and its read bound does not. This replica bounded O when the mutual
+/// pair landed, and the bound is a ratchet ([#282](https://github.com/justin13888/Sunrise/issues/282)).
+#[test]
+fn a_third_current_device_settles_which_half_of_a_mutual_pair_the_account_meant() {
+    let ex = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eo = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let ed = engine_seeded(ROOT, [3u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let et = engine_seeded(ROOT, [5u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let er = engine_seeded(ROOT, [4u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut db = db_root(ROOT);
+    let (x_id, o_id) = (ex.keychain.device_id(), eo.keychain.device_id());
+    let d_id = ed.keychain.device_id();
+
+    // The mutual pair: X gets its revocation of O in first, and O answers.
+    revoke(&er, &mut db, &ex, o_id, T0 + 10_000);
+    revoke(&er, &mut db, &eo, x_id, T0 + 20_000);
+    assert!(er.is_revoked(db.conn(), &x_id).unwrap());
+    assert!(er.is_revoked(db.conn(), &o_id).unwrap());
+
+    // T says X is the compromised half.
+    revoke(&er, &mut db, &et, x_id, T0 + 30_000);
+    assert!(er.is_revoked(db.conn(), &x_id).unwrap());
+    assert!(
+        !er.is_revoked(db.conn(), &o_id).unwrap(),
+        "a revoker of X other than O gates X's revocation of O"
+    );
+
+    // O is ungated as well as current: it revokes a third party again.
+    revoke(&er, &mut db, &eo, d_id, T0 + 40_000);
+    assert!(
+        er.is_revoked(db.conn(), &d_id).unwrap(),
+        "T's row discounts X out of O's revoker set, so O is no longer locked out"
+    );
+
+    // The residual: the standing comes back, the keys do not.
+    assert!(
+        er.is_read_bounded(db.conn(), &o_id).unwrap(),
+        "the read bound is a per-replica ratchet, and a revocation does not release it"
+    );
+}
+
 /// **A gated op must not seat its sender in the revoker set of the device it
 /// named.**
 ///
@@ -7254,8 +7311,9 @@ fn a_gated_revocation_does_not_seat_its_sender_in_its_targets_revoker_set() {
 /// It costs two revocations in one chain rather than the one ordinary op the
 /// defect above cost, and the device doing the second of them is by
 /// construction not the attacker.
-/// [#241](https://github.com/justin13888/Sunrise/issues/241)'s un-revoke is
-/// what would let the account say which of the two readings it meant.
+/// A current device that revokes X again says which of the two readings the
+/// account meant, and X is gated again. No un-revoke op is needed for that
+/// (ADR-0055 §3).
 #[test]
 fn the_discount_rehabilitates_a_device_whose_sole_revoker_a_third_party_revokes() {
     let ex = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
