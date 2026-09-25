@@ -42,6 +42,33 @@ struct KeychainRelayDeviceIDStoreTests {
         #expect(try store.load()?.id == "dev_01J8ZQ7X9K3M5N7P9R1T3V5W7Y")
     }
 
+    /// `bind`'s rewrite, the store's second writer (#254): a binding minted
+    /// under another account is replaced, and the replacement is what every
+    /// later load answers. Read twice, because a rewrite that left two copies
+    /// under one name shows only on the load after, as the migration's refusal.
+    ///
+    /// It pins what this build can reach: the cross-domain write keeps what it
+    /// wrote when the other domain refuses with the missing entitlement (the
+    /// Mac), and skips the delete where the domains are one store (iOS). It
+    /// does **not** pin the other domain's copy being removed — no build here
+    /// can plant one there, item 2 of the seven in `docs/07-clients/desktop.md`
+    /// — so reverting `store` to the plain `write` leaves it green.
+    @Test
+    func aRebindingInAnotherScopeReplacesTheRecordedOne() throws {
+        let store = scratch()
+        defer { try? store.clear() }
+
+        try store.store(Self.binding)
+        let rebound = RelayDeviceBinding(
+            id: "dev_01J8ZQ7X9K3M5N7P9R1T3V5W80",
+            scope: RelayDeviceScope(relayURL: "https://relay.example", bearer: RelayScopeFixture.bob)
+        )
+        try store.store(rebound)
+
+        #expect(try store.load() == rebound, "the rewrite replaces the binding it rescoped")
+        #expect(try store.load() == rebound, "and leaves nothing a later load refuses")
+    }
+
     /// An empty id would put an `X-Sunrise-Device` on the wire naming no row,
     /// and the relay answers that as a bad *bearer* so a caller cannot
     /// enumerate an account's devices. This is the only place it can be told
