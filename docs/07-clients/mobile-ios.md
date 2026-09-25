@@ -21,7 +21,8 @@ that is no longer what is built.
 [`parity-matrix.md`](./parity-matrix.md) now carries a filled iOS column and
 [ADR-0028](../11-adr/0028-ios-is-a-v1-client.md) is the record of why: every
 row the shell reaches is a **SHOULD**, and none of them is a MUST until an iOS
-release ships. Twenty-three SHOULDs, graded **23 met**. The two that were
+release ships. Twenty-four rows, graded **24 met**; the newest is the widget
+row ([Widgets](#widgets)). The two that were
 unmet — saved views and iCal import/export, each a working shared model with no
 iOS caller — now have one: a **Views** menu on the toolbar of the screens a
 saved view can name, and **Import calendar…** / **Export calendar** in Browse's
