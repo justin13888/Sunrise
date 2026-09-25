@@ -3278,6 +3278,14 @@ pub struct AccountBootstrap {
     /// owns and this value reports rather than sets.
     pub email: String,
     /// The id the relay assigned this device. Every later request names it.
+    ///
+    /// **The caller must record it before it lets this record go.** The relay
+    /// returns it to the registering device and to nobody else, never sends it
+    /// again, and without it a relay with `require_device_sig` refuses every
+    /// request this device makes. The Apple app writes it to the vault's
+    /// `KeychainRelayDeviceIDStore`; it used to read `recovery_code` off this
+    /// record and drop the rest
+    /// ([#183](https://github.com/justin13888/Sunrise/issues/183)).
     pub device_id: String,
     /// The twenty-four words, or `None` on a device admitted by pairing.
     ///
