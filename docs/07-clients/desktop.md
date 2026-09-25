@@ -844,15 +844,31 @@ The two rejected homes, for the record:
   where every device replicates every other device's id and a merge has to
   decide which one is "this" one.
 
-**The app cannot yet register itself.** `sunrise_relay_client::bootstrap` — the
-`POST /api/v1/accounts` then `POST /api/v1/devices` pair the CLI runs as
-`sunrise bootstrap` — is not exposed across the UniFFI seam, so nothing in the
-app produces an id. Until it is, the only way an Apple client is device-bound is
-the environment override the CLI has for the same case: launch it with
+**The app registers itself, by one of two routes** (#183), and each ends in
+that store (`RelayDeviceRegistration` in `RelayDeviceStore.swift`):
+
+- **The device that created the vault** registers inside the recovery ceremony.
+  `SunriseCore::bootstrap_account` runs `POST /api/v1/accounts` then
+  `POST /api/v1/devices`, and the app records the returned `device_id` only
+  after the relay accepted it. A Keychain refusal at that point still shows the
+  recovery code, because the relay already holds the blob that code opens.
+- **Every other device** — one admitted by pairing, or a founding device whose
+  id was never recorded — registers at sync start. `SessionModel.bindRelayDevice`
+  calls `SunriseCore::register_relay_device`, which is `POST /api/v1/devices`
+  alone, as `sunrise recover` does. It publishes nothing about the account and
+  asserts no terms acceptance ([`../06-server/api.md`](../06-server/api.md)
+  §Terms acceptance). It does nothing when an id already resolves, or while a
+  recovery ceremony is outstanding.
+
+A driver started *before* the ceremony recorded its id keeps running unbound
+until the next start, because a repeated start against the same URL is refused
+rather than re-pointed.
+
+The environment override the CLI has for the same case still wins: launch with
 `SUNRISE_SYNC_DEVICE_ID` set to an id registered elsewhere, and the driver
-presents and signs for it. That is the same variable name, the same precedence
-(override before stored) and the same meaning as
-`sunrise_cli::livesync::ENV_SYNC_DEVICE_ID`.
+presents and signs for it and the app registers nothing. That is the same
+variable name, the same precedence (override before stored) and the same
+meaning as `sunrise_cli::livesync::ENV_SYNC_DEVICE_ID`.
 
 An unbound driver is not a failure state and is not refused: it is what every
 self-host relay runs, and a client that would not connect without a binding
