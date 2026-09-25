@@ -288,6 +288,10 @@ pub fn parse(
     let words: Vec<&str> = input.split_whitespace().collect();
     let mut i = 0usize;
     while i < words.len() {
+        // Every arm below consumes at least the word it matched, so the cursor
+        // strictly advances each turn. Asserted rather than assumed: a cursor
+        // that stops advancing is otherwise noticed only by the wall clock.
+        let start = i;
         let w = words[i];
         i += 1;
         if let Some(body) = w.strip_prefix('#') {
@@ -331,6 +335,7 @@ pub fn parse(
         } else {
             edit.errors.push(EditError::NotAToken(w.into()));
         }
+        debug_assert!(i > start, "annotate::parse cursor did not advance");
     }
     edit
 }

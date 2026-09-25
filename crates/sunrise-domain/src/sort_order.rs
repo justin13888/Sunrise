@@ -198,7 +198,12 @@ pub fn between(after: Option<&str>, before: Option<&str>) -> Result<String, Sort
             return Ok(finish(out));
         }
         out.push(ZERO + a);
+        let start = i;
         i += 1;
+        // The walk ends only by finding a differing digit further on, so a
+        // cursor that stops advancing would push digits forever. Asserted
+        // rather than assumed, so it fails fast instead of timing out.
+        debug_assert!(i > start, "between: digit cursor did not advance");
     }
 }
 
@@ -217,7 +222,11 @@ fn above_tail(out: &mut Vec<u8>, lo: &str, mut i: usize) {
             return;
         }
         out.push(ZERO + a);
+        let start = i;
         i += 1;
+        // Termination rests on running off the end of `lo`, which only an
+        // advancing cursor reaches. Asserted, as in `between`.
+        debug_assert!(i > start, "above_tail: digit cursor did not advance");
     }
 }
 
