@@ -263,6 +263,29 @@ struct WidgetPublisherTests {
         await vault.bridge.shutdown()
     }
 
+    /// A quit takes the titles with it: the notification the app is told it
+    /// is terminating by erases the snapshot before the observer returns.
+    @Test
+    func terminatingWithdrawsTheSnapshot() async throws {
+        let vault = try await TestVault()
+        let store = scratchStore()
+        defer { try? FileManager.default.removeItem(at: store.directory) }
+        let center = NotificationCenter()
+        let feed = WidgetFeed(store: store, reload: {})
+        feed.withdraw(whenever: WidgetFeed.terminationNotification, from: center)
+        feed.start(bridge: vault.bridge)
+        let publisher = try #require(feed.publisher)
+        await publisher.publish()
+        #expect(store.read() != nil)
+
+        center.post(name: WidgetFeed.terminationNotification, object: nil)
+
+        #expect(store.read() == nil)
+        #expect(feed.publisher == nil)
+        #expect(publisher.isStopped)
+        await vault.bridge.shutdown()
+    }
+
     /// The default publishes nothing, so no test can write into the container
     /// the installed app's widgets read.
     @Test

@@ -1,3 +1,8 @@
+#if os(macOS)
+import AppKit
+#else
+import UIKit
+#endif
 import Foundation
 import WidgetKit
 
@@ -180,6 +185,7 @@ final class WidgetFeed {
     /// The publisher for the vault attached now, or `nil` with none.
     private(set) var publisher: WidgetPublisher?
     private var task: _Concurrency.Task<Void, Never>?
+    private var terminationObserver: NSObjectProtocol?
 
     init(
         store: WidgetSnapshotStore,
@@ -190,8 +196,37 @@ final class WidgetFeed {
     }
 
     /// The feed into this app's App Group, or `nil` where it has none.
+    ///
+    /// Withdraws at once, because no vault is open at launch: a snapshot on
+    /// disk now was left by a process that ended without saying so (iOS
+    /// killing a suspended app, a crash). And withdraws again when the app is
+    /// told it is terminating, so a quit takes the titles with it.
     static func appGroup() -> WidgetFeed? {
-        WidgetSnapshotStore.appGroup().map { WidgetFeed(store: $0) }
+        guard let store = WidgetSnapshotStore.appGroup() else { return nil }
+        let feed = WidgetFeed(store: store)
+        feed.withdraw()
+        feed.withdraw(whenever: terminationNotification)
+        return feed
+    }
+
+    #if os(macOS)
+    static let terminationNotification = NSApplication.willTerminateNotification
+    #else
+    static let terminationNotification = UIApplication.willTerminateNotification
+    #endif
+
+    /// Withdraw whenever `center` posts `name`.
+    ///
+    /// Delivered on the posting thread rather than through a queue or a task:
+    /// the termination notification is posted on the main thread and the
+    /// process exits as soon as its observers return, so an erase scheduled
+    /// for later would never run.
+    func withdraw(whenever name: Notification.Name, from center: NotificationCenter = .default) {
+        if let terminationObserver { center.removeObserver(terminationObserver) }
+        terminationObserver = center.addObserver(forName: name, object: nil, queue: nil) { [weak self] _ in
+            guard let self else { return }
+            MainActor.assumeIsolated { self.withdraw() }
+        }
     }
 
     /// Publish from `bridge` until the next ``start(bridge:)`` or
@@ -219,7 +254,8 @@ final class WidgetFeed {
     /// empty.
     ///
     /// Called whenever the session leaves `.unlocked` — a lock, a sign-out, a
-    /// failure, the first beat of a switch — and by `AppSurfaces.detach()`.
+    /// failure, the first beat of a switch — by `AppSurfaces.detach()`, and
+    /// at launch and termination (``appGroup()``).
     /// The other vault surfaces stay bound across a lock, because the window
     /// is replaced by `LockedView` and nothing reaches them; the widgets are
     /// drawn by another process with no lock of its own, so this one acts.
