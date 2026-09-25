@@ -86,15 +86,19 @@ the worker mints on first run is stored beside it in OPFS. Everything the
 native vault protects at rest — task titles, notes, the device's private keys
 — is readable by anything that can read this origin's OPFS: the browser
 itself, its extensions with storage access, and anyone with the device's
-unlocked user account. What crosses the network is unchanged: ops are sealed
-end to end exactly as native clients seal them.
+unlocked user account. The gap is local only: the web client does not sync
+yet, and when it does its ops are sealed by the same core that seals native
+clients' ops, so nothing it sends is weaker for it.
 
 What the product says to a user, wherever the web client can hold data:
 
 > Sunrise on the web stores your tasks on this device **without encryption**.
-> Anyone who can use this browser profile can read them. Your data is still
-> end-to-end encrypted in transit and on the server. For encryption on this
-> device, use the Sunrise app.
+> Anyone who can use this browser profile can read them. For encryption on
+> this device, use the Sunrise app.
+
+Once the web client syncs, the notice gains one sentence: *What leaves this
+device is still end-to-end encrypted.* It must not say so before then, when
+nothing leaves.
 
 That notice is not yet in the web client: it needs a string-catalog entry
 (ADR-0054), and is tracked with the rest of the web client's unencrypted-vault
