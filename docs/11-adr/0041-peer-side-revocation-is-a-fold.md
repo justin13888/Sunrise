@@ -325,6 +325,20 @@ there are five visible consequences:
    `sunrise devices revoke`, and the Apple device list states the row's own
    condition. That is the same rule `log-events.md` already stated for
    `revoke_incomplete`, applied to a strictly larger consequence.
+
+   **The relay half follows the register only while it is still queued.** The
+   fold rewrites `device_revocations` and never `relay_revocation_intents`, so
+   an intent can outlive the row it was queued beside. The drain and
+   `Core::relay_revocation_pending` read only intents whose device the
+   register currently holds, and the rest are held rather than deleted, so a
+   later fold that revokes the device again owes the relay that revocation
+   after all ([#257](https://github.com/justin13888/Sunrise/issues/257)).
+   Clearing the intent on the unwind was rejected: it makes the fold write a
+   table it does not own, and it loses the intent for exactly that later fold,
+   leaving the relay behind the register. A revocation the relay has already
+   been told is not taken back — the relay has no inverse of the `DELETE` — so
+   under `require_device_sig` an unwound device stays refused there, in the
+   same direction as its read bound (item 5).
 3. **A cut correction does not recover a skipped revocation.** #82 offers two
    honest options — re-request the op, or accept the loss and say so where a
    user can see it — and this takes the second, because the first is not even

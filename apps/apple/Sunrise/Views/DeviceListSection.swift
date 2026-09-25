@@ -152,6 +152,14 @@ struct DeviceListSection: View {
     /// Nothing was removed, so "Removed X" is the one sentence that must not
     /// appear, and the rotation and relay lines below would all be answers to
     /// a question the user no longer has.
+    ///
+    /// Neither branch can contradict the relay queue. The gated branch says in
+    /// fixed copy that the removal tells the relay nothing, and that is exact:
+    /// a gated removal leaves its target current, and the core owes the relay
+    /// an intent only while the register calls its device revoked — so an
+    /// older intent for the same device, queued before its removal unwound, is
+    /// held rather than sent (#257). The other branch reads
+    /// `Core::relay_revocation_pending`, which answers from that same set.
     @ViewBuilder
     private var revocationDisclosure: some View {
         if let done = model.lastRevocation, done.gated {

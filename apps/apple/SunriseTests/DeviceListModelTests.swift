@@ -191,18 +191,18 @@ struct DeviceListModelTests {
     /// relay nothing" above means. The second assertion below holds the
     /// fixture to it.
     ///
-    /// It is **not** the only value this state can hold, and this case does
-    /// not claim it is. The guard governs the insert and nothing else: it
-    /// deletes no row, and the fold that unwinds a register row leaves
-    /// `relay_revocation_intents` untouched — the only delete is the sync
-    /// driver's, on a `Revoked` or `Unknown` answer from the relay. So an
-    /// intent queued by an *earlier*, effective revocation of the same device
-    /// outlives that device unwinding back to current, and revoking it again
-    /// reads `gated` beside a `relayPending` that is `true`. That divergence,
-    /// its chain and its options are
-    /// [#257](https://github.com/justin13888/Sunrise/issues/257). It is not
-    /// repaired here: the repair would have the fold write into a table it
-    /// does not own.
+    /// It is the only value this state can hold. The fold that unwinds a
+    /// register row leaves `relay_revocation_intents` untouched, so an intent
+    /// queued by an *earlier*, effective revocation of the same device can
+    /// outlive that device unwinding back to current — but an intent is owed,
+    /// and `Core::relay_revocation_pending` answers `true`, only while the
+    /// register calls its device revoked, and a gated revocation leaves its
+    /// target current. So the old row is held rather than sent, and a gated
+    /// outcome cannot sit beside a `relayPending` that is `true`
+    /// ([#257](https://github.com/justin13888/Sunrise/issues/257);
+    /// `sunrise-core`'s
+    /// `a_relay_intent_is_owed_only_while_the_register_calls_its_device_revoked`
+    /// pins it).
     @Test
     func theDisclosureSaysWhenTheAccountDiscardedTheRemoval() {
         let outcome = CommandOutcome(
