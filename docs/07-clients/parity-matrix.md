@@ -128,9 +128,17 @@ surface covers, so that the narrowness never has to be re-derived. It is not a
 *partial*, which is reserved for a row whose core action a user cannot
 complete.
 
-**Every MUST graded below is met, except the four that ADR-0042 restored or
-added:** sharing (two rows), calendar integration, and widgets. None of those
-has a reachable surface, and each is a ranked issue. The graded MUSTs live in
+**Every MUST graded below is met, except these ones that ADR-0042 restored or
+added:**
+
+- Sharing (two rows) and calendar integration. None of these has a reachable
+  surface, and each is a ranked issue.
+- The macOS **widget** row. The Notification Centre widget is built and
+  embedded ([#14](https://github.com/justin13888/Sunrise/issues/14)), but
+  nobody has seen a Mac offer it, so it stays **unmet** until someone does
+  ([#376](https://github.com/justin13888/Sunrise/issues/376)).
+
+The iOS widget row is graded **met**. The graded MUSTs live in
 three columns: macOS, the CLI, and iOS. iOS's rows were SHOULDs under
 [ADR-0028](../11-adr/0028-ios-is-a-v1-client.md) when they were last graded,
 and became MUSTs under ADR-0042 without any verdict changing. The previous revision of
@@ -142,7 +150,7 @@ around it is recorded in the cells below and in
 [What is still narrow](#what-is-still-narrow) — an audit whose every row says
 "met" is worth nothing if the narrowness is not written down beside it.
 
-### macOS — 23 MUSTs
+### macOS — 24 MUSTs
 
 | Capability | Verdict | Reached from |
 |---|---|---|
@@ -167,6 +175,7 @@ around it is recorded in the cells below and in
 | iCal import / export | met *(windowed, no round-trip)* | File → Import Calendar… (⌘⇧I) and Export Calendar ▸ Today \| This Week → `AppSurfaces` → `IcalModel` → `CoreBridge.importIcal` / `.exportIcal` → the seam's `import_ical` / `export_ical` |
 | Background sync (while running) | met | `startSync` spawns a live driver for the life of the window; off when no relay URL is set |
 | Menu bar | met | `MenuBarExtra` with real Today / Inbox / sync data off the change feed |
+| Lock screen / home screen widget (Notification Centre) | unmet | Built but never observed. `SunriseWidgets` is embedded under `Contents/PlugIns` and draws the snapshot `WidgetPublisher` writes from `Query::Today`, as on iOS. A Mac loads only a sandboxed widget whose App Group it has granted, and no build this repository makes has the team that grant is keyed to (`DEVELOPMENT_TEAM: ""`; `mise run macos-app` builds with `CODE_SIGNING_ALLOWED=NO`). So no one has watched the widget appear in the gallery. Measuring it on a Developer ID build is [#376](https://github.com/justin13888/Sunrise/issues/376) |
 | OS automation (App Intents) | met | six intents + `AppShortcutsProvider` + `TaskEntity`/`EntityStringQuery`; `IntentVault` counted lease |
 | Mouse | met | standard AppKit/SwiftUI controls, plus double-click-to-open and context menus |
 | First-run pairing | met | `OnboardingView` "Pair with that device", and the same route out of `LockedView` |
@@ -239,11 +248,12 @@ moved. Refusing and then telling the user exactly how to proceed is the point:
 guessing would have left every such vault readable by anyone holding a copy of
 `sunrise`.
 
-### iOS — 23 MUSTs
+### iOS — 24 MUSTs
 
 Measured the same way, and against the same two trees the iOS product compiles:
 `apps/apple/iOS/` for the shell, and the shared `apps/apple/Sunrise/` for
-everything below it. **23 met.** These rows were graded as SHOULDs under
+everything below it. **24 met.** The widget row is the newest. The other 23
+were graded as SHOULDs under
 [ADR-0028](../11-adr/0028-ios-is-a-v1-client.md) and are MUSTs of the
 phone/tablet class under ADR-0042. It is the record of what a user can
 actually reach on a phone.
@@ -269,6 +279,7 @@ actually reach on a phone.
 | Pairing — show QR | met | `QRCode.image` (`QRCode.swift:29-48`) through `PlatformImage`'s `UIImage` branch (`PlatformKit.swift:42-52`), with the copyable text beside it |
 | iCal import / export | met *(windowed, no round-trip)* | Browse → More → **Import calendar…** / **Export calendar ▸ Today \| This Week** (`iOS/VaultTabs.swift`, `overflowMenu`), into the same URL-taking `AppSurfaces.importIcal(from:)` / `exportIcal(_:to:)` the Mac's File menu reaches — a `fileImporter` and a `fileExporter` in place of the Mac's two `NSPanel`s (`iOS/VaultSurfaces.swift`, `iOS/IcalDocuments.swift`), and `IcalSurfaces` hung on the tab shell as the Mac hangs it on its window, so the notice report an import produces is shown here too. The picked document's security scope is held across the read. Same scope note as the Mac's row, and for the same reason: it is the seam's |
 | Background sync | met *(frontmost only)* | `startSync` (`VaultTabs.swift:495-502`) on the shell's `.task` and again on every relay-URL change (`iOS/VaultSurfaces.swift:62-66`, `:71`), exactly as the Mac's window does it. There is no `BGAppRefreshTask` anywhere in `apps/apple`, so sync stops when the app leaves the foreground ([#31](https://github.com/justin13888/Sunrise/issues/31)) |
+| Lock screen / home screen widget | met *(Next Up only)* | Home Screen or Lock Screen → the widget gallery → Sunrise → **Next Up**, served by `SunriseWidgetsiOS`, which is embedded in the app's `PlugIns`. It reads the App Group snapshot that `WidgetPublisher` writes from `Query::Today` and `today_section` (`Sunrise/App/WidgetPublisher.swift`), and every row links to `sunrise://task/<id>?action=open`. The group is granted, not just declared: `WidgetPublisherTests.theAppNamesItsAppGroup` asserts that iOS hands the signed test host its container, and iOS refuses the container to a process without the grant. The capture widget and the Stream tile that [mobile-ios.md](./mobile-ios.md#widgets) also specifies are not built ([#376](https://github.com/justin13888/Sunrise/issues/376)) |
 | OS automation (App Intents) | met | `Sunrise/Intents/` compiles into both products; the iOS target names `AppIntents.framework` (`project.yml:369`), which is what makes Xcode write the metadata bundle without which the intents link and are never offered; six `AppShortcut`s (`SunriseShortcuts.swift:22-83`); the live vault is adopted at `AppSurfaces.swift:162` so an intent fired while the app is open is answered rather than refused |
 | Vim-style modal navigation | met | the same ten-binding subset behind the same toggle — `onKeyChord(… vim:)` (`TaskListView.swift:118`) and Settings → Keyboard → **Vim-style motions** (`AccountView.swift:245-254`). Needs an attached keyboard, which is the row's own scope |
 | Touch | met | tap-to-select on tagged rows, which iOS does **not** give for free and which left every `BrowseSidebar` entry inert until it was added (`PlatformKit.swift:133-159`); swipe actions (`TaskListView.swift:199-203`); a **Done** toolbar to put the software keyboard away, since a phone has no Escape (`CaptureBar.swift:84-85`); **Cancel** / **Add** in the capture sheet, where the Mac has only Return and Escape (`QuickCaptureView.swift:66-85`); haptic refusal feedback where the Mac beeps (`PlatformKit.swift:122-128`) |
@@ -447,7 +458,7 @@ capability and each capability is reachable. They are written down so that
   to attach to and stays in prose. The test is mechanical — find the capability
   in the requirement table above, and if its mark in that column is not the one
   that column's audit grades, there is no cell to qualify. Among the ones
-  recorded today: macOS *Print / PDF export*, a **SHOULD** the 23-MUST audit
+  recorded today: macOS *Print / PDF export*, a **SHOULD** the 24-MUST audit
   has no line for; the CLI's unwritable Task `body`, which belongs to its
   *Notes* row, a **MAY** the 9-MUST audit has no line for, and is why
   *Read/write tasks* — in whose cell that gap is recorded — is bare; and on

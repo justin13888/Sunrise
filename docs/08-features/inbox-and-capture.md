@@ -79,7 +79,7 @@ more than the row itself.
 | macOS global hotkey | Capture window | **live** — `RegisterEventHotKey` ⌘⇧N, plus the menu bar item |
 | Apple URL scheme (`sunrise://capture?text=`) | Capture sheet, pre-filled | **live** on both Apple apps; each registers the scheme in its own `info:` block |
 | iOS Siri / Shortcuts | Voice → parser → task | **live** — `CaptureTaskIntent` behind the **Capture Task** App Shortcut, shared with macOS |
-| iOS Lock Screen widget | Capture sheet | **not built** — no `WidgetKit` in `apps/apple` and no widget extension target ([#14](https://github.com/justin13888/Sunrise/issues/14)) |
+| iOS Lock Screen widget | Capture sheet | **not built**. The widget extension exists and carries **Next Up** ([#14](https://github.com/justin13888/Sunrise/issues/14)), but no route opens an empty capture sheet: the link parser refuses `sunrise://capture` with no text, and `CaptureTaskIntent` runs in the background ([#376](https://github.com/justin13888/Sunrise/issues/376)) |
 | iOS Share Sheet | Task with attached link/file/text | **not built** — no share extension target ([#31](https://github.com/justin13888/Sunrise/issues/31)) |
 | Android Quick Settings tile | Capture sheet | **not built**; ranked ([`../roadmap.md`](../roadmap.md)) |
 | Android share intent | Task with attached link/file/text | **not built**; ranked |
