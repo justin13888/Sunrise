@@ -79,7 +79,12 @@ rustls = { version = "0.23", default-features = false, features = ["std", "ring"
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
 
 # --- storage ---
-rusqlite = { version = "0.31", default-features = false, features = ["bundled-sqlcipher", "blob", "trace"] }
+# 0.40 is the first line with `ffi-sqlite-wasm-rs`, which the web core
+# (`crates/sunrise-core-wasm`, ADR-0055) builds on. `fallible_uint` restores the
+# `u64` `ToSql`/`FromSql` impls 0.31 carried unconditionally — the same checked
+# conversion (an out-of-range value is an error, never a wrap) — so the
+# storage layer's `u64` columns bind exactly as they did.
+rusqlite = { version = "0.40.2", default-features = false, features = ["bundled-sqlcipher", "blob", "trace", "fallible_uint"] }
 
 # --- async runtime / web ---
 tokio = { version = "1.41", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "io-util", "net", "signal"] }
