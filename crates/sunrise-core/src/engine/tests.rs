@@ -906,95 +906,19 @@ mod testutil {
             .unwrap()
     }
 
+    /// The `ev` names of every event emitted while a closure runs, in order.
+    ///
+    /// Only the `ev` field is kept, which is the only part of a log line this
+    /// repository treats as a contract — `crates/sunrise-log/tests/event_catalog.rs`
+    /// is the gate on that name. The capture, and the tracing interest-cache
+    /// pin it needs to see anything at all, are `sunrise-log`'s.
+    pub(super) use sunrise_log::test_util::events_emitted_by;
+
     /// How many `device_revoke` ops this replica has kept, believed or not.
     ///
     /// The register is a fold over these, so "stored and skipped" and "never
     /// arrived" look identical in `device_revocations` and are told apart only
     /// here.
-    /// The `ev` names of every event emitted while `f` runs, in order.
-    ///
-    /// Hand-rolled rather than borrowed from `sunrise-log`'s capture target:
-    /// this crate depends on `tracing` and not on `tracing-subscriber`, and a
-    /// dev-dependency on either to read one field would be a workspace change
-    /// for a test. Only the `ev` field is kept, which is the only part of a
-    /// log line this repository treats as a contract —
-    /// `crates/sunrise-log/tests/event_catalog.rs` is the gate on that name.
-    ///
-    /// The inert dispatcher is not optional and not tidiness. `tracing` caches
-    /// an `Interest` per callsite, and while exactly one `Dispatch` is
-    /// registered process-wide the fast path computes it from *the registering
-    /// thread's* default subscriber, which in a test binary is whichever
-    /// neighbour reached the callsite first and usually has none. The interest
-    /// is then cached as `never`, the macro is skipped, and the capture sees
-    /// nothing at all. A second dispatcher that is never dropped keeps the
-    /// count above one so every rebuild reads the registry instead. The same
-    /// defect and the same remedy are documented at length on
-    /// `sunrise-log`'s `pin_interest_cache`.
-    pub(super) fn events_emitted_by(f: impl FnOnce()) -> Vec<String> {
-        use std::sync::OnceLock;
-        use tracing::field::{Field, Visit};
-
-        /// Registered once and never dropped; see above.
-        static INTEREST_PIN: OnceLock<tracing::Dispatch> = OnceLock::new();
-
-        struct Inert;
-        impl tracing::Subscriber for Inert {
-            fn enabled(&self, _m: &tracing::Metadata<'_>) -> bool {
-                false
-            }
-            fn new_span(&self, _s: &tracing::span::Attributes<'_>) -> tracing::Id {
-                tracing::Id::from_u64(1)
-            }
-            fn record(&self, _s: &tracing::Id, _v: &tracing::span::Record<'_>) {}
-            fn record_follows_from(&self, _s: &tracing::Id, _f: &tracing::Id) {}
-            fn event(&self, _e: &tracing::Event<'_>) {}
-            fn enter(&self, _s: &tracing::Id) {}
-            fn exit(&self, _s: &tracing::Id) {}
-        }
-
-        struct EvVisitor(Option<String>);
-        impl Visit for EvVisitor {
-            fn record_str(&mut self, field: &Field, value: &str) {
-                if field.name() == "ev" {
-                    self.0 = Some(value.to_owned());
-                }
-            }
-            fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
-                if field.name() == "ev" && self.0.is_none() {
-                    self.0 = Some(format!("{value:?}").trim_matches('"').to_owned());
-                }
-            }
-        }
-
-        struct EvCapture(Arc<PLMutex<Vec<String>>>);
-        impl tracing::Subscriber for EvCapture {
-            fn enabled(&self, _m: &tracing::Metadata<'_>) -> bool {
-                true
-            }
-            fn new_span(&self, _s: &tracing::span::Attributes<'_>) -> tracing::Id {
-                tracing::Id::from_u64(1)
-            }
-            fn record(&self, _s: &tracing::Id, _v: &tracing::span::Record<'_>) {}
-            fn record_follows_from(&self, _s: &tracing::Id, _f: &tracing::Id) {}
-            fn event(&self, event: &tracing::Event<'_>) {
-                let mut visitor = EvVisitor(None);
-                event.record(&mut visitor);
-                if let Some(ev) = visitor.0 {
-                    self.0.lock().push(ev);
-                }
-            }
-            fn enter(&self, _s: &tracing::Id) {}
-            fn exit(&self, _s: &tracing::Id) {}
-        }
-
-        INTEREST_PIN.get_or_init(|| tracing::Dispatch::new(Inert));
-        let seen = Arc::new(PLMutex::new(Vec::new()));
-        let dispatch = tracing::Dispatch::new(EvCapture(Arc::clone(&seen)));
-        tracing::dispatcher::with_default(&dispatch, f);
-        let taken = seen.lock().clone();
-        taken
-    }
-
     pub(super) fn ledger_rows(db: &Db) -> i64 {
         db.conn()
             .query_row("SELECT count(*) FROM device_revoke_ops", [], |r| r.get(0))
