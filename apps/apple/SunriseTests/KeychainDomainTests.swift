@@ -121,19 +121,23 @@ struct KeychainDomainTests {
     }
 
     /// What the probe answers on the configurations this repository builds, and **one
-    /// of five** assertions that change the day an entitlement lands — an earlier
-    /// revision of this line called it the only one. The other four are in
-    /// `KeychainMigrationFallbackTests`: `aDestinationThisBuildCannotReachFallsBackToTheSource`,
+    /// of five** assertions whose answer differs on a test run hosted by an entitled
+    /// build — an earlier revision of this line called it the only one. The other four
+    /// are in `KeychainMigrationFallbackTests`: `aDestinationThisBuildCannotReachFallsBackToTheSource`,
     /// `theUnreachableDomainRefusesMutationsAndAnswersReadsAsEmpty`,
     /// `aRefusalOnThisDomainDoesNotSpareTheCopyInTheOther` and
-    /// `aWriteRefusedInItsOwnDomainIsNotReportedAsAPartialSuccess`. All five are
-    /// **rewritten to assert the entitled behaviour**, not deleted and not guarded:
-    /// deleting drops the coverage exactly when the path first runs for real, guarding
-    /// leaves the entitled build asserting nothing. `docs/07-clients/desktop.md` names
-    /// the same five under its Apple-team handoff. iOS has the data-protection keychain
-    /// and nothing else; the Mac app is ad-hoc signed with no `keychain-access-groups`
+    /// `aWriteRefusedInItsOwnDomainIsNotReportedAsAPartialSuccess`. A team alone flips
+    /// none of them: `keychain-access-groups` is on the Release configuration only and
+    /// every scheme's `test` action is Debug, so these tests run unentitled. All five
+    /// are **extended to assert the entitled behaviour on an entitled host** and keep
+    /// the Debug answer on Debug — not deleted, not skipped there, and not rewritten
+    /// away from the Debug answer: deleting drops the coverage exactly when the path
+    /// first runs for real, skipping leaves the entitled host asserting nothing, and a
+    /// rewrite turns every Debug run red. `docs/07-clients/desktop.md` names the same
+    /// five under its Apple-team handoff. iOS has the data-protection keychain and
+    /// nothing else; the Debug Mac test host carries no `keychain-access-groups`
     /// entitlement, so `SecItemAdd` with `kSecUseDataProtectionKeychain` is refused and
-    /// the probe falls open to the login keychain — which is why this change is inert.
+    /// the probe falls open to the login keychain.
     ///
     /// The five stay five. `KeychainMigrationFallbackTests`'
     /// `theMigrationsDestinationWriteDoesNotTakeTheSourceWithIt` is a **sixth**
@@ -142,7 +146,7 @@ struct KeychainDomainTests {
     /// because the property it pins — that the migration's destination write
     /// does not delete the source addressed at the other domain — has no true
     /// form on a build that cannot reach `.dataProtection`. These five change
-    /// their answer the day a team lands; that one starts running.
+    /// their answer on an entitled test host; that one starts running there.
     @Test
     func theProbeAnswersWhatThisBuildCanActuallyReach() {
         #if os(iOS)
