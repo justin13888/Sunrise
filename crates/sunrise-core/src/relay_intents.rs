@@ -26,9 +26,10 @@
 //!
 //! [`OWED_RELAY_REVOCATIONS_SQL`] is therefore the one definition of what is
 //! owed: an intent whose device the register **currently** calls revoked. The
-//! drain sends only those, and [`Core::relay_revocation_pending`] answers from
-//! the same set, so neither can tell the relay to cut a device every replica
-//! shows as current (#257). The row itself stays: when a later fold revokes the
+//! drain sends only those, asking again for each device right before its send,
+//! and [`Core::relay_revocation_pending`] answers from the same set, so neither
+//! tells the relay to cut a device the register already calls current when the
+//! send starts (#257). The row itself stays: when a later fold revokes the
 //! device again — the discount can restore an unwound revocation — the intent
 //! is owed again, which deleting it on the unwind would have lost, leaving the
 //! relay behind the register (#160's failure).
@@ -175,6 +176,15 @@ impl Core {
             "DELETE FROM device_revocations WHERE device_id = ?",
             rusqlite::params![&device_id[..]],
         )?;
+        Ok(())
+    }
+
+    /// Drop the register table, so every read of what is owed fails at
+    /// storage. Test-only.
+    #[cfg(test)]
+    pub(crate) fn break_register_for_test(&self) -> Result<(), CoreError> {
+        let db = self.db();
+        db.conn().execute("DROP TABLE device_revocations", [])?;
         Ok(())
     }
 

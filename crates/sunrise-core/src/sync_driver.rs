@@ -1645,6 +1645,11 @@ fn build_outbox_frames(
 /// would have the relay refuse a device every replica shows as current (#257).
 /// Such a row is skipped, not deleted, so it is sent after all if a later fold
 /// revokes the device again; `crate::relay_intents` holds the one definition.
+/// The check is repeated for each device immediately before its send, not
+/// read once for the whole drain: the sends await the network, and a local
+/// command can unwind a device while an earlier one is in flight. An unwind
+/// that lands during a device's own send is the case the module doc names:
+/// the relay has been told, and nothing takes that back.
 ///
 /// Failures leave the row in place, deliberately. The device this is about is
 /// typically lost or stolen; giving up after one refused call would mean the
@@ -1668,6 +1673,14 @@ async fn drain_relay_revocations<T: Transport + ?Sized>(core: &Core, transport: 
         return;
     };
     for device_id in pending {
+        // The snapshot above is taken once, and every send below awaits the
+        // network, so a local command can unwind a later device's register row
+        // while an earlier one is in flight. Ask again right before each send.
+        match core.relay_revocation_pending(&device_id) {
+            Ok(true) => {}
+            Ok(false) => continue,
+            Err(_) => return,
+        }
         match transport.revoke_device(device_id).await {
             Ok(RevokeOutcome::Revoked) => {
                 let _ = core.clear_relay_revocation(device_id);
@@ -2686,6 +2699,90 @@ mod tests {
             "once the register agrees again the relay is owed the revocation"
         );
         assert!(!core.relay_intent_row_exists_for_test(target).unwrap());
+    }
+
+    /// A device unwound while the drain is awaiting an earlier send is not
+    /// sent (#257).
+    ///
+    /// The drain reads the owed set once, then awaits the network per device.
+    /// This transport unwinds the second device's register row while the
+    /// first send is in flight, as a local command on another task could.
+    #[tokio::test]
+    async fn a_device_unwound_mid_drain_is_not_sent() {
+        struct UnwindsOnFirstSend {
+            core: Arc<Core>,
+            unwind: [u8; 16],
+            seen: Vec<[u8; 16]>,
+        }
+        #[async_trait]
+        impl Transport for UnwindsOnFirstSend {
+            async fn send_frame(&mut self, _f: Vec<u8>) -> Result<(), TransportError> {
+                Ok(())
+            }
+            async fn recv_frame(&mut self) -> Result<Option<Vec<u8>>, TransportError> {
+                Ok(None)
+            }
+            async fn close(&mut self) -> Result<(), TransportError> {
+                Ok(())
+            }
+            async fn revoke_device(
+                &mut self,
+                device_id: [u8; 16],
+            ) -> Result<RevokeOutcome, TransportError> {
+                if self.seen.is_empty() {
+                    self.core.unwind_register_row_for_test(self.unwind).unwrap();
+                }
+                self.seen.push(device_id);
+                Ok(RevokeOutcome::Revoked)
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let core = open_arc(dir.path()).await;
+        // Same `created_at_ms`, so the id breaks the tie: `first` is sent first.
+        let first = [0x11; 16];
+        let second = [0x22; 16];
+        core.queue_relay_revocation_for_test(first).unwrap();
+        core.queue_relay_revocation_for_test(second).unwrap();
+        assert_eq!(
+            core.pending_relay_revocations().unwrap(),
+            vec![first, second]
+        );
+
+        let mut transport = UnwindsOnFirstSend {
+            core: core.clone(),
+            unwind: second,
+            seen: Vec::new(),
+        };
+        drain_relay_revocations(&core, &mut transport).await;
+        assert_eq!(
+            transport.seen,
+            vec![first],
+            "a device the register stopped calling revoked mid-drain must not be cut"
+        );
+        assert!(
+            core.relay_intent_row_exists_for_test(second).unwrap(),
+            "and its intent is held, not dropped"
+        );
+    }
+
+    /// A storage failure is an error, not "nothing queued".
+    ///
+    /// Reporting `false` here would tell someone the relay had been told about
+    /// a device when this client could not even read whether it had.
+    #[tokio::test]
+    async fn a_storage_failure_is_not_read_as_nothing_pending() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = open_arc(dir.path()).await;
+        let target = [0x6b; 16];
+        core.queue_relay_revocation_for_test(target).unwrap();
+        core.break_register_for_test().unwrap();
+
+        assert!(
+            core.relay_revocation_pending(&target).is_err(),
+            "an unreadable register must surface as an error"
+        );
+        assert!(core.pending_relay_revocations().is_err());
     }
 
     // ---- channel-backed duplex transport ----
