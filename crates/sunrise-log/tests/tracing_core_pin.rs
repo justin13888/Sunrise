@@ -91,9 +91,12 @@ fn the_interest_cache_workaround_is_still_needed() {
          Check tracing-core {locked}'s `src/callsite.rs`. If `Rebuilder::JustOne` \
          is gone — or its `for_each` no longer calls `dispatcher::get_default` — \
          the defect is fixed upstream: delete `pin_interest_cache`, the `Inert` \
-         subscriber and its `INTEREST_PIN` from `crates/sunrise-log/src/init.rs`, \
-         delete `crates/sunrise-log/tests/interest_cache.rs`, and delete this \
-         file. If the shortcut is still there, the workaround is still load-bearing: \
+         subscriber and its `INTEREST_PIN` from `crates/sunrise-log/src/init.rs` \
+         and its one caller in `crates/sunrise-log/src/test_util.rs`, delete \
+         `crates/sunrise-log/tests/interest_cache.rs` and \
+         `crates/sunrise-log/tests/events_emitted_by.rs`, and delete this file. \
+         No other crate carries a copy: their tests capture through \
+         `sunrise_log::test_util`. If the shortcut is still there, the workaround is still load-bearing: \
          update CONFIRMED_BUGGY to {locked} and say in the commit body that you \
          looked."
     );
