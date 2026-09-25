@@ -346,9 +346,12 @@ nowhere else. Release is the configuration the team signs: `release.yml`
 archives Release with the Developer ID identity. Its one team-less caller,
 the workflow's `unsigned_macos_dmg` dry run, archives
 `CODE_SIGNING_ALLOWED=NO`, which embeds no entitlements, so it is unaffected. A
-local `xcodebuild archive` without a team signs ad-hoc and now dies at AMFI,
-which is the measured configuration 2 above; such a bundle was never one that
-could ship.
+local Release build without a team no longer produces a bundle at all: Xcode
+refuses it before signing, with `"Sunrise" has entitlements that require
+signing with a development certificate`, rather than producing the
+configuration-2 bundle AMFI would kill. Such a bundle was never one that could
+ship; a team-less Release build that is wanted anyway adds
+`CODE_SIGNING_ALLOWED=NO`, as the dry run does.
 
 What is still missing is outside this repository's files: an Apple Developer
 Program team for `DEVELOPMENT_TEAM`, and a Developer ID provisioning profile

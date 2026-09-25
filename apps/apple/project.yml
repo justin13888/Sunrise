@@ -278,7 +278,10 @@ targets:
       # a developer does about it.
       #
       # Release's own team-less consumer is unaffected: `release.yml`'s dry run
-      # archives `CODE_SIGNING_ALLOWED=NO`, which embeds no entitlements.
+      # archives `CODE_SIGNING_ALLOWED=NO`, which embeds no entitlements. A
+      # team-less Release build that signs ad-hoc is refused by Xcode itself
+      # ("has entitlements that require signing with a development
+      # certificate") rather than producing a bundle AMFI would kill.
       configs:
         Release:
           CODE_SIGN_ENTITLEMENTS: macOS/Sunrise.entitlements
