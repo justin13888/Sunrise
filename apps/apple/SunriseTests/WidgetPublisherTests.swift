@@ -279,6 +279,10 @@ struct WidgetPublisherTests {
         )
         #if os(iOS)
         #expect(group == "group.dev.sunrise")
+        // iOS hands a container only to a process the group was granted to,
+        // so this is the entitlement being in force, not merely declared.
+        // (macOS returns a path whether or not it was.)
+        #expect(WidgetSnapshotStore.appGroup() != nil)
         #else
         #expect(group.hasSuffix("dev.sunrise"))
         #endif
