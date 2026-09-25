@@ -58,7 +58,7 @@ ADRs are numbered sequentially (`0001`, `0002`, …) and never renumbered.
 | 0038 | [The macOS app updates itself through Sparkle, and the appcast's EdDSA key is subordinate to the Developer ID certificate in lifecycle, not in authority](./0038-macos-update-feed.md) | accepted (answers 0031's revisit trigger 4; amends `desktop.md` §Update channel and `releasing.md`) |
 | 0039 | [A tag uploads an iOS build to TestFlight; App Store submission is a separate, manual act](./0039-ios-distribution.md) | accepted (takes the channel half of 0028's Decision 6 slot and leaves the MUST-parity half reserved; amends the clients overview §Distribution) |
 | 0040 | [A predecessor's successor places are held by rank, not by arrival, and are re-judged when the predecessor is established](./0040-sibling-admission-is-a-rank.md) | accepted (amends 0037 §Consequences and key rotation §Verification; depends on 0034, 0037) |
-| 0041 | [Peer-side revocation enforcement covers the control ops whose effect can be re-derived, and the register becomes a fold](./0041-peer-side-revocation-is-a-fold.md) | accepted (amends 0034 corollary 3 and key rotation §Revocation and the threat model's A3; closes #82; `STORAGE_V` 28) |
+| 0041 | [Peer-side revocation enforcement covers the control ops whose effect can be re-derived, and the register becomes a fold](./0041-peer-side-revocation-is-a-fold.md) | accepted (amends 0034 corollary 3 and key rotation §Revocation and the threat model's A3; closes #82; `STORAGE_V` 28); amended by 0056: an un-revoke is not what settles item 4's residuals |
 | 0042 | [Sunrise stays at v0.x; compatibility is carried by versioned surfaces, not a product version](./0042-v0-forever.md) | accepted (amends 0020, 0027 and 0028: their release framing becomes roadmap rank; redefines doc status `proposed`) |
 | 0043 | [Ops form per-device hash chains with causal heads, and replicas compare a per-stream digest](./0043-commit-tree.md) | proposed |
 | 0044 | [Entity ops write fields, not whole entities, and each field merges by its own CRDT type](./0044-per-field-ops.md) | accepted (supersedes 0014) |
@@ -73,6 +73,7 @@ ADRs are numbered sequentially (`0001`, `0002`, …) and never renumbered.
 | 0053 | [The source device makes a JPEG or PNG thumbnail as its own blob, clients render only what their platform decodes natively, and a core-owned LRU bounds the local copy](./0053-attachment-thumbnails-and-native-rendering.md) | accepted |
 | 0054 | [User-visible strings are compiled from one TOML catalog into committed bindings, in a MessageFormat subset every client renders the same way](./0054-string-catalog-pipeline.md) | accepted (amends `i18n.md` §String catalog and §Plural-rule test coverage; follows 0029) |
 | 0055 | [The web client runs `sunrise-core` compiled to wasm, over plaintext SQLite in OPFS, one tab at a time](./0055-web-wasm-core.md) | accepted (supersedes 0012) |
+| 0056 | [A revocation is withdrawn only by the device that made it, and the withdrawal waits for unknown op kinds to be parked](./0056-a-revocation-is-withdrawn-only-by-its-author.md) | accepted (amends 0041 §"What a user sees" item 4; depends on 0045 §4 and §7; built by #383) |
 
 ## When to write a new ADR
 
