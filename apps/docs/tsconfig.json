@@ -1,0 +1,10 @@
+{
+    "extends": "../../tsconfig.base.json",
+    "compilerOptions": {
+        "noEmit": true,
+        "types": ["node"]
+    },
+    // The site's only TypeScript is its config and what the config derives
+    // from the tree; the pages are `docs/`.
+    "include": [".vitepress/config.ts", "site.ts", "site.test.ts"]
+}

@@ -172,6 +172,16 @@ url = { version = "2.5", default-features = false }
 # so without an explicit bundle no named zone would resolve at all.
 jiff = { version = "0.2", default-features = false, features = ["std", "serde", "tzdb-bundle-always"] }
 
+# --- internationalization ---
+# CLDR plural rules and integer formatting for the CLI's generated string
+# binding (ADR-0054) — the "CLDR via ICU4X" of docs/10-cross-cutting/i18n.md.
+# `compiled_data` bakes the CLDR data into the binary, so there is no data
+# provider to find at run time. `icu_locale_core` is already in the lock
+# through `url`'s IDNA stack; these share its 2.x line.
+icu_plurals = { version = "2.3", default-features = false, features = ["compiled_data"] }
+icu_decimal = { version = "2.3", default-features = false, features = ["compiled_data"] }
+icu_locale_core = { version = "2.3", default-features = false }
+
 # --- random ---
 rand = { version = "0.8", default-features = false, features = ["std", "std_rng", "getrandom"] }
 rand_core = { version = "0.6", default-features = false, features = ["std"] }

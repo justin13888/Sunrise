@@ -10,6 +10,9 @@ lerna-debug.log*
 node_modules
 dist
 dist-ssr
+# VitePress's pre-bundled dependencies (apps/docs, `cacheDir`). Written by
+# every `dev` run; Biome would otherwise lint them.
+apps/docs/.vitepress/cache/
 *.local
 
 # TypeScript incremental build info

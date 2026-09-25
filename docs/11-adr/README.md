@@ -71,6 +71,7 @@ ADRs are numbered sequentially (`0001`, `0002`, …) and never renumbered.
 | 0051 | [Places are a synced, end-to-end encrypted entity, and presence is evaluated on the device and never stored](./0051-places.md) | accepted |
 | 0052 | [Search indexes every entity kind twice (words and trigrams), parses an operator grammar in Rust, and stays inside the vault](./0052-search-v2.md) | accepted (amends 0008) |
 | 0053 | [The source device makes a JPEG or PNG thumbnail as its own blob, clients render only what their platform decodes natively, and a core-owned LRU bounds the local copy](./0053-attachment-thumbnails-and-native-rendering.md) | accepted |
+| 0054 | [User-visible strings are compiled from one TOML catalog into committed bindings, in a MessageFormat subset every client renders the same way](./0054-string-catalog-pipeline.md) | accepted (amends `i18n.md` §String catalog and §Plural-rule test coverage; follows 0029) |
 
 ## When to write a new ADR
 
