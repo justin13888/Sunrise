@@ -753,10 +753,10 @@ swiftlint lint --strict --quiet --config .swiftlint.yml
 # Built and tested as two `xcodebuild` calls, `build-for-testing` then
 # `test-without-building`, so the boot above has the whole build to finish in.
 # The build half has no result bundle: `set -e` stops the task on a compile
-# error, and `-quiet` still prints it, so a red build is read from the log.
-# `arch=arm64` because a simulator on Apple silicon answers to both
-# architectures, and naming the device alone still draws xcodebuild's
-# "multiple matching destinations" warning.
+# error, and `-quiet` still prints it. It builds for the generic simulator with
+# `ARCHS=arm64` (the xcframework's one simulator slice) because resolving the
+# device races the boot: CI run 36079811924 found no simulator at all mid-boot.
+# `arch=arm64` on the test half silences "multiple matching destinations".
 #
 # Signed, unlike the macOS build, and it has to be. iOS gates the Keychain
 # on an application-identifier entitlement, which only exists on a signed
@@ -797,10 +797,10 @@ mkdir -p "$(dirname "$bundle")"
 xcodebuild build-for-testing \\
   -project Sunrise.xcodeproj \\
   -scheme SunriseiOS \\
-  -destination "platform=iOS Simulator,id=$udid,arch=arm64" \\
+  -destination "generic/platform=iOS Simulator" \\
   -enableCodeCoverage NO \\
   -quiet \\
-  CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=- ${SUNRISE_FFI_PREBUILT:+SUNRISE_FFI_PREBUILT=$SUNRISE_FFI_PREBUILT}
+  ARCHS=arm64 CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=- ${SUNRISE_FFI_PREBUILT:+SUNRISE_FFI_PREBUILT=$SUNRISE_FFI_PREBUILT}
 # How long the tests then wait on the boot is the number that says whether it
 # is still on the critical path; zero means the build covered all of it.
 built_at=$SECONDS
