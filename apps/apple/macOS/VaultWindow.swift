@@ -408,10 +408,11 @@ struct VaultWindow: View {
     private func startSync() async {
         // Registered first, so the plan below reads the id it produced (#183).
         await session.bindRelayDevice()
+        let (relayURL, token) = (settings.relayURL, account.accessToken)
         guard case let .connect(url, bearer, relayDeviceID) = SyncPlan(
-            relayURL: settings.relayURL,
-            accessToken: account.accessToken,
-            relayDeviceID: session.relayDeviceID
+            relayURL: relayURL,
+            accessToken: token,
+            relayDeviceID: session.relayDeviceID(relayURL: relayURL, bearer: token)
         ) else { return }
         try? await bridge.startSync(url: url, bearer: bearer, relayDeviceID: relayDeviceID)
     }

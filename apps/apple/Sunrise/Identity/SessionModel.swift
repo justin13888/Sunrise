@@ -335,7 +335,8 @@ final class SessionModel {
             guard let bearer = account.accessToken else {
                 throw RecoverySetupError.signedOut
             }
-            return try await RelayDeviceRegistration.publish(store: store) {
+            let scope = RelayDeviceScope(relayURL: settings.relayURL, bearer: bearer)
+            return try await RelayDeviceRegistration.publish(store: store, scope: scope) {
                 try await bridge.bootstrapAccount(
                     relayURL: settings.relayURL.trimmed,
                     bearer: bearer,
@@ -347,19 +348,22 @@ final class SessionModel {
         }
     }
 
-    /// Register this device with the relay if it holds no relay id yet — the
-    /// route a paired device never had (#183). Each platform's sync start calls
-    /// it before reading ``relayDeviceID``. Skipped while a recovery ceremony,
-    /// which registers the device itself, is outstanding; a failure leaves the
-    /// driver unbound as before, and the next start tries again.
+    /// Register this device with the relay if it holds no relay id valid for
+    /// the configured relay and the signed-in account — the route a paired
+    /// device never had, and the recovery for an id minted on another relay or
+    /// for another account (#183). Each platform's sync start calls it before
+    /// reading ``relayDeviceID(relayURL:bearer:)``. Skipped while a recovery
+    /// ceremony, which registers the device itself, is outstanding; a failure
+    /// leaves the driver unbound as before, and the next start tries again.
     func bindRelayDevice() async {
         guard recoveryCeremony == nil, !isBindingRelayDevice, let bridge else { return }
         let settings = AppSettings(defaults: settingsDefaults)
         guard settings.syncIsConfigured, let bearer = account.accessToken else { return }
         let store = relayDeviceStore
+        let scope = RelayDeviceScope(relayURL: settings.relayURL, bearer: bearer)
         isBindingRelayDevice = true
         defer { isBindingRelayDevice = false }
-        _ = try? await RelayDeviceRegistration.bind(store: store) {
+        _ = try? await RelayDeviceRegistration.bind(store: store, scope: scope) {
             try await bridge.registerRelayDevice(
                 relayURL: settings.relayURL.trimmed,
                 bearer: bearer,
@@ -472,15 +476,22 @@ final class SessionModel {
         }
     }
 
-    /// The relay's id for this device against the open vault, or `nil` for an
-    /// unbound sync driver.
+    /// The relay's id for this device against the open vault, valid on
+    /// `relayURL` under `bearer`'s account, or `nil` for an unbound sync driver.
+    /// Takes the same two values the caller's `SyncPlan` does, so the id and
+    /// the connection it is presented on describe one relay and one account.
     ///
     /// A read rather than stored state: the environment override
     /// `RelayDeviceID.resolve` consults is a launch-time fact, and the stored
     /// half is written by registration — the recovery ceremony's or
     /// ``bindRelayDevice()``'s — so re-reading is what makes a driver started
     /// after registration pick the binding up.
-    var relayDeviceID: String? { RelayDeviceID.resolve(store: relayDeviceStore) }
+    func relayDeviceID(relayURL: String, bearer: String?) -> String? {
+        RelayDeviceID.resolve(
+            store: relayDeviceStore,
+            scope: RelayDeviceScope(relayURL: relayURL, bearer: bearer)
+        )
+    }
 
     /// Close the vault, releasing the core's lock on it.
     ///

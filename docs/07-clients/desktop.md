@@ -860,9 +860,23 @@ that store (`RelayDeviceRegistration` in `RelayDeviceStore.swift`):
   §Terms acceptance). It does nothing when an id already resolves, or while a
   recovery ceremony is outstanding.
 
+**A stored id is valid only where it was minted.** The relay looks it up
+under the account on that relay (`Store::active_device`), so the same id sent
+to another relay, or under another account's bearer, names no row and is
+answered as a bad bearer. The store therefore records each id with its scope:
+the relay URL (trimmed, trailing slashes dropped) and the bearer's OIDC `iss`
+and `sub`, read from the JWT without verifying it. A stored id is presented
+only while that scope is the one sync runs in; after the relay URL changes or
+the user signs in to another account it resolves to nothing, and the next sync
+start registers again and replaces it. A value stored with no scope reads as
+nothing for the same reason. An opaque (non-JWT) bearer has no readable
+account, so its scope rests on the relay URL alone.
+
 A driver started *before* the ceremony recorded its id keeps running unbound
-until the next start, because a repeated start against the same URL is refused
-rather than re-pointed.
+until the next start, because a repeated start is a no-op rather than a
+re-point. For the same reason a running driver keeps the id it started with
+when the relay URL or the account changes mid-process; the next launch binds
+the new scope.
 
 The environment override the CLI has for the same case still wins: launch with
 `SUNRISE_SYNC_DEVICE_ID` set to an id registered elsewhere, and the driver
