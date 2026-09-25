@@ -13,8 +13,8 @@ struct NextUpEntry: TimelineEntry {
 /// it could recompute on a schedule — which tasks are next is the core's
 /// decision, and the core is not in this process — so the only thing that can
 /// make a new entry worth drawing is the app writing a new snapshot, and the
-/// app asks WidgetKit to reload when it does. The "updated … ago" stamp is a
-/// relative `Text`, which the system keeps current without a new entry.
+/// app asks WidgetKit to reload when it does. The age stamp is a relative
+/// `Text`, which the system keeps current without a new entry.
 struct NextUpProvider: TimelineProvider {
     func placeholder(in context: Context) -> NextUpEntry {
         NextUpEntry(date: .now, snapshot: .sample)

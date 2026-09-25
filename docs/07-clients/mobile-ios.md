@@ -141,7 +141,9 @@ question and only the number of rows changes:
 | Lock Screen inline | "N left · first title" | the first task |
 
 A row opens `sunrise://task/<id>?action=open`, which lands on Today with the
-task revealed. Every size also prints "updated … ago".
+task revealed. The Home Screen sizes also print the snapshot's age as a
+relative time ("5 min"), which VoiceOver reads as "Updated 5 min ago". The
+Lock Screen sizes have no room for it and print none.
 
 The same sources build the macOS widget, which offers the three Home Screen
 sizes; see [`desktop.md`](./desktop.md#platform-integration).
@@ -168,10 +170,17 @@ These rules are normative for any client that adds a widget.
   SQLCipher, the same trade a reminder notification's title makes. On iOS the
   file is written with `completeUntilFirstUserAuthentication`, because a Lock
   Screen widget has to draw while the phone is locked.
-- **The snapshot exists only while a vault is open.** Every time the session
-  leaves `.unlocked`, the app erases the file and reloads the widgets: on a
-  lock, a sign-out, a failure, or the start of a vault switch. A vault switch
-  erases the old snapshot before the new vault's is written. With no snapshot,
+- **The snapshot exists only while a vault is open, or until the next launch
+  where the app ended without notice.** Every time the session leaves
+  `.unlocked`, the app erases the file and reloads the widgets: on a lock, a
+  sign-out, a failure, or the start of a vault switch. A vault switch erases
+  the old snapshot before the new vault's is written. The app also erases it
+  when it is told it is terminating (a quit on macOS), and again at launch,
+  before any vault is open. iOS kills a suspended app, and a crash ends one,
+  without telling it; that snapshot stays on disk, and on the widget, until
+  Sunrise next launches. A suspended iOS app still holds its vault open, so
+  the Lock Screen widget keeps drawing while the app is in the background.
+  With no snapshot,
   every size says **Open Sunrise** and never shows an empty list. An empty list
   would claim that nothing is due, when the truth is that the widget cannot
   see.
@@ -191,8 +200,8 @@ something different**, because iOS budgets reloads. The widget's timeline is
 one entry with a `.never` policy: nothing in the extension can compute a new
 state, so only a write from the app can produce one.
 
-While the app is suspended, nothing refreshes the snapshot. The "updated …
-ago" stamp shows how old it is. A `BGAppRefreshTask` that opens the vault in
+While the app is suspended, nothing refreshes the snapshot. On the Home
+Screen sizes, the age stamp shows how old it is. A `BGAppRefreshTask` that opens the vault in
 the background and republishes belongs to background sync
 ([#367](https://github.com/justin13888/Sunrise/issues/367)).
 

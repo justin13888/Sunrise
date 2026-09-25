@@ -53,9 +53,9 @@ struct WidgetSnapshot: Codable, Equatable, Sendable {
     }
 
     var version = WidgetSnapshot.currentVersion
-    /// When the app wrote this, as Unix milliseconds. The widget prints it as
-    /// "updated … ago": the spec asks for the stamp, because a widget cannot
-    /// say how stale it is any other way.
+    /// When the app wrote this, as Unix milliseconds. The Home Screen sizes
+    /// print it as a relative time: the spec asks for the stamp, because a
+    /// widget cannot say how stale it is any other way.
     var writtenAtMs: Int64
     /// Every open task in Today, not just the rows carried.
     var outstanding: Int
