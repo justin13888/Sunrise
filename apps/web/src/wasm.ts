@@ -170,7 +170,15 @@ async function openWorkerCore(): Promise<CoreApi | null> {
         { resolve: (json: string) => void; reject: (e: Error) => void }
     >();
     const opened = new Promise<boolean>((resolve) => {
-        worker.addEventListener("error", () => resolve(false));
+        worker.addEventListener("error", (event) => {
+            // Before `ready` this falls back to the stub; after it, no reply
+            // is coming for what is in flight, so say so rather than hang.
+            resolve(false);
+            for (const waiter of pending.values()) {
+                waiter.reject(new Error(`web core worker: ${event.message}`));
+            }
+            pending.clear();
+        });
         worker.addEventListener(
             "message",
             (event: MessageEvent<WorkerMessage>) => {
