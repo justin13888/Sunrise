@@ -6,6 +6,9 @@ import "@sunrise/ui-tokens/css";
 import React from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
+import { applyDocumentLocale } from "./i18n";
+
+applyDocumentLocale(document.documentElement);
 
 const container = document.getElementById("root");
 if (!container) {

@@ -12,18 +12,21 @@ import SwiftUI
 /// Nothing here is phrased as an accusation, and `DeviceListModel` explains why
 /// for each of the three marks a row can carry. A device list that cries wolf
 /// about an ordinary pairing is a device list a user learns to close.
+///
+/// Every word on it is `L10n.Devices`, compiled from `i18n/en.toml`'s
+/// `[apple.devices]` table: the first view read from the string catalog.
 struct DeviceListSection: View {
     @Bindable var model: DeviceListModel
 
     @State private var revoking: DeviceListModel.DeviceRow?
 
     var body: some View {
-        Section("Devices") {
+        Section(L10n.Devices.title) {
             ForEach(model.rows) { row in
                 deviceRow(row)
             }
             if model.rows.isEmpty {
-                Text("No devices yet.")
+                Text(L10n.Devices.empty)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -39,7 +42,7 @@ struct DeviceListSection: View {
         .task { await model.refresh() }
         .task { await model.follow() }
         .confirmationDialog(
-            "Remove \(revoking?.nickname ?? "this device")?",
+            Self.removeConfirmTitle(nickname: revoking?.nickname),
             isPresented: Binding(get: { revoking != nil }, set: { if !$0 { revoking = nil } }),
             titleVisibility: .visible
         ) {
@@ -53,23 +56,25 @@ struct DeviceListSection: View {
                     revoking = nil
                 }
             }
-            Button("Cancel", role: .cancel) { revoking = nil }
+            Button(L10n.Devices.cancel, role: .cancel) { revoking = nil }
         } message: {
-            Text(
-                """
-                Every Stream key is rotated, so this device reads nothing \
-                written afterwards. It can still read what it already has — \
-                revocation is forward-only.
-                """
-            )
+            Text(L10n.Devices.removeConfirmMessage)
         }
+    }
+
+    /// The confirmation dialog's title. A nickname is a non-optional `String`,
+    /// so "no nickname" is the empty one, not only the absent row: both get the
+    /// unnamed title rather than "Remove ?".
+    nonisolated static func removeConfirmTitle(nickname: String?) -> String {
+        guard let nickname, !nickname.isEmpty else { return L10n.Devices.removeConfirmTitleUnnamed }
+        return L10n.Devices.removeConfirmTitle(name: nickname)
     }
 
     @ViewBuilder
     private func deviceRow(_ row: DeviceListModel.DeviceRow) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack {
-                Text(row.nickname.isEmpty ? "Unnamed device" : row.nickname)
+                Text(row.nickname.isEmpty ? L10n.Devices.unnamed : row.nickname)
                 Spacer()
                 Text(row.platform)
                     .font(.caption)
@@ -88,13 +93,13 @@ struct DeviceListSection: View {
         .accessibilityIdentifier("devices.row")
         .swipeActions(edge: .trailing) {
             if !row.isThisDevice && !row.revoked {
-                Button("Remove", role: .destructive) { revoking = row }
+                Button(L10n.Devices.remove, role: .destructive) { revoking = row }
                     .accessibilityIdentifier("devices.revoke")
             }
         }
         .contextMenu {
             if !row.isThisDevice && !row.revoked {
-                Button("Remove…", role: .destructive) { revoking = row }
+                Button(L10n.Devices.removeEllipsis, role: .destructive) { revoking = row }
             }
         }
     }
@@ -106,8 +111,8 @@ struct DeviceListSection: View {
     /// an honest device reaches, and a red dot cannot say so.
     private func marks(_ row: DeviceListModel.DeviceRow) -> [String] {
         var out: [String] = []
-        if row.isThisDevice { out.append("This \(Platform.deviceName).") }
-        if row.revoked { out.append("Removed. It reads nothing written since.") }
+        if row.isThisDevice { out.append(L10n.Devices.markThisDevice(device: Platform.deviceName)) }
+        if row.revoked { out.append(L10n.Devices.markRemoved) }
         if !row.revoked, row.readBounded {
             // The two removal facts have come apart. Since ADR-0041 the
             // register is a fold, so a removal stops being recorded once the
@@ -116,31 +121,13 @@ struct DeviceListSection: View {
             // other member while receiving nothing at all — the one outcome of
             // that design a user could be surprised by. Worded as a state with
             // its remedy, for the same reason the two marks below are.
-            out.append(
-                """
-                Removed earlier. The account no longer records that, so it \
-                shows as current — but it still receives no keys and reads \
-                nothing written since. Remove it again from a device you \
-                still trust.
-                """
-            )
+            out.append(L10n.Devices.markReadBounded)
         }
         if !row.current {
-            out.append(
-                """
-                Not active on this account — the identity that certified it is \
-                no longer the one in force. An honest device that has not \
-                caught up with a change yet looks the same.
-                """
-            )
+            out.append(L10n.Devices.markNotCurrent)
         }
         if row.admittedAfterRevocation {
-            out.append(
-                """
-                Joined after a device was removed. Usually that is just a \
-                device you added later; it is worth a look if it is not.
-                """
-            )
+            out.append(L10n.Devices.markAdmittedAfterRevocation)
         }
         return out
     }
@@ -151,14 +138,7 @@ struct DeviceListSection: View {
     @ViewBuilder
     private var identityKeyDisclosure: some View {
         if model.holdsIdentityKey {
-            Text(
-                """
-                This \(Platform.deviceName) holds the account identity key. \
-                Your recovery code is its only other copy: without one, losing \
-                this device destroys the key permanently, and no recovery \
-                feature added later can retrieve it.
-                """
-            )
+            Text(L10n.Devices.identityKey(device: Platform.deviceName))
             .font(.caption)
             .foregroundStyle(.secondary)
             .accessibilityIdentifier("devices.identityKey")
@@ -176,55 +156,28 @@ struct DeviceListSection: View {
     private var revocationDisclosure: some View {
         if let done = model.lastRevocation, done.gated {
             VStack(alignment: .leading, spacing: 4) {
-                Text("\(done.nickname) was NOT removed.")
-                Text(
-                    """
-                    This \(Platform.deviceName) has itself been removed from \
-                    the account, so the account discards its removals of other \
-                    devices. \(done.nickname) is still current everywhere and \
-                    still receives new keys, and this removal tells the relay nothing.
-                    """
-                )
-                Text(
-                    """
-                    Remove it from a device the account still trusts. The \
-                    request is kept, not discarded, and is reconsidered \
-                    whenever another removal arrives.
-                    """
-                )
+                Text(L10n.Devices.gatedTitle(name: done.nickname))
+                Text(L10n.Devices.gatedReason(device: Platform.deviceName, name: done.nickname))
+                Text(L10n.Devices.gatedRemedy)
                 unwoundNotice(done)
-                Button("Done") { model.dismissRevocation() }
+                Button(L10n.Devices.done) { model.dismissRevocation() }
             }
             .font(.caption)
             .accessibilityIdentifier("devices.revocationGated")
         } else if let done = model.lastRevocation {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Removed \(done.nickname) from this account.")
+                Text(L10n.Devices.removedTitle(name: done.nickname))
                 if done.unrotatedStreams.isEmpty {
-                    Text("Every Stream key was rotated, and the account identity with it.")
+                    Text(L10n.Devices.removedAllRotated)
                 } else {
-                    Text(
-                        """
-                        The account identity rotated, and every Stream key but \
-                        \(done.unrotatedStreams.count). That device may still \
-                        read those. This is a damaged row in this vault's \
-                        storage, not something the removal can retry.
-                        """
-                    )
+                    Text(L10n.Devices.removedSomeUnrotated(count: done.unrotatedStreams.count))
                     ForEach(done.unrotatedStreams, id: \.self) { id in
                         Text(id).monospaced()
                     }
                 }
-                Text(
-                    done.relayPending
-                        ? """
-                        The relay has NOT been told yet. That is queued and \
-                        goes out on the next sync.
-                        """
-                        : "The relay has been told."
-                )
+                Text(done.relayPending ? L10n.Devices.relayPending : L10n.Devices.relayTold)
                 unwoundNotice(done)
-                Button("Done") { model.dismissRevocation() }
+                Button(L10n.Devices.done) { model.dismissRevocation() }
             }
             .font(.caption)
             .accessibilityIdentifier("devices.revocationResult")
@@ -242,16 +195,7 @@ struct DeviceListSection: View {
     @ViewBuilder
     private func unwoundNotice(_ done: DeviceListModel.Revocation) -> some View {
         if !done.unwound.isEmpty {
-            Text(
-                """
-                The account no longer records a removal of \
-                \(done.unwound.count) other device(s), because the device \
-                that removed them was itself removed. They are not back in — \
-                they receive no keys and read nothing written since — but the \
-                account does not say they were removed. Remove each of them \
-                again from a device you still trust.
-                """
-            )
+            Text(L10n.Devices.unwound(count: done.unwound.count))
             ForEach(done.unwound, id: \.self) { id in
                 Text(id).monospaced()
             }
@@ -271,10 +215,10 @@ private enum RevokeReasonChoice: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .lost: "I lost it"
-        case .stolen: "It was stolen"
-        case .retired: "No longer using it"
-        case .compromised: "Someone else got into it"
+        case .lost: L10n.Devices.reasonLost
+        case .stolen: L10n.Devices.reasonStolen
+        case .retired: L10n.Devices.reasonRetired
+        case .compromised: L10n.Devices.reasonCompromised
         }
     }
 

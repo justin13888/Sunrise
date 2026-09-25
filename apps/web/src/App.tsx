@@ -1,5 +1,6 @@
 import { taskStateGlyph } from "@sunrise/ui";
 import { useEffect, useState } from "react";
+import { t } from "./i18n";
 import { loadCore, type Task } from "./wasm";
 
 export function App() {
@@ -17,20 +18,23 @@ export function App() {
 
     return (
         <main style={{ fontFamily: "system-ui", padding: 16 }}>
-            <h1>Sunrise — Web</h1>
+            <h1>{t.web.app.title()}</h1>
             {error ? (
                 <p style={{ color: "tomato" }}>{error}</p>
             ) : (
                 <ul style={{ listStyle: "none", padding: 0 }}>
                     {tasks.length === 0 ? (
-                        <li>Nothing on the list.</li>
+                        <li>{t.web.app.empty()}</li>
                     ) : (
-                        tasks.map((t) => (
-                            <li key={t.id} style={{ padding: "4px 0" }}>
+                        tasks.map((task) => (
+                            <li
+                                key={task.id}
+                                style={{ paddingBlock: 4, paddingInline: 0 }}
+                            >
                                 <span style={{ fontFamily: "monospace" }}>
-                                    {taskStateGlyph[t.state]}
+                                    {taskStateGlyph[task.state]}
                                 </span>{" "}
-                                {t.title}
+                                {task.title}
                             </li>
                         ))
                     )}

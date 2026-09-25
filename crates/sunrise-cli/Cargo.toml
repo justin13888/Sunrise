@@ -21,6 +21,11 @@ workspace = true
 
 [dependencies]
 jiff = { workspace = true }
+# The runtime `src/i18n.rs` gives the generated string binding: CLDR plural
+# categories and locale digits for `#` and `{n, number}` (ADR-0054).
+icu_decimal = { workspace = true }
+icu_locale_core = { workspace = true }
+icu_plurals = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 tracing = { workspace = true }
 # `sunrise recover` has one error arm per thing the user can do about it, and a

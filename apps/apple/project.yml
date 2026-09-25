@@ -206,6 +206,15 @@ targets:
       # keep the committed file honest instead. See ADR-0029.
       - path: ../../packages/sunrise-ui-tokens/generated/tokens.swift
         group: Generated
+      # The string catalog, compiled from `i18n/*.toml` and committed for the
+      # same reason (ADR-0054): `Strings.swift` is the typed `L10n` front, and
+      # `Localizable.xcstrings` the messages Foundation formats, CLDR plurals
+      # included. `mise run i18n-check` and the vitest drift test guard both.
+      - path: ../../packages/sunrise-i18n/generated/Strings.swift
+        group: Generated
+      - path: ../../packages/sunrise-i18n/generated/Localizable.xcstrings
+        group: Generated
+        buildPhase: resources
     dependencies:
       - target: SunriseFFI
       - framework: ../../out/SunriseCore.xcframework
@@ -358,6 +367,12 @@ targets:
       # See the note on that target.
       - path: ../../packages/sunrise-ui-tokens/generated/tokens.swift
         group: Generated
+      # The same string catalog the macOS target compiles; see the note there.
+      - path: ../../packages/sunrise-i18n/generated/Strings.swift
+        group: Generated
+      - path: ../../packages/sunrise-i18n/generated/Localizable.xcstrings
+        group: Generated
+        buildPhase: resources
     dependencies:
       - target: SunriseFFI
       - framework: ../../out/SunriseCore.xcframework

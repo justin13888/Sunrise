@@ -1067,13 +1067,13 @@ def report_unlexable(unlexable: int) -> None:
     four hundred would mean the gate had stopped reading most of what it
     was pointed at, and nothing would have said so.
 
-    On this repository the tally is 45, and it is **not** 44 fences plus
-    one oddity in `mise.toml`, which is what this docstring claimed from
-    the commit that introduced the sentence until the composition was
-    re-derived rather than asserted. Six of the 45 are not in
-    `mise.toml` at all:
+    On this repository the tally is 47, and it is **not** all fences
+    plus one oddity in `mise.toml`, which is what this docstring claimed
+    (at 45) from the commit that introduced the sentence until the
+    composition was re-derived rather than asserted. Six of the 47 are
+    not in `mise.toml` at all:
 
-    * **38** TOML triple-quote fences in `mise.toml` — 28 `\"\"\"` and 10
+    * **40** TOML triple-quote fences in `mise.toml` — 28 `\"\"\"` and 12
       `'''`, each an unbalanced quotation to a shell lexer.
     * **1** more in `mise.toml`, at `:530`, which continues a line with
       `\\\\` inside a `\"\"\"` string — one backslash to the shell, two to
@@ -1094,7 +1094,7 @@ def report_unlexable(unlexable: int) -> None:
     executable line from prose that happens to lex. Prose that does
     *not* lex lands here and is skipped, which is the safe direction and
     is why the number has to be broken down rather than summarised: a
-    reader told all 45 are TOML fences never learns the gate is skipping
+    reader told all 47 are TOML fences never learns the gate is skipping
     English apostrophes in two workflows, and would read a fence count
     that had quietly become a prose count as no change at all.
 
