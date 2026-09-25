@@ -298,11 +298,11 @@ impl Engine {
                 // and can take a row back out — a revocation stops being
                 // believed when the ledger shows its author was revoked first
                 // — and a recipient gate that a later op can release is not a
-                // gate. `device_read_bounds` only ever grows
-                // (`migrations/0028_device_read_bounds.sql`), so a device this
-                // replica once excluded stays excluded from every epoch it
-                // mints afterwards, whatever the device list goes on to say
-                // about it.
+                // gate. `device_read_bounds` keeps every row for an id with a
+                // cert here (`migrations/0028_device_read_bounds.sql`; #315
+                // releases only certless ids), so a device this replica once
+                // excluded stays excluded from every epoch it mints
+                // afterwards, whatever the device list says about it.
                 "SELECT d.device_id, d.d_d_pub FROM devices d
                  WHERE d.d_d_pub IS NOT NULL
                    AND d.identity_id = ?1
@@ -740,8 +740,8 @@ fn ops_run_end(
 /// `crates/sunrise-core/src/engine/revocation.rs:257#revoke_device`. ADR-0041
 /// (`docs/11-adr/0041-peer-side-revocation-is-a-fold.md`) is where the two
 /// tables were split, and the split is why the distinction earns a sentence:
-/// the register is a fold and shrinks, `device_read_bounds` only ever grows,
-/// and the site that hands out keys must not be able to hand them back.
+/// the register is a fold and shrinks, `device_read_bounds` never releases a
+/// certified device, and the site that hands out keys must not hand them back.
 ///
 /// What that read decides is which stream keys a newly certified device is
 /// sealed: on a bounded one it returns early and seals none. What it does
@@ -810,10 +810,10 @@ fn ops_run_end(
 /// which refuses one naming its own sender — logging
 /// `core.device.revoke_refused` with `reason = "self"` — and writes no
 /// register row. That event has a second emitter at
-/// `crates/sunrise-core/src/engine/revocation.rs:1353#apply_device_revoke`,
-/// `reason = "revoked_sender"`, and that one is not a refusal to record at
-/// all: the ledger row stands and the fold declines to believe it. A reader
-/// who wants every emitter of `revoke_refused` has both of them here.
+/// `crates/sunrise-core/src/engine/revocation.rs:1364#apply_device_revoke`,
+/// `reason = "revoked_sender"`: the fold declines to believe the row. A third,
+/// `crates/sunrise-core/src/engine/revocation.rs:1346#apply_device_revoke`,
+/// `reason = "sender_over_cap"`, drops a pair past its sender's cap.
 ///
 /// What is refused in the first case is a *register write* rather than the
 /// delivery: the op row went in before the control op was dispatched, so this
