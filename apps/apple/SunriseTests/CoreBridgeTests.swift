@@ -68,14 +68,18 @@ struct CoreBridgeTests {
 
         // Past the prime: `changes()` opens with an empty batch that means
         // "re-read", and the claim here is about a write actually being
-        // announced.
-        let observed = Task { () -> ChangeBatch? in
-            for await batch in changes where !batch.touched.isEmpty { return batch }
-            return nil
+        // announced. Bounded, because a write that is never announced is
+        // silence, and an unbounded wait would hang the suite instead of
+        // failing it.
+        let observed = Task {
+            await Self.firstBatch(of: changes, matching: { !$0.touched.isEmpty })
         }
 
         let outcome = try await vault.bridge.submit(.createTask(draft: draft("Book the ferry")))
-        let batch = try #require(await observed.value)
+        let batch = try #require(
+            await observed.value,
+            "the write was never announced on the stream"
+        )
         #expect(batch.touched.contains(outcome.entity))
         #expect(batch.isComplete)
         await vault.bridge.shutdown()
@@ -194,14 +198,13 @@ struct CoreBridgeTests {
         let stayingSaw = Task { await Self.touched(in: staying) }
         // A view that appears, repaints once on a real write and disappears.
         // Past the prime for the reason above: an empty opening batch is not
-        // the repaint this is about.
-        let departed = Task { () -> ChangeBatch? in
-            for await batch in leaving where !batch.touched.isEmpty { return batch }
-            return nil
+        // the repaint this is about. Bounded like the test above.
+        let departed = Task {
+            await Self.firstBatch(of: leaving, matching: { !$0.touched.isEmpty })
         }
 
         let first = try await vault.bridge.submit(.createTask(draft: draft("Pack the tent")))
-        #expect(await departed.value != nil)
+        #expect(await departed.value != nil, "the leaving screen never saw its write")
 
         let second = try await vault.bridge.submit(.createTask(draft: draft("Find the pegs")))
         try? await Task.sleep(for: .milliseconds(150))
@@ -215,15 +218,16 @@ struct CoreBridgeTests {
         )
     }
 
-    /// The first batch a stream produces, or `nil` if it produces none inside
-    /// `within`. A feed defect shows up as silence, and silence is a hang
-    /// unless something bounds it.
+    /// The first batch a stream produces that `matching` accepts, or `nil` if
+    /// it produces none inside `within`. A feed defect shows up as silence,
+    /// and silence is a hang unless something bounds it.
     private static func firstBatch(
         of stream: AsyncStream<ChangeBatch>,
-        within: Duration = .seconds(3)
+        within: Duration = .seconds(3),
+        matching: @escaping @Sendable (ChangeBatch) -> Bool = { _ in true }
     ) async -> ChangeBatch? {
         let reader = Task { () -> ChangeBatch? in
-            for await batch in stream { return batch }
+            for await batch in stream where matching(batch) { return batch }
             return nil
         }
         let timeout = Task {
