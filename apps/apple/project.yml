@@ -91,6 +91,21 @@ settings:
     # Unrelated to the App Sandbox, which stays off — see the note on the
     # macOS target below and ADR-0031.
     ENABLE_HARDENED_RUNTIME: YES
+    # The App Group each app shares with its widget extension (#14): the
+    # app writes the widgets' snapshot into its container and the extension
+    # reads it. Spelled once, here, and reaching Swift through the
+    # `SunriseAppGroup` Info.plist key every one of the four targets carries,
+    # beside the entitlement that grants it.
+    #
+    # Two spellings because the two platforms grant a group differently.
+    # iOS requires the `group.` form, which its provisioning profile
+    # authorises. A Developer ID Mac app is granted a group prefixed with its
+    # own team *without* a profile — and `release.yml` exports the Mac app
+    # with no profile at all, so the `group.` form would be refused there.
+    # With no team configured (every local and CI build) the prefix is
+    # empty and the Mac group is plain `dev.sunrise`.
+    "SUNRISE_APP_GROUP[sdk=iphone*]": group.dev.sunrise
+    "SUNRISE_APP_GROUP[sdk=macosx*]": $(TeamIdentifierPrefix)dev.sunrise
 
 # Builds `out/SunriseCore.xcframework` + `out/swift/sunrise_core_bindings.swift`,
 # but only when there is something to build.
@@ -194,6 +209,9 @@ targets:
       # modal file panels and `NSPrintOperation`.
       - path: Sunrise
       - path: macOS
+      # The widgets' snapshot format, which the app writes and the widget
+      # extension reads — so both compile the one file.
+      - path: Widgets/Shared
       # Generated from the Rust crate on every build; never edited, and
       # excluded from SwiftLint for the same reason.
       - path: ../../out/swift/sunrise_core_bindings.swift
@@ -228,6 +246,9 @@ targets:
       # looks at. `macOS/SoftwareUpdate.swift` is the only file that imports
       # it, and it is a macOS-only source path for the same reason.
       - package: Sparkle
+      # Embedded under `Contents/PlugIns`, which is where the system looks
+      # for a Mac app's widgets.
+      - target: SunriseWidgets
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.sunrise.Sunrise
@@ -284,6 +305,9 @@ targets:
         # build settings keeps one version number in this file.
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        # Where `WidgetSnapshotStore.appGroup()` writes. See
+        # `SUNRISE_APP_GROUP` at the top of this file.
+        SunriseAppGroup: $(SUNRISE_APP_GROUP)
         # --- Sparkle (ADR-0038) ------------------------------------------
         #
         # The feed the app asks "is there a newer build?". It is the
@@ -330,6 +354,22 @@ targets:
         # — which is exactly what `release.yml` produces and nothing else can.
         SURequireSignedFeed: true
         SUVerifyUpdateBeforeExtraction: true
+    # The App Group, and nothing else. Generated and gitignored like the
+    # Info.plist above, so this file stays the source of truth.
+    #
+    # Not a restricted entitlement in the team-prefixed form a Developer ID
+    # build carries, which is why it can be committed where
+    # `keychain-access-groups` (see the note above) cannot: no profile is
+    # needed to be granted it, and an ad-hoc build that carries it still
+    # launches. The app itself is not sandboxed and can reach the container
+    # path without it; it is here so the group is *granted* to the app the
+    # same way it is granted to the sandboxed extension, rather than the
+    # two sides reaching the one directory by different rights.
+    entitlements:
+      path: Generated/Sunrise.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - $(SUNRISE_APP_GROUP)
     postCompileScripts:
       - name: SwiftLint
         basedOnDependencyAnalysis: false
@@ -352,6 +392,8 @@ targets:
     sources:
       - path: Sunrise
       - path: iOS
+      # See the macOS target.
+      - path: Widgets/Shared
       - path: ../../out/swift/sunrise_core_bindings.swift
         group: Generated
       # The same committed, drift-checked token file the macOS target compiles.
@@ -367,6 +409,8 @@ targets:
       # link but are never offered by Shortcuts or Siri. `Sunrise/Intents/` is
       # shared, so this surface is the Mac's, unchanged.
       - sdk: AppIntents.framework
+      # Embedded under `PlugIns`; the Home and Lock Screen widgets.
+      - target: SunriseWidgetsiOS
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.sunrise.SunriseiOS
@@ -397,6 +441,15 @@ targets:
             CFBundleURLSchemes: [sunrise]
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        SunriseAppGroup: $(SUNRISE_APP_GROUP)
+    # The App Group. iOS's `containerURL` answers `nil` to a process the
+    # group was not granted to, so without this the app would have nowhere
+    # to write and every widget would say "Open Sunrise" forever.
+    entitlements:
+      path: Generated/SunriseiOS.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - $(SUNRISE_APP_GROUP)
     postCompileScripts:
       - name: SwiftLint
         basedOnDependencyAnalysis: false
@@ -406,6 +459,81 @@ targets:
           else
             echo "warning: swiftlint not installed; skipping"
           fi
+
+  # The widgets (#14), built once per platform from the same `Widgets/`
+  # sources and embedded in the matching app.
+  #
+  # **No Rust in here, on purpose.** The extension links neither the
+  # xcframework nor the bindings: the app holds the vault lock, the vault
+  # root is in the app's Keychain items, and a widget's memory ceiling is far
+  # below what opening a vault costs. It reads the snapshot the app writes
+  # into the App Group and draws it; `Widgets/Shared/WidgetSnapshot.swift`
+  # says what that snapshot may carry.
+  SunriseWidgets:
+    type: app-extension
+    platform: macOS
+    sources:
+      - path: Widgets
+    dependencies:
+      - sdk: WidgetKit.framework
+      - sdk: SwiftUI.framework
+    settings:
+      base:
+        # Under the app's own identifier, which the system requires of an
+        # embedded extension.
+        PRODUCT_BUNDLE_IDENTIFIER: dev.sunrise.Sunrise.Widgets
+        PRODUCT_NAME: SunriseWidgets
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Sunrise
+        INFOPLIST_KEY_NSHumanReadableCopyright: ""
+        SKIP_INSTALL: YES
+    info:
+      path: Generated/Info-Widgets.plist
+      properties:
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        SunriseAppGroup: $(SUNRISE_APP_GROUP)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    # A Mac widget extension must be sandboxed or the system will not load
+    # it — unlike the app, whose sandbox is still #247's. The group is the
+    # one door out of that sandbox it needs.
+    entitlements:
+      path: Generated/SunriseWidgets.entitlements
+      properties:
+        com.apple.security.app-sandbox: true
+        com.apple.security.application-groups:
+          - $(SUNRISE_APP_GROUP)
+
+  SunriseWidgetsiOS:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: Widgets
+    dependencies:
+      - sdk: WidgetKit.framework
+      - sdk: SwiftUI.framework
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.sunrise.SunriseiOS.Widgets
+        PRODUCT_NAME: SunriseWidgets
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Sunrise
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SKIP_INSTALL: YES
+    info:
+      path: Generated/Info-Widgets-iOS.plist
+      properties:
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        SunriseAppGroup: $(SUNRISE_APP_GROUP)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    entitlements:
+      path: Generated/SunriseWidgets-iOS.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - $(SUNRISE_APP_GROUP)
 
   # Drives the real window. This is the only target that proves a click
   # reaches the core: `SunriseTests` exercises the view *models*, which is a
