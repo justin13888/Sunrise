@@ -7,14 +7,18 @@ status: accepted
 A React (TS) PWA running the Sunrise core compiled to WebAssembly. Offline-capable; installable; runs without a browser session-by-session.
 
 > **Status — the WASM core runs, locally and unencrypted
-> ([ADR-0055](../11-adr/0055-web-wasm-core.md)); not deployed
+> ([ADR-0055](../11-adr/0055-web-wasm-core.md)); deployable to Cloudflare
+> Pages, and not yet deployed
 > ([#11](https://github.com/justin13888/Sunrise/issues/11)).**
 > `crates/sunrise-core-wasm` compiles `sunrise-core` to `wasm32-unknown-unknown`
 > and exposes it as JSON in, JSON out. `apps/web/src/core.worker.ts` runs it in a
 > dedicated worker over the OPFS `SyncAccessHandle` pool VFS, and
 > `apps/web/src/wasm.ts`'s `loadCore()` uses it where the browser has workers,
 > OPFS and `navigator.locks`, falling back to the `localStorage` stub elsewhere
-> or when no bundle was built (`mise run web-wasm`).
+> or when no bundle was built (`mise run web-wasm`). The `web-pages` job in
+> `.github/workflows/release.yml` deploys it on a tag once the Pages project
+> and its secrets exist, and deploys nothing until then (§Self-host vs managed
+> cloud).
 >
 > What the architecture below describes and the build does not yet do:
 >
@@ -22,7 +26,8 @@ A React (TS) PWA running the Sunrise core compiled to WebAssembly. Offline-capab
 >   root is stored beside it; ADR-0055 §4 states the gap and what the product
 >   tells a user about it. Encryption waits on the passphrase unlock below.
 > - **Sync.** The worker opens a local vault only; the SSE transport is
->   native-only.
+>   native-only. The server to sync with is already chosen
+>   (§Self-host vs managed cloud); nothing reads it yet.
 > - **Attachments.** The blob store is `std::fs`, which the wasm target lacks;
 >   adding one fails with an error.
 > - **Read-only tabs.** One tab holds the vault; another waits for it rather
@@ -133,7 +138,17 @@ Deep links arriving before the Service Worker is ready are queued in `localStora
 
 ### Self-host vs managed cloud
 
-*Target state.* The web client would connect to whatever sync server URL is configured, with the operator hosting the static assets or pointing the user at a hosted app configured against their server. A runtime server-URL setting is the web client's own deliverable and does not exist; there is no "settings handshake" protocol anywhere in the tree. Note also that there is one server shape, self-host ([ADR-0027](../11-adr/0027-v1-self-host-first.md)), so there is no managed alternative to choose between.
+The web client connects to whatever relay its browser has chosen, so one deployment of the static assets serves every self-hosted relay. There is one server shape, self-host ([ADR-0027](../11-adr/0027-v1-self-host-first.md)), so there is no managed alternative to choose between.
+
+*Built* (`apps/web/src/server-url.ts`). The relay is a run-time, per-browser setting, never baked into a deployment. It is an origin — `https`, no path; `http` only on loopback, since an `https` page cannot reach anything else over `http` — resolved in this order:
+
+1. **The stored choice**, in `localStorage`. A relay URL is not sensitive: the relay sees ciphertext only.
+2. **A link**, `?server=https://relay.example` on the app's address — how an operator points a user at their relay. Followed only while nothing is stored, then stored, and taken off the address. A link to a different relay than the stored one is ignored with a console warning: a link must not move a user onto another relay without anything on screen saying so.
+3. **The build default**, `SUNRISE_WEB_DEFAULT_SERVER_URL` at build time — for an operator hosting the app for their own relay. Not stored, so a rebuilt default reaches every browser that never chose. Only `SUNRISE_WEB_*` variables reach the bundle (`envPrefix`), and all of them are public.
+
+*Not built.* A settings screen to see, change or clear the relay; until one exists, changing it means clearing the site's data. Nothing reads the setting until the web core syncs. There is no "settings handshake" protocol beyond the link.
+
+*Deploy.* `apps/web/wrangler.toml` names the Cloudflare Pages project (`sunrise-web`) and its output directory. The `web-pages` job in `.github/workflows/release.yml` builds the core bundle and the client on a tag and deploys them — a prerelease to the `prerelease` preview alias — once the owner has created the project (`bunx wrangler pages project create sunrise-web --production-branch master`) and the `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` secrets. Until then it deploys nothing and says so in the job summary, which is the intended state while a deployed copy has no relay to reach. `ci.yml`'s `web-build` job builds the client on every push.
 
 ## What about the browser as a *capture* tool?
 

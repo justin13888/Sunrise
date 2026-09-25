@@ -15,7 +15,7 @@ so they cannot disagree about what a task is or when a routine fires.
 | CLI | Rust, core linked in-process | **shipping** | this page, §CLI |
 | iOS / iPadOS | Swift + SwiftUI + UniFFI core | **shipping** at SHOULD level ([ADR-0028](../11-adr/0028-ios-is-a-v1-client.md)) | [`mobile-ios.md`](./mobile-ios.md) |
 | Android | Kotlin + Jetpack Compose + UniFFI core | not built | [`mobile-android.md`](./mobile-android.md) |
-| Web (PWA) | React + WASM core | not built; ranked as [#52](https://github.com/justin13888/Sunrise/issues/52) (core) and [#11](https://github.com/justin13888/Sunrise/issues/11) (deploy) | [`web.md`](./web.md) |
+| Web (PWA) | React + WASM core | not built; the core runs locally without sync ([ADR-0055](../11-adr/0055-web-wasm-core.md)), and the Pages deploy is wired but not enabled ([#11](https://github.com/justin13888/Sunrise/issues/11)) | [`web.md`](./web.md) |
 | Terminal (TUI) | — | **removed** ([ADR-0019](../11-adr/0019-swiftui-macos-client.md)) | — |
 
 "Not built" means specified and carrying no MUSTs — that is Android and Web,

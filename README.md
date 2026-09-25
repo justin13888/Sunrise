@@ -51,7 +51,7 @@ tools/
   uniffi-bindgen/  Binding generator, deliberately outside the workspace
 apps/
   apple/       Native SwiftUI clients over the UniFFI seam — see ADR-0019
-  web/         Web PWA (React + Vite) — stub; WASM core is #52, deploy is #11
+  web/         Web PWA (React + Vite) — local WASM core, no sync yet; Cloudflare Pages deploy wired, not enabled (#11)
   docs/        The documentation site: VitePress over docs/ — see ADR-0054
 i18n/          The string catalog: en.toml, and a <locale>.toml per translation
 packages/
