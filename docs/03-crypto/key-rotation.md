@@ -407,7 +407,7 @@ Revocation = removing a device from the identity. Triggered from any other still
 
 A revoked device that never reconnects retains whatever plaintext it had at the moment of revocation. We are honest about this in the UI.
 
-**A revocation cannot be undone today.** No command, seam export or client surface withdraws one. A device revoked by mistake is readmitted only by pairing it again as a new device. That mints a fresh `device_id`, and the new device holds no `ID_S_priv` (#221). The surfaces that revoke say so ([#384](https://github.com/justin13888/Sunrise/issues/384) tracks the device list's copy).
+**A revocation cannot be undone today.** No command, seam export or client surface withdraws one. A device revoked by mistake is readmitted only by pairing it again as a new device. That mints a fresh `device_id`, and the new device holds no `ID_S_priv` (#221). The CLI's `device revoke` says so; the device list's Remove confirmation does not yet ([#384](https://github.com/justin13888/Sunrise/issues/384)).
 
 [ADR-0056](../11-adr/0056-a-revocation-is-withdrawn-only-by-its-author.md) decides the inverse, and [#383](https://github.com/justin13888/Sunrise/issues/383) builds it:
 
