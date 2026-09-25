@@ -42,8 +42,7 @@ struct DeviceListSection: View {
         .task { await model.refresh() }
         .task { await model.follow() }
         .confirmationDialog(
-            revoking.map { L10n.Devices.removeConfirmTitle(name: $0.nickname) }
-                ?? L10n.Devices.removeConfirmTitleUnnamed,
+            Self.removeConfirmTitle(nickname: revoking?.nickname),
             isPresented: Binding(get: { revoking != nil }, set: { if !$0 { revoking = nil } }),
             titleVisibility: .visible
         ) {
@@ -61,6 +60,14 @@ struct DeviceListSection: View {
         } message: {
             Text(L10n.Devices.removeConfirmMessage)
         }
+    }
+
+    /// The confirmation dialog's title. A nickname is a non-optional `String`,
+    /// so "no nickname" is the empty one, not only the absent row: both get the
+    /// unnamed title rather than "Remove ?".
+    static func removeConfirmTitle(nickname: String?) -> String {
+        guard let nickname, !nickname.isEmpty else { return L10n.Devices.removeConfirmTitleUnnamed }
+        return L10n.Devices.removeConfirmTitle(name: nickname)
     }
 
     @ViewBuilder

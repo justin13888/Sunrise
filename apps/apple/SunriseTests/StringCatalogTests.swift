@@ -34,4 +34,11 @@ struct StringCatalogTests {
                 .hasPrefix("This Mac has itself been removed")
         )
     }
+
+    @Test
+    func anEmptyNicknameGetsTheUnnamedConfirmTitle() {
+        #expect(DeviceListSection.removeConfirmTitle(nickname: "") == "Remove this device?")
+        #expect(DeviceListSection.removeConfirmTitle(nickname: nil) == "Remove this device?")
+        #expect(DeviceListSection.removeConfirmTitle(nickname: "Mac") == "Remove Mac?")
+    }
 }
