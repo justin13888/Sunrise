@@ -712,6 +712,13 @@ fn a_v13_vaults_revoked_device_becomes_a_device_revocations_row() {
 fn a_v13_vaults_revocation_is_seeded_into_the_0027_ledger() {
     let (_dir, db) = open_migrated(V13_FIXTURE);
     assert!(table_exists(&db, "device_revoke_ops"));
+    // `query_row` reads the first row and ignores the rest, so the count is
+    // what establishes "exactly one".
+    assert_eq!(
+        row_count(&db, "device_revoke_ops"),
+        1,
+        "the one revocation seeds exactly one ledger row"
+    );
     let (sender, revoked, ms, logical): (Vec<u8>, Vec<u8>, i64, i64) = db
         .conn()
         .query_row(
@@ -720,7 +727,7 @@ fn a_v13_vaults_revocation_is_seeded_into_the_0027_ledger() {
             [],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
-        .expect("exactly one ledger row");
+        .expect("read the ledger row");
     assert!(
         sender.is_empty(),
         "a carried-over revocation names no sender"
