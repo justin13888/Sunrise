@@ -463,7 +463,7 @@ is tested, and has not been released.
    went. The filter is gone: all three Apple jobs now carry the event condition
    `Rust (macos-latest)` already had, so they run on a push to `master`,
    nightly and on `workflow_dispatch`, and never on a pull request
-   (`.github/workflows/ci.yml:364-369`). The queue above was still costing
+   (`.github/workflows/ci.yml:360`). The queue above was still costing
    every change that touched `crates/`, which is most of them. The evidential
    claim survives because the command did not change, only where it runs.
    Every Apple job is a single `mise run` task, so `mise run ios-app` on a Mac

@@ -255,12 +255,7 @@ jobs:
     # The event condition is repeated here, not inherited: `!cancelled()`
     # replaces the implicit `success()`, so on its own it would run this job
     # after a *skipped* framework job and fail on the artefact that never came.
-    if: >-
-      ${{ !cancelled() && (
-        github.event_name == 'schedule'
-        || github.event_name == 'workflow_dispatch'
-        || (github.event_name == 'push' && github.ref == 'refs/heads/master')
-      ) }}
+    if: ${{ !cancelled() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/master')) }}
     env:
       # The framework and the bindings arrive from `apple-xcframework`. This is
       # what stops them being rebuilt here, and it is read in two places that
@@ -362,12 +357,7 @@ jobs:
     # The event condition is repeated here, not inherited: `!cancelled()`
     # replaces the implicit `success()`, so on its own it would run this job
     # after a *skipped* framework job and fail on the artefact that never came.
-    if: >-
-      ${{ !cancelled() && (
-        github.event_name == 'schedule'
-        || github.event_name == 'workflow_dispatch'
-        || (github.event_name == 'push' && github.ref == 'refs/heads/master')
-      ) }}
+    if: ${{ !cancelled() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/master')) }}
     env:
       # As in `macos-app`, and for the reason spelled out there.
       SUNRISE_FFI_PREBUILT: "1"
