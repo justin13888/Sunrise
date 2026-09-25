@@ -17,8 +17,8 @@
 //!
 //! # Two builds, one dispatch layer
 //!
-//! Everything outside [`web`] is target-independent and is what the tests
-//! below drive, natively, against real `SQLCipher`. [`web`] exists only on
+//! Everything outside the `web` module is target-independent and is what the
+//! tests below drive, natively, against real `SQLCipher`. `web` exists only on
 //! `wasm32-unknown-unknown` and adds the three things a browser needs and a
 //! test does not: the OPFS `SyncAccessHandle` pool VFS, a clock read from
 //! `Date.now()`, and the `wasm-bindgen` exports.
