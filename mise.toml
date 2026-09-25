@@ -301,6 +301,39 @@ rustc --edition 2021 --crate-type rlib --emit=metadata \
 rustfmt --check --edition 2021 packages/sunrise-ui-tokens/generated/tokens.rs
 '''
 
+# The string catalog, in the design tokens' shape (ADR-0054, after ADR-0029):
+# `i18n/*.toml` compiles into four committed files under
+# `packages/sunrise-i18n/generated/` — `messages.ts` for the web client and the
+# docs site, `Strings.swift` and `Localizable.xcstrings` for the Apple apps,
+# `strings.rs` for the CLI — because Xcode and `cargo build` cannot run Bun.
+[tasks.i18n]
+description = "Regenerate the string catalog bindings from i18n/*.toml"
+run = "bun run packages/sunrise-i18n/build.ts"
+
+# `git status --porcelain` rather than `git diff --exit-code`, which the tokens
+# gate uses: a newly emitted file is untracked, and `git diff` is silent about
+# an untracked file.
+[tasks.i18n-check]
+description = "Reject string catalog bindings that have drifted from i18n/*.toml"
+shell = "bash -c"
+run = '''
+set -euo pipefail
+bun run packages/sunrise-i18n/build.ts >/dev/null
+stale="$(git status --porcelain -- packages/sunrise-i18n/generated)"
+if [ -n "$stale" ]; then
+  printf '%s\n' "$stale" >&2
+  echo "i18n: the generated bindings are stale; run \`mise run i18n\` and commit the result." >&2
+  exit 1
+fi
+'''
+
+# One CI matrix entry per locale (`i18n-plurals` in ci.yml). With no argument
+# it runs the three the spec names, which between them hold every CLDR plural
+# category: `mise run i18n-plurals`, or `mise run i18n-plurals pl` for one.
+[tasks.i18n-plurals]
+description = "Plural-coverage check: every message compiles and renders under each locale's CLDR rules"
+run = "bun run packages/sunrise-i18n/plurals.ts"
+
 # --- Fuzzing (cargo-fuzz) ---
 #
 # The harnesses live in `fuzz/`, which is its own cargo workspace. Two things

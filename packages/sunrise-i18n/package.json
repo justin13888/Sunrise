@@ -1,0 +1,21 @@
+{
+    "name": "@sunrise/i18n",
+    "version": "0.1.0",
+    "private": true,
+    "type": "module",
+    "main": "generated/messages.ts",
+    "types": "generated/messages.ts",
+    "exports": {
+        ".": "./generated/messages.ts"
+    },
+    "scripts": {
+        "typecheck": "tsc --noEmit",
+        "build": "bun run build.ts",
+        "plurals": "bun run plurals.ts"
+    },
+    "devDependencies": {
+        "@formatjs/icu-messageformat-parser": "^3.5.20",
+        "smol-toml": "^1.8.0",
+        "typescript": "~5.8.3"
+    }
+}

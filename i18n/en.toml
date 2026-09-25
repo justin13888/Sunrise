@@ -1,0 +1,124 @@
+# The Sunrise string catalog: every user-visible string, in English.
+#
+# This file is the single source (docs/10-cross-cutting/i18n.md §String
+# catalog). A translation is `i18n/<locale>.toml` with the same keys; a key it
+# omits falls back to the English here. `mise run i18n` compiles the catalog
+# into the committed bindings under packages/sunrise-i18n/generated/, and
+# `mise run i18n-check` fails while they are stale.
+#
+# Values are ICU MessageFormat, in the subset every binding renders the same
+# way: text, {name}, {name, number}, and {name, plural, …} with the CLDR
+# categories plus =0 and `#`. A literal apostrophe before `{`, `}` or `#`
+# starts a quote; write '' for a lone apostrophe there. No concatenation:
+# a sentence is one message with placeholders, so a translator can move them.
+#
+# The first key segment is the surface that shows the string, and decides
+# which bindings carry it:
+#
+#   common  every binding            apple  Strings.swift + xcstrings
+#   web     messages.ts              cli    strings.rs
+#   docs    messages.ts (docs site)
+#
+# A comment above a key is the translator's context. Say where the string
+# appears and what it must not lose; do not restate the English.
+
+[common]
+# The product name. Not translated; carried so no binding hard-codes it.
+product_name = "Sunrise"
+
+[web.app]
+# <title> of the web client, and its page heading.
+title = "Sunrise — Web"
+# Today's list when it holds no task.
+empty = "Nothing on the list."
+
+[docs.site]
+# The documentation site's title, beside the logo and in the browser tab.
+title = "Sunrise"
+# The site's <meta name="description">.
+description = "Local-first, end-to-end encrypted productivity: the design, the protocol, and the decisions behind them."
+# The top navigation's link to the architecture decision records.
+nav_adrs = "Decisions"
+# The top navigation's link to the ranked roadmap.
+nav_roadmap = "Roadmap"
+
+[apple.devices]
+# Settings: the heading of the device list.
+title = "Devices"
+# Settings, device list: shown instead of rows when there are none.
+empty = "No devices yet."
+# A device row whose nickname is empty.
+unnamed = "Unnamed device"
+# Swipe action on a device row.
+remove = "Remove"
+# Context-menu item on a device row; the ellipsis says a confirmation follows.
+remove_ellipsis = "Remove…"
+# Confirmation dialog title. {name} is the device's nickname.
+remove_confirm_title = "Remove {name}?"
+# Confirmation dialog title when the device has no nickname.
+remove_confirm_title_unnamed = "Remove this device?"
+# Confirmation dialog body. "Stream" is a product term (a list of tasks).
+remove_confirm_message = "Every Stream key is rotated, so this device reads nothing written afterwards. It can still read what it already has — revocation is forward-only."
+# The four removal reasons, as confirmation dialog buttons.
+reason_lost = "I lost it"
+reason_stolen = "It was stolen"
+reason_retired = "No longer using it"
+reason_compromised = "Someone else got into it"
+# Confirmation dialog: dismisses without removing.
+cancel = "Cancel"
+# Dismisses a removal report.
+done = "Done"
+# A mark under the row for the device the user is holding. {device} is the
+# platform's word for it ("Mac", "iPhone").
+mark_this_device = "This {device}."
+mark_removed = "Removed. It reads nothing written since."
+mark_read_bounded = "Removed earlier. The account no longer records that, so it shows as current — but it still receives no keys and reads nothing written since. Remove it again from a device you still trust."
+mark_not_current = "Not active on this account — the identity that certified it is no longer the one in force. An honest device that has not caught up with a change yet looks the same."
+mark_admitted_after_revocation = "Joined after a device was removed. Usually that is just a device you added later; it is worth a look if it is not."
+# Shown only on the device that holds the account identity key.
+identity_key = "This {device} holds the account identity key. Your recovery code is its only other copy: without one, losing this device destroys the key permanently, and no recovery feature added later can retrieve it."
+# A removal this device was not allowed to make. {name} is the other device.
+gated_title = "{name} was NOT removed."
+gated_reason = "This {device} has itself been removed from the account, so the account discards its removals of other devices. {name} is still current everywhere and still receives new keys, and this removal tells the relay nothing."
+gated_remedy = "Remove it from a device the account still trusts. The request is kept, not discarded, and is reconsidered whenever another removal arrives."
+# A removal that went through. {name} is the removed device.
+removed_title = "Removed {name} from this account."
+removed_all_rotated = "Every Stream key was rotated, and the account identity with it."
+# {count} Streams could not be rotated; their ids are listed below it.
+removed_some_unrotated = "{count, plural, one {The account identity rotated, and every Stream key but one. That device may still read that Stream. This is a damaged row in this vault's storage, not something the removal can retry.} other {The account identity rotated, and every Stream key but #. That device may still read those. This is a damaged row in this vault's storage, not something the removal can retry.}}"
+relay_pending = "The relay has NOT been told yet. That is queued and goes out on the next sync."
+relay_told = "The relay has been told."
+# {count} earlier removals the account stopped recording; their ids follow.
+unwound = "{count, plural, one {The account no longer records a removal of one other device, because the device that removed it was itself removed. It is not back in — it receives no keys and reads nothing written since — but the account does not say it was removed. Remove it again from a device you still trust.} other {The account no longer records a removal of # other devices, because the device that removed them was itself removed. They are not back in — they receive no keys and read nothing written since — but the account does not say they were removed. Remove each of them again from a device you still trust.}}"
+
+[cli.login]
+opening_browser = "Opening your browser to sign in. If it does not open, visit:"
+# {seconds} is how long the new access token lasts.
+signed_in = "Signed in. Access token valid for {seconds, plural, one {# second} other {# seconds}}."
+signed_out = "Signed out."
+
+[cli.vaults]
+# stderr, when `sunrise vaults` has nothing to list. {dir} is a path.
+none = "no vaults keyed in {dir}"
+
+[cli.focus]
+nothing_actionable = "nothing actionable — everything is blocked, done, or unscheduled"
+# {title} is the task's title.
+started_on = "focus started on {title}"
+
+[cli.sync]
+live = "sync: live, outbox empty"
+# {count} changes wait to upload; {state} is the sync state's name.
+pending = "sync: {count, plural, one {# pending} other {# pending}} ({state})"
+
+[cli.devices]
+# Printed under a removal. {count} earlier removals the account no longer
+# records; their ids are listed after it, one per line.
+unwound = "{count, plural, one {  - NOTE: the account no longer records a removal of one other device, because the device that removed it was itself removed:} other {  - NOTE: the account no longer records a removal of # other devices, because the device that removed them was itself removed:}}"
+# Printed after each id listed under `unwound`.
+unwound_row = "(shows as current; still receives no keys)"
+unwound_remedy = "    They are not back in: they receive no keys and cannot read anything written since. But the account does not say they were removed. Remove each of them again from a device you still trust."
+
+[cli.recover]
+# Printed above the 24 words, which follow in rows of four.
+code_heading = "Your recovery code — write it down now, on paper:"
