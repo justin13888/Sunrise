@@ -1410,7 +1410,7 @@ jobs:
           key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
           restore-keys: ${{ runner.os }}-bun-
       - run: bun install --frozen-lockfile
-      - name: Every message compiles and renders under this locale's CLDR rules
+      - name: Every message compiles and renders under the CLDR rules of this locale
         env:
           LOCALE: ${{ matrix.locale }}
         run: bun run packages/sunrise-i18n/plurals.ts "$LOCALE"
