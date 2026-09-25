@@ -71,6 +71,13 @@ function themeColorMeta(): Plugin {
 }
 
 export default defineConfig({
+    /**
+     * Only `SUNRISE_WEB_*` reaches the bundle (#11). Vite's `VITE_` default
+     * would do, but a prefix naming the app keeps a variable meant for the Rust
+     * build, or for a deploy step's credentials, from being published to every
+     * browser by a name that happens to match. `src/vite-env.d.ts` lists them.
+     */
+    envPrefix: "SUNRISE_WEB_",
     plugins: [
         react(),
         themeColorMeta(),

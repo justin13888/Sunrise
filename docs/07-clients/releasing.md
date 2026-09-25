@@ -20,6 +20,13 @@ uploads to App Store Connect and no-ops, visibly, until six further secrets and
 an App Store Connect app record exist.
 [ADR-0039](../11-adr/0039-ios-distribution.md) §Decision 5 is that list.
 
+**Web is not in this runbook either.** The `web-pages` job deploys the web
+client to Cloudflare Pages and no-ops, visibly, until the owner creates the
+`sunrise-web` Pages project and the `CLOUDFLARE_API_TOKEN` and
+`CLOUDFLARE_ACCOUNT_ID` secrets.
+[`web.md`](./web.md#self-host-vs-managed-cloud) §Self-host vs managed cloud
+says how to turn it on.
+
 **Why this shape:** [ADR-0031](../11-adr/0031-macos-distribution.md). The short
 version is that the app is not sandboxed
 ([`desktop.md`](./desktop.md) §Sandboxing), the Mac App Store requires the
