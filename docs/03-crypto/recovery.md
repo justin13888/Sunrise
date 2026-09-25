@@ -47,14 +47,16 @@ device's UID key, so an encrypted backup cannot re-key it for other hardware.
 - **macOS does not have this guarantee yet.** The Mac app uses the file-based login keychain,
   which accepts `kSecAttrAccessible` and stores nothing (`SecItemAdd` with
   `kSecUseDataProtectionKeychain` returns `errSecMissingEntitlement` for an app with neither the
-  App Sandbox nor a keychain-access-group entitlement, neither of which
-  `apps/apple/project.yml` configures yet). A Mac moved by Migration Assistant or restored from Time Machine
-  carries the login keychain and therefore the vault root. The Apple client declares the right
-  class on both platforms; only iOS enforces it. Closing the gap is not a one-line entitlement:
-  an ad-hoc-signed build carrying `keychain-access-groups` is killed at launch by AMFI, which is
-  what makes the fix wait on a real signing identity — measured, with the other two
-  configurations that were tried, in
+  App Sandbox nor an authorised keychain-access-group entitlement). A Mac moved by Migration
+  Assistant or restored from Time Machine carries the login keychain and therefore the vault
+  root. The Apple client declares the right class on both platforms; only iOS enforces it.
+  Closing the gap is not a one-line entitlement: an ad-hoc-signed build carrying
+  `keychain-access-groups` is killed at launch by AMFI, which is what makes the fix wait on a
+  real signing identity — measured, with the other two configurations that were tried, in
   [`../07-clients/desktop.md`](../07-clients/desktop.md#the-data-protection-keychain-is-not-a-one-line-entitlement).
+  `apps/apple/project.yml` therefore carries the entitlement on the **Release** configuration
+  only, which is the one the team signs; Debug builds stay on the login keychain so that
+  building the app needs no Apple account.
 
   The **move** an existing installation would need when that identity arrives is already built,
   and is the half that needed no signature: each store runs `KeychainMigration` on `load`, which
@@ -64,8 +66,11 @@ device's UID key, so an encrypted backup cannot re-key it for other hardware.
   actually reach. On every **Mac** build this repository can make the answer is the login
   keychain, so none of it changes what a Mac does today — **this bullet is still exactly true**.
   (On iOS it answers the data-protection keychain, because that is the only one iOS has; this
-  bullet is about the Mac, which is where the gap is.) What is outstanding is the entitlement
-  and the team that signs it.
+  bullet is about the Mac, which is where the gap is.) What is outstanding is the team that
+  signs a Release, the Developer ID provisioning profile that grants the entitlement, and the
+  release pipeline that installs it
+  ([#389](https://github.com/justin13888/Sunrise/issues/389)). The first signed Release to
+  launch on a Mac moves each item on its first `load`, and from then on the guarantee holds there.
 
 ## Recovery code
 

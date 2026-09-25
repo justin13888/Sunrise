@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  The macOS app's entitlements, applied to the Release configuration only
+  (apps/apple/project.yml, the `Sunrise` target's `configs.Release`).
+
+  `keychain-access-groups` is what moves the app onto the data-protection
+  keychain, the one that stores `kSecAttrAccessible` and so makes the vault
+  root's `ThisDeviceOnly` class hold on a Mac. It is a restricted entitlement:
+  a build carrying it launches only when a provisioning profile from the
+  signing team grants it, and anything else is `Killed: 9` by AMFI before
+  `main`. That is why Debug does not carry it. See
+  docs/07-clients/desktop.md §The data-protection keychain is not a one-line
+  entitlement.
+
+  One group, the app's own. `$(AppIdentifierPrefix)` expands to the signing
+  team's id and a dot at build time, so the group is the team-prefixed bundle
+  identifier, which is also the default access group every item the app
+  writes lands in. No item names a group explicitly, so a second group here
+  would change nothing but what the app could read.
+
+  No `com.apple.security.app-sandbox`: the App Sandbox stays off (ADR-0031).
+-->
+<plist version="1.0">
+<dict>
+	<key>keychain-access-groups</key>
+	<array>
+		<string>$(AppIdentifierPrefix)dev.sunrise.Sunrise</string>
+	</array>
+</dict>
+</plist>

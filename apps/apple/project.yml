@@ -251,22 +251,40 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.productivity
         INFOPLIST_KEY_NSHumanReadableCopyright: ""
-        # No App Sandbox yet (#247). Sandboxing moves Keychain items into an
-        # app-scoped group, which would have to land together with the
-        # entitlement and a signing identity; both are release work.
-        #
-        # Nor is there a `keychain-access-groups` entitlement, which is a
-        # *different* thing and is what the data-protection keychain needs —
-        # the one that would make the vault root's `ThisDeviceOnly` class mean
-        # something on the Mac. It cannot be committed on its own: it is a
-        # restricted entitlement, and an ad-hoc-signed build carrying it is
-        # killed by AMFI before `main`, so adding it here would break
-        # `mise run macos-app` for everyone without an Apple team. See
-        # docs/07-clients/desktop.md §The data-protection keychain is not a
-        # one-line entitlement for the three configurations that were measured.
-        #
-        # The hardened runtime is a different setting and is on; it lives in
-        # `settings.base` above, where its note explains why.
+        # No App Sandbox (ADR-0031). The hardened runtime is a different
+        # setting and is on; it lives in `settings.base` above, where its note
+        # explains why.
+      # `keychain-access-groups`, which is what the data-protection keychain
+      # needs — the one that makes the vault root's `ThisDeviceOnly` class mean
+      # something on the Mac — on **Release only**.
+      #
+      # It is a restricted entitlement: a build carrying it launches only when
+      # a provisioning profile from the signing team grants it, and an
+      # ad-hoc-signed one is killed by AMFI before `main` (measured, with the
+      # other two configurations tried, in docs/07-clients/desktop.md §The
+      # data-protection keychain is not a one-line entitlement). Every Debug
+      # consumer is team-less by design: `mise run macos-app` and `macos-run`
+      # build `CODE_SIGNING_ALLOWED=NO`, `macos-uitest` signs ad-hoc because
+      # the UI-test runner will not launch unsigned, and a Run from
+      # `macos-open` signs ad-hoc with `settings.base`'s identity. On Debug the
+      # entitlement would kill the last two for everyone without an Apple
+      # team.
+      #
+      # The price is that Debug and Release address **different keychains** on
+      # a Mac that has run both against one vault: a signed Release moves the
+      # three items into the data-protection keychain, and a Debug build, whose
+      # probe answers `.login`, then finds nothing and shows the lost-vault
+      # screen. desktop.md §Debug and Release keep separate keychains says what
+      # a developer does about it.
+      #
+      # Release's own team-less consumer is unaffected: `release.yml`'s dry run
+      # archives `CODE_SIGNING_ALLOWED=NO`, which embeds no entitlements. A
+      # team-less Release build that signs ad-hoc is refused by Xcode itself
+      # ("has entitlements that require signing with a development
+      # certificate") rather than producing a bundle AMFI would kill.
+      configs:
+        Release:
+          CODE_SIGN_ENTITLEMENTS: macOS/Sunrise.entitlements
     # `CFBundleURLTypes` is the one key with no `INFOPLIST_KEY_` build setting
     # behind it, so registering `sunrise://` needs a real plist. It is
     # generated from here and gitignored, like the `.xcodeproj`: this file
