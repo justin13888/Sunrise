@@ -66,7 +66,7 @@ impl ConstraintSeverity {
 crate::unknown::lossy_enum!(ConstraintSeverity);
 
 /// Local wall-clock time-of-day window. Half-open `[start, end)`; `start` MUST
-/// be strictly `< end` (no midnight wrap in v1).
+/// be strictly `< end` (midnight wrap is not supported).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TimeOfDayRange {
     /// Inclusive lower bound (local wall-clock).

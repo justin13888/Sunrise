@@ -50,15 +50,18 @@ is rendered **read-only** rather than rewritten. Under entity-level LWW
 ([ADR-0014](../11-adr/0014-entity-level-lww-merge.md)) that is what stops an
 older client from silently flattening a body it does not fully understand.
 
-**Not built here:** the free-standing `Note` entity, stream sharing, and Google
-Calendar, all three per [ADR-0020](../11-adr/0020-v1-must-demotions.md).
+**Not built here:** the free-standing `Note` entity
+([ADR-0020](../11-adr/0020-v1-must-demotions.md)), stream sharing (a MUST in
+the parity matrix, ranked as [#133](https://github.com/justin13888/Sunrise/issues/133)), and read-only calendar integrations
+([ADR-0049](../11-adr/0049-calendar-integrations-per-device-oauth.md), ranked as
+[#4](https://github.com/justin13888/Sunrise/issues/4)).
 
-That list used to carry a fourth entry — **iCal import/export**, the one v1
+That list used to carry a fourth entry — **iCal import/export**, the one
 MUST this client did not meet — and it no longer does: File → Import Calendar…
 (⌘⇧I) and Export Calendar ▸ Today | This Week now call the seam's
 `import_ical` / `export_ical` through `IcalModel`. **Every one of the 23 macOS
 MUSTs is met.** See the status audit in
-[`parity-matrix.md`](./parity-matrix.md#v1-status-audit).
+[`parity-matrix.md`](./parity-matrix.md#status-audit).
 
 ## Architecture
 
@@ -276,7 +279,7 @@ document's intent, not yet implemented).
 - **specified — Continuity Camera** for attaching a scan from an iPhone. **Not
   implemented** — attachments come from the file importer or a drop.
 - **built — Print / PDF export.** ⌘P and File → Export as PDF…, a
-  parity-matrix **SHOULD** that no longer has to slip to v1.x. The screen is
+  parity-matrix **SHOULD** that no longer has to slip. The screen is
   turned into a `PrintDocument` — a title, a stamp and a list of sections of
   rows — which is a plain value a test can assert against, and only then handed
   to `ImageRenderer` and paginated into a `PDFDocument`. Printing goes through
@@ -296,7 +299,7 @@ The direct `.dmg` build is **not** sandboxed. A sandboxed build cannot register
 a reliable system-wide hotkey, and quick capture is the feature the persona
 uses most. A Mac App Store build would have to trade that away, and
 [ADR-0031](../11-adr/0031-macos-distribution.md) declines the trade: the App
-Store is **not** a v1 channel, and v1 ships the direct `.dmg` alone. The
+Store is **not** a distribution channel, and the direct `.dmg` ships alone. The
 sandbox stays off.
 
 ### The data-protection keychain is not a one-line entitlement
@@ -889,8 +892,9 @@ none, because it is the SAS.
 - Quick capture is its own borderless, non-activating `NSPanel`.
 - A detached, compact, always-on-top **focus** window is **specified, not
   built** — Focus is a sidebar destination in the main window today.
-- Two-column stream comparison is **deferred**, not cut: it was specified for
-  the Tauri app, nothing was built, and it is not a v1 MUST.
+- Two-column stream comparison is **not built**, and not cut: it was specified
+  for the Tauri app, nothing was built, it is not a MUST, and it is not ranked
+  on the roadmap.
 
 ## Update channel
 

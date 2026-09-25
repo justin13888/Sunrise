@@ -46,7 +46,7 @@
 //!
 //! The signature covers the method and the *concrete* target the client sent,
 //! read from the request. kynos routes on whole paths and does not rewrite the
-//! URI the way axum's `Router::nest` did — which is what forced v1 to reach for
+//! URI the way axum's `Router::nest` did — which is what forced the axum server to reach for
 //! `OriginalUri` — so what arrives here is what was sent.
 //!
 //! **No operation on this surface takes a query parameter.** Adding one means

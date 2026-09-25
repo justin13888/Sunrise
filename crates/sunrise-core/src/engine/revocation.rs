@@ -25,8 +25,8 @@
 //!   and `CommandResult::revocation_gated` in [`Engine::revoke_device`] below.
 //! - **"Is this device read-bounded?"** — `device_read_bounds`, via
 //!   [`Engine::is_read_bounded`]. A ratchet: written only by the fold's
-//!   `INSERT OR IGNORE`, never deleted. It has to be monotone or it is not a
-//!   bound, and it is the sole gate on all four key-distribution sites —
+//!   `INSERT OR IGNORE`, never deleted for a device with a cert here. It has
+//!   to be monotone or it is not a bound; it gates all four key sites —
 //!   `emit_key_envelopes`' anti-join and `backfill_key_envelopes`' early
 //!   return in [`super::oplog`], the survivor roster `rotate_identity` builds
 //!   in [`super::identity`], and the readmission signal the
@@ -597,9 +597,9 @@ impl Engine {
     /// which is derived, has to converge, and can therefore go from true back
     /// to false when the fold learns a revocation's author was itself revoked.
     /// This one answers "may this device be given a key?", and it only ever
-    /// goes from false to true: `device_read_bounds` is written by
-    /// [`Self::refold_device_revocations`]' `INSERT OR IGNORE` and by migration
-    /// 0028's seed, and by nothing else — no `DELETE`, no `UPDATE`.
+    /// goes from false to true for a device with a cert here: written by the
+    /// fold's `INSERT OR IGNORE` and 0028's seed, and deleted only by
+    /// [`Self::release_orphan_read_bounds`], for certless ids no row names.
     ///
     /// Keeping them apart is what makes the threat model's A3 sentence true.
     /// While one table served both, a routine unwind — retire the old laptop
@@ -877,8 +877,8 @@ impl Engine {
     ///
     /// # Recoverability: a cut correction does **not** un-skip a revocation
     ///
-    /// Nothing is discarded — a skipped op is still in the ledger, so there is
-    /// nothing to re-request — but the skip is not undone by correcting a cut
+    /// A skipped op's pair stays (unless its sender passes the per-sender cap),
+    /// so there is nothing to re-request — but the skip is not undone by a cut
     /// either, and the reason is the paragraphs above: **the gate reads no cut
     /// of any kind**. `revokers_all`, the discount and the walk's condition are
     /// built from `(sender, revoked)` pairs and nothing else; the HLC decides
@@ -957,9 +957,9 @@ impl Engine {
         // **Defensive against a future writer, not against rows that exist.**
         // No self-naming row can reach `device_revoke_ops` at HEAD — see the
         // walk below, which states both sources — so nothing reaches this
-        // `continue` today. It is kept because the ledger is append-only and
-        // permanent: a writer that admitted one would put the device it named
-        // beyond revoking anything, on every replica, for good.
+        // `continue` today. It is kept because a pair is dropped only when its
+        // own sender passes the cap: a writer admitting one would put the
+        // device it named beyond revoking anything, everywhere, for good.
         //
         // The walk below holds the same condition and it is **not** a
         // duplicate: this one bounds the *gate*, that one bounds the
@@ -1078,8 +1078,8 @@ impl Engine {
             // refuses a self-naming op before the insert
             // (`apply_device_revoke` returns early), and 0027's seed reads
             // `device_revocations`, which the pre-ADR-0041 arm also refused to
-            // write for one. The ledger is append-only and permanent, so the
-            // cost of a writer that admitted one is not recoverable — which is
+            // write for one. A pair is dropped only by its own sender's cap, so
+            // the cost of a writer that admitted one is not recoverable — which is
             // why the checks are kept and said to be unreachable rather than
             // quietly relied on.
             if row.sender == row.revoked {
@@ -1165,8 +1165,8 @@ impl Engine {
         // So the bound is its own table and this is its only writer:
         // `INSERT OR IGNORE` over the register this fold just computed, run
         // **before** the `DELETE`, so no row can pass through a window where it
-        // is in neither. Nothing in this tree deletes from it or updates it —
-        // `migrations/0028_device_read_bounds.sql` is why it is a ratchet
+        // is in neither. Only `release_orphan_read_bounds` deletes, and never a
+        // certed device — `migrations/0028_device_read_bounds.sql` is why a ratchet
         // rather than a second fold, and why making the register itself the
         // ratchet was rejected.
         //
@@ -1339,6 +1339,17 @@ impl Engine {
                 i64::try_from(now_ms).unwrap_or(i64::MAX),
             ],
         )?;
+        // Before the fold, unlike the pair compaction below, because this one
+        // does change what the fold reads: see `cap_device_revoke_targets`.
+        if Self::cap_device_revoke_targets(tx, sender, &p.revoked_device_id)? {
+            tracing::warn!(
+                ev = "core.device.revoke_refused",
+                reason = "sender_over_cap",
+                sender_h = hex_short(sender),
+                subject_h = hex_short(&p.revoked_device_id),
+                "a device has named more distinct targets than one sender may keep"
+            );
+        }
         let skipped = self.refold_device_revocations(tx)?;
         if skipped
             .iter()
@@ -1357,6 +1368,211 @@ impl Engine {
                 "a device the account had already revoked tried to revoke another"
             );
         }
+        // After the fold and the skip check, so both read the op this call
+        // stored even when it is one the compaction below removes.
+        Self::compact_device_revoke_ops(tx)?;
+        Self::release_orphan_read_bounds(tx)?;
         Ok(Vec::new())
     }
+
+    /// Delete every ledger row the fold can never read the value of: all but
+    /// the greatest-stamped row of each `(sender, revoked_device_id)` pair.
+    ///
+    /// # Why this changes no fold
+    ///
+    /// [`Self::refold_device_revocations`] reads a row in two places, and
+    /// neither can tell a pair's lesser rows from its greatest:
+    ///
+    /// - **The gate** is built from `(sender, revoked)` pairs and nothing else
+    ///   — `revokers_all`, the discount, and the walk's condition. Deleting a
+    ///   row whose pair survives in another row leaves every one of them
+    ///   unchanged, and so leaves every row gated or ungated as it was.
+    /// - **The register** takes, per revoked device, the greatest ungated row in
+    ///   the canonical order. Whether a row is gated depends only on its pair,
+    ///   so a pair's rows are gated or ungated together; and within one pair
+    ///   `sender` and `revoked_device_id` are equal, so the canonical order is
+    ///   the HLC alone. If any row of a pair could win, the pair's greatest row
+    ///   sorts after it and wins instead. A lesser row never wins.
+    ///
+    /// So the fold is the same function of the compacted ledger as of the full
+    /// one, every register it produces is the same register, and
+    /// `device_read_bounds` — which ratchets over those registers — takes the
+    /// same rows it would have. That is the property ADR-0034 corollary 3 and
+    /// ADR-0041 need from the ledger, and it is why this can delete from a
+    /// table whose whole design is keeping ops: it deletes only rows the fold
+    /// provably ignores.
+    ///
+    /// The compacted ledger is also itself a function of the op set rather
+    /// than of arrival order: whichever order the ops came in, what remains is
+    /// each pair's greatest stamp. A lesser op that arrives after its pair's
+    /// greatest is stored, folded, reported on if gated, and removed here in
+    /// the same transaction.
+    ///
+    /// # What it bounds, and what it does not
+    ///
+    /// The ledger holds at most one row per distinct `(sender, target)` pair.
+    /// Repeating a revocation — a cut correction, a re-sent op with a new
+    /// stamp, or a revoked device naming the same target over and over — no
+    /// longer grows it. What it does not bound is the number of distinct
+    /// targets an authenticated sender names: `apply_device_revoke` stores a
+    /// row for an id no device on the account has, deliberately, because a
+    /// cert can arrive after the revocation of its device. That is
+    /// [`Self::cap_device_revoke_targets`]' bound, and unlike this one it
+    /// does change a fold, which is why it runs before the fold and not here.
+    ///
+    /// Global rather than scoped to the pair the caller just wrote, so a vault
+    /// that accumulated lesser rows before this existed is compacted by its
+    /// next `device_revoke`, and one pass costs the same order as the fold's
+    /// own sorted read.
+    fn compact_device_revoke_ops(tx: &Transaction<'_>) -> rusqlite::Result<usize> {
+        tx.execute(
+            "DELETE FROM device_revoke_ops WHERE rowid IN (
+                 SELECT rowid FROM (
+                     SELECT rowid, ROW_NUMBER() OVER (
+                         PARTITION BY sender, revoked_device_id
+                         ORDER BY op_hlc_ms DESC, op_hlc_logical DESC
+                     ) AS pos
+                     FROM device_revoke_ops
+                 ) WHERE pos > 1
+             )",
+            [],
+        )
+    }
+
+    /// Keep at most [`REVOKE_TARGETS_PER_SENDER`] distinct targets per sender,
+    /// and say whether the pair `(sender, target)` just written was dropped.
+    ///
+    /// # Why the ledger needs a cap at all
+    ///
+    /// [`Self::compact_device_revoke_ops`] bounds the rows per pair, not the
+    /// pairs. `apply_device_revoke` has to store a row for an id no device on
+    /// this account has, because a cert can arrive after the revocation of its
+    /// device, so an authenticated sender naming ids it made up grew the
+    /// ledger, the register, and `device_read_bounds` by one row per id, and
+    /// every later fold by the same. A revoked device could do it too: its ops
+    /// are stored whatever its standing. The relay cannot bound it: envelopes
+    /// are opaque to it, and with `require_device_sig = false` it does not
+    /// know the sender device either
+    /// ([#315](https://github.com/justin13888/Sunrise/issues/315)).
+    ///
+    /// # What it keeps, and why that is still a function of the op set
+    ///
+    /// Per sender, the pairs whose greatest row sorts highest in the fold's
+    /// canonical order, `(op_hlc_ms, op_hlc_logical, revoked_device_id)`
+    /// descending, which is total within one sender because a pair is one
+    /// sender and one target. Whole pairs are kept or dropped, so this commutes
+    /// with the pair compaction. And it merges: a pair dropped here ranked
+    /// below the sender's K-th pair, that K-th key only rises as rows arrive,
+    /// and a later row of the dropped pair is ranked on its own stamp, which
+    /// is either its pair's true greatest or lower than the stamp that already
+    /// lost. So whatever order the ops arrive in, the ledger ends as the same
+    /// rows, and the fold over it, which runs after this, is the same fold.
+    ///
+    /// # Whom it costs: only the sender over the cap
+    ///
+    /// It drops a sender's **own** claims and nobody else's. None of those
+    /// claims can ungate that sender, because the gate on a sender is built
+    /// from rows revoking it, and the discount of one of its revokers needs a
+    /// row whose sender is not that sender; so a device cannot use the cap to
+    /// escape [`Self::refold_device_revocations`]' gate. What it can do is
+    /// withdraw its own earlier revocations by naming
+    /// [`REVOKE_TARGETS_PER_SENDER`] new ids. Those revocations are already
+    /// hostage to that device's standing, since the moment it is revoked they
+    /// unwind anyway, and a device the account still trusts holds keys to
+    /// everything. The remedy is this family's usual one: revoke again from a
+    /// device the account still trusts. [`Self::revoke_device`] refuses a
+    /// target with no row in `devices`, so an honest device reaches the cap
+    /// only by revoking that many devices that really paired.
+    fn cap_device_revoke_targets(
+        tx: &Transaction<'_>,
+        sender: &[u8; 16],
+        target: &[u8; 16],
+    ) -> rusqlite::Result<bool> {
+        tx.execute(
+            "WITH heads AS (
+                 SELECT sender, revoked_device_id, op_hlc_ms, op_hlc_logical
+                 FROM (
+                     SELECT sender, revoked_device_id, op_hlc_ms, op_hlc_logical,
+                            ROW_NUMBER() OVER (
+                                PARTITION BY sender, revoked_device_id
+                                ORDER BY op_hlc_ms DESC, op_hlc_logical DESC
+                            ) AS pos
+                     FROM device_revoke_ops
+                 ) WHERE pos = 1
+             ),
+             ranked AS (
+                 SELECT sender, revoked_device_id,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY sender
+                            ORDER BY op_hlc_ms DESC, op_hlc_logical DESC,
+                                     revoked_device_id DESC
+                        ) AS pos
+                 FROM heads
+             )
+             DELETE FROM device_revoke_ops
+             WHERE EXISTS (
+                 SELECT 1 FROM ranked r
+                 WHERE r.pos > ?1
+                   AND r.sender = device_revoke_ops.sender
+                   AND r.revoked_device_id = device_revoke_ops.revoked_device_id
+             )",
+            params![REVOKE_TARGETS_PER_SENDER],
+        )?;
+        let kept: Option<i64> = tx
+            .query_row(
+                "SELECT 1 FROM device_revoke_ops
+                 WHERE sender = ?1 AND revoked_device_id = ?2 LIMIT 1",
+                params![&sender[..], &target[..]],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(kept.is_none())
+    }
+
+    /// Delete each `device_read_bounds` row whose device this replica holds no
+    /// cert for and no ledger row names.
+    ///
+    /// The fold bounds every device its register holds, so without this the
+    /// cap in [`Self::cap_device_revoke_targets`] bounded the ledger and the
+    /// register and left the read bound growing by one row per made-up id: a
+    /// sender over the cap names a new one, the fold lands it, and the next
+    /// op evicts it from the ledger while its bound stays.
+    ///
+    /// **Why this does not release a bound that bounds anything.** The four
+    /// key-distribution sites seal only to devices in `devices`, and nothing
+    /// deletes from `devices`, so a device this replica holds a cert for is
+    /// never touched here: an unwind still cannot readmit it. A row goes only
+    /// when its id is certless *and* named by no ledger row, and since the
+    /// pair compaction keeps every pair, the only thing that takes the last row
+    /// naming an id is the per-sender cap. So what this releases is a bound on
+    /// an id that only a sender over the cap ever revoked, and that no device
+    /// here has. If its cert arrives later, the id is current, which is what
+    /// the capped ledger says of it, and a replica that held the cert first
+    /// keeps its bound. That is the non-convergence the bound already has
+    /// ([#282](https://github.com/justin13888/Sunrise/issues/282)), reached
+    /// here only through a sender that named more ids than the cap.
+    fn release_orphan_read_bounds(tx: &Transaction<'_>) -> rusqlite::Result<usize> {
+        tx.execute(
+            "DELETE FROM device_read_bounds
+             WHERE NOT EXISTS (
+                       SELECT 1 FROM devices d
+                       WHERE d.device_id = device_read_bounds.device_id
+                   )
+               AND NOT EXISTS (
+                       SELECT 1 FROM device_revoke_ops o
+                       WHERE o.revoked_device_id = device_read_bounds.device_id
+                   )",
+            [],
+        )
+    }
 }
+
+/// The most distinct targets one sender's `device_revoke` ops keep in the
+/// ledger. See [`Engine::cap_device_revoke_targets`].
+///
+/// Far above what an honest device reaches: [`Engine::revoke_device`] refuses
+/// a target this replica holds no cert for, so an honest device gets here only
+/// by revoking this many devices that really paired with the account. The
+/// ledger is then at most this times the number of senders, and so is each
+/// fold's work.
+pub(super) const REVOKE_TARGETS_PER_SENDER: i64 = 256;

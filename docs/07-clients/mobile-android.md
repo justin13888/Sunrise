@@ -4,9 +4,9 @@ status: proposed
 
 # Android Client
 
-> **Status: proposed. Not scheduled for v1.**
-> [ADR-0027](../11-adr/0027-v1-self-host-first.md) clause 4 places Android after
-> v1. This document is the design of record for that work, not a description of
+> **Status: proposed. Not yet built; ranked on the roadmap ([`../roadmap.md`](../roadmap.md)).**
+> [ADR-0027](../11-adr/0027-v1-self-host-first.md) clause 4 defers Android.
+> This document is the design of record for that work, not a description of
 > anything that ships.
 >
 > **What exists in the tree:** the string `"android"` in the device-platform
@@ -18,18 +18,18 @@ status: proposed
 > `.github/workflows/release.yml:893` puts it plainly: "Google Play — there is
 > no Android app."
 >
-> **Why it is not v1:** [ADR-0019](../11-adr/0019-swiftui-macos-client.md)
-> committed v1's graphical client to SwiftUI on macOS. A second native client is
+> **Why it is not built:** [ADR-0019](../11-adr/0019-swiftui-macos-client.md)
+> committed the graphical client to SwiftUI on macOS. A second native client is
 > a separate build, a separate store pipeline and a separate QA surface, none of
 > which exist.
 >
-> **What holds regardless:** nothing here constrains v1 code. The UniFFI seam
+> **What holds regardless:** nothing here constrains current code. The UniFFI seam
 > this document assumes is real and is exercised by the macOS app, so the
 > starting position for the work is better than the rest of this page implies.
 
 Native Kotlin / Jetpack Compose app. The Sunrise core ships as an `.aar` via UniFFI bindings (JNI under the hood).
 
-Target: Android 10 (API 29) and above. Wear OS support is MAY for v1.
+Target: Android 10 (API 29) and above. Wear OS support is MAY.
 
 ## Why native
 

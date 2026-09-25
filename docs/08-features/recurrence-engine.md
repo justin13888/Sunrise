@@ -4,24 +4,38 @@ status: accepted
 
 # Recurrence Engine
 
-Materializes Routines into Tasks on a schedule. Lives in the core; runs on every device with idempotent generation.
+Materializes Routines into Tasks. Lives in the core; runs on every device with
+idempotent generation.
+
+**The model of record is
+[`../02-domain/routines-and-recurrence.md`](../02-domain/routines-and-recurrence.md).**
+It owns the Routine shape, the occurrence key, the skip list, generation and
+its horizon, catch-up, edit scope, the streak and pausing. This page covers
+only what the engine adds on top: the RRULE subset shared with the calendar
+integrations, when generation runs, and how the engine is tested. Where the
+two disagree, the domain page wins.
 
 ## Inputs
 
-- Routine entity (template + RRULE + tz + horizon + skip dates).
-- Current time, in the routine's tz.
-- Existing materialized occurrences (to dedup).
+- The Routine: its template, structured `rrule`, civil `anchor` (a `zoned` or
+  `floating` wall-clock time, never an instant), `ends_at`, `skipped_keys` and
+  pause state ([`../02-domain/routines-and-recurrence.md`](../02-domain/routines-and-recurrence.md)
+  §Fields; [`../10-cross-cutting/time.md`](../10-cross-cutting/time.md) §6;
+  [#331](https://github.com/justin13888/Sunrise/issues/331)).
+- Current time and the reader's zone, passed in by the caller; the engine reads
+  no clock.
+- The tasks already materialized for the series (to dedup by task id).
 
-## RRULE subset (v1)
+## RRULE subset
 
-v1 supports the following RFC 5545 RRULE features. The same subset is reused by Google Calendar and iCalendar import/export — see [`../09-integrations/`](../09-integrations/) and reference this section.
+The engine supports the following RFC 5545 RRULE features. The same subset is reused by Google Calendar and iCalendar import/export — see [`../09-integrations/`](../09-integrations/) and reference this section.
 
-| Property | v1 |
+| Property | Supported |
 |---|---|
 | `FREQ` | DAILY, WEEKLY, MONTHLY, YEARLY |
 | `INTERVAL` | yes |
 | `COUNT` | yes |
-| `UNTIL` | yes (UTC) |
+| `UNTIL` | yes; a UTC `UNTIL` is converted at import into the anchor's civil frame |
 | `BYDAY` | yes (e.g. `MO,WE,FR`, `1MO`, `-1FR`) |
 | `BYMONTHDAY` | yes |
 | `BYMONTH` | yes |
@@ -29,69 +43,54 @@ v1 supports the following RFC 5545 RRULE features. The same subset is reused by 
 | `BYHOUR`, `BYMINUTE`, `BYSECOND` | no |
 | `BYWEEKNO`, `BYYEARDAY` | no |
 | `WKST` | yes (default `MO`) |
-| `EXDATE` | yes — maps to `Routine.skip_dates` at import |
+| `EXDATE` | yes — maps to `Routine.skipped_keys` at import |
 | `RDATE` | no — dropped at import with an `int.import.rrule_lossy` warning |
 | `RSCALE` | no |
 
-`EXDATE` and `RDATE` are separate iCal properties, not RRULE parts. EXDATE maps to `Routine.skip_dates` at import; RDATE is not supported in v1 (import drops it with an `int.import.rrule_lossy` warning).
+`EXDATE` and `RDATE` are separate iCal properties, not RRULE parts. How an
+`EXDATE` becomes an occurrence key, and how an unsupported part is refused, are
+in [`../02-domain/routines-and-recurrence.md`](../02-domain/routines-and-recurrence.md)
+§Recurrence rule and §Skip list.
 
-Unsupported properties on import are silently dropped with a `int.import.rrule_lossy` `warn` log. Parsing uses a hand-written parser in `sunrise-domain` (`crates/sunrise-domain/src/rrule.rs`), not a third-party crate: the supported subset is deliberately narrow, it adds zero unvetted transitive dependencies to a security-frozen workspace, and it lets us emit an exact error taxonomy rather than remap a library's errors. See [`../01-architecture/dependencies.md`](../01-architecture/dependencies.md).
+Parsing uses a hand-written parser in `sunrise-domain` (`crates/sunrise-domain/src/rrule.rs`), not a third-party crate: the supported subset is deliberately narrow, it adds zero unvetted transitive dependencies to a security-frozen workspace, and it lets us emit an exact error taxonomy rather than remap a library's errors. See [`../01-architecture/dependencies.md`](../01-architecture/dependencies.md).
 
-## Output
+## Output and algorithm
 
-- Zero or more new Task entities created within `[now, now + horizon]` with `routine_id` and `routine_occurrence` set.
+Zero or more new Tasks, each with the deterministic id
+`occurrence_task_id(series_root, key)`, `routine_occurrence_key = key`, and
+`planned_at` = the key in the anchor's kind. The per-key steps (skip, pause,
+dedup against live or tombstoned tasks, catch-up, template fields) and the
+look-ahead horizon, which is a fixed function of `FREQ`, are specified in
+[`../02-domain/routines-and-recurrence.md`](../02-domain/routines-and-recurrence.md)
+§Generation. Read-time catch-up of occurrences already materialized is in the
+same page's §Catch-up for occurrences already materialized.
 
-## Algorithm
-
-```
-for each non-paused, non-archived Routine R:
-    for each occurrence O in expand(R.rrule, R.starts_at, R.ends_at, [now, now+horizon]):
-        if O in R.skip_dates: continue
-        occurrence_key := stable_id(R.id, O)
-        if exists Task with (routine_id=R.id, routine_occurrence=O):
-            continue
-        emit CreateTask op with:
-            id = derive_task_id(R.id, O)              # deterministic
-            routine_id = R.id
-            routine_occurrence = O
-            stream_id = R.template.stream_id
-            title = R.template.title
-            … (rest of template)
-            scheduled_at = O
-```
-
-`stable_id` and `derive_task_id` are deterministic. This guarantees idempotence: any device running the engine for a given (R, O) will emit the *same* op_id, and the merge layer dedups on it.
-
-## Horizon
-
-Default: 14 days for `FREQ=DAILY` or shorter; 60 days for weekly+. Configurable per Routine. The horizon is a generation hint, not a constraint — past-horizon occurrences will be generated next time the engine runs.
-
-## Catchup policy
-
-When a device wakes after being offline for many days:
-
-- `skip` policy: drop missed occurrences.
-- `merge` policy: emit one Task summarizing them.
-- `queue` policy: emit one Task per missed occurrence.
-
-Selection UX: per-Routine setting in the Routine config view — `Catch-up policy` segmented control with options Skip / Merge / Queue. Default = Skip.
-
-The op-log idempotence still applies: a device that *previously* emitted an op for a missed occurrence (because it was online then) won't re-emit; the offline device sees that op via sync and merges.
+Because the id is a pure function of the series root and the civil key, any
+device generating the same occurrence emits the same task id, and the merge
+layer dedups it.
 
 ## Edge cases
 
-- **DST transitions.** Occurrence is computed in the routine's tz. If a 9am routine falls in a "spring forward" gap, we use the same wall-clock 9am after the gap (skip the missing hour); for "fall back," we keep the first occurrence.
-- **Tz changes.** If the routine's tz is changed, future occurrences shift. Past-generated occurrences are not retroactively moved.
+- **DST transitions.** The rule is expanded in civil space with no zone
+  ([`../10-cross-cutting/time.md`](../10-cross-cutting/time.md) §6). A key is
+  resolved to an instant only when something needs one, in the anchor's `tz`
+  for a `zoned` anchor and in the reader's zone for a `floating` one, with
+  jiff's `Disambiguation::Compatible`, the one rule in
+  [`../10-cross-cutting/time.md`](../10-cross-cutting/time.md) §3:
+  - **Gap** (the wall-clock time does not exist on a spring-forward night): the occurrence moves **forward by the length of the gap**. A 02:30 routine in `America/New_York` fires at 03:30 on that night; a 02:10 routine in `Australia/Lord_Howe`, whose gap is 30 minutes, fires at 02:40. A 09:00 routine is never in a gap in any zone that shifts at night, and fires at 09:00.
+  - **Fold** (the wall-clock time happens twice on a fall-back night): the occurrence fires once, at the **earlier** instant.
+  - **Keys stay civil.** The occurrence key, skip key and streak key are the intended wall-clock value (`…T02:30`), never the resolved instant, so all three agree across a transition ([`../02-domain/routines-and-recurrence.md`](../02-domain/routines-and-recurrence.md) §Occurrence key).
+- **Zone changes.** See [`../02-domain/routines-and-recurrence.md`](../02-domain/routines-and-recurrence.md)
+  §Anchors are civil: travelling never moves a `zoned` anchor, and changing a
+  routine's zone changes when occurrences fire, never which occurrences exist
+  or what their keys are.
 - **Routine deletion.** Stops generation. Existing occurrences remain unless explicitly deleted by the user.
-- **Adaptive cadence (`every X days since last completion`).** Stores `(last_completed_at, X)` on the Routine row, which merges as one entity-level LWW unit keyed `(hlc, device_id, seq)` — not as a per-field CRDT register ([ADR-0014](../11-adr/0014-entity-level-lww-merge.md), [`../05-sync/conflict-resolution.md`](../05-sync/conflict-resolution.md) §The comparison key). Concurrent completions resolve to one surviving Routine row whole. The "next due" is `last_completed_at + X days`, recomputed on every read.
-
-## Streak counter
-
-- Maintained on the Routine entity as an ordinary field, merged with the rest of the row under entity-level LWW keyed `(hlc, device_id, seq)`. It is **not** a PN-counter; the workspace ships no CRDT library ([ADR-0014](../11-adr/0014-entity-level-lww-merge.md)). Two devices completing concurrently therefore produce one surviving count, not a sum.
-- *Related, and open:* the per-key growth this implies is the same unbounded-growth question A-14 raises for `streak_keys`; nothing prunes them.
-- `complete(occurrence)` on or before the occurrence's scheduled day + grace = +1.
-- `skip(occurrence)` or missed = -1 or reset to 0 (configurable).
-- Re-completing a previously-skipped occurrence does not retroactively repair the streak.
+- **Adaptive cadence** is not modelled; the convergence rule it must follow is
+  in [`../02-domain/routines-and-recurrence.md`](../02-domain/routines-and-recurrence.md)
+  §Adaptive cadence — convergence rule.
+- **Streaks** are derived from `streak_keys` and never stored
+  ([`../02-domain/routines-and-recurrence.md`](../02-domain/routines-and-recurrence.md)
+  §Streak).
 
 ## Generation timing
 

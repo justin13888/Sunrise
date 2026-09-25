@@ -254,17 +254,9 @@ loopback** — a non-loopback bind withholds the route and logs
 §operator-surfaces. It was previously mounted unconditionally with no
 authentication and no bind check.
 
-Target examples, none of which exist:
-
-```
-sunrise_sync_connections_active
-sunrise_sync_ops_received_total{kind="OpBatch"}
-sunrise_sync_ops_delivered_total{kind="Push"}
-sunrise_sync_op_latency_seconds_bucket{le="…"}
-sunrise_blob_uploads_total
-sunrise_push_dispatch_total{provider="apns",result="ok"}
-sunrise_db_query_seconds{op="…"}
-```
+The target set is [`metrics.md`](./metrics.md): every metric the relay is to expose, with its
+type, labels and bucket set, the alerts it feeds, and an extended label allowlist that supersedes
+the one below once the first labelled metric lands ([#356](https://github.com/justin13888/Sunrise/issues/356)).
 
 ### Label allowlist — NOT ENFORCED
 
@@ -417,7 +409,7 @@ Visible in the user's "Security" page on the web app, derived from a per-account
 
 - 30 days, configurable via `[observability] audit_retention_days = 30`
   (default). A cron job at 02:00 UTC deletes expired records. There is one
-  deployment profile in v1 ([ADR-0027](../11-adr/0027-v1-self-host-first.md)),
+  deployment profile ([ADR-0027](../11-adr/0027-v1-self-host-first.md)),
   so there is no managed/self-host split to state. There is no separate
   `auth_log_retention_hours` setting — server logs use `account_h` everywhere;
   no email-tagged buffer exists.

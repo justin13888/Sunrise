@@ -118,7 +118,7 @@ impl Attachment {
 /// mint it after the fact.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AttachmentDraft {
-    /// Parent entity. Tasks only in v1.
+    /// Parent entity. Tasks only, currently.
     pub parent: EntityRef,
     /// Filename, informational.
     pub filename: String,

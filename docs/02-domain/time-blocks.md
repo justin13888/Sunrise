@@ -4,59 +4,111 @@ status: accepted
 
 # Time Blocks
 
-A Block is a scheduled time range, optionally bound to one or more Tasks. Blocks are how Sunrise integrates with calendars and supports time-blocking workflows.
+A Block is a scheduled time range, optionally bound to one or more Tasks. Blocks are the time the user schedules in Sunrise and carry its time-blocking workflows. Events fetched from an external calendar are **not** Blocks: they are read-only `ExternalEvent`s ([ADR-0049](../11-adr/0049-calendar-integrations-per-device-oauth.md)), and see §Calendar integration.
+
+> **Amended** by [ADR-0046](../11-adr/0046-optional-stream.md) (`stream_id` is
+> optional), [ADR-0048](../11-adr/0048-interactive-planner.md) (the planner
+> moves only `flexible` blocks) and
+> [ADR-0044](../11-adr/0044-per-field-ops.md) (per-field merge). Recurrence
+> shares the series model of
+> [`routines-and-recurrence.md`](./routines-and-recurrence.md), and every time
+> rule is in [`../10-cross-cutting/time.md`](../10-cross-cutting/time.md).
+> Implementation is tracked in [#342](https://github.com/justin13888/Sunrise/issues/342).
 
 ## Fields
 
 `stime` is the four-kinded `SunriseTime` defined in
-[`tasks.md`](./tasks.md) §`stime`. A 09:00 block and a block at a fixed instant
-are different commitments, and flying to another timezone must move one and not
-the other.
+[`time.md` §1](../10-cross-cutting/time.md#1-every-stored-time-is-a-sunrisetime).
+A 09:00 block and a block at a fixed instant are different commitments, and
+flying to another timezone must move one and not the other.
 
 Shared types are defined in
 [`overview.md` §Common CDDL types](./overview.md#common-cddl-types).
 
-This is the **v1 shape** — the whole of what a device writes and signs; there is no second, richer Block on the wire:
+This is the whole of what a device writes and signs; there is no second, richer Block on the wire:
 
 ```cddl
 Block = {
     id:           tstr .regexp "blk_[0-9A-HJKMNP-TV-Z]{26}",
     created_at:   timestamp,
     updated_at:   timestamp,
-    stream_id:    entity-ref,                 ; str_ ref; REQUIRED, not optional
-    starts_at:    stime,                      ; see tasks.md §stime
-    ends_at:      stime,                      ; resolves after starts_at
+    stream_id?:   entity-ref,                 ; str_ ref; absent = no stream (ADR-0046)
+    kind:         BlockKind,                  ; fixed / flexible
+    starts_at:    stime,                      ; for a recurring block, the series ANCHOR
+    ends_at:      stime,                      ; same kind as starts_at; resolves after it
     title?:       text<256>,                  ; defaults to the bound task's title
     title_track_task: bool,                   ; default false; recompute title from the one bound Task
-    tasks:        [* entity-ref],             ; tsk_ refs bound to this Block
-    rrule?:       RRule,                      ; recurring blocks; see routines-and-recurrence.md
-    location?:    text<128>,
+    tasks:        [* entity-ref],             ; tsk_ refs bound to this Block; OR-set
+    rrule?:       RRule,                      ; recurring blocks; see §Recurring blocks
+    exceptions?:  { * occurrence-key => BlockException }, ; per-occurrence changes; map of registers
+    split_from?:  entity-ref,                 ; blk_ ref of the series this one continues
+    location?:    text<128>,                  ; free text; never matched to a Place automatically
     notes?:       NoteBody,
     source?:      BlockSource,
-    external_id?: tstr,                       ; the FOREIGN id, for round-tripping outward
+    external_id?: tstr,                       ; the FOREIGN id; .ics export/import only
     deleted:      bool,
     unknown-fields,                           ; see overview.md
 }
 
+BlockKind   = "fixed"                         ; never moved by the planner
+            / "flexible"                      ; the planner may move it
+            / tstr                            ; unknown values preserved, read as "fixed"
+
 BlockSource = "sunrise"                       ; created in Sunrise
-            / "import:gcal"                   ; imported from Google Calendar
             / "import:ics"                    ; imported from a one-shot .ics file
+            / tstr                            ; unknown values preserved
+
+BlockException = { cancelled: true }
+               / { ? starts_at: stime, ? ends_at: stime, ? title: text<256>,
+                   ? location: text<128>, ? notes: NoteBody, unknown-fields }
 ```
 
-The last five are what
+### Fixed and flexible
+
+`kind` says whether the planner may move the block
+([ADR-0048](../11-adr/0048-interactive-planner.md)):
+
+- **`fixed`**: a commitment with other people or the world (a meeting, a
+  flight). The planner treats it as immovable, and only the user moves it.
+  Every block imported from an `.ics` file is `fixed`, and an unknown `kind`
+  reads as `fixed`, the safe answer.
+- **`flexible`**: time the user reserved for themselves (a focus block). The
+  planner may move it within its day to make room. A user-created block is
+  `flexible` by default.
+
+A block that has already ended, or is in progress at `now`, is treated as fixed
+by the planner whatever its `kind`.
+
+**Migration default for existing rows.** `kind` is additive, so a Block written
+before it existed carries no value, and a reader fills one in by the same rule
+a new Block gets: an absent `kind` reads as **`flexible`** when `source` is
+absent or `sunrise` (a user-created block), and as **`fixed`** when `source` is
+`import:ics` (or any other value, the safe answer). Today's tree stores no
+`source` either, so a block imported from `.ics` before `source` lands carries
+no marker and reads as `flexible`; re-importing the same file recomputes the
+same id (§`external_id` is not the dedup key) and rewrites it with
+`source = import:ics` and `kind = fixed`.
+
+`rrule`, `location`, `notes`, `source` and `external_id` are what
 [ADR-0025](../11-adr/0025-integration-account-entity.md) adds, and each answers
 a concrete loss: without `rrule` a recurring calendar event has nowhere to put
 its rule, without `location` and `notes` an imported event's `LOCATION` and
 `DESCRIPTION` have nowhere to land, and without `source` / `external_id` a
 foreign id cannot be round-tripped back out. They are additive fields, so a
 build that predates them preserves them through `unknown-fields` rather than
-dropping them, and `DOC_SCHEMA_FLOOR` does not move.
+dropping them, and `DOC_SCHEMA_FLOOR` does not move. `kind`, `exceptions` and
+`split_from` are additive in the same way.
 
-Two corrections against earlier revisions of this spec:
+**Status in the tree.** None of the eight exists yet: `Block` has the base
+fields only (`crates/sunrise-domain/src/block.rs#Block`), and `stream_id` is
+still required. [#342](https://github.com/justin13888/Sunrise/issues/342) and [#332](https://github.com/justin13888/Sunrise/issues/332) track them.
 
-- **`stream_id` is required.** A Block always has an owning Stream; there is
-  no untinted Block. It was specified as optional and has never been written
-  that way.
+Two notes against earlier revisions of this spec:
+
+- **`stream_id` is optional** ([ADR-0046](../11-adr/0046-optional-stream.md)).
+  A stream-less Block is sealed under the private key domain and drawn in the
+  neutral palette colour. An earlier revision made it required; that was the
+  Inbox-sentinel model, which ADR-0046 removes.
 - **There is no `timezone` field.** `SunriseTime` subsumes it — a `zoned`
   bound carries its own IANA zone, and a `floating` or `all_day` bound
   deliberately carries none. A second, Block-level zone would be a third
@@ -74,7 +126,8 @@ side table to keep in step with the vault** — see
 [`../09-integrations/icalendar.md`](../09-integrations/icalendar.md).
 
 `external_id` exists for the opposite direction: to carry a *foreign* id back
-out on export, and to name the Google event a pushed Block corresponds to.
+out on `.ics` export and to read it on `.ics` import. It serves nothing else;
+calendar-integration events are `ExternalEvent`s with their own id, not Blocks.
 Wiring dedup to it would replace an id-derivation that cannot drift with a
 lookup that can, and would need an index the schema does not have.
 ADR-0025 records this as a consequence precisely so that a later reader does
@@ -93,15 +146,43 @@ travel_time_before_s?: uint        ; seconds, matching the rest of the domain
 travel_time_after_s?:  uint
 ```
 
+### Recurring blocks
+
+A recurring block reuses the routine **series model**
+([`routines-and-recurrence.md`](./routines-and-recurrence.md)), and the
+expansion is the same Rust function:
+
+- **Anchor.** `starts_at` is the anchor and MUST be `zoned` or `floating`
+  ([`time.md` §6](../10-cross-cutting/time.md#6-recurrence-is-expanded-in-civil-space)).
+  The occurrence duration is `ends_at − starts_at` in civil terms, so a
+  09:00–11:00 block stays 09:00–11:00 on a DST day.
+- **Occurrence keys** are the intended civil start (`YYYY-MM-DDTHH:MM`), as for
+  routines, and never depend on how a DST gap resolved.
+- **Expanded on read, never stored.** `expand_block(block, window, zone)` yields
+  the occurrences that intersect a query window. No per-occurrence row is
+  written, so a recurring block costs one entity however long it runs.
+- **Exceptions** are a map of registers keyed by occurrence key: `cancelled`
+  removes one occurrence (iCal `EXDATE`), and an override changes one
+  occurrence's time or fields. Two devices changing two different occurrences
+  both keep their change.
+- **Edit scope** is *this* (writes an exception), *this and future* (splits the
+  series: the old block's `rrule.until` ends before the chosen occurrence and a
+  new block with `split_from` starts at it) or *all* (edits the series). The
+  split block's id is derived from `(series root, split key)`, so two devices
+  splitting at the same occurrence converge on one new block.
+- **Binding a task** to a recurring block binds it to one occurrence: the
+  binding carries the occurrence key.
+
 ### Importer status
 
-The model landing is not the importer landing. Today `crates/sunrise-integrations`
-parses `RRULE`, `DESCRIPTION` and `LOCATION` out of a `VEVENT` and then reports
-each one at the domain boundary as an `ICalNotice`, because `ical_map` has
-nowhere to put them — so **a recurring event imports as a single occurrence**.
-The fields above remove that limitation; **teaching the importer to use them is
-a later PR**, and until it lands the notices are still what a user sees. Nothing
-is silently dropped in either state.
+`crates/sunrise-integrations` parses `RRULE`, `DESCRIPTION` and `LOCATION` out
+of a `VEVENT` and then reports each at the domain boundary as an `ICalNotice`,
+because the tree's `Block` has none of the fields above. So **a recurring event
+imports as a single occurrence** until [#342](https://github.com/justin13888/Sunrise/issues/342) lands. The importer then maps
+`RRULE` to `rrule`, `EXDATE` to `cancelled` exceptions, `RECURRENCE-ID`
+overrides to exceptions, `LOCATION` to `location` and `DESCRIPTION` to `notes`,
+and `(source, uid)` stays the id derivation. Nothing is silently dropped in
+either state.
 
 ## Block title
 
@@ -142,23 +223,42 @@ Decision: keep them distinct. A Block can *bind* one-or-more Tasks; completing a
 - **Bind.** Add a Task. Bound Task's `blocks` field updates symmetrically.
 - **Complete bound tasks.** When all bound tasks are done before `ends_at`, UI offers to shrink the block.
 - **Run / no-show.** No "ran the block" state. We trust the user.
-- **Move.** Drag updates `starts_at`/`ends_at`. Travel-time buffers are recalculated.
+- **Move.** A drag goes through the planner's preview and commit
+  ([ADR-0048](../11-adr/0048-interactive-planner.md)), which writes
+  `starts_at`/`ends_at` on the dragged block and on any `flexible` block it had
+  to move. On a recurring block the drag asks for an edit scope.
 
 ## Calendar integration
 
-Blocks are the **bidirectional bridge** with external calendars. See [`../09-integrations/google-calendar.md`](../09-integrations/google-calendar.md):
+Calendar integrations are **read-only**
+([ADR-0049](../11-adr/0049-calendar-integrations-per-device-oauth.md), specified
+in [`../09-integrations/overview.md`](../09-integrations/overview.md)), and they
+never produce Blocks:
 
-- A Sunrise-created Block can be pushed to Google as an event (opt-in per Stream or per Block).
-- A Google event can be imported as a read-only Block (`source = import:gcal`). Sunrise *will not* mutate imported blocks; the user must "convert to Sunrise block" to edit.
+- An event fetched from Google Calendar, Microsoft Graph or CalDAV becomes an
+  **`ExternalEvent`**, a separate read-only entity. Recurring events are stored
+  as the occurrences the provider expanded inside the fetch window, each with a
+  deterministic id, so two devices fetching the same occurrence converge on one
+  entity.
+- The planner treats every `ExternalEvent` as fixed
+  ([ADR-0048](../11-adr/0048-interactive-planner.md)), and the calendar view
+  draws it beside the user's Blocks. No client edits it.
+- Nothing is pushed to an external calendar. A Block never becomes a provider
+  event, and there is no `import:gcal` source.
 
-This split prevents accidental write-amplification into the user's primary calendar.
+The only calendar path that writes Blocks is the one-shot `.ics` file import
+([`../09-integrations/icalendar.md`](../09-integrations/icalendar.md)), which is
+what `source` and `external_id` serve. Not built; ranked on the roadmap
+([`../roadmap.md`](../roadmap.md)) as
+[#4](https://github.com/justin13888/Sunrise/issues/4).
 
 ## Merge mapping
 
-The whole Block is one last-writer-wins unit on `(hlc, device_id, seq)`
-([ADR-0014](../11-adr/0014-entity-level-lww-merge.md)). `tasks` is an
-observed-remove set in the target state only; today a concurrent bind on one
-device and unbind on another resolves by timestamp.
+Per [ADR-0044](../11-adr/0044-per-field-ops.md): every scalar field is a
+per-field LWW register on `(hlc, device_id, seq)`; `tasks` is an add/remove
+OR-set; `exceptions` is a map of registers, one per occurrence key. The tree
+still merges the whole Block as one full-state unit until [#319](https://github.com/justin13888/Sunrise/issues/319) lands, so a
+concurrent bind on one device and unbind on another resolves by timestamp.
 
 The `block_tasks` projection is the sole writer of the binding relation and
 `Task.blocks` is derived from it, so the two never disagree — see §Symmetry
@@ -167,6 +267,12 @@ with `Task.blocks`.
 ## Conflicts
 
 When two devices schedule overlapping Blocks for the same task, both Blocks coexist. UI surfaces the conflict; user resolves manually. We do *not* auto-merge or auto-delete a Block.
+
+Overlap is decided by resolving both blocks' bounds in the reader's zone
+([`time.md` §2](../10-cross-cutting/time.md#2-comparisons-resolve-through-the-readers-zone-never-through-index_ms)),
+never on the storage index key, and recurring blocks overlap per occurrence.
+Today `overlaps` compares index keys
+(`crates/sunrise-domain/src/block.rs#overlaps`), tracked in [#336](https://github.com/justin13888/Sunrise/issues/336).
 
 The Calendar view shades the overlap region and shows a "Resolve" overflow menu with three actions:
 

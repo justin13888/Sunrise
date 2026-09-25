@@ -1,4 +1,4 @@
-//! v1 protocol-version constants.
+//! Protocol-version constants (wire protocol 1 and its sibling surfaces).
 //!
 //! Per `docs/10-cross-cutting/protocol-versioning.md` §2. The versioned
 //! surfaces are exposed as `u16` because the magic-prefix layout encodes
@@ -44,7 +44,7 @@ pub const ENVELOPE_FORMAT_V: u16 = 3;
 ///
 /// A v2 build handed a `blk_` or `att_` op cannot decode it — a new op variant
 /// is not a new field — and reports it as an invalid remote op rather than
-/// applying it wrongly. That is acceptable pre-1.0, where no build older than
+/// applying it wrongly. That is acceptable while no build older than
 /// this one exists (ADR-0018), and it is why the op vocabulary is documented
 /// as a wire contract in `sunrise_core::inner_op`.
 ///

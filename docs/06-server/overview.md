@@ -37,7 +37,7 @@ The Sunrise server is a thin, untrusted-for-content relay. It is an open-source 
 - Run business logic on content.
 - Generate human-readable notifications.
 - Run third-party integrations (Google Calendar OAuth flows happen on-device; the integration runs there).
-- Federation between servers (out of scope for v1).
+- Federation between servers (out of scope).
 
 ## Process model
 
@@ -122,12 +122,14 @@ For T2 deployments, a "single binary" mode bundles SQLite and disk-backed blob s
 
 ## Versioning
 
-v1 is a single wire-protocol version: the server speaks v1, clients speak v1, no negotiation. A future major version coordinates with a client release ≥30 days prior and migrates everything atomically; clients that miss the deadline see a clear "please update" message.
+The server and every client speak wire protocol 1, and **the version is negotiated**: `Hello::negotiate` (`crates/sunrise-wire-protocol/src/negotiation.rs`) picks the highest version both sides support, and with one version on each side the intersection is `{1}` ([`../05-sync/wire-protocol.md`](../05-sync/wire-protocol.md) §Versioning). A second wire protocol version is added through that same negotiation, with the server accepting both for an overlap window rather than switching everyone at once. A client whose supported set does not intersect the server's gets `SYNC_PROTOCOL_VERSION_MISMATCH` and a clear "please update Sunrise" message.
 
 Persisted server-side structures (recovery blobs at rest; snapshot blobs the server relays opaquely) follow the uniform 5-byte magic prefix from [`../10-cross-cutting/protocol-versioning.md`](../10-cross-cutting/protocol-versioning.md) §3. The server does not introspect these payloads; it stores opaque bytes.
 
-## Deferred to v2
+## Not built
 
-- **Managed cloud, plan tiers and billing** ([ADR-0027](../11-adr/0027-v1-self-host-first.md)). v1 ships one server shape and has no tiers.
+None of these is ranked on the roadmap ([`../roadmap.md`](../roadmap.md)).
+
+- **Managed cloud, plan tiers and billing** ([ADR-0027](../11-adr/0027-v1-self-host-first.md)). There is one server shape and no tiers.
 - Cross-server federation.
-- Foreground-service "always-on" sync on Android — moot for v1, which ships no Android client at all ([ADR-0027](../11-adr/0027-v1-self-host-first.md) clause 4).
+- Foreground-service "always-on" sync on Android — moot today, as there is no Android client at all ([ADR-0027](../11-adr/0027-v1-self-host-first.md) clause 4).

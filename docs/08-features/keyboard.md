@@ -6,6 +6,62 @@ status: accepted
 
 Sunrise must be operable end-to-end with the keyboard alone on every platform that has a keyboard.
 
+## Rules
+
+These three rules are normative for every client with a keyboard. [#348](https://github.com/justin13888/Sunrise/issues/348)
+brings the Apple clients into line with them.
+
+### 1. Hints everywhere
+
+Every action that has a key binding MUST show that binding **wherever the
+action appears**, so a user learns the key from the place they already reach
+for the action:
+
+| Surface | How the hint appears |
+|---|---|
+| Menu bar items | The platform's native key equivalent (macOS draws it; Windows and Linux menus show the accelerator text) |
+| Context menus | The same native key equivalent, or the binding right-aligned where the platform has none |
+| Toolbar buttons | In the tooltip (`.help` on Apple), after the action's title: "Undo complete ‘Report’ (⌘Z)" |
+| Command palette | The binding beside every command |
+| Cheat sheet | Every binding, grouped by scope |
+| Empty states | The one action that fills the view, named with its key: "Your Inbox is empty. Press ⌘N to capture." |
+| Onboarding tips and coachmarks | The key for each action a tip teaches |
+| Settings rows that trigger an action | The binding beside the row's button |
+| Notification action rows in Settings | The binding, where the action has one ([`notifications.md`](./notifications.md)) |
+
+One helper renders a hint from the keymap, in the platform's notation (`⌘⇧N` on
+macOS, `Ctrl+Shift+N` elsewhere). No surface formats a chord by hand.
+
+Hints are text as well as glyphs: every hint has an accessibility label that
+reads the chord in words ("Command Shift N").
+
+### 2. One keymap source
+
+Each client has exactly **one** table of bindings (`Keymap` on Apple:
+`apps/apple/Sunrise/Keyboard/Keymap.swift:250`'s `shortcutLabel` is the hint
+renderer). Every binding, every hint and every palette entry is derived from
+it. No view binds a key with a literal chord, and every bound action is an
+action in that table, so the palette and cheat sheet can list it. A test in each
+client enforces both halves: no literal chord outside the table, and every
+action with a chord appears in the palette, the cheat sheet and at least one
+menu.
+
+Today the Apple clients break this in five places: Quick Capture's global
+chord and Undo repeat chords the table already holds as literals, and Morning
+Summary (⌥⌘M), End of Day (⌥⌘E) and Import Calendar (⇧⌘I) are bound in
+`apps/apple/macOS/AppCommands.swift` with no action in the table at all. No
+toolbar tooltip names a key.
+
+### 3. Desktop parity
+
+Every desktop client (macOS, Windows, Linux, and the web client on a desktop
+browser) MUST offer the same set of actions with the same bindings, translated
+only by the platform's modifier convention (⌘ ↔ Ctrl, ⌥ ↔ Alt) and where a
+platform reserves a chord. An iPad or Android tablet with a hardware keyboard is
+held to the same set: palette, cheat sheet, the ⌘/Ctrl bindings and the list
+keymap. A phone with no hardware keyboard is exempt. A binding added to one
+desktop client is added to the table this page holds, and so to all of them.
+
 ## Per-platform default keymaps
 
 Defaults follow platform conventions.
@@ -15,15 +71,16 @@ Defaults follow platform conventions.
 > client. The `sunrise` CLI that replaced it is **not** a keyboard-driven
 > client — it is a set of twenty-three one-shot subcommands (`capture`, `edit`,
 > `defer`, `done`, `drop`, `today`, `inbox`, `next`, `focus`, `search`, …), so
-> it has no keymap to specify. The Win/Linux and Web columns are unbuilt
-> targets: macOS is the only shipping GUI client.
+> it has no keymap to specify. The Win/Linux and Web columns are the
+> contract for clients that do not exist yet: macOS is the only shipping
+> desktop client.
 
 > **Reading the macOS column.** Every binding below is **implemented and
 > reachable** in `apps/apple`, transcribed as data in
 > `apps/apple/Sunrise/Keyboard/Keymap.swift` and resolved in one of two scopes
 > (`.application`, attached to the window; `.list`, attached to the task list).
-> The Win/Linux and Web columns are specification for unbuilt targets — nothing
-> in them has been implemented, and they should be read as intent.
+> The Win/Linux and Web columns are the same actions under the desktop parity
+> rule above; nothing in them is implemented yet.
 
 | Action | macOS | Desktop (Win/Linux) | Web |
 |---|---|---|---|
@@ -53,6 +110,25 @@ Defaults follow platform conventions.
 | Undo | `Cmd+Z` | `Ctrl+Z` | `Ctrl+Z` |
 | Redo | `Cmd+Shift+Z` | `Ctrl+Y` | `Ctrl+Y` |
 
+### Specified bindings, not built
+
+Bindings the feature specs assign, reserved here so no other action takes them.
+They join the table above, with their hints, when their features land.
+
+| Action | macOS | Desktop (Win/Linux) | Spec |
+|---|---|---|---|
+| Upcoming | `Cmd+3` | `Ctrl+3` | [`planning-views.md`](./planning-views.md) |
+| Needs decision (triage) | `Cmd+4` | `Ctrl+4` | [`planning-views.md`](./planning-views.md) |
+| Save search | `Cmd+S` (in search) | `Ctrl+S` | [`search.md`](./search.md) |
+| Nudge item by one snap | `Opt+↑/↓` | `Alt+↑/↓` | [`planner.md`](./planner.md) |
+| Resize item by one snap | `Shift+Opt+↑/↓` | `Shift+Alt+↑/↓` | [`planner.md`](./planner.md) |
+| Move item a day | `Opt+←/→` | `Alt+←/→` | [`planner.md`](./planner.md) |
+| Plan my day | `Cmd+Opt+P` | `Ctrl+Alt+P` | [`planner.md`](./planner.md) |
+| Triage: Already done at… | `Shift+X` | same | [`planning-views.md`](./planning-views.md) |
+| Triage: Drop | `Backspace` | same | [`planning-views.md`](./planning-views.md) |
+| Triage: Keep | `Shift+K` | same | [`planning-views.md`](./planning-views.md) |
+| Morning summary, End-of-day plan, Import calendar | as in the table above, moved into the keymap | same | Rule 2 |
+
 Four entries need their exact behaviour stated, because the obvious reading is
 wrong:
 
@@ -78,7 +154,8 @@ wrong:
 **Remapping is not implemented.** An earlier revision of this file said the
 defaults were "user remappable in Settings". They are not: `Keymap.bindings` is
 a compile-time constant and Settings → Keyboard offers only the vim toggle
-below. Remapping is roadmap, not v1.
+below. When remapping lands it edits the one keymap source, so every hint
+follows the user's binding.
 
 ### Note editor
 
@@ -102,14 +179,14 @@ local pref (not synced) — `UserDefaults`, under the literal key
 sheet, which carries the same toggle so the mode is discoverable from the place
 that documents it. **Available on macOS only.** Web is unbuilt.
 
-### What v1 vim mode is
+### What vim mode is
 
 A **navigational subset**, scoped to the task list, and **additive** rather than
 modal: a key vim does not claim falls through to the ordinary list keymap, so
 `X` `D` `S` `M` `F` keep working with vim on. There is no Insert mode, and
 therefore no Normal mode to return to.
 
-### v1 vim-mode keymap (exhaustive, as shipped)
+### Vim-mode keymap (exhaustive, as shipped)
 
 | Keys | Action |
 |---|---|
@@ -153,9 +230,10 @@ focused) the browser keeps the binding.
 ## Discoverability
 
 - `?` in any view opens a contextual cheat sheet — on macOS. It is inert on
-  iOS; see [Mobile keyboards](#mobile-keyboards).
-- Command palette shows the current binding next to every command.
-- New users see an opt-in "show keyboard tips" coachmark.
+  iOS today; see [Mobile keyboards](#mobile-keyboards).
+- Every surface shows the binding of every action it offers, per
+  [Rule 1](#1-hints-everywhere).
+- New users see an opt-in "show keyboard tips" coachmark, whose tips name keys.
 
 ## Accessibility
 
@@ -174,7 +252,9 @@ focused) the browser keeps the binding.
   **Capture** button rather than a chord; the command palette (`⌘⇧P`) and the
   cheat sheet are handed inert closures in the tab shell, so `?` in a list does
   nothing there. An iPad that draws a system menu bar gets only the system's
-  own items, for the same reason. Android tablets are a deferred client.
+  own items, for the same reason. This falls short of [Rule 3](#3-desktop-parity),
+  which holds a tablet with a hardware keyboard to the desktop set; [#348](https://github.com/justin13888/Sunrise/issues/348)
+  closes it with `UIKeyCommand`-backed commands. Android has no client yet.
 - **A software keyboard is told what the field holds.** Capture takes a `text`
   input mode with autocorrect off and no autocapitalisation, so that `#`, `@`,
   `^`, `!` and `~` are typed as-is and predictive text cannot rewrite a token
@@ -207,10 +287,10 @@ focused) the browser keeps the binding.
   is no Escape key to hand focus back with, and **Cancel** / **Add** buttons in
   the capture sheet, because the Mac's panel commits on Return and closes on
   Escape and a phone can do neither visibly.
-- The requirement level is in
-  [`../07-clients/parity-matrix.md`](../07-clients/parity-matrix.md): iOS
-  *Keyboard navigation* is a **SHOULD** scoped to the list keymap, and the
-  audit grades it `met *(list keymap)*`.
+- The per-class target and the audit are in
+  [`../07-clients/parity-matrix.md`](../07-clients/parity-matrix.md), which
+  grades iOS *Keyboard navigation* `met *(list keymap)*`: the list keymap on an
+  attached keyboard, and nothing above it until [#348](https://github.com/justin13888/Sunrise/issues/348).
 
 ## Conflict policy
 

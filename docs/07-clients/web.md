@@ -6,7 +6,7 @@ status: accepted
 
 A React (TS) PWA running the Sunrise core compiled to WebAssembly. Offline-capable; installable; runs without a browser session-by-session.
 
-> **v1 status — WASM core deferred; the MSRV half of the blocker is cleared.**
+> **Status — WASM core not built, ranked as [#52](https://github.com/justin13888/Sunrise/issues/52) (deploy: [#11](https://github.com/justin13888/Sunrise/issues/11)); the MSRV half of the blocker is cleared.**
 > The architecture below is the *target*. A gated spike (see
 > [ADR 0012](../11-adr/0012-web-wasm-deferred.md)) found that the only `rusqlite`
 > line integrating `sqlite-wasm-rs` (`0.40`, via `ffi-sqlite-wasm-rs`) requires
@@ -22,14 +22,14 @@ A React (TS) PWA running the Sunrise core compiled to WebAssembly. Offline-capab
 > nine minor versions, 100+ call sites, and a wholesale change of the native
 > SQLite/SQLCipher stack — tracked as
 > [#52](https://github.com/justin13888/Sunrise/issues/52), still subject to the
-> same hard gate. **Until it lands, v1 web ships the `localStorage` stub**
+> same hard gate. **Until it lands, the web client ships the `localStorage` stub**
 > behind `apps/web/src/wasm.ts`'s `loadCore()` seam: in-tab, **unencrypted**, no
 > OPFS, no real `sunrise-core`. It exists so the PWA shell renders for UI
 > development.
 >
 > Note also that even once the WASM path lands, `sqlite-wasm-rs` yields
 > **plaintext SQLite in OPFS** (no SQLCipher key pragmas on wasm) — a
-> spec-accepted v1 web gap — and multi-tab exclusivity moves to the JS layer's
+> spec-accepted web gap — and multi-tab exclusivity moves to the JS layer's
 > `navigator.locks`.
 
 ## Targets
@@ -64,7 +64,7 @@ React UI ──▶ Web Worker (sunrise-core WASM)
 
 ### SQLite in the browser
 
-- *Target state:* `wa-sqlite` (WASM SQLite with FTS5), async access only, via Web Worker. Nothing in the tree builds it — the WASM core is deferred ([ADR-0012](../11-adr/0012-web-wasm-deferred.md)) and no `wa-sqlite` dependency is declared anywhere.
+- *Target state:* `wa-sqlite` (WASM SQLite with FTS5), async access only, via Web Worker. Nothing in the tree builds it — the WASM core is not built ([#52](https://github.com/justin13888/Sunrise/issues/52), [ADR-0012](../11-adr/0012-web-wasm-deferred.md)) and no `wa-sqlite` dependency is declared anywhere.
 - We are not using the browser's built-in WebSQL or any other sync API.
 
 ### Service Worker
@@ -96,7 +96,7 @@ Two open tabs sharing a vault would otherwise corrupt SQLite. Solution:
 
 | Limitation | Mitigation |
 |---|---|
-| No global hotkey (browser-scoped only) | Browser extension companion (separate spec; v1.x) |
+| No global hotkey (browser-scoped only) | Browser extension companion (separate spec; not built) |
 | No background sync without Service Worker tricks; no guaranteed background time | Periodic Background Sync API where available; otherwise sync on tab focus |
 | Reduced clipboard / drag-and-drop privileges | Use modern Clipboard API; permissions prompt as needed |
 | Push only via Web Push (VAPID); no APNs/FCM directly | Use Web Push; iOS Safari supports it (16.4+) |
@@ -135,7 +135,7 @@ Deep links arriving before the Service Worker is ready are queued in `localStora
 
 ### Self-host vs managed cloud
 
-*Target state.* The web client would connect to whatever sync server URL is configured, with the operator hosting the static assets or pointing the user at a hosted app configured against their server. A runtime server-URL setting is the web client's own deliverable and does not exist; there is no "settings handshake" protocol anywhere in the tree. Note also that v1 ships one server shape, self-host ([ADR-0027](../11-adr/0027-v1-self-host-first.md)), so there is no managed alternative to choose between.
+*Target state.* The web client would connect to whatever sync server URL is configured, with the operator hosting the static assets or pointing the user at a hosted app configured against their server. A runtime server-URL setting is the web client's own deliverable and does not exist; there is no "settings handshake" protocol anywhere in the tree. Note also that there is one server shape, self-host ([ADR-0027](../11-adr/0027-v1-self-host-first.md)), so there is no managed alternative to choose between.
 
 ## What about the browser as a *capture* tool?
 
@@ -145,4 +145,4 @@ A browser extension (separate codebase, smaller scope) gives us:
 - "Send page to Sunrise" action.
 - Selection-to-task command.
 
-Tracked as v1.x; not in v1 scope.
+Not built.

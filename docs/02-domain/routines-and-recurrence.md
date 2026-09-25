@@ -6,10 +6,20 @@ status: accepted
 
 A Routine is a template plus a recurrence rule. It generates Tasks (occurrences) on a schedule. Routines are first-class because multi-stream operators rely heavily on them — gym, journaling, weekly review, paying bills, watering plants.
 
+> **Amended** by [`../10-cross-cutting/time.md`](../10-cross-cutting/time.md)
+> (civil anchors, one DST rule, expansion in civil space),
+> [ADR-0044](../11-adr/0044-per-field-ops.md) (skip and streak sets merge as
+> OR-sets), [ADR-0046](../11-adr/0046-optional-stream.md) (the template's
+> stream is optional) and [ADR-0047](../11-adr/0047-deadlines-and-lateness.md)
+> (occurrences are planned with `planned_at`; nothing is changed
+> automatically). This revision also fixes the defects recorded in [#331](https://github.com/justin13888/Sunrise/issues/331);
+> §Status in the tree lists what the code does today.
+
 ## Fields
 
 Shared types are defined in
-[`overview.md` §Common CDDL types](./overview.md#common-cddl-types).
+[`overview.md` §Common CDDL types](./overview.md#common-cddl-types), and `stime`
+in [`time.md` §1](../10-cross-cutting/time.md#1-every-stored-time-is-a-sunrisetime).
 
 ```cddl
 Routine = {
@@ -18,40 +28,38 @@ Routine = {
     updated_at:        timestamp,
     template:          TaskTemplate,        ; what each occurrence looks like
     rrule:             RRule,               ; a STRUCTURED MAP, not an RFC 5545 string
-    timezone:          tstr,                ; IANA tz; rrule is interpreted in this tz
-    starts_at:         timestamp,
-    ends_at?:          timestamp,           ; routine sunsets after this
-    skip_dates:        [* timestamp],       ; DEPRECATED; see below
-    skipped_keys?:     [* occurrence-key],  ; the live skip list; omitted when empty
+    anchor:            stime,               ; "zoned" (default) or "floating": the first occurrence's wall clock
+    ends_at?:          stime,               ; "floating" or "all_day"; no occurrence after it
+    split_from?:       entity-ref,          ; rtn_ ref of the series this one continues (§Edit scope)
+    skipped_keys:      [* occurrence-key],  ; OR-set; the skip list
+    streak_keys:       [* occurrence-key],  ; OR-set; occurrences completed within the grace window
     catchup_policy:    CatchupPolicy,
-    streak_counter:    int,
-    last_completed_at?: timestamp,
     grace_window_s?:   uint,                ; seconds; absent = the 24h default
     forgiveness_enabled?: bool,             ; default TRUE; only `false` hits the wire
-    streak_started_at?: timestamp,          ; anchor of the streak and its 30-day window
-    forgivenesses_in_window?: uint,         ; omitted when 0
-    streak_keys?:      [* occurrence-key],  ; occurrences already counted; omitted when empty
     paused:            bool,
-    paused_until?:     timestamp,
-    scheduling_constraints?: [* SchedulingConstraint], ; copied to each materialized task; whole list is one LWW register (max 16); omitted when empty; see scheduling-constraints.md
+    paused_until?:     stime,               ; the pause ends here; see §Pausing
+    scheduling_constraints?: [* SchedulingConstraint], ; copied to each occurrence; one register (max 16)
     archived:          bool,
     deleted:           bool,
     unknown-fields,                         ; see overview.md
 }
 
-; A wall-clock occurrence identifier, minute precision, no zone. Resolved
-; against the Routine's own `timezone`. Chosen over an instant because a key
-; is immune to tzdb drift; see §Skip list below.
+; The intended civil start of an occurrence, minute precision, no zone.
+; It is the single identity of an occurrence: task id, skip, streak and merge
+; all use it. See §Occurrence key.
 occurrence-key = tstr .regexp "[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}"
 
 TaskTemplate = {
     title:             text<512>,
-    stream_id:         entity-ref,
+    stream_id?:        entity-ref,          ; absent = no stream (ADR-0046)
     contexts:          [* entity-ref],
     energy?:           Energy,
     priority?:         1..5,
     estimated_duration_s?: uint,            ; SECONDS, matching Task
     body?:             NoteBody,
+    target_offset_s?:  uint,                ; if set, each occurrence's target_at = occurrence + offset
+    hard_due_offset_s?: uint,               ; if set, each occurrence's hard_due_at = occurrence + offset
+    unknown-fields,
 }
 
 ; The RRULE is parsed at the edge and stored decomposed. Storing the string
@@ -67,199 +75,331 @@ RRule = {
     by_month?:         [* 1..12],
     by_set_pos?:       [* int],
     count?:            uint,
-    until?:            timestamp,
+    until?:            stime,               ; "floating" or "all_day", in the anchor's civil frame; inclusive
     wkst?:             Weekday,
+    unknown-fields,
 }
 
-Frequency = "DAILY" / "WEEKLY" / "MONTHLY" / "YEARLY"
-Weekday   = "SU" / "MO" / "TU" / "WE" / "TH" / "FR" / "SA"
+Frequency = "DAILY" / "WEEKLY" / "MONTHLY" / "YEARLY" / tstr
+; Weekday is defined once, in ../10-cross-cutting/time.md §1.
 
-CatchupPolicy = "skip"        ; missed occurrences are dropped
-              / "merge"       ; missed occurrences collapse into one task
-              / "queue"       ; each missed occurrence becomes a separate task
+CatchupPolicy = "skip"        ; past open occurrences lapse
+              / "merge"       ; past open occurrences collapse into the latest
+              / "queue"       ; every past open occurrence stays
+              / tstr          ; unknown: read as "queue", the policy that hides nothing
 ```
 
-`Frequency` and `Weekday` are the **only** two enums on the wire without an
-unknown-value fallback: every other one degrades to a safe default rather than
-rejecting the op it arrived in. Recurring on the wrong schedule is worse than
-failing the routine, so these reject. See
-[`schema-versioning.md`](./schema-versioning.md).
+**Removed from the previous shape.** `timezone` and `starts_at` are replaced by
+`anchor` (a zoned anchor carries its own zone). `skip_dates` is gone: its
+entries migrate into `skipped_keys` (below). `streak_counter`,
+`last_completed_at`, `streak_started_at` and `forgivenesses_in_window` are no
+longer stored: they are derived from `streak_keys` (§Streak), because a stored
+counter beside the set it counts is two values that can disagree.
 
-### Skip list: `skipped_keys` supersedes `skip_dates`
+**Unknown enum values are preserved, and a rule that cannot be read generates
+nothing.** An unknown `Frequency` or `Weekday` round-trips byte for byte
+([#321](https://github.com/justin13888/Sunrise/issues/321)). Recurring on the wrong schedule is worse than not recurring, so a
+routine whose rule contains an unknown value generates no occurrences on this
+build and is shown as "needs a newer Sunrise". The op that carried it is never
+rejected.
 
-Two representations of "skipped" is one more than can be kept in agreement, so
-`skip_dates` is **deprecated** and `skipped_keys` is the live field. Stage A of
-the removal (stop reading for new skips) is complete — `SkipRoutineOccurrence`
-writes only `skipped_keys`. `skip_dates` survives to read pre-existing
-payloads and iCal `EXDATE` imports, and is dropped at
-`DOC_SCHEMA_FLOOR = 3`, per
-[`../04-storage/migrations.md`](../04-storage/migrations.md) §doc-schema
-migrations.
+## Occurrence key
 
-An instant has to be re-resolved against the routine's timezone on every read
-and silently stops matching its occurrence when that zone's rules change. A
-key does not.
+**One key per occurrence, used everywhere.** The key is the occurrence's
+**intended civil start**, `YYYY-MM-DDTHH:MM`, as produced by expanding the rule
+in civil space ([`time.md` §6](../10-cross-cutting/time.md#6-recurrence-is-expanded-in-civil-space)).
+It is never derived from the resolved instant. So on a spring-forward night a
+02:30 occurrence has key `…T02:30` while it fires at 03:30, and:
 
-**`skipped_keys` is append-only, and a skip is permanent.**
-`Command::SkipRoutineOccurrence` appends the occurrence key (deduplicating
-against what is already there) and there is **no un-skip command**: nothing in
-`Command` removes an entry, and `RoutinePatch` has no `skipped_keys` field. A
-user who skips the wrong occurrence cannot restore it, and the occurrence is
-suppressed on every device forever. That is a real gap, not a design choice —
-the append-only shape is what makes the list converge under entity-level LWW,
-but converging on "skipped" was never meant to be irreversible.
+- the materialized task's id is `occurrence_task_id(series_root, key)`;
+- a skip adds `key` to `skipped_keys`;
+- an on-time completion adds `key` to `streak_keys`;
+- the task records `routine_occurrence_key = key`.
 
-**The `DOC_SCHEMA_FLOOR = 3` removal date has not arrived.** `DOC_SCHEMA_FLOOR`
-is **1** in `crates/sunrise-cbor/src/version.rs`, and it moves only when a shape
-stops being readable — not when `DOC_SCHEMA_V` advances past 3. So `skip_dates`
-stays on the wire for now, and stage B ("stop writing") is not due.
+A key is resolved to an instant only when something needs an instant: in the
+anchor's `tz` for a `zoned` anchor, and in the reader's zone for a `floating`
+anchor, by the DST rule in [`time.md` §3](../10-cross-cutting/time.md#3-one-dst-rule).
 
-### `merge` semantics
+**`series_root`** is the id of the first routine in a chain of splits
+(§Edit scope): a routine with no `split_from` is its own root. Keying task ids
+on the root is what lets a split series adopt occurrences its predecessor
+already materialized instead of duplicating them.
 
-When generation runs and finds N ≥ 2 missed occurrences, `merge` produces exactly **one** task:
+### Anchors are civil
 
-- `scheduled_at` and `routine_occurrence` = the **most recent** missed
-  occurrence's instant. Both are single values, not lists: `Task.routine_occurrence`
-  is one instant, which is also what keys generation's idempotency.
-- `title` = the template's title with a ` (xN catch-up)` suffix. There is no
-  separate `title_template` field; `TaskTemplate.title` is the template.
-- The idempotency key is the **latest missed occurrence's** key, so the merged
-  task collides with — and therefore replaces rather than duplicates — the
-  occurrence it stands in for, and completing it increments the streak by 1,
-  not N. Earlier revisions specified a `":merged:" || sorted_dates_hash` key;
-  that would have made the merged task a *fourth* distinct id, generating a
-  duplicate whenever the policy changed. Nothing has ever emitted it.
+The anchor is a wall-clock time, not an instant. Changing a routine's zone
+changes the anchor's `tz` and nothing else, so a 09:00 Los Angeles routine
+moved to New York is a 09:00 New York routine. A `floating` anchor ("09:00
+wherever I am") resolves each occurrence in the reader's zone, so it fires at
+09:00 local on every device, and its keys, task ids and streak are identical
+across devices because they are civil.
 
-N = 1 is not a merge: the single missed occurrence materializes normally.
+## Skip list
+
+`skipped_keys` is an **OR-set** of occurrence keys
+([ADR-0044](../11-adr/0044-per-field-ops.md)):
+
+- `Command::SkipRoutineOccurrence { routine, key }` adds the key.
+- `Command::UnskipRoutineOccurrence { routine, key }` removes it, so a skip is
+  no longer permanent. Two devices skipping and unskipping concurrently resolve
+  add-wins.
+- A skipped key generates no task. If the occurrence was already materialized
+  and is untouched, skipping it also tombstones that task in the same command;
+  a touched one is left alone and shown as skipped.
+
+**Migration.** The deprecated `skip_dates` instants are converted to keys by
+expanding the rule over each instant's civil day in the routine's zone and
+taking the occurrence whose task id matches; an entry that matches no
+occurrence is dropped with a `core.routine.skip_date_unmatched` log line. iCal
+`EXDATE` values map to keys the same way.
 
 ## Recurrence rule
 
-We use **RFC 5545 RRULE** (the iCalendar standard) as a baseline. Supported parts: `FREQ`, `INTERVAL`, `BYDAY`, `BYMONTHDAY`, `BYMONTH`, `BYSETPOS`, `COUNT`, `UNTIL`, `WKST`. Not supported in v1: `BYYEARDAY`, `BYWEEKNO`.
+We use **RFC 5545 RRULE** as the baseline. Supported parts: `FREQ`, `INTERVAL`,
+`BYDAY`, `BYMONTHDAY`, `BYMONTH`, `BYSETPOS`, `COUNT`, `UNTIL`, `WKST`.
+`BYYEARDAY` and `BYWEEKNO` are not supported, and `RRuleParseError::UnknownPart`
+rejects them at the edge rather than silently dropping them.
 
-The parser accepts the RFC 5545 text form and stores the decomposed `RRule`
-map above; `RRuleParseError::UnknownPart` rejects anything outside the
-supported set rather than silently dropping it.
+- **Expansion is civil.** The rule is expanded over civil date-times from the
+  anchor's civil value, with no zone. `until`, `count` and `ends_at` are
+  applied to keys in civil space: an `all_day` `until` includes every
+  occurrence on that date.
+- **An iCal `UNTIL` in UTC** is converted at import into the anchor's civil
+  frame (resolved in the anchor's zone), because a rule's end is a property of
+  the series' wall clock.
+- `EXDATE` maps to `skipped_keys`. `RDATE` is not supported, and import reports
+  it with an `int.import.rrule_lossy` warning.
 
-`EXDATE` and `RDATE` are separate iCal properties, not RRULE parts. EXDATE maps to `Routine.skip_dates` at import; RDATE is not supported in v1 (import drops it with an `int.import.rrule_lossy` warning).
+The iCal importer imports a `VEVENT` as a **Block**, never as a Routine; a
+recurring event becomes a recurring Block ([`time-blocks.md`](./time-blocks.md)
+§Recurring blocks), which shares this expander.
 
-> **Both statements describe a Routine importer that does not exist.** The iCal
-> importer is reachable from both shipping clients now — `sunrise ical import`,
-> and the macOS File menu over the seam's `import_ical` — but it imports a
-> `VEVENT` as a **Block**, never as a Routine, so
-> nothing maps `EXDATE` to `Routine.skip_dates`. `EXDATE`, `RDATE` and `RRULE`
-> itself are all reported as unmapped and dropped, which means a recurring
-> event imports as a single occurrence. See
-> [`../09-integrations/icalendar.md`](../09-integrations/icalendar.md) for what
-> the subset does and does not carry.
+Sunrise extensions, specified and **not** modelled (each would add a field):
 
-Sunrise extensions — **specified, not implemented.** Neither has a field in
-`Routine`, and `RRule` has no room for one; both would be a `DOC_SCHEMA_V`
-bump:
-
-- **Floating windows.** "Within a 3-day window starting Monday." Useful for non-anchored habits ("3 workouts/week, any 3 days").
-- **Adaptive cadence.** "Every X days since last completion" rather than calendar dates.
+- **Floating windows.** "Within a 3-day window starting Monday." Useful for
+  non-anchored habits ("3 workouts a week, any 3 days").
+- **Adaptive cadence.** "Every X days since last completion" rather than
+  calendar dates (§Adaptive cadence).
 
 ## Generation
 
-A background job in the core looks ahead by a per-Routine `materialization_horizon`. Defaults by `FREQ`:
+A job in the core materializes occurrences up to a look-ahead horizon, a pure
+function of `FREQ` (`materialization_horizon_days` in
+`crates/sunrise-domain/src/routine.rs`):
 
-| FREQ | Default horizon |
+| FREQ | Horizon |
 |---|---|
 | `DAILY` | 14 days |
 | `WEEKLY` | 60 days |
 | `MONTHLY` | 180 days |
 | `YEARLY` | 540 days |
 
-> **Not a field in v1.** The horizon is a pure function of `FREQ`
-> (`materialization_horizon_days` in `crates/sunrise-domain/src/routine.rs`),
-> not a stored, user-editable `Routine` field. The paragraph below describes
-> the intended editable form; adding it is a `DOC_SCHEMA_V` bump.
+For each key in `[watermark, now + horizon]`, in the series that owns the key
+(§Edit scope):
 
-The horizon is intended to become a Routine field (user-editable in the Routine settings UI; range 7–730 days, clamped on write). Reducing the horizon **does not** delete already-generated future occurrences (that would discard any user notes/edits on them); increasing the horizon generates new occurrences from `max(now, last_generated_at)` to the new horizon. For each occurrence in the horizon that has no existing Task:
+1. Skip it if it is in `skipped_keys`, or the routine is paused at that key
+   (§Pausing), or the effective stream of the template is paused.
+2. Skip it if a task with `occurrence_task_id(series_root, key)` exists, live
+   or tombstoned. **Generation is idempotent**, which is critical because it
+   runs on every device.
+3. If the key is already in the past beyond the grace window (a device that was
+   offline, or a routine created with a past anchor), apply the catch-up policy
+   at generation: `skip` generates nothing; `merge` generates only the latest
+   such key; `queue` generates every one.
+4. Otherwise create the Task from the template, with `routine_id =
+   series_root`, `routine_occurrence_key = key`, `planned_at` = the key in the
+   anchor's kind (`zoned` with the anchor's `tz`, or `floating`), `target_at`
+   and `hard_due_at` from the template's offsets if set, and the template's
+   `stream_id` resolved through `effective_stream`
+   ([ADR-0046](../11-adr/0046-optional-stream.md) §4).
 
-1. Compute occurrence datetime in the routine's tz.
-2. Apply the skip list — `skipped_keys` first, then the deprecated `skip_dates`.
-3. If `catchup_policy = skip` and the occurrence is in the past beyond a grace window, drop it.
-4. Otherwise, create a Task with `routine_id` and `routine_occurrence` set.
+Tasks are never generated into a deleted stream: a template naming a deleted
+stream generates into whatever the tombstone re-homes it to, or into no stream.
 
-Generation is **idempotent** — re-running generates nothing if the Task already exists for that `(routine_id, occurrence)` pair. This is critical because generation runs on every device.
+### Catch-up for occurrences already materialized
 
-### Scheduling constraints on generated tasks
+The watermark advances past occurrences once they are generated, so the rule
+above cannot reach an occurrence generated in advance and then left open. The
+catch-up policy therefore **also** applies to open occurrences at read time, as
+a derived state that writes nothing (nothing changes a task automatically,
+[ADR-0047](../11-adr/0047-deadlines-and-lateness.md) §4):
 
-A Routine's `scheduling_constraints` are **copied verbatim** onto each Task at generation time (evaluated thereafter in the *Task's* device-local tz, per [`scheduling-constraints.md`](./scheduling-constraints.md)). The `rrule` decides *when* occurrences exist; constraints only annotate and validate the *scheduling* of the resulting Tasks. An occurrence that violates a `hard` constraint is still materialized — never silently dropped — but **flagged** so the UI can surface it; the constraint governs scheduling, not existence.
+An open occurrence is **past** when its key's resolved instant plus the grace
+window is before `now`. For the routine's past open occurrences:
 
-## Editing series vs occurrence
+| Policy | Views show |
+|---|---|
+| `skip` | none of them. Each is **lapsed**: hidden from Today, lists and the triage queue, counted as missed for the streak, and listed under the routine's "Lapsed" with a bulk Drop. |
+| `merge` | only the latest, titled with a ` (×N catch-up)` suffix computed at read time; the others are lapsed. |
+| `queue` | all of them, as ordinary tasks. |
 
-Editing a generated Task only touches that occurrence. Editing the Routine prompts: *"Apply to future occurrences only / All future and past unstarted / Just the routine template."*
+A lapsed occurrence that the user edits, completes or drops is no longer open
+and leaves the lapsed set by the same predicate.
 
-## Streak counter
+### Scheduling constraints on occurrences
 
-Increments on completion of an occurrence within `grace_window_s` after the
-scheduled time. `grace_window_s` is a per-Routine field: absent means the
-24-hour default (`DEFAULT_GRACE_WINDOW_S`), and any value is clamped on read to
-7 days (`MAX_GRACE_WINDOW_S`).
+A Routine's `scheduling_constraints` are **copied** onto each generated Task.
+The `rrule` decides *when* occurrences exist; constraints annotate and validate
+the planning of the resulting Tasks, evaluated in the anchor's zone for a
+`zoned` anchor ([`scheduling-constraints.md`](./scheduling-constraints.md)
+§Evaluation zone). An occurrence that violates a `hard` constraint is still
+generated, never silently dropped, and the violation is **derived and flagged
+on read** like any other constraint violation, not persisted.
 
-`streak_counter` is a plain signed integer that merges with the rest of the
-Routine row under entity-level LWW
-([ADR-0014](../11-adr/0014-entity-level-lww-merge.md)). It is **not** a
-PN-counter, and entity LWW alone would not stop a double-count — the
-idempotency set below is what does.
+## Edit scope
 
-Idempotency: only the **first** `pending → done` transition for an occurrence
-increments the counter. The occurrence's key (`YYYY-MM-DDTHH:MM`, the
-`occurrence-key` type above) is appended to `streak_keys`, sorted; the full
-idempotency key in prose is this Routine's id joined with the entry.
-Subsequent `done → pending → done` transitions on the same occurrence find the
-key already present and are no-ops for the streak. Membership is **permanent
-(no GC)**, per
-[`../08-features/recurrence-engine.md`](../08-features/recurrence-engine.md).
+Editing a generated Task touches only that task. Editing the Routine takes an
+explicit scope:
 
-`streak_keys` is a literal sorted list of strings, not a probabilistic
-structure: an earlier revision of this spec described an "HLL-flavored set",
-and an approximate membership test is the wrong tool here — a false positive
-silently drops a real increment, and the exact list costs ~16 bytes per
-occurrence.
+```rust
+enum EditScope {
+    This { key: OccurrenceKey },           // one occurrence
+    ThisAndFuture { key: OccurrenceKey },  // split the series at `key`
+    All,                                   // the whole series
+}
+```
 
-Two devices completing the same occurrence concurrently both write the same
-key, so whichever row wins the LWW carries one copy of it. Two devices
-completing *different* occurrences concurrently is where entity LWW bites: one
-row wins whole, and the loser's key and increment are dropped from the
-projection (they survive in the op log). See ADR-0014 §What we give up.
+- **This** writes the change onto that occurrence's Task only (materializing it
+  first if it is inside the horizon but not yet generated). A time change moves
+  its `planned_at`; the occurrence keeps its key.
+- **This and future** splits the series. In one command:
+  1. the old routine's `rrule.until` is set to the civil start of the last
+     occurrence before `key` (or, if there is none, the old routine is
+     archived);
+  2. a new routine is created with `split_from` = the old routine's id,
+     `anchor` = `key` in the anchor's kind (with the edit applied), the edited
+     template and rule, and the old routine's `skipped_keys` and `streak_keys`
+     at or after `key`;
+  3. the new routine's id is derived from `(series_root, key)`, so two devices
+     that split the same series at the same occurrence create **one** routine
+     and merge its fields.
+- **All** edits the routine itself.
 
-**The streak fields are system-managed.** Of them, `RoutinePatch` exposes
-exactly two knobs — `grace_window_s` and `forgiveness_enabled` — and no others.
-(The patch type carries ten further fields, none of them streak state:
-`template`, `rrule`, `timezone`, `starts_at`, `ends_at`,
-`scheduling_constraints`, `catchup_policy`, `paused`, `paused_until` and
-`archived`.)
-`streak_counter`, `streak_started_at`, `forgivenesses_in_window`, `streak_keys`
-and `last_completed_at` have no patch field and no command: they move only as a
-side effect of completing an occurrence, in the same transaction as the
-`task.update` that caused it. A streak cannot be corrected by hand, in either
-direction.
+**Which series owns a key.** Keys are identified against the series root, so a
+split can leave two routines whose ranges overlap after a concurrent edit (two
+devices splitting at different keys). For each key, the owning routine is the
+live routine in the root's chain with the **latest anchor at or before the
+key**, ties broken by id. Only the owner's template and rule apply to that key,
+so every replica generates each key once, from one template.
 
-Streak resets to 0 on a missed occurrence with one exception: the **forgiveness rule** allows up to one missed occurrence per 30-day rolling window without resetting. The forgiveness rule is enabled by default and toggled per Routine.
+### Template propagation
 
-The 30-day forgiveness window is anchored at **`streak_started_at`**, the timestamp of the first non-failed completion that began the current streak. Sliding behavior:
+A template edit with scope *This and future* or *All* propagates to occurrences
+that already exist:
 
-- When `now - streak_started_at > 30 days`, `streak_started_at` advances to `streak_started_at + 30 days` (re-anchor without resetting the streak).
-- Forgiveness is consumed when applied; the counter `forgivenesses_in_window`
-  tracks usage and resets to 0 on each anchor advance. The allowance is 1 per
-  window (`FORGIVENESS_ALLOWANCE`), and the window is 30 days
-  (`FORGIVENESS_WINDOW_S`), both in `crates/sunrise-domain/src/streak.rs`.
+- It reaches every **open** occurrence in scope (for *All*, past open ones
+  included) and never a completed or cancelled one.
+- It is **per field**: a field propagates to an occurrence only if that
+  occurrence's register for the field was last written by generation or by an
+  earlier propagation. A field the user edited on that occurrence is left
+  alone, and other fields of the same occurrence still update. The register's
+  origin (generated or user) is part of the per-field register
+  ([ADR-0044](../11-adr/0044-per-field-ops.md)).
+- A rule or anchor change re-keys nothing. An untouched open occurrence whose
+  key is no longer produced by the new rule is tombstoned; a touched one stays
+  as an ordinary task, keeps its `routine_id`, and is shown as "no longer in
+  the series".
+- Propagation writes are made by the device that issued the edit, in the same
+  transaction as the edit.
+
+## Streak
+
+A streak is **derived**, never stored. Its only stored input is `streak_keys`,
+an OR-set of the occurrence keys completed within the grace window:
+
+- An occurrence's key is added on its **first** transition to `done` whose
+  `completed_at` is within `grace_window_s` after the occurrence's resolved
+  start (absent: the 24-hour default `DEFAULT_GRACE_WINDOW_S`; any value is
+  clamped to 7 days, `MAX_GRACE_WINDOW_S`). A backdated `completed_at`
+  ([ADR-0047](../11-adr/0047-deadlines-and-lateness.md)) counts by its own
+  value, so a late click does not break a streak the work did not break. An
+  `all_day` `completed_at` counts if that date is the occurrence's planner
+  date.
+- A later `done → todo → done` finds the key present and adds nothing.
+- Two devices completing different occurrences concurrently both add their
+  keys, and the OR-set keeps both. That is the fix for the previous
+  whole-row merge, which lost one.
+
+```rust
+fn streak(routine: &Routine, now: Timestamp, zone: &TimeZone) -> StreakState
+struct StreakState { current: u32, started_at: Option<OccurrenceKey>, last_completed: Option<OccurrenceKey>, forgiveness_used: u32 }
+```
+
+`streak` walks the series' expected keys (the rule's expansion across the
+split chain, minus `skipped_keys` and paused keys) up to the last key whose
+grace window has closed at `now`, newest first, and counts consecutive keys in
+`streak_keys`. A key not in `streak_keys` ends the streak, unless forgiveness
+covers it:
+
+- **Forgiveness** (enabled by default, per routine) excuses at most
+  `FORGIVENESS_ALLOWANCE` (1) missed key in any `FORGIVENESS_WINDOW_S`
+  (30 days) window of the walk, both constants in
+  `crates/sunrise-domain/src/streak.rs`.
+- Because the walk is a pure function of the keys, the forgiveness window no
+  longer needs a stored anchor or a stored usage count, and two devices can
+  never disagree about how much forgiveness remains.
+
+A streak is deliberately not a PN-counter: a streak resets, and a counter that
+must be reset by subtracting its current value is not convergent under
+concurrent completions. A set of keys is.
 
 ## Pausing
 
-Pausing a Routine stops generation but does not delete already-generated occurrences. `paused_until` auto-unpauses.
+A routine is paused at key `k` when `paused` is true and either `paused_until`
+is absent or `k` is before `paused_until`, compared by the rule in
+[`time.md`](../10-cross-cutting/time.md) §1 and §6: in the anchor's civil frame
+for a `floating` value, by resolved instant for `instant` and `zoned` ones, and
+for an `all_day` value of `d`, against the start of planner day `d` (a key is
+paused when it resolves before `boundary(d)`). Paused keys are not generated and are not expected by the
+streak. Nothing writes `paused = false` when the pause ends: the comparison
+simply stops holding. Already-generated occurrences are not deleted by a
+pause.
 
 ## Adaptive cadence — convergence rule
 
-> **Not implemented.** Adaptive cadence has no field in `Routine` (see §Recurrence
-> rule). This records the rule it must follow when it lands.
+> **Not modelled.** Adaptive cadence has no field (see §Recurrence rule). This
+> records the rule it must follow when it lands.
 
-Adaptive-cadence routines compute "next due" from the most recent completion. To converge cleanly under concurrent completions on multiple devices, the rule is:
+Adaptive-cadence routines compute "next due" from the most recent completion.
+To converge under concurrent completions on multiple devices:
 
-1. The Routine's `last_completed_at` wins by the same key as every other field:
-   `(hlc, device_id, seq)` ([ADR-0016](../11-adr/0016-hlc-timestamps.md)).
-2. The "next due" date is **derived** from `last_completed_at` and the cadence interval, snapped to the start of the local day in the Routine's `timezone`.
-3. Two devices completing within the same local day produce the same snapped result; later concurrent completions LWW.
+1. The most recent completion is **derived** as the latest key in
+   `streak_keys` (or among completed occurrences), not stored.
+2. The next occurrence is derived from it and the cadence interval, snapped to
+   the start of the planner day in the anchor's zone.
+3. Two devices completing within the same planner day produce the same snapped
+   result.
+
+## Merge mapping
+
+| Field | Merge |
+|---|---|
+| scalars (`anchor`, `ends_at`, `catchup_policy`, `grace_window_s`, `forgiveness_enabled`, `paused`, `paused_until`, `archived`, …) | per-field LWW register |
+| `template` fields, `rrule` | one register each for `template.*` field and for `rrule` as a whole (a rule is edited as a unit) |
+| `scheduling_constraints` | one register for the list |
+| `skipped_keys`, `streak_keys` | add/remove OR-sets |
+| streak, lapsed, catch-up title | derived; not stored |
+
+## Status in the tree
+
+The shape above is the design of record. The tree still ships the previous
+model, tracked in [#331](https://github.com/justin13888/Sunrise/issues/331) (with [#336](https://github.com/justin13888/Sunrise/issues/336) for the time fields and [#319](https://github.com/justin13888/Sunrise/issues/319) for the
+merge):
+
+- The anchor is `starts_at: Timestamp` beside a separate `timezone` string, and
+  a zone change re-derives the wall clock from the instant, so 09:00 LA becomes
+  12:00 NY (`crates/sunrise-domain/src/routine.rs#Routine`,
+  `crates/sunrise-domain/src/routine_gen.rs#expand`).
+- `paused_until` is stored and never read
+  (`crates/sunrise-domain/src/routine_gen.rs#occurrences_in`).
+- Catch-up applies only on first materialization
+  (`crates/sunrise-core/src/engine/routine.rs#materialize_one_routine`).
+- The streak key is built from the actual instant
+  (`crates/sunrise-domain/src/routine_gen.rs#occurrence_key_at`) while task ids
+  and skips use the intended wall clock, so the keys differ on a DST day.
+- `streak_counter` and `streak_keys` merge with the whole row, so concurrent
+  completions of different occurrences lose one.
+- `RoutinePatch` has no edit scope (`crates/sunrise-domain/src/routine.rs#RoutinePatch`),
+  and template edits do not reach existing occurrences.
+- There is no un-skip, and `skip_dates` is still read.
+- `Frequency` and `Weekday` fail the whole op on an unknown value.

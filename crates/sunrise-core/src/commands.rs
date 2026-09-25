@@ -9,7 +9,7 @@ use sunrise_domain::{
 };
 use sunrise_id::EntityRef;
 
-/// Mutating commands. v1 covers Tasks and Streams; deeper entity types
+/// Mutating commands. Today these cover Tasks and Streams; deeper entity types
 /// expand the surface in follow-up phases.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Command {

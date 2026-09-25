@@ -69,7 +69,7 @@
 //! [`discard_partial_blob`](Core::discard_partial_blob), which removes a blob's
 //! chunks unless every one of them is present — which is exactly the document's
 //! "re-tapping a `partial: true` attachment retries from byte 0", and is why
-//! resume-from-partial being out of scope for v1 costs nothing here.
+//! resume-from-partial being out of scope costs nothing here.
 
 use std::collections::HashSet;
 

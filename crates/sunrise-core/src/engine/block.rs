@@ -488,7 +488,7 @@ pub(super) fn upsert_block_row(
 }
 
 /// Replace a Block's bindings with the op's set. Full-state, like every other
-/// v1 op: the set on the winning op is the set.
+/// entity op: the set on the winning op is the set.
 pub(super) fn replace_block_tasks(tx: &Transaction<'_>, b: &Block) -> rusqlite::Result<()> {
     tx.execute(
         "DELETE FROM block_tasks WHERE block_id = ?",

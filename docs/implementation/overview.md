@@ -4,7 +4,9 @@ status: living
 
 # Implementation Overview
 
-This file tracks the state of the v1 implementation against `docs/`.
+This file tracks the state of the implementation against `docs/`. Sunrise stays
+at v0.x ([ADR-0042](../11-adr/0042-v0-forever.md)); what is not built is ranked
+on the roadmap ([`../roadmap.md`](../roadmap.md)).
 
 **How to read this file.** An earlier revision reported most phases as
 "✅ shipped" on the basis that the crate existed and its own tests passed. That
@@ -13,13 +15,12 @@ overstated the product substantially — several "shipped" crates are not
 reachable from any binary. The table below reports *reachability from a running
 client*, which is the only measure that matters to a user.
 
-**Last verified on the v1 rewrite line, now merged to `master`, after the final
-wave of client work.** Every
+**Last verified on `master`, after the final wave of client work.** Every
 row was re-checked against the source, and every number in
 [Test suite](#test-suite) is measured rather than remembered. The companion
 document is the per-capability
-[status audit](../07-clients/parity-matrix.md#v1-status-audit), which grades the
-v1 MUSTs the same way; this file grades crates, that one grades capabilities,
+[status audit](../07-clients/parity-matrix.md#status-audit), which grades the
+MUSTs the same way; this file grades crates, that one grades capabilities,
 and a crate can be reachable while a capability inside it is not.
 
 ## Legend
@@ -30,7 +31,7 @@ and a crate can be reachable while a capability inside it is not.
 | 🟨 **partial** | Reachable, but a documented part of its spec is missing |
 | 🟧 **orphan** | Crate builds and self-tests pass, but **nothing depends on it** — no product path reaches this code. Test and benchmark harnesses (`sunrise-e2e`, `sunrise-bench`) are exempt: having no dependents is their correct shape, since they exercise other crates rather than being consumed |
 | 🟥 **broken** | Does not build, or does not work when run |
-| ⬜ **deferred** | Deliberately out of scope for v1, with a recorded decision |
+| ⬜ **not built** | Not built; ranked on the roadmap, with the issue that tracks it |
 
 ## Crate status
 
@@ -53,16 +54,16 @@ and a crate can be reachable while a capability inside it is not.
 | `sunrise-auth` | ✅ live | Client-side OIDC relying party: discovery, PKCE, a loopback redirect listener, token exchange and refresh, and credential storage. Consumed by `sunrise-cli` (`login` / `logout` / `whoami`) and by `sunrise-core-bindings`, so it reaches the macOS app. 35 tests |
 | `sunrise-core` | 🟨 partial | Open / submit / query / changes / sync_status / close all work. Implements **8** entities behind **25** op kinds (`InnerOp`), the newest of which is `IdentityTransition`, exposed as **32** commands and **30** queries — `Command::RotateIdentity` and `Query::IdentityStatus` arrived with identity rotation ([ADR-0037](../11-adr/0037-identity-transition.md)), which is what finally makes revocation stick: revoking a device now rotates the account identity away from it, so the device cannot certify itself back in under a fresh id ([#105](https://github.com/justin13888/Sunrise/issues/105)). Every command kind and every query is reachable across the UniFFI seam; `sunrise-cli` reaches **11** of those commands and **16** of the queries — `devices`, `device revoke`, `identity status` and `identity rotate` are new, and until they landed nothing but `sunrise-e2e` drove revocation at all — enough that `Query::StreamTasks` and `Query::ContextTasks`, which no binary issued a cycle ago, now have a caller with no UI behind it. `SystemClock::timezone()` now resolves the device's real IANA zone (see [Fixed this cycle](#fixed-this-cycle)) |
 | `sunrise-server` | ✅ live | Every operation is served by `api/`, described by `schemas/generated/openapi.v1.json` and reachable — `routes/` and the `/sync` WebSocket are gone, and with them `axum` and `tokio-tungstenite` (`tower` and `tower-http` survive in the lock only as `reqwest` transitives, declared nowhere). Relay fanout, cursor-scoped replay backed by a durable SQLite relay log, metrics, OIDC JWKS verification, `X-Sunrise-Device-Sig` binding, and SQLite-backed accounts/devices are real. `/sync` is an SSE stream downstream and typed `POST`s upstream ([ADR-0023](../11-adr/0023-sse-sync-transport.md)): `POST /sync/session` negotiates, `GET /sync/events` fans out with `Last-Event-ID` resumption, and the stream ends when the token expires or the device is revoked, so a revocation reaches a stream already open. Fanout is scoped to the verified subject. `require_device_sig` is derived from the deployment — on wherever an OIDC issuer is configured, off for single-tenant self-host, which `validate` rejects the flag alongside anyway — and `/metrics` is mounted only on a loopback listener. Blob 2PC is **implemented**, not a stub: `init` / `PUT {upload_id}/{chunk_idx}` / `finalize` / `GET {blob_id}` are all mounted, content-addressed and hash-verified on finalize, with a round-trip test, and the fetch streams chunk-by-chunk rather than buffering the whole blob. Its auth is bearer plus account plus device binding, and since ADR-0023 that is the *same* auth `/sync` runs rather than a stricter one: every route on the surface goes through one of `api/signed.rs`'s four extractors ([#22](https://github.com/justin13888/Sunrise/issues/22) is closed by this) |
-| `sunrise-integrations` | 🟨 partial | **No longer an orphan.** The iCal half is live and dual-consumed: `ical` (RFC 5545 syntax) → `ical_map` (domain mapping) → `ical_vault` (the vault driver), reached by `sunrise-cli`'s `ical import` / `ical export` and, across the seam's `import_ical` / `export_ical`, by the macOS File menu — so both shipping clients reach it, which was not true a cycle ago. Imports are idempotent because the Block id *is* a hash of `(source, uid)`. The subset is narrow and **reports rather than drops**: `VTODO`, `VALARM`, `VTIMEZONE`, `VJOURNAL`, `VFREEBUSY`, `RDATE`/`EXDATE`/`RECURRENCE-ID`, `ATTACH`, `ATTENDEE` and any `X-` property each raise an `ICalNotice`. `RRULE`, `DESCRIPTION` and `LOCATION` parse and are then reported at the domain boundary, because `Block` has no field for them — so **a recurring event imports as a single occurrence**, and an exported `.ics` carries only `UID`, `SUMMARY`, `DTSTART`, `DTEND`. The GCal half is **implemented, tested and unconsumed**, deferred to [#4](https://github.com/justin13888/Sunrise/issues/4) by [ADR-0020](../11-adr/0020-v1-must-demotions.md): PKCE exchange/refresh with the durable-refresh-token rule and change detection that suppresses phantom deletes, all with injected transport, but nothing has run against the live API (needs a Google OAuth client ID) and there is no `impl EventSyncer` anywhere. `IntegrationProvider` still has **no implementor** — not even the live iCal path uses it, so the crate's own claim that integrations "run through" it is not true today |
-| `sunrise-cli` | ✅ live | The `sunrise` binary: **twenty-three** one-shot subcommands — `capture`, `edit`, `defer`, `done`, `drop`, `today`, `inbox`, `next`, `search`, `streams` (incl. `streams move`), `stream`, `contexts`, `context`, `routines`, `review`, `export`, `ical` (`import` / `export`), `vaults`, `login`, `logout`, `whoami`, `focus`, `sync --once` — plus the env-driven live-sync wiring. Six landed this cycle (`edit`, `defer`, `drop`, `stream`, `context`, `vaults`) and they are what closed the CLI's three partial MUSTs; **all nine are now met**, see the [status audit](../07-clients/parity-matrix.md#v1-status-audit). It submits nine of the core's commands: `CreateTask`, `UpdateTask`, `PromoteToStream`, `DeferTask`, `CompleteTask`, `DeleteTask`, `UpdateStream`, `StartFocus` and `ImportBlock`. Joining an account is a command again, and four of them: `pair offer`, `pair request`, `pair issue`, `pair accept` — a file per message, because pairing is a three-message exchange since the account's signing key stopped travelling ([#105](https://github.com/justin13888/Sunrise/issues/105)) and the CLI has no channel to carry it over. They are dispatched *before* `Core::open`, because the identity a vault belongs to is fixed when the vault is created. Arg parsing is hand-rolled, not clap. This is the reachability story for the core with no UI at all — `crates/sunrise-cli/tests/cli.rs` drives the real binary against a real vault in a separate process |
+| `sunrise-integrations` | 🟨 partial | **No longer an orphan.** The iCal half is live and dual-consumed: `ical` (RFC 5545 syntax) → `ical_map` (domain mapping) → `ical_vault` (the vault driver), reached by `sunrise-cli`'s `ical import` / `ical export` and, across the seam's `import_ical` / `export_ical`, by the macOS File menu — so both shipping clients reach it, which was not true a cycle ago. Imports are idempotent because the Block id *is* a hash of `(source, uid)`. The subset is narrow and **reports rather than drops**: `VTODO`, `VALARM`, `VTIMEZONE`, `VJOURNAL`, `VFREEBUSY`, `RDATE`/`EXDATE`/`RECURRENCE-ID`, `ATTACH`, `ATTENDEE` and any `X-` property each raise an `ICalNotice`. `RRULE`, `DESCRIPTION` and `LOCATION` parse and are then reported at the domain boundary, because `Block` has no field for them — so **a recurring event imports as a single occurrence**, and an exported `.ics` carries only `UID`, `SUMMARY`, `DTSTART`, `DTEND`. The GCal half is **implemented, tested and unconsumed**; read-only calendar sync ([ADR-0049](../11-adr/0049-calendar-integrations-per-device-oauth.md)) is not built and is ranked as [#4](https://github.com/justin13888/Sunrise/issues/4): PKCE exchange/refresh with the durable-refresh-token rule and change detection that suppresses phantom deletes, all with injected transport, but nothing has run against the live API (needs a Google OAuth client ID) and there is no `impl EventSyncer` anywhere. `IntegrationProvider` still has **no implementor** — not even the live iCal path uses it, so the crate's own claim that integrations "run through" it is not true today |
+| `sunrise-cli` | ✅ live | The `sunrise` binary: **twenty-three** one-shot subcommands — `capture`, `edit`, `defer`, `done`, `drop`, `today`, `inbox`, `next`, `search`, `streams` (incl. `streams move`), `stream`, `contexts`, `context`, `routines`, `review`, `export`, `ical` (`import` / `export`), `vaults`, `login`, `logout`, `whoami`, `focus`, `sync --once` — plus the env-driven live-sync wiring. Six landed this cycle (`edit`, `defer`, `drop`, `stream`, `context`, `vaults`) and they are what closed the CLI's three partial MUSTs; **all nine are now met**, see the [status audit](../07-clients/parity-matrix.md#status-audit). It submits nine of the core's commands: `CreateTask`, `UpdateTask`, `PromoteToStream`, `DeferTask`, `CompleteTask`, `DeleteTask`, `UpdateStream`, `StartFocus` and `ImportBlock`. Joining an account is a command again, and four of them: `pair offer`, `pair request`, `pair issue`, `pair accept` — a file per message, because pairing is a three-message exchange since the account's signing key stopped travelling ([#105](https://github.com/justin13888/Sunrise/issues/105)) and the CLI has no channel to carry it over. They are dispatched *before* `Core::open`, because the identity a vault belongs to is fixed when the vault is created. Arg parsing is hand-rolled, not clap. This is the reachability story for the core with no UI at all — `crates/sunrise-cli/tests/cli.rs` drives the real binary against a real vault in a separate process |
 | `sunrise-client-core` | ✅ live | Client-side but UI-free: undo/redo by inverse command over an `EntityLookup`, and saved views with their TOML-subset parser |
 | `sunrise-core-bindings` | ✅ live | The UniFFI seam ([ADR-0019](../11-adr/0019-swiftui-macos-client.md)): an opaque async `SunriseCore`, all 30 commands, all 29 queries and their results, and a `ChangeListener` change stream with the mandatory `on_lagged` resync, fanned out to every subscriber. **Re-graded from 🟨 this cycle.** The partial mark was for one stated reason — `import_ical` / `export_ical` had no Swift caller — and `apps/apple` now calls both, so the mark was re-derived rather than inherited. Sweeping every exported symbol for a Swift caller leaves a much smaller residue: `parse_saved_view` has none at all, and `energy_fit_label` is reached only from the test target. Neither carries a parity MUST — the *Saved searches / views* MUST is met through `SavedViews.load` / `.save` — so they are unconsumed surface rather than an unreachable requirement, which is the distinction the 🟨 mark is for |
 | `sunrise-bench` | ✅ live | Criterion suite + linux-x86_64 baselines. `baseline --check` compares against them and annotates regressions; it runs nightly and **does not gate** — on shared runners the same binary reports ±100% against its own baseline from noise alone |
 | `sunrise-e2e` | ✅ live | Flagship two-Core relay convergence + four chaos scenarios, plus blocker, context and focus-session convergence |
 | `apps/apple` | 🟨 partial | The SwiftUI clients over the UniFFI seam ([ADR-0019](../11-adr/0019-swiftui-macos-client.md)): ~21.6k lines of app source across `Sunrise/` (shared, 19.3k), `macOS/` (1.4k) and `iOS/` (0.9k), **631 Swift Testing cases in 94 suites** — 622 of them compile into the macOS bundle and 621 into the iOS one — plus 5 XCTest UI tests on macOS and 17 on iOS. Built by XcodeGen from `project.yml`, linking the generated xcframework. **Both targets build in CI**, as two jobs on `macos-26` rather than one, downstream of a third — an `apple-xcframework` job that builds the three-slice framework once and publishes it as an artefact, then a `macos-app` job running `mise run macos-app` (xcodegen → `swiftlint --strict` → `xcodebuild test`), and an `ios-app` job running `mise run ios-app`, which builds the `SunriseiOS` product, compiles the same `SunriseTests/` sources against it a second time as `SunriseiOSTests`, which is what makes the shared half of the app answer for itself on both platforms, and — unlike the macOS job — runs its UI tests, `SunriseiOSUITests`, on the iPhone 17 Pro simulator. Landed this cycle: the iCal import/export surface with its grouped notice report, print and PDF export, the drag-and-drop gaps, sidebar stream reorder through the core, and a routine timer that actually starts. **Every one of the 23 macOS MUSTs is now met** — the iCal row was the last unmet one. Still partial, and for reasons that are about its *spec* rather than about a MUST: [`desktop.md`](../07-clients/desktop.md) specifies a detached always-on-top focus window, Spotlight indexing of task titles and Continuity Camera, none of which exist (Sparkle updates were the fourth until [ADR-0038](../11-adr/0038-macos-update-feed.md) landed them); there is no camera QR scanner; and the **macOS** UI test target is `skipped: true` in the scheme — a macOS XCUITest needs `DevToolsSecurity -enable` on the machine, and a simulator runner needs no such change — so on the Mac product CI proves the models behave but never proves a click reaches the core. The iOS job is where that loop closes — `SunriseiOSUITests` runs on the simulator — so the click-to-core path is demonstrated on the platform that carries the **SHOULDs** and not on the one that carries the MUSTs ([ADR-0028](../11-adr/0028-ios-is-a-v1-client.md)). iOS's own 23 SHOULDs now grade **23 met** — saved views and iCal import/export were the last two unmet, each a working shared model with no iOS caller, and each now has one; [`parity-matrix.md`](../07-clients/parity-matrix.md) carries the row-by-row evidence |
-| `apps/web` | ⬜ deferred | localStorage stub per [ADR-0012](../11-adr/0012-web-wasm-deferred.md) |
+| `apps/web` | ⬜ not built | localStorage stub per [ADR-0012](../11-adr/0012-web-wasm-deferred.md); the WASM core is ranked as [#52](https://github.com/justin13888/Sunrise/issues/52) and the deploy as [#11](https://github.com/justin13888/Sunrise/issues/11) |
 | `packages/sunrise-ui-tokens` | ✅ live | The design-token build [#29](https://github.com/justin13888/Sunrise/issues/29) said had never been built. Six TOML sources compiled by `mise run tokens` into `tokens.css`, `tokens.ts`, `tokens.swift` and `tokens.rs`, all committed and guarded by three overlapping gates — a vitest drift test, `mise run tokens-check` (which also `rustc`- and `rustfmt`-checks the Rust output) and a `tokens-current` CI job. **72 vitest cases**, the repository's first TypeScript tests, which also assert the stream palette against `StreamColor::as_str` in the Rust and the WCAG contrast ratios `../10-cross-cutting/accessibility.md` asks for — the latter over the whole palette since [ADR-0030](../11-adr/0030-palette-contrast-gate.md), which moved contrast from three hand-picked assertions to an exhaustive rule table the loader enforces. `tokens.kt` is not emitted (no Android target); `tokens.rs` has no consumer yet and is `include!`-ready for the first one ([ADR-0029](../11-adr/0029-design-token-pipeline.md)) |
-| `packages/sunrise-ui` | 🟨 partial | No longer hand-written: the 40-line token file is now a naming layer over `@sunrise/ui-tokens`, and `spacing` moved to the six-step scale the doc always specified. Still not a component library, and still **one** consumer — `apps/web`, itself deferred — which imports `taskStateGlyph` and, through `main.tsx`, the generated stylesheet. The *values* do now reach shipping clients: both Apple targets compile `tokens.swift` from the same TOML. They reach them through `sunrise-ui-tokens`, not through this package, which is why this row is still 🟨 |
+| `packages/sunrise-ui` | 🟨 partial | No longer hand-written: the 40-line token file is now a naming layer over `@sunrise/ui-tokens`, and `spacing` moved to the six-step scale the doc always specified. Still not a component library, and still **one** consumer — `apps/web`, itself a stub — which imports `taskStateGlyph` and, through `main.tsx`, the generated stylesheet. The *values* do now reach shipping clients: both Apple targets compile `tokens.swift` from the same TOML. They reach them through `sunrise-ui-tokens`, not through this package, which is why this row is still 🟨 |
 
 ### Entities without a command path
 
@@ -72,10 +73,11 @@ command, no op kind and no query. Nothing can write them; the two tables are
 the only ones in the schema with no writer.
 
 That collision with `docs/07-clients/parity-matrix.md` is now **resolved**, and
-by a decision rather than an edit. [ADR-0020](../11-adr/0020-v1-must-demotions.md)
-demoted the two sharing rows to *deferred* — `Person` is the entity that design
+by a decision rather than an edit. The two sharing rows are MUST in the parity
+matrix, not built, and ranked as [#133](https://github.com/justin13888/Sunrise/issues/133) — `Person` is the entity that design
 operates on, and there is a complete spec with sound primitives underneath it
-and nothing in between — and split the **Notes (rich text)** row, which stays a
+and nothing in between — and [ADR-0020](../11-adr/0020-v1-must-demotions.md)
+split the **Notes (rich text)** row, which stays a
 MUST and is met: it means a Task's `body`, not the free-standing `Note`. Both
 tables stay in the frozen baseline schema and stay unwritten, on purpose.
 
@@ -361,29 +363,32 @@ Recorded because each presented as something other than what it was:
   `ratatui-image` and `image` left the workspace with it, and so did the
   RUSTSEC-2024-0436 advisory suppression they required.
 
-## Deferred by decision
+## Not built
 
 - **Web WASM core** — [ADR-0012](../11-adr/0012-web-wasm-deferred.md). The MSRV
   blocker is **cleared**: [ADR-0026](../11-adr/0026-msrv-bump.md) moved the pin
-  to 1.91.1, which is ADR-0012's stated revisit trigger. What is still deferred
+  to 1.91.1, which is ADR-0012's stated revisit trigger. What is not built
   is the work that trigger unblocks — the `rusqlite` 0.31 → 0.40 swap across
   `sunrise-storage` and `sunrise-core`, under ADR-0012's unchanged native
   SQLCipher gate ([#52](https://github.com/justin13888/Sunrise/issues/52)).
   `apps/web/src/wasm.ts` keeps the `loadCore()` seam for a later drop-in.
 - **Android** — the same UniFFI scaffolding generates Kotlin "when Android
   arrives" (`crates/sunrise-core-bindings/src/lib.rs`), and nothing has asked
-  it to: there is no `apps/android`. Post-v1 by
-  [ADR-0027](../11-adr/0027-v1-self-host-first.md). iOS shared this bullet
+  it to: there is no `apps/android`. Not built; the roadmap ranks a Kotlin
+  UniFFI smoke test ([#369](https://github.com/justin13888/Sunrise/issues/369)) and no Android client yet. iOS shared this bullet
   until [ADR-0028](../11-adr/0028-ios-is-a-v1-client.md) and no longer does —
   `mise run apple-xcframework` builds its device and simulator slices,
   `ci.yml`'s `Add the iOS slices to the pinned toolchain` step — in the
   `apple-xcframework` job, the one job that still compiles Rust for Apple —
   adds them on every run, and the app that links them is tested on the
   simulator.
-- **Stream sharing, Google Calendar, and the standalone `Note`** — the three
-  capabilities [ADR-0020](../11-adr/0020-v1-must-demotions.md) removed from the
-  v1 MUST set. GCal's provider is implemented and tested; what is deferred is
-  the wiring, storage and UI around it ([#4](https://github.com/justin13888/Sunrise/issues/4)).
+- **Stream sharing, calendar integrations, and the standalone `Note`** — not
+  built. Sharing is a MUST in the parity matrix, ranked as [#133](https://github.com/justin13888/Sunrise/issues/133). Calendar
+  integrations are read-only
+  ([ADR-0049](../11-adr/0049-calendar-integrations-per-device-oauth.md)) and
+  ranked as [#4](https://github.com/justin13888/Sunrise/issues/4); GCal's provider code is implemented and tested, and what is
+  missing is the wiring, storage and UI around it. The standalone `Note` has no
+  writer.
 - **Apple Focus integration** — not wired.
 - **Focus Mode's platform effects** — the session record, planner, calibration,
   chunking and unblock cascade are live in the core
@@ -402,10 +407,12 @@ Recorded because each presented as something other than what it was:
   and the weekly and daily reviews. Review → Trends and Review → History are
   deliberately outside it — a chart and a list of links do not paginate into
   rows, and both already carry CSV/JSON export beside them.
-- **Merge journal & per-field CRDT** — v1 conflict resolution is entity-level
-  LWW, now the decided model per [ADR-0014](../11-adr/0014-entity-level-lww-merge.md),
-  which supersedes ADR-0003. `crates/sunrise-crdt` and the `loro` dependency are
-  deleted; the workspace contains no CRDT library.
+- **Per-field ops** — the tree still resolves conflicts by entity-level LWW
+  ([ADR-0014](../11-adr/0014-entity-level-lww-merge.md)), and that merge model is
+  superseded by per-field ops ([ADR-0044](../11-adr/0044-per-field-ops.md)), not
+  built and ranked as [#319](https://github.com/justin13888/Sunrise/issues/319). `crates/sunrise-crdt` and the `loro` dependency
+  are deleted, and ADR-0044 keeps it that way: the workspace contains no CRDT
+  library.
 - **CI gates** — the bench comparison is wired and runs nightly, but
   **informationally**: on shared runners the same binary reports swings over
   ±100% against its own baseline from scheduling noise alone, so `testing.md`'s
@@ -446,8 +453,7 @@ Recorded because each presented as something other than what it was:
 
 ## Test suite
 
-All figures below were **measured on the v1 rewrite line, now merged to
-`master`** after the final wave, not carried over from an earlier revision.
+All figures below were **measured on `master`** after the final wave, not carried over from an earlier revision.
 
 | Gate | Result |
 |---|---|

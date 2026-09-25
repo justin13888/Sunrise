@@ -1,6 +1,6 @@
 //! External integrations.
 //!
-//! Implements `docs/09-integrations/`. v1 ships:
+//! Implements `docs/09-integrations/`. Today it ships:
 //!
 //! - [`ical`]: RFC 5545 reading and writing (a subset; see the module docs
 //!   for exactly which one), with [`ical_map`] lowering a `VEVENT` onto a

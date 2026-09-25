@@ -4,146 +4,118 @@ status: accepted
 
 # Google Calendar
 
-Bidirectional integration. Per-Stream toggle.
+Read-only. Each device authorizes on its own and keeps its token in its
+keychain; the vault syncs the account configuration and the fetched events.
+[ADR-0049](../11-adr/0049-calendar-integrations-per-device-oauth.md) is the
+decision, and [`overview.md`](./overview.md) specifies the entities, fetching
+and reconnect flow shared by every calendar provider. This page is what is
+specific to Google.
 
-> **Status: deferred from the v1 MUST set, and wired to nothing.**
-> `crates/sunrise-integrations/src/gcal.rs` is implemented and tested — the PKCE
-> authorization-code exchange and refresh with the durable-refresh-token rule,
-> change detection that suppresses phantom deletes, all against an injected
-> transport so the tests need no network — and it has **zero consumers**.
-> Nothing has ever run it against the live Google API, there is **no
-> `impl EventSyncer`**, and `IntegrationProvider` has no implementor.
-> [ADR-0020](../11-adr/0020-v1-must-demotions.md) §(b) deferred Google Calendar
-> from the v1 MUST set against
-> [issue #4](https://github.com/justin13888/Sunrise/issues/4); this is a
-> wiring-and-storage gap, not a protocol gap. Everything below the Auth section
-> is the target.
+> **Status: not built.** `crates/sunrise-integrations/src/gcal.rs` implements
+> the PKCE authorization-code exchange
+> (`crates/sunrise-integrations/src/gcal.rs#OAuthFlow`), refresh with the
+> durable-refresh-token rule
+> (`crates/sunrise-integrations/src/gcal.rs#apply_refresh`) and change detection
+> that suppresses phantom deletes, all against an injected transport. It has
+> **zero consumers**: nothing has run it against the live API, there is no
+> `impl EventSyncer`, and there is no storage or UI.
+> [#4](https://github.com/justin13888/Sunrise/issues/4) tracks the build.
 
 ## Auth
 
-**On-device PKCE with a public client. The server is never in the token path.**
+**On-device PKCE with a public client, per device. The server is never in the
+token path.**
 
-- OAuth 2.0 authorization code + PKCE (`code_challenge_method=S256`), run
-  entirely on the user's device against
+- OAuth 2.0 authorization code + PKCE (`code_challenge_method=S256`) against
   `https://accounts.google.com/o/oauth2/v2/auth` and
-  `https://oauth2.googleapis.com/token`, with a loopback `redirect_uri`. This is
-  what `gcal.rs`'s `OAuthFlow::{auth_url, code_exchange_request,
-  refresh_request}` already implement, and a test asserts the request body
-  contains no `client_secret`.
-- **There is no `client_secret`.** An installed app is a *public* client: a
-  secret shipped in a binary is not a secret, which is the whole reason PKCE
-  exists. `client_id` is a public string and can live in the binary.
-- Scopes: `https://www.googleapis.com/auth/calendar.events` (no contacts, no drive).
-- Credentials are stored in the `IntegrationAccount` entity, per
-  [ADR-0025](../11-adr/0025-integration-account-entity.md) and
-  [`overview.md`](./overview.md) §Token storage — **not** in a Stream field,
-  which does not exist. The durable refresh token syncs; the short-lived access
-  token stays device-local.
-- Refresh tokens rotate per Google's flow, and an omitted `refresh_token` on a
-  refresh response MUST NOT erase the stored one (`Credentials::apply_refresh`).
+  `https://oauth2.googleapis.com/token`, with `access_type=offline` so a refresh
+  token is issued.
+- **One OAuth client per platform**, because Google binds a token to the client
+  that minted it:
 
-An earlier revision of this document specified the exchange as "mediated
-server-side, so the client never sees `client_secret`", with the managed server
-holding `client_id` and `client_secret` in its secret store. **ADR-0025 deletes
-that flow rather than softening it.** It contradicted this directory's own
-"The server is not a credentialed proxy" and "Tokens never leave the device",
-and it would have put the relay in possession of every user's calendar tokens —
-the precise property the architecture exists to avoid. Its premise does not hold
-either: a public PKCE client has no secret to protect.
+  | Platform | Google client type | Redirect |
+  |---|---|---|
+  | macOS | Desktop app | Loopback `http://127.0.0.1:<port>/callback` |
+  | iOS / iPadOS | iOS | Custom scheme from the bundle id |
+  | Windows, Linux | Desktop app | Loopback |
+  | Android | Android (package + signing cert) | App link |
 
-### `client_id` provisioning
+  A token minted by one platform's client is unusable by another's, which is one
+  of the reasons tokens are never synced.
+- **There is no `client_secret`.** An installed app is a public client; a
+  `client_id` is public and ships in the binary. A self-hosted build MAY
+  substitute its own `client_id`s.
+- **Scope:** `https://www.googleapis.com/auth/calendar.readonly`, plus `openid`
+  to learn the account's `sub`. No write scope, no contacts, no drive. The
+  scope is "sensitive", so the production OAuth app needs Google's
+  verification; until it has it, test users' refresh tokens expire after 7
+  days, and the app shows "Needs reconnect" when they do.
+- **Storage:** the refresh token goes in the platform keychain with
+  this-device-only accessibility. The access token stays in memory.
+- **Refresh:** an omitted `refresh_token` on a refresh response MUST NOT erase
+  the stored one (`Credentials::apply_refresh`, already implemented). Google
+  caps live refresh tokens per account per client; past the cap it invalidates
+  the oldest, which surfaces on that device as "Needs reconnect".
+- **Subject:** the ID token's `sub` is the account's `subject`. A reconnect that
+  returns a different `sub` is refused.
 
-A `client_id` is public, so provisioning it is a configuration question, not a
-secrets question:
+An earlier revision specified a server-mediated exchange with a `client_secret`
+in the managed server's secret store. ADR-0025 deleted it, and ADR-0049 keeps
+it deleted: it would put the relay in possession of every user's calendar
+tokens.
 
-- **Managed cloud:** a single Google OAuth app is registered to Sunrise and its
-  `client_id` ships with the client. No `client_secret` is registered, stored or
-  used. No such app exists yet — it is one of the reasons ADR-0020 deferred this
-  integration.
-- **Self-host:** the operator MAY register their own Google OAuth app (as an
-  installed/public client) and configure its `client_id` under
-  `[integrations.google_calendar]`. If unconfigured, the integration shows a
-  setup wizard pointing at `https://console.cloud.google.com`.
+## Fetch
 
-## Inbound (Google → Sunrise Blocks)
+For each subscribed calendar:
 
-For each user-selected Google calendar:
+1. `calendarList.list` on connect and once a day, to refresh names, colours
+   and the list offered in Settings. A calendar the user can see only as
+   free/busy is listed and marked "busy only": its events carry no title, and
+   they import as events titled "Busy". `AccessRole::can_read_details`
+   in `gcal.rs` already tells the two apart.
+2. `events.list` with `singleEvents=true`, `timeMin`/`timeMax` bounding the
+   window in [`overview.md`](./overview.md) §Fetching, `maxResults=250`, looping
+   on `pageToken`. `singleEvents=true` makes Google expand recurring series,
+   so each occurrence arrives with its own `recurringEventId` and
+   `originalStartTime`.
+3. The final `nextSyncToken` is stored device-locally per calendar. Later
+   fetches pass it and receive only changes. On `410 Gone`, the device drops the
+   token and does a full fetch of the window.
+4. Each occurrence maps to an `ExternalEvent`:
 
-1. Periodic poll using `events.list` with `pageSize=100`, looping on `pageToken`. The poll interval is a per-Stream field, range 5–60 minutes (default 5 minutes). `int.run.start` and `int.run.ok` log entries include the configured interval.
-2. The final `nextSyncToken` is persisted per `(stream, calendar)`. On `410 Gone` for a sync token (Google's "expired" signal), the integration resets to an empty token and runs a full sync.
-3. New / updated events become / update Blocks tagged `source = import:gcal`, `external_id = <google_event_id>`. The Block also carries a `source_calendar_id` (internal) so multi-calendar imports are unambiguous.
-4. Imported Blocks are read-only **by default**. If the user edits an imported Block, `source_calendar_id` is cleared and the Block becomes pushable.
-5. Deleted Google events become tombstoned imported Blocks.
-6. Recurring events are stored as recurrence rules, not pre-expanded (the Block's `rrule` carries it). The supported subset matches [`../08-features/recurrence-engine.md`](../08-features/recurrence-engine.md); lossy imports log `int.import.rrule_lossy { provider: "google", original: "<rule>", emitted: "<rule>" }`.
+   | Google field | `ExternalEvent` |
+   |---|---|
+   | `iCalUID` | `uid` |
+   | `originalStartTime` (recurring) | `recurrence_id` |
+   | `summary` | `title` |
+   | `start`/`end` (`dateTime` + `timeZone`, or `date`) | `starts_at`/`ends_at` (`Zoned`, or `AllDay`) |
+   | `location` | `location` |
+   | `transparency` | `transparency` |
+   | `status` | `status`; `cancelled` is a deletion |
+   | `htmlLink` | `url` |
 
-## Outbound (Sunrise Blocks → Google)
-
-Per-Stream toggle "Push to Google":
-
-1. When a Block is created/edited in this Stream and not imported, push to a designated Google calendar.
-2. Sunrise stores the resulting Google event ID in `external_id` for round-trip.
-3. Future edits update the Google event.
-4. Deletes propagate.
-
-Pushed events have:
-
-- Title: Block title or bound task title.
-- Description: bound task description (truncated; full is in Sunrise).
-- Color: from Stream color, mapped to Google color set:
-
-  | Sunrise color | Google color id |
-  |---|---|
-  | accent (default) | 1 (Lavender) |
-  | success | 10 (Basil) |
-  | warning | 5 (Banana) |
-  | danger | 11 (Tomato) |
-  | info | 7 (Peacock) |
-  | muted | 8 (Graphite) |
-  | custom hex | nearest of the above by Lab distance |
-
-- Source: `Sunrise` annotation in the description footer.
-
-Lossy export of a recurrence rule (the Sunrise rule cannot be expressed exactly in Google's RRULE subset) is detected at push time and surfaces a per-Block warning icon.
-
-## Conflict handling
-
-- **Concurrent edit (Sunrise wins).** Push includes the `etag` from the last known Google version. If Google rejects with `412 Precondition Failed`, the integration: (1) fetches the current Google event, (2) ignores Google's edits, (3) re-pushes Sunrise's version with the new etag. A toast says `"Replaced external changes in <event>."` Per-Stream throttle: at most one such toast per session.
-- **Google deleted externally.** If `events.get` returns `404`, the Block becomes orphaned: `external_id` is preserved but flagged `external_orphan: true`. The UI offers Delete or Re-push. Re-push clears `external_id` and POSTs as a new event, getting a fresh id.
-
-## Privacy
-
-- We push *only* the Stream the user has opted in. We don't read Google calendars unless the user also opted in to import.
-- **Tokens never reach the server.** The refresh token syncs between the user's
-  own devices as ciphertext inside an ordinary op, which the relay cannot open;
-  the access token never leaves the device that minted it. See
-  [`overview.md`](./overview.md) §Token storage.
-- Aggregate sync metrics are *not* sent to Google or our server beyond the third-party API itself.
+   Attendees, descriptions, attachments and conference data are not stored.
 
 ## Error model
 
-- 401 / token expired: refresh; if refresh fails (or 401 reappears after a recent successful refresh, indicating external revocation per [`overview.md`](./overview.md)), mark integration as needing reauth, surface banner, and stop scheduling.
-- 429: backoff with `Retry-After`.
-- 5xx: exponential backoff up to 30 minutes.
-- Quota exhausted (rare for personal use): banner + pause until next day.
-
-## Account / calendar selection
-
-In settings, the user picks:
-
-- Which Google account is connected per Stream.
-- Which Google calendars to import from (**multi-select**). Each imported Block is tagged with `source_calendar_id` (internal).
-- Which Google calendar to push to (**single**). On export the source is ignored; Blocks always push to the configured export calendar.
+| Response | Handling |
+|---|---|
+| `401` after a successful refresh, or `invalid_grant` on refresh | This device → `needs_reauth`; delete the token; notify ([`overview.md`](./overview.md) §Connecting and reconnecting) |
+| `403` `rateLimitExceeded` / `429` | Back off, honouring `Retry-After` |
+| `403` `quotaExceeded` (daily) | Pause this device's fetches until the next UTC day; banner |
+| `410` on a sync token | Full re-fetch of the window |
+| `5xx`, network errors | Exponential back-off up to 30 minutes |
 
 ## Disconnect
 
-Disconnect (best-effort):
+`https://oauth2.googleapis.com/revoke` with this device's refresh token, best
+effort, three retries. On final failure, the UI links
+`https://myaccount.google.com/permissions` so the user can revoke by hand.
+Everything else is in [`overview.md`](./overview.md) §Disconnecting.
 
-- Token revoke is called once; on failure it retries up to 3 times with exponential backoff. The result is logged.
-- The integration is marked disabled regardless of revoke success.
-- Tokens deleted from vault.
-- Imported Blocks remain (read-only, tagged "disconnected") unless the user opts to remove them via the disable modal.
-- The UI suggests the user manually revoke at `https://myaccount.google.com/permissions` when revoke retries are exhausted.
+## Privacy
 
-## Why not push everything to all calendars by default
-
-A previous prototype showed: silent two-way sync of "everything" creates anxiety about external visibility. Per-Stream opt-in is the right granularity.
+- Sunrise reads only calendars the user subscribes to.
+- Tokens never reach the server or the vault. Events reach the server only as
+  ciphertext ops.
+- Nothing about the user's Sunrise data is sent to Google.

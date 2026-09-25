@@ -156,7 +156,7 @@ accept.) The tokenizer applies to both the index and queries:
 | `runs` | `running` | yes (both stem to `run`) |
 | `日本語` | `日本語` | unicode61 segments per character; CJK match works as substring |
 
-CJK quality is acknowledged as basic; v1.1 introduces a per-locale CJK tokenizer (capability bit `CLI_FTS5_CJK`).
+CJK quality is acknowledged as basic; a per-locale CJK tokenizer (capability bit `CLI_FTS5_CJK`) is planned but not built.
 
 ## Indexes
 
@@ -181,7 +181,7 @@ If an op cannot be applied (e.g. dep not yet present), it is inserted with `appl
 
 ## SQLCipher configuration
 
-For v1 we ship the SQLCipher v4 default cipher suite to leverage the well-tested upstream:
+We ship the SQLCipher v4 default cipher suite to leverage the well-tested upstream:
 
 - Cipher: AES-256-CBC with HMAC-SHA-512 page MAC (SQLCipher v4 default).
 - KDF: PBKDF2-HMAC-SHA-512, 256 000 iterations.
@@ -203,7 +203,7 @@ Using a pre-derived key bypasses SQLCipher's internal PBKDF2: we set `PRAGMA cip
 
 The choice of AES here is a deliberate divergence from XChaCha20-Poly1305 used elsewhere; rationale:
 
-- SQLCipher's AES-CBC + HMAC mode is shipped as a single audited library on every platform v1 targets. (The WASM story would go through `wa-sqlite`, which nothing in the tree builds — the web core is deferred, [ADR-0012](../11-adr/0012-web-wasm-deferred.md).)
+- SQLCipher's AES-CBC + HMAC mode is shipped as a single audited library on every platform Sunrise targets. (The WASM story would go through `wa-sqlite`, which nothing in the tree builds — the web core is deferred, [ADR-0012](../11-adr/0012-web-wasm-deferred.md).)
 - Page-level encryption inside SQLite has its own design (per-page IVs, MAC over `(page_no, ciphertext)`). Replacing the cipher would mean shipping a custom SQLCipher fork, which is outside our maintenance budget.
 - The vault DB at rest is protected by the OS keystore and the application unlock; the cipher choice here is defense-in-depth, not the primary trust boundary.
 

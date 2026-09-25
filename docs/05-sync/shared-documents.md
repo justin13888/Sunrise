@@ -4,9 +4,9 @@ status: proposed
 
 # Shared Documents (Cross-User)
 
-> **Status: proposed. Not scheduled for v1.**
-> [ADR-0027](../11-adr/0027-v1-self-host-first.md) clause 5 places cross-user
-> shared documents after v1, consistent with
+> **Status: proposed. Not yet built; ranked on the roadmap ([`../roadmap.md`](../roadmap.md)).**
+> [ADR-0027](../11-adr/0027-v1-self-host-first.md) clause 5 defers cross-user
+> shared documents, consistent with
 > [ADR-0020](../11-adr/0020-v1-must-demotions.md) §(a). This document is the
 > design of record for that work, not a description of anything that ships.
 >
@@ -15,8 +15,8 @@ status: proposed
 > implementor of the key distribution the design needs — ADR-0020 §(a)
 > enumerates the gap in detail.
 >
-> **Why it is not v1:** beyond ADR-0020's security-review argument, two things
-> in this file are structurally at odds with the relay v1 has. The relay
+> **Why it is not built:** beyond ADR-0020's security-review argument, two things
+> in this file are structurally at odds with the relay as built. The relay
 > evaluates no role and cannot
 > ([`../01-architecture/trust-and-server-role.md`](../01-architecture/trust-and-server-role.md)`:44-47`),
 > so every "the server also checks" sentence has been corrected rather than
@@ -100,7 +100,7 @@ Scrubbing happens **per envelope, per cohort**, at op-emit time:
 4. CBOR-encode the per-cohort variant; encrypt under the cohort's Stream key.
 5. Emit each per-cohort envelope as a separate sub-op in the same OpBatch.
 
-Editors **cannot** create cross-stream references in v1 — the UI prevents it because editors hold no ids for entities outside the shared Stream. Owner scrubs at emit time; there is no editor→owner re-scrubbing path.
+Editors **cannot** create cross-stream references — the UI prevents it because editors hold no ids for entities outside the shared Stream. Owner scrubs at emit time; there is no editor→owner re-scrubbing path.
 
 ### Entity reference format
 
@@ -128,7 +128,7 @@ The merge layer handles it identically to multi-device. A merge across users wor
 
 - Person `@carlos` mentioned in a shared task: included with display name only, not contact methods.
 - `assignee` field set to an unshared Person: scrubbed to a placeholder.
-- Comment-on-task is a non-feature in v1, so no comment-author exposure question.
+- Comment-on-task is a non-feature, so no comment-author exposure question.
 
 ## Failure modes
 

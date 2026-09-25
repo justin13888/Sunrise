@@ -4,7 +4,7 @@ status: accepted
 
 # Cryptographic Primitives
 
-The complete and frozen set of algorithms used in Sunrise v1. Any change requires a new ADR superseding [`../11-adr/0004-crypto-primitives.md`](../11-adr/0004-crypto-primitives.md) and a wire-format version bump.
+The complete and frozen set of algorithms in Sunrise's crypto suite v1. Any change requires a new ADR superseding [`../11-adr/0004-crypto-primitives.md`](../11-adr/0004-crypto-primitives.md) and a wire-format version bump.
 
 ## Algorithm table
 
@@ -28,7 +28,7 @@ HKDF-SHA-256 is used **only** as the HPKE-internal KDF; it is not exposed at the
 
 ### Which of these are actually reachable
 
-Every algorithm above is frozen for v1, and most are live. Two rows describe capability that no code exercises, and one is narrower in practice than the row implies:
+Every algorithm above is frozen in crypto suite v1, and most are live. Two rows describe capability that no code exercises, and one is narrower in practice than the row implies:
 
 * **HPKE has one consumer of four roles.** `sunrise-crypto` depends on `hpke` and `hpke_seal.rs` implements the single-shot Base construction; **key envelopes** use it. Share grants, recovery upload and pairing transport still do not — sharing is unbuilt, the recovery blob uses its own AEAD-under-Argon2id seal, and pairing's transport is Noise XX, not HPKE.
 * **Argon2id runs on one path, not two.** It is used only to stretch the recovery code in `crates/sunrise-crypto/src/recovery.rs`. There is no passphrase unlock: the vault root is 32 random bytes from a keystore, never derived (see [`identity-and-device-keys.md`](./identity-and-device-keys.md)).
@@ -120,7 +120,7 @@ Any change that perturbs a frozen vector blocks merge and requires a wire-format
 
 ## Algorithm IDs (wire-level)
 
-The op envelope carries algorithm tags so a future rotation is a clean version transition. Defined values for v1:
+The op envelope carries algorithm tags so a future rotation is a clean version transition. Defined values for crypto suite v1:
 
 | Field | Value | Meaning |
 |---|---|---|

@@ -102,7 +102,7 @@ Two separate caps, and they are checked against different quantities
 | **4 MiB** | `MAX_FRAME_BYTES` | the whole encoded frame — 11-byte header plus the *compressed* body |
 | **16 MiB** | `MAX_DECOMPRESSED_BYTES` | `len_prefix`, checked **before** decompression, and the decompressed bytes again after |
 
-Larger payloads are split at the application layer into multiple OpBatches; v1 has no multi-frame buffering protocol. Over the frame cap is a protocol error: server closes with `PROTOCOL_FRAME_TOO_LARGE`. Over the decompressed cap is `PROTOCOL_DECOMPRESS_BOMB`.
+Larger payloads are split at the application layer into multiple OpBatches; there is no multi-frame buffering protocol. Over the frame cap is a protocol error: server closes with `PROTOCOL_FRAME_TOO_LARGE`. Over the decompressed cap is `PROTOCOL_DECOMPRESS_BOMB`.
 
 ### Compression
 
@@ -205,7 +205,7 @@ and `AUTH_DEVICE_REVOKED`: the first is recoverable by the client on its own,
 the other two require the user. A client that cannot tell them apart either
 re-prompts every hour or retries forever against a revoked device.
 
-Frames are capped at 4 MiB; if a payload would exceed that, the application splits into multiple OpBatches. v1 has no multi-frame protocol.
+Frames are capped at 4 MiB; if a payload would exceed that, the application splits into multiple OpBatches. There is no multi-frame protocol.
 
 The server **never** sees op contents; it only sees envelopes (which are opaque ciphertext) and routes them.
 
@@ -231,7 +231,7 @@ AUTH_DEVICE_SIG_INVALID         RELAY_GRANT_REVOKED
                                 FATAL_INTERNAL
 ```
 
-`AUTH_QUOTA_EXCEEDED` was here until ADR-0027 took per-account quotas out of v1;
+`AUTH_QUOTA_EXCEEDED` was here until ADR-0027 took per-account quotas out of scope;
 it is gone from the enum, its id is burned, and nothing ever emitted it.
 
 Nine names this document used previously are **not** in the enum and MUST NOT be
@@ -384,6 +384,16 @@ client would record a completeness it has no basis for. A session whose
 credential is about to lapse renews it with `POST /sync/session/refresh`, which
 must name the same principal and the same device; the open stream keeps running.
 
+The reference client (`crates/sunrise-core/src/sync_driver.rs`) tells the three
+close reasons apart by the code's `retryable` flag in the error catalogue, which
+keeps the `RefreshToken` section's distinction: `AUTH_TOKEN_EXPIRED` and
+`RELAY_STORAGE_UNAVAILABLE` reconnect on the backoff schedule, and
+`AUTH_DEVICE_REVOKED`, `AUTH_TOKEN_INVALID` or a code it cannot read moves it to
+`SyncState::Stopped`, where it makes no further attempt until the credential is
+replaced or the app restarts. A refused
+`GET /sync/events` is not a close — its code may be derived from an HTTP status
+— so the client logs the relay's code and reconnects as it does for a drop.
+
 **A non-zero `Last-Event-ID` takes precedence over the cursors for frame
 selection.** Replayed `ops` events carry the relay's durable per-channel id, so
 a reconnect that presents the last id it saw resumes after that frame instead of
@@ -498,7 +508,7 @@ envelope**, each in its own vault transaction
 (`crates/sunrise-core/src/sync_driver.rs`), so a batch can be half-applied if
 the process dies mid-loop. Every apply is idempotent and entity-level LWW, so
 the surviving state converges — but a multi-op user action is not atomic on the
-receiving side, and nothing in v1 makes it so.
+receiving side, and nothing in the current implementation makes it so.
 
 Transactional all-or-nothing application remains the intended contract for
 multi-op user actions (move task across streams = delete + create, must arrive
@@ -510,9 +520,9 @@ The server preserves the order in which it received ops from a given originating
 
 ## Versioning
 
-The wire protocol is pinned at **v1** for the entire v1 release line, but **in-band negotiation exists and is the mechanism that enforces the pin.** `Hello::negotiate` in `crates/sunrise-wire-protocol/src/negotiation.rs` takes the client's `wire_proto_supported`, `crypto_suite_supported`, `doc_schema_max` and capability bitfield against the server's own sets, picks `max(intersection(…))` for wire proto and crypto suite, and returns the `HelloAck` — or a `NegotiationError` the server surfaces as a typed `Error` before closing. The rules and their error codes are specified in [`../10-cross-cutting/protocol-versioning.md`](../10-cross-cutting/protocol-versioning.md) §4, and every failure path has a frozen fixture (below).
+The wire protocol is pinned at **v1**, but **in-band negotiation exists and is the mechanism that enforces the pin.** `Hello::negotiate` in `crates/sunrise-wire-protocol/src/negotiation.rs` takes the client's `wire_proto_supported`, `crypto_suite_supported`, `doc_schema_max` and capability bitfield against the server's own sets, picks `max(intersection(…))` for wire proto and crypto suite, and returns the `HelloAck` — or a `NegotiationError` the server surfaces as a typed `Error` before closing. The rules and their error codes are specified in [`../10-cross-cutting/protocol-versioning.md`](../10-cross-cutting/protocol-versioning.md) §4, and every failure path has a frozen fixture (below).
 
-With one version on each side the intersection is trivially `{1}`, which is why the pin holds without any coordination — not because negotiation is absent. A future major version coordinates with a client release ≥30 days in advance per [`../06-server/overview.md`](../06-server/overview.md). An empty intersection (e.g. a self-hoster running an older binary) returns a clean `Error { code: "SYNC_PROTOCOL_VERSION_MISMATCH" }` then `Close`, and the client surfaces "please update Sunrise (client or server)."
+With one version on each side the intersection is trivially `{1}`, which is why the pin holds without any coordination — not because negotiation is absent. A new wire protocol version is added alongside the old one, not in place of it: both sides advertise both for an overlap window, so the intersection is never empty for a supported build ([`../06-server/overview.md`](../06-server/overview.md) §Versioning, [`../10-cross-cutting/protocol-versioning.md`](../10-cross-cutting/protocol-versioning.md)). An empty intersection (e.g. a self-hoster running an older binary) returns a clean `Error { code: "SYNC_PROTOCOL_VERSION_MISMATCH" }` then `Close`, and the client surfaces "please update Sunrise (client or server)."
 
 ### Frozen fixtures
 

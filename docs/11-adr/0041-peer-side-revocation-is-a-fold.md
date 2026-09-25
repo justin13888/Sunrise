@@ -98,8 +98,10 @@ Two gates, and a shape.
 
 Every `device_revoke` op is **stored whatever its sender's standing**, in
 `device_revoke_ops` (migration 0027), and the register is recomputed from it
-each time one lands. Before the walk the fold builds `revokers_all` — for each
-device, the set of *other* devices the ledger records as having revoked it,
+each time one lands. The ledger holds one row per `(sender, revoked_device_id)`
+pair, the one with the highest stamp, because the fold reads nothing from the
+pair's other rows, and at most 256 pairs per sender (§Consequences). Before the walk the fold builds
+`revokers_all` — for each device, the set of *other* devices the ledger records as having revoked it,
 over every row and not over any part of one — and then makes a **second pass
 over that frozen map, discounting `s` from `v`'s set when the ledger holds a
 row revoking `s` whose sender is not `v`**. Both passes read the row set and
@@ -319,9 +321,11 @@ there are five visible consequences:
    honest options — re-request the op, or accept the loss and say so where a
    user can see it — and this takes the second, because the first is not even
    needed: the op was never discarded, it is simply still gated. Correcting a
-   cut appends a second revocation of the same sender by the same party, which
+   cut adds a second revocation of the same sender by the same party, which
    changes which row wins the register and changes nothing about who has
-   revoked whom — so the gate answers the same question the same way.
+   revoked whom, so the gate answers the same question the same way. The
+   ledger keeps only one row for the pair, the one with the higher stamp, and
+   that row's gate answer is the same as the other's.
    `a_cut_correction_does_not_re_fold_a_skipped_revocation` pins it.
 
    This is tolerable **here and would not be tolerable for a task edit**, and
@@ -600,11 +604,92 @@ discount has to guess at. Taken.
   §Decision 1 is the argument and `key-rotation.md` §"What converges, and what
   does not" is where a reader of the crypto docs meets it.
 - **The register is rewritten on every `device_revoke`.** `DELETE` plus one
-  `INSERT` per surviving row, inside the transaction that is already open. The
-  ledger is bounded by the number of revocation ops an account ever makes, which
-  is a handful, and both are in the same order of magnitude as the device list.
+  `INSERT` per surviving row, inside the transaction that is already open, after
+  a read of the whole ledger. So each applied op costs time proportional to the
+  ledger, and what bounds the ledger is not "the number of revocation ops an
+  account ever makes", which this bullet used to say. Nothing bounds that
+  number: any member can send `device_revoke` ops, a revoked one included,
+  because its ops are stored whatever its standing
+  ([#250](https://github.com/justin13888/Sunrise/issues/250)).
+  `Engine::compact_device_revoke_ops` keeps **one row per `(sender,
+  revoked_device_id)` pair**: after each fold it deletes every row of a pair
+  except the one with the highest stamp. The fold never reads the value of those
+  rows. The gate reads pairs, all of a pair's rows are gated or ungated
+  together, and a pair's highest stamp always outranks its other rows for the
+  register. So every register comes out the same, and so does every read bound.
+  Sending the same revocation again, correcting a cut, or a revoked device
+  naming one target over and over no longer grows the table.
+- **Each sender keeps at most 256 distinct targets**
+  ([#315](https://github.com/justin13888/Sunrise/issues/315)).
+  `apply_device_revoke` stores a row for an id no device on this account has
+  ever had, on purpose: a cert can arrive after the revocation of its device.
+  Pair compaction left that open, so an authenticated sender, a revoked one
+  included, grew the ledger, the register and the read bound by one row per id
+  it made up, and every later fold's cost with them.
+  `Engine::cap_device_revoke_targets` closes it. Before the fold, it keeps each
+  sender's `REVOKE_TARGETS_PER_SENDER` (256) pairs whose greatest stamp sorts
+  highest, `(op_hlc_ms, op_hlc_logical, revoked_device_id)` descending, and
+  deletes the rest of that sender's pairs. Unlike pair compaction this changes
+  the fold, and it is still a function of the op set: whole pairs are kept or
+  dropped, the 256th pair's key only rises as ops arrive, and a later row of a
+  dropped pair is ranked on its own stamp. So the ledger ends as the same rows
+  in any delivery order, and so does the register. The ledger is then at most
+  256 rows per sender, and a fold costs time proportional to that.
+
+  **What the cap costs, and whom.** It drops the flooding sender's own claims
+  and no one else's. None of them can ungate that sender: the gate on a sender
+  is built from rows revoking it, and the discount of one of its revokers needs
+  a row from some other sender. So a revoked device cannot flood its way out of
+  the gate (`a_gated_sender_flooding_past_the_cap_stays_gated`). A sender the
+  account still trusts **can** withdraw its own earlier revocations by naming
+  256 fresh ids (`a_sender_keeps_at_most_the_cap_of_distinct_revocation_targets`).
+  Those revocations already depend on that sender's standing: they unwind the
+  moment it is revoked. And a trusted device that has turned hostile holds keys
+  to everything anyway. The remedy is this family's usual one: revoke again
+  from a device the account still trusts. An honest device never reaches the
+  cap, because `revoke_device` refuses a target this replica holds no cert for.
+  A dropped op logs `core.device.revoke_refused` with
+  `reason = "sender_over_cap"`, and unlike the other two reasons it is not kept.
+
+  **The cap makes the read bound order-dependent a second way.** The ledger and
+  the register converge; the read bound does not, and the cap adds a path to
+  that beside [#282](https://github.com/justin13888/Sunrise/issues/282)'s. Take
+  a pair naming a device this replica holds a cert for. On a replica where the
+  pair lands before 256 newer pairs from the same sender, the fold writes the
+  device's read bound, and the later eviction withdraws the revocation from the
+  register but leaves the bound, because the device has a cert here. On a
+  replica where the 256 newer pairs arrive first, the cap drops the pair before
+  any fold sees it, and that replica never bounds the device. Both replicas then
+  agree that the device is current, and only the first one withholds keys from
+  it. This is taken, not fixed: releasing the bound on eviction would let a
+  sender unbound any device it revoked by naming 256 fresh ids, which is the
+  readmission the read bound exists to prevent, and bounding every pair a
+  sender ever named is the unbounded table the cap exists to remove. The cost
+  falls only on a device a flooding sender revoked, and it is the same
+  per-replica shape #282 already leaves open, so closing #282 with a bound
+  derived from the op set would close this path too.
+
+  **Why not the relay.** A per-sender upload quota at the relay was the other
+  way to settle #315, and it cannot bound this. Envelopes are opaque to the
+  relay, so a quota counts uploads of every kind, not revocations. With
+  `require_device_sig = false`, the default, the relay knows the account and
+  not the sending device, so a per-sender quota is a per-account one, and it
+  throttles the honest devices along with the flooding one. And a rate is not a
+  bound: at any rate a flood arrives in the end, and the ledger would still
+  grow without limit on every replica.
 - **The read bound is a second table and is never rewritten**, only added to
-  (`0028_device_read_bounds.sql`). One `INSERT OR IGNORE` per surviving row runs
+  (`0028_device_read_bounds.sql`), with one exception for ids no device here
+  has. `Engine::release_orphan_read_bounds` deletes a row whose id has no row
+  in `devices` and no ledger row naming it. Pair compaction keeps every pair,
+  so only the cap above can remove the last ledger row naming an id. Without
+  the release, a sender over the cap would still grow this table by one row
+  per made-up id, each landing in one fold and falling out of the ledger at
+  the next. It never releases a device this replica holds a cert for, and
+  every key-distribution site seals only to such devices. So an unwind still
+  cannot readmit any device a key could reach. A released id whose cert
+  arrives later is current, as the capped ledger says. A replica that held the
+  cert first keeps its bound, which is the non-convergence #282 already
+  records, reached here only through a sender over the cap. One `INSERT OR IGNORE` per surviving row runs
   immediately before the `DELETE` above, so no row passes through a window where
   it is in neither. `Engine::is_read_bounded` is the read, and the four
   key-distribution sites are **not** its only askers: a **fifth** asks it

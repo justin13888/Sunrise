@@ -2,6 +2,10 @@
 
 **Status:** accepted
 
+**Amended by:** [ADR-0042](./0042-v0-forever.md) — the "v1 MUST set" and its
+deferrals are release framing, now withdrawn: sharing and calendars are ranked
+roadmap items, and the regression rule no longer depends on a release.
+
 **Amends:** [`../07-clients/parity-matrix.md`](../07-clients/parity-matrix.md)
 (four rows; the amendment cites this ADR from each).
 

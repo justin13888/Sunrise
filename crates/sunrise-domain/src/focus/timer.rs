@@ -33,7 +33,7 @@ pub const CYCLES_BEFORE_LONG_BREAK: u32 = 4;
 /// `docs/08-features/focus-mode.md` §Adaptive session length.
 ///
 /// `timeboxed to my next Block` is deliberately absent: Block has no command
-/// path in v1, so there is no next Block to box against.
+/// path today, so there is no next Block to box against.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionLength {

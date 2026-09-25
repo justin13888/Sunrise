@@ -83,7 +83,7 @@ AccountInfo          { identity_id, email, tier, device_count, created_at_ms }
 `AccountInfo.tier` is always the string `"free"`: `resolve_account` sets it at
 provisioning (`crates/sunrise-server/src/store/accounts.rs:107`) and nothing
 updates it or reads it for a decision. It is retained for wire compatibility,
-not because it means anything — there are no plan tiers in v1
+not because it means anything — there are no plan tiers
 ([ADR-0027](../11-adr/0027-v1-self-host-first.md)).
 
 `AccountInfo` carries a **device count**, not a `[DeviceMeta]` array, and names
@@ -193,7 +193,7 @@ device-management surface reads —
 [#160](https://github.com/justin13888/Sunrise/issues/160) both want one, and
 [#170](https://github.com/justin13888/Sunrise/issues/170) wants somewhere on the
 Apple clients to keep the relay device id such a list is keyed by — and the
-push-token route waits on a push pipeline whose client half v1 does not have.
+push-token route waits on a push pipeline whose client half does not exist yet.
 Whoever adds a caller signs it: every route here takes a signed extractor and
 `SseTransport::with_device_signer` is the pattern.
 
@@ -459,10 +459,10 @@ The envelope `ApiError` actually renders carries two members and no
 
 Codes are **stable** (clients map them to translated strings). New codes can be added; clients see unknown codes as a generic error. Messages never quote a token, a key, or a subject: a JWKS transport failure and a forged signature both render as the same opaque `401`, and a SQLite error renders as `500 FATAL_INTERNAL` with the message `"internal error"`.
 
-### Quota responses — REMOVED FROM v1
+### Quota responses — REMOVED
 
 There are none, and there is no longer a code to build them from. ADR-0027
-takes per-account quotas out of v1; `AUTH_QUOTA_EXCEEDED` and
+takes per-account quotas out of scope; `AUTH_QUOTA_EXCEEDED` and
 `STORAGE_QUOTA_EXCEEDED` are gone from `sunrise-error`'s `codes.toml` and their
 ids (203, 300) are burned. Nothing counts storage, ops, or devices against a
 plan, and the `429`/`202` pair this section used to specify — a hard cap over
@@ -484,7 +484,7 @@ The target, when it is built:
 
 Per-IP: 60 RPM unauthenticated, 600 RPM authenticated.
 
-Per-account limiting is **out of v1** — it presupposes per-account accounting
+Per-account limiting is **not built** — it presupposes per-account accounting
 that does not exist ([ADR-0027](../11-adr/0027-v1-self-host-first.md) clause 2).
 The design of record for it is
 [`../05-sync/backpressure-and-quotas.md`](../05-sync/backpressure-and-quotas.md),

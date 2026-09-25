@@ -6,7 +6,7 @@ status: accepted
 
 Sunrise is end-to-end encrypted: the server holds ciphertext and metadata; only paired user devices hold the keys to read content.
 
-This document is the index. Each linked spec is normative for its area; **all crypto specs in this directory are accepted (frozen) for v1**.
+This document is the index. Each linked spec is normative for its area; **all crypto specs in this directory are accepted (frozen)**.
 
 **Accepted is not the same as implemented.** [ADR-0024](../11-adr/0024-key-hierarchy.md) records that the documented cryptosystem and the one in `crates/` were different systems sharing a vocabulary, and adopts the documented hierarchy — the one drawn below — as the target. Each spec in this directory opens with an implementation-status section naming what the tree does today. The short version: the **op envelope, blob chunking, recovery-blob seal, Noise XX handshake and SAS** are byte-exact; the **key hierarchy is now built** — identity keypair, identity-signed DeviceCerts, random per-`(stream_id, epoch)` Stream keys, HPKE `key_envelope` distribution, device revocation and epoch rotation; what remains unbuilt is **identity rotation**, **`share_grant` / `share_revoke`** and the **checkpoint / snapshot** families.
 
@@ -19,11 +19,11 @@ This document is the index. Each linked spec is normative for its area; **all cr
 5. **Revocability.** A lost/stolen device can be revoked, after which it cannot read new content.
 6. **Selective sharing.** Sharing a Stream to another identity does not leak unrelated content.
 
-## Non-goals (v1)
+## Non-goals
 
 - **Forward secrecy of stored ops.** Compromise of a current Stream key reveals all past ops encrypted under it. (TLS 1.3 provides session-level FS for the transport.)
 - **Plausible deniability** of identity ownership.
-- **Post-quantum resistance.** Envelope algorithm IDs are versioned to support a future PQ rotation; no PQ primitives ship in v1.
+- **Post-quantum resistance.** Envelope algorithm IDs are versioned to support a future PQ rotation; no PQ primitives ship today.
 - **Anonymity from the relay.** The server learns account email, device IDs, op counts, IPs, and the sharing graph.
 - **Defense against compelled disclosure** of user secrets.
 

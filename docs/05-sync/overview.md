@@ -18,8 +18,8 @@ Sync moves encrypted ops between devices that participate in the same identity (
 
 | Component | Spec |
 |---|---|
-| Merge engine (entity LWW) | [`conflict-resolution.md`](./conflict-resolution.md), [ADR-0014](../11-adr/0014-entity-level-lww-merge.md) |
-| Per-field merge (deferred design) | [`crdt-design.md`](./crdt-design.md) *(proposed)* |
+| Merge engine (entity LWW today; superseded by [ADR-0044](../11-adr/0044-per-field-ops.md)) | [`conflict-resolution.md`](./conflict-resolution.md), [ADR-0014](../11-adr/0014-entity-level-lww-merge.md) |
+| Per-field merge (design of record, [ADR-0044](../11-adr/0044-per-field-ops.md)) | [`crdt-design.md`](./crdt-design.md) *(proposed)* |
 | Wire protocol | [`wire-protocol.md`](./wire-protocol.md) |
 | Transport (SSE + typed POST per [ADR-0023](../11-adr/0023-sse-sync-transport.md); WebSocket is the implementation being replaced) | [`transports.md`](./transports.md) |
 | Conflict resolution policies | [`conflict-resolution.md`](./conflict-resolution.md) |
@@ -49,12 +49,19 @@ Sync moves encrypted ops between devices that participate in the same identity (
 
 `Catching up` and `Live` are both functional states from the user's perspective; the indicator differs.
 
+Two states sit outside the diagram. `Degraded` is connected but told by the
+relay that ops it can no longer supply are missing. `Stopped` follows a relay
+`Close` whose code the error catalogue marks not retryable (`AUTH_DEVICE_REVOKED`,
+`AUTH_TOKEN_INVALID`, or a code it cannot read): unlike `Disconnected`
+it does not retry, and leaves only when the credential is replaced or the app
+restarts. `crates/sunrise-sync/src/state.rs` is the authority for the set.
+
 ## Latency targets
 
 | Action | p50 | p95 |
 |---|---|---|
 | Local commit visible in UI | <16ms | <50ms |
-| Op visible on a peer device on same network | <500ms | <2s |
+| Op visible on a peer device that is online (≤ 50 ms RTT to the relay) | <150ms | <300ms; **p99 <500ms** ([`performance-budgets.md`](../10-cross-cutting/performance-budgets.md) §Sync propagation) |
 | Op visible on a peer over LTE | <2s | <8s |
 | Op visible on a phone awoken by push | <5s | <15s |
 

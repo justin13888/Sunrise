@@ -179,7 +179,7 @@ pub enum PairingPayloadError {
     /// transport messages is the eventual answer — the channel is
     /// bidirectional and already carries multiple frames — but it needs a
     /// framing contract that reaches the Swift seam, where a sealed message is
-    /// currently one base64 string. A vault this large is far past anything v1
+    /// currently one base64 string. A vault this large is far past anything today
     /// produces, and a wrong answer here is a device that silently cannot read
     /// half its own content.
     #[error("pairing payload is {len} bytes, over the {MAX_PAIRING_PAYLOAD}-byte transport limit")]

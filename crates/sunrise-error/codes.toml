@@ -13,6 +13,7 @@
 #  - Codes can be ADDED (at minor-version boundaries); never repurposed,
 #    never renamed.
 #  - Numeric ids are monotonically increasing and never re-used.
+#  - `since` is the wire protocol version a code first appeared in, not a product release.
 
 [[code]]
 id = 1
@@ -84,7 +85,7 @@ kind = "permanent"
 retryable = false
 since = "v1"
 
-# 203 was `AUTH_QUOTA_EXCEEDED`. ADR-0027 takes per-account quotas out of v1
+# 203 was `AUTH_QUOTA_EXCEEDED`. ADR-0027 left per-account quotas unbuilt
 # and nothing ever emitted it, so it was removed — and the id is burned by the
 # rule above, never re-used and never repurposed. Hence 204 below.
 
