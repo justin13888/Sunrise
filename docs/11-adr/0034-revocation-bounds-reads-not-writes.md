@@ -209,8 +209,10 @@ Revocation today is a **register plus a read bound**:
   that pin them, at [ADR-0041 §What a user sees when an op is
   refused](./0041-peer-side-revocation-is-a-fold.md#what-a-user-sees-when-an-op-is-refused),
   item 4, and that text governs; what may be told to a user is held open by
-  [#248](https://github.com/justin13888/Sunrise/issues/248) and
-  [#252](https://github.com/justin13888/Sunrise/issues/252).
+  [#252](https://github.com/justin13888/Sunrise/issues/252). The mutual pair's
+  lockout ([#248](https://github.com/justin13888/Sunrise/issues/248)) is
+  settled by a third current device, per
+  [ADR-0056](./0056-a-revocation-is-withdrawn-only-by-its-author.md) §3.
 
 ### Why re-adding a peer-side refusal is not free
 
@@ -292,7 +294,7 @@ which is the scope ADR-0041 preserves and says it preserves ([ADR-0041 §3. What
 is deliberately not
 gated](./0041-peer-side-revocation-is-a-fold.md#3-what-is-deliberately-not-gated);
 its header says the same at
-`docs/11-adr/0041-peer-side-revocation-is-a-fold.md:9-11`, which sits above
+`docs/11-adr/0041-peer-side-revocation-is-a-fold.md:17-19`, which sits above
 every section heading in that file and so is cited by line, unanchored). The
 decision itself has not changed for that family. What changed is its reach: two
 **control** ops are refused at the peer, listed in §"What is actually enforced,
@@ -503,9 +505,11 @@ and that is what the relay bound is for.
    when an op is
    refused](./0041-peer-side-revocation-is-a-fold.md#what-a-user-sees-when-an-op-is-refused),
    item 4, and that text governs; what may be told to a user is held open by
-   [#248](https://github.com/justin13888/Sunrise/issues/248) and
    [#252](https://github.com/justin13888/Sunrise/issues/252), and #252 is this
-   defect, already filed. What binds the client copy is #241's remit and not
+   defect, already filed. The mutual pair's lockout
+   ([#248](https://github.com/justin13888/Sunrise/issues/248)) is settled by a
+   third current device, per
+   [ADR-0056](./0056-a-revocation-is-withdrawn-only-by-its-author.md) §3. What binds the client copy is #241's remit and not
    this trigger. **The trigger itself stands unchanged**: revocation presented
    as a control that stops writes is a reason to revisit this decision, whatever
    a screen is eventually allowed to say.

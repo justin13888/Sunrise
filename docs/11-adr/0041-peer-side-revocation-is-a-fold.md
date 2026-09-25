@@ -2,6 +2,14 @@
 
 **Status:** accepted
 
+**Amended by:** [ADR-0056](./0056-a-revocation-is-withdrawn-only-by-its-author.md)
+— this record said an un-revoke op is what would settle the residuals of
+§"What a user sees" item 4. It would not, and they do not need one: a revocation
+from a third current device already settles them, and the one inverse ADR-0056
+takes is a withdrawal by a revocation's own author. Item 4 and §Alternatives
+(i) now say so. The fold, the gate, the discount and the read bound are
+unchanged.
+
 **Amends** [ADR-0034](./0034-revocation-bounds-reads-not-writes.md) §Decision
 corollary 3, which reserved peer-side enforcement for after the relay bound and
 required that it not reintroduce order dependence. This is that enforcement,
@@ -339,15 +347,28 @@ there are five visible consequences:
    anybody else.** The mutual exception's cost, stated here because a user can
    reach it: once X and O have revoked each other, each one's only revoker is
    the other, so each is forgiven for revoking the other and gated for
-   revoking a *third* party. That reaches the honest device of the pair too,
-   and it is permanent, because revocation has no inverse
-   ([#241](https://github.com/justin13888/Sunrise/issues/241)). One op from a
-   device the account has already expelled therefore costs the device that
-   expelled it its third-party administrative capability, for good.
+   revoking a *third* party. That reaches the honest device of the pair too.
+   One op from a device the account has already expelled therefore costs the
+   device that expelled it its third-party administrative capability, until a
+   third current device says which half of the pair the account meant.
 
-   **The remedy is a third current device**, and the bound that makes one
-   enough is the discount pass §Decision 1 carries. For one revision it was
-   not enough: the revoker map was built from every row while only the walk
+   **The remedy is a third current device revoking the compromised half.**
+   That row gives the compromised half a revoker other than the honest one, so
+   its revocation of the honest half is gated; and it revokes the compromised
+   half from a sender other than the honest one, so the discount drops the
+   compromised half out of the honest half's revoker set. The honest half is
+   current and ungated again.
+   `a_third_current_device_settles_which_half_of_a_mutual_pair_the_account_meant`
+   pins it. Its read bound stays on a replica that had taken it, which is item
+   5's ratchet and [#282](https://github.com/justin13888/Sunrise/issues/282)'s
+   to close. No withdrawal lifts the lockout
+   ([ADR-0056](./0056-a-revocation-is-withdrawn-only-by-its-author.md) §3): a
+   device withdraws only its own revocations, the row gating the honest half is
+   the compromised half's, and the honest half withdrawing its own revocation
+   reinstates the compromised half while leaving itself gated.
+
+   The bound that makes a third device enough is the discount pass §Decision 1
+   carries. For one revision it was not enough: the revoker map was built from every row while only the walk
    judged one, so a row the walk gated still seated its sender in its target's
    set, and a revoked device reached every current device with one ordinary op
    apiece. The claim in this paragraph was false for as long as that lasted,
@@ -396,7 +417,8 @@ there are five visible consequences:
    `the_discount_lets_one_of_two_devices_revoked_together_ungate_the_other`
    pins it. It is narrower than what the discount closes — that cost one op
    from *one* revoked device and was permanent and account-wide — but it is
-   not nothing, and #241's un-revoke is what would settle it.
+   not nothing. What settles it is that current device revoking X2: it is a
+   revoker of X2 nobody discounts, so X2 is gated again (ADR-0056 §3).
 
    *The chain, which is the hole.* One link further — O revokes X, P revokes
    O, Q revokes P — and Q's row gates P's, so O's revocation of X stands and X
@@ -581,8 +603,10 @@ third parties anyway. Both are narrower than what it closes — that cost one op
 from one revoked device, was permanent, and reached the whole account — and
 neither is reachable by a revoked device out of its own rows. Neither is out of
 an attacker's reach either, where the attacker holds a second device the same
-revoker expelled. #241's un-revoke is still what would settle the question the
-discount has to guess at. Taken.
+revoker expelled. The question the discount has to guess at is settled by a
+revocation from a current device outside the relationship, which is a revoker
+nobody discounts; no un-revoke is needed for it
+([ADR-0056](./0056-a-revocation-is-withdrawn-only-by-its-author.md) §3). Taken.
 
 ## Consequences
 
