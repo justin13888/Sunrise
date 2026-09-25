@@ -130,6 +130,8 @@ jobs:
         #   apps/apple/**            the Swift, project.yml and .swiftlint.yml
         #   mise.toml                defines every task the Apple jobs run
         #   tokens.swift             generated, committed, compiled into both apps
+        #   Strings.swift,           the string catalog's Apple binding, likewise
+        #     Localizable.xcstrings  (ADR-0054)
         #   .github/workflows/ci.yml a change to these jobs must run them
         #   .github/actions/**       likewise for anything they call
         #
@@ -180,7 +182,7 @@ jobs:
           # here-string redirects from a temporary file, so there is no reader
           # to close the pipe and nothing to take a signal.
           if grep -qE \
-            '(^crates/|^tools/|^schemas/|(^|/)Cargo\.(toml|lock)$|\.rs$|^rust-toolchain|^\.cargo/|^apps/apple/|^mise\.toml$|^packages/sunrise-ui-tokens/generated/tokens\.swift$|^\.github/workflows/ci\.yml$|^\.github/actions/)' \
+            '(^crates/|^tools/|^schemas/|(^|/)Cargo\.(toml|lock)$|\.rs$|^rust-toolchain|^\.cargo/|^apps/apple/|^mise\.toml$|^packages/sunrise-ui-tokens/generated/tokens\.swift$|^packages/sunrise-i18n/generated/(Strings\.swift|Localizable\.xcstrings)$|^\.github/workflows/ci\.yml$|^\.github/actions/)' \
             <<<"$changed"
           then
             echo "apple=true" >> "$GITHUB_OUTPUT"
@@ -1352,6 +1354,85 @@ jobs:
           rustc --edition 2021 --crate-type rlib --emit=metadata \
             --out-dir "$meta" packages/sunrise-ui-tokens/generated/tokens.rs
           rustfmt --check --edition 2021 packages/sunrise-ui-tokens/generated/tokens.rs
+
+  # The string catalog's drift gate, in the design tokens' shape (ADR-0054,
+  # after ADR-0029): the four files under `packages/sunrise-i18n/generated/`
+  # are inputs to Xcode and to the CLI's `cargo build`, neither of which can
+  # run the generator. `strings.rs` needs no compile step here: the CLI
+  # `include!`s it, so the `rust` job compiles and lints it.
+  i18n-current:
+    name: String catalog gate
+    runs-on: ubuntu-latest
+    # Sized from what it does: a `bun install` and one TypeScript build over
+    # one TOML file — `bun-typecheck`'s 21s, measured, with room.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6  # v2.2.0
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          restore-keys: ${{ runner.os }}-bun-
+      - run: bun install --frozen-lockfile
+      - name: Reject generated string bindings that have drifted from i18n/*.toml
+        # `git status --porcelain`, not `git diff --exit-code`: a binding the
+        # generator newly emits is untracked, and `git diff` is silent about it.
+        run: |
+          bun run packages/sunrise-i18n/build.ts
+          stale="$(git status --porcelain -- packages/sunrise-i18n/generated)"
+          if [ -n "$stale" ]; then
+            printf '%s\n' "$stale"
+            echo "::error::i18n: the generated bindings are stale; run \`mise run i18n\` and commit the result."
+            exit 1
+          fi
+
+  # docs/10-cross-cutting/i18n.md §Plural-rule test coverage: one entry per
+  # locale, the three between them holding every CLDR plural category. A
+  # locale with a catalog is checked against its own messages; one without is
+  # checked against the template a translator into it would start from. A
+  # missing or dead plural arm fails. Adding a translated locale adds an entry.
+  i18n-plurals:
+    name: Plural coverage (${{ matrix.locale }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      # Every locale reports, so one failure does not hide another's.
+      fail-fast: false
+      matrix:
+        locale: [en, pl, ar]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6  # v2.2.0
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          restore-keys: ${{ runner.os }}-bun-
+      - run: bun install --frozen-lockfile
+      - name: Every message compiles and renders under this locale's CLDR rules
+        env:
+          LOCALE: ${{ matrix.locale }}
+        run: bun run packages/sunrise-i18n/plurals.ts "$LOCALE"
+
+  # `apps/docs` is VitePress over `docs/`. Its build is the only thing that
+  # notices a doc VitePress cannot render — a dead page link, or prose Vue
+  # would read as a template — so it runs on every change.
+  docs-site:
+    name: Docs site build
+    runs-on: ubuntu-latest
+    # Measured at 5s locally for 166 pages, plus `bun install`.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6  # v2.2.0
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          restore-keys: ${{ runner.os }}-bun-
+      - run: bun install --frozen-lockfile
+      - run: bun run --filter @sunrise/docs build
 
   orphan-crates:
     name: Orphan crate gate
