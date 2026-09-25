@@ -31,6 +31,8 @@ product_name = "Sunrise"
 title = "Sunrise — Web"
 # Today's list when it holds no task.
 empty = "Nothing on the list."
+# The installable app's description, in its web app manifest.
+description = "Local-first, end-to-end encrypted productivity"
 
 [docs.site]
 # The documentation site's title, beside the logo and in the browser tab.

@@ -1,3 +1,4 @@
+import { createMessages } from "@sunrise/i18n";
 import { color } from "@sunrise/ui-tokens";
 import react from "@vitejs/plugin-react";
 import { defineConfig, type Plugin } from "vite";
@@ -22,6 +23,30 @@ import { VitePWA } from "vite-plugin-pwa";
  * over it.
  */
 const themeColor = color.light.surface.accent;
+
+/**
+ * The strings the build itself writes — the static `<title>` and the web app
+ * manifest — in the catalog's source locale. Both are fixed at build time, so
+ * they cannot follow the reader's language; `src/main.tsx` sets `<html lang>`
+ * and `dir` at load, and a translated manifest waits for a per-locale build.
+ */
+const messages = createMessages([]);
+
+/** Write `<title>` from the string catalog, the way the colour is written. */
+function titleFromCatalog(): Plugin {
+    return {
+        name: "sunrise-title",
+        transformIndexHtml() {
+            return [
+                {
+                    tag: "title",
+                    children: messages.web.app.title(),
+                    injectTo: "head",
+                },
+            ];
+        },
+    };
+}
 
 /**
  * Write `<meta name="theme-color">` into the HTML from the token above.
@@ -49,6 +74,7 @@ export default defineConfig({
     plugins: [
         react(),
         themeColorMeta(),
+        titleFromCatalog(),
         VitePWA({
             registerType: "autoUpdate",
             workbox: {
@@ -56,9 +82,11 @@ export default defineConfig({
                 globPatterns: ["**/*.{js,css,html,svg,wasm}"],
             },
             manifest: {
-                name: "Sunrise",
-                short_name: "Sunrise",
-                description: "Local-first, end-to-end encrypted productivity",
+                name: messages.common.productName(),
+                short_name: messages.common.productName(),
+                lang: messages.locale,
+                dir: messages.dir,
+                description: messages.web.app.description(),
                 theme_color: themeColor,
                 icons: [],
             },

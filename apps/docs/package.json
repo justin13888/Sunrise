@@ -1,0 +1,19 @@
+{
+    "name": "@sunrise/docs",
+    "version": "0.1.0",
+    "private": true,
+    "type": "module",
+    "scripts": {
+        "dev": "vitepress dev",
+        "build": "vitepress build",
+        "preview": "vitepress preview",
+        "typecheck": "tsc --noEmit"
+    },
+    "dependencies": {
+        "@sunrise/i18n": "workspace:*"
+    },
+    "devDependencies": {
+        "typescript": "~5.8.3",
+        "vitepress": "^1.6.4"
+    }
+}

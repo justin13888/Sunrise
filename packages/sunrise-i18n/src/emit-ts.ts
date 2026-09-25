@@ -130,13 +130,16 @@ export function emitTs(catalog: Catalog): string {
     const accessors: string[] = [];
     emitTree(tree(keys, 0), catalog, 2, accessors);
 
+    // The import names its `.ts` extension. `apps/web/vite.config.ts` imports
+    // this file, and Vite loads a config's linked workspace packages with
+    // Node's own resolver, which does not guess extensions.
     return `${BANNER}
 import {
     type Catalog,
     createFormatter,
     direction,
     negotiate,
-} from "../src/runtime";
+} from "../src/runtime.ts";
 
 /** Every locale this binding carries, the source locale first. */
 export const locales = ${JSON.stringify(carried)} as const;

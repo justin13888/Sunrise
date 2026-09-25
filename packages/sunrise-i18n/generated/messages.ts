@@ -6,7 +6,7 @@ import {
     createFormatter,
     direction,
     negotiate,
-} from "../src/runtime";
+} from "../src/runtime.ts";
 
 /** Every locale this binding carries, the source locale first. */
 export const locales = ["en"] as const;
@@ -19,6 +19,7 @@ const catalog: Catalog = {
         "common.product_name": [{ kind: "text", value: "Sunrise" }],
         "web.app.title": [{ kind: "text", value: "Sunrise — Web" }],
         "web.app.empty": [{ kind: "text", value: "Nothing on the list." }],
+        "web.app.description": [{ kind: "text", value: "Local-first, end-to-end encrypted productivity" }],
         "docs.site.title": [{ kind: "text", value: "Sunrise" }],
         "docs.site.description": [{ kind: "text", value: "Local-first, end-to-end encrypted productivity: the design, the protocol, and the decisions behind them." }],
         "docs.site.nav_adrs": [{ kind: "text", value: "Decisions" }],
@@ -48,6 +49,8 @@ export function createMessages(requested: readonly string[]) {
                 title: (): string => f("web.app.title"),
                 /** Nothing on the list. */
                 empty: (): string => f("web.app.empty"),
+                /** Local-first, end-to-end encrypted productivity */
+                description: (): string => f("web.app.description"),
             },
         },
         docs: {
