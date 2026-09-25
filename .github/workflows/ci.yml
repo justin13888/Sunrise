@@ -65,7 +65,7 @@ jobs:
   # The two are not interchangeable here: a job skipped by a conditional
   # reports a check run GitHub counts as successful, whereas a workflow filtered
   # out by `paths:` reports nothing at all — and `macOS app (…)` and
-  # `iOS app (…)` are required contexts in the `Protect master` ruleset, so
+  # `iOS app (…)` are required status checks on `master`, so
   # that second shape would leave every docs-only pull request permanently
   # unmergeable.
   #
@@ -193,7 +193,7 @@ jobs:
   # The Rust gate runs twice, as two jobs naming one composite action, rather
   # than as the two-leg matrix this used to be. The names below are
   # byte-identical to the legs they replace because both are required status
-  # checks in the `Protect master` ruleset, and the mechanism that keeps the
+  # checks on `master`, and the mechanism that keeps the
   # macOS one off the pull-request path only works on a whole job. See the
   # header of .github/actions/rust-checks/action.yml for why.
   #
@@ -479,6 +479,24 @@ jobs:
     env:
       # As in `macos-app`, and for the reason spelled out there.
       SUNRISE_FFI_PREBUILT: "1"
+      # `ScreenshotWalkTests` off the pull-request path, and only it: the rest
+      # of `SunriseiOSUITests` still runs on every pull request this job runs
+      # on, and that is where the tap-to-core evidence ADR-0028's revisit
+      # trigger 2 rests on lives — `TabShellUITests` captures through the bar
+      # and asserts the row lands. The walk measured 128 s of a ~10-minute UI
+      # suite. Its screenshots are not what a pull request loses, because a
+      # green run's result bundle is never uploaded (see the last step below).
+      # What it does lose, named so nobody has to rediscover it: the walk is
+      # the only iOS UI test that opens the Search tab, seeds five annotated
+      # captures in a row, and dismisses the keyboard. It still runs on every
+      # push to master, nightly and on dispatch.
+      #
+      # The cost, stated like `rust-macos`'s: a pull request that breaks only
+      # what the walk alone reaches merges green, and the walk goes red on
+      # master afterwards. `mise run ios-app` skips on any non-empty value;
+      # the empty string on every other event expands to nothing there,
+      # exactly as unset does.
+      SUNRISE_SKIP_SCREENSHOT_WALK: ${{ github.event_name == 'pull_request' && '1' || '' }}
     steps:
       # First, and before the runner does anything else. `!cancelled()` in the
       # `if:` above replaces the implicit `success()` that `needs:` would
@@ -515,16 +533,18 @@ jobs:
           xcrun simctl list devices available | grep -i iphone
           du -sh out/SunriseCore.xcframework out/swift
       # One task, as with macOS. `mise run ios-app` runs `xcodegen generate`,
-      # `swiftlint --strict`, and `xcodebuild test` against the iPhone 17 Pro
-      # simulator — which runs both the shared `SunriseTests` bundle and,
-      # unlike the macOS job, the UI tests: a simulator runner needs no change
-      # to the machine's security posture, so there is nothing to opt into.
+      # `swiftlint --strict`, and `xcodebuild build-for-testing` then
+      # `test-without-building` against the iPhone 17 Pro simulator, booted
+      # in the background while the build runs — which runs both the shared
+      # `SunriseTests` bundle and, unlike the macOS job, the UI tests: a
+      # simulator runner needs no change to the machine's security posture,
+      # so there is nothing to opt into.
       - name: mise run ios-app
         run: mise run ios-app
       # The bundle `mise run ios-app` leaves at `out/test-results/ios.xcresult`
       # is the one thing a red run of this job produces that is worth
       # anything, and until now it died with the runner. The task writes it
-      # (`mise.toml:731-744`) and then hands it to
+      # (`mise.toml:794-827`) and then hands it to
       # `.github/scripts/xcresult-failures.py`, which is why a failure here
       # names a file and a line rather than only a test method. What the log
       # cannot carry is the rest of the bundle: the automation activity
@@ -567,16 +587,19 @@ jobs:
       # missing path is the expected outcome and not a second error to read.
       # Its commonest shape is not an earlier *step* failing — it is an
       # earlier phase inside this same step. `mise run ios-app` runs
-      # `swiftlint lint --strict` (`mise.toml:685`) before it ever reaches
+      # `swiftlint lint --strict` (`mise.toml:731`) before it ever reaches
       # `xcodebuild`, and a strict-lint red is a frequent way for this job to
-      # go down; at that point no bundle has been written at all. Uploading
-      # nothing, silently, on a SwiftLint failure is the intended behaviour
-      # here and not a gap in it. Pairing it with a condition that never fires
+      # go down; at that point no bundle has been written at all. The same
+      # holds for a compile error, since the build half
+      # (`build-for-testing`) writes no bundle either, and for a simulator
+      # that never finished booting. Uploading nothing, silently, in those
+      # cases is the intended behaviour here and not a gap in it: each one
+      # prints its cause to the log. Pairing it with a condition that never fires
       # on success is the `fuzz` job's shape, at
-      # `:1693-1703`. `retention-days: 7` is not inherited from there — that
+      # `:1817-1827`. `retention-days: 7` is not inherited from there — that
       # step carries no such key — and is this step's own choice: a red run's
       # bundle has to outlive a weekend plus a maintainer's attention, and
-      # seven days is what the framework artefact at `:320` already uses.
+      # seven days is what the framework artefact at `:358` already uses.
       #
       # `path:` is the directory holding the bundle rather than the bundle
       # itself. An `.xcresult` is a directory, and naming it directly makes
@@ -588,14 +611,14 @@ jobs:
       # Said plainly because it has not been established: nothing here has
       # verified that an `.xcresult` survives the zip round trip
       # `upload-artifact` performs. The framework step's own comment earns
-      # that claim explicitly for its payload at `:304-305` — "no symlink and
+      # that claim explicitly for its payload at `:341-342` —"no symlink and
       # no executable bit, so a zip round trip loses nothing" — and no
       # equivalent inspection has been made of a result bundle, a package
       # with its own internal structure. The "Xcode opens it by double-click"
       # sentence above rests on the directory-naming argument alone; the first
       # real failure this step catches is what will confirm or refute it.
       #
-      # `compression-level: 1` for the reason recorded at `:300-305`, which
+      # `compression-level: 1` for the reason recorded at `:337-342`, which
       # applies here unchanged: both ends of this round trip are 10x-billed
       # macOS runners, and a result bundle off the same runner class runs to
       # hundreds of megabytes. It was inherited by omission before, not
@@ -603,7 +626,7 @@ jobs:
       #
       # `name:` carries `github.run_attempt` because `upload-artifact@v4`
       # fails outright when an artifact of that name already exists in the run
-      # and `overwrite:` is unset — and `:315-319` records this repository's
+      # and `overwrite:` is unset — and `:353-357` records this repository's
       # own finding that "Re-run failed jobs" re-enters the *same* run, so
       # attempt 1's artefact is still present when attempt 2 uploads. The
       # suffix rather than `overwrite: true`: comparing two red attempts side

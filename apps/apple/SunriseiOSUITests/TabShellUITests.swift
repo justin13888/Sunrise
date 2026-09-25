@@ -49,12 +49,12 @@ final class TabShellUITests: SunriseUITestCase {
             activate(app.buttons["more"], named: "Browse's More menu")
             activate(app.buttons[row].firstMatch, named: "\(row) in the More menu")
             XCTAssertTrue(
-                app.navigationBars[row].waitForExistence(timeout: 10),
+                app.navigationBars[row].appears(within: 10),
                 "\(row) pushed and titled itself"
             )
             activate(app.navigationBars.buttons.firstMatch, named: "the back button on \(row)")
             XCTAssertTrue(
-                app.navigationBars["Browse"].waitForExistence(timeout: 10),
+                app.navigationBars["Browse"].appears(within: 10),
                 "back returned to Browse"
             )
         }
@@ -96,14 +96,14 @@ final class TabShellUITests: SunriseUITestCase {
         capture("Renew passport !1", landingAs: "Renew passport")
 
         try XCTSkipUnless(
-            app.keyboards.element.waitForExistence(timeout: 3),
+            app.keyboards.element.appears(within: 3),
             "no software keyboard on this simulator, so nothing covers the tab bar"
         )
 
         // Unconditional from here. Past the skip the keyboard is up, so the
         // way out has to exist and has to work.
         let done = app.buttons["capture.done"]
-        XCTAssertTrue(done.waitForExistence(timeout: 5), "the keyboard offers Done")
+        XCTAssertTrue(done.appears(within: 5), "the keyboard offers Done")
         activate(done, named: "the keyboard's Done button", timeout: 5)
 
         // The claim of this test, and the reason the message is spelled out
@@ -117,7 +117,7 @@ final class TabShellUITests: SunriseUITestCase {
         )
         activate(browse, named: "the Browse tab")
         XCTAssertTrue(
-            app.navigationBars["Browse"].waitForExistence(timeout: 10),
+            app.navigationBars["Browse"].appears(within: 10),
             "the tab switched"
         )
     }
@@ -207,7 +207,7 @@ final class TabShellUITests: SunriseUITestCase {
         activate(inbox, named: "the Inbox row in Browse")
 
         XCTAssertTrue(
-            app.staticTexts["Book the ferry"].waitForExistence(timeout: 10),
+            app.staticTexts["Book the ferry"].appears(within: 10),
             "what the sheet captured is in the Inbox"
         )
     }
@@ -237,7 +237,7 @@ final class SidebarAddButtonTests: SunriseUITestCase {
 
         for name in ["New stream", "New context"] {
             XCTAssertTrue(
-                app.buttons[name].waitForExistence(timeout: 10),
+                app.buttons[name].appears(within: 10),
                 "\(name) is in the accessibility tree under its own name"
             )
         }

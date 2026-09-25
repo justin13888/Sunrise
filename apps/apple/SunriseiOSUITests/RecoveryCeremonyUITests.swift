@@ -34,7 +34,7 @@ final class RecoveryCeremonyUITests: SunriseUITestCase {
 
         let later = app.buttons["recovery.later"]
         XCTAssertTrue(
-            later.waitForExistence(timeout: 30),
+            later.appears(within: 30),
             "a vault created here cannot reach a relay, so the ceremony offers 'Not now'"
         )
         XCTAssertFalse(
@@ -52,7 +52,7 @@ final class RecoveryCeremonyUITests: SunriseUITestCase {
         createVault()
 
         let later = app.buttons["recovery.later"]
-        XCTAssertTrue(later.waitForExistence(timeout: 30), "the ceremony is on screen")
+        XCTAssertTrue(later.appears(within: 30), "the ceremony is on screen")
         activate(later, named: "the ceremony's 'Not now' button", timeout: 30)
 
         XCTAssertTrue(

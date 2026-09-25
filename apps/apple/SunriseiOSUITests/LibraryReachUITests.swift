@@ -20,7 +20,7 @@ final class LibraryReachUITests: SunriseUITestCase {
         // `SidebarAddButtonTests` gives: a control findable only by identifier
         // is silent to VoiceOver.
         XCTAssertTrue(
-            app.buttons["Save this view…"].waitForExistence(timeout: 10),
+            app.buttons["Save this view…"].appears(within: 10),
             "the menu offers to save the view on screen"
         )
     }
@@ -42,7 +42,7 @@ final class LibraryReachUITests: SunriseUITestCase {
         // its prompt — SwiftUI hands the accessibility tree as the label is not
         // a promise worth resting a test on.
         let name = app.textFields.firstMatch
-        XCTAssertTrue(name.waitForExistence(timeout: 10), "the sheet asks for a name")
+        XCTAssertTrue(name.appears(within: 10), "the sheet asks for a name")
         activate(name, named: "the sheet's name field")
         name.typeText("mornings")
         activate(app.buttons["Save"], named: "the sheet's Save button")
@@ -54,7 +54,7 @@ final class LibraryReachUITests: SunriseUITestCase {
             app.descendants(matching: .any)
                 .matching(NSPredicate(format: "label BEGINSWITH %@", "mornings"))
                 .firstMatch
-                .waitForExistence(timeout: 10),
+                .appears(within: 10),
             "the saved view is in the menu"
         )
     }
@@ -68,8 +68,8 @@ final class LibraryReachUITests: SunriseUITestCase {
 
         for name in ["Import calendar…", "Export calendar"] {
             XCTAssertTrue(
-                app.buttons[name].waitForExistence(timeout: 10)
-                    || app.otherElements[name].waitForExistence(timeout: 1),
+                app.buttons[name].appears(within: 10)
+                    || app.otherElements[name].appears(within: 1),
                 "\(name) is in the menu under its own name"
             )
         }

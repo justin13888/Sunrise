@@ -25,6 +25,18 @@ roadmap phase and a per-device-class parity target, not a release gate.
 > built from, so it removes runs whose result was already determined and no
 > others. The decision is unaffected, and rests now on that narrower property
 > rather than on unconditionality.
+>
+> **Third later change, same treatment.** On a pull request `ios-app` now
+> skips one class, `ScreenshotWalkTests`, through
+> `-skip-testing:SunriseiOSUITests/ScreenshotWalkTests`; it still runs on
+> every push to master, nightly and on dispatch. The Context's *"every case in
+> the six files"* is therefore true of those runs and not of a pull request's.
+> Revisit trigger 2 does not fire: the claim that a tap reaches the core is
+> carried by the tab-shell suites — `TabShellUITests` captures a task and
+> asserts its row lands — which still run on every pull request the job runs
+> on. What a pull request does give up is what only the walk reaches: the
+> Search tab, a five-capture fixture and keyboard dismissal. A break there
+> goes red on master after the merge, not on the pull request.
 
 **Amends:** [`../07-clients/parity-matrix.md`](../07-clients/parity-matrix.md)
 (one new column, 31 cells, plus an audit section, two hard rules — the iOS
@@ -75,7 +87,7 @@ Read from the tree rather than from a plan:
   scheme (`:533-547`), unlike `SunriseUITests`, which is `skipped: true` in the
   macOS scheme (`:514-515`) because a macOS XCUITest needs
   `sudo DevToolsSecurity -enable` on the machine. The scheme runs the target
-  whole — `mise.toml:686-691` records that `mise run ios-app` passes no
+  whole — `mise.toml:732-737` records that `mise run ios-app` passes no
   `-only-testing` — so what the simulator runs on every build is every case in
   the six files under `apps/apple/SunriseiOSUITests/`, seventeen `func test`
   declarations at this revision, and not only the tab shell's.
