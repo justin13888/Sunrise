@@ -36,6 +36,8 @@ final class AppSurfaces {
     static let routineIntervalMs: UInt64 = 15 * 60 * 1000
 
     private(set) var menuBar: MenuBarModel?
+    let widgets: WidgetFeed?
+    init(widgets: WidgetFeed? = nil) { self.widgets = widgets }
 
     #if os(macOS)
     /// Whether ⌘⇧N is registered with the window server. iOS has no global
@@ -168,6 +170,7 @@ final class AppSurfaces {
         // was available.
         IntentVault.adopt(bridge)
         menuBar = MenuBarModel(bridge: bridge)
+        widgets?.start(bridge: bridge)
         ical = IcalModel(bridge: bridge)
         #if os(macOS)
         // The panel owns the field on macOS because it owns the window the
@@ -471,6 +474,7 @@ final class AppSurfaces {
     /// giving it back belongs here and not in ``releaseVault()``.
     func detach() {
         releaseVault()
+        widgets?.withdraw()
         #if os(macOS)
         hotkey.unregister()
         hotkeyStatus = hotkey.status

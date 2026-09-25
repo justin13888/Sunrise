@@ -712,10 +712,13 @@ jobs:
           # `signingStyle: manual` with no `provisioningProfiles` entry, which
           # is correct rather than incomplete: a Developer ID Application
           # signature needs a profile only for capabilities that are
-          # profile-gated (iCloud, Push, App Groups, and the App Sandbox's
-          # network and file entitlements). This app declares none — see
-          # apps/apple/project.yml, which ships no entitlements file at all —
-          # so the identity is the whole credential.
+          # profile-gated (iCloud, Push, `group.` App Groups, and the App
+          # Sandbox's network and file entitlements). This app declares none
+          # of those. Its one App Group is team-prefixed
+          # (`$(TeamIdentifierPrefix)dev.sunrise`, apps/apple/project.yml),
+          # which Developer ID grants without a profile. Its widget
+          # extension's plain `app-sandbox` needs no profile either. So the
+          # identity is the whole credential.
           cat > "$RUNNER_TEMP/ExportOptions.plist" <<PLIST
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

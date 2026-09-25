@@ -21,7 +21,8 @@ that is no longer what is built.
 [`parity-matrix.md`](./parity-matrix.md) now carries a filled iOS column and
 [ADR-0028](../11-adr/0028-ios-is-a-v1-client.md) is the record of why: every
 row the shell reaches is a **SHOULD**, and none of them is a MUST until an iOS
-release ships. Twenty-three SHOULDs, graded **23 met**. The two that were
+release ships. Twenty-four rows, graded **24 met**; the newest is the widget
+row ([Widgets](#widgets)). The two that were
 unmet — saved views and iCal import/export, each a working shared model with no
 iOS caller — now have one: a **Views** menu on the toolbar of the screens a
 saved view can name, and **Import calendar…** / **Export calendar** in Browse's
@@ -107,35 +108,114 @@ SwiftUI scenes ──▶ ViewModels (ObservableObject) ──▶ CoreClient (Swi
 
 ## Platform surfaces (not built)
 
-> **None of the surfaces in this section, in [Background sync](#background-sync), or in [Push handling](#push-handling) exists yet.** Grepping `apps/apple` finds no
-> `WidgetKit`, `BGAppRefreshTask`, `BGProcessingTask`, `ActivityKit`,
+> **Apart from two exceptions, none of the surfaces in this section, in [Background sync](#background-sync), or in [Push handling](#push-handling) exists yet.** Grepping `apps/apple` finds no
+> `BGAppRefreshTask`, `BGProcessingTask`, `ActivityKit`,
 > `WatchConnectivity`, `INFocusStatus` or `SecureEnclave`, and `project.yml`
-> declares no widget, share or watch extension target. This section is the
+> declares no share or watch extension target. This section is the
 > specification these surfaces will be built to, not a description of the app.
-> Tracked in [#31](https://github.com/justin13888/Sunrise/issues/31); widgets
-> specifically in [#14](https://github.com/justin13888/Sunrise/issues/14).
+> Tracked in [#368](https://github.com/justin13888/Sunrise/issues/368) and
+> [#367](https://github.com/justin13888/Sunrise/issues/367).
 >
-> The one exception is **Shortcuts and App Intents**, which is real — six intents
-> live in `apps/apple/Sunrise/Intents/` and are shared with macOS. The set
-> differs from the list below: there is no "defer" or "stream-summary" intent,
-> and there are "today" and "inbox" intents that this page does not mention.
+> The two exceptions:
+>
+> - **Shortcuts and App Intents.** Six intents live in
+>   `apps/apple/Sunrise/Intents/` and are shared with macOS. The set differs
+>   from the list below: there is no "defer" or "stream-summary" intent, and
+>   there are "today" and "inbox" intents that this page does not mention.
+> - **The Next Up widget** ([Widgets](#widgets)), on the Home Screen and the
+>   Lock Screen. The capture widget and the Stream tile are not built
+>   ([#376](https://github.com/justin13888/Sunrise/issues/376)).
 
 
-### Lock Screen widgets
+### Widgets
 
-- **Single-tap capture.** Tap opens the app cold to the dedicated `CapturePresenter` view (text field focused, software keyboard up). No per-tap deep-link payload is needed because Lock Screen widgets cannot embed input. (iOS doesn't allow direct text entry on the lock screen for a third-party app, but we shorten the path.)
-- **Today summary.** Small widget showing tasks-due-today count + first task title.
-- **Stream tile.** Large widget showing top items in a chosen Stream.
+**Built: Next Up** (#14). It shows how much of Today is left and what comes
+first. It is one widget in every size, because every size answers the same
+question and only the number of rows changes:
 
-Widgets read from a shared App Group container synced periodically by the main app's BGTask.
+| Family | Draws | Tap opens |
+|---|---|---|
+| Home Screen small | the open count, the overdue count, the first task and its section | the first task |
+| Home Screen medium / large | the counts, then 3 / 8 rows, each with its own link, and "+N more" | the row tapped; elsewhere, the first task |
+| Lock Screen rectangular | "N left" (with the overdue count), then the first two titles | the first task |
+| Lock Screen circular | the open count | the first task |
+| Lock Screen inline | "N left · first title" | the first task |
 
-#### Widget refresh cadence
+A row opens `sunrise://task/<id>?action=open`, which lands on Today with the
+task revealed. The Home Screen sizes also print the snapshot's age as a
+relative time ("5 min"), which VoiceOver reads as "Updated 5 min ago". The
+Lock Screen sizes have no room for it and print none.
 
-`BGAppRefreshTask` is scheduled every 15 minutes (iOS may delay). The widget shows a "last updated <relative>" stamp. On-app-open also refreshes synchronously.
+The same sources build the macOS widget, which offers the three Home Screen
+sizes; see [`desktop.md`](./desktop.md#platform-integration).
 
-### Home Screen widgets
+#### The snapshot is the whole contract
 
-- Same set as lock-screen widgets, plus larger configurations.
+These rules are normative for any client that adds a widget.
+
+- **The widget extension never opens the vault.** It links no Rust. There are
+  three reasons. The app holds the vault lock while it runs. The vault root
+  is in the app's Keychain items. And a widget's memory ceiling is far below
+  what `Core::open` needs. The extension reads one JSON file,
+  `widget-snapshot.json`, from the App Group container. The app writes it
+  (`WidgetSnapshot`, in `apps/apple/Widgets/Shared/`).
+- **What is on the widget is the core's decision.** The rows are the open tasks
+  of `Query::Today`, in the order it returns them. Each row's section
+  (overdue / due / scheduled) comes from `today_section` and is carried as
+  data, so the widget never re-derives the start-of-day boundary. The app only
+  chooses which fields to project and how many rows.
+- **What leaves the vault is bounded.** The file holds, for at most 8 tasks,
+  the task's id, its title, its section and its link. It also holds three
+  counts (open, overdue and Inbox) and a timestamp. It holds no notes,
+  streams, contexts or dates. This is a deliberate plaintext copy outside
+  SQLCipher, the same trade a reminder notification's title makes. On iOS the
+  file is written with `completeUntilFirstUserAuthentication`, because a Lock
+  Screen widget has to draw while the phone is locked.
+- **The snapshot exists only while a vault is open, or until the next launch
+  where the app ended without notice.** Every time the session leaves
+  `.unlocked`, the app erases the file and reloads the widgets: on a lock, a
+  sign-out, a failure, or the start of a vault switch. A vault switch erases
+  the old snapshot before the new vault's is written. The app also erases it
+  when it is told it is terminating (a quit on macOS), and again at launch,
+  before any vault is open. iOS kills a suspended app, and a crash ends one,
+  without telling it; that snapshot stays on disk, and on the widget, until
+  Sunrise next launches. A suspended iOS app still holds its vault open, so
+  the Lock Screen widget keeps drawing while the app is in the background.
+  With no snapshot,
+  every size says **Open Sunrise** and never shows an empty list. An empty list
+  would claim that nothing is due, when the truth is that the widget cannot
+  see.
+- **A snapshot from another format version counts as absent.**
+
+#### Refresh cadence
+
+The app rewrites the snapshot at these moments:
+
+- when a vault is attached;
+- after each change batch from the core (debounced 500 ms);
+- every 15 minutes while it runs, which catches a day rolling over;
+- whenever the app returns to the foreground.
+
+It writes, and asks WidgetKit to reload, **only when the widget would draw
+something different**, because iOS budgets reloads. The widget's timeline is
+one entry with a `.never` policy: nothing in the extension can compute a new
+state, so only a write from the app can produce one.
+
+While the app is suspended, nothing refreshes the snapshot. On the Home
+Screen sizes, the age stamp shows how old it is. A `BGAppRefreshTask` that opens the vault in
+the background and republishes belongs to background sync
+([#367](https://github.com/justin13888/Sunrise/issues/367)).
+
+#### Not built
+
+These are tracked in [#376](https://github.com/justin13888/Sunrise/issues/376):
+
+- **Single-tap capture** (Lock Screen). A tap opens the app to the capture
+  sheet with the field focused. It is blocked on a route: `sunrise://capture`
+  with no text is refused by the link parser today, and the capture intent
+  runs in the background.
+- **Stream tile.** A large widget showing the top items in a chosen Stream.
+  It needs a configuration intent, and the app has to publish per-stream rows.
 
 ### Focus Filters
 
