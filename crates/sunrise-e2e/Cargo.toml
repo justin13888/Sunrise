@@ -24,7 +24,7 @@ sunrise-cbor = { workspace = true }
 sunrise-wire-protocol = { workspace = true }
 ciborium = { workspace = true }
 jiff = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "net"] }
 async-trait = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }

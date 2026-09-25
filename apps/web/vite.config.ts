@@ -80,6 +80,11 @@ export default defineConfig({
             workbox: {
                 navigateFallback: "/index.html",
                 globPatterns: ["**/*.{js,css,html,svg,wasm}"],
+                // The web core (`public/wasm/`, ADR-0055) is ~4.6 MB, over
+                // Workbox's 2 MiB default, and a PWA that cannot launch its
+                // core offline is not offline-capable. Workbox fails the build
+                // on an asset over the limit rather than skipping it.
+                maximumFileSizeToCacheInBytes: 8 * 1024 * 1024,
             },
             manifest: {
                 name: messages.common.productName(),

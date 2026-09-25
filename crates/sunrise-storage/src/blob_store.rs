@@ -55,10 +55,14 @@ impl BlobStore {
             fs::create_dir_all(parent)?;
         }
         let tmp = path.with_extension("bin.tmp");
-        let mut f = fs::File::create(&tmp)?;
-        f.write_all(ciphertext)?;
-        f.sync_all()?;
-        drop(f);
+        // Closed before the rename by leaving scope. Not `drop(f)`: on
+        // wasm32-unknown-unknown `File` has no `Drop` impl, and clippy's
+        // `drop_non_drop` rejects the call when the web core is linted.
+        {
+            let mut f = fs::File::create(&tmp)?;
+            f.write_all(ciphertext)?;
+            f.sync_all()?;
+        }
         fs::rename(&tmp, &path)?;
         Ok(())
     }
