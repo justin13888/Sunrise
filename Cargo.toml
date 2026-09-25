@@ -87,7 +87,11 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["ring"]
 rusqlite = { version = "0.40.2", default-features = false, features = ["bundled-sqlcipher", "blob", "trace", "fallible_uint"] }
 
 # --- async runtime / web ---
-tokio = { version = "1.41", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "io-util", "net", "signal"] }
+# Only the features every target can build. A member inherits these and cannot
+# remove them, and `mio` (behind `net`, `fs`, `signal` and `rt-multi-thread`)
+# refuses `wasm32-unknown-unknown`, which `sunrise-core` must build for
+# (`crates/sunrise-core-wasm`, ADR-0055). Each crate names the rest itself.
+tokio = { version = "1.41", features = ["macros", "sync", "time", "io-util"] }
 # `original-uri` keeps the pre-nesting request target available to handlers.
 # `Router::nest` rewrites `Uri` to the path *inside* the nest, and the device
 # signature covers the target the client actually sent.
