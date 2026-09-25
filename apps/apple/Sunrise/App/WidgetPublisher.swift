@@ -17,9 +17,9 @@ import WidgetKit
 ///
 /// **What is on Today is the core's decision, not this file's.** The rows are
 /// `Query::Today` in the order it returns them, each one's section is
-/// `today_section`, and the counts are the same open-task counts the menu bar
-/// shows. The only thing decided here is the projection: which fields, and how
-/// many rows.
+/// `today_section`, and the counts are the menu bar's, from the same
+/// ``DailySnapshot`` derivation. The only thing decided here is the
+/// projection: which fields, and how many rows.
 @MainActor
 final class WidgetPublisher {
     /// The same debounce the menu bar uses, for the same reason: this is a
@@ -39,7 +39,12 @@ final class WidgetPublisher {
     private let store: WidgetSnapshotStore
     private let reload: @MainActor () -> Void
 
-    /// What the file holds now, as far as this process knows.
+    /// What this publisher last wrote, or `nil` before its first write.
+    ///
+    /// Starts empty rather than read from disk: a publisher is only ever
+    /// built by ``WidgetFeed/start(bridge:)``, and by then the file is gone —
+    /// erased at launch and by the withdraw that precedes every later start —
+    /// so the first publish always writes.
     private(set) var published: WidgetSnapshot?
     /// Why the last attempt wrote nothing, or `nil` after a good one.
     private(set) var errorMessage: String?
@@ -54,46 +59,39 @@ final class WidgetPublisher {
         self.bridge = bridge
         self.store = store
         self.reload = reload
-        // Seeded from disk, so a relaunch that finds Today as it left it
-        // spends none of the reload budget saying so.
-        published = store.read()
     }
 
     /// Project Today and the Inbox into what the widgets draw.
     ///
     /// Pure: `today_section`, the one seam function it calls, reads nothing
     /// but its arguments, and neither does `DeepLink.url`.
+    ///
+    /// The rows and counts come from the menu bar's own derivation
+    /// (``DailySnapshot/openToday(_:nowMs:timeZone:)`` and its `count`
+    /// methods), not a copy of it, so the two surfaces cannot disagree.
     static func snapshot(
         today: [TaskItem],
         inbox: [TaskItem],
         nowMs: UInt64,
         timeZone: String
     ) -> WidgetSnapshot {
-        let open = today.filter { $0.state != .done && $0.state != .cancelled }
-        var overdue = 0
-        var rows: [WidgetSnapshot.Row] = []
-        for task in open {
-            let section = WidgetSnapshot.Section(todaySection(
-                scheduledAt: task.scheduledAt,
-                dueAt: task.dueAt,
-                nowMs: nowMs,
-                tz: timeZone
-            ))
-            if section == .overdue { overdue += 1 }
-            guard rows.count < WidgetSnapshot.rowLimit else { continue }
-            rows.append(WidgetSnapshot.Row(
-                id: task.id,
-                title: task.title,
-                section: section,
-                link: DeepLink.task(task.id, .open).url
-            ))
-        }
+        let open = DailySnapshot.openToday(today, nowMs: nowMs, timeZone: timeZone)
+        var counts = DailySnapshot()
+        counts.count(today: open)
+        counts.count(inbox: inbox)
         return WidgetSnapshot(
             writtenAtMs: Int64(clamping: nowMs),
-            outstanding: open.count,
-            overdue: overdue,
-            inbox: inbox.count { $0.state != .done && $0.state != .cancelled },
-            rows: rows
+            outstanding: counts.outstanding,
+            overdue: counts.overdue,
+            inbox: counts.inbox,
+            rows: open.prefix(WidgetSnapshot.rowLimit).map { task, section in
+                WidgetSnapshot.Row(
+                    id: task.id,
+                    title: task.title,
+                    section: WidgetSnapshot.Section(section),
+                    link: DeepLink.task(task.id, .open).url
+                )
+            }
         )
     }
 

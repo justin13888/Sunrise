@@ -18,12 +18,67 @@ struct DailySnapshot: Equatable {
     /// Deliberately one number. A menu bar item that renders four counts is
     /// four things to read at a glance, which is none.
     var badge: String {
-        let outstanding = scheduled + due + overdue
-        return outstanding == 0 ? "" : "\(outstanding)"
+        outstanding == 0 ? "" : "\(outstanding)"
+    }
+
+    /// Today's open tasks, whatever their section.
+    var outstanding: Int {
+        scheduled + due + overdue
     }
 
     var isEmpty: Bool {
-        scheduled + due + overdue + inbox == 0
+        outstanding + inbox == 0
+    }
+}
+
+/// The one derivation of Today's counts, shared by every glance surface.
+///
+/// The menu bar and the widgets both count from here, so the two cannot
+/// disagree about what is left, what is overdue, or what is in the Inbox —
+/// not because two copies are kept in step, but because there is one.
+extension DailySnapshot {
+    /// Whether a task is still to do. Done and cancelled rows are not.
+    static func isOpen(_ task: TaskItem) -> Bool {
+        task.state != .done && task.state != .cancelled
+    }
+
+    /// Today's open tasks in the order the core returned them, each with its
+    /// section.
+    ///
+    /// The section is the domain's decision — the overdue boundary is
+    /// `due_at < start_of_today_local`, not `due_at < now`, and a surface
+    /// counting it itself would disagree with the list behind it every
+    /// evening.
+    static func openToday(
+        _ today: [TaskItem],
+        nowMs: UInt64,
+        timeZone: String
+    ) -> [(task: TaskItem, section: TodaySection)] {
+        today.filter(isOpen).map { task in
+            (task, todaySection(
+                scheduledAt: task.scheduledAt,
+                dueAt: task.dueAt,
+                nowMs: nowMs,
+                tz: timeZone
+            ))
+        }
+    }
+
+    /// Add `open` — what ``openToday(_:nowMs:timeZone:)`` returned — to the
+    /// section counts.
+    mutating func count(today open: [(task: TaskItem, section: TodaySection)]) {
+        for (_, section) in open {
+            switch section {
+            case .scheduled: scheduled += 1
+            case .due: due += 1
+            case .overdue: overdue += 1
+            }
+        }
+    }
+
+    /// Set the Inbox count from the Inbox's rows.
+    mutating func count(inbox rows: [TaskItem]) {
+        inbox = rows.count(where: Self.isOpen)
     }
 }
 
@@ -71,22 +126,7 @@ final class MenuBarModel {
             if case let .tasks(rows) = try await bridge.query(
                 .today(nowMs: now, contexts: [])
             ) {
-                for task in rows where task.state != .done && task.state != .cancelled {
-                    // The section is the domain's decision — the overdue
-                    // boundary is `due_at < start_of_today_local`, not
-                    // `due_at < now`, and a menu bar counting it itself would
-                    // disagree with the list behind it every evening.
-                    switch todaySection(
-                        scheduledAt: task.scheduledAt,
-                        dueAt: task.dueAt,
-                        nowMs: now,
-                        tz: timeZone
-                    ) {
-                    case .scheduled: built.scheduled += 1
-                    case .due: built.due += 1
-                    case .overdue: built.overdue += 1
-                    }
-                }
+                built.count(today: DailySnapshot.openToday(rows, nowMs: now, timeZone: timeZone))
             }
             // Completions come from `MorningSummary`, not from `Query::Today`.
             // Today is a *plan*: it lists what is still to happen, so a task
@@ -106,7 +146,7 @@ final class MenuBarModel {
                 }
             }
             if case let .tasks(rows) = try await bridge.query(.inbox) {
-                built.inbox = rows.count { $0.state != .done && $0.state != .cancelled }
+                built.count(inbox: rows)
             }
             if case let .syncStatus(status) = try await bridge.query(.syncStatus) {
                 sync = SyncPresentation(status)

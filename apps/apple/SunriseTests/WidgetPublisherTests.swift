@@ -181,6 +181,32 @@ struct WidgetPublisherTests {
         await vault.bridge.shutdown()
     }
 
+    /// A publish whose reads fail leaves the snapshot on disk as it was and
+    /// spends no reload: a failed read is not an empty Today. The bridge
+    /// fails here because its vault was shut down under it, so every query
+    /// throws `Closed`.
+    @Test
+    func aFailedPublishKeepsTheSnapshotOnDisk() async throws {
+        let vault = try await TestVault()
+        let store = scratchStore()
+        defer { try? FileManager.default.removeItem(at: store.directory) }
+        let reloads = ReloadCounter()
+        let publisher = WidgetPublisher(bridge: vault.bridge, store: store) { reloads.count += 1 }
+        let now = await vault.bridge.nowMs()
+        let list = TaskListModel(bridge: vault.bridge, kind: .inbox)
+        await list.create(draft("Still here", dueAt: .instant(at: Int64(now))))
+        await publisher.publish()
+        let before = try #require(store.read())
+        #expect(publisher.errorMessage == nil)
+
+        await vault.bridge.shutdown()
+        await publisher.publish()
+
+        #expect(publisher.errorMessage != nil, "the failure is recorded")
+        #expect(store.read() == before, "and the snapshot is not erased or rewritten")
+        #expect(reloads.count == 1, "and the widgets are not redrawn")
+    }
+
     /// Once stopped, nothing is written — the lock that stopped it has
     /// already erased the file.
     @Test
