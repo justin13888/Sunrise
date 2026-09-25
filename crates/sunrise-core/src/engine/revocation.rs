@@ -818,9 +818,18 @@ impl Engine {
     /// revokes O, the mutual exception lands that, O goes out, and O going out
     /// both unwinds its revocation of X2 (decision 1, predating the discount)
     /// and discounts O out of X2's set (the discount). X2 then revokes the
-    /// rest of the account. The remedy is the mutual pair's and no better: a
-    /// device X2 reaches revokes it back and is left revoked itself. Pinned by
+    /// rest of the account. A device X2 reaches revokes it back and is left
+    /// revoked itself. Pinned by
     /// `the_discount_lets_one_of_two_devices_revoked_together_ungate_the_other`.
+    ///
+    /// **And no current device settles it, which is where it is worse than
+    /// the mutual pair.** A device T the attacker never
+    /// reached revokes X2, and X2 is gated again only until X1 names T. That
+    /// op is gated and revokes nobody, but the discount counts every stored
+    /// row, and it is a row revoking T from a sender other than X2. So T is
+    /// discounted out of X2's set, and X2 revokes the account again, T
+    /// included. Each honest revoker costs the attacker one op. Pinned by
+    /// `a_second_expelled_device_discounts_the_third_device_that_revoked_the_first`.
     ///
     /// *Shape two, which is the hole.* Extend that by one link — O revokes X,
     /// P revokes O, Q revokes P — and Q's row gates P's, so O's revocation of
@@ -836,9 +845,11 @@ impl Engine {
     ///
     /// What closes it is the same thing that closes the lockout, and it
     /// already exists: a current device revoking X. That device is a revoker
-    /// nobody discounts, so X is gated again. An un-revoke op is not needed to
-    /// say which reading of a revoked revoker the account meant, and a
-    /// third-party one is rejected as new authority. The one inverse ADR-0056
+    /// nobody discounts, so X is gated again, unless a second device the
+    /// attacker holds names it (§"And no current device settles it" above).
+    /// An un-revoke op is not needed to say which reading of a revoked
+    /// revoker the account meant, and a third-party one is rejected as new
+    /// authority. The one inverse ADR-0056
     /// (`docs/11-adr/0056-a-revocation-is-withdrawn-only-by-its-author.md`)
     /// takes is a withdrawal by a revocation's own author, and it is not built
     /// yet ([#383](https://github.com/justin13888/Sunrise/issues/383)).
@@ -852,6 +863,15 @@ impl Engine {
     /// row the ledger does not yet hold, and a third current device writes it.
     /// `a_mutual_pair_locks_both_devices_out_of_third_party_revocation` pins
     /// the behaviour so it stays deliberate.
+    ///
+    /// Against an attacker holding two expelled devices, that row is not
+    /// enough either: each honest row is answered by one gated row, and the
+    /// ledger stays symmetric however many rounds are played. Filtering the
+    /// discounting rows by one more level of the gate is beaten by one more
+    /// attacker op, and the limit of that is the fixpoint ADR-0041
+    /// §Alternatives (f) declines. What would settle it is an authority the
+    /// ledger does not hold, and
+    /// [#394](https://github.com/justin13888/Sunrise/issues/394) carries it.
     ///
     /// # Why `sender` is the row's author, and where that is enforced
     ///
