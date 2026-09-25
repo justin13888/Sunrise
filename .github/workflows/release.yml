@@ -13,16 +13,20 @@ name: Release
 # sits the run out. `verify`'s `dry_run` output is the single switch the rest of
 # the file reads.
 #
-# Two jobs here publish something that is not an artifact on the Release page,
-# and both have their own record:
+# Three jobs here publish something that is not an artifact on the Release
+# page, and each has its own record:
 #
 #   * `appcast` writes the EdDSA-signed update feed every *installed* copy of
 #     the Mac app reads — ADR-0038. It runs after `release` because it names
 #     the release it was triggered by.
-#   * `ios-release` uploads an iOS build to App Store Connect — ADR-0039. It is
-#     the one job whose credentials are deliberately allowed not to exist: it
-#     no-ops, with its own name and a summary saying so, until the owner has an
-#     App Store Connect record to upload to.
+#   * `ios-release` uploads an iOS build to App Store Connect — ADR-0039. Its
+#     credentials are deliberately allowed not to exist: it no-ops, with its
+#     own name and a summary saying so, until the owner has an App Store
+#     Connect record to upload to.
+#   * `web-pages` deploys the web client to Cloudflare Pages — #11. Allowed
+#     not to be configured in the same way, and for a second reason: the web
+#     core does not sync yet (docs/07-clients/web.md), so the owner turns it
+#     on when a deployed copy has a relay to reach.
 on:
   push:
     tags:
@@ -1509,6 +1513,132 @@ jobs:
           security delete-keychain "$RUNNER_TEMP/sunrise-ios.keychain-db" 2>/dev/null || true
           rm -f "$RUNNER_TEMP/ios.p12" "$RUNNER_TEMP/AuthKey_ios.p8" \
                 "$RUNNER_TEMP/profile.mobileprovision" "$RUNNER_TEMP/profile.plist"
+
+  # ---------------------------------------------------------------------
+  # Web client → Cloudflare Pages (#11).
+  # ---------------------------------------------------------------------
+  # Configured by two repository secrets, CLOUDFLARE_API_TOKEN (scoped to
+  # "Cloudflare Pages: Edit") and CLOUDFLARE_ACCOUNT_ID, and a Pages project
+  # named as `apps/web/wrangler.toml` names it, created once by the owner:
+  #
+  #   bunx wrangler pages project create sunrise-web --production-branch master
+  #
+  # Without both secrets the job no-ops with a summary saying so, as
+  # `ios-release` does, rather than failing the tag: a deployed web client has
+  # no relay to reach until the web core syncs, so not deploying is the
+  # expected state, not a broken release.
+  #
+  # The relay is not baked in. Each browser chooses its own
+  # (`apps/web/src/server-url.ts`); the repository variable
+  # SUNRISE_WEB_DEFAULT_SERVER_URL, when set, is only the default a browser
+  # starts from.
+  web-pages:
+    name: Web (Cloudflare Pages)
+    needs: verify
+    # Tags only: a dry run exists for the macOS packaging path.
+    if: needs.verify.outputs.dry_run == 'false'
+    runs-on: ubuntu-latest
+    # A cold release build of the web core for wasm32 (~3 minutes locally, as
+    # `ci.yml`'s `wasm-core` job notes), `wasm-bindgen-cli` compiled from
+    # source (~2 minutes), a Vite build and an upload. No observation yet;
+    # sized with the margin the Rust jobs carry.
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      VERSION: ${{ needs.verify.outputs.version }}
+      PRERELEASE: ${{ needs.verify.outputs.prerelease }}
+    steps:
+      # As in `verify`: only whether each secret exists crosses into the step.
+      - name: Is Cloudflare Pages deployment configured?
+        id: pages
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN != '' }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID != '' }}
+        run: |
+          set -euo pipefail
+          missing=""
+          for s in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID; do
+            eval "have=\${$s}"
+            [ "$have" = "true" ] || missing="$missing $s"
+          done
+          if [ -z "$missing" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "configured=false" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Web — NOT DEPLOYED"
+            echo
+            echo "This release deployed no web client. That is the expected state"
+            echo "until the web core syncs: see the \`web-pages\` job's comment in"
+            echo "\`.github/workflows/release.yml\` for the Pages project and the"
+            echo "secrets it needs."
+            echo
+            echo "Missing repository secrets:"
+            echo
+            for s in ${missing}; do echo "- \`${s}\`"; done
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::notice title=Web was not deployed::This release deployed no web client. See the job summary for the secrets that are missing."
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        if: steps.pages.outputs.configured == 'true'
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # v1
+        if: steps.pages.outputs.configured == 'true'
+        with:
+          toolchain: stable
+      - name: Add the wasm target to the pinned toolchain
+        if: steps.pages.outputs.configured == 'true'
+        run: rustup target add wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+        if: steps.pages.outputs.configured == 'true'
+        with:
+          key: release-web-pages
+      # `mise run web-wasm`, spelled out because no job here installs mise.
+      # `wasm-bindgen-cli` must be the exact `wasm-bindgen` in `Cargo.lock`, so
+      # the version is read from the lock rather than written a third time.
+      - name: Build the web core bundle
+        if: steps.pages.outputs.configured == 'true'
+        env:
+          CC_wasm32_unknown_unknown: clang
+        run: |
+          set -euo pipefail
+          cargo build -p sunrise-core-wasm --target wasm32-unknown-unknown --release
+          bindgen=$(sed -n '/^name = "wasm-bindgen"$/{n;s/^version = "\(.*\)"$/\1/p;}' Cargo.lock)
+          [ -n "$bindgen" ] || { echo "::error::no wasm-bindgen version in Cargo.lock"; exit 1; }
+          cargo install --quiet --locked wasm-bindgen-cli --version "$bindgen" --root target/tools
+          target/tools/bin/wasm-bindgen --target web --no-typescript \
+            --out-dir apps/web/public/wasm \
+            target/wasm32-unknown-unknown/release/sunrise_core_wasm.wasm
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6  # v2.2.0
+        if: steps.pages.outputs.configured == 'true'
+      - name: Build the web client
+        if: steps.pages.outputs.configured == 'true'
+        env:
+          SUNRISE_WEB_DEFAULT_SERVER_URL: ${{ vars.SUNRISE_WEB_DEFAULT_SERVER_URL }}
+        run: |
+          set -euo pipefail
+          bun install --frozen-lockfile
+          bun run --filter @sunrise/web build
+          # A build without the bundle still succeeds and runs the
+          # `localStorage` stub; a release must not ship that silently.
+          test -f apps/web/dist/wasm/sunrise_core_wasm_bg.wasm
+      # A prerelease tag goes to a preview alias, never to production.
+      - name: Deploy to Cloudflare Pages
+        if: steps.pages.outputs.configured == 'true'
+        working-directory: apps/web
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          branch=master
+          if [ "$PRERELEASE" = "true" ]; then branch=prerelease; fi
+          # An exact version: `bunx wrangler` alone would run whatever npm
+          # served that day under a token that can edit the Pages project.
+          bunx wrangler@4.140.0 pages deploy \
+            --branch "$branch" \
+            --commit-hash "$GITHUB_SHA" \
+            --commit-message "v$VERSION"
 
 # ---------------------------------------------------------------------------
 # Publish targets deliberately absent
