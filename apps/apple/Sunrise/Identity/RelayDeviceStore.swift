@@ -209,7 +209,8 @@ struct KeychainRelayDeviceIDStore: RelayDeviceIDStore {
     func store(_ binding: RelayDeviceBinding) throws {
         let trimmed = binding.id.trimmed
         guard !trimmed.isEmpty else { throw RelayDeviceIDError.empty }
-        try item.writeAcrossDomains(JSONEncoder().encode(RelayDeviceBinding(id: trimmed, scope: binding.scope)))
+        let data = try JSONEncoder().encode(RelayDeviceBinding(id: trimmed, scope: binding.scope))
+        try item.writeAcrossDomains(data)
     }
 
     /// Across both domains, so the id and the `D_S_priv` it names stay a pair:
