@@ -941,6 +941,24 @@ mod testutil {
             .collect()
     }
 
+    /// The intents the drain would send: [`pending_relay_revocations`] less
+    /// every row the register no longer agrees with, read through the one
+    /// definition `Core::pending_relay_revocations` reads.
+    pub(super) fn owed_relay_revocations(db: &Db) -> Vec<[u8; 16]> {
+        let conn = db.conn();
+        let mut stmt = conn
+            .prepare(crate::relay_intents::OWED_RELAY_REVOCATIONS_SQL)
+            .unwrap();
+        let rows = stmt
+            .query_map([], |r| r.get::<_, Vec<u8>>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        rows.into_iter()
+            .filter_map(|id| <[u8; 16]>::try_from(id.as_slice()).ok())
+            .collect()
+    }
+
     pub(super) fn device_rows(db: &Db) -> i64 {
         db.conn()
             .query_row("SELECT COUNT(*) FROM devices", [], |r| r.get(0))
@@ -11372,6 +11390,87 @@ fn revoke_device_reports_that_the_fold_discarded_its_own_op() {
         !pending_relay_revocations(&dba).contains(&c_id),
         "telling the relay to cut a device every replica still shows as current is \
          the disclosure failure #160 fixed in the other direction"
+    );
+}
+
+/// **The relay half follows the register through an unwind, both ways (#257).**
+///
+/// `revoke_device` guards the intent insert so the two halves of a revocation
+/// cannot disagree about whether there is one. The fold then made the register
+/// retroactive and never touched the intent table, which reopened the same
+/// disagreement from the other side. The chain is the issue's own:
+///
+/// 1. X revokes C while offline: effective, so C's intent is queued.
+/// 2. O revokes X. The re-fold gates `X -> C`, and C unwinds to current.
+/// 3. X revokes C again. Gated, so nothing new is queued — but step 1's row is
+///    still there.
+///
+/// The intent must not be owed while the register calls C current, or the
+/// relay refuses a device every replica shows as a member. And it must not be
+/// lost either, which is what clearing it on the unwind would do:
+///
+/// 4. P revokes O. The discount takes O out of X's revoker set, `X -> C` lands
+///    again, and C is revoked — so the relay is owed that revocation, and the
+///    row step 1 queued is what carries it.
+#[test]
+fn a_relay_intent_is_owed_only_while_the_register_calls_its_device_revoked() {
+    let ex = engine_random_keys(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eo = engine_random_keys(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let ec = engine_random_keys(ROOT, [3u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let ep = engine_random_keys(ROOT, [4u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut dbx = db_root(ROOT);
+    trust(&ex, &mut dbx, &eo);
+    trust(&ex, &mut dbx, &ec);
+    trust(&ex, &mut dbx, &ep);
+    let (x_id, o_id, c_id) = (
+        ex.keychain.device_id(),
+        eo.keychain.device_id(),
+        ec.keychain.device_id(),
+    );
+    let revoke_c = |dbx: &mut Db| {
+        ex.apply(
+            dbx,
+            Command::RevokeDevice {
+                device_id: EntityRef::new(EntityKind::Device, c_id),
+                reason: RevokeReason::Lost,
+            },
+        )
+        .expect("revoke C")
+    };
+
+    // 1.
+    let first = revoke_c(&mut dbx);
+    assert!(!first.revocation_gated);
+    assert_eq!(owed_relay_revocations(&dbx), vec![c_id]);
+
+    // 2.
+    revoke(&ex, &mut dbx, &eo, x_id, T0 + 10_000);
+    assert!(!ex.is_revoked(dbx.conn(), &c_id).unwrap(), "C unwound");
+    assert_eq!(
+        pending_relay_revocations(&dbx),
+        vec![c_id],
+        "the fold does not write the intent table"
+    );
+    assert!(
+        owed_relay_revocations(&dbx).is_empty(),
+        "an intent for a device the register calls current is not owed"
+    );
+
+    // 3.
+    let again = revoke_c(&mut dbx);
+    assert!(again.revocation_gated);
+    assert!(
+        owed_relay_revocations(&dbx).is_empty(),
+        "a gated revocation tells the relay nothing, even over an earlier row"
+    );
+
+    // 4.
+    revoke(&ex, &mut dbx, &ep, o_id, T0 + 20_000);
+    assert!(ex.is_revoked(dbx.conn(), &c_id).unwrap(), "C revoked again");
+    assert_eq!(
+        owed_relay_revocations(&dbx),
+        vec![c_id],
+        "the relay is owed the revocation the register now holds"
     );
 }
 

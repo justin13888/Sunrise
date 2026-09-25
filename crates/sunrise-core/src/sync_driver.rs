@@ -1640,6 +1640,12 @@ fn build_outbox_frames(
 /// it lands the relay keeps accepting the revoked device's uploads and keeps
 /// streaming it everyone else's, which is `#80`.
 ///
+/// It sends only what the register still agrees with. A re-fold can unwind the
+/// register row an intent was queued beside, and an intent sent after that
+/// would have the relay refuse a device every replica shows as current (#257).
+/// Such a row is skipped, not deleted, so it is sent after all if a later fold
+/// revokes the device again; `crate::relay_intents` holds the one definition.
+///
 /// Failures leave the row in place, deliberately. The device this is about is
 /// typically lost or stolen; giving up after one refused call would mean the
 /// revocation silently never reached the relay, which is the failure this whole
@@ -2632,6 +2638,54 @@ mod tests {
             vec![target],
             "and the intent survives for a transport that can carry it"
         );
+    }
+
+    /// An intent whose register row a re-fold unwound is not sent, and is
+    /// sent after all once the register revokes the device again (#257).
+    ///
+    /// The unwind is the fold rebuilding `device_revocations` without the
+    /// row; it never touches `relay_revocation_intents`. Sending the intent
+    /// anyway would have the relay refuse a device every replica shows as
+    /// current. Deleting it instead would lose it for the later fold that
+    /// restores the revocation, and the relay would then be behind the
+    /// register — the #160 direction, which is the unsafe one.
+    #[tokio::test]
+    async fn an_intent_the_register_no_longer_agrees_with_is_held_not_sent() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = open_arc(dir.path()).await;
+        let target = [0x5a; 16];
+        core.queue_relay_revocation_for_test(target).unwrap();
+        core.unwind_register_row_for_test(target).unwrap();
+
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut accepting = Recorder {
+            seen: seen.clone(),
+            answer: Ok(RevokeOutcome::Revoked),
+        };
+        drain_relay_revocations(&core, &mut accepting).await;
+        assert!(
+            seen.lock().unwrap().is_empty(),
+            "a device the register calls current must not be cut at the relay"
+        );
+        assert!(
+            !core.relay_revocation_pending(&target).unwrap(),
+            "and no surface may call it queued, since it will not be sent"
+        );
+        assert!(
+            core.relay_intent_row_exists_for_test(target).unwrap(),
+            "the intent is held, not dropped"
+        );
+
+        // The register revokes it again, as a later fold can.
+        core.queue_relay_revocation_for_test(target).unwrap();
+        assert!(core.relay_revocation_pending(&target).unwrap());
+        drain_relay_revocations(&core, &mut accepting).await;
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![target],
+            "once the register agrees again the relay is owed the revocation"
+        );
+        assert!(!core.relay_intent_row_exists_for_test(target).unwrap());
     }
 
     // ---- channel-backed duplex transport ----
