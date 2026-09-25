@@ -163,7 +163,7 @@ captured from the app are the same task.
 
 This is the exact human test script to exercise every surface of the codebase, top to bottom. The automated suites are the source of truth for correctness; the manual runs are for visual/interaction QA. Run each command from the repo root.
 
-> **Maturity note:** the Rust **core**, the **sync relay server**, and the **CLI** run for real today. Cross-device sync is proven end to end by the `sunrise-e2e` convergence tests, including a paired-device test that transfers the vault root over a Noise handshake rather than sharing a key literal. The **macOS** app is a real client — tasks, calendar, focus, routines, review, notes, search, attachments, pairing, multi-vault, reminders, App Intents, drag-and-drop, iCal import/export, print and PDF export, and full keyboard navigation — built, SwiftLint-`--strict`ed and tested in CI on `macos-26` (477 tests in 75 suites). The **iOS/iPadOS** app is the same shared view layer behind a tab shell: it builds, runs that same suite a second time against the iOS product, and runs UI tests on the simulator — all in CI's `ios-app` job, on every push to `master` and on every pull request that touches something the app is built from. It carries the phone/tablet column of the matrix at MUST level ([ADR-0042](docs/11-adr/0042-v0-forever.md)); all 23 graded rows are met. Run either app with `mise run macos-run` / `mise run ios-run`. Both apps' status against every parity requirement is tracked capability by capability in [`docs/07-clients/parity-matrix.md`](docs/07-clients/parity-matrix.md#status-audit), where every graded MUST is met on macOS, the CLI and iOS, and the unbuilt ones (sharing, calendar integration, widgets) are ranked on the [roadmap](docs/roadmap.md) — read the "what is still narrow" notes there rather than the verdict column alone. The **web** client backs onto a `localStorage` stub — the real WASM `sunrise-core` build is not built yet and is ranked on the [roadmap](docs/roadmap.md) ([#52](https://github.com/justin13888/Sunrise/issues/52)); see [ADR-0012](docs/11-adr/0012-web-wasm-deferred.md). The Tauri **desktop** shell and the Ratatui **TUI** were both removed; see [ADR-0019](docs/11-adr/0019-swiftui-macos-client.md).
+> **Maturity note:** the Rust **core**, the **sync relay server**, and the **CLI** run for real today. Cross-device sync is proven end to end by the `sunrise-e2e` convergence tests, including a paired-device test that transfers the vault root over a Noise handshake rather than sharing a key literal. The **macOS** app is a real client — tasks, calendar, focus, routines, review, notes, search, attachments, pairing, multi-vault, reminders, App Intents, drag-and-drop, iCal import/export, print and PDF export, and full keyboard navigation — built, SwiftLint-`--strict`ed and tested in CI on `macos-26` (477 tests in 75 suites). The **iOS/iPadOS** app is the same shared view layer behind a tab shell: it builds, runs that same suite a second time against the iOS product, and runs UI tests on the simulator — all in CI's `ios-app` job on every push to `master`, and locally through `mise run apple-app` before a change that reaches the app merges. It carries the phone/tablet column of the matrix at MUST level ([ADR-0042](docs/11-adr/0042-v0-forever.md)); all 23 graded rows are met. Run either app with `mise run macos-run` / `mise run ios-run`. Both apps' status against every parity requirement is tracked capability by capability in [`docs/07-clients/parity-matrix.md`](docs/07-clients/parity-matrix.md#status-audit), where every graded MUST is met on macOS, the CLI and iOS, and the unbuilt ones (sharing, calendar integration, widgets) are ranked on the [roadmap](docs/roadmap.md) — read the "what is still narrow" notes there rather than the verdict column alone. The **web** client backs onto a `localStorage` stub — the real WASM `sunrise-core` build is not built yet and is ranked on the [roadmap](docs/roadmap.md) ([#52](https://github.com/justin13888/Sunrise/issues/52)); see [ADR-0012](docs/11-adr/0012-web-wasm-deferred.md). The Tauri **desktop** shell and the Ratatui **TUI** were both removed; see [ADR-0019](docs/11-adr/0019-swiftui-macos-client.md).
 
 #### 1. Toolchain check
 
@@ -305,7 +305,22 @@ The rest of the Apple tasks, and what each one does *not* do:
 `macos-26`, across two of its three Apple jobs. The third,
 `apple-xcframework`, builds `out/SunriseCore.xcframework` once and hands it to
 both as an artefact — locally each task still builds it first, because only CI
-sets the `SUNRISE_FFI_PREBUILT` flag that says otherwise. Note that the macOS UI test target is
+sets the `SUNRISE_FFI_PREBUILT` flag that says otherwise.
+
+CI runs those jobs on a push to `master`, nightly, and on
+`gh workflow run ci.yml --ref <branch>`, but **not on a pull request**, where
+they report `skipped` (ADR-0028). So before merging a change that touches
+anything the apps are built from — `crates/`, `tools/`, `schemas/`, any
+`Cargo.toml`/`Cargo.lock`, a `.rs` file, `rust-toolchain*`, `.cargo/`,
+`apps/apple/`, `mise.toml`, the generated `tokens.swift`, `Strings.swift` or
+`Localizable.xcstrings`, or the CI workflow and actions — run
+`mise run apple-app` on a Mac. Before any build work, every Apple task checks
+that this is a Mac with Xcode selected (the Command Line Tools alone are not
+enough) and the iOS Rust targets installed; `macos-app` and `ios-app` also
+check XcodeGen, SwiftLint and, for iOS, the `ios_sim` simulator. A missing one
+stops the task there, naming the command that fixes it.
+
+Note that the macOS UI test target is
 `skipped: true` in the `Sunrise` scheme, so `mise run macos-uitest` — which has a
 scheme of its own, because `-only-testing` cannot select a skipped testable — is
 the only thing that drives the real macOS window, and it runs on a developer

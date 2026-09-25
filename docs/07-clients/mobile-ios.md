@@ -49,17 +49,18 @@ What exists today:
   A simulator runner needs no change to the machine's security posture, so iOS is
   the platform where a tap is proved to reach the core on every build.
 - CI: an `ios-app` job on `macos-26`, downstream of the `apple-xcframework`
-  job that builds the framework it links. It runs whenever CI runs, except on
-  a pull request that touches nothing the Apple apps are built from — no Rust,
-  no manifest, no `apps/apple/**`, no `mise.toml` — which the `changes` job
-  decides. A skipped job reports a check GitHub counts as successful, so the
-  required context is still satisfied. Four triggers
+  job that builds the framework it links. It runs on every trigger except
+  `pull_request`, where it is skipped. A skipped job reports a check GitHub
+  counts as successful, so the required context is still satisfied. Before
+  merge, the same `mise run ios-app` runs locally on a Mac instead (ADR-0028,
+  clause 2 of "What would force revisiting this"). Four triggers
   (`.github/workflows/ci.yml:3-17`), one of them branch-filtered: `push` on
   `master`. `pull_request` carries no `branches:` key, deliberately — that key
   filters on the *base* branch, so constraining it meant a pull request stacked
   on another pull request's branch ran nothing at all. Every pull request is
-  gated now, whatever it targets. The nightly schedule is constrained too, but
-  by GitHub rather than by this file: a `schedule` fires on the repository's
+  gated by the rest of the workflow, whatever it targets. The nightly schedule
+  is constrained too, but by GitHub rather than by this file: a `schedule`
+  fires on the repository's
   **default branch** alone, and that is `master`, so the 04:00 nightly builds
   `master` and nothing else, and no `--ref` can change it.
   `workflow_dispatch` is the one that will build any ref on request:

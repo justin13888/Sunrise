@@ -25,6 +25,15 @@ roadmap phase and a per-device-class parity target, not a release gate.
 > built from, so it removes runs whose result was already determined and no
 > others. The decision is unaffected, and rests now on that narrower property
 > rather than on unconditionality.
+>
+> **Third later change, same treatment.** The changed-paths filter is gone, and
+> `ios-app` no longer runs on any pull request: all three Apple jobs carry the
+> event condition `Rust (macos-latest)` already had, and run on a push to
+> `master`, nightly and on dispatch. Every sentence below about CI running the
+> iOS suite on a pull request, and the second change's argument above,
+> describes the file as it was. Revisit trigger 2 carries the second amendment:
+> the evidence before merge is the same `mise run ios-app`, run locally at the
+> head, and CI confirms it on the merge.
 
 **Amends:** [`../07-clients/parity-matrix.md`](../07-clients/parity-matrix.md)
 (one new column, 31 cells, plus an audit section, two hard rules — the iOS
@@ -426,8 +435,9 @@ is tested, and has not been released.
    That condition is the amendment to this clause. The job now carries an
    `if:` and a changed-paths filter — `needs: [changes, apple-xcframework]`
    with `if: ${{ !cancelled() && needs.changes.outputs.apple != 'false' }}`
-   (`.github/workflows/ci.yml:439-440`) — which this clause originally named as
-   disqualifying on its face. The evidential claim survives because of what the
+   (the `changes` job, removed by the second amendment below) — which this
+   clause originally named as disqualifying on its face. The evidential claim
+   survives because of what the
    filter is keyed on: it skips the job only when a pull request touches
    **nothing the app is built from** — no `crates/`, `tools/` or `schemas/`, no
    manifest, no `rust-toolchain`, no `.cargo/`, no `apps/apple/`, no
@@ -436,9 +446,9 @@ is tested, and has not been released.
    exactly the runs whose result was already determined.
 
    The converse is worth stating plainly, because it is the half a reader
-   assumes away: `crates/**` is the filter's first prefix
-   (`.github/workflows/ci.yml:85`), so a pull request that changes only Rust
-   **does** still run `ios-app`, and a flaky iOS UI test can block a diff that
+   assumes away: `crates/**` is the filter's first prefix in that job, so a
+   pull request that changes only Rust **does** still run `ios-app`, and a
+   flaky iOS UI test can block a diff that
    touches no Swift at all. That is not a defect in the filter — the workspace
    is what the xcframework is built from, and narrowing it to `apps/apple/`
    would fire this clause as written — but it is why this job's reliability is
@@ -447,6 +457,25 @@ is tested, and has not been released.
    jobs, and the queue those three Apple jobs created was delaying every
    pull request in the repository by up to two hours. If the filter is ever
    widened to skip on a change that *could* reach the app, this clause fires as
+   written.
+
+   The second amendment widens it all the way, and says where the evidence
+   went. The filter is gone: all three Apple jobs now carry the event condition
+   `Rust (macos-latest)` already had, so they run on a push to `master`,
+   nightly and on `workflow_dispatch`, and never on a pull request
+   (`.github/workflows/ci.yml:364-369`). The queue above was still costing
+   every change that touched `crates/`, which is most of them. The evidential
+   claim survives because the command did not change, only where it runs.
+   Every Apple job is a single `mise run` task, so `mise run ios-app` on a Mac
+   is the same XcodeGen project, the same SwiftLint `--strict`, the same
+   `xcodebuild test` and the same simulator (`ios_sim` in `mise.toml`). A
+   change that reaches what the apps are built from — the path list above —
+   runs it at its head before merge, and the push to `master` runs it again in
+   CI. The cost is stated rather than assumed away: CI can now only find an iOS
+   regression after the merge that brings it in, and
+   `gh workflow run ci.yml --ref <branch>` is how a pull request gets the CI run
+   before merge when that matters. If the local run stops being made before
+   merge, or the CI job stops being the same task, this clause fires as
    written.
 3. **A widget, share or watch extension target appearing in `project.yml`.**
    Decision 3 defers the widget row, and grades *Watch app* MAY, on the

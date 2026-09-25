@@ -54,144 +54,6 @@ env:
   RUSTFLAGS: "-D warnings"
 
 jobs:
-  # Which of the jobs below this push can possibly affect. Only the three
-  # Apple jobs consult it, because they are the only ones whose cost is worth
-  # a filter: they run on a runner class that bills at 10x and is capped at
-  # five concurrent jobs account-wide, and 13 of the 60 pull requests merged in
-  # the fortnight before this job was added touched neither Rust nor Apple
-  # sources and paid ~33 macOS-minutes each anyway.
-  #
-  # A job-level `if:` on the consumers, never a workflow-level `paths:` filter.
-  # The two are not interchangeable here: a job skipped by a conditional
-  # reports a check run GitHub counts as successful, whereas a workflow filtered
-  # out by `paths:` reports nothing at all — and `macOS app (…)` and
-  # `iOS app (…)` are required contexts in the `Protect master` ruleset, so
-  # that second shape would leave every docs-only pull request permanently
-  # unmergeable.
-  #
-  # `git diff` rather than `dorny/paths-filter` or `tj-actions/changed-files`.
-  # Fifteen lines of shell do not justify a third-party action running in the
-  # runner context at all. This used to carry a second reason — that the
-  # repository pinned by floating major tag, which is the configuration that
-  # let CVE-2025-30066 reach the repositories it reached, every tag of
-  # `tj-actions/changed-files` having been retargeted to dump runner memory
-  # into build logs. That reason is spent: every `uses:` here is a commit sha
-  # now, and a sha cannot be retargeted. What survives is the first reason and
-  # the blast radius behind it, which pinning reduces but does not remove — a
-  # pinned action is still third-party code with the runner's token and
-  # filesystem, and `dependabot` will move these pins forward on a schedule
-  # nobody reads line by line.
-  #
-  # `gh api .../compare` was the other candidate and is wrong for a different
-  # reason: its `files` array truncates at 300 entries with no error, so a
-  # large pull request would silently report that it changed nothing relevant.
-  changes:
-    name: Changed paths
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    outputs:
-      apple: ${{ steps.filter.outputs.apple }}
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
-        with:
-          # The diff below needs the merge base. The repository is ~43 MiB
-          # packed, so full history costs seconds.
-          fetch-depth: 0
-      - id: filter
-        name: Does this change reach the Apple apps?
-        # Fails open in every direction, which is the only safe bias for a job
-        # that decides whether a gate runs. Any event that is not a pull
-        # request answers `true`; a `git diff` that cannot resolve its endpoints
-        # — a force-pushed base on a stacked pull request is the realistic way —
-        # answers `true` rather than failing the step, because a red X here
-        # would be a worse signal than an Apple job that did not need to run.
-        #
-        # **Directory prefixes, not file extensions.** The tempting version of
-        # this matches `\.rs$` and the manifests, and it is wrong: the slices
-        # compile several things that are not Rust and not a manifest.
-        # `crates/sunrise-crypto/src/bip39-english.txt` is `include_str!`d by
-        # `bip39.rs`; `crates/sunrise-storage/src/migrations.rs` `include_str!`s
-        # twelve `.sql` files; and `crates/sunrise-relay-client/build.rs` reads
-        # `schemas/generated/openapi.v1.json` to generate the entire relay
-        # client. Each of those changes the bytes of the xcframework while an
-        # extension match says nothing happened. `crates/` is 348 tracked files
-        # of which two are markdown, so the prefix costs almost nothing over the
-        # extension it replaces and cannot miss an asset added later.
-        #
-        #   crates/**                the workspace, assets and fixtures included
-        #   tools/**                 `uniffi-bindgen`, built `--locked` from its
-        #                            own tracked lockfile to generate the Swift
-        #   schemas/**               `build.rs` input for the relay client
-        #   **/Cargo.{toml,lock}     the root and `fuzz/` manifests the two
-        #                            prefixes above do not reach
-        #   *.rs                     a Rust file added outside those trees
-        #   rust-toolchain*          selects the compiler for all three slices
-        #   .cargo/**                declares the three Apple target triples
-        #   apps/apple/**            the Swift, project.yml and .swiftlint.yml
-        #   mise.toml                defines every task the Apple jobs run
-        #   tokens.swift             generated, committed, compiled into both apps
-        #   Strings.swift,           the string catalog's Apple binding, likewise
-        #     Localizable.xcstrings  (ADR-0054)
-        #   .github/workflows/ci.yml a change to these jobs must run them
-        #   .github/actions/**       likewise for anything they call
-        #
-        # Known and deliberate omission: `.github/scripts/xcresult-failures.py`
-        # is called by both app tasks, but only on the failing path and under
-        # `|| true`, so it cannot turn a green run red or a red run green.
-        run: |
-          set -euo pipefail
-          if [ "${{ github.event_name }}" != "pull_request" ]; then
-            echo "apple=true" >> "$GITHUB_OUTPUT"
-            echo "not a pull request; running the Apple jobs"
-            exit 0
-          fi
-          base='${{ github.event.pull_request.base.sha }}'
-          head='${{ github.event.pull_request.head.sha }}'
-          # `--no-renames` is load-bearing, not tidiness. `--name-only` prints
-          # only a rename's *destination*, so `git mv apps/apple/Foo.swift
-          # scratch/Foo.txt` would report one path that matches nothing here,
-          # skip all three Apple jobs, report both required contexts green, and
-          # break master on merge. With `--no-renames` the same commit reports a
-          # delete and an add, and the delete matches.
-          if ! changed=$(git diff --no-renames --name-only "$base...$head"); then
-            echo "apple=true" >> "$GITHUB_OUTPUT"
-            echo "could not diff $base...$head; running the Apple jobs"
-            exit 0
-          fi
-          echo "changed paths:"
-          printf '%s\n' "$changed"
-          # A here-string, not `printf '%s\n' "$changed" | grep -qE`. That
-          # pipeline fails in the one direction the paragraph above says this
-          # job must never fail in. `grep -q` exits on its first match without
-          # draining stdin; `printf` then takes SIGPIPE; and `pipefail`
-          # promotes that 141 to the status of the whole pipeline — so the
-          # `else` branch runs, and a pull request that *did* touch `crates/`
-          # reports `apple=false`, skips all three Apple jobs, reports both
-          # required contexts green, and breaks master on merge. That is the
-          # same failure `--no-renames` above exists to prevent, arriving by a
-          # different route.
-          #
-          # It needs the payload to exceed the 64 KiB pipe buffer *and* a match
-          # to sort early — and since `git diff --name-only` emits sorted
-          # paths, `.github/`, `apps/apple/` and `crates/` are exactly the
-          # entries that sort early, so the early match is the likely case
-          # rather than the unlikely one. All 890 tracked files changing at
-          # once is 34 KiB today, so this is headroom and not a live bug; the
-          # point is that a job whose contract is "fail open in every
-          # direction" should not be relying on the tree staying small. A
-          # here-string redirects from a temporary file, so there is no reader
-          # to close the pipe and nothing to take a signal.
-          if grep -qE \
-            '(^crates/|^tools/|^schemas/|(^|/)Cargo\.(toml|lock)$|\.rs$|^rust-toolchain|^\.cargo/|^apps/apple/|^mise\.toml$|^packages/sunrise-ui-tokens/generated/tokens\.swift$|^packages/sunrise-i18n/generated/(Strings\.swift|Localizable\.xcstrings)$|^\.github/workflows/ci\.yml$|^\.github/actions/)' \
-            <<<"$changed"
-          then
-            echo "apple=true" >> "$GITHUB_OUTPUT"
-            echo "a path the Apple apps are built from changed; running them"
-          else
-            echo "apple=false" >> "$GITHUB_OUTPUT"
-            echo "nothing the Apple apps are built from changed; skipping them"
-          fi
-
   # The Rust gate runs twice, as two jobs naming one composite action, rather
   # than as the two-leg matrix this used to be. The names below are
   # byte-identical to the legs they replace because both are required status
@@ -241,6 +103,14 @@ jobs:
     # run GitHub counts as successful, so the required context is still
     # satisfied on every pull request. The cost of that is honest and worth
     # writing down — this required check can now only go red after a merge.
+    #
+    # The three Apple jobs below carry this same condition, for the same queue.
+    # Every macOS job in this file therefore runs on a push to master, nightly,
+    # and on a manual dispatch — `gh workflow run ci.yml --ref <branch>` runs
+    # them against a branch head, and their results appear on that branch's
+    # pull request. Before merge, the evidence is the local run: each Apple
+    # job is one `mise run` task, so `mise run apple-app` on a Mac runs exactly
+    # the same commands.
     if: >-
       github.event_name == 'schedule'
       || github.event_name == 'workflow_dispatch'
@@ -266,8 +136,11 @@ jobs:
     # knows a macOS job can need, not from the warm number, and tightened once
     # a cold run has been measured.
     timeout-minutes: 45
-    needs: changes
-    if: ${{ !cancelled() && needs.changes.outputs.apple != 'false' }}
+    # Off the pull-request path, as `rust-macos` is; see the note there.
+    if: >-
+      github.event_name == 'schedule'
+      || github.event_name == 'workflow_dispatch'
+      || (github.event_name == 'push' && github.ref == 'refs/heads/master')
     env:
       # Deliberately clears the workflow-level `-D warnings`, and this is now
       # the only job that needs to: it compiles `tools/uniffi-bindgen`, a
@@ -378,13 +251,21 @@ jobs:
     # on the runner class that bills at 10x.
     runs-on: macos-26
     timeout-minutes: 60
-    needs: [changes, apple-xcframework]
-    if: ${{ !cancelled() && needs.changes.outputs.apple != 'false' }}
+    needs: apple-xcframework
+    # The event condition is repeated here, not inherited: `!cancelled()`
+    # replaces the implicit `success()`, so on its own it would run this job
+    # after a *skipped* framework job and fail on the artefact that never came.
+    if: >-
+      ${{ !cancelled() && (
+        github.event_name == 'schedule'
+        || github.event_name == 'workflow_dispatch'
+        || (github.event_name == 'push' && github.ref == 'refs/heads/master')
+      ) }}
     env:
       # The framework and the bindings arrive from `apple-xcframework`. This is
       # what stops them being rebuilt here, and it is read in two places that
       # are both load-bearing: mise.toml's `apple-xcframework` task, which
-      # `macos-app` `depends` on, and the `SunriseFFI` aggregate target in
+      # `macos-app` runs first, and the `SunriseFFI` aggregate target in
       # apps/apple/project.yml, whose build script `xcodebuild` runs
       # *unconditionally* (`basedOnDependencyAnalysis: false`) and whose first
       # act would otherwise be an `rm -rf` over the artefact this job has just
@@ -401,8 +282,9 @@ jobs:
       # otherwise carry, so a *failed* `apple-xcframework` dispatches this job
       # rather than skipping it. That is deliberate: this job's name is a
       # required context and `apple-xcframework`'s is not, so skipping here
-      # would report success and let a broken framework build merge. Running
-      # and failing is the correct outcome — but without this step the failure
+      # would report a green required check on the master commit or dispatched
+      # branch head a broken framework build came from. Running and failing is
+      # the correct outcome — but without this step the failure
       # arrives minutes later as "Artifact not found", which names the symptom
       # and not the cause. This turns it into one line, in seconds, and gives
       # the macOS slot straight back.
@@ -476,8 +358,16 @@ jobs:
     # simulator is the thing that broke.
     runs-on: macos-26
     timeout-minutes: 60
-    needs: [changes, apple-xcframework]
-    if: ${{ !cancelled() && needs.changes.outputs.apple != 'false' }}
+    needs: apple-xcframework
+    # The event condition is repeated here, not inherited: `!cancelled()`
+    # replaces the implicit `success()`, so on its own it would run this job
+    # after a *skipped* framework job and fail on the artefact that never came.
+    if: >-
+      ${{ !cancelled() && (
+        github.event_name == 'schedule'
+        || github.event_name == 'workflow_dispatch'
+        || (github.event_name == 'push' && github.ref == 'refs/heads/master')
+      ) }}
     env:
       # As in `macos-app`, and for the reason spelled out there.
       SUNRISE_FFI_PREBUILT: "1"
@@ -487,8 +377,9 @@ jobs:
       # otherwise carry, so a *failed* `apple-xcframework` dispatches this job
       # rather than skipping it. That is deliberate: this job's name is a
       # required context and `apple-xcframework`'s is not, so skipping here
-      # would report success and let a broken framework build merge. Running
-      # and failing is the correct outcome — but without this step the failure
+      # would report a green required check on the master commit or dispatched
+      # branch head a broken framework build came from. Running and failing is
+      # the correct outcome — but without this step the failure
       # arrives minutes later as "Artifact not found", which names the symptom
       # and not the cause. This turns it into one line, in seconds, and gives
       # the macOS slot straight back.
