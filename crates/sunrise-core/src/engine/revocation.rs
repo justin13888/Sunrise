@@ -757,11 +757,16 @@ impl Engine {
     /// exactly one entry and it is the other. So each is forgiven for revoking
     /// the other — that is the exception, and it is what makes the pair
     /// converge on both revocations — and gated for revoking **anybody else**.
-    /// It reaches the honest device of the pair too, and it is permanent:
-    /// nothing in this tree deletes a `device_revocations` row and
-    /// [`Self::is_revoked`] is presence and nothing else. So one op from a
-    /// device the account has already expelled costs the device that expelled
-    /// it the ability to revoke third parties, for good.
+    /// It reaches the honest device of the pair too, and it lasts until a
+    /// third current device revokes the half it believes compromised. That
+    /// device's row gives the compromised half a second revoker, so its
+    /// revocation of the honest half is gated. The same row discounts the
+    /// compromised half out of the honest half's revoker set, so the honest
+    /// half is current and ungated again. Pinned by
+    /// `a_third_current_device_settles_which_half_of_a_mutual_pair_the_account_meant`.
+    /// Until then, one op from a device the account has already expelled costs
+    /// the device that expelled it the ability to revoke third parties. In a
+    /// two-device account there is no third device, so it is for good.
     ///
     /// **What it does not cost, stated as the bound rather than as a hope.**
     /// This paragraph claimed that every other current device in the account
@@ -829,19 +834,22 @@ impl Engine {
     /// second device the same attacker holds. Pinned by
     /// `the_discount_leaves_a_revoked_device_revoking_when_a_chain_revokes_its_revoker`.
     ///
-    /// What would close it is the same thing that would close the lockout: an
-    /// un-revoke op, so the account can say which of the two readings of a
-    /// revoked revoker it meant
-    /// ([#241](https://github.com/justin13888/Sunrise/issues/241)).
+    /// What closes it is the same thing that closes the lockout, and it
+    /// already exists: a current device revoking X. That device is a revoker
+    /// nobody discounts, so X is gated again. An un-revoke op is not needed to
+    /// say which reading of a revoked revoker the account meant, and a
+    /// third-party one is rejected as new authority. The one inverse ADR-0056
+    /// (`docs/11-adr/0056-a-revocation-is-withdrawn-only-by-its-author.md`)
+    /// takes is a withdrawal by a revocation's own author, and it is not built
+    /// yet ([#383](https://github.com/justin13888/Sunrise/issues/383)).
     ///
     /// It is recorded rather than repaired because no ledger-only rule can do
     /// better. After a mutual revocation the two devices are symmetric in the
     /// ledger: nothing distinguishes the honest one from the compromised one,
     /// so ungating both would hand an attacker the account. Exempting from a
     /// device's revoker set any revoker the final register revokes reopens the
-    /// bypass above, with the arrow reversed. What would close it is an
-    /// un-revoke op, which this engine does not have
-    /// ([#241](https://github.com/justin13888/Sunrise/issues/241)).
+    /// bypass above, with the arrow reversed. What tells the two apart is a
+    /// row the ledger does not yet hold, and a third current device writes it.
     /// `a_mutual_pair_locks_both_devices_out_of_third_party_revocation` pins
     /// the behaviour so it stays deliberate.
     ///

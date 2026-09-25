@@ -119,7 +119,9 @@ USAGE:
                                  revoke a device and rotate every Stream key, so
                                  it reads nothing written afterwards. Also
                                  rotates the account identity, on the device
-                                 that created the account
+                                 that created the account. It cannot be
+                                 undone: to use the device again, pair it
+                                 as a new device
     sunrise identity status      the account's identity chain: its stable name,
                                  the identity in force, and whether this device
                                  still speaks for it
@@ -784,6 +786,13 @@ async fn dispatch(
                 );
             }
             println!("  - that device cannot certify itself back in under a new id");
+            // Said on the effective branch only: a gated revocation revoked
+            // nothing, so there is nothing to be unable to undo. ADR-0056
+            // decides a withdrawal by this device, and until #383 builds it,
+            // pairing again is the only way back.
+            println!(
+                "  - this cannot be undone: to use that device again, pair it as a new device"
+            );
             print_revocation_unwound(&outcome.revocation_unwound);
             let pending = core.relay_revocation_pending(&target)?;
             if pending {
