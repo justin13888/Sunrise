@@ -139,8 +139,9 @@ extension RelayDeviceIDError: LocalizedError {
 /// The override is the CLI's `SUNRISE_SYNC_DEVICE_ID`, spelled the same and
 /// meaning the same thing: *this device registered somewhere else*. It is what
 /// points the app at a relay whose `POST /api/v1/devices` was run by
-/// `sunrise bootstrap`, and until the app can register on its own it is the
-/// only way an Apple client is device-bound at all. Reading it here rather than
+/// `sunrise bootstrap`. The app registers on its own since #183 — see
+/// ``RelayDeviceRegistration`` — so this is a development affordance, and an
+/// override present means the app does not register. Reading it here rather than
 /// at each call site keeps "which id" a single decision, and keeps the
 /// precedence — override first, exactly as `SyncEnv::with_stored` orders the
 /// CLI's two sources — in one place.
@@ -157,6 +158,60 @@ enum RelayDeviceID {
             return override
         }
         return (try? store.load()).flatMap { $0 }
+    }
+}
+
+/// The two moments this device learns its relay id, and what each does with it.
+///
+/// The relay mints the id at `POST /api/v1/devices` and returns it once. For a
+/// long time the app received it and dropped it: the recovery ceremony read
+/// the code off `AccountBootstrap` and discarded the rest, and a device
+/// admitted by pairing never registered at all (#183). Both paths now end in
+/// the vault's ``RelayDeviceIDStore``, and they are here, over closures, so
+/// the order each one depends on is testable with no relay and no Keychain.
+enum RelayDeviceRegistration {
+    /// Publish the account, record the relay id it returned, and hand back the
+    /// recovery code.
+    ///
+    /// **The order is the point.** The id is recorded only after the relay
+    /// accepted the registration — an id recorded for a registration that
+    /// failed names no row, and the relay reports that as a bad bearer. And a
+    /// failure to *record* it does not fail the call: by then the relay holds
+    /// the recovery blob, the code returned is the only thing that opens it,
+    /// and a retry would seal a new seed the relay refuses as
+    /// `RECOVERY_BLOB_EXISTS`. Losing the code to save the id would trade the
+    /// account key for a binding ``bind(store:environment:register:)`` can
+    /// re-establish on the next sync start.
+    static func publish(
+        store: any RelayDeviceIDStore,
+        bootstrap: () async throws -> AccountBootstrap
+    ) async throws -> String? {
+        let outcome = try await bootstrap()
+        try? store.store(outcome.deviceId)
+        return outcome.recoveryCode
+    }
+
+    /// The id to present, registering this device first if it has none.
+    ///
+    /// An id already resolved — stored, or the `SUNRISE_SYNC_DEVICE_ID`
+    /// override — is returned without a request: a second registration is a
+    /// second relay row for the same key, which is harmless to the relay and
+    /// clutters the device list a user revokes from. Otherwise `register` runs
+    /// and its id is recorded. A record the Keychain refuses is not an error
+    /// here: nothing is stored, so the next start registers again rather than
+    /// the device staying unbound for good.
+    static func bind(
+        store: any RelayDeviceIDStore,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        register: () async throws -> String
+    ) async throws -> String {
+        if let known = RelayDeviceID.resolve(store: store, environment: environment) {
+            return known
+        }
+        let id = try await register().trimmed
+        guard !id.isEmpty else { throw RelayDeviceIDError.empty }
+        try? store.store(id)
+        return id
     }
 }
 

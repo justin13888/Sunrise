@@ -143,6 +143,142 @@ struct RelayDeviceIDResolutionTests {
     }
 }
 
+/// The two paths that now write the relay id (#183), over closures standing in
+/// for the relay, so the order each one depends on is pinned without a network.
+struct RelayDeviceRegistrationTests {
+    private static let id = "01J8ZQ7X9K3M5N7P9R1T3V5W7Y"
+    private static let code = "abandon ability able about"
+
+    private struct RelayRefused: Error {}
+
+    private static func outcome(code: String?) -> AccountBootstrap {
+        AccountBootstrap(
+            identityId: "acct",
+            email: "alice@example.com",
+            deviceId: id,
+            recoveryCode: code
+        )
+    }
+
+    /// The defect itself: the id the relay returned used to be dropped with
+    /// everything but the code.
+    @Test
+    func publishingRecordsTheRelayIDAndReturnsTheCode() async throws {
+        let store = InMemoryRelayDeviceIDStore()
+        let code = try await RelayDeviceRegistration.publish(store: store) {
+            Self.outcome(code: Self.code)
+        }
+        #expect(code == Self.code)
+        #expect(try store.load() == Self.id)
+    }
+
+    /// A paired device publishing has no code to show and an id to keep all
+    /// the same.
+    @Test
+    func aDeviceWithNoCodeStillRecordsItsID() async throws {
+        let store = InMemoryRelayDeviceIDStore()
+        let code = try await RelayDeviceRegistration.publish(store: store) {
+            Self.outcome(code: nil)
+        }
+        #expect(code == nil)
+        #expect(try store.load() == Self.id)
+    }
+
+    /// An id recorded for a registration the relay refused names no row, and
+    /// the relay would answer it as a bad bearer.
+    @Test
+    func aRefusedPublicationRecordsNothing() async throws {
+        let store = InMemoryRelayDeviceIDStore()
+        await #expect(throws: RelayRefused.self) {
+            _ = try await RelayDeviceRegistration.publish(store: store) { throw RelayRefused() }
+        }
+        #expect(try store.load() == nil)
+    }
+
+    /// The relay holds the blob by now, and the code is the only thing that
+    /// opens it. A Keychain that will not take the id must not cost the user
+    /// the code: a retry would seal a new seed the relay refuses.
+    @Test
+    func aStoreThatRefusesTheIDDoesNotCostTheCode() async throws {
+        let code = try await RelayDeviceRegistration.publish(store: FailingRelayDeviceIDStore()) {
+            Self.outcome(code: Self.code)
+        }
+        #expect(code == Self.code)
+    }
+
+    /// A device already bound is not registered again: that would be a
+    /// second relay row for the same key in the list a user revokes from.
+    @Test
+    func aStoredIDIsUsedWithoutRegistering() async throws {
+        let store = InMemoryRelayDeviceIDStore(id: "dev_stored")
+        let id = try await RelayDeviceRegistration.bind(store: store, environment: [:]) {
+            Issue.record("a bound device must not register again")
+            return Self.id
+        }
+        #expect(id == "dev_stored")
+    }
+
+    /// The override means *this device registered somewhere else*.
+    @Test
+    func theOverrideIsUsedWithoutRegistering() async throws {
+        let store = InMemoryRelayDeviceIDStore()
+        let id = try await RelayDeviceRegistration.bind(
+            store: store,
+            environment: [RelayDeviceID.environmentKey: "dev_override"]
+        ) {
+            Issue.record("an overridden device must not register")
+            return Self.id
+        }
+        #expect(id == "dev_override")
+        #expect(try store.load() == nil, "the override is not copied into the store")
+    }
+
+    /// The paired device's path: nothing stored, so it registers and keeps
+    /// the id — which is what `SessionModel.relayDeviceID` then reads.
+    @Test
+    func anUnboundDeviceRegistersAndRecordsTheID() async throws {
+        let store = InMemoryRelayDeviceIDStore()
+        let id = try await RelayDeviceRegistration.bind(store: store, environment: [:]) {
+            "  \(Self.id)\n"
+        }
+        #expect(id == Self.id)
+        #expect(try store.load() == Self.id)
+        #expect(RelayDeviceID.resolve(store: store, environment: [:]) == Self.id)
+    }
+
+    @Test
+    func aRefusedRegistrationRecordsNothing() async throws {
+        let store = InMemoryRelayDeviceIDStore()
+        await #expect(throws: RelayRefused.self) {
+            _ = try await RelayDeviceRegistration.bind(store: store, environment: [:]) {
+                throw RelayRefused()
+            }
+        }
+        #expect(try store.load() == nil)
+    }
+
+    /// An empty id would put a header naming no row on the wire.
+    @Test
+    func anEmptyRegisteredIDIsRefused() async throws {
+        let store = InMemoryRelayDeviceIDStore()
+        await #expect(throws: RelayDeviceIDError.empty) {
+            _ = try await RelayDeviceRegistration.bind(store: store, environment: [:]) { "  " }
+        }
+        #expect(try store.load() == nil)
+    }
+
+    /// A Keychain that will not take the id leaves nothing stored, so the next
+    /// sync start registers again rather than the device staying unbound.
+    @Test
+    func aStoreThatRefusesTheIDStillReturnsIt() async throws {
+        let id = try await RelayDeviceRegistration.bind(
+            store: FailingRelayDeviceIDStore(),
+            environment: [:]
+        ) { Self.id }
+        #expect(id == Self.id)
+    }
+}
+
 private struct FailingRelayDeviceIDStore: RelayDeviceIDStore {
     func load() throws -> String? { throw RelayDeviceIDError.empty }
     func store(_ id: String) throws { throw RelayDeviceIDError.empty }
