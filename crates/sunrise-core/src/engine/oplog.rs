@@ -715,16 +715,16 @@ fn ops_run_end(
 /// The argument that removed the old behaviour — that advancing made a
 /// reversible decision irreversible — is now settled rather than hedged, and
 /// settled in its favour. The register really is reversible:
-/// `crates/sunrise-core/src/engine/revocation.rs:1234#refold_device_revocations`
+/// `crates/sunrise-core/src/engine/revocation.rs:1254#refold_device_revocations`
 /// empties `device_revocations` and rebuilds it on every applied revocation,
 /// and what it rebuilds is last-writer-wins rather than `MIN` — the ledger is
 /// folded in ascending order at
-/// `crates/sunrise-core/src/engine/revocation.rs:1065#refold_device_revocations`
+/// `crates/sunrise-core/src/engine/revocation.rs:1085#refold_device_revocations`
 /// so a later row simply overwrites an earlier one, written at
-/// `crates/sunrise-core/src/engine/revocation.rs:1126#refold_device_revocations`
+/// `crates/sunrise-core/src/engine/revocation.rs:1146#refold_device_revocations`
 /// — precisely so a cut from a slow clock is corrected by revoking again from
 /// a healthy device. The rationale for choosing LWW over `MIN` is recorded at
-/// `crates/sunrise-core/src/engine/revocation.rs:1278#apply_device_revoke`.
+/// `crates/sunrise-core/src/engine/revocation.rs:1298#apply_device_revoke`.
 /// Nothing below rests on that, because nothing below un-writes an op row.
 ///
 /// # What the apply path consults, and what that read decides
@@ -806,13 +806,13 @@ fn ops_run_end(
 ///
 /// The first. `crates/sunrise-core/src/engine/sync.rs:803#apply_control_op` hands a
 /// `device_revoke` to
-/// `crates/sunrise-core/src/engine/revocation.rs:1302#apply_device_revoke`,
+/// `crates/sunrise-core/src/engine/revocation.rs:1322#apply_device_revoke`,
 /// which refuses one naming its own sender — logging
 /// `core.device.revoke_refused` with `reason = "self"` — and writes no
 /// register row. That event has a second emitter at
-/// `crates/sunrise-core/src/engine/revocation.rs:1372#apply_device_revoke`,
+/// `crates/sunrise-core/src/engine/revocation.rs:1392#apply_device_revoke`,
 /// `reason = "revoked_sender"`: the fold declines to believe the row. A third,
-/// `crates/sunrise-core/src/engine/revocation.rs:1354#apply_device_revoke`,
+/// `crates/sunrise-core/src/engine/revocation.rs:1374#apply_device_revoke`,
 /// `reason = "sender_over_cap"`, drops a pair past its sender's cap.
 ///
 /// What is refused in the first case is a *register write* rather than the
