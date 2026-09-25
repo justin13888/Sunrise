@@ -635,6 +635,41 @@ jobs:
           command: check
           arguments: --all-features
 
+  # The web core (ADR-0055): `sunrise-core` built and linted for
+  # `wasm32-unknown-unknown`. The `rust` job compiles for the host only, and
+  # everything that breaks the web build — `std::fs`, `std::process::id`, a
+  # tokio socket feature reaching the core through the workspace root — is
+  # fine on the host. This is `mise run web-wasm-check`, spelled out because no
+  # job here installs mise.
+  #
+  # Not a required check. Its own cache key: the target differs, so nothing in
+  # the `rust` entry would be reused.
+  wasm-core:
+    name: WASM core (wasm32-unknown-unknown)
+    runs-on: ubuntu-latest
+    # A cold build of the core's graph for one target, check-only. No
+    # observation yet; sized from the local cold build (~3 minutes) with the
+    # margin the other Rust jobs carry.
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # v1
+        with:
+          toolchain: stable
+      - name: Add the wasm target to the pinned toolchain
+        # Inside the checkout, so `rust-toolchain.toml` selects the toolchain
+        # the target is added to.
+        run: rustup target add wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+        with:
+          shared-key: wasm-core
+      - name: Lint the web core for wasm32 (warnings denied)
+        # SQLite and zstd are C, which `cc` compiles for wasm32 with the
+        # runner's `clang`; Ubuntu's is built with the WebAssembly backend.
+        env:
+          CC_wasm32_unknown_unknown: clang
+        run: cargo clippy -p sunrise-core-wasm --target wasm32-unknown-unknown -- -D warnings
+
   bun-lint:
     name: Bun lint & format
     runs-on: ubuntu-latest

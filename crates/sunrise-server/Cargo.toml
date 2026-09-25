@@ -39,7 +39,10 @@ kynos = { workspace = true }
 jsonwebtoken = { workspace = true }
 parking_lot = { workspace = true }
 rusqlite = { workspace = true }
-tokio = { workspace = true }
+# The server is a native binary: the multi-threaded runtime, sockets, the
+# shutdown signal, and file I/O. The workspace root carries only the features
+# every target builds (it is what keeps `sunrise-core` building for wasm).
+tokio = { workspace = true, features = ["rt-multi-thread", "net", "signal", "fs"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

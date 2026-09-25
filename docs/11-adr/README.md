@@ -29,7 +29,7 @@ ADRs are numbered sequentially (`0001`, `0002`, …) and never renumbered.
 | 0009 | [Explicit protocol versioning spec](./0009-protocol-versioning-spec.md) | accepted (amended by 0015: the envelope container is versioned separately from the doc schema); amended by 0045: fingerprints, parking, `vault_requires` |
 | 0010 | [Layered structured logging](./0010-logging-strategy.md) | accepted (amended 2026-08: `tracing` carries the transport) |
 | 0011 | [Datetime library: jiff](./0011-datetime-jiff.md) | accepted |
-| 0012 | [Web WASM core deferred; localStorage stub for v1](./0012-web-wasm-deferred.md) | accepted (amended by 0026: the MSRV revisit trigger has fired; the deferral now rests on the `rusqlite` 0.40 swap alone) |
+| 0012 | [Web WASM core deferred; localStorage stub for v1](./0012-web-wasm-deferred.md) | superseded by 0055 (amended by 0026: the MSRV revisit trigger fired; the `rusqlite` 0.40 swap has since landed) |
 | 0013 | [Focus session op representation](./0013-focus-session-op-representation.md) | accepted (amended by 0014: OR-Set → append-only row) |
 | 0014 | [Entity-level LWW in SQLite is the v1 merge model](./0014-entity-level-lww-merge.md) | superseded by 0044 (per-field ops replace entity-level LWW; was amended by 0016) |
 | 0015 | [Envelope container format is versioned separately from the doc schema](./0015-envelope-doc-schema-split.md) | accepted (amended by 0045: container floor tolerance) |
@@ -72,6 +72,7 @@ ADRs are numbered sequentially (`0001`, `0002`, …) and never renumbered.
 | 0052 | [Search indexes every entity kind twice (words and trigrams), parses an operator grammar in Rust, and stays inside the vault](./0052-search-v2.md) | accepted (amends 0008) |
 | 0053 | [The source device makes a JPEG or PNG thumbnail as its own blob, clients render only what their platform decodes natively, and a core-owned LRU bounds the local copy](./0053-attachment-thumbnails-and-native-rendering.md) | accepted |
 | 0054 | [User-visible strings are compiled from one TOML catalog into committed bindings, in a MessageFormat subset every client renders the same way](./0054-string-catalog-pipeline.md) | accepted (amends `i18n.md` §String catalog and §Plural-rule test coverage; follows 0029) |
+| 0055 | [The web client runs `sunrise-core` compiled to wasm, over plaintext SQLite in OPFS, one tab at a time](./0055-web-wasm-core.md) | accepted (supersedes 0012) |
 
 ## When to write a new ADR
 
