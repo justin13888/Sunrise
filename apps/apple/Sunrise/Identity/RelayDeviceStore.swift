@@ -169,6 +169,11 @@ enum RelayDeviceID {
 /// admitted by pairing never registered at all (#183). Both paths now end in
 /// the vault's ``RelayDeviceIDStore``, and they are here, over closures, so
 /// the order each one depends on is testable with no relay and no Keychain.
+///
+/// `@MainActor` because both callers are, and the closures they pass capture
+/// main-actor state (the session's bridge and settings); a nonisolated method
+/// would have to send those closures off the actor.
+@MainActor
 enum RelayDeviceRegistration {
     /// Publish the account, record the relay id it returned, and hand back the
     /// recovery code.

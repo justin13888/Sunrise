@@ -145,6 +145,7 @@ struct RelayDeviceIDResolutionTests {
 
 /// The two paths that now write the relay id (#183), over closures standing in
 /// for the relay, so the order each one depends on is pinned without a network.
+@MainActor
 struct RelayDeviceRegistrationTests {
     private static let id = "01J8ZQ7X9K3M5N7P9R1T3V5W7Y"
     private static let code = "abandon ability able about"
