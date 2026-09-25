@@ -418,7 +418,9 @@ there are five visible consequences:
    pins it. It is narrower than what the discount closes — that cost one op
    from *one* revoked device and was permanent and account-wide — but it is
    not nothing. What settles it is that current device revoking X2: it is a
-   revoker of X2 nobody discounts, so X2 is gated again (ADR-0056 §3).
+   revoker of X2 nobody discounts, so X2 is gated again.
+   `the_discount_lets_one_of_two_devices_revoked_together_ungate_the_other`
+   pins that too: after T revokes X2, X2's next revocation does not land.
 
    *The chain, which is the hole.* One link further — O revokes X, P revokes
    O, Q revokes P — and Q's row gates P's, so O's revocation of X stands and X
