@@ -7369,7 +7369,8 @@ fn the_discount_lets_one_of_two_devices_revoked_together_ungate_the_other() {
 /// honest revoker costs the attacker one op. No current device settles this
 /// through the ledger, because the answer is always another row the other
 /// attacker device can discount. Pinned so the residual stays deliberate
-/// until the structural fix #252's remainder tracks lands.
+/// until the membership authority
+/// [#394](https://github.com/justin13888/Sunrise/issues/394) tracks lands.
 #[test]
 fn a_second_expelled_device_discounts_the_third_device_that_revoked_the_first() {
     let ex1 = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
