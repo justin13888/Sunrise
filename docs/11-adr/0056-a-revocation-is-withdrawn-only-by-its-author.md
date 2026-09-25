@@ -1,8 +1,9 @@
 # 0056 — A revocation is withdrawn only by the device that made it, and the withdrawal waits for unknown op kinds to be parked
 
-**Status:** accepted. The decision is taken here and nothing in the engine emits
-a withdrawal yet. §7 is why the op waits, and
-[#383](https://github.com/justin13888/Sunrise/issues/383) builds it.
+**Status:** accepted
+
+**Built by** [#383](https://github.com/justin13888/Sunrise/issues/383), which
+waits on §7. Nothing in the engine emits a withdrawal yet.
 
 **Amends** [ADR-0041](./0041-peer-side-revocation-is-a-fold.md) where it says an
 un-revoke op "is what would settle" the residuals of §"What a user sees" item 4.
@@ -11,7 +12,11 @@ fold, the gate, the discount and the read bound are unchanged.
 
 **Depends on** [ADR-0045](./0045-schema-identity-and-feature-gating.md) §4
 (parked ops), which [#320](https://github.com/justin13888/Sunrise/issues/320)
-builds. Until #320 lands, an older build drops the op kind this record adds.
+builds, and ADR-0045 §7 (`vault_requires` and `DeviceFeatures`), which
+[#324](https://github.com/justin13888/Sunrise/issues/324) builds. Parking
+protects only builds that have it. A build that predates #320 still drops the
+op kind this record adds, and only §7's feature gate keeps the op away from
+such a build.
 
 **Answers** [#241](https://github.com/justin13888/Sunrise/issues/241).
 
@@ -251,7 +256,7 @@ this device revoked. The confirmation states three things:
 - if the relay was told and cannot be told otherwise, the device must be
   paired again.
 
-### 7. The op waits for #320
+### 7. The op waits for #320 and #324, and is emitted only behind a feature id
 
 At HEAD, a build that meets an op kind it cannot decode fails
 `decode_inner_op`. `apply_remote_all` turns that failure into
@@ -265,10 +270,44 @@ keeps the device revoked, while a newer one reinstates it. That breaks the
 invariant ADR-0042 puts above every feature: merging vaults across client
 versions must never break and must never lose data.
 
-So no withdrawal is emitted before ADR-0045 §4's parking lands (#320). A
-parked withdrawal is retained, and it is replayed when the older replica
-upgrades, which is what makes the register converge across builds. The same
-change bumps `DOC_SCHEMA_V`, because the change adds an op kind
+Parking alone does not close this. A parked withdrawal is retained and
+replayed when its replica upgrades, which makes the register converge across
+builds that have ADR-0045 §4 (#320). A build that predates #320 cannot park:
+it drops the withdrawal as corruption, and nothing brings the op back. Those
+builds never advertise a feature set, and ADR-0045 §7 ("Enabling a feature")
+says the feature gate is the only thing that protects them. So the withdrawal is
+gated on both:
+
+- **Neither the op nor the feature lands before #320 and #324.** Parking makes
+  the op survivable on a build that has it. `vault_requires` and
+  `DeviceFeatures` are what tell the emitter which builds exist.
+- **The op belongs to a structural feature, `core.revoke_withdraw`.** The
+  feature registry records `device.revoke_withdraw` as the op kind it
+  introduces. A client MUST apply and emit `VaultRequires` naming it before
+  its first `DeviceRevokeWithdraw`, as ADR-0045 §7's emission order requires.
+- **The withdrawing command refuses while any device that could still drop the
+  op lacks the feature.** Those devices are every device the register does not
+  name as revoked, plus the device being reinstated, which must fold its own
+  reinstatement. If any of them has no `core.revoke_withdraw` in its latest
+  `DeviceFeatures`, including a device that has never emitted one, the command
+  fails with a typed error that names the devices to update.
+- **There is no user override.** ADR-0045 §7 lets the user confirm enabling a
+  feature over a device that lacks it, because that device then only turns
+  read-only for the affected data. Here the device would drop the op and fold
+  a different register for good, which is the split this section exists to
+  prevent. A device the user cannot update is revoked first. Its revocation
+  needs no feature, and a revoked device's register no longer decides who is
+  current.
+
+**One residual stays open, and it is ADR-0045's rather than this record's.**
+A device paired after a withdrawal, on a build that predates #320, syncs the
+vault-meta stream from the start and drops the withdrawal as it would any
+other new op kind. The gate above cannot see a device that did not exist when
+the command ran. ADR-0045 §7 has no rule that stops a build missing a required
+feature from being paired into a vault, and every feature that adds an op kind
+shares this hole. It is disclosed here, and closing it belongs to #324.
+
+The same change bumps `DOC_SCHEMA_V`, because the change adds an op kind
 (`docs/02-domain/schema-versioning.md`). It adds the `kind` column in a new
 migration, and bumps `STORAGE_V` with it. Neither lands before the op does.
 §Alternatives (g) explains why.
@@ -323,7 +362,8 @@ every epoch through one `DeviceCertPublish`. Conditions (b) and (c) of §4 are
 what separate a withdrawal from an unwind.
 
 **(g) Land the `kind` column and the fold now, ahead of the op.** A migration
-cannot be taken back, and nothing would write the column until #320 lands. The
+cannot be taken back, and nothing would write the column until #320 and #324
+land. The
 fold would then carry a branch no row can reach, and a storage version would be
 spent on it. §7 already fixes the order. The option that is cheaper to reverse
 is to land the decision now and the schema with its only writer.
@@ -332,9 +372,10 @@ is to land the decision now and the schema with its only writer.
 
 - **#241 is answered, and its implementation is**
   [#383](https://github.com/justin13888/Sunrise/issues/383). That
-  issue depends on #320 and covers the op, the migration, the fold's pair
-  heads, the bound release, the backfill, the command, the seam, the CLI and
-  the relay reinstatement. The device-list copy that says revocation cannot
+  issue depends on #320 and #324 (§7) and covers the op, the
+  `core.revoke_withdraw` feature and its emission gate, the migration, the
+  fold's pair heads, the bound release, the backfill, the command, the seam,
+  the CLI and the relay reinstatement. The device-list copy that says revocation cannot
   be undone is [#384](https://github.com/justin13888/Sunrise/issues/384),
   and it does not wait for #320.
 - **ADR-0041's "an un-revoke would settle it" is withdrawn.** A third current
@@ -351,7 +392,9 @@ is to land the decision now and the schema with its only writer.
 
 1. **#320 lands with a different parking contract.** An example is parked ops
    that are not replayed on upgrade. §7's convergence argument rests on replay,
-   so this record's sequencing has to be re-derived.
+   so this record's sequencing has to be re-derived. The same holds if #324
+   lands a feature gate that differs from ADR-0045 §7, or closes the pairing
+   residual §7 discloses.
 2. **#282 makes the read bound a function of the op set.** §4's per-replica
    release then becomes an account-wide rule, and conditions (b) and (c)
    should be re-derived from that function rather than carried over.

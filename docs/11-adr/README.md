@@ -73,7 +73,7 @@ ADRs are numbered sequentially (`0001`, `0002`, …) and never renumbered.
 | 0053 | [The source device makes a JPEG or PNG thumbnail as its own blob, clients render only what their platform decodes natively, and a core-owned LRU bounds the local copy](./0053-attachment-thumbnails-and-native-rendering.md) | accepted |
 | 0054 | [User-visible strings are compiled from one TOML catalog into committed bindings, in a MessageFormat subset every client renders the same way](./0054-string-catalog-pipeline.md) | accepted (amends `i18n.md` §String catalog and §Plural-rule test coverage; follows 0029) |
 | 0055 | [The web client runs `sunrise-core` compiled to wasm, over plaintext SQLite in OPFS, one tab at a time](./0055-web-wasm-core.md) | accepted (supersedes 0012) |
-| 0056 | [A revocation is withdrawn only by the device that made it, and the withdrawal waits for unknown op kinds to be parked](./0056-a-revocation-is-withdrawn-only-by-its-author.md) | accepted, not yet built (amends 0041 §"What a user sees" item 4; depends on 0045 §4; built by #383) |
+| 0056 | [A revocation is withdrawn only by the device that made it, and the withdrawal waits for unknown op kinds to be parked](./0056-a-revocation-is-withdrawn-only-by-its-author.md) | accepted (amends 0041 §"What a user sees" item 4; depends on 0045 §4 and §7; built by #383) |
 
 ## When to write a new ADR
 
