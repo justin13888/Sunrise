@@ -1,4 +1,4 @@
-# 0055 — A revocation is withdrawn only by the device that made it, and the withdrawal waits for unknown op kinds to be parked
+# 0056 — A revocation is withdrawn only by the device that made it, and the withdrawal waits for unknown op kinds to be parked
 
 **Status:** accepted. The decision is taken here and nothing in the engine emits
 a withdrawal yet. §7 is why the op waits, and

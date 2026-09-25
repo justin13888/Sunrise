@@ -122,7 +122,7 @@ impl Core {
     /// Acquires the OS-level vault lock; if another process holds it, returns
     /// `VaultLock(AlreadyHeld { holder_pid, holder_started_at })`.
     pub async fn open(cfg: CoreConfig, unlock: Unlock) -> Result<Self, CoreError> {
-        let pid = std::process::id();
+        let pid = holder_pid();
         let started_at = format_iso8601(cfg.clock.now_ms());
         let lock = VaultLock::acquire(&cfg.vault_dir, pid, &started_at)?;
         let (vault_root, identity_seed) = unlock.into_parts();
@@ -1070,6 +1070,22 @@ impl sunrise_sync::DeviceSigner for CoreDeviceSigner {
 
     fn now_ms(&self) -> u64 {
         self.core.now_ms()
+    }
+}
+
+/// The id the vault lock records for this holder.
+///
+/// A browser worker has no process id, and `std::process::id` panics on
+/// `wasm32-unknown-unknown` rather than saying so; the web build records 0,
+/// the same value a contender reads from an unreadable owner file.
+fn holder_pid() -> u32 {
+    #[cfg(all(target_family = "wasm", target_os = "unknown"))]
+    {
+        0
+    }
+    #[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
+    {
+        std::process::id()
     }
 }
 

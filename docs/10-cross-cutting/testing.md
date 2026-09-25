@@ -365,11 +365,11 @@ is mostly not shell: a TOML `run = '''` fence and a YAML scalar with an
 apostrophe in it are both unbalanced quotations to a shell lexer, and blocking a
 merge for one is how a gate gets switched off. The tally is printed rather than
 kept quiet, so that a number which grew from forty-odd to four hundred would say
-so. On this repository it is 47: **40** of `mise.toml`'s triple-quote fences
-plus `mise.toml:530`, **three** in `.github/scripts/sparkle-tools.sh` where one
+so. On this repository it is 51: **44** of `mise.toml`'s triple-quote fences
+plus `mise.toml:637`, **three** in `.github/scripts/sparkle-tools.sh` where one
 `awk` program's single-quoted body spans three lines inside a `$( )`, and
 **three** `- name:` scalars whose English apostrophe is an unbalanced quotation
-— two in `ci.yml`, one in `release.yml`. Six of the 47 are not in `mise.toml`,
+— two in `ci.yml`, one in `release.yml`. Six of the 51 are not in `mise.toml`,
 which matters because the three workflow entries are the visible half of the
 limit two paragraphs up: the gate cannot tell an executable line from prose.
 Prose that does not lex lands in this tally and is skipped, which is the safe

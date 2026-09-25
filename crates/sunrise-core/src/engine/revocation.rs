@@ -838,8 +838,8 @@ impl Engine {
     /// already exists: a current device revoking X. That device is a revoker
     /// nobody discounts, so X is gated again. An un-revoke op is not needed to
     /// say which reading of a revoked revoker the account meant, and a
-    /// third-party one is rejected as new authority. The one inverse ADR-0055
-    /// (`docs/11-adr/0055-a-revocation-is-withdrawn-only-by-its-author.md`)
+    /// third-party one is rejected as new authority. The one inverse ADR-0056
+    /// (`docs/11-adr/0056-a-revocation-is-withdrawn-only-by-its-author.md`)
     /// takes is a withdrawal by a revocation's own author, and it is not built
     /// yet ([#383](https://github.com/justin13888/Sunrise/issues/383)).
     ///

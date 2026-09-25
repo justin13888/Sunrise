@@ -52,23 +52,38 @@
 //! So a process-local registry of canonicalized vault paths is the authority
 //! for same-process contention, and the OS lock is the authority across
 //! processes.
+//!
+//! # In a browser
+//!
+//! On `wasm32-unknown-unknown` there is no filesystem to take the OS lock on:
+//! `std::fs` returns `Unsupported` for every call. The web build keeps the
+//! registry, which still refuses a second `Core` in the same worker, and leaves
+//! exclusivity across tabs to the worker's `navigator.locks` lock, taken before
+//! it opens the vault (ADR-0055 §4). Nothing is written beside the vault.
 
 use parking_lot::Mutex;
 use std::collections::HashMap;
+#[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
 use std::fs::{self, File, OpenOptions, TryLockError};
+#[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
+#[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
 use std::time::Duration;
 use thiserror::Error;
 
+#[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
 const LOCK_FILE: &str = "core.lock";
+#[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
 const OWNER_FILE: &str = "core.lock.owner";
 /// Retry budget. A fixed count rather than a deadline: the sleep is constant,
 /// so this is exactly equivalent to the old 250ms timeout while needing no
 /// clock at all — which keeps the determinism gate satisfied without an
 /// exemption.
+#[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
 const ACQUIRE_ATTEMPTS: u32 = 13;
+#[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
 const RETRY_INTERVAL: Duration = Duration::from_millis(20);
 
 /// Vault-lock errors.
@@ -142,11 +157,38 @@ pub struct VaultLock {
     /// Held open for the lock's lifetime. Closing this handle — for any
     /// reason, including SIGKILL, `abort()`, or power loss — is what releases
     /// the OS lock.
+    #[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
     file: File,
     /// Canonicalized vault dir; the [`HELD`] key.
     key: PathBuf,
 }
 
+#[cfg(all(target_family = "wasm", target_os = "unknown"))]
+impl VaultLock {
+    /// Claim `vault_dir` in this worker's registry. See the module docs' "In a
+    /// browser": there is no OS lock to take, and no owner file to write.
+    pub fn acquire(
+        vault_dir: &Path,
+        pid: u32,
+        started_at_iso: &str,
+    ) -> Result<Self, VaultLockError> {
+        let me = HolderInfo {
+            pid,
+            started_at: started_at_iso.to_string(),
+        };
+        let claim = RegistryClaim::try_claim(vault_dir.to_path_buf(), me).map_err(|existing| {
+            VaultLockError::AlreadyHeld {
+                holder_pid: existing.pid,
+                holder_started_at: existing.started_at,
+            }
+        })?;
+        Ok(Self {
+            key: claim.disarm(),
+        })
+    }
+}
+
+#[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
 impl VaultLock {
     /// Try to acquire the vault lock.
     ///
@@ -229,6 +271,7 @@ impl VaultLock {
 /// Best-effort. The payload is explicitly non-authoritative — it exists only
 /// for the error message — so a write failure must never fail an otherwise-good
 /// acquire. No fsync: after a crash the contents are meaningless anyway.
+#[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
 fn write_owner(owner_path: &Path, pid: u32, started_at_iso: &str) {
     let _ = OpenOptions::new()
         .write(true)
@@ -238,6 +281,7 @@ fn write_owner(owner_path: &Path, pid: u32, started_at_iso: &str) {
         .and_then(|mut f| f.write_all(format!("{pid}\n{started_at_iso}\n").as_bytes()));
 }
 
+#[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
 fn read_holder_err(owner_path: &Path) -> VaultLockError {
     let mut payload = String::new();
     let _ = OpenOptions::new()
@@ -261,6 +305,7 @@ impl Drop for VaultLock {
         // Order matters: release the OS lock before the registry entry, so a
         // same-process retry loop cannot win the registry and then lose the OS
         // lock in a tight spin. Neither file is unlinked (see module docs).
+        #[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
         let _ = self.file.unlock();
         HELD.lock().remove(&self.key);
         // `self.file` closes here; on abnormal exit the OS does this for us.

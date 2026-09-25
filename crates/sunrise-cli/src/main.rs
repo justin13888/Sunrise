@@ -787,7 +787,7 @@ async fn dispatch(
             }
             println!("  - that device cannot certify itself back in under a new id");
             // Said on the effective branch only: a gated revocation revoked
-            // nothing, so there is nothing to be unable to undo. ADR-0055
+            // nothing, so there is nothing to be unable to undo. ADR-0056
             // decides a withdrawal by this device, and until #383 builds it,
             // pairing again is the only way back.
             println!(
