@@ -941,24 +941,6 @@ mod testutil {
             .collect()
     }
 
-    /// The intents the drain would send: [`pending_relay_revocations`] less
-    /// every row the register no longer agrees with, read through the one
-    /// definition `Core::pending_relay_revocations` reads.
-    pub(super) fn owed_relay_revocations(db: &Db) -> Vec<[u8; 16]> {
-        let conn = db.conn();
-        let mut stmt = conn
-            .prepare(crate::relay_intents::OWED_RELAY_REVOCATIONS_SQL)
-            .unwrap();
-        let rows = stmt
-            .query_map([], |r| r.get::<_, Vec<u8>>(0))
-            .unwrap()
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .unwrap();
-        rows.into_iter()
-            .filter_map(|id| <[u8; 16]>::try_from(id.as_slice()).ok())
-            .collect()
-    }
-
     pub(super) fn device_rows(db: &Db) -> i64 {
         db.conn()
             .query_row("SELECT COUNT(*) FROM devices", [], |r| r.get(0))
@@ -11414,6 +11396,24 @@ fn revoke_device_reports_that_the_fold_discarded_its_own_op() {
 ///    row step 1 queued is what carries it.
 #[test]
 fn a_relay_intent_is_owed_only_while_the_register_calls_its_device_revoked() {
+    // The intents the drain would send: `pending_relay_revocations` less every
+    // row the register no longer agrees with, read through the one definition
+    // `Core::pending_relay_revocations` reads.
+    fn owed_relay_revocations(db: &Db) -> Vec<[u8; 16]> {
+        let conn = db.conn();
+        let mut stmt = conn
+            .prepare(crate::relay_intents::OWED_RELAY_REVOCATIONS_SQL)
+            .unwrap();
+        let rows = stmt
+            .query_map([], |r| r.get::<_, Vec<u8>>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        rows.into_iter()
+            .filter_map(|id| <[u8; 16]>::try_from(id.as_slice()).ok())
+            .collect()
+    }
+
     let ex = engine_random_keys(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
     let eo = engine_random_keys(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
     let ec = engine_random_keys(ROOT, [3u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
