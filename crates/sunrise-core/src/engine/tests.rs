@@ -7876,7 +7876,7 @@ fn a_read_bounded_senders_recipient_claim_is_refused_and_the_cursor_counts_the_o
 ///
 /// It is **not** the revocation register, and since ADR-0041 the difference
 /// is the point: the register is a fold that can hand a device back, and
-/// `device_read_bounds` only ever grows. Revoking still writes both, so the
+/// `device_read_bounds` keeps a certified one. Revoking writes both, so the
 /// premise here is set by the ordinary command and then asserted on the
 /// table the gate actually reads.
 ///
@@ -8528,7 +8528,7 @@ fn a_stranger_cert_through_apply_remote_is_refused_and_writes_no_cursor() {
 ///
 /// So this delivers both revocations as remote ops and holds three things at
 /// once. The register did unwind — C is off the list and the event fired.
-/// The read bound did not, because it only ever grows, which is the
+/// The read bound did not, because a ledger row still names C: the
 /// asymmetry `Engine::is_read_bounded` exists for. And both cursors stand
 /// exactly where the op rows put them: the fold rewrote `device_revocations`
 /// and touched neither `ops` nor `sync_cursors`.
@@ -16946,5 +16946,181 @@ fn a_roster_entry_cannot_rebind_the_device_key() {
         after.2,
         to.to_vec(),
         "an honest entry still moves the device"
+    );
+}
+
+/// A made-up device id no engine owns, distinct for each `n`.
+fn made_up_device(n: u64) -> [u8; 16] {
+    let mut id = [0xF0u8; 16];
+    id[8..].copy_from_slice(&n.to_be_bytes());
+    id
+}
+
+/// `device_read_bounds` row count.
+fn read_bound_rows(db: &Db) -> i64 {
+    db.conn()
+        .query_row("SELECT COUNT(*) FROM device_read_bounds", [], |r| r.get(0))
+        .unwrap()
+}
+
+/// **A sender naming made-up ids stops growing the three tables at the cap**
+/// (#315).
+///
+/// Pair compaction bounds rows per `(sender, target)` pair; nothing bounded
+/// the pairs. B, a device the account trusts, first revokes C, which really
+/// paired, and then names `REVOKE_TARGETS_PER_SENDER + 40` ids nobody has, each
+/// with a later stamp. The ledger and the register keep B's newest
+/// `REVOKE_TARGETS_PER_SENDER` targets, so C's revocation is the one B's own
+/// flood withdrew; C keeps its read bound because this replica holds C's cert,
+/// and the made-up ids that fell out give theirs back. D's revocation of E,
+/// another sender's claim, is untouched throughout.
+#[test]
+fn a_sender_keeps_at_most_the_cap_of_distinct_revocation_targets() {
+    use super::revocation::REVOKE_TARGETS_PER_SENDER as CAP;
+    let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let ec = engine_seeded(ROOT, [3u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let ed = engine_seeded(ROOT, [5u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let ee = engine_seeded(ROOT, [6u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let er = engine_seeded(ROOT, [4u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut db = db_root(ROOT);
+    trust(&er, &mut db, &ec);
+    let (c_id, e_id) = (ec.keychain.device_id(), ee.keychain.device_id());
+    let cap = u64::try_from(CAP).unwrap();
+
+    revoke(&er, &mut db, &ed, e_id, T0);
+    revoke(&er, &mut db, &eb, c_id, T0 + 1);
+    assert!(er.is_read_bounded(db.conn(), &c_id).unwrap());
+
+    for n in 0..cap + 40 {
+        revoke(&er, &mut db, &eb, made_up_device(n), T0 + 1_000 + n);
+    }
+
+    assert_eq!(ledger_rows(&db), CAP + 1, "B's cap, plus D's one row");
+    assert_eq!(
+        whole_register(&db).len(),
+        usize::try_from(CAP + 1).unwrap(),
+        "the register folds from the capped ledger"
+    );
+    assert!(
+        !er.is_revoked(db.conn(), &c_id).unwrap(),
+        "B's oldest claim, on C, is the one its own flood withdrew"
+    );
+    assert!(
+        er.is_read_bounded(db.conn(), &c_id).unwrap(),
+        "and C, whose cert this replica holds, keeps its read bound"
+    );
+    assert!(!er.is_read_bounded(db.conn(), &made_up_device(0)).unwrap());
+    assert!(er
+        .is_read_bounded(db.conn(), &made_up_device(cap + 39))
+        .unwrap());
+    assert_eq!(
+        read_bound_rows(&db),
+        CAP + 2,
+        "B's kept targets, E, and C: the evicted made-up ids gave theirs back"
+    );
+    assert!(
+        er.is_revoked(db.conn(), &e_id).unwrap(),
+        "another sender's claim is not B's to withdraw"
+    );
+}
+
+/// **The cap is a function of the op set, not of arrival order** (#315).
+///
+/// The same ops, one sender over the cap with stamps interleaved around a
+/// second sender's, applied forwards on one replica and backwards on the
+/// other, must leave the same ledger and the same register. Each order also
+/// meets a pair the cap evicts before that pair's greatest row arrives, which
+/// is the case the merge argument in `cap_device_revoke_targets` turns on:
+/// forwards it is X, whose flood row sorts below 274 others and whose
+/// greatest row follows the flood; backwards it is Y, whose lesser row
+/// arrives first and whose greatest row arrives last. The replay asserts
+/// each eviction before the greatest row lands.
+#[test]
+fn the_revocation_target_cap_is_the_same_whichever_order_the_ops_arrive() {
+    use super::revocation::REVOKE_TARGETS_PER_SENDER as CAP;
+    let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let ed = engine_seeded(ROOT, [5u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let er = engine_seeded(ROOT, [4u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let cap = u64::try_from(CAP).unwrap();
+    let (x, y) = (made_up_device(3), made_up_device(cap + 20));
+
+    let mut ops: Vec<(&Engine, [u8; 16], u64)> = vec![(&eb, y, T0 + 100_001)];
+    for n in 0..cap + 20 {
+        // Stamps not in id order, so rank is decided by stamp and not by id.
+        // X's flood row sorts above only n = 0, so the flood evicts it.
+        let at = if n == 3 {
+            T0 + 5
+        } else {
+            T0 + ((n * 7919) % (cap + 20)) * 10
+        };
+        ops.push((&eb, made_up_device(n), at));
+    }
+    ops.push((&eb, x, T0 + 100_000));
+    ops.push((&eb, x, T0 + 1));
+    for n in 0..5 {
+        ops.push((&ed, made_up_device(1_000 + n), T0 + n * 500));
+    }
+    ops.push((&eb, y, T0 + 2));
+
+    let replay = |order: Vec<&(&Engine, [u8; 16], u64)>, head: ([u8; 16], u64)| {
+        let mut db = db_root(ROOT);
+        for &&(sender, target, at) in &order {
+            if (target, at) == head {
+                assert!(
+                    !whole_ledger(&db).iter().any(|row| row.3 == target),
+                    "the cap evicted this pair before its greatest row arrived"
+                );
+            }
+            revoke(&er, &mut db, sender, target, at);
+        }
+        db
+    };
+    let forward = replay(ops.iter().collect(), (x, T0 + 100_000));
+    let backward = replay(ops.iter().rev().collect(), (y, T0 + 100_001));
+
+    assert_eq!(whole_ledger(&forward), whole_ledger(&backward));
+    assert_eq!(whole_register(&forward), whole_register(&backward));
+    assert_eq!(ledger_rows(&forward), CAP + 5);
+    for target in [x, y] {
+        assert!(
+            er.is_revoked(forward.conn(), &target).unwrap(),
+            "a pair whose greatest stamp is among B's newest is kept, in both orders"
+        );
+    }
+}
+
+/// **A gated sender cannot use the cap to escape its gate** (#315).
+///
+/// The cap drops only the flooding sender's own claims, and the gate on a
+/// sender is built from rows revoking it, which it does not author. So X,
+/// revoked by B, floods past the cap and then names C: the gate still holds,
+/// and B's revocation of X, B's claim and not X's, stays in the ledger.
+#[test]
+fn a_gated_sender_flooding_past_the_cap_stays_gated() {
+    use super::revocation::REVOKE_TARGETS_PER_SENDER as CAP;
+    let ex = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let ec = engine_seeded(ROOT, [3u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let er = engine_seeded(ROOT, [4u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut db = db_root(ROOT);
+    let (x_id, c_id) = (ex.keychain.device_id(), ec.keychain.device_id());
+    let cap = u64::try_from(CAP).unwrap();
+
+    revoke(&er, &mut db, &eb, x_id, T0);
+    for n in 0..cap + 5 {
+        revoke(&er, &mut db, &ex, made_up_device(n), T0 + 1_000 + n);
+    }
+    revoke(&er, &mut db, &ex, c_id, T0 + 500_000);
+
+    assert!(er.is_revoked(db.conn(), &x_id).unwrap());
+    assert!(
+        !er.is_revoked(db.conn(), &c_id).unwrap(),
+        "X is still gated after its flood"
+    );
+    assert_eq!(ledger_rows(&db), CAP + 1, "X's cap, plus B's claim on X");
+    assert_eq!(
+        whole_register(&db).len(),
+        1,
+        "none of X's gated claims reached the register"
     );
 }
