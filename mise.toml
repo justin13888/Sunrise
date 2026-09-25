@@ -128,6 +128,49 @@ run = [
 description = "Type-check the Rust workspace"
 run = "cargo check --workspace --all-targets"
 
+# The web core (ADR-0055): `sunrise-core` compiled for the browser. Builds for
+# `wasm32-unknown-unknown` and lints there, which is what the `WASM core` CI job
+# runs; `--workspace` above covers only the host target, and a change that
+# reaches for `std::fs`, a process id or a tokio socket in the core compiles
+# natively and breaks here.
+#
+# SQLite (`sqlite-wasm-rs`) and zstd are C, compiled for wasm32 by `cc`, which
+# needs a clang with the WebAssembly backend. Apple's clang has none; on macOS
+# this uses Homebrew's `llvm` unless `CC_wasm32_unknown_unknown` is already set.
+[tasks.web-wasm-check]
+description = "Check and lint the web core for wasm32-unknown-unknown (warnings denied)"
+run = '''
+set -euo pipefail
+if [ "$(uname)" = Darwin ] && [ -z "${CC_wasm32_unknown_unknown:-}" ]; then
+  llvm="$(brew --prefix llvm)/bin"
+  export CC_wasm32_unknown_unknown="$llvm/clang" AR_wasm32_unknown_unknown="$llvm/llvm-ar"
+fi
+cargo clippy -p sunrise-core-wasm --target wasm32-unknown-unknown -- -D warnings
+'''
+
+# Build the web core into `apps/web/public/wasm/` (untracked), where
+# `apps/web/src/core.worker.ts` loads it from. Without it the web client runs
+# its `localStorage` stub.
+#
+# `wasm-bindgen-cli` must be the exact `wasm-bindgen` version in `Cargo.lock`;
+# the CLI refuses a module built against any other. It is installed under
+# `target/tools/`, so it is per-checkout and never on anyone's PATH. Moving
+# `wasm-bindgen` in the lock means moving the version here with it.
+[tasks.web-wasm]
+description = "Build the web core bundle into apps/web/public/wasm/"
+run = '''
+set -euo pipefail
+if [ "$(uname)" = Darwin ] && [ -z "${CC_wasm32_unknown_unknown:-}" ]; then
+  llvm="$(brew --prefix llvm)/bin"
+  export CC_wasm32_unknown_unknown="$llvm/clang" AR_wasm32_unknown_unknown="$llvm/llvm-ar"
+fi
+cargo build -p sunrise-core-wasm --target wasm32-unknown-unknown --release
+cargo install --quiet --locked wasm-bindgen-cli --version 0.2.127 --root target/tools
+target/tools/bin/wasm-bindgen --target web --no-typescript \
+  --out-dir apps/web/public/wasm \
+  target/wasm32-unknown-unknown/release/sunrise_core_wasm.wasm
+'''
+
 # `--all-targets` is load-bearing beyond "run the tests in the tree", and the
 # reason is `crates/sunrise-log/tests/event_catalog.rs`. That gate reads the
 # dep-info rustc leaves beside each artefact to learn which files the compiler
