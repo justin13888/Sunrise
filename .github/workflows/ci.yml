@@ -1069,7 +1069,7 @@ jobs:
   file-size:
     name: File size gate
     runs-on: ubuntu-latest
-    # Checkout plus one pass over the Rust files in three packages.
+    # Checkout plus one pass over the Rust files in the packages it measures.
     timeout-minutes: 5
     # Its own job rather than a step inside `Determinism gate`, which is where
     # it first landed. File length has nothing to do with determinism: the four
