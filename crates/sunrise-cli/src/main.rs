@@ -753,6 +753,15 @@ async fn dispatch(
             // saying it is current, and the relay half was deliberately not
             // queued. Printing "revoked" over that would be the same
             // disclosure failure as printing it over a queued relay intent.
+            //
+            // The relay line is fixed copy rather than a read of
+            // `relay_revocation_pending`, and that is exact rather than
+            // assumed: a gated command leaves the target current in the
+            // register, and an intent is owed only while the register calls
+            // its device revoked. So an older intent for the same device — one
+            // an earlier, effective revocation queued before it unwound — is
+            // held and not sent (`crates/sunrise-core/src/relay_intents.rs`,
+            // #257).
             if outcome.revocation_gated {
                 println!(
                     "NOT revoked: this device has itself been revoked, so the account \
