@@ -19,15 +19,15 @@ what an `Ack` means.
 
 ### What the relay actually keys on
 
-`batch_ops_hash` (`crates/sunrise-server/src/api/sync/publish.rs:278`) is a
+`batch_ops_hash` (`crates/sunrise-server/src/api/sync/publish.rs:281#batch_ops_hash`) is a
 domain-separated BLAKE3 over the op count and each op's length-prefixed bytes.
-`Store::relay_append` (`crates/sunrise-server/src/relay_log.rs:207`) looks that
+`Store::relay_append` (`crates/sunrise-server/src/relay_log.rs:207#relay_append`) looks that
 hash up in `relay_batches` inside the append transaction and returns
 `Appended::Duplicate` on a hit, which the handler answers with the **first**
 copy's `server_first_seen_ms` and no fan-out
-(`crates/sunrise-server/src/api/sync/publish.rs:207-217`).
+(`crates/sunrise-server/src/api/sync/publish.rs:207-220#ops`).
 
-`relay_batches` (`crates/sunrise-server/src/relay_log.rs:110-118`) is keyed
+`relay_batches` (`crates/sunrise-server/src/relay_log.rs:110-118#SCHEMA`) is keyed
 `(account_h, stream_id, ops_h)` and holds `frame_id` as a
 `REFERENCES relay_frames(id) ON DELETE CASCADE`. That is the property worth
 naming: the dedup window and the replay window are the same window by
@@ -35,10 +35,10 @@ construction, with no second sweep and nothing to keep in step by hand.
 
 ### The case it cannot catch
 
-`Core::sync_outbox_grouped` (`crates/sunrise-core/src/core/mod.rs:951`) groups
+`Core::sync_outbox_grouped` (`crates/sunrise-core/src/core/mod.rs:975#sync_outbox_grouped`) groups
 **every** unacked op for a stream into one batch. There is no size cap, so the
 partition is "everything unacked at this instant", and the fresh-session drain
-(`crates/sunrise-core/src/sync_driver.rs:705`) re-runs it with an empty
+(`crates/sunrise-core/src/sync_driver.rs:1170-1177#session`) re-runs it with an empty
 `inflight_ops` skip set. So:
 
 1. Session 1 sends `[O1]`; the relay appends and acks; the ack dies with the
@@ -59,7 +59,7 @@ length-prefixing is not the problem and is doing its own job: it is what stops a
 
 Correctness does not rest on the relay's dedup at all. It rests on the
 **receiver's**, whose key is the op id: `OpLog::insert` is an
-`INSERT OR IGNORE INTO ops` (`crates/sunrise-storage/src/oplog.rs:53`) under a
+`INSERT OR IGNORE INTO ops` (`crates/sunrise-storage/src/oplog.rs:53#insert`) under a
 deterministic `remote_op_id(stream_id, device_id, seq)` plus
 `UNIQUE(stream_id, device_id, seq)`, and the receive path gates on
 `tx.changes() == 0`. A second copy materializes nothing and raises no event.
@@ -68,12 +68,13 @@ So the uncovered shape costs disk on one relay channel and one redundant fan-out
 per lost ack. It is bounded twice over: by how many ops are unacked at the moment
 an ack is lost (which is bounded by how long a session survives), and by
 retention — 30 days and 256 MiB per channel
-(`DEFAULT_MAX_AGE_MS` / `DEFAULT_MAX_BYTES`,
-`crates/sunrise-server/src/relay_log.rs:121`), after which the frame and its
+(`DEFAULT_MAX_AGE_MS`,
+`crates/sunrise-server/src/relay_log.rs:123#DEFAULT_MAX_AGE_MS`, and
+`DEFAULT_MAX_BYTES`, `crates/sunrise-server/src/relay_log.rs:130#DEFAULT_MAX_BYTES`), after which the frame and its
 `relay_batches` row are evicted together.
 
 There is no measurement of how often it happens.
-`sunrise_relay_batch_duplicate_total` (`crates/sunrise-server/src/api/sync/publish.rs:208`)
+`sunrise_relay_batch_duplicate_total` (`crates/sunrise-server/src/api/sync/publish.rs:211#ops`)
 counts the re-sends the batch key *did* catch, and nothing counts the ones it did
 not — a re-partitioned re-send is indistinguishable, at the relay, from ordinary
 new work.
@@ -106,7 +107,7 @@ anything: a batch `[O1, O2]` with `O1` already seen still has to be stored and
 fanned out for `O2`'s sake, so the disk this was meant to save is still spent.
 To actually save it the relay would have to **filter `O1` out and re-encode the
 frame** — which it is technically able to do, since the REST path already
-rebuilds the frame server-side (`crates/sunrise-server/src/api/sync/publish.rs:125-137`)
+rebuilds the frame server-side (`crates/sunrise-server/src/api/sync/publish.rs:128-140#ops`)
 — and that is where the cost lands:
 
 - `Appended` becomes three-valued, because "partly fresh" is now a real answer,
@@ -114,7 +115,7 @@ rebuilds the frame server-side (`crates/sunrise-server/src/api/sync/publish.rs:1
 - `frame_heads` has to be recomputed after filtering, or the heads claim seqs the
   stored frame no longer carries — and the head is exactly what
   `relay_replay`'s skip test reads. Over-claiming a head is data loss
-  (`crates/sunrise-server/src/relay_log.rs:292`).
+  (`crates/sunrise-server/src/relay_log.rs:294-298#relay_replay`).
 - A per-op table needs the `ON DELETE CASCADE` tie to `relay_frames` that
   `relay_batches` has, or the dedup window and the replay window drift apart —
   and forgetting an op id is precisely what lets a legitimate replay through.
@@ -137,7 +138,7 @@ and the existing batch key would catch the first exactly. This closes the case
 where it is caused, needs no relay change and no second retention rule, and
 leaves `Ack` meaning what it means today. The cost is a column on `outbox`
 (`op_id, stream_id, enqueued_at_ms, acked_at_ms` today —
-`crates/sunrise-storage/src/sync_local.rs:51`) and therefore a storage baseline
+`crates/sunrise-storage/src/sync_local.rs:51#enqueue`) and therefore a storage baseline
 edit under [ADR-0018](./0018-storage-baseline-reset.md), plus driver changes to
 write it and to re-drain by partition. It is cheaper than the relay-side fix and
 strictly better placed; it is simply not worth spending before the measurement
