@@ -676,11 +676,10 @@ impl SseTransport {
         let mut id = None;
         let mut data = String::new();
         // `event_end` stops at the first blank line, so every empty piece of
-        // this split is either that line or the gap inside a `\r\n`.
+        // this split is either that line or the gap inside a `\r\n`. Both, and
+        // a comment (`:` then text), have an empty field name, which no arm
+        // below matches: they fall through without a test of their own.
         for line in text.split(['\r', '\n']) {
-            if line.is_empty() || line.starts_with(':') {
-                continue;
-            }
             let (field, value) = match line.split_once(':') {
                 Some((field, value)) => (field, value.strip_prefix(' ').unwrap_or(value)),
                 None => (line, ""),
@@ -1455,19 +1454,19 @@ fn event_end(buf: &[u8]) -> Option<usize> {
         Some(b'\n' | b'\r') => Some(at + 1),
         _ => None,
     };
-    let mut at = 0;
-    while at < buf.len() {
-        let Some(next_line) = terminator_end(at) else {
-            at += 1;
-            continue;
-        };
+    let mut line_start = 0;
+    loop {
+        let line_end = line_start
+            + buf[line_start..]
+                .iter()
+                .position(|b| matches!(b, b'\r' | b'\n'))?;
+        let next_line = terminator_end(line_end)?;
         // `next_line` starts a line; it is blank when it opens on a terminator.
         if let Some(end) = terminator_end(next_line) {
             return Some(end);
         }
-        at = next_line;
+        line_start = next_line;
     }
-    None
 }
 
 fn protocol<E: std::fmt::Display>(e: &E) -> TransportError {
