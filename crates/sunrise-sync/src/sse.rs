@@ -1437,7 +1437,6 @@ fn binding_advice(server_date: Option<&str>, now_ms: Option<u64>) -> String {
     }
 }
 
-/// Everything that is a malformed exchange rather than an unreachable one.
 /// How many bytes at the head of `buf` make up its first complete event: every
 /// line through the blank line that ends it, or `None` while that blank line
 /// has not arrived.
@@ -1469,6 +1468,7 @@ fn event_end(buf: &[u8]) -> Option<usize> {
     }
 }
 
+/// Everything that is a malformed exchange rather than an unreachable one.
 fn protocol<E: std::fmt::Display>(e: &E) -> TransportError {
     TransportError::Protocol(e.to_string())
 }
