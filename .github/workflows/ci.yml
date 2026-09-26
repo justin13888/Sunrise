@@ -776,9 +776,11 @@ jobs:
     # raising `timeout-minutes` only lets a bad ratio cost more. Splitting
     # core further does shorten the longest shard, but **sub**-proportionally
     # — each new shard pays another baseline build — and total runner minutes
-    # rise with every split. And the failure is cheap while it lasts —
-    # `sunrise-core` has no recorded floor, so a shard that times out spends
-    # runner minutes and gates nothing.
+    # rise with every split. And the failure is no longer cheap. Until #272
+    # recorded `sunrise-core`'s floor, the gate failed that crate as unfloored
+    # whatever its shards did, so a timed-out shard cost runner minutes and
+    # nothing else. Now the crate is compared against a floor, and a shard
+    # that times out puts that comparison at stake.
     #
     # If core's shard count rises, this can come down with it.
     timeout-minutes: 120
