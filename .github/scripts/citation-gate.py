@@ -1277,6 +1277,8 @@ pub fn f() {
 #   19-23 `impl`                20-22 `twice` again, this one with a body
 #   39    `const LIMIT`         40-43 `const SCHEMA`, doc included
 #   45-47 `const fn doubled`    49-51 `static DEFAULTS`, closed by `};`
+#   55-58 `static ESCAPED`, a `\"` in its initialiser
+#   60-63 `const QUOTES`, associated, a `'"'` in its initialiser
 #
 # `twice` appearing twice is the whole reason `symbol_span` returns a list.
 SYMBOL_FIXTURE = """\
@@ -1333,6 +1335,16 @@ static DEFAULTS: Split = Split {
 };
 pub fn after_a_literal() -> u8 {
     1
+}
+static ESCAPED: [&str; 2] = [
+    "a \\"; b",
+    "c",
+];
+impl Split {
+    const QUOTES: [char; 2] = [
+        '"',
+        'x',
+    ];
 }
 """
 
@@ -1757,7 +1769,7 @@ def self_test() -> int:
 
         # No suffix: byte-for-byte the behaviour of every citation in the tree
         # before this suffix existed. If this moves, the widening was not one.
-        for line, want in ((4, True), (54, True), (55, False)):
+        for line, want in ((4, True), (64, True), (65, False)):
             _, found = symbol_verdict(f"{main}:{line}")
             wrong(
                 (found is None) != want,
@@ -1828,6 +1840,24 @@ def self_test() -> int:
             found is None or "spans 49-51" not in found.message,
             f"`{main}:53#DEFAULTS` reported {found}, expected a span miss",
         )
+
+        # An escaped `\"` does not close a string, and a `'"'` char literal
+        # does not open one. Read either way, the `];` that ends the item
+        # lands inside a string and the span runs on: `ESCAPED` to 63,
+        # `QUOTES` to the end of the file, so the misses below go clean.
+        # `QUOTES` is an associated const inside an `impl`, which `#NAME`
+        # resolves as it does a top-level one.
+        for body, last, after, want in (
+            ("ESCAPED", 58, 59, "spans 55-58"),
+            ("QUOTES", 63, 64, "spans 60-63"),
+        ):
+            _, found = symbol_verdict(f"{main}:{last}#{body}")
+            wrong(found is not None, f"`{main}:{last}#{body}` reported {found}, expected clean")
+            _, found = symbol_verdict(f"{main}:{after}#{body}")
+            wrong(
+                found is None or want not in found.message,
+                f"`{main}:{after}#{body}` reported {found}, expected a span miss",
+            )
 
     if failures:
         return 1
