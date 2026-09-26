@@ -1085,12 +1085,18 @@ jobs:
         # lines -- six impl blocks, ninety free functions and a ten-thousand-line
         # test module in one file. It got there one reasonable commit at a time.
         #
-        # Thresholds are each package's own p90, not a number from a style
-        # guide, and the baseline in the script names every file over one today
-        # with what it is. That list may shrink and may not grow.
+        # Every crate is in exactly one of the script's THRESHOLDS (measured)
+        # and UNGATED (not measured, with the reason). A threshold is the
+        # package's own p90, or for a package with fewer than ten Rust files
+        # (sunrise-sync) the pooled p90 of the UNGATED packages -- never a
+        # number from a style guide. The baseline names every file over its
+        # threshold today with what it is. That list may shrink and may not grow.
         #
-        # Exit 1 is "a file grew"; exit 2 is "the baseline needs a line
-        # deleted". Both are red, and the output says which it is.
+        # Exit 1 is "a file grew", or the gate refused to measure: a crate in
+        # neither table or in both, or a THRESHOLDS package that is missing.
+        # Exit 2 is bookkeeping: a BASELINE entry for a file now under its
+        # threshold or gone, or an UNGATED entry for a crate that is gone, each
+        # a one-line deletion. Both are red, and the output says which it is.
         run: python3 .github/scripts/file-size-gate.py
 
   file-size-gate-contract:
