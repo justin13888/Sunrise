@@ -34,8 +34,8 @@ use std::sync::Arc;
 use sunrise_auth::CredentialStore;
 
 use sunrise_core::{
-    BoxTransport, ConnectFuture, Core, CoreConfig, CoreError, SyncConfig, TokenSource,
-    TransportFactory, Unlock,
+    BoxTransport, ConnectFuture, Core, CoreConfig, CoreError, CredentialRead, SyncConfig,
+    TokenSource, TransportFactory, Unlock,
 };
 use sunrise_crypto::keys::VaultRootKey;
 use sunrise_sync::{DeviceSigner, SseTransport};
@@ -208,12 +208,12 @@ pub fn plan_from_env(env: &SyncEnv) -> SyncPlan {
 
 /// Build a [`TransportFactory`] that reaches `url` with the real [`SseTransport`]
 /// on every connect attempt (initial connect + every reconnect), presenting
-/// whatever bearer `credential` holds **at that moment**.
+/// the bearer the driver read for **that attempt**.
 ///
-/// Reading the token per attempt rather than capturing it is the whole point:
-/// a reconnect after a renewal has to present the new token, and a factory
-/// that closed over a `String` would present the one sync started with
-/// forever.
+/// The factory holds no bearer: the driver reads the core's
+/// [`Core::sync_credential`] per attempt and hands the read over, so a
+/// reconnect after a renewal presents the new token, and the driver knows
+/// which version each attempt carried.
 ///
 /// This is the same factory shape `sunrise-e2e::ws_factory` uses; the driver is
 /// transport-agnostic and calls it once per connection attempt.
@@ -224,18 +224,13 @@ pub fn plan_from_env(env: &SyncEnv) -> SyncPlan {
 /// and the one route where that matters most is the revocation `DELETE`, which
 /// runs on whatever connection the driver has at the time.
 #[must_use]
-pub fn ws_factory(
-    url: &str,
-    credential: TokenSource,
-    signer: Option<Arc<dyn DeviceSigner>>,
-) -> TransportFactory {
+pub fn ws_factory(url: &str, signer: Option<Arc<dyn DeviceSigner>>) -> TransportFactory {
     let url = url.to_string();
-    Arc::new(move || {
+    Arc::new(move |read: CredentialRead| {
         let url = url.clone();
-        let bearer = credential.get();
         let signer = signer.clone();
         Box::pin(async move {
-            let t = SseTransport::connect_with_bearer(&url, bearer.as_deref());
+            let t = SseTransport::connect_with_bearer(&url, read.bearer());
             let t = match signer {
                 Some(s) => t.with_device_signer(s),
                 None => t,
@@ -277,7 +272,13 @@ pub fn apply_plan(core: &Arc<Core>, plan: &SyncPlan) -> Vec<String> {
     let signer = plan.device_id.as_ref().map(|id| core.device_signer(id));
     match &plan.sync {
         Some(sc) => {
-            match core.start_sync(ws_factory(&sc.url, sc.credential.clone(), signer.clone())) {
+            // The driver presents the core's own credential cell, and `core`
+            // may have been opened before this plan existed — `main` opens
+            // with an empty plan first, and `recover` builds its plan after
+            // registering — so the plan's bearer is handed to that cell here,
+            // the way the FFI seam's `start_sync` does.
+            core.sync_credential().set(sc.credential.get());
+            match core.start_sync(ws_factory(&sc.url, signer.clone())) {
                 Ok(()) => {
                     // The relay *host* is the sanctioned connection-diagnostic
                     // identifier (logging.md §6.2); the full URL could carry a
