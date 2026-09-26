@@ -136,13 +136,16 @@ run = "cargo check --workspace --all-targets"
 #
 # SQLite (`sqlite-wasm-rs`) and zstd are C, compiled for wasm32 by `cc`, which
 # needs a clang with the WebAssembly backend. Apple's clang has none; on macOS
-# this uses Homebrew's `llvm` unless `CC_wasm32_unknown_unknown` is already set.
+# this uses Homebrew's `llvm` unless `CC_wasm32_unknown_unknown` is already set,
+# and stops before cargo when that clang is not there: `brew --prefix` prints
+# the path whether or not the formula is installed.
 [tasks.web-wasm-check]
 description = "Check and lint the web core for wasm32-unknown-unknown (warnings denied)"
 run = '''
 set -euo pipefail
 if [ "$(uname)" = Darwin ] && [ -z "${CC_wasm32_unknown_unknown:-}" ]; then
   llvm="$(brew --prefix llvm)/bin"
+  [ -x "$llvm/clang" ] || { echo "no clang with a WebAssembly backend at $llvm; brew install llvm" >&2; exit 1; }
   export CC_wasm32_unknown_unknown="$llvm/clang" AR_wasm32_unknown_unknown="$llvm/llvm-ar"
 fi
 cargo clippy -p sunrise-core-wasm --target wasm32-unknown-unknown -- -D warnings
@@ -162,6 +165,7 @@ run = '''
 set -euo pipefail
 if [ "$(uname)" = Darwin ] && [ -z "${CC_wasm32_unknown_unknown:-}" ]; then
   llvm="$(brew --prefix llvm)/bin"
+  [ -x "$llvm/clang" ] || { echo "no clang with a WebAssembly backend at $llvm; brew install llvm" >&2; exit 1; }
   export CC_wasm32_unknown_unknown="$llvm/clang" AR_wasm32_unknown_unknown="$llvm/llvm-ar"
 fi
 cargo build -p sunrise-core-wasm --target wasm32-unknown-unknown --release
@@ -566,6 +570,52 @@ run = ".github/scripts/citation-gate.py"
 # Comments are exempt: the scan skips lines whose first non-whitespace character
 # is `#`, so prose here may name the flag freely (#147).
 
+# The gate every Apple task passes before it does any work. Without it, a Linux
+# machine or a Mac missing one tool gets through minutes of release cargo builds
+# before failing on a command it never had, and the error names that command,
+# not what is actually missing.
+#
+# The Xcode check runs `xcodebuild -version` instead of `command -v xcodebuild`,
+# because checking the binary is not enough there. With only the Command Line
+# Tools selected, `/usr/bin/xcodebuild` exists and is a shim that fails with
+# "requires Xcode", so a presence check passes the one broken setup this is for.
+# Every other need is a plain binary or a queryable fact, and is checked as one.
+#
+# Needs, all optional; the platform and Xcode checks always run:
+#   xcodegen, swiftlint  on PATH
+#   rust-targets         the iOS slices installed on the pinned toolchain
+#   sim                  the `ios_sim` simulator exists
+[tasks.apple-preflight]
+description = "Fail fast unless this machine can run the Apple tasks: macOS, Xcode, and the named needs"
+hide = true
+shell = "bash -c"
+usage = 'arg "[need]" var=#true help="xcodegen, swiftlint, rust-targets, sim"'
+run = '''
+# Checking this machine can build for Apple platforms.
+set -euo pipefail
+missing() { echo "apple-preflight: $1" >&2; exit 1; }
+[ "$(uname -s)" = Darwin ] \
+  || missing "the Apple tasks build for Apple platforms and run on macOS only (this is $(uname -s))"
+xcodebuild -version >/dev/null 2>&1 \
+  || missing "xcodebuild cannot run; install Xcode and select it: sudo xcode-select -s /Applications/Xcode.app"
+for need in ${usage_need:-}; do
+  case "$need" in
+    xcodegen | swiftlint)
+      command -v "$need" >/dev/null || missing "$need is not on PATH; brew install $need" ;;
+    rust-targets)
+      installed="$(rustup target list --installed)"
+      for t in $ios_slices $ios_sim_slices; do
+        grep -qx "$t" <<<"$installed" \
+          || missing "the $t target is not installed on the pinned toolchain; rustup target add $t"
+      done ;;
+    sim)
+      grep -qF "    $ios_sim (" <<<"$(xcrun simctl list devices available)" \
+        || missing "no available simulator named \"$ios_sim\"; install its iOS runtime in Xcode > Settings > Components" ;;
+    *) missing "unknown need: $need" ;;
+  esac
+done
+'''
+
 [tasks.apple-xcframework]
 description = "Build the Swift bindings + SunriseCore.xcframework both Apple apps link"
 shell = "bash -c"
@@ -576,7 +626,7 @@ set -euo pipefail
 # `macos-app` and `ios-app` jobs as an artefact; `SUNRISE_FFI_PREBUILT=1` is
 # how those jobs say the framework already in `out/` is the right one. Two
 # paths would otherwise rebuild it, and both reach this line: this task,
-# because `macos-app` and `ios-app` `depends` on it, and the `SunriseFFI`
+# because `macos-app` and `ios-app` run it first, and the `SunriseFFI`
 # aggregate target in apps/apple/project.yml, whose build script runs this
 # task again from inside `xcodebuild` and carries the same guard.
 #
@@ -600,6 +650,10 @@ if [ "${SUNRISE_FFI_PREBUILT:-}" = "1" ]; then
   echo "SUNRISE_FFI_PREBUILT=1: reusing out/$ffi_fw.xcframework + out/swift"
   exit 0
 fi
+
+# Before the first cargo call. Every Apple task that runs this one, by `depends`
+# or by `mise run`, inherits the check, so none starts a build it cannot finish.
+mise run apple-preflight rust-targets
 
 rm -rf build "out/$ffi_fw.xcframework"
 mkdir -p build/headers build/macos build/ios build/ios-sim out/swift
@@ -709,19 +763,25 @@ echo "out/$ffi_fw.xcframework (macOS + iOS + iOS Simulator) + out/swift/$ffi_lib
 #
 # Both of those rebuilds are what `SUNRISE_FFI_PREBUILT=1` turns off, and CI
 # sets it because a job upstream has already built the framework and handed it
-# over as an artefact. The `depends` above reads it; so does the `SunriseFFI`
-# script phase, which is why the `xcodebuild` line below forwards it on as a
-# build setting — Xcode gives a script phase the build settings, not this
-# shell's environment. `${x:+...}` expands to nothing at all when the variable
-# is unset, so a developer's command line is character-for-character what it
-# was, and it is `set -u`-safe. Nothing sets the variable outside CI.
+# over as an artefact. The `apple-xcframework` run below reads it; so does the
+# `SunriseFFI` script phase, which is why the `xcodebuild` line below forwards
+# it on as a build setting — Xcode gives a script phase the build settings, not
+# this shell's environment. `${x:+...}` expands to nothing at all when the
+# variable is unset, so a developer's command line is character-for-character
+# what it was, and it is `set -u`-safe. Nothing sets the variable outside CI.
+#
+# The framework is a `mise run` step, not a `depends`, so that this task's own
+# tools are checked first. A `depends` runs before the first line here, which
+# would put a missing SwiftLint several minutes of release builds behind the
+# command that could have named it.
 [tasks.macos-app]
 description = "Generate the Xcode project, build the macOS app, and run its tests"
-depends = ["apple-xcframework"]
 dir = "apps/apple"
 shell = "bash -c"
 run = """
 set -euo pipefail
+mise run apple-preflight xcodegen swiftlint
+mise run apple-xcframework
 xcodegen generate --quiet
 swiftlint lint --strict --quiet --config .swiftlint.yml
 # See `ios-app` below for why the result bundle is here and what reads it.
@@ -749,14 +809,16 @@ fi
 # compiles, built a second time against the iOS app. That is the core claim
 # this task makes: not that the iOS app builds, but that it behaves the way the
 # Mac does everywhere the two share a model. The UI tests it also runs are
-# below.
+# below. The framework is a step rather than a `depends` for the reason given
+# above `macos-app`, and the simulator is checked with the tools.
 [tasks.ios-app]
 description = "Generate the Xcode project, build the iOS app, and run its tests"
-depends = ["apple-xcframework"]
 dir = "apps/apple"
 shell = "bash -c"
 run = """
 set -euo pipefail
+mise run apple-preflight xcodegen swiftlint sim
+mise run apple-xcframework
 xcodegen generate --quiet
 swiftlint lint --strict --quiet --config .swiftlint.yml
 # No `-only-testing`: the `SunriseiOS` scheme's test targets run whole, so this

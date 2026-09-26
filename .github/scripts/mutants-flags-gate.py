@@ -1067,15 +1067,15 @@ def report_unlexable(unlexable: int) -> None:
     four hundred would mean the gate had stopped reading most of what it
     was pointed at, and nothing would have said so.
 
-    On this repository the tally is 51, and it is **not** all fences
+    On this repository the tally is 53, and it is **not** all fences
     plus one oddity in `mise.toml`, which is what this docstring claimed
     (at 45) from the commit that introduced the sentence until the
-    composition was re-derived rather than asserted. Six of the 51 are
+    composition was re-derived rather than asserted. Six of the 53 are
     not in `mise.toml` at all:
 
-    * **44** TOML triple-quote fences in `mise.toml` — 28 `\"\"\"` and 16
+    * **46** TOML triple-quote fences in `mise.toml` — 28 `\"\"\"` and 18
       `'''`, each an unbalanced quotation to a shell lexer.
-    * **1** more in `mise.toml`, at `:637`, which continues a line with
+    * **1** more in `mise.toml`, at `:691`, which continues a line with
       `\\\\` inside a `\"\"\"` string — one backslash to the shell, two to
       this gate, which reads TOML source rather than decoded TOML
       values. It is the only entry that is an unclosed `$(` rather than
@@ -1083,8 +1083,8 @@ def report_unlexable(unlexable: int) -> None:
     * **3** in `.github/scripts/sparkle-tools.sh` at `:37`, `:42` and
       `:43` — one `awk` program whose single-quoted body spans three
       lines inside a `$( )`, which no trailing backslash joins.
-    * **2** in `.github/workflows/ci.yml` at `:1069` and `:1095`, and
-      **1** in `.github/workflows/release.yml` at `:854`. All three are
+    * **2** in `.github/workflows/ci.yml` at `:1057` and `:1083`, and
+      **1** in `.github/workflows/release.yml` at `:861`. All three are
       `- name:` prose whose English apostrophe is an unbalanced
       quotation: "the core's storage seam", "its package's threshold",
       "a user's Mac".
@@ -1094,7 +1094,7 @@ def report_unlexable(unlexable: int) -> None:
     executable line from prose that happens to lex. Prose that does
     *not* lex lands here and is skipped, which is the safe direction and
     is why the number has to be broken down rather than summarised: a
-    reader told all 51 are TOML fences never learns the gate is skipping
+    reader told all 53 are TOML fences never learns the gate is skipping
     English apostrophes in two workflows, and would read a fence count
     that had quietly become a prose count as no change at all.
 

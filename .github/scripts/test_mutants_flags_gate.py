@@ -1353,7 +1353,7 @@ class FlagsGateContract(unittest.TestCase):
         self.assertEqual(
             derived,
             {
-                "mise.toml": 45,
+                "mise.toml": 47,
                 ".github/scripts/sparkle-tools.sh": 3,
                 ".github/workflows/ci.yml": 2,
                 ".github/workflows/release.yml": 1,
@@ -1363,8 +1363,8 @@ class FlagsGateContract(unittest.TestCase):
             "docs/10-cross-cutting/testing.md in the same change, and "
             "check whether a file has started going unread rather than "
             "only editing this mapping to match.")
-        # And the two kinds inside `mise.toml`: 44 fences, which are
-        # unbalanced quotations to a shell lexer, and `:637` alone,
+        # And the two kinds inside `mise.toml`: 46 fences, which are
+        # unbalanced quotations to a shell lexer, and `:691` alone,
         # which is an unclosed `$(` continued with `\\` inside a `"""`
         # string. They are counted together by the gate and stated
         # separately by its docstring, so they are asserted separately
@@ -1376,7 +1376,7 @@ class FlagsGateContract(unittest.TestCase):
             except ValueError as error:
                 if not gate.INVOCATION.search(line):
                     kinds[str(error)] = kinds.get(str(error), 0) + 1
-        self.assertEqual(kinds.get("no closing quotation"), 44)
+        self.assertEqual(kinds.get("no closing quotation"), 46)
         self.assertEqual(
             kinds.get("no closing `)` for a command substitution"), 1)
         # Finally, the number the gate PRINTS is the sum of the parts.
