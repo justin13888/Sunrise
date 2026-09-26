@@ -637,32 +637,65 @@ impl SseTransport {
 
     /// Pull the next complete event out of the buffer, if one is there.
     ///
-    /// SSE separates events with a blank line, so a complete event is
-    /// everything up to the first `\n\n`. Comments — the keep-alives that
-    /// replaced `Ping` — start with `:` and are dropped here rather than
-    /// reaching the driver, which has no frame for them.
+    /// This reads any conformant `text/event-stream`, as the WHATWG HTML
+    /// standard's "interpreting an event stream" defines it — not only what
+    /// this relay's encoder happens to write. That encoder (kynos's
+    /// `response::stream::sse::encode`) emits `\n` line endings and a single
+    /// `data:` line per event, so today the two readings agree; the parser
+    /// does not lean on that, so a proxy that rewrites line endings, a second
+    /// relay implementation, or a value that spans lines reads the same.
+    ///
+    /// - A line ends at `\r\n`, `\n`, or a lone `\r`.
+    /// - An event ends at the first blank line.
+    /// - Successive `data:` fields are joined with `\n` between them.
+    /// - One space after a field's colon is dropped; any further whitespace
+    ///   belongs to the value.
+    /// - An `id` holding a NUL is ignored, as the standard requires.
+    ///
+    /// Comments — the keep-alives that replaced `Ping` — start with `:` and
+    /// are dropped here rather than reaching the driver, which has no frame
+    /// for them. An event with no data comes back with an empty string, which
+    /// the driver skips. Fields the driver has no use for (`event`, `retry`)
+    /// are ignored.
     fn take_event(&mut self) -> Option<(Option<String>, String)> {
-        let end = self
+        // A blank line before any field dispatches nothing, so leading line
+        // terminators are no-ops and are consumed. That is also what swallows
+        // the `\n` of a `\r\n` whose `\r` ended the previous event exactly at
+        // a chunk boundary.
+        let lead = self
             .buf
-            .windows(2)
-            .position(|w| w == b"\n\n")
-            .map(|i| i + 2)?;
+            .iter()
+            .take_while(|b| matches!(b, b'\r' | b'\n'))
+            .count();
+        self.buf.drain(..lead);
+
+        let end = event_end(&self.buf)?;
         let raw = self.buf.drain(..end).collect::<Vec<u8>>();
         let text = String::from_utf8_lossy(&raw);
 
         let mut id = None;
         let mut data = String::new();
-        for line in text.lines() {
-            if let Some(rest) = line.strip_prefix("id:") {
-                id = Some(rest.trim().to_owned());
-            } else if let Some(rest) = line.strip_prefix("data:") {
-                data.push_str(rest.trim_start());
+        // `event_end` stops at the first blank line, so every empty piece of
+        // this split is either that line or the gap inside a `\r\n`. Both, and
+        // a comment (`:` then text), have an empty field name, which no arm
+        // below matches: they fall through without a test of their own.
+        for line in text.split(['\r', '\n']) {
+            let (field, value) = match line.split_once(':') {
+                Some((field, value)) => (field, value.strip_prefix(' ').unwrap_or(value)),
+                None => (line, ""),
+            };
+            match field {
+                "data" => {
+                    data.push_str(value);
+                    data.push('\n');
+                }
+                "id" if !value.contains('\0') => id = Some(value.to_owned()),
+                _ => {}
             }
         }
-        if data.is_empty() {
-            // A comment or a bare keep-alive: nothing for the driver.
-            return Some((id, String::new()));
-        }
+        // Every `data` field appended a `\n`; the last one is not part of the
+        // value. With no `data` field this pops nothing and the event is empty.
+        data.pop();
         Some((id, data))
     }
 
@@ -1404,6 +1437,37 @@ fn binding_advice(server_date: Option<&str>, now_ms: Option<u64>) -> String {
     }
 }
 
+/// How many bytes at the head of `buf` make up its first complete event: every
+/// line through the blank line that ends it, or `None` while that blank line
+/// has not arrived.
+///
+/// A line ends at `\r\n`, `\n`, or a lone `\r`. A `\r` that is the last byte
+/// in `buf` may be the first half of a `\r\n`, but it still ends its line; only
+/// the byte after it can say whether the next line is blank, so the answer
+/// waits for that byte either way. A blank line ended by a lone `\r` at the
+/// end of `buf` does end the event now, and a `\n` that arrives after it is
+/// consumed by [`SseTransport::take_event`] as a no-op blank line.
+fn event_end(buf: &[u8]) -> Option<usize> {
+    let terminator_end = |at: usize| match buf.get(at) {
+        Some(b'\r') if buf.get(at + 1) == Some(&b'\n') => Some(at + 2),
+        Some(b'\n' | b'\r') => Some(at + 1),
+        _ => None,
+    };
+    let mut line_start = 0;
+    loop {
+        let line_end = line_start
+            + buf[line_start..]
+                .iter()
+                .position(|b| matches!(b, b'\r' | b'\n'))?;
+        let next_line = terminator_end(line_end)?;
+        // `next_line` starts a line; it is blank when it opens on a terminator.
+        if let Some(end) = terminator_end(next_line) {
+            return Some(end);
+        }
+        line_start = next_line;
+    }
+}
+
 /// Everything that is a malformed exchange rather than an unreachable one.
 fn protocol<E: std::fmt::Display>(e: &E) -> TransportError {
     TransportError::Protocol(e.to_string())
@@ -1825,6 +1889,90 @@ mod tests {
         let (id, data) = t.take_event().expect("the event behind it");
         assert_eq!(id.as_deref(), Some("7"));
         assert_eq!(data, "after");
+    }
+
+    // The cases below are ones the relay's own encoder never writes, so the
+    // loopback relay cannot script them: the parser reads the format, not the
+    // encoder, and these pin the difference byte by byte.
+
+    /// Successive `data:` fields are one value with a newline between each,
+    /// which is the only way the format carries a newline at all.
+    #[test]
+    fn successive_data_fields_are_joined_with_a_newline() {
+        let mut t = buffered(b"data: line one\ndata: line two\n\n");
+        let (_, data) = t.take_event().expect("a terminated event");
+        assert_eq!(data, "line one\nline two", "not concatenated end to end");
+
+        let mut t = buffered(b"data: {\"kind\":\"gap\",\ndata: \"reason\":\"x\"}\n\n");
+        let (_, data) = t.take_event().expect("a terminated event");
+        assert_eq!(data, "{\"kind\":\"gap\",\n\"reason\":\"x\"}");
+    }
+
+    /// A stream delimited with `\r\n` ends its events at `\r\n\r\n`, and each
+    /// line loses its `\r` rather than carrying it into the value.
+    #[test]
+    fn a_crlf_stream_terminates_its_events_and_drains_the_buffer() {
+        let mut t = buffered(b"id: 9\r\ndata: one\r\n\r\nid: 10\r\ndata: two\r\n\r\n");
+        let (id, data) = t.take_event().expect("a CRLF-terminated event");
+        assert_eq!((id.as_deref(), data.as_str()), (Some("9"), "one"));
+        let (id, data) = t.take_event().expect("the second CRLF event");
+        assert_eq!((id.as_deref(), data.as_str()), (Some("10"), "two"));
+        assert!(t.buf.is_empty());
+
+        let mut t = buffered(b"data: {}\r\n");
+        assert!(t.take_event().is_none(), "one CRLF is not a blank line");
+    }
+
+    /// A lone `\r` is a line ending too, so `\r\r` ends an event.
+    #[test]
+    fn a_bare_cr_stream_terminates_its_events() {
+        let mut t = buffered(b"id: 3\rdata: a\rdata: b\r\r");
+        let (id, data) = t.take_event().expect("a CR-terminated event");
+        assert_eq!((id.as_deref(), data.as_str()), (Some("3"), "a\nb"));
+        assert!(t.buf.is_empty());
+    }
+
+    /// A `\r\n` split across two reads neither stalls the event it ends nor
+    /// invents one: the `\r` that completes a blank line dispatches at once,
+    /// and the `\n` that arrives after it is a no-op, not an empty event ahead
+    /// of the real next one.
+    #[test]
+    fn a_crlf_split_across_reads_yields_each_event_once() {
+        let mut t = buffered(b"data: first\r\n\r");
+        let (_, data) = t.take_event().expect("the blank line's \\r ends it");
+        assert_eq!(data, "first");
+        assert!(t.take_event().is_none(), "nothing else has arrived");
+
+        t.buf.extend_from_slice(b"\ndata: second\r\n\r\n");
+        let (_, data) = t.take_event().expect("the next real event");
+        assert_eq!(data, "second", "the stray \\n is not an event of its own");
+        assert!(t.buf.is_empty());
+
+        let head = b"data: x\r";
+        let mut t = buffered(head);
+        assert!(
+            t.take_event().is_none(),
+            "a trailing \\r cannot yet say whether the next line is blank"
+        );
+        assert_eq!(t.buf, head, "and nothing is consumed while it waits");
+    }
+
+    /// One space after the colon is the separator; anything further is value.
+    /// A field with no colon is a field with an empty value, and an `id`
+    /// holding a NUL is ignored.
+    #[test]
+    fn field_values_follow_the_format_s_whitespace_and_colon_rules() {
+        let mut t = buffered(b"data:x\n\ndata:  indented\n\n");
+        assert_eq!(t.take_event().expect("first").1, "x");
+        assert_eq!(t.take_event().expect("second").1, " indented");
+
+        let mut t = buffered(b"data\ndata: x\n\n");
+        assert_eq!(t.take_event().expect("an event").1, "\nx");
+
+        let mut t = buffered(b"id: a\0b\ndata: x\n\n");
+        let (id, data) = t.take_event().expect("an event");
+        assert!(id.is_none(), "an id with a NUL is not an id");
+        assert_eq!(data, "x");
     }
 
     // ---- the mapping half: `frame_for` needs no socket either ----
