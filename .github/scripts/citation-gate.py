@@ -464,6 +464,14 @@ LINE_FRAGMENT = re.compile(r"^L[0-9]+(?:C[0-9]+)?(?:-L[0-9]+(?:C[0-9]+)?)?$")
 # `impl`s it is now a red check, and a module cited by its own name has no
 # target at all. Both spellings say less than they appear to, which is the
 # whole reason they went.
+#
+# `const` is in the alternation as well as in the qualifier run above it, and
+# the two are different items. `const fn f` is a function: the qualifier takes
+# the `const` and `kind` is `fn`. `pub const LIMIT: u64 = …;` is a constant: the
+# qualifier cannot be followed by `LIMIT`, so it backs off and `kind` is
+# `const`. A top-level constant is the item an ADR most often cites by value —
+# "10 MiB (`blob_sync.rs:164`)" — and it was the one declaration a `#LIMIT`
+# suffix could not name, which left exactly those citations to rot unchecked.
 SYMBOL_DECL = (
     r"^(?P<indent>[ \t]*)"
     r"(?:pub(?:\([^)]*\))?[ \t]+)?"
@@ -471,7 +479,7 @@ SYMBOL_DECL = (
     r"(?:async[ \t]+)?"
     r"(?:unsafe[ \t]+)?"
     r"(?:const[ \t]+)?"
-    r"(?:fn|struct|enum|trait|type|static|union)[ \t]+"
+    r"(?P<kind>fn|struct|enum|trait|type|static|union|const)[ \t]+"
     r"{name}\b"
 )
 
@@ -756,7 +764,54 @@ def symbol_span(path: str, name: str) -> list[tuple[int, int]]:
     braces balance on the declaration ends there. A span whose close is never
     found runs to the end of the file: over-broad, so it can only pass a
     citation, never fail one.
+
+    A `const` or `static` is the one item whose *initialiser* can hide both
+    rules from the walk, and it is read through `code` for that reason. Its
+    value can be a string literal spanning lines — `relay_log.rs`'s `SCHEMA`
+    is a raw string of SQL whose every statement ends in `;` — and a walk that
+    reads those semicolons ends the item at its first `CREATE TABLE`, which
+    red-lines a citation of the table the ADR is actually about. Its value can
+    also be a struct literal, which closes on `};` rather than on a `}` of its
+    own, so the closing-brace rule misses it and the span runs on through
+    every item below until some other `}` sits at the same indent. For those
+    two kinds only, the rules read each line with its string contents and any
+    trailing `//` comment removed, and `};` closes the item as `}` does. Every
+    other kind is walked exactly as before, character for character, because
+    a `fn` body is where a stray `'"'` or an odd quote in a comment would
+    flip the string state and widen spans that are correct today.
     """
+
+    def code(line: str, quoted: bool) -> tuple[str, bool]:
+        """`line` outside string literals, and whether one is still open after it.
+
+        Line-based like the rest of this walk: `quoted` carries a string that
+        opened on an earlier line. A backslash escapes the next character
+        inside a string, and a `'"'` char literal is not a quote. A raw string
+        that holds a `"` of its own is the shape this misreads, and none of
+        the constants this gate resolves has one.
+        """
+        kept: list[str] = []
+        cursor = 0
+        while cursor < len(line):
+            char = line[cursor]
+            if quoted:
+                if char == "\\":
+                    cursor += 2
+                    continue
+                if char == '"':
+                    quoted = False
+            elif char == '"':
+                quoted = True
+            elif line.startswith("'\"'", cursor):
+                cursor += 3
+                continue
+            elif line.startswith("//", cursor):
+                break
+            else:
+                kept.append(char)
+            cursor += 1
+        return "".join(kept).rstrip(), quoted
+
     try:
         with open(path, "rb") as handle:
             lines = handle.read().decode("utf-8", errors="replace").splitlines()
@@ -783,11 +838,16 @@ def symbol_span(path: str, name: str) -> list[tuple[int, int]]:
             start = opener
 
         closing = found.group("indent") + "}"
+        initialiser = found.group("kind") in ("const", "static")
+        closings = (closing, closing + ";") if initialiser else (closing,)
         end = len(lines)
         opened = False
+        quoted = False
         for cursor in range(index, len(lines)):
             body = lines[cursor].rstrip()
-            if cursor > index and body == closing:
+            if initialiser:
+                body, quoted = code(body, quoted)
+            if cursor > index and body in closings:
                 end = cursor + 1
                 break
             if "{" in body:
@@ -1215,6 +1275,8 @@ pub fn f() {
 #   1-9   `wanted`'s span, doc and attribute included
 #   11-13 `other`               15-17 `trait T`        16 `twice`, `;`-ended
 #   19-23 `impl`                20-22 `twice` again, this one with a body
+#   39    `const LIMIT`         40-43 `const SCHEMA`, doc included
+#   45-47 `const fn doubled`    49-51 `static DEFAULTS`, closed by `};`
 #
 # `twice` appearing twice is the whole reason `symbol_span` returns a list.
 SYMBOL_FIXTURE = """\
@@ -1255,6 +1317,22 @@ pub static LIST: [u8; 2] = [
 ];
 pub fn after_an_array() -> u8 {
     0
+}
+pub const LIMIT: u64 = 10; // "an odd quote in a comment
+/// A schema held in a raw string, one `;` per statement.
+pub(crate) const SCHEMA: &str = r"
+CREATE TABLE a (x);
+CREATE TABLE b (y);";
+
+const fn doubled(x: u8) -> u8 {
+    x * 2
+}
+
+static DEFAULTS: Split = Split {
+    field: 0,
+};
+pub fn after_a_literal() -> u8 {
+    1
 }
 """
 
@@ -1679,7 +1757,7 @@ def self_test() -> int:
 
         # No suffix: byte-for-byte the behaviour of every citation in the tree
         # before this suffix existed. If this moves, the widening was not one.
-        for line, want in ((4, True), (38, True), (39, False)):
+        for line, want in ((4, True), (54, True), (55, False)):
             _, found = symbol_verdict(f"{main}:{line}")
             wrong(
                 (found is None) != want,
@@ -1714,6 +1792,41 @@ def self_test() -> int:
         wrong(
             found is None or "spans 36-38" not in found.message,
             f"`{main}:33#after_an_array` reported {found}, expected a span miss",
+        )
+
+        # A top-level `const` resolves, and `const fn` is still a function.
+        # `LIMIT` ends on its own `;` even with an odd quote in the comment
+        # after it, because that comment is not code.
+        for body in (f"{main}:39#LIMIT", f"{main}#LIMIT", f"{main}:46#doubled"):
+            _, found = symbol_verdict(body)
+            wrong(found is not None, f"`{body}` reported {found}, expected clean")
+        _, found = symbol_verdict(f"{main}:40#LIMIT")
+        wrong(
+            found is None or "spans 39-39" not in found.message,
+            f"`{main}:40#LIMIT` reported {found}, expected a span miss",
+        )
+
+        # The `;` inside `SCHEMA`'s raw string does not end it. Read as code,
+        # line 42 ends the item and a citation of the second table -- the one
+        # `relay_log.rs`'s `relay_batches` is -- would be red.
+        for line in (40, 42, 43):
+            _, found = symbol_verdict(f"{main}:{line}#SCHEMA")
+            wrong(found is not None, f"`{main}:{line}#SCHEMA` reported {found}, expected clean")
+        _, found = symbol_verdict(f"{main}:45#SCHEMA")
+        wrong(
+            found is None or "spans 40-43" not in found.message,
+            f"`{main}:45#SCHEMA` reported {found}, expected a span miss",
+        )
+
+        # A struct-literal initialiser closes on `};`. Without that the span
+        # ran on to the `}` of `after_a_literal`, so a citation of the next
+        # function was certified as inside `DEFAULTS`.
+        _, found = symbol_verdict(f"{main}:51#DEFAULTS")
+        wrong(found is not None, f"`{main}:51#DEFAULTS` reported {found}, expected clean")
+        _, found = symbol_verdict(f"{main}:53#DEFAULTS")
+        wrong(
+            found is None or "spans 49-51" not in found.message,
+            f"`{main}:53#DEFAULTS` reported {found}, expected a span miss",
         )
 
     if failures:
