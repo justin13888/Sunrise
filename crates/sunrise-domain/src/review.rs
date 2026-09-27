@@ -872,6 +872,23 @@ mod tests {
         );
     }
 
+    /// ADR-0045 §6: an inbox task in a state this build does not know reads
+    /// as `todo`, its fallback, so it is still offered for triage.
+    #[test]
+    fn step_two_reads_an_unknown_state_as_untriaged() {
+        let inbox = inbox_stream_ref();
+        let mut f = fixture();
+        let mut unknown = task(9, inbox, "in a newer build's state", MON + DAY);
+        unknown.state = TaskState::from_raw("snoozed");
+        f.tasks.push(unknown);
+
+        let r = review_from(&f, vec![ReviewStream::from(&stream(3, "Work"))]);
+        assert_eq!(
+            r.inbox.iter().map(|t| t.title.as_str()).collect::<Vec<_>>(),
+            vec!["in a newer build's state"]
+        );
+    }
+
     #[test]
     fn step_four_lists_commitments_that_came_due_and_stayed_open() {
         let s = eref(EntityKind::Stream, 3);

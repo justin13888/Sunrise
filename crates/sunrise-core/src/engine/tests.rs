@@ -18694,3 +18694,111 @@ fn an_unknown_stream_color_and_cadence_survive_a_rename() {
         other => panic!("expected a stream.update, got {}", other.inner_kind()),
     }
 }
+
+/// ADR-0045 §6: a catch-up policy this build does not know reads as `skip`,
+/// its fallback. Six missed daily occurrences materialize no backlog (`queue`
+/// would make six, `merge` one), and the future ones are still generated.
+#[test]
+fn an_unknown_catchup_policy_materializes_no_backlog() {
+    let mut db = db();
+    let e = engine();
+    let d = routine_draft(
+        stream_ref(5),
+        "FREQ=DAILY",
+        NOW - (5 * DAY_MS + 3_600_000),
+        RoutineCatchupPolicy::from_raw("backfill_weekends"),
+        Vec::new(),
+    );
+    let rid = e.apply(&mut db, Command::CreateRoutine(d)).unwrap().entity;
+    assert_eq!(past_task_count(&db, rid), 0, "an unknown policy skips");
+    assert!(
+        !live_task_ids(&db).is_empty(),
+        "future occurrences are still materialized"
+    );
+    assert_eq!(
+        routine_of(&e, &db, rid).catchup_policy.as_str(),
+        "backfill_weekends",
+        "the raw policy is kept"
+    );
+}
+
+/// Skipping an occurrence tombstones its untouched task when that task is in
+/// a state this build does not know, as it does a `todo` one.
+#[test]
+fn skipping_an_occurrence_tombstones_its_task_in_an_unknown_state() {
+    let mut db = db();
+    let e = engine();
+    let d = routine_draft(
+        stream_ref(5),
+        "FREQ=DAILY",
+        NOW + 3_600_000,
+        RoutineCatchupPolicy::Skip,
+        Vec::new(),
+    );
+    let rid = e.apply(&mut db, Command::CreateRoutine(d)).unwrap().entity;
+    let routine = read_routine(db.conn(), rid.bytes()).unwrap().unwrap();
+    let window = (ms_to_ts(NOW), ms_to_ts(NOW + 20 * DAY_MS));
+    let key = routine.occurrences_in(window).unwrap()[2].key.clone();
+    let tid = occurrence_task_id(&rid, &key);
+    set_unknown_state(&e, &mut db, tid, "snoozed");
+
+    e.apply(
+        &mut db,
+        Command::SkipRoutineOccurrence {
+            id: rid,
+            occurrence_key: key,
+        },
+    )
+    .unwrap();
+    let t = match e.query(&db, Query::EntityById(tid)).unwrap() {
+        QueryResult::Task(t) => *t,
+        _ => panic!(),
+    };
+    assert!(t.deleted, "an unknown state is tombstoned like `todo`");
+}
+
+/// A scheduled task in a state this build does not know is open, so it still
+/// produces a reminder.
+#[test]
+fn a_task_in_an_unknown_state_still_produces_a_reminder() {
+    let (e, mut db) = engine_at(NOTIFY_NOON);
+    let task = e
+        .apply(
+            &mut db,
+            Command::CreateTask(TaskDraft {
+                title: "Call the bank".into(),
+                scheduled_at: Some(SunriseTime::instant(ms_to_ts(NOTIFY_NOON + 3_600_000))),
+                ..Default::default()
+            }),
+        )
+        .unwrap()
+        .entity;
+    set_unknown_state(&e, &mut db, task, "snoozed");
+    let out = reminders(
+        &e,
+        &db,
+        NOTIFY_NOON,
+        NOTIFY_NOON + 86_400_000,
+        ReminderSettings::default(),
+    );
+    assert_eq!(
+        out.iter().map(|r| r.entity).collect::<Vec<_>>(),
+        vec![task],
+        "an unknown state reads as `todo`"
+    );
+}
+
+/// A session that says it finished its task completes a task in a state this
+/// build does not know, as it would a `todo` one.
+#[test]
+fn a_finished_session_completes_a_task_in_an_unknown_state() {
+    let mut db = db();
+    let e = engine();
+    let task = new_task(&e, &mut db, "Write the report");
+    let session = open_session(&e, &mut db, task);
+    set_unknown_state(&e, &mut db, task, "snoozed");
+    let res = end_session(&e, &mut db, session, true);
+
+    assert_eq!(task_of(&e, &db, task).state, TaskState::Done);
+    assert_eq!(res.state, Some(TaskState::Done));
+}

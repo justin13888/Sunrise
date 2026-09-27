@@ -412,6 +412,19 @@ mod tests {
         );
     }
 
+    /// ADR-0045 §6: a kind this build does not know reads as `work`, its
+    /// fallback, so its time is counted and it calibrates.
+    #[test]
+    fn an_unknown_kind_is_counted_as_work() {
+        let mut deep = record(2, 2, Some(600), Some(300_000), true);
+        deep.kind = FocusKind::from_raw("deep_work");
+        let s = fold_focus_stats(&[record(1, 1, Some(600), Some(600_000), true), deep], 0);
+        assert_eq!(s.sessions, 2);
+        assert_eq!(s.work_sessions, 2, "the unknown kind counts as work");
+        assert_eq!(s.total_focused_ms, 900_000);
+        assert!(s.overall.is_some(), "it calibrates as work does");
+    }
+
     #[test]
     fn stats_bucket_per_stream_and_per_energy() {
         let mut a = record(1, 1, Some(600), Some(1_200_000), true); // 2.0x
