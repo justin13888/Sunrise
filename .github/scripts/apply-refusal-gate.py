@@ -49,7 +49,7 @@ What counts as a violation
    storage failure -- a statement that could not run -- and that is not a
    refusal: the delivery failed, and the relay resends it. The issue that asked
    for this gate named "no `?` on a fallible call" and that cannot be the rule,
-   because the span holds some fifty of them and every one is a SQLite
+   because the spans hold some seventy of them and every one is a SQLite
    statement or a helper around one. So each callee a `?` propagates from is
    named in `PROPAGATES` with what it is, and a `?` on any other name fails.
    Adding a name is the moment somebody has to answer "can this return an
@@ -284,7 +284,7 @@ def is_pattern(s: str, open_paren: int) -> bool:
     if close < 0:
         return False
     rest = s[close + 1 :].lstrip()
-    if rest.startswith("=>"):
+    if rest.startswith("=>") or re.match(r"if\b", rest):  # an arm, guarded or not
         return True
     if rest.startswith("=") and not rest.startswith("=="):
         return True

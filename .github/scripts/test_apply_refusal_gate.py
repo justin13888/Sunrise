@@ -62,6 +62,7 @@ CLEAN_REVOKE = (
     '        tx.execute("INSERT INTO r VALUES (?1)", params![1])?;\n'
     "        match tx.query_row(\"SELECT 1\", [], |r| r.get::<_, i64>(0)) {\n"
     "            Err(rusqlite::Error::QueryReturnedNoRows) => {}\n"
+    "            Err(e) if p.quiet => drop(e),\n"
     "            _ => {}\n"
     "        }\n"
     "        Ok(Vec::new())\n"
