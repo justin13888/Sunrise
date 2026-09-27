@@ -173,9 +173,8 @@ struct RelayDeviceIDResolutionTests {
     /// row on the wire.
     @Test
     func anUnregisteredDeviceResolvesToNothing() throws {
-        #expect(
-            try RelayDeviceID.resolve(store: InMemoryRelayDeviceIDStore(), scope: scope, environment: [:]) == nil
-        )
+        let store = InMemoryRelayDeviceIDStore()
+        #expect(try RelayDeviceID.resolve(store: store, scope: scope, environment: [:]) == nil)
     }
 
     /// A blank override is not an override. Exporting the variable empty is
@@ -196,34 +195,13 @@ struct RelayDeviceIDResolutionTests {
     /// A store that was reached and refused is **not** an unregistered device
     /// (#284). The id may be sitting in it, so answering `nil` would start an
     /// unbound driver for a registered device and send `bind` to register a
-    /// second relay row. The refusal is passed through as the store raised it.
+    /// second relay row. The refusal is passed through as the store raised it;
+    /// the rest of the refusal cases are in `RelayDeviceRefusalTests`.
     @Test
     func aStoreThatRefusesIsNotReadAsUnregistered() {
         #expect(throws: FailingRelayDeviceIDStore.refusal) {
             try RelayDeviceID.resolve(store: FailingRelayDeviceIDStore(), scope: scope, environment: [:])
         }
-    }
-
-    /// The one refusal read as no id: both copies were read and disagree, so
-    /// nothing sits unread, and the registration that follows is what
-    /// collapses them. Throwing here would leave that state with no remedy.
-    @Test
-    func twoDisagreeingCopiesResolveToNothingSoBindCanReplaceThem() throws {
-        let store = FailingRelayDeviceIDStore(loadRefusal: .migrationUnverified)
-        #expect(try RelayDeviceID.resolve(store: store, scope: scope, environment: [:]) == nil)
-    }
-
-    /// The override never reaches the store, so a refusing store cannot take
-    /// away an id somebody set by hand.
-    @Test
-    func theOverrideWinsOverARefusingStore() throws {
-        #expect(
-            try RelayDeviceID.resolve(
-                store: FailingRelayDeviceIDStore(),
-                scope: scope,
-                environment: [RelayDeviceID.environmentKey: "dev_override"]
-            ) == "dev_override"
-        )
     }
 
     /// #183's review defect: the relay looks the id up under the account on
@@ -486,51 +464,4 @@ struct RelayDeviceRegistrationTests {
         ) { Self.id }
         #expect(id == Self.id)
     }
-
-    /// #284: a Keychain that would not *read* may be holding the id this
-    /// device is bound by. Registering on top of it is a fresh relay row per
-    /// sync start for as long as the refusal lasts, so `bind` throws first.
-    @Test
-    func aStoreThatRefusesTheReadDoesNotRegister() async throws {
-        await #expect(throws: FailingRelayDeviceIDStore.refusal) {
-            _ = try await RelayDeviceRegistration.bind(
-                store: FailingRelayDeviceIDStore(),
-                scope: Self.scope,
-                environment: [:]
-            ) {
-                Issue.record("a refused read must not register")
-                return Self.id
-            }
-        }
-    }
-
-    /// Two disagreeing copies are the refusal registration repairs: the
-    /// store's cross-domain write replaces both, and nothing else would. The
-    /// store answers no id, so the one `bind` returns is the one it registered.
-    @Test
-    func twoDisagreeingCopiesRegisterAgain() async throws {
-        let id = try await RelayDeviceRegistration.bind(
-            store: FailingRelayDeviceIDStore(loadRefusal: .migrationUnverified),
-            scope: Self.scope,
-            environment: [:]
-        ) { Self.id }
-        #expect(id == Self.id)
-    }
-}
-
-/// A store whose writes the Keychain refuses, and whose reads it refuses too
-/// unless `loadRefusal` is `nil`, which answers "never registered".
-private struct FailingRelayDeviceIDStore: RelayDeviceIDStore {
-    /// What a locked keychain or a dismissed access prompt answers.
-    static let refusal = KeychainError.unexpected(errSecInteractionNotAllowed)
-
-    var loadRefusal: KeychainError? = Self.refusal
-
-    func load() throws -> RelayDeviceBinding? {
-        if let loadRefusal { throw loadRefusal }
-        return nil
-    }
-
-    func store(_ binding: RelayDeviceBinding) throws { throw Self.refusal }
-    func clear() throws {}
 }
