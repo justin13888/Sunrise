@@ -199,7 +199,9 @@ impl OidcClient {
     ///
     /// # Errors
     /// [`LoginError::Rejected`] if the issuer declines the exchange;
-    /// [`LoginError::Transport`] or [`LoginError::Malformed`] otherwise.
+    /// [`LoginError::Transport`], [`LoginError::Provider`] or
+    /// [`LoginError::Malformed`] otherwise, sorted as [`OidcClient::refresh`]
+    /// describes.
     pub async fn exchange(
         &self,
         redirect: &RedirectCapture,
@@ -212,7 +214,7 @@ impl OidcClient {
             .set_pkce_verifier(PkceCodeVerifier::new(redirect.verifier.clone()))
             .request_async(&http)
             .await
-            .map_err(|e| LoginError::Rejected(format!("code exchange: {e}")))?;
+            .map_err(|e| token_error("code exchange", e))?;
         Ok(Self::to_credentials(&token, now_ms))
     }
 
@@ -221,7 +223,13 @@ impl OidcClient {
     /// # Errors
     /// [`LoginError::Rejected`] if the issuer declines — which includes a
     /// refresh token that has been revoked or has expired, and means the user
-    /// must go through the browser again.
+    /// must go through the browser again, and only an OAuth error body naming
+    /// one of RFC 6749 §5.2's codes is read that way. Every other failure says
+    /// nothing about the refresh token and keeps its own variant: the HTTP
+    /// client's [`LoginError::Transport`] or [`LoginError::Provider`] when the
+    /// token endpoint gave no answer, [`LoginError::Malformed`] for an answer
+    /// that did not parse, and [`LoginError::Transport`] for an error code
+    /// outside §5.2.
     pub async fn refresh(
         &self,
         metadata: &ProviderMetadata,
@@ -235,7 +243,7 @@ impl OidcClient {
             .exchange_refresh_token(&oauth2::RefreshToken::new(refresh_token.to_string()))
             .request_async(&http)
             .await
-            .map_err(|e| LoginError::Rejected(format!("refresh: {e}")))?;
+            .map_err(|e| token_error("refresh", e))?;
 
         let mut creds = Self::to_credentials(&token, now_ms);
         // Issuers that do not rotate refresh tokens omit it from the response.
@@ -296,6 +304,47 @@ impl OidcClient {
                     .map_err(|e| LoginError::Provider(format!("redirect_uri: {e}")))?,
             )),
         }
+    }
+}
+
+/// Sort a token-endpoint failure by what the issuer actually said.
+///
+/// [`LoginError::Rejected`] is reserved for an issuer that answered in OAuth's
+/// own words with one of RFC 6749 §5.2's codes (`invalid_grant` for a revoked
+/// or expired refresh token): that answer does not change on a retry, and a
+/// client acts on it by dropping the grant. Everything else leaves the grant as
+/// it was and keeps its own variant:
+///
+/// - the request never got an answer: the [`HttpClient`]'s own error, a
+///   [`LoginError::Transport`] or [`LoginError::Provider`], passed through;
+/// - an answer that did not parse, including the HTML page a proxy serves for
+///   a `503`, or a non-`200` with no body: [`LoginError::Malformed`];
+/// - an error body naming a code outside §5.2 (`temporarily_unavailable`,
+///   `server_error`, anything an issuer made up): [`LoginError::Transport`],
+///   because nothing in §5.2 lets a client read it as a verdict on the grant.
+fn token_error(
+    step: &str,
+    e: oauth2::RequestTokenError<LoginError, oauth2::basic::BasicErrorResponse>,
+) -> LoginError {
+    use oauth2::basic::BasicErrorResponseType;
+    use oauth2::RequestTokenError;
+    match e {
+        RequestTokenError::ServerResponse(body) => match body.error() {
+            BasicErrorResponseType::Extension(code) => {
+                LoginError::Transport(format!("{step}: issuer answered `{code}`"))
+            }
+            BasicErrorResponseType::InvalidClient
+            | BasicErrorResponseType::InvalidGrant
+            | BasicErrorResponseType::InvalidRequest
+            | BasicErrorResponseType::InvalidScope
+            | BasicErrorResponseType::UnauthorizedClient
+            | BasicErrorResponseType::UnsupportedGrantType => {
+                LoginError::Rejected(format!("{step}: {body}"))
+            }
+        },
+        RequestTokenError::Request(inner) => inner,
+        RequestTokenError::Parse(e, _) => LoginError::Malformed(format!("{step}: {e}")),
+        RequestTokenError::Other(m) => LoginError::Malformed(format!("{step}: {m}")),
     }
 }
 
