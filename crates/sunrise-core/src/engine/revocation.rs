@@ -39,8 +39,12 @@
 //!   bound ratchets over the registers *this* replica computed, so two
 //!   replicas holding one ledger in different arrival orders can settle on
 //!   permanently different bounds. [`Engine::refold_device_revocations`] works
-//!   the counterexample; [#282](https://github.com/justin13888/Sunrise/issues/282)
-//!   holds the unclosed half.
+//!   the counterexample. A device that pairs adopts its sponsor's bound
+//!   ([`adopt_sponsor_read_bounds`]), so it starts where its sponsor stands
+//!   rather than as the weakest replica
+//!   ([#282](https://github.com/justin13888/Sunrise/issues/282));
+//!   [#411](https://github.com/justin13888/Sunrise/issues/411) holds the half
+//!   between replicas that already exist.
 //!
 //! They were one table until `migrations/0028_device_read_bounds.sql`, and
 //! while they were, an ordinary unwind released the read bound: the device
@@ -600,7 +604,9 @@ impl Engine {
     /// This one answers "may this device be given a key?", and it only ever
     /// goes from false to true for a device with a cert here: written by the
     /// fold's `INSERT OR IGNORE` and 0028's seed, and deleted only by
-    /// [`Self::release_orphan_read_bounds`], for certless ids no row names.
+    /// [`Self::release_orphan_read_bounds`], for certless ids no row names. A
+    /// paired vault also starts with its sponsor's rows, adopted at creation by
+    /// [`adopt_sponsor_read_bounds`] and never released.
     ///
     /// Keeping them apart is what makes the threat model's A3 sentence true.
     /// While one table served both, a routine unwind — retire the old laptop
@@ -630,9 +636,9 @@ impl Engine {
     /// replicas that applied the same ops in different orders can settle on
     /// permanently different bounds, because a row gated at every fold one of
     /// them runs never reaches its `register` and so never reaches its bound.
-    /// [`Self::refold_device_revocations`] works the counterexample through;
-    /// [#282](https://github.com/justin13888/Sunrise/issues/282) is the open
-    /// question of what a converging derivation would be. So a caller may read
+    /// [`Self::refold_device_revocations`] works the counterexample through,
+    /// and [#411](https://github.com/justin13888/Sunrise/issues/411) is why no
+    /// rule over the ledger alone can converge it. So a caller may read
     /// this as "has *this* replica bounded the device", and may not read it as
     /// "has the account".
     pub(super) fn is_read_bounded(
@@ -1225,19 +1231,22 @@ impl Engine {
         // [`Self::backfill_key_envelopes`] to hand back every held epoch of
         // every stream: the failure this split exists to close, surviving at
         // the new site for a replica that met the ops the other way round.
-        // Nor is it adversarial — `PairingPayload` carries no revocation
-        // state, so a device that pairs today starts empty and learns the ops
-        // in whatever order the relay has them.
         //
         // What *is* closed here is the whole of what one replica can observe:
         // once this replica has bounded a device, no later fold gives the bound
-        // back, so an unwind can no longer readmit it to a recipient set. The
-        // cross-replica half needs the bound to be a function of the op set,
-        // which is a derivation this table does not have and
-        // [#282](https://github.com/justin13888/Sunrise/issues/282) is where it
-        // belongs — with the two questions it turns on: whether the bound is a
-        // property of the account or of a replica's history, and whether
-        // `PairingPayload` should carry it.
+        // back, so an unwind can no longer readmit it to a recipient set. And a
+        // device that pairs no longer starts as the second replica above: its
+        // vault adopts its sponsor's bound at creation
+        // ([`adopt_sponsor_read_bounds`], #282), where it used to start empty
+        // and meet every op late.
+        //
+        // What is not closed is two replicas that already exist. No rule over
+        // the ledger alone can close it: the honest ledger above and a revoked
+        // device back-dating `X -> V` below its own cut are the same rows with
+        // the names changed, so a rule that bounds C also lets a revoked device
+        // bound any honest device. Closing it needs information the ledger
+        // does not carry, and
+        // [#411](https://github.com/justin13888/Sunrise/issues/411) holds it.
         //
         // A device the discount pass rehabilitates reads `current` in the
         // device list while receiving no keys; that asymmetry is real, and
@@ -1578,7 +1587,7 @@ impl Engine {
     /// here has. If its cert arrives later, the id is current, which is what
     /// the capped ledger says of it, and a replica that held the cert first
     /// keeps its bound. That is the non-convergence the bound already has
-    /// ([#282](https://github.com/justin13888/Sunrise/issues/282)), reached
+    /// ([#411](https://github.com/justin13888/Sunrise/issues/411)), reached
     /// here only through a sender that named more ids than the cap.
     ///
     /// **A bound adopted from a sponsor is never released here**

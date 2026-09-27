@@ -115,7 +115,7 @@ the code rather than from the issue:
   It was, briefly."* Cited without a line on purpose — that paragraph is being
   rewritten, and a line number into it is a citation built to rot.
 - The test `a_revoked_devices_ops_still_apply_at_the_replica`
-  (`crates/sunrise-core/src/engine/tests.rs:7552-7554#a_revoked_devices_ops_still_apply_at_the_replica`)
+  (`crates/sunrise-core/src/engine/tests.rs:7648-7650#a_revoked_devices_ops_still_apply_at_the_replica`)
   revokes a device at a cut before
   every op it writes — the strongest form of the premise — and asserts the op
   applies, materializes and is passed by the cursor.
@@ -136,7 +136,7 @@ Revocation today is a **register plus a read bound**:
 - `device_revoke` is **recorded whatever its sender's standing**, in
   `device_revoke_ops`, and `device_revocations` is rebuilt from that ledger on
   every such op
-  (`crates/sunrise-core/src/engine/revocation.rs:1280#apply_device_revoke`)
+  (`crates/sunrise-core/src/engine/revocation.rs:1289#apply_device_revoke`)
   rather than upserted into: the fold deletes the register outright and
   re-inserts the winners
   (`crates/sunrise-core/src/engine/revocation.rs:1254#refold_device_revocations`).
@@ -317,7 +317,7 @@ third-party `key_envelope` claim is not
 recorded](./0041-peer-side-revocation-is-a-fold.md#2-a-read-bounded-devices-third-party-key_envelope-claim-is-not-recorded)).
 It can afford that because declining a row can only cause *more* key
 distribution and never less, which is not a general licence;
-[#282](https://github.com/justin13888/Sunrise/issues/282) is the open question
+[#411](https://github.com/justin13888/Sunrise/issues/411) is the open question
 of what a converging derivation would be. Corollary 3's *prediction* also did
 not hold — it expected peer-side enforcement as defence in depth "not as the
 only line", and with `require_device_sig` at its default it is the only line
@@ -457,7 +457,7 @@ and that is what the relay bound is for.
   outright for a device admitted by pairing, which is the half this bullet is
   not about.
 - **No code changes.** The test doc at
-  `crates/sunrise-core/src/engine/tests.rs:7512#a_revoked_devices_ops_still_apply_at_the_replica`
+  `crates/sunrise-core/src/engine/tests.rs:7608#a_revoked_devices_ops_still_apply_at_the_replica`
   and `apply_remote_all`'s step b gain
   a citation of this ADR in place of a bare issue number, so the next reader
   finds a decision rather than an open question.

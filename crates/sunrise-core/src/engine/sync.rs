@@ -741,7 +741,7 @@ impl Engine {
                         // `backfill_key_envelopes` emits the envelope. More
                         // senders refused can only mean *more* backfill, never
                         // less. It is also why the bound being per-replica
-                        // (#282) costs nothing at this site: two replicas
+                        // (#411) costs nothing at this site: two replicas
                         // disagreeing about one hint row cannot withhold a key
                         // from anybody.
                         if self.is_read_bounded(tx, sender)? {

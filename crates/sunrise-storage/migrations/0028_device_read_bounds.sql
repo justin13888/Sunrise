@@ -61,8 +61,9 @@
 -- it mints. What this table does close is the single-replica unwind: once a
 -- replica has bounded a device, nothing here gives the bound back.
 -- `crates/sunrise-core/src/engine/revocation.rs` states the fork at the write
--- itself, and issue #282 holds the unclosed half and the two design questions
--- it turns on.
+-- itself. A device that pairs adopts its sponsor's bound (0030, issue #282),
+-- so it no longer starts as the second replica; issue #411 holds the half
+-- between replicas that already exist.
 --
 -- The *register* still could not be made the ratchet instead (ADR-0041's own
 -- revisit trigger 4 says a ratchet and a fold cannot both be true of one

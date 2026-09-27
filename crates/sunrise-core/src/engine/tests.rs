@@ -6801,14 +6801,16 @@ fn the_register_is_the_same_whichever_order_the_two_revocations_arrive() {
     // Pinned as the **known current behaviour**, not as the behaviour anyone
     // wants: on `two` the bound holds C out of every recipient set, and on `one`
     // C is an ordinary member that will be sealed every epoch this replica
-    // mints. Closing
-    // [#282](https://github.com/justin13888/Sunrise/issues/282) means the two
+    // mints. #282 closed the systematic case, a joiner that paired with
+    // nothing (`a_joiner_keeps_its_sponsors_bound_on_c_whichever_order_it_meets_the_ops`
+    // below). These two replicas already exist, and closing
+    // [#411](https://github.com/justin13888/Sunrise/issues/411) means they
     // become equal and these assertions turn red — which is the point of
     // writing them down rather than leaving the gap undiscovered.
     assert_eq!(
         read_bound_row(&one, &c_id),
         None,
-        "known gap (#282): the replica that learned of A's own revocation first \
+        "known gap (#411): the replica that learned of A's own revocation first \
          never bounds C, so it goes on sealing C every epoch it mints"
     );
     assert!(
@@ -7212,7 +7214,7 @@ fn a_mutual_pair_locks_both_devices_out_of_third_party_revocation() {
 ///
 /// The last assertion is the residual ADR-0056 §4 states. O's standing comes
 /// back and its read bound does not. This replica bounded O when the mutual
-/// pair landed, and the bound is a ratchet ([#282](https://github.com/justin13888/Sunrise/issues/282)).
+/// pair landed, and the bound is a ratchet ([#411](https://github.com/justin13888/Sunrise/issues/411)).
 #[test]
 fn a_third_current_device_settles_which_half_of_a_mutual_pair_the_account_meant() {
     let ex = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
