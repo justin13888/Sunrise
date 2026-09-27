@@ -18462,6 +18462,185 @@ fn an_unknown_state_counts_as_open_in_the_stream_list() {
     assert_eq!(rows[0].open_task_count, 1, "the Inbox counts it as open");
 }
 
+/// Set a task's state to one this build does not know.
+fn set_unknown_state(e: &Engine, db: &mut Db, task: EntityRef, raw: &str) {
+    e.apply(
+        db,
+        Command::UpdateTask {
+            id: task,
+            patch: TaskPatch {
+                state: Some(TaskState::from_raw(raw)),
+                ..Default::default()
+            },
+        },
+    )
+    .unwrap();
+}
+
+/// A stream's own open count (the non-Inbox rows of the stream list) counts
+/// an unknown state as open.
+#[test]
+fn an_unknown_state_counts_as_open_in_a_streams_own_count() {
+    let mut db = db();
+    let e = engine();
+    let s = e
+        .apply(
+            &mut db,
+            Command::CreateStream(StreamDraft {
+                name: "Work".into(),
+                ..Default::default()
+            }),
+        )
+        .unwrap()
+        .entity;
+    let task = task_with(
+        &e,
+        &mut db,
+        "in a state this build lacks",
+        TaskDraft {
+            stream_id: Some(s),
+            ..Default::default()
+        },
+    );
+    set_unknown_state(&e, &mut db, task, "archived");
+    let rows = match e.query(&db, Query::StreamList).unwrap() {
+        QueryResult::Streams(r) => r,
+        _ => panic!(),
+    };
+    let row = rows.iter().find(|r| r.id == s).unwrap();
+    assert_eq!(row.open_task_count, 1, "the stream counts it as open");
+}
+
+/// The actionable scan reads an unknown state as open in all three places it
+/// filters on state: the task itself, a blocker, and a dependent.
+#[test]
+fn the_actionable_scan_reads_an_unknown_state_as_open() {
+    let mut db = db();
+    let e = engine();
+    let blocker = new_task(&e, &mut db, "blocker");
+    let dependent = new_task(&e, &mut db, "dependent");
+    e.apply(
+        &mut db,
+        Command::UpdateTask {
+            id: dependent,
+            patch: TaskPatch {
+                blocked_by: Some(vec![blocker]),
+                ..Default::default()
+            },
+        },
+    )
+    .unwrap();
+    set_unknown_state(&e, &mut db, blocker, "archived");
+    set_unknown_state(&e, &mut db, dependent, "archived");
+
+    let rows = actionable_rows(&e, &db);
+    let b = row_for(&rows, blocker);
+    assert_eq!(
+        b.unblocks, 1,
+        "the unknown-state dependent is waiting on it"
+    );
+    assert_eq!(b.open_blockers, 0);
+    let d = row_for(&rows, dependent);
+    assert_eq!(
+        d.open_blockers, 1,
+        "the unknown-state blocker is still open"
+    );
+    assert_eq!(d.effective_state, EffectiveTaskState::Blocked);
+}
+
+/// Editing a routine's rule regenerates an untouched future task in an
+/// unknown state as it does a `todo` one, and keeps an in-progress one.
+#[test]
+fn update_routine_regenerates_a_future_task_in_an_unknown_state() {
+    let mut db = db();
+    let e = engine();
+    let d = routine_draft(
+        stream_ref(5),
+        "FREQ=DAILY",
+        NOW + 3_600_000,
+        RoutineCatchupPolicy::Skip,
+        Vec::new(),
+    );
+    let rid = e.apply(&mut db, Command::CreateRoutine(d)).unwrap().entity;
+    let routine = read_routine(db.conn(), rid.bytes()).unwrap().unwrap();
+    let window = (ms_to_ts(NOW), ms_to_ts(NOW + 20 * DAY_MS));
+    let daily = routine.occurrences_in(window).unwrap();
+    // occ[2] falls on a weekday a weekly rule drops.
+    let drop_id = occurrence_task_id(&rid, &daily[2].key);
+    set_unknown_state(&e, &mut db, drop_id, "snoozed");
+
+    let patch = RoutinePatch {
+        rrule: Some(RRule::parse("FREQ=WEEKLY").unwrap()),
+        ..Default::default()
+    };
+    e.apply(&mut db, Command::UpdateRoutine { id: rid, patch })
+        .unwrap();
+
+    let t = match e.query(&db, Query::EntityById(drop_id)).unwrap() {
+        QueryResult::Task(t) => *t,
+        _ => panic!(),
+    };
+    assert!(
+        t.deleted,
+        "an unknown state is regenerated away like `todo`"
+    );
+}
+
+/// A focus session of a kind this build does not know counts as work: it
+/// advances the next session's chunk and the planner's prior-session count.
+#[test]
+fn an_unknown_focus_kind_counts_as_a_work_session() {
+    let mut db = db();
+    let (e, clock) = focus_engine(0);
+    let task = task_with(
+        &e,
+        &mut db,
+        "75 minutes of work",
+        TaskDraft {
+            estimated_duration_s: Some(75 * 60),
+            ..Default::default()
+        },
+    );
+    let s = e
+        .apply(
+            &mut db,
+            Command::StartFocus(FocusStartDraft {
+                task_id: task,
+                kind: FocusKind::from_raw("deep_work"),
+                length: SessionLength::OnePomodoro,
+                energy: None,
+            }),
+        )
+        .unwrap()
+        .entity;
+    set_clock(&clock, POMODORO_MS);
+    e.apply(
+        &mut db,
+        Command::EndFocus {
+            session: s,
+            actual_focused_ms: None,
+            completed_task: false,
+        },
+    )
+    .unwrap();
+
+    let rows = plan(&e, &db, None);
+    let row = rows.iter().find(|r| r.task.id == task).unwrap();
+    assert_eq!(row.prior_sessions, 1, "the planner counts it as work");
+
+    set_clock(&clock, POMODORO_MS + 1);
+    let next = start_work(&e, &mut db, task, SessionLength::SizedToEstimate);
+    let row = sessions_for(&e, &db, task)
+        .into_iter()
+        .find(|r| r.session.start.id == next)
+        .unwrap();
+    assert_eq!(
+        row.session.start.chunk,
+        Some(Chunk { index: 2, total: 3 }),
+        "the next sitting counts it as a prior work session"
+    );
+}
+
 /// Storage keeps a stream's unknown colour and cadence verbatim through a
 /// rename, where it used to read them back as `slate` and `weekly`.
 #[test]
