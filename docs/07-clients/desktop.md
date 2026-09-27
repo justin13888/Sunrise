@@ -975,6 +975,15 @@ An unbound driver is not a failure state and is not refused: it is what every
 self-host relay runs, and a client that would not connect without a binding
 could never reach the relay that mints one.
 
+**A Keychain that refuses the read is not an unregistered device** (#284). A
+locked keychain, a dismissed access prompt, or an unreadable other keychain may
+be hiding an id this device is bound by, so `RelayDeviceID.resolve` throws
+rather than answering no id: `bind` registers nothing on top of it, and
+`SyncPlan` stays off with a reason naming the Keychain instead of starting an
+unbound driver. The next sync start reads again. Two disagreeing copies
+(`.migrationUnverified`) are the one refusal read as no id, because both were
+read and the re-registration's cross-domain write is what collapses them.
+
 ## Pairing
 
 A second device is paired over a **six-leg copy/paste handshake**: the QR/text
