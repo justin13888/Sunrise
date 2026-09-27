@@ -1758,6 +1758,23 @@ jobs:
       - name: Exit-code contract
         run: python3 .github/scripts/test_workflow_hardening_gate.py
 
+  reverses-gate-contract:
+    name: Reverses gate contract
+    runs-on: ubuntu-latest
+    # One Python script over bodies and event payloads it synthesises in a
+    # temp directory: no toolchain, no network past the checkout. Seconds.
+    timeout-minutes: 5
+    # The gate itself runs in pr-body.yml, which fires on a body edit as well
+    # as a push. This contract reads no body, so it sits here with the other
+    # gate contracts and without an `if:`. It plants the two `Reverses:` lines
+    # that closed #282 and #297 (#300) and asserts exit 1, and keeps the shapes
+    # #300 names as safe - a fenced record, a markdown link, an intended
+    # `Closes #N` on its own line - at 0.
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - name: Exit-code contract
+        run: python3 .github/scripts/test_reverses_gate.py
+
 
   fuzz:
     name: Fuzz (${{ matrix.target }})
