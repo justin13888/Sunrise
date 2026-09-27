@@ -293,6 +293,11 @@ final class AppSurfaces {
     /// and it was, until this, also the fastest way to lose one.
     func commitCapture(_ draft: TaskDraftIn) async throws {
         guard let vault else { throw CaptureError.noOpenVault }
+        #if DEBUG
+        // After the vault guard, so the refusal is the one a commit reaching
+        // an open vault would see — see `UITestHarness.failCaptureFlag`.
+        if UITestHarness.failsQuickCapture() { throw CaptureError.refusedByUITestHarness }
+        #endif
         _ = try await vault.submit(.createTask(draft: draft))
     }
 
@@ -506,11 +511,20 @@ enum CaptureError: Error, Equatable, LocalizedError {
     /// No vault is open — the window between one being closed and the next
     /// being opened, which multi-account switching made reachable.
     case noOpenVault
+    #if DEBUG
+    /// A UI test launched with `UITestHarness.failCaptureFlag` asked for this
+    /// commit to be refused. Debug builds only, like the harness itself.
+    case refusedByUITestHarness
+    #endif
 
     var errorDescription: String? {
         switch self {
         case .noOpenVault:
             "No vault is open. Open Sunrise and try again."
+        #if DEBUG
+        case .refusedByUITestHarness:
+            "The UI-test harness refused this capture."
+        #endif
         }
     }
 }
