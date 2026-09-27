@@ -223,14 +223,21 @@ impl OpLog {
     /// Record that a build at `doc_schema_v` tried to replay `op_id` and it
     /// is still parked, so [`Self::parked_for_replay`] skips it until the
     /// build changes. A no-op for an op the replay released.
+    ///
+    /// `reason`, when given, replaces the row's reason: the retry found a
+    /// different cause than the one the op was parked for (ADR-0045 §4, "stays
+    /// parked with its reason updated"). `None` keeps the reason it has.
     pub fn restamp_parked(
         tx: &rusqlite::Transaction<'_>,
         op_id: &[u8; 16],
         doc_schema_v: u16,
+        reason: Option<ParkReason>,
     ) -> Result<(), OpLogError> {
         tx.execute(
-            "UPDATE parked_ops SET parked_under_doc_schema_v = ? WHERE op_id = ?",
-            params![doc_schema_v, op_id],
+            "UPDATE parked_ops SET parked_under_doc_schema_v = ?,
+                                   reason = COALESCE(?, reason)
+             WHERE op_id = ?",
+            params![doc_schema_v, reason.map(ParkReason::as_str), op_id],
         )?;
         Ok(())
     }
@@ -242,13 +249,18 @@ pub const PARKED_KIND: &str = "unknown";
 
 /// Why an op is parked rather than applied (ADR-0045 §4).
 ///
-/// One reason today. The others that ADR lists (an unknown field-op kind, a
+/// One reason parks an op on first delivery today, and one more is written
+/// only by a replay. The others that ADR lists (an unknown field-op kind, a
 /// payload undecodable at a newer `doc_schema_v`, a schema-fingerprint
 /// mismatch) arrive with the issues that introduce what they detect.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParkReason {
     /// The inner op's variant name is not one this build knows.
     UnknownKind,
+    /// A replay decoded the op, because this build knows its kind, and the
+    /// apply path refused it. The kind is no longer missing, so the
+    /// `unknown_kind` it was parked under would misstate why it is kept.
+    ReplayRefused,
 }
 
 impl ParkReason {
@@ -257,6 +269,7 @@ impl ParkReason {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::UnknownKind => "unknown_kind",
+            Self::ReplayRefused => "replay_refused",
         }
     }
 }
@@ -480,12 +493,35 @@ mod tests {
         );
         assert_eq!(ids(&OpLog::parked_for_replay(&db, 5).unwrap()), vec![6]);
 
-        db.with_tx(|tx| OpLog::restamp_parked(tx, &[3u8; 16], 6).map_err(sq))
+        db.with_tx(|tx| OpLog::restamp_parked(tx, &[3u8; 16], 6, None).map_err(sq))
             .unwrap();
         assert_eq!(
             ids(&OpLog::parked_for_replay(&db, 6).unwrap()),
             vec![2, 5, 4, 1]
         );
+    }
+
+    #[test]
+    fn a_restamp_keeps_the_reason_unless_it_is_given_a_new_one() {
+        let mut db = Db::open_memory(&vault_key()).unwrap();
+        park(&mut db, 1, 2, 1, 100, 0, 5);
+        park(&mut db, 2, 2, 2, 100, 0, 5);
+        db.with_tx(|tx| {
+            OpLog::restamp_parked(tx, &[1u8; 16], 6, None).map_err(sq)?;
+            OpLog::restamp_parked(tx, &[2u8; 16], 6, Some(ParkReason::ReplayRefused)).map_err(sq)
+        })
+        .unwrap();
+        let reason = |id: u8| -> (String, i64) {
+            db.conn()
+                .query_row(
+                    "SELECT reason, parked_under_doc_schema_v FROM parked_ops WHERE op_id = ?",
+                    params![[id; 16]],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap()
+        };
+        assert_eq!(reason(1), ("unknown_kind".into(), 6));
+        assert_eq!(reason(2), ("replay_refused".into(), 6));
     }
 
     #[test]

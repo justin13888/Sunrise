@@ -17958,7 +17958,7 @@ fn an_op_of_a_kind_this_build_does_not_know_is_parked_and_counted() {
     // Re-delivery and a replay by the same build both change nothing.
     let ops_before = op_count(&dbb);
     assert!(eb.apply_remote_all(&mut dbb, &future).unwrap().is_empty());
-    assert!(eb.replay_parked_ops(&mut dbb).unwrap().is_empty());
+    assert!(eb.replay_parked_ops(&mut dbb).is_empty());
     assert_eq!(op_count(&dbb), ops_before);
     assert_eq!(parked_rows(&dbb).len(), 1);
     assert_eq!(op_row(&dbb, &future_id), ("unknown".into(), None));
@@ -17993,7 +17993,7 @@ fn a_parked_op_is_materialized_once_a_build_that_knows_its_kind_replays_it() {
     );
     assert_eq!(cursor_for(&dbb, &op.stream_id, &a_id), 1);
 
-    let events = eb.replay_parked_ops(&mut dbb).unwrap();
+    let events = eb.replay_parked_ops(&mut dbb);
     assert!(
         events
             .iter()
@@ -18008,7 +18008,7 @@ fn a_parked_op_is_materialized_once_a_build_that_knows_its_kind_replays_it() {
     assert_eq!(op_count(&dbb), 1, "the same op row, now applied");
 
     // Idempotent: a second replay and a relay re-send both stop at the gate.
-    assert!(eb.replay_parked_ops(&mut dbb).unwrap().is_empty());
+    assert!(eb.replay_parked_ops(&mut dbb).is_empty());
     assert!(eb.apply_remote(&mut dbb, &env).unwrap().is_none());
     assert_eq!(read_task_t(&eb, &dbb, task).title, "from the future");
 }
@@ -18034,7 +18034,7 @@ fn a_parked_op_this_build_still_cannot_read_stays_parked_and_is_restamped() {
         .unwrap();
     assert_eq!(OpLog::parked_for_replay(&dbb, current).unwrap().len(), 1);
 
-    assert!(eb.replay_parked_ops(&mut dbb).unwrap().is_empty());
+    assert!(eb.replay_parked_ops(&mut dbb).is_empty());
     assert_eq!(
         parked_rows(&dbb),
         vec![(
@@ -18049,15 +18049,17 @@ fn a_parked_op_this_build_still_cannot_read_stays_parked_and_is_restamped() {
     );
 }
 
-/// A storage failure while replaying is not a refusal. The replay returns it
-/// and leaves the op's old stamp alone, so the next open applies it; a
-/// re-stamp here would keep an op this build can read parked until the next
-/// `DOC_SCHEMA_V` bump.
+/// A storage failure while replaying is neither a refusal nor fatal. The
+/// replay logs it, leaves the op's old stamp alone so the next try applies it
+/// (a re-stamp would keep an op this build can read parked until the next
+/// `DOC_SCHEMA_V` bump), and goes on to the next parked op.
 ///
 /// The failure is a trigger on the release's `DELETE FROM parked_ops`, which
 /// runs inside the apply transaction and nowhere in the read or the re-stamp.
+/// It fires on every try, the fault that would lock the vault if a replay
+/// failure could fail `Core::open`.
 #[test]
-fn a_storage_failure_during_replay_is_returned_and_the_op_is_not_restamped() {
+fn a_storage_failure_during_replay_leaves_the_op_unstamped_and_the_replay_goes_on() {
     let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
     let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
     let mut dba = db_root(ROOT);
@@ -18070,6 +18072,17 @@ fn a_storage_failure_during_replay_is_returned_and_the_op_is_not_restamped() {
     let older = sunrise_cbor::version::DOC_SCHEMA_V - 1;
     eb.park_op(&mut dbb, &env, &op, "TaskCreate", older)
         .unwrap();
+    // A second parked op, behind the first in replay order, that this build
+    // still cannot read: the failure above it must not stop its re-stamp.
+    let later = emit_raw_inner(
+        &ea,
+        &mut dba,
+        &op.stream_id,
+        &future_kind_inner("StillUnknown"),
+    );
+    let later_op = decode_envelope(&later).unwrap();
+    eb.park_op(&mut dbb, &later, &later_op, "StillUnknown", older)
+        .unwrap();
 
     dbb.conn()
         .execute_batch(
@@ -18077,31 +18090,75 @@ fn a_storage_failure_during_replay_is_returned_and_the_op_is_not_restamped() {
              BEGIN SELECT RAISE(ABORT, 'disk full'); END;",
         )
         .unwrap();
-    let err = eb.replay_parked_ops(&mut dbb).unwrap_err();
-    assert!(
-        matches!(
-            err,
-            EngineError::Sqlite(_) | EngineError::Storage(_) | EngineError::OpLog(_)
-        ),
-        "a storage error, not a refusal: {err:?}"
-    );
-    assert_eq!(
-        parked_rows(&dbb),
-        vec![("unknown_kind".into(), "TaskCreate".into(), i64::from(older))],
-        "the stamp is the one it was parked under"
-    );
-    assert!(eb.query(&dbb, Query::EntityById(task)).is_err());
+    // The fault recurs on every try; each one returns, and neither stamps it.
+    for _ in 0..2 {
+        assert!(eb.replay_parked_ops(&mut dbb).is_empty());
+        assert_eq!(
+            parked_rows(&dbb),
+            vec![
+                ("unknown_kind".into(), "TaskCreate".into(), i64::from(older)),
+                (
+                    "unknown_kind".into(),
+                    "StillUnknown".into(),
+                    i64::from(sunrise_cbor::version::DOC_SCHEMA_V)
+                ),
+            ],
+            "the failed op keeps its stamp, and the replay went on to the next"
+        );
+        assert!(eb.query(&dbb, Query::EntityById(task)).is_err());
+    }
 
     // The next open, with the disk healthy, applies it.
     dbb.conn()
         .execute_batch("DROP TRIGGER fail_release;")
         .unwrap();
-    let events = eb.replay_parked_ops(&mut dbb).unwrap();
+    let events = eb.replay_parked_ops(&mut dbb);
     assert!(events
         .iter()
         .any(|e| matches!(e, DomainEvent::Created(r) if *r == task)));
     assert_eq!(read_task_t(&eb, &dbb, task).title, "held up by the disk");
-    assert!(parked_rows(&dbb).is_empty());
+    assert_eq!(
+        parked_rows(&dbb).len(),
+        1,
+        "only the still-unknown op is left"
+    );
+}
+
+/// An op whose kind this build now knows, but which the apply path refuses on
+/// replay, stays parked under this build's stamp, and its reason stops saying
+/// the kind is unknown (ADR-0045 §4, "stays parked with its reason updated").
+///
+/// The refusal is the sender's device being unknown to this replica: the
+/// parked row is written directly, and this replica never trusted the sender,
+/// so the replay's signer lookup refuses it.
+#[test]
+fn a_parked_op_refused_on_replay_stays_parked_with_its_reason_updated() {
+    let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut dba = db_root(ROOT);
+    let mut dbb = db_root(ROOT);
+
+    let task = new_task(&ea, &mut dba, "refused on replay");
+    let env = create_env_for(&dba, task.bytes());
+    let op = decode_envelope(&env).unwrap();
+    assert!(matches!(
+        eb.apply_remote_all(&mut db_root(ROOT), &env),
+        Err(EngineError::UnknownDevice)
+    ));
+    let older = sunrise_cbor::version::DOC_SCHEMA_V - 1;
+    eb.park_op(&mut dbb, &env, &op, "TaskCreate", older)
+        .unwrap();
+
+    assert!(eb.replay_parked_ops(&mut dbb).is_empty());
+    assert_eq!(
+        parked_rows(&dbb),
+        vec![(
+            "replay_refused".into(),
+            "TaskCreate".into(),
+            i64::from(sunrise_cbor::version::DOC_SCHEMA_V)
+        )]
+    );
+    assert!(eb.query(&dbb, Query::EntityById(task)).is_err());
 }
 
 /// Only an unknown *name* parks. A family this build reads, with a payload

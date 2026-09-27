@@ -304,7 +304,7 @@ async fn an_op_an_older_build_parked_is_materialized_when_the_vault_reopens() {
     }
     assert_eq!(task_rows(&joiner), 0, "parked, so not materialized");
     assert_eq!(parked_rows(&joiner), 1);
-    joiner.close().await.unwrap();
+    a_failing_replay_never_fails_the_open(joiner, joiner_dir.path(), &joiner_root, task).await;
 
     let upgraded = Core::open(
         cfg(joiner_dir.path()),
@@ -318,6 +318,59 @@ async fn an_op_an_older_build_parked_is_materialized_when_the_vault_reopens() {
     assert_eq!(task_rows(&upgraded), 1, "the open replayed it");
     assert_eq!(parked_rows(&upgraded), 0, "and released the marker");
     upgraded.close().await.unwrap();
+}
+
+/// A storage fault that fails the parked op's replay on every open, installed
+/// in `core`'s vault and removed again before this returns. It must never
+/// fail the open: the vault opens, the op stays parked under its old stamp,
+/// and the next open tries it again.
+async fn a_failing_replay_never_fails_the_open(
+    core: Core,
+    dir: &std::path::Path,
+    root: &VaultRootKey,
+    task: sunrise_id::EntityRef,
+) {
+    let exec = |core: &Core, sql: &str| core.db.lock().conn().execute_batch(sql).unwrap();
+    let reopen = || {
+        Core::open(
+            cfg(dir),
+            Unlock::DevicePaired {
+                root: root.clone(),
+                paired: None,
+            },
+        )
+    };
+    exec(
+        &core,
+        "CREATE TRIGGER fail_release BEFORE DELETE ON parked_ops
+         BEGIN SELECT RAISE(ABORT, 'disk full'); END;",
+    );
+    core.close().await.unwrap();
+    for _ in 0..2 {
+        let failing = reopen()
+            .await
+            .expect("a replay failure never fails the open");
+        let (tasks, older): (i64, i64) = failing
+            .db
+            .lock()
+            .conn()
+            .query_row(
+                "SELECT (SELECT count(*) FROM tasks WHERE id = ?1),
+                        (SELECT count(*) FROM parked_ops WHERE parked_under_doc_schema_v = ?2)",
+                rusqlite::params![
+                    &task.bytes()[..],
+                    i64::from(sunrise_cbor::version::DOC_SCHEMA_V - 1)
+                ],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(tasks, 0, "the replay failed, so nothing materialized");
+        assert_eq!(older, 1, "not re-stamped, so the next open retries it");
+        failing.close().await.unwrap();
+    }
+    let healed = reopen().await.unwrap();
+    exec(&healed, "DROP TRIGGER fail_release;");
+    healed.close().await.unwrap();
 }
 
 #[tokio::test]

@@ -44,6 +44,35 @@ fn oplog_to_sqlite(e: OpLogError) -> rusqlite::Error {
     }
 }
 
+/// Log a storage failure that stopped a parked-op replay at `step` (`read`,
+/// `apply` or `restamp`). The op keeps its stamp, so the next open retries
+/// it. A class and not the message: a storage error can quote a bound value.
+fn log_replay_failed(
+    header: Option<&sunrise_crypto::OpEnvelope>,
+    step: &'static str,
+    e: &EngineError,
+) {
+    tracing::warn!(
+        ev = "core.op.parked_replay_failed",
+        reason = step,
+        stream_h = header.map(|h| hex_short(&h.stream_id)).unwrap_or_default(),
+        sender_h = header.map(|h| hex_short(&h.device_id)).unwrap_or_default(),
+        seq = header.map_or(0, |h| h.seq),
+        cause = storage_class(e),
+        "a parked op could not be replayed; it stays parked and the next open retries it"
+    );
+}
+
+/// The error class a replay-failure log carries in place of the message.
+const fn storage_class(e: &EngineError) -> &'static str {
+    match e {
+        EngineError::Storage(_) => "storage",
+        EngineError::Sqlite(_) => "sqlite",
+        EngineError::OpLog(_) => "oplog",
+        _ => "other",
+    }
+}
+
 impl Engine {
     /// Mint a new epoch for one Stream and distribute it.
     ///
@@ -761,35 +790,50 @@ impl Engine {
     /// An op this build still cannot apply stays parked, and is re-stamped
     /// with this build so the next open does not try it again. That covers a
     /// kind this build does not know either (the apply path parks it again,
-    /// which changes nothing) and an op that now decodes but is refused: its
-    /// bytes verified once and advanced the cursor, so keeping them is the
-    /// only answer that loses nothing. A refusal is logged.
+    /// which changes nothing, and the reason stays `unknown_kind`) and an op
+    /// that now decodes but is refused: its bytes verified once and advanced
+    /// the cursor, so keeping them is the only answer that loses nothing. Its
+    /// reason becomes [`ParkReason::ReplayRefused`], because its kind is no
+    /// longer unknown. A refusal is logged.
     ///
-    /// A storage failure while applying one is not a refusal: the replay stops
-    /// there and returns it, and that op keeps its old stamp, so the next open
-    /// tries it again.
+    /// A storage failure while applying or re-stamping one is not a refusal,
+    /// and it is not fatal either. It is logged, that op keeps its old stamp so
+    /// the next open tries it again, and the replay goes on to the next op. A
+    /// fault that recurs on every try therefore costs one failed apply per
+    /// open, and never stops the vault opening.
     ///
-    /// # Errors
-    /// Storage failures reading or re-stamping `parked_ops`, and a storage
-    /// failure (`Storage`, `Sqlite` or `OpLog`) while applying a parked op.
-    /// Any other failure to apply one op is not an error.
-    pub fn replay_parked_ops(&self, db: &mut Db) -> Result<Vec<DomainEvent>, EngineError> {
-        let parked = OpLog::parked_for_replay(db, DOC_SCHEMA_V)?;
+    /// Infallible for the same reason: a failure to read `parked_ops` is
+    /// logged, nothing is replayed, and the next open reads it again.
+    pub fn replay_parked_ops(&self, db: &mut Db) -> Vec<DomainEvent> {
+        let parked = match OpLog::parked_for_replay(db, DOC_SCHEMA_V) {
+            Ok(parked) => parked,
+            Err(e) => {
+                log_replay_failed(None, "read", &EngineError::from(e));
+                return Vec::new();
+            }
+        };
         let mut events = Vec::new();
         for op in parked {
-            match self.apply_remote_all(db, &op.envelope) {
-                Ok(more) => events.extend(more),
+            let header = || decode_envelope(&op.envelope).ok();
+            let reason = match self.apply_remote_all(db, &op.envelope) {
+                Ok(more) => {
+                    events.extend(more);
+                    None
+                }
                 // A storage failure says nothing about the op. Re-stamping it
                 // would keep an op this build can apply parked until the next
                 // `DOC_SCHEMA_V` bump, so the stamp stays as it was and the
                 // next open tries it again.
                 Err(
                     e @ (EngineError::Storage(_) | EngineError::Sqlite(_) | EngineError::OpLog(_)),
-                ) => return Err(e),
+                ) => {
+                    log_replay_failed(header().as_ref(), "apply", &e);
+                    continue;
+                }
                 // A class and not the message: a decode error can quote the
                 // payload it failed on, and this payload is plaintext.
                 Err(e) => {
-                    let header = decode_envelope(&op.envelope).ok();
+                    let header = header();
                     tracing::warn!(
                         ev = "core.op.parked_replay_refused",
                         stream_h = header
@@ -808,13 +852,16 @@ impl Engine {
                         },
                         "a parked op still does not apply; it stays parked"
                     );
+                    Some(ParkReason::ReplayRefused)
                 }
+            };
+            if let Err(e) = db.with_tx(|tx| {
+                OpLog::restamp_parked(tx, &op.op_id, DOC_SCHEMA_V, reason).map_err(oplog_to_sqlite)
+            }) {
+                log_replay_failed(header().as_ref(), "restamp", &EngineError::from(e));
             }
-            db.with_tx(|tx| {
-                OpLog::restamp_parked(tx, &op.op_id, DOC_SCHEMA_V).map_err(oplog_to_sqlite)
-            })?;
         }
-        Ok(events)
+        events
     }
 
     /// Apply one control op. Returns the `(stream_id, epoch)` pairs whose keys

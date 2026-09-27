@@ -863,7 +863,7 @@ pub(super) fn ops_run_end(
 /// at this `(stream, epoch)` opens the envelope,
 /// `crates/sunrise-core/src/engine/sync.rs:329#apply_remote_all` when the
 /// sender's clock is outside the drift window, and
-/// `crates/sunrise-core/src/engine/sync.rs:863#apply_control_op` when a key
+/// `crates/sunrise-core/src/engine/sync.rs:910#apply_control_op` when a key
 /// envelope names an epoch above `MAX_EPOCH_LEAP`. The first two return an
 /// error before the transaction opens, so no op row and no cursor; the third
 /// drops a payload with the op row already in, so the op counts toward the

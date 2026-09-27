@@ -184,7 +184,11 @@ impl Core {
         // `publish_device_cert` below announces under. No subscriber exists
         // yet, so the events it returns have nobody to reach; every screen
         // reads the vault fresh after open.
-        engine.replay_parked_ops(&mut db)?;
+        //
+        // It cannot fail the open. A parked op whose replay fails in storage is
+        // logged and left for the next open, so a fault that recurs on every
+        // try costs one retry per open and never locks the vault.
+        let _ = engine.replay_parked_ops(&mut db);
         // Between `ensure_base_epochs` and `publish_device_cert`, and in that
         // order for two reasons.
         //
