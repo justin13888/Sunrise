@@ -24,8 +24,10 @@
 //!   through a `LEFT JOIN` rather than through this function (`super::query`),
 //!   and `CommandResult::revocation_gated` in [`Engine::revoke_device`] below.
 //! - **"Is this device read-bounded?"** — `device_read_bounds`, via
-//!   [`Engine::is_read_bounded`]. A ratchet: written only by the fold's
-//!   `INSERT OR IGNORE`, never deleted for a device with a cert here. It has
+//!   [`Engine::is_read_bounded`]. A ratchet: written by the fold's upsert
+//!   (`INSERT ... ON CONFLICT(device_id) DO UPDATE SET from_sponsor = 0`) and,
+//!   once at pairing, by [`adopt_sponsor_read_bounds`]; never deleted for a
+//!   device with a cert here. It has
 //!   to be monotone or it is not a bound; it gates all four key sites —
 //!   `emit_key_envelopes`' anti-join and `backfill_key_envelopes`' early
 //!   return in [`super::oplog`], the survivor roster `rotate_identity` builds
@@ -39,8 +41,12 @@
 //!   bound ratchets over the registers *this* replica computed, so two
 //!   replicas holding one ledger in different arrival orders can settle on
 //!   permanently different bounds. [`Engine::refold_device_revocations`] works
-//!   the counterexample; [#282](https://github.com/justin13888/Sunrise/issues/282)
-//!   holds the unclosed half.
+//!   the counterexample. A device that pairs adopts its sponsor's bound
+//!   ([`adopt_sponsor_read_bounds`]), so it starts where its sponsor stands
+//!   rather than as the weakest replica
+//!   ([#282](https://github.com/justin13888/Sunrise/issues/282));
+//!   [#411](https://github.com/justin13888/Sunrise/issues/411) holds the half
+//!   between replicas that already exist.
 //!
 //! They were one table until `migrations/0028_device_read_bounds.sql`, and
 //! while they were, an ordinary unwind released the read bound: the device
@@ -599,8 +605,14 @@ impl Engine {
     /// to false when the fold learns a revocation's author was itself revoked.
     /// This one answers "may this device be given a key?", and it only ever
     /// goes from false to true for a device with a cert here: written by the
-    /// fold's `INSERT OR IGNORE` and 0028's seed, and deleted only by
-    /// [`Self::release_orphan_read_bounds`], for certless ids no row names.
+    /// fold's upsert and 0028's seed, and deleted only by
+    /// [`Self::release_orphan_read_bounds`], for certless ids no row names. A
+    /// paired vault also starts with its sponsor's rows, adopted at creation by
+    /// [`adopt_sponsor_read_bounds`] and marked `from_sponsor = 1`, which
+    /// exempts them from that release. The exemption lasts until this
+    /// replica's own fold bounds the same device: the upsert then sets
+    /// `from_sponsor = 0`, and the row is releasable like any row the fold
+    /// wrote.
     ///
     /// Keeping them apart is what makes the threat model's A3 sentence true.
     /// While one table served both, a routine unwind — retire the old laptop
@@ -630,9 +642,9 @@ impl Engine {
     /// replicas that applied the same ops in different orders can settle on
     /// permanently different bounds, because a row gated at every fold one of
     /// them runs never reaches its `register` and so never reaches its bound.
-    /// [`Self::refold_device_revocations`] works the counterexample through;
-    /// [#282](https://github.com/justin13888/Sunrise/issues/282) is the open
-    /// question of what a converging derivation would be. So a caller may read
+    /// [`Self::refold_device_revocations`] works the counterexample through,
+    /// and [#411](https://github.com/justin13888/Sunrise/issues/411) is why no
+    /// rule over the ledger alone can converge it. So a caller may read
     /// this as "has *this* replica bounded the device", and may not read it as
     /// "has the account".
     pub(super) fn is_read_bounded(
@@ -1191,16 +1203,18 @@ impl Engine {
         // from it drove `backfill_key_envelopes` to hand back every held epoch
         // of every stream.
         //
-        // So the bound is its own table and this is its only writer:
-        // `INSERT OR IGNORE` over the register this fold just computed, run
+        // So the bound is its own table and this fold is its writer over the
+        // ledger: an upsert over the register this fold just computed, run
         // **before** the `DELETE`, so no row can pass through a window where it
-        // is in neither. Only `release_orphan_read_bounds` deletes, and never a
-        // certed device — `migrations/0028_device_read_bounds.sql` is why a ratchet
-        // rather than a second fold, and why making the register itself the
-        // ratchet was rejected.
+        // is in neither. The only other writer is `adopt_sponsor_read_bounds`,
+        // once, when a paired vault is created. Only `release_orphan_read_bounds`
+        // deletes, and never a certed device —
+        // `migrations/0028_device_read_bounds.sql` is why a ratchet rather than
+        // a second fold, and why making the register itself the ratchet was
+        // rejected.
         //
         // **The cost, and it is larger than a floor: the bound does not
-        // converge.** What this `INSERT OR IGNORE` buys is monotonicity along
+        // converge.** What this insert buys is monotonicity along
         // *this replica's own arrival order*, and nothing more. The bound is a
         // union of the registers this replica happened to compute, so a row
         // gated at every fold this replica runs never enters `register` and
@@ -1225,28 +1239,41 @@ impl Engine {
         // [`Self::backfill_key_envelopes`] to hand back every held epoch of
         // every stream: the failure this split exists to close, surviving at
         // the new site for a replica that met the ops the other way round.
-        // Nor is it adversarial — `PairingPayload` carries no revocation
-        // state, so a device that pairs today starts empty and learns the ops
-        // in whatever order the relay has them.
         //
         // What *is* closed here is the whole of what one replica can observe:
         // once this replica has bounded a device, no later fold gives the bound
-        // back, so an unwind can no longer readmit it to a recipient set. The
-        // cross-replica half needs the bound to be a function of the op set,
-        // which is a derivation this table does not have and
-        // [#282](https://github.com/justin13888/Sunrise/issues/282) is where it
-        // belongs — with the two questions it turns on: whether the bound is a
-        // property of the account or of a replica's history, and whether
-        // `PairingPayload` should carry it.
+        // back, so an unwind can no longer readmit it to a recipient set. And a
+        // device that pairs no longer starts as the second replica above: its
+        // vault adopts its sponsor's bound at creation
+        // ([`adopt_sponsor_read_bounds`], #282), where it used to start empty
+        // and meet every op late.
+        //
+        // What is not closed is two replicas that already exist. No rule over
+        // the ledger alone can close it: the honest ledger above and a revoked
+        // device back-dating `X -> V` below its own cut are the same rows with
+        // the names changed, so a rule that bounds C also lets a revoked device
+        // bound any honest device. Closing it needs information the ledger
+        // does not carry, and
+        // [#411](https://github.com/justin13888/Sunrise/issues/411) holds it.
         //
         // A device the discount pass rehabilitates reads `current` in the
         // device list while receiving no keys; that asymmetry is real, and
         // `DeviceRow::read_bounded` is what puts it on screen instead of
         // leaving a user to infer it.
+        //
+        // A row adopted from a sponsor that this fold bounds too becomes this
+        // replica's own (`from_sponsor = 0`), keeping its first timestamp. The
+        // readmission check in `sync.rs` counts only this replica's own rows,
+        // so without the flip a joiner that adopted C and then applied
+        // `A -> C` itself would never count its own revocation of C. The row
+        // then gives up the orphan-release exemption. It has no further need
+        // of it, because this fold wrote it from a ledger row, which is the
+        // premise that release is built on.
         {
             let mut bound = tx.prepare(
-                "INSERT OR IGNORE INTO device_read_bounds (device_id, first_bound_at_ms)
-                 VALUES (?1, ?2)",
+                "INSERT INTO device_read_bounds (device_id, first_bound_at_ms)
+                 VALUES (?1, ?2)
+                 ON CONFLICT(device_id) DO UPDATE SET from_sponsor = 0",
             )?;
             for (device_id, row) in &register {
                 bound.execute(params![device_id, row.recorded_at_ms])?;
@@ -1578,12 +1605,24 @@ impl Engine {
     /// here has. If its cert arrives later, the id is current, which is what
     /// the capped ledger says of it, and a replica that held the cert first
     /// keeps its bound. That is the non-convergence the bound already has
-    /// ([#282](https://github.com/justin13888/Sunrise/issues/282)), reached
+    /// ([#411](https://github.com/justin13888/Sunrise/issues/411)), reached
     /// here only through a sender that named more ids than the cap.
+    ///
+    /// **A bound adopted from a sponsor is not released here while it stays
+    /// marked** (`from_sponsor = 1`, migration 0030). The fold clears the mark
+    /// when it bounds the same device itself, and from then on the row is the
+    /// fold's own and meets this function's premise. That premise is that
+    /// the fold wrote the bound from a ledger row, so a certless id no row
+    /// names is one only the cap could have emptied. An adopted bound had no
+    /// ledger row here to begin with: the joiner writes it before it holds any
+    /// cert but its own, and releasing it at the joiner's first
+    /// `device_revoke` would readmit the device the moment its cert arrived.
+    /// See [`adopt_sponsor_read_bounds`].
     fn release_orphan_read_bounds(tx: &Transaction<'_>) -> rusqlite::Result<usize> {
         tx.execute(
             "DELETE FROM device_read_bounds
-             WHERE NOT EXISTS (
+             WHERE from_sponsor = 0
+               AND NOT EXISTS (
                        SELECT 1 FROM devices d
                        WHERE d.device_id = device_read_bounds.device_id
                    )
@@ -1605,3 +1644,72 @@ impl Engine {
 /// ledger is then at most this times the number of senders, and so is each
 /// fold's work.
 pub(super) const REVOKE_TARGETS_PER_SENDER: i64 = 256;
+
+/// This replica's whole read bound, as a pairing grant carries it to a joiner.
+///
+/// # Why a joiner is handed the bound
+///
+/// The bound is a ratchet over the registers *this* replica computed along its
+/// own arrival order, so it holds a device that no fold of the ledger would
+/// bound today: one whose revocation this replica applied while its revoker was
+/// still ungated. A joiner that started empty learned the ops from the relay
+/// afterwards, met every such revocation already gated, and never bounded the
+/// device — so every freshly paired device was the weakest replica in the
+/// account and sealed keys to devices its sponsor had cut off
+/// ([#282](https://github.com/justin13888/Sunrise/issues/282)). Carrying the
+/// bound makes a joiner start where its sponsor stands.
+///
+/// It is the bound and not the ledger because the ledger folds to the
+/// account's final register, which is exactly what the joiner computes from
+/// the relay anyway: the history is the one thing only the sponsor holds.
+///
+/// Every row, including one for an id the sponsor holds no cert for: the device
+/// may have been revoked before its cert reached the sponsor, and it is the
+/// joiner that will meet the cert. An id that is not 16 bytes is left out,
+/// because it cannot name a device — every `devices` row and every
+/// `device_revoke` target is 16 — so no key site could ever reach it.
+pub(crate) fn read_bounds_for_pairing(
+    conn: &rusqlite::Connection,
+) -> rusqlite::Result<BTreeSet<[u8; 16]>> {
+    let mut stmt = conn.prepare("SELECT device_id FROM device_read_bounds")?;
+    let ids = stmt
+        .query_map([], |r| r.get::<_, Vec<u8>>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(ids
+        .into_iter()
+        .filter_map(|id| <[u8; 16]>::try_from(id.as_slice()).ok())
+        .collect())
+}
+
+/// Adopt a sponsor's read bound into a vault being created by pairing.
+///
+/// Run in the same transaction that creates the vault, so a vault that exists
+/// has adopted its sponsor's bound: there is no window in which a joiner is
+/// open and still the weakest replica. `INSERT OR IGNORE` because the table is
+/// a ratchet and a bound already here stays as it is.
+///
+/// The rows are marked `from_sponsor = 1` (migration 0030), which is what keeps
+/// [`Engine::release_orphan_read_bounds`] from taking one back before its
+/// device's cert or revocation has reached this replica. The mark also keeps
+/// the rows out of the readmission count in `sync.rs`, which asks whether this
+/// replica has itself applied a revocation. A row stays marked until this
+/// replica's own fold bounds the same device, which clears the mark.
+///
+/// `first_bound_at_ms` is `now_ms`, this replica's reading, because the column
+/// records when *this* replica first wrote the bound and a sponsor's wall clock
+/// is not comparable with it.
+pub(crate) fn adopt_sponsor_read_bounds(
+    tx: &Transaction<'_>,
+    bounds: &BTreeSet<[u8; 16]>,
+    now_ms: u64,
+) -> rusqlite::Result<()> {
+    let mut insert = tx.prepare(
+        "INSERT OR IGNORE INTO device_read_bounds (device_id, first_bound_at_ms, from_sponsor)
+         VALUES (?1, ?2, 1)",
+    )?;
+    let at = i64::try_from(now_ms).unwrap_or(i64::MAX);
+    for id in bounds {
+        insert.execute(params![&id[..], at])?;
+    }
+    Ok(())
+}

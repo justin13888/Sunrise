@@ -6801,14 +6801,16 @@ fn the_register_is_the_same_whichever_order_the_two_revocations_arrive() {
     // Pinned as the **known current behaviour**, not as the behaviour anyone
     // wants: on `two` the bound holds C out of every recipient set, and on `one`
     // C is an ordinary member that will be sealed every epoch this replica
-    // mints. Closing
-    // [#282](https://github.com/justin13888/Sunrise/issues/282) means the two
+    // mints. #282 closed the systematic case, a joiner that paired with
+    // nothing (`a_joiner_keeps_its_sponsors_bound_on_c_whichever_order_it_meets_the_ops`
+    // below). These two replicas already exist, and closing
+    // [#411](https://github.com/justin13888/Sunrise/issues/411) means they
     // become equal and these assertions turn red — which is the point of
     // writing them down rather than leaving the gap undiscovered.
     assert_eq!(
         read_bound_row(&one, &c_id),
         None,
-        "known gap (#282): the replica that learned of A's own revocation first \
+        "known gap (#411): the replica that learned of A's own revocation first \
          never bounds C, so it goes on sealing C every epoch it mints"
     );
     assert!(
@@ -6820,6 +6822,170 @@ fn the_register_is_the_same_whichever_order_the_two_revocations_arrive() {
         read_bound_row(&one, &a_id).is_some() && read_bound_row(&two, &a_id).is_some(),
         "both replicas bound A, which is why the divergence is C's alone and not \
          a difference in what either replica believes about the ledger"
+    );
+}
+
+/// **A device paired from the replica that bounded C keeps C bounded, whatever
+/// order it then meets the ops in** (#282).
+///
+/// The test above leaves two existing replicas apart. What pairing can close is
+/// the systematic case: a joiner used to start with no bound and learn both ops
+/// from the relay later, so it met `A -> C` already gated and never bounded C —
+/// the weakest replica in the account by construction. `sponsor` here is `two`
+/// above, which bounded C; the joiner adopts its bound at vault creation, then
+/// meets `B -> A` first, the order that left `one` unbounded.
+///
+/// Asserted after `B -> A` alone as well as after both ops: at that point the
+/// joiner holds no cert for C and no ledger row naming it, which is exactly
+/// the row `release_orphan_read_bounds` deletes when this replica's own fold
+/// wrote it. An adopted row is exempt, or the bound would be gone before C's
+/// cert arrived.
+#[test]
+fn a_joiner_keeps_its_sponsors_bound_on_c_whichever_order_it_meets_the_ops() {
+    let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let ec = engine_seeded(ROOT, [3u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let er = engine_seeded(ROOT, [4u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let (a_id, c_id) = (ea.keychain.device_id(), ec.keychain.device_id());
+
+    let mut sponsor = db_root(ROOT);
+    revoke(&er, &mut sponsor, &ea, c_id, T0 + 60_000);
+    revoke(&er, &mut sponsor, &eb, a_id, T0);
+    let carried = super::read_bounds_for_pairing(sponsor.conn()).unwrap();
+    assert_eq!(carried, std::collections::BTreeSet::from([a_id, c_id]));
+
+    // What `Keychain::create` does with a pairing grant's bound.
+    let mut joiner = db_root(ROOT);
+    joiner
+        .with_tx(|tx| super::adopt_sponsor_read_bounds(tx, &carried, T0))
+        .unwrap();
+
+    revoke(&er, &mut joiner, &eb, a_id, T0);
+    assert!(
+        er.is_read_bounded(joiner.conn(), &c_id).unwrap(),
+        "an adopted bound survives the orphan release, though no cert or ledger \
+         row here names C yet"
+    );
+    revoke(&er, &mut joiner, &ea, c_id, T0 + 60_000);
+    assert!(
+        er.is_read_bounded(joiner.conn(), &c_id).unwrap(),
+        "and survives meeting A -> C already gated, which is where a joiner that \
+         paired with nothing lost it"
+    );
+    assert_eq!(
+        revocation_row(&joiner, &c_id),
+        revocation_row(&sponsor, &c_id),
+        "the register is untouched by the adoption: it is still the fold"
+    );
+
+    // The same arrival order without the adoption, which is every joiner
+    // before this change.
+    let mut bare = db_root(ROOT);
+    revoke(&er, &mut bare, &eb, a_id, T0);
+    revoke(&er, &mut bare, &ea, c_id, T0 + 60_000);
+    assert!(!er.is_read_bounded(bare.conn(), &c_id).unwrap());
+}
+
+/// **The orphan release still takes back what this replica's own fold wrote**
+/// (#315), with the adopted rows beside it.
+///
+/// The exemption is for rows a sponsor handed over, and it must not widen: a
+/// certless id only a capped sender named, whose bound this replica's fold
+/// wrote, is released exactly as before.
+#[test]
+fn the_orphan_release_spares_only_adopted_bounds() {
+    use super::revocation::REVOKE_TARGETS_PER_SENDER as CAP;
+    let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let er = engine_seeded(ROOT, [4u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let cap = u64::try_from(CAP).unwrap();
+    let adopted = made_up_device(9_999);
+    let mut db = db_root(ROOT);
+    db.with_tx(|tx| {
+        super::adopt_sponsor_read_bounds(tx, &std::collections::BTreeSet::from([adopted]), T0)
+    })
+    .unwrap();
+
+    for n in 0..=cap {
+        revoke(&er, &mut db, &eb, made_up_device(n), T0 + 1_000 + n);
+    }
+
+    assert!(
+        !er.is_read_bounded(db.conn(), &made_up_device(0)).unwrap(),
+        "the id B's own flood evicted gives its bound back, as before"
+    );
+    assert!(
+        er.is_read_bounded(db.conn(), &adopted).unwrap(),
+        "while a bound adopted from the sponsor, certless and unnamed here, stays"
+    );
+}
+
+/// **An adopted bound is not a revocation this replica applied, so it marks
+/// nobody as joined after one.**
+///
+/// A joiner adopts its sponsor's bound before it holds any cert but its own.
+/// If the readmission check counted those rows, the joiner's first sync would
+/// mark its sponsor and every device that paired before any revocation as
+/// `admitted_after_revocation`. No older replica marks them, and the #105 signal
+/// would become a badge every sibling wears. The joiner counts a revocation
+/// once its own fold applies it, which is the order an older replica met it
+/// in. A device that turns up after that is marked. That second half also
+/// checks that the fold clears `from_sponsor` on the adopted row it bounds
+/// again, because otherwise the joiner would count nothing.
+#[test]
+fn an_adopted_bound_marks_no_device_as_joined_after_a_revocation() {
+    let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let ec = engine_seeded(ROOT, [3u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let ed = engine_seeded(ROOT, [5u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let er = engine_seeded(ROOT, [4u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let (a_id, b_id, c_id, d_id) = (
+        ea.keychain.device_id(),
+        eb.keychain.device_id(),
+        ec.keychain.device_id(),
+        ed.keychain.device_id(),
+    );
+    let from_sponsor = |db: &Db| -> i64 {
+        db.conn()
+            .query_row(
+                "SELECT from_sponsor FROM device_read_bounds WHERE device_id = ?",
+                params![&c_id[..]],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+
+    let mut joiner = db_root(ROOT);
+    joiner
+        .with_tx(|tx| {
+            super::adopt_sponsor_read_bounds(tx, &std::collections::BTreeSet::from([c_id]), T0)
+        })
+        .unwrap();
+
+    // The sponsor and a sibling that were here before C was revoked.
+    trust(&er, &mut joiner, &ea);
+    trust(&er, &mut joiner, &eb);
+    assert!(
+        !device_list_row(&er, &joiner, &a_id).admitted_after_revocation,
+        "the sponsor did not join after anything this replica applied"
+    );
+    assert!(
+        !device_list_row(&er, &joiner, &b_id).admitted_after_revocation,
+        "nor did a sibling that paired before any revocation"
+    );
+
+    // The joiner now applies A -> C itself, from the relay.
+    revoke(&er, &mut joiner, &ea, c_id, T0);
+    assert_eq!(
+        from_sponsor(&joiner),
+        0,
+        "the fold bounding an adopted device makes the row this replica's own"
+    );
+    assert!(er.is_read_bounded(joiner.conn(), &c_id).unwrap());
+
+    trust_at(&er, &mut joiner, &ed, T0 + 1);
+    assert!(
+        device_list_row(&er, &joiner, &d_id).admitted_after_revocation,
+        "a device that turns up after a revocation this replica applied is marked"
     );
 }
 
@@ -7118,7 +7284,7 @@ fn a_mutual_pair_locks_both_devices_out_of_third_party_revocation() {
 ///
 /// The last assertion is the residual ADR-0056 §4 states. O's standing comes
 /// back and its read bound does not. This replica bounded O when the mutual
-/// pair landed, and the bound is a ratchet ([#282](https://github.com/justin13888/Sunrise/issues/282)).
+/// pair landed, and the bound is a ratchet ([#411](https://github.com/justin13888/Sunrise/issues/411)).
 #[test]
 fn a_third_current_device_settles_which_half_of_a_mutual_pair_the_account_meant() {
     let ex = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));

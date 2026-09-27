@@ -1,0 +1,46 @@
+-- 0030: mark the read bounds a paired device adopted from its sponsor, so the
+-- orphan release never takes one back before its device's cert arrives.
+--
+-- Why a paired device adopts a bound at all (issue #282)
+-- ------------------------------------------------------
+--
+-- `device_read_bounds` (0028) is a ratchet over the registers a replica
+-- computed along its own arrival order, and no fold of the ledger rebuilds it.
+-- Retire laptop C from desktop A, then months later retire A from phone B: a
+-- replica that applied `A -> C` while A was still ungated bounds C, and one that
+-- met `B -> A` first gates `A -> C` on every fold and never bounds C. A device
+-- that paired started with no revocation state and learned the ops from the
+-- relay afterwards, so it was systematically the second kind, the weakest
+-- replica in the account. It sealed keys to every device its sponsor had cut
+-- off.
+--
+-- The pairing grant now carries the sponsor's whole bound, and the joiner
+-- writes it here when its vault is created. The joiner cannot derive the claim
+-- and does not need to: the sponsor is the device holding `ID_S_priv`, and the
+-- same message hands over every Stream key in the account.
+--
+-- Why a column
+-- ------------
+--
+-- `Engine::release_orphan_read_bounds` deletes a bound whose device this
+-- replica holds no cert for and that no ledger row names. That is right for a
+-- bound this replica's own fold wrote: the fold wrote it from a ledger row, so
+-- only the per-sender cap can have taken the last one away. It is wrong for an
+-- adopted bound. A joiner adopts the bound before it has any cert but its own
+-- and before its ledger holds a row, so the first `device_revoke` it applies
+-- would release every adopted bound whose cert and revocation had not yet
+-- arrived, and the device would become a key recipient once its cert did.
+-- `from_sponsor = 1` exempts the row, which keeps what 0028 promised of the
+-- table: nothing releases a bound on a device a key could reach.
+--
+-- What the exemption costs is bounded: the adopted rows are the sponsor's
+-- table at one moment, written once, and never grown by anything else. A row
+-- the sponsor held for an id no device will ever have stays as an inert row.
+--
+-- The seed
+-- --------
+--
+-- `DEFAULT 0` marks every existing row as this replica's own, which it is:
+-- nothing adopted a bound before this migration.
+ALTER TABLE device_read_bounds
+    ADD COLUMN from_sponsor INTEGER NOT NULL DEFAULT 0 CHECK (from_sponsor IN (0, 1));

@@ -97,6 +97,9 @@ fn fixture_payload() -> PairingPayload {
             .expect("encode the fixture's device cert"),
         vault_root: VAULT_ROOT,
         stream_keys,
+        // Empty, so field 15 is omitted and the committed Swift literal keeps
+        // the bytes it had before the field existed.
+        read_bounds: std::collections::BTreeSet::new(),
     }
 }
 
