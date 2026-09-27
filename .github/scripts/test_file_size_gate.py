@@ -69,16 +69,20 @@ class GateCase(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
         (self.tmp / "crates").mkdir()
 
-    def source(self, thresholds: dict, baseline: dict) -> pathlib.Path:
-        """The gate, with its two tables replaced by this case's.
+    def source(self, thresholds: dict, baseline: dict, ungated: dict) -> pathlib.Path:
+        """The gate, with its three tables replaced by this case's.
 
         Rewriting the literals rather than importing and patching keeps the
         subprocess boundary — which is what CI runs, and where the exit code
         lives — while letting a case describe a tree of three files instead
-        of the twenty packages the real tables name.
+        of the twenty-five packages the real tables name.
         """
         text = GATE.read_text()
-        for name, value in (("THRESHOLDS", thresholds), ("BASELINE", baseline)):
+        for name, value in (
+            ("THRESHOLDS", thresholds),
+            ("BASELINE", baseline),
+            ("UNGATED", ungated),
+        ):
             pattern = re.compile(
                 rf"^{name}: dict\[str, \w+\] = \{{.*?^\}}$", re.S | re.M
             )
@@ -89,9 +93,11 @@ class GateCase(unittest.TestCase):
         copy.write_text(text)
         return copy
 
-    def run_gate(self, thresholds: dict, baseline: dict) -> subprocess.CompletedProcess:
+    def run_gate(
+        self, thresholds: dict, baseline: dict, ungated: dict | None = None
+    ) -> subprocess.CompletedProcess:
         return subprocess.run(
-            [sys.executable, str(self.source(thresholds, baseline))],
+            [sys.executable, str(self.source(thresholds, baseline, ungated or {}))],
             cwd=self.tmp,
             capture_output=True,
             text=True,
@@ -125,13 +131,16 @@ class CleanTree(GateCase):
         result = self.run_gate({"crates/a": 100}, {"crates/a/src/big.rs": "debt"})
         self.assert_code(result, OK, "1 file(s) on the shrinking baseline")
 
-    def test_files_outside_a_named_package_are_not_measured(self):
-        # The gate is scoped to the packages in THRESHOLDS. A crate with no
-        # threshold has no bound, which is a deliberate limit and not an
-        # accident -- it is the difference between a ratchet and a style rule.
+    def test_a_package_listed_as_ungated_is_not_measured(self):
+        # A crate in UNGATED has no bound, and that is on the record rather
+        # than an accident of which packages were typed into THRESHOLDS.
         rust_file(self.tmp / "crates/unscoped/src/huge.rs", 5000)
         rust_file(self.tmp / "crates/a/src/lib.rs", 10)
-        self.assert_code(self.run_gate({"crates/a": 100}, {}), OK)
+        result = self.run_gate(
+            {"crates/a": 100}, {}, {"crates/unscoped": "not measured yet"}
+        )
+        self.assert_code(result, OK, "1 package(s) listed as not measured")
+        self.assertNotIn("huge.rs", result.stdout)
 
     def test_target_and_node_modules_are_skipped(self):
         # Build output is not source. Without this the gate would measure
@@ -230,6 +239,20 @@ class TheBaselineDrifted(GateCase):
             "correct the path if the file was moved",
         )
 
+    def test_an_ungated_entry_whose_crate_is_gone(self):
+        # Same news as a missing baseline entry: the tree is fine, and the
+        # table needs a line deleted.
+        rust_file(self.tmp / "crates/a/src/lib.rs", 10)
+        result = self.run_gate({"crates/a": 100}, {}, {"crates/deleted": "debt"})
+        self.assert_code(
+            result,
+            BASELINE_STALE,
+            "UNGATED names packages that are not in the tree",
+            "crates/deleted",
+            "Delete each of those entries from UNGATED",
+        )
+        self.assertNotIn("grew past", result.stdout)
+
     def test_a_renamed_file_is_reported_as_missing_rather_than_ignored(self):
         # A split renames files, which is the single most common way this
         # list goes stale -- `api/sync.rs` became `api/sync/suite.rs` once
@@ -268,6 +291,37 @@ class RefusesToGuess(GateCase):
         rust_file(self.tmp / "crates/a/src/lib.rs", 10)
         result = self.run_gate({"crates/a": 100, "crates/renamed": 100}, {})
         self.assert_code(result, GREW, "crates/renamed does not exist")
+
+    def test_a_crate_in_neither_table_is_not_a_pass(self):
+        # The hole this check closes: `sunrise-sync` sat outside THRESHOLDS
+        # with nothing saying so, and `sse.rs` passed at five thousand lines
+        # because it had no bound rather than because it was within one. The
+        # file is small here on purpose -- the failure is about scope, not size.
+        rust_file(self.tmp / "crates/a/src/lib.rs", 10)
+        rust_file(self.tmp / "crates/forgotten/src/lib.rs", 10)
+        result = self.run_gate({"crates/a": 100}, {})
+        self.assert_code(
+            result,
+            GREW,
+            "in neither THRESHOLDS nor UNGATED",
+            "crates/forgotten",
+            "list it in UNGATED with the reason",
+        )
+        self.assertNotIn("file-size clean", result.stdout)
+
+    def test_a_crate_in_both_tables_is_not_a_pass(self):
+        # Measured and exempt at once is a contradiction the tables must not
+        # be allowed to hold, whichever of the two a reader happens to find.
+        rust_file(self.tmp / "crates/a/src/lib.rs", 10)
+        result = self.run_gate({"crates/a": 100}, {}, {"crates/a": "not measured"})
+        self.assert_code(result, GREW, "in both THRESHOLDS and UNGATED", "crates/a")
+
+    def test_a_hidden_directory_under_crates_is_not_a_crate(self):
+        # A dot-directory left by an editor or tool is not a package and must
+        # not demand a classification.
+        rust_file(self.tmp / "crates/a/src/lib.rs", 10)
+        (self.tmp / "crates/.cache").mkdir()
+        self.assert_code(self.run_gate({"crates/a": 100}, {}), OK)
 
 
 if __name__ == "__main__":

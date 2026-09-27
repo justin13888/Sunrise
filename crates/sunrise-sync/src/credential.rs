@@ -92,11 +92,37 @@ impl TokenSource {
     ///
     /// A live session sends the new bearer in-band; the next reconnect reads
     /// it from here. Neither path requires the driver to be restarted.
+    ///
+    /// The version is bumped while the token lock is still held, so a
+    /// [`TokenSource::read`] can never pair the new token with the old version
+    /// or the old token with the new one.
     pub fn set(&self, token: Option<String>) {
-        if let Ok(mut g) = self.0.token.write() {
-            *g = token;
+        let mut guard = self.0.token.write().ok();
+        if let Some(g) = guard.as_mut() {
+            **g = token;
         }
         self.0.version.send_modify(|v| *v = v.wrapping_add(1));
+        drop(guard);
+    }
+
+    /// The token and the version it is at, read together.
+    ///
+    /// This is the read a connect attempt presents. [`TokenSource::get`] and
+    /// [`TokenSource::version`] taken one after the other can straddle a
+    /// [`TokenSource::set`] on another thread and describe two different
+    /// writes; this cannot, because `set` bumps the version under the same
+    /// lock this holds for reading. A consumer that later brings a
+    /// [`TokenWatch`] forward with [`TokenWatch::mark_carried`] therefore
+    /// consumes exactly the writes this bearer reflects, and no more.
+    ///
+    /// A poisoned lock reads as "no token", as [`TokenSource::get`] does.
+    #[must_use]
+    pub fn read(&self) -> CredentialRead {
+        let guard = self.0.token.read().ok();
+        let bearer = guard.as_ref().and_then(|g| (**g).clone());
+        let version = *self.0.version.borrow();
+        drop(guard);
+        CredentialRead { bearer, version }
     }
 
     /// How many times the token has been replaced.
@@ -111,7 +137,7 @@ impl TokenSource {
     /// which version it last woke that consumer for, which is what makes a
     /// write impossible to miss. That memory is private to `changed` — it is
     /// the receiver's own position in the channel, and nothing reads it out as
-    /// a number. [`TokenWatch::mark_current`] is the way to move that position,
+    /// a number. [`TokenWatch::mark_carried`] is the way to move that position,
     /// and the only operation that can say whether a given handle was behind.
     #[must_use]
     pub fn watch(&self) -> TokenWatch {
@@ -148,22 +174,34 @@ impl TokenWatch {
         *self.0.borrow_and_update()
     }
 
-    /// Bring this handle forward to whatever the source has already sent, and
-    /// report whether it was behind.
+    /// Bring this handle forward to exactly the write a [`CredentialRead`]
+    /// carried, and report whether that consumed anything.
     ///
-    /// `Some(v)` when this handle had fallen behind and has now been brought
-    /// forward to version `v`; `None` when it was already current and there was
-    /// nothing to consume. Either way [`TokenWatch::changed`] afterwards waits
-    /// for the next *write* rather than resolving immediately for writes that
-    /// landed earlier.
+    /// It exists for a consumer that has just presented the token by another
+    /// route — a sync connect, whose `Authorization` header carries the bearer
+    /// `carried` was read with. Announcing the writes that bearer already
+    /// reflects would be work the relay does not need. Announcing nothing for a
+    /// write it does *not* reflect would lose that write.
     ///
-    /// It exists for a consumer that has just read the token by another route
-    /// and so is already holding the latest bearer — a sync session whose
-    /// connect read the credential after those writes landed. Announcing them
-    /// again would be work the relay does not need, because the connect
-    /// already carried them.
+    /// - The source is still at `carried`: the handle is brought forward, and
+    ///   the answer is `Some(carried)` if it was behind, `None` if it was
+    ///   already current and there was nothing to consume. Either way
+    ///   [`TokenWatch::changed`] afterwards waits for the next write.
+    /// - The source has moved past `carried`: a write landed after the read,
+    ///   so the bearer the caller holds does not reflect it. The handle is
+    ///   left **pending**, so the next [`TokenWatch::changed`] resolves at once
+    ///   and the newer token is announced, and the answer is `None` — nothing
+    ///   this handle consumed is covered by what the caller carried. Any
+    ///   writes up to `carried` that the read did carry are announced along
+    ///   with it, as the one newer token; that costs at most one redundant
+    ///   frame and never loses a write.
     ///
-    /// # Why the answer cannot be a version number
+    /// There is deliberately no way to bring a handle forward to "whatever the
+    /// source holds now". That was the old shape, and it consumed any write
+    /// landing between the caller's read and the mark without the caller
+    /// having carried it (#273).
+    ///
+    /// # Why the answer cannot be a version comparison
     ///
     /// The value in the watch cell *is* the source's counter, the same number
     /// [`TokenSource::version`] returns, so every handle reads the same value
@@ -173,9 +211,61 @@ impl TokenWatch {
     /// check, which is the defect #244 reported. The receiver's own position in
     /// the channel is the only thing that distinguishes two handles, nothing
     /// reads it out as a number, and `Ref::has_changed` is what consults it.
-    pub fn mark_current(&mut self) -> Option<u64> {
-        let current = self.0.borrow_and_update();
-        current.has_changed().then(|| *current)
+    /// `carried` is compared against the source only to ask whether a write
+    /// landed after the read, which is a question about the source.
+    pub fn mark_carried(&mut self, carried: u64) -> Option<u64> {
+        let (behind, now) = {
+            let current = self.0.borrow_and_update();
+            (current.has_changed(), *current)
+        };
+        if now == carried {
+            return behind.then_some(carried);
+        }
+        self.0.mark_changed();
+        None
+    }
+}
+
+/// One read of a [`TokenSource`]: the bearer it held, and the version it was
+/// at when it held it.
+///
+/// This is what a sync connect attempt presents. The sync driver takes one per
+/// attempt and hands it to the transport factory, so the bearer an attempt
+/// carries and the version the driver then marks as carried are one
+/// observation rather than two reads of two cells — a factory has no reason to
+/// read the source itself, and no way to tell the driver it read a different
+/// version than this one.
+///
+/// Only [`TokenSource::read`] makes one.
+#[derive(Clone)]
+pub struct CredentialRead {
+    bearer: Option<String>,
+    version: u64,
+}
+
+impl CredentialRead {
+    /// The bearer to present, if any.
+    #[must_use]
+    pub fn bearer(&self) -> Option<&str> {
+        self.bearer.as_deref()
+    }
+
+    /// The source's version at the moment of the read — how many times it had
+    /// been replaced.
+    #[must_use]
+    pub fn version(&self) -> u64 {
+        self.version
+    }
+}
+
+// Hand-written for the same reason as `TokenSource`'s: a derived `Debug` would
+// print the bearer.
+impl std::fmt::Debug for CredentialRead {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CredentialRead")
+            .field("set", &self.bearer.is_some())
+            .field("version", &self.version)
+            .finish()
     }
 }
 
@@ -285,8 +375,9 @@ mod tests {
         // The offline window: two writes, and nobody waiting on either.
         s.set(Some("a".into()));
         s.set(Some("b".into()));
+        let read = s.read();
         assert_eq!(
-            w.mark_current(),
+            w.mark_carried(read.version()),
             Some(2),
             "the handle was behind, and both writes are consumed and counted"
         );
@@ -300,7 +391,7 @@ mod tests {
 
     /// And bringing a handle that is already current forward eats nothing.
     ///
-    /// The opposite over-correction to the one above: a `mark_current` that
+    /// The opposite over-correction to the one above: a `mark_carried` that
     /// left the receiver marked *past* the sender would swallow the next real
     /// renewal, which is the failure `TokenWatch` exists to prevent.
     #[tokio::test]
@@ -308,7 +399,7 @@ mod tests {
         let s = TokenSource::new(None);
         let mut w = s.watch();
         assert_eq!(
-            w.mark_current(),
+            w.mark_carried(s.read().version()),
             None,
             "a fresh handle is already current and has nothing to consume"
         );
@@ -329,7 +420,7 @@ mod tests {
     /// **The falsifier for #244's defect.** A handle brought forward by
     /// `changed` is already current, and the mark must say so.
     ///
-    /// `mark_current` used to return `*borrow_and_update()` — the *source's*
+    /// The mark used to return `*borrow_and_update()` — the *source's*
     /// counter, which is the same number for every handle at every position.
     /// Here that return was `1` having consumed nothing, and a caller comparing
     /// it against the number a previous attempt saw read it as "this connect
@@ -342,7 +433,7 @@ mod tests {
         s.set(Some("a".into()));
         assert_eq!(w.changed().await, 1, "the write wakes the parked handle");
         assert_eq!(
-            w.mark_current(),
+            w.mark_carried(s.read().version()),
             None,
             "`changed` already brought this handle forward; the mark consumed nothing"
         );
@@ -351,5 +442,89 @@ mod tests {
             1,
             "and the source's counter is not zero, which is what the old return reported"
         );
+    }
+
+    /// **The falsifier for #273's race.** A write landing between the read an
+    /// attempt presents and the mark that follows it is not consumed.
+    ///
+    /// Marking to "whatever the source holds now" — the shape this replaced —
+    /// consumed it here: the attempt carried `a`, the handle was brought
+    /// forward past `b`, and nothing ever told the relay about `b`. The mark
+    /// has to leave `b` pending, so the next wait resolves at once.
+    #[tokio::test]
+    async fn a_write_after_the_read_is_left_pending() {
+        let s = TokenSource::new(None);
+        let mut w = s.watch();
+        s.set(Some("a".into()));
+        let read = s.read();
+        // The race: another thread renews after the attempt read its bearer.
+        s.set(Some("b".into()));
+        assert_eq!(
+            w.mark_carried(read.version()),
+            None,
+            "the attempt carried `a`, not `b`, so the mark reports nothing carried"
+        );
+        let next = tokio::time::timeout(std::time::Duration::from_millis(200), w.changed())
+            .await
+            .expect("`b` was never carried, so it must still wake the pump");
+        assert_eq!(next, 2);
+        assert_eq!(s.get().as_deref(), Some("b"), "and the pump announces `b`");
+    }
+
+    /// A read pairs a token with the version of the write that put it there.
+    #[test]
+    fn a_read_names_the_write_it_saw() {
+        let s = TokenSource::new(Some("first".into()));
+        let before = s.read();
+        assert_eq!(before.bearer(), Some("first"));
+        assert_eq!(before.version(), 0);
+        s.set(Some("second".into()));
+        let after = s.read();
+        assert_eq!(after.bearer(), Some("second"));
+        assert_eq!(after.version(), 1);
+        assert_eq!(
+            before.bearer(),
+            Some("first"),
+            "a read is a snapshot; a later write does not reach it"
+        );
+    }
+
+    /// Reads racing writes on another thread never pair one write's token with
+    /// another write's version.
+    ///
+    /// Write `i` stores the token `"i"`, so version `v` must hold token `v`.
+    /// With the version bumped after the token lock is released, a read landing
+    /// between the two sees token `v` at version `v - 1`.
+    #[test]
+    fn a_read_racing_writes_is_never_torn() {
+        let s = TokenSource::new(Some("0".into()));
+        let writer = {
+            let s = s.clone();
+            std::thread::spawn(move || {
+                for i in 1..=200_000u64 {
+                    s.set(Some(i.to_string()));
+                }
+            })
+        };
+        // Read for as long as the writer is writing: a fixed count finishes
+        // early on a fast reader and leaves the window unexercised.
+        while !writer.is_finished() {
+            let read = s.read();
+            assert_eq!(
+                read.bearer(),
+                Some(read.version().to_string().as_str()),
+                "a read paired a token with another write's version"
+            );
+        }
+        writer.join().unwrap();
+    }
+
+    /// A read holds the bearer, and the driver's callers log what they hold.
+    #[test]
+    fn a_read_never_debug_prints_the_token() {
+        let s = TokenSource::new(Some("super-secret-bearer".into()));
+        let rendered = format!("{:?}", s.read());
+        assert!(!rendered.contains("super-secret-bearer"), "{rendered}");
+        assert!(rendered.contains("set: true"), "{rendered}");
     }
 }

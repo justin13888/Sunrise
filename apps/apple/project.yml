@@ -102,7 +102,7 @@ settings:
 # anything that fails in between leaves the tree with no framework at all. Point
 # 1 at the top of this file records that hazard for a script phase on the app
 # target. It applies just as much to this aggregate target when the caller is
-# `mise run ios-app` or `mise run macos-app`, whose `depends` has already built
+# `mise run ios-app` or `mise run macos-app`, whose first step has already built
 # the framework moments earlier: the phase then deletes a *current* artefact
 # that the very `xcodebuild` invocation running it is about to link, spends five
 # minutes rebuilding three release slices of the C dependencies to arrive back
@@ -114,7 +114,7 @@ settings:
 # So: rebuild when the framework is missing, when the generated bindings are
 # missing, or when anything that feeds either is newer than the framework.
 # Otherwise say so and stop. That leaves the two callers doing the right thing
-# for the same reason — `mise run <task>` skips, because its `depends` just
+# for the same reason — `mise run <task>` skips, because its first step just
 # built it; Xcode on its own builds, because nothing else was going to.
 #
 # `basedOnDependencyAnalysis: false` stays. Xcode's own analysis needs the
