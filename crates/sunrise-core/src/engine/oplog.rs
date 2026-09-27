@@ -194,8 +194,8 @@ impl Engine {
     /// The live `(epoch, key)` for `stream_id`, minting the next epoch and
     /// telling every other member about it if the stream has none.
     ///
-    /// "None" includes a stream whose every key a read-bounded device
-    /// delivered: [`Keychain::current_epoch_tx`](crate::keychain::Keychain::current_epoch_tx)
+    /// "None" includes a stream whose highest epoch holds only keys a
+    /// read-bounded device delivered: [`Keychain::current_epoch_tx`](crate::keychain::Keychain::current_epoch_tx)
     /// reads such a stream as keyless, and the mint lands above every held key.
     /// The vault-meta stream is the exception, and that function says why.
     ///
