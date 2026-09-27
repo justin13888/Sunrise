@@ -293,6 +293,9 @@ final class AppSurfaces {
     /// and it was, until this, also the fastest way to lose one.
     func commitCapture(_ draft: TaskDraftIn) async throws {
         guard let vault else { throw CaptureError.noOpenVault }
+        #if DEBUG
+        try UITestHarness.refuseQuickCaptureIfAsked()
+        #endif
         _ = try await vault.submit(.createTask(draft: draft))
     }
 
