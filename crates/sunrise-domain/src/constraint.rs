@@ -20,6 +20,7 @@ use jiff::Zoned;
 use serde::de::{SeqAccess, Visitor};
 use serde::ser::SerializeSeq;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use std::collections::HashSet;
 use thiserror::Error;
 
 /// Maximum number of constraints carried on a single Task/Routine.
@@ -112,20 +113,24 @@ const fn weekday_bit(w: &Weekday) -> Option<u8> {
 /// this build has no name for" into a hard block on every day but Monday, and
 /// inventing a block
 /// is exactly what an unknown value must never do.
+///
+/// The unknown tokens come off the wire from a peer, so their count is
+/// unbounded. They are indexed by a hash set beside the arrival-order list,
+/// which keeps decoding `n` of them linear rather than quadratic.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct WeekdaySet {
     mask: u8,
+    /// Unknown tokens in arrival order, each once.
     unknown: Vec<UnknownVariant>,
+    /// The same tokens as `unknown`, for O(1) membership.
+    unknown_index: HashSet<UnknownVariant>,
 }
 
 impl WeekdaySet {
     /// The empty set (== "all days").
     #[must_use]
-    pub const fn new() -> Self {
-        Self {
-            mask: 0,
-            unknown: Vec::new(),
-        }
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// Build from an iterator of weekdays.
@@ -143,7 +148,7 @@ impl WeekdaySet {
         match (weekday_bit(&w), w) {
             (Some(bit), _) => self.mask |= 1 << bit,
             (None, Weekday::Unknown(raw)) => {
-                if !self.unknown.contains(&raw) {
+                if self.unknown_index.insert(raw.clone()) {
                     self.unknown.push(raw);
                 }
             }
@@ -157,7 +162,7 @@ impl WeekdaySet {
     pub fn contains(&self, w: &Weekday) -> bool {
         match (weekday_bit(w), w) {
             (Some(bit), _) => self.mask & (1 << bit) != 0,
-            (None, Weekday::Unknown(raw)) => self.unknown.contains(raw),
+            (None, Weekday::Unknown(raw)) => self.unknown_index.contains(raw),
             (None, _) => false,
         }
     }
@@ -825,5 +830,31 @@ mod tests {
         assert!(c.is_satisfied_at(&zoned(2026, 8, 8, 12, 0)));
         let (hard, _) = violations_by_severity(std::slice::from_ref(&c), &zoned(2026, 8, 8, 12, 0));
         assert!(hard.is_empty(), "an unknown day never invents a hard block");
+    }
+
+    #[test]
+    fn many_distinct_unknown_day_tokens_decode_in_linear_time_and_keep_order() {
+        // A peer controls this list. With a quadratic de-duplication, 100k
+        // distinct tokens would cost ~5e9 string comparisons and this test
+        // would not finish; indexed, it is 100k set inserts.
+        const N: usize = 100_000;
+        let mut days: Vec<String> = (0..N).map(|i| format!("X{i}")).collect();
+        // Every token repeated once more, after the first pass, plus a known day.
+        days.extend((0..N).map(|i| format!("X{i}")));
+        days.push("TU".to_owned());
+        let j = serde_json::json!({ "days_of_week": days, "severity": "hard" });
+        let c: ScheduleConstraint = serde_json::from_value(j).unwrap();
+
+        assert_eq!(c.days_of_week.len() as usize, N + 1);
+        assert!(c.days_of_week.contains(&Weekday::from_raw("X99999")));
+        assert!(!c.days_of_week.contains(&Weekday::from_raw("X100000")));
+        // Round trip: the known day first, then each unknown once, in arrival order.
+        let back = serde_json::to_value(&c).unwrap();
+        let back = back["days_of_week"].as_array().unwrap();
+        assert_eq!(back.len(), N + 1);
+        assert_eq!(back[0], "TU");
+        for (i, v) in back[1..].iter().enumerate() {
+            assert_eq!(v.as_str(), Some(format!("X{i}").as_str()));
+        }
     }
 }
