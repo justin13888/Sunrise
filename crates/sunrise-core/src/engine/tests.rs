@@ -17964,6 +17964,99 @@ fn an_op_of_a_kind_this_build_does_not_know_is_parked_and_counted() {
     assert_eq!(op_row(&dbb, &future_id), ("unknown".into(), None));
 }
 
+/// Parking observes the sender's stamp. The row is in `ops`, which
+/// `prime_hlc` restores the clock from, so a park that skipped the observe
+/// would leave the next open above a reading this session never took.
+#[test]
+fn parking_an_op_observes_the_senders_stamp() {
+    // A leads B by 200 s: inside `MAX_DRIFT_MS`, so the stamp is admitted and
+    // is above anything B's own clock has read.
+    const LEAD_MS: u64 = 200_000;
+    let ea = engine_seeded(
+        ROOT,
+        [1u8; 32],
+        Arc::new(FakeClock(PLMutex::new(T0 + LEAD_MS))),
+    );
+    let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut dba = db_root(ROOT);
+    let mut dbb = db_root(ROOT);
+    trust(&eb, &mut dbb, &ea);
+
+    let task = new_task(&ea, &mut dba, "stamped ahead");
+    let env = create_env_for(&dba, task.bytes());
+    let op = decode_envelope(&env).unwrap();
+    assert!(
+        eb.hlc.peek() < op.hlc,
+        "the premise: B's clock has not seen the stamp"
+    );
+
+    eb.park_op(
+        &mut dbb,
+        &env,
+        &op,
+        "TaskCreate",
+        sunrise_cbor::version::DOC_SCHEMA_V,
+    )
+    .unwrap();
+    assert!(
+        eb.hlc.peek() >= op.hlc,
+        "the park observed the sender's stamp"
+    );
+    assert_eq!(parked_rows(&dbb).len(), 1);
+}
+
+/// A stamp beyond the drift window is refused by the park as it is by the
+/// apply path, before anything is written: no `ops` row, no marker, and the
+/// cursor does not count it.
+#[test]
+fn parking_an_op_beyond_the_drift_window_is_refused_and_leaves_no_row() {
+    let ea = engine_seeded(
+        ROOT,
+        [1u8; 32],
+        Arc::new(FakeClock(PLMutex::new(
+            T0 + sunrise_cbor::hlc::MAX_DRIFT_MS + 1,
+        ))),
+    );
+    let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut dba = db_root(ROOT);
+    let mut dbb = db_root(ROOT);
+    trust(&eb, &mut dbb, &ea);
+    let a_id = ea.keychain.device_id();
+
+    let task = new_task(&ea, &mut dba, "from the future");
+    let env = create_env_for(&dba, task.bytes());
+    let op = decode_envelope(&env).unwrap();
+    let ops_before = op_count(&dbb);
+    let hlc_before = eb.hlc.peek();
+
+    let err = eb
+        .park_op(
+            &mut dbb,
+            &env,
+            &op,
+            "TaskCreate",
+            sunrise_cbor::version::DOC_SCHEMA_V,
+        )
+        .unwrap_err();
+    assert!(
+        matches!(&err, EngineError::RemoteOpInvalid(m) if m.contains("hlc")),
+        "expected an HLC drift rejection, got {err:?}"
+    );
+    assert_eq!(op_count(&dbb), ops_before, "no ops row");
+    let op_id = remote_op_id(&op.stream_id, &a_id, op.seq);
+    let rows: i64 = dbb
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM ops WHERE op_id = ?",
+            params![&op_id[..]],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(rows, 0, "no ops row for the refused op");
+    assert!(parked_rows(&dbb).is_empty(), "no parked_ops row");
+    assert_eq!(eb.hlc.peek(), hlc_before, "the clock was not dragged along");
+}
+
 /// The upgrade. A build that did not know `TaskCreate` parked one; this
 /// build knows it, and the replay `Core::open` runs materializes it through
 /// the full apply path, releases the marker, and is idempotent afterwards.
