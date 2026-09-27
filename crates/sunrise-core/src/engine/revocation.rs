@@ -344,13 +344,14 @@ impl Engine {
             // false is that *this* device has itself been revoked, and
             // `mint_epoch` writes the fresh key straight into this device's
             // own `stream_keys`, `emit_key_envelopes` seals it to every
-            // unbounded peer, `Keychain::absorb_stream_key` stores it with no
-            // check on the sender's standing, and `current_epoch_tx` is
-            // `MAX(epoch)`. An expelled device running
-            // `sunrise devices revoke <anything>` therefore minted a fresh
-            // epoch for **every stream in the account**, handed it to every
-            // honest peer, and read everything they wrote next — while being
-            // told, correctly, that it had revoked nothing.
+            // unbounded peer, and `current_epoch_tx` was `MAX(epoch)`. An
+            // expelled device running `sunrise devices revoke <anything>`
+            // therefore minted a fresh epoch for **every stream in the
+            // account**, handed it to every honest peer, and read everything
+            // they wrote next — while being told, correctly, that it had
+            // revoked nothing. A peer that has bounded this device now stores
+            // such a key and never writes under it (ADR-0041 §Decision 4), so
+            // what this guard still protects is every peer that has not.
             //
             // Skipping it costs no disclosure. No caller reads
             // `unrotated_streams` on this path: the CLI returns before it

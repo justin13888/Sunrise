@@ -62,12 +62,11 @@ impl Engine {
         db.with_tx(|tx| -> rusqlite::Result<()> {
             // **A revoked device holds no pen.** `mint_epoch` writes the fresh
             // key into this device's own `stream_keys`, `emit_key_envelopes`
-            // seals it to every unbounded peer, `Keychain::absorb_stream_key`
-            // stores it with no check on the sender's standing, and
-            // `current_epoch_tx` is `MAX(epoch)` — so a revoked device that
-            // could run this would choose the key every honest peer seals its
-            // next write under. `revoke_device` keeps such a device out of the
-            // same chain on its `effective` predicate; this is the other door.
+            // seals it to every unbounded peer, and a peer that has not yet
+            // bounded this device adopts it as live — so a revoked device that
+            // could run this would choose the key those peers seal their next
+            // write under. `revoke_device` keeps such a device out of the same
+            // chain on its `effective` predicate; this is the other door.
             //
             // Unlike `revoke_device`, this *is* a local "refuse if revoked"
             // guard, and ADR-0041 §Decision 3's reason for refusing one there
@@ -79,8 +78,12 @@ impl Engine {
             // It is checked first, before `ensure_stream_epoch` can mint the
             // vault-meta stream's first epoch, so a refusal writes nothing.
             // And it is only the local half: a replica that has not applied
-            // the revocation has no row to read. The peer-side half is gating
-            // what `absorb_stream_key` accepts, which is its own question.
+            // the revocation has no row to read. The peer-side half is
+            // `Keychain::current_epoch_tx`, which on a replica that has bounded
+            // this device stores the key it seals and never writes under it
+            // (ADR-0041 §Decision 4). That half is what binds a modified
+            // client; this one binds an unmodified build whose own replica
+            // knows it is revoked, and so protects the peers that do not yet.
             if self.is_revoked(tx, &self.keychain.device_id())? {
                 refused = true;
                 return Ok(());
@@ -634,18 +637,21 @@ impl Engine {
                 // check in this arm can run. An epoch far above this replica's
                 // live one is refused before it can be written anywhere.
                 //
-                // Two distinct harms, one bound. `MAX(epoch)` is what makes a
-                // key live, so *absorbing* an absurd epoch strands `mint_epoch`
-                // at the saturation point and redirects every op this device
+                // Two distinct harms, one bound. `mint_epoch` counts from the
+                // highest epoch held, so *absorbing* an absurd epoch strands it
+                // at the saturation point, and from an unbounded sender that
+                // epoch is also the live one, redirecting every op this device
                 // seals afterwards to a key nobody else holds. And *recording*
                 // an absurd epoch tells `backfill_key_envelopes` that a device
                 // nobody has served already holds that epoch's key, so it emits
                 // nothing and the device is left unable to read the stream. See
                 // [`MAX_EPOCH_LEAP`].
-                let live = self
-                    .keychain
-                    .current_epoch_tx(tx, &p.stream_id)?
-                    .unwrap_or(0);
+                //
+                // Measured from `max_epoch_tx`, the highest epoch held, and not
+                // from the live one: an honest mint lands above every held key,
+                // including one a read-bounded device delivered, and measuring
+                // from the lower live epoch would refuse that honest epoch.
+                let live = self.keychain.max_epoch_tx(tx, &p.stream_id)?.unwrap_or(0);
                 if p.epoch > live.saturating_add(MAX_EPOCH_LEAP) {
                     tracing::warn!(
                         ev = "core.key.epoch_refused",
@@ -774,7 +780,17 @@ impl Engine {
                     &p.stream_id,
                     p.epoch,
                     &key,
-                    KeySource::Envelope,
+                    // The sender is recorded, and the key is stored whatever
+                    // its standing. Declining it would leave this replica
+                    // unable to open ops sealed under it, including an honest
+                    // peer's written before that peer applied the revocation,
+                    // and which ops a replica could read would then turn on
+                    // delivery order (ADR-0034 corollary 3). What the sender's
+                    // standing decides is whether this device ever *writes*
+                    // under the key: `Keychain::current_epoch_tx` passes over a
+                    // key any read-bounded device delivered (ADR-0041
+                    // §Decision 4).
+                    KeySource::Envelope { sender: *sender },
                     self.rng.as_ref(),
                     now_ms,
                 )?;

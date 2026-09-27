@@ -11545,8 +11545,10 @@ fn a_relay_intent_is_owed_only_while_the_register_calls_its_device_revoked() {
 /// device outright.
 ///
 /// Without the guard, a device its own register calls revoked mints a fresh
-/// epoch into its own `stream_keys` and seals it to every unbounded peer, whose
-/// `absorb_stream_key` takes it and whose next write is sealed under it. The
+/// epoch into its own `stream_keys` and seals it to every unbounded peer, and
+/// each peer that has not yet bounded it seals its next write under that key.
+/// A peer that has is covered by
+/// `a_key_a_revoked_device_seals_to_a_peer_is_absorbed_and_never_written_under`. The
 /// refusal is checked before anything can mint, so the failed command leaves
 /// no key, no op, and no envelope behind. The positive half — an unrevoked
 /// device rotates and every current peer is sealed the new epoch — is
@@ -11606,6 +11608,103 @@ fn a_revoked_device_cannot_rotate_a_stream_key() {
         to_b_before,
         "so no honest peer was sealed a key this device chose"
     );
+}
+
+/// **The peer-side half: a key a read-bounded device seals to this device is
+/// absorbed and never written under** (issue #280, ADR-0041 §Decision 4).
+///
+/// `a_revoked_device_cannot_rotate_a_stream_key` binds an unmodified build.
+/// This is the modified client that guard cannot reach: X seals a fresh epoch
+/// straight to A's public `D_D`, one above A's live one, through the ordinary
+/// `key_envelope` arm. The envelope lands *before* A learns X is revoked, so
+/// the test also pins that the standing is read when A chooses a key to write
+/// under, and not when the key arrived.
+#[test]
+fn a_key_a_revoked_device_seals_to_a_peer_is_absorbed_and_never_written_under() {
+    let ea = engine_random_keys(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let ex = engine_random_keys(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eo = engine_random_keys(ROOT, [3u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut dba = db_root(ROOT);
+    trust(&ea, &mut dba, &ex);
+    trust(&ea, &mut dba, &eo);
+    let (a_id, x_id) = (ea.keychain.device_id(), ex.keychain.device_id());
+    let inbox = INBOX_STREAM_BYTES;
+
+    let (honest_epoch, honest_key) = dba
+        .with_tx(|tx| ea.ensure_stream_epoch(tx, &inbox, T0))
+        .unwrap();
+
+    // X, running a client that ignores its own revocation, mints the next
+    // epoch and seals it to A.
+    let planted = StreamKey::from_bytes([0x6b; 32]);
+    let planted_epoch = honest_epoch + 1;
+    let sealed = ex
+        .keychain
+        .seal_key_envelope(
+            &ea.keychain.device_dh_pub(),
+            &inbox,
+            planted_epoch,
+            &planted,
+            ex.rng.as_ref(),
+        )
+        .unwrap();
+    let inner = InnerOp::KeyEnvelope(KeyEnvelopePayload {
+        stream_id: inbox,
+        epoch: planted_epoch,
+        recipient: Recipient::Device(a_id),
+        key_id: stream_key_id(&planted),
+        hpke_ciphertext: sealed,
+    });
+    let learned = dba
+        .with_tx(|tx| ea.apply_control_op(tx, &inner, &x_id, Hlc::at(T0), T0, 1))
+        .unwrap();
+    assert_eq!(
+        learned,
+        vec![(inbox, planted_epoch)],
+        "the key is absorbed, so every op sealed under it opens here"
+    );
+    let live = |db: &mut Db| {
+        db.with_tx(|tx| ea.keychain.current_stream_key_tx(tx, &inbox))
+            .unwrap()
+            .expect("a live inbox key")
+    };
+    assert_eq!(
+        stream_key_id(&live(&mut dba).1),
+        stream_key_id(&planted),
+        "while X is a member here, its epoch is live like anybody's"
+    );
+
+    // O revokes X, and A applies it.
+    revoke(&ea, &mut dba, &eo, x_id, T0 + 1_000);
+    assert!(read_bound_row(&dba, &x_id).is_some(), "A bounded X");
+
+    let (epoch, key) = live(&mut dba);
+    assert_eq!(
+        (epoch, stream_key_id(&key)),
+        (honest_epoch, stream_key_id(&honest_key)),
+        "A writes under the highest epoch no read-bounded device holds"
+    );
+    assert!(
+        ea.keychain
+            .stream_keys_at(&inbox, planted_epoch)
+            .iter()
+            .any(|k| stream_key_id(k) == stream_key_id(&planted)),
+        "and still holds X's key, so what was sealed under it stays readable"
+    );
+
+    // And A's next write really is sealed where X cannot read it.
+    let task = new_task(&ea, &mut dba, "written after the revocation");
+    let env = create_env_for(&dba, task.bytes());
+    let sealed_at = sunrise_crypto::decode_envelope(&env)
+        .expect("the op this engine just wrote decodes")
+        .epoch;
+    assert_eq!(
+        sealed_at, honest_epoch,
+        "the task was sealed under epoch {sealed_at}; X holds epoch {planted_epoch}"
+    );
+    ea.keychain
+        .open_op(&env)
+        .expect("and A reads its own write");
 }
 
 /// The epoch separation the ordering argument rests on, asserted against the
@@ -16699,9 +16798,10 @@ fn the_discount_rehabilitates_the_gate_and_never_the_read_bound() {
 /// `sunrise devices revoke <anything>` drew a fresh key for every stream in
 /// the account, wrote it into its **own** `stream_keys`, and sealed it to every
 /// honest peer — whose next writes it could then read, because
-/// `Keychain::absorb_stream_key` checks no sender standing and
-/// `current_epoch_tx` is `MAX(epoch)`. It was told, correctly, that it had
-/// revoked nothing.
+/// `current_epoch_tx` was `MAX(epoch)`. It was told, correctly, that it had
+/// revoked nothing. A peer that has bounded it no longer writes under such a
+/// key (ADR-0041 §Decision 4); a peer that has not still does, and this guard
+/// is what protects it.
 ///
 /// Move the rotation loop back outside the `if effective` block in
 /// `revoke_device` and this goes red.

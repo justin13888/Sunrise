@@ -228,4 +228,10 @@ pub const CRYPTO_SUITE_V: u16 = 5;
 /// ratchet — written only by `INSERT OR IGNORE`, never deleted — and an
 /// unwound revocation stops handing the device back every epoch the vault
 /// mints (ADR-0041 §Decision 1 records the unwind; this is its read half).
-pub const STORAGE_V: u16 = 28;
+///
+/// `29` is migration `0029_stream_key_senders.sql`, which records which devices
+/// delivered each Stream key this vault absorbed (issue #280, ADR-0041
+/// §Decision 4). A key a read-bounded device delivered is still stored, so
+/// every op sealed under it stays readable, and it is never the key this
+/// device writes under.
+pub const STORAGE_V: u16 = 29;

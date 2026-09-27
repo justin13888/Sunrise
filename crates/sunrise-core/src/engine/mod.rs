@@ -150,14 +150,18 @@ const MAX_TREND_WEEKS: u32 = 104;
 /// vault cannot turn one keypress into a full-table sort.
 const FOCUS_PLAN_SCAN_CAP: u32 = 512;
 
-/// How far above this replica's live epoch an absorbed Stream key may sit.
+/// How far above the highest epoch this replica holds an absorbed Stream key
+/// may sit.
 ///
 /// `epoch` is a plain field of the signed envelope, so a member chooses it
-/// freely, and `current_epoch_tx` reads the live epoch as `MAX(epoch)`. Without
-/// a bound a single `key_envelope` at `u32::MAX` does two things at once:
+/// freely, and `mint_epoch` counts from the highest epoch held
+/// (`Keychain::max_epoch_tx`). Without a bound a single `key_envelope` at
+/// `u32::MAX` does two things at once:
 /// [`Keychain::mint_epoch`](crate::keychain::Keychain::mint_epoch) saturates,
-/// so rotation can never advance past it again, and every op this device seals
-/// from then on is sealed under a key only the sender holds — the victim goes
+/// so rotation can never advance past it again, and, from a sender this
+/// replica has not read-bounded, whose key `current_epoch_tx` adopts as live,
+/// every op this device seals from then on is sealed under a key only the
+/// sender holds — the victim goes
 /// dark to its own account, permanently, from one op.
 ///
 /// The window can be this tight because a legitimate epoch is *walked*, never
