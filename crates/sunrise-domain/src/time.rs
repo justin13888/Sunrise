@@ -604,6 +604,11 @@ mod tests {
             SunriseTime::all_day(civil::date(2024, 7, 4)).to_string(),
             "2024-07-04"
         );
+        assert_eq!(
+            lunar(Some("2024-06-01T09:30:00Z")).to_string(),
+            "2024-06-01T09:30:00Z[unknown kind lunar]"
+        );
+        assert_eq!(lunar(None).to_string(), "[unknown kind lunar]");
     }
 
     /// A payload written at `DOC_SCHEMA_V = 1`, where the field was a bare

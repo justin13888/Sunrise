@@ -337,7 +337,9 @@ impl From<ConstraintError> for ValidationError {
 impl ScheduleConstraint {
     /// Bitmask of populated dimensions: bit0=time_of_day, bit1=days_of_week
     /// (non-empty), bit2=date_range. This is the constraint's "kind" for the
-    /// OR/AND combination semantics. Always non-zero for a valid constraint.
+    /// OR/AND combination semantics. Zero only for a constraint whose populated
+    /// fields are all unknown to this build, which validates and is satisfied
+    /// at every moment, so its group of one never produces a violation.
     fn kind_key(&self) -> u8 {
         let mut k = 0u8;
         if self.time_of_day.is_some() {
@@ -452,8 +454,9 @@ pub fn validate_list(list: &[ScheduleConstraint]) -> Result<(), ConstraintError>
 /// the caller filters by [`ConstraintSeverity`].
 #[must_use]
 pub fn list_violations(list: &[ScheduleConstraint], zdt: &Zoned) -> Vec<usize> {
-    // kind_key is in 1..=7 for valid constraints, so a u8 mask over the eight
-    // possible kinds is enough to record which kind-groups are satisfied.
+    // kind_key is in 0..=7 for valid constraints (0 for one holding only
+    // fields this build does not know), so a u8 mask over the eight possible
+    // kinds is enough to record which kind-groups are satisfied.
     let mut satisfied_kinds: u8 = 0;
     for c in list {
         if c.is_satisfied_at(zdt) {
