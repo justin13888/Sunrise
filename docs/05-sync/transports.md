@@ -74,7 +74,7 @@ stream emits a `:sunrise` comment every `KEEP_ALIVE_SECS` = 15 s
 one, but neither sends one unprompted: a comment does the same job — stopping an
 intermediary from reaping an idle connection — with no frame type and nothing
 for the client to answer. `SseTransport` drops incoming comments before they
-reach the driver (`sse.rs:223-244`).
+reach the driver (`crates/sunrise-sync/src/sse.rs:660#take_event`).
 
 Earlier revisions of this page said keepalive was not implemented and that a
 dead peer holding a valid token would hold a session until the token expired.

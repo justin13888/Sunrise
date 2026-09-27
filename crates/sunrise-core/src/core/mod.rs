@@ -416,8 +416,9 @@ impl Core {
     /// on an `Arc<Core>` so the task can hold a `Weak<Core>` back-reference —
     /// this keeps [`Core::open`] usable without a runtime for offline / TUI
     /// sync-off cases. The `factory` yields a fresh transport per connection
-    /// attempt; `sunrise_sync::WsTransport` is the production one, an in-process
-    /// loopback is used in tests.
+    /// attempt, presenting the [`crate::CredentialRead`] the driver takes from
+    /// [`Core::sync_credential`] for that attempt; `sunrise_sync::SseTransport`
+    /// is the production one, an in-process loopback is used in tests.
     pub fn start_sync(self: &Arc<Self>, factory: TransportFactory) -> Result<(), CoreError> {
         let mut guard = self.sync_handle.lock();
         if guard.is_some() {

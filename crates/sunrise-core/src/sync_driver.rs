@@ -80,7 +80,7 @@ use sunrise_error::{ErrorCode, ErrorKind};
 use sunrise_id::EntityKind;
 use sunrise_sync::{Backoff, RevokeOutcome, SyncState, Transport, TransportError};
 
-pub use sunrise_sync::{TokenSource, TokenWatch};
+pub use sunrise_sync::{CredentialRead, TokenSource, TokenWatch};
 use sunrise_wire_protocol::{
     decode_frame, encode_frame, AckPayload, Capability, CapabilityBits, CaughtUpPayload,
     ClosePayload, ErrorPayload, FrameFlags, Hello, HelloAck, MsgKind, OpBatchPayload,
@@ -98,40 +98,29 @@ pub type ConnectFuture = Pin<Box<dyn Future<Output = Result<BoxTransport, Transp
 /// connect attempt (initial connect and every reconnect after a drop), so it
 /// must be able to produce a brand-new connection each time.
 ///
-/// # Precondition: do not fix the bearer when the factory is built
+/// # The driver reads the credential, not the factory
 ///
-/// A factory that presents a bearer must read it from its [`TokenSource`] on
-/// **every call** — never once, when the factory is built.
+/// Each call is handed the [`CredentialRead`] this attempt presents: the
+/// bearer the [`SyncConfig::credential`] held when `run` read it, and the
+/// version it was at. A factory presents [`CredentialRead::bearer`] and holds
+/// no bearer of its own.
 ///
-/// This is a precondition of the driver, not a suggestion. `run` marks its
-/// renewal handle current the instant this closure returns, taking whatever
-/// the attempt is about to present as consumed. A factory that fixed its
-/// bearer when it was built has every later renewal consumed by a connect
-/// which did not carry it, and the relay is then never told: not in band,
-/// because the pump has nothing pending, and not on the next reconnect either,
-/// because that attempt marks the handle current too.
+/// The read is the driver's because the driver has to know exactly what each
+/// attempt carried. `run` brings its renewal handle forward to that version —
+/// not to whatever the source holds by the time the factory returns — so a
+/// renewal the attempt carried is not re-announced, and a renewal landing at
+/// any moment after the read, including while the factory runs, is still
+/// announced in band as a `0x12 RefreshToken`. When the factory did its own
+/// read, the driver could only assume the factory read per attempt and mark
+/// to whatever the source held afterwards: a factory that fixed its bearer
+/// when it was built had every later renewal consumed by a connect that did
+/// not carry it, and a write landing between the factory's read and the mark
+/// was consumed the same way (#273).
 ///
-/// Reading in the closure's own body is what the driver is written against.
-/// Reading inside the [`ConnectFuture`] the closure returns is *discouraged*
-/// rather than forbidden, and the difference between the two is waste against
-/// loss: that read happens **after** the mark, not before it. `run` marks at
-/// some version `v_m` and the future then reads at `v_f >= v_m`, so the
-/// attempt carries everything the mark consumed and possibly more. A write
-/// landing between the two makes the pump fire and costs one redundant
-/// `0x12 RefreshToken` — waste, never loss. Only a build-time capture loses a
-/// renewal, and loses it silently.
-///
-/// The two factories that ship read in the closure body —
-/// `sunrise_cli::livesync::ws_factory` and `sunrise_core_bindings::ws_factory`
-/// both call [`TokenSource::get`] there. Most harnesses cannot break it at
-/// all: the in-process harness in this file's `tests` module and the three
-/// factories in `sunrise-e2e` present no renewable bearer, so there is nothing
-/// for the handle to consume, and each says so in its own documentation. The
-/// test factories in this file that *do* read a [`TokenSource`] read it in the
-/// closure body, per attempt, which is the shipped shape — that is what makes
-/// them evidence about the driver rather than about themselves. A harness that
-/// grows a bearer must do the same.
-pub type TransportFactory = Arc<dyn Fn() -> ConnectFuture + Send + Sync>;
+/// A factory can still ignore the argument and present a bearer captured
+/// when it was built. Nothing in this workspace does, and nothing has a reason
+/// to: the bearer it would need is the one it is handed.
+pub type TransportFactory = Arc<dyn Fn(CredentialRead) -> ConnectFuture + Send + Sync>;
 
 /// Default anti-entropy interval: how often a live session re-subscribes with
 /// its current cursors even with no evidence anything went wrong.
@@ -689,23 +678,21 @@ pub(crate) async fn run(
     // [`note_marked_at_connect`].
     let mut marked_at_connect: Option<u64> = None;
     while !shared.is_shutdown() {
-        // Connect (cancellable by shutdown).
-        let connect_fut = factory();
-        // The factory has just read the credential, so this attempt carries
-        // every renewal that landed while the driver was disconnected. Bring
-        // the handle forward to what it read, and the pump's renewal arm below
-        // fires only for writes made after this connect.
-        //
-        // This NARROWS the window; it does not close it. The factory's read
-        // and the mark below are two operations on two cells with no lock
-        // spanning them, and `TokenSource::set` is called from other threads —
-        // the FFI seam in `sunrise-core-bindings` and the CLI's login flow. A
-        // `set` that completes wholly between the two is consumed here without
-        // having been carried, so it reaches the relay on the next reconnect
-        // rather than in band. What the move bought is the size of the window:
-        // it used to span the dial, the handshake and the subscribe, and is
-        // now the few instructions between these two statements.
-        marked_at_connect = mark_renewals_current(&mut renewals, marked_at_connect);
+        // Connect (cancellable by shutdown). The bearer this attempt presents
+        // is read here, by the driver, and handed to the factory — so the
+        // version it was read at is known rather than assumed.
+        let read = credential.read();
+        let carried = read.version();
+        let connect_fut = factory(read);
+        // This attempt carries every renewal up to `carried`, including those
+        // that landed while the driver was disconnected. Bring the handle
+        // forward to exactly that, and the pump's renewal arm below fires for
+        // every write the attempt did not carry — one made during the factory
+        // call, the dial, the handshake or the session alike. `TokenSource::set`
+        // is called from other threads (the FFI seam in `sunrise-core-bindings`
+        // and the CLI's login flow), and a write landing between the read above
+        // and this mark is left pending rather than consumed (#273).
+        marked_at_connect = mark_renewals_current(&mut renewals, carried, marked_at_connect);
         let connected = tokio::select! {
             biased;
             () = shared.shutdown_notified() => break,
@@ -979,26 +966,21 @@ fn next_backoff_delay(backoff: &mut Backoff, jitter_unit: f64) -> Duration {
     }
 }
 
-/// Bring the driver's renewal handle forward to the credential this connect
-/// read, and fold the result into what this connect still owes the log.
+/// Bring the driver's renewal handle forward to the credential version this
+/// connect carried, and fold the result into what this connect still owes the
+/// log.
 ///
 /// `Some(v)` when a renewal out of the offline window has been consumed and
 /// not yet reported — by this attempt, or by an earlier attempt the relay never
-/// answered. `None` when the handle was already current and nothing is
+/// answered. `None` when nothing up to `carried` was pending and nothing is
 /// outstanding.
 ///
-/// Called once per connect attempt, immediately after the factory returned and
-/// long before the handshake, because that return is the moment this attempt's
-/// bearer is fixed — *provided the factory did not fix its bearer when it was
-/// built*. That is a precondition, not an observation: it is stated on
-/// [`TransportFactory`], and the two shipped factories
-/// (`sunrise_cli::livesync::ws_factory` and `sunrise_core_bindings::ws_factory`)
-/// meet it while every test harness in the tree presents no renewable bearer
-/// at all and so cannot violate it. Bringing the handle forward here — and no
-/// later — marks what such an attempt carries and little else, so a write
-/// landing during the dial, the handshake or the session itself still reaches
-/// the relay in band as a `0x12 RefreshToken` instead of waiting for the next
-/// reconnect.
+/// `carried` is the version of the [`CredentialRead`] `run` handed the factory
+/// for this attempt, so the mark consumes exactly what the attempt presents:
+/// [`TokenWatch::mark_carried`] leaves any later write pending, and it reaches
+/// the relay in band as a `0x12 RefreshToken` — whether it landed while the
+/// factory ran, during the dial, the handshake or the session itself — instead
+/// of waiting for the next reconnect.
 ///
 /// # Why an attempt's mark outlives the attempt
 ///
@@ -1016,16 +998,12 @@ fn next_backoff_delay(backoff: &mut Backoff, jitter_unit: f64) -> Duration {
 /// attempt this carry exists for is one that built a transport and then lost
 /// its handshake — a relay that is down, or a refusal — which is the ordinary
 /// failure and not a rare one.
-///
-/// The residual, stated because the call site reads like a proof and is not
-/// one: the factory's read and this mark are two operations on two cells with
-/// nothing ordering them, and `TokenSource::set` is called from other threads.
-/// A `set` completing between them is consumed here without having been
-/// carried, and rides the next reconnect instead of the live session. The move
-/// shrank that window from "the dial, the handshake and the subscribe" to a
-/// few instructions; it did not remove it.
-fn mark_renewals_current(renewals: &mut TokenWatch, unreported: Option<u64>) -> Option<u64> {
-    renewals.mark_current().or(unreported)
+fn mark_renewals_current(
+    renewals: &mut TokenWatch,
+    carried: u64,
+    unreported: Option<u64>,
+) -> Option<u64> {
+    renewals.mark_carried(carried).or(unreported)
 }
 
 /// Report a renewal this connect carried out of the offline window.
@@ -1640,6 +1618,17 @@ fn build_outbox_frames(
 /// it lands the relay keeps accepting the revoked device's uploads and keeps
 /// streaming it everyone else's, which is `#80`.
 ///
+/// It sends only what the register still agrees with. A re-fold can unwind the
+/// register row an intent was queued beside, and an intent sent after that
+/// would have the relay refuse a device every replica shows as current (#257).
+/// Such a row is skipped, not deleted, so it is sent after all if a later fold
+/// revokes the device again; `crate::relay_intents` holds the one definition.
+/// The check is repeated for each device immediately before its send, not
+/// read once for the whole drain: the sends await the network, and a local
+/// command can unwind a device while an earlier one is in flight. An unwind
+/// that lands during a device's own send is the case the module doc names:
+/// the relay has been told, and nothing takes that back.
+///
 /// Failures leave the row in place, deliberately. The device this is about is
 /// typically lost or stolen; giving up after one refused call would mean the
 /// revocation silently never reached the relay, which is the failure this whole
@@ -1662,6 +1651,14 @@ async fn drain_relay_revocations<T: Transport + ?Sized>(core: &Core, transport: 
         return;
     };
     for device_id in pending {
+        // The snapshot above is taken once, and every send below awaits the
+        // network, so a local command can unwind a later device's register row
+        // while an earlier one is in flight. Ask again right before each send.
+        match core.relay_revocation_pending(&device_id) {
+            Ok(true) => {}
+            Ok(false) => continue,
+            Err(_) => return,
+        }
         match transport.revoke_device(device_id).await {
             Ok(RevokeOutcome::Revoked) => {
                 let _ = core.clear_relay_revocation(device_id);
@@ -2404,8 +2401,8 @@ mod tests {
 
     use super::{
         drain_relay_revocations, mark_renewals_current, note_marked_at_connect, run, BoxTransport,
-        ClosePayload, ConnectFuture, SessionEnd, SyncConfig, SyncShared, TokenSource,
-        TransportFactory,
+        ClosePayload, ConnectFuture, CredentialRead, SessionEnd, SyncConfig, SyncShared,
+        TokenSource, TransportFactory,
     };
     use crate::config::{Clock, Rng};
     use crate::{Command, Core, CoreConfig, DomainEvent, Query, QueryResult, SystemRng, Unlock};
@@ -2634,6 +2631,138 @@ mod tests {
         );
     }
 
+    /// An intent whose register row a re-fold unwound is not sent, and is
+    /// sent after all once the register revokes the device again (#257).
+    ///
+    /// The unwind is the fold rebuilding `device_revocations` without the
+    /// row; it never touches `relay_revocation_intents`. Sending the intent
+    /// anyway would have the relay refuse a device every replica shows as
+    /// current. Deleting it instead would lose it for the later fold that
+    /// restores the revocation, and the relay would then be behind the
+    /// register — the #160 direction, which is the unsafe one.
+    #[tokio::test]
+    async fn an_intent_the_register_no_longer_agrees_with_is_held_not_sent() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = open_arc(dir.path()).await;
+        let target = [0x5a; 16];
+        core.queue_relay_revocation_for_test(target).unwrap();
+        core.unwind_register_row_for_test(target).unwrap();
+
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut accepting = Recorder {
+            seen: seen.clone(),
+            answer: Ok(RevokeOutcome::Revoked),
+        };
+        drain_relay_revocations(&core, &mut accepting).await;
+        assert!(
+            seen.lock().unwrap().is_empty(),
+            "a device the register calls current must not be cut at the relay"
+        );
+        assert!(
+            !core.relay_revocation_pending(&target).unwrap(),
+            "and no surface may call it queued, since it will not be sent"
+        );
+        assert!(
+            core.relay_intent_row_exists_for_test(target).unwrap(),
+            "the intent is held, not dropped"
+        );
+
+        // The register revokes it again, as a later fold can.
+        core.queue_relay_revocation_for_test(target).unwrap();
+        assert!(core.relay_revocation_pending(&target).unwrap());
+        drain_relay_revocations(&core, &mut accepting).await;
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![target],
+            "once the register agrees again the relay is owed the revocation"
+        );
+        assert!(!core.relay_intent_row_exists_for_test(target).unwrap());
+    }
+
+    /// A device unwound while the drain is awaiting an earlier send is not
+    /// sent (#257).
+    ///
+    /// The drain reads the owed set once, then awaits the network per device.
+    /// This transport unwinds the second device's register row while the
+    /// first send is in flight, as a local command on another task could.
+    #[tokio::test]
+    async fn a_device_unwound_mid_drain_is_not_sent() {
+        struct UnwindsOnFirstSend {
+            core: Arc<Core>,
+            unwind: [u8; 16],
+            seen: Vec<[u8; 16]>,
+        }
+        #[async_trait]
+        impl Transport for UnwindsOnFirstSend {
+            async fn send_frame(&mut self, _f: Vec<u8>) -> Result<(), TransportError> {
+                Ok(())
+            }
+            async fn recv_frame(&mut self) -> Result<Option<Vec<u8>>, TransportError> {
+                Ok(None)
+            }
+            async fn close(&mut self) -> Result<(), TransportError> {
+                Ok(())
+            }
+            async fn revoke_device(
+                &mut self,
+                device_id: [u8; 16],
+            ) -> Result<RevokeOutcome, TransportError> {
+                if self.seen.is_empty() {
+                    self.core.unwind_register_row_for_test(self.unwind).unwrap();
+                }
+                self.seen.push(device_id);
+                Ok(RevokeOutcome::Revoked)
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let core = open_arc(dir.path()).await;
+        // Same `created_at_ms`, so the id breaks the tie: `first` is sent first.
+        let first = [0x11; 16];
+        let second = [0x22; 16];
+        core.queue_relay_revocation_for_test(first).unwrap();
+        core.queue_relay_revocation_for_test(second).unwrap();
+        assert_eq!(
+            core.pending_relay_revocations().unwrap(),
+            vec![first, second]
+        );
+
+        let mut transport = UnwindsOnFirstSend {
+            core: core.clone(),
+            unwind: second,
+            seen: Vec::new(),
+        };
+        drain_relay_revocations(&core, &mut transport).await;
+        assert_eq!(
+            transport.seen,
+            vec![first],
+            "a device the register stopped calling revoked mid-drain must not be cut"
+        );
+        assert!(
+            core.relay_intent_row_exists_for_test(second).unwrap(),
+            "and its intent is held, not dropped"
+        );
+    }
+
+    /// A storage failure is an error, not "nothing queued".
+    ///
+    /// Reporting `false` here would tell someone the relay had been told about
+    /// a device when this client could not even read whether it had.
+    #[tokio::test]
+    async fn a_storage_failure_is_not_read_as_nothing_pending() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = open_arc(dir.path()).await;
+        let target = [0x6b; 16];
+        core.queue_relay_revocation_for_test(target).unwrap();
+        core.break_register_for_test().unwrap();
+
+        assert!(
+            core.relay_revocation_pending(&target).is_err(),
+            "an unreadable register must surface as an error"
+        );
+        assert!(core.pending_relay_revocations().is_err());
+    }
+
     // ---- channel-backed duplex transport ----
 
     struct ChannelTransport {
@@ -2693,6 +2822,9 @@ mod tests {
         /// or `>=` for that reason.
         connect_count: u64,
         scripts: VecDeque<Script>,
+        /// The bearer each of those attempts was handed, in order — what a
+        /// real relay would have seen in its `Authorization` header.
+        presented: Vec<Option<String>>,
     }
     type SharedServer = Arc<parking_lot::Mutex<ServerInner>>;
 
@@ -2747,6 +2879,7 @@ mod tests {
         let server: SharedServer = Arc::new(parking_lot::Mutex::new(ServerInner {
             connect_count: 0,
             scripts: scripts.into_iter().collect(),
+            presented: Vec::new(),
         }));
         let (batch_tx, batch_rx) = mpsc::unbounded_channel();
         let subs: SubCount = Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -2754,19 +2887,17 @@ mod tests {
         let factory_server = server.clone();
         let factory_subs = subs.clone();
         let factory_refreshes = refreshes.clone();
-        let factory: TransportFactory = Arc::new(move || {
+        let factory: TransportFactory = Arc::new(move |read: CredentialRead| {
             let batch_tx = batch_tx.clone();
             let subs = factory_subs.clone();
             let refreshes = factory_refreshes.clone();
             // Counted in the closure's own body rather than in the future it
-            // returns, because that is where the driver's own ordering is:
-            // `run` marks the renewal handle the instant this closure returns,
-            // so `connect_count` is an observable a test can order a
-            // credential write against only if it moves first. Holding the
-            // server lock across a `set` then keeps the next attempt out.
+            // returns, so a test that sees `connect_count` move knows `run`
+            // has already read this attempt's credential.
             let script = {
                 let mut s = factory_server.lock();
                 s.connect_count += 1;
+                s.presented.push(read.bearer().map(ToOwned::to_owned));
                 s.scripts.pop_front().unwrap_or_default()
             };
             let fut = async move {
@@ -3285,8 +3416,9 @@ mod tests {
         credential.set(Some("third-token".into()));
 
         let mut marked = None;
+        let carried = credential.read().version();
         let events = captured_events(|| {
-            marked = mark_renewals_current(&mut renewals, marked);
+            marked = mark_renewals_current(&mut renewals, carried, marked);
             note_marked_at_connect(marked.take());
         });
         assert_eq!(
@@ -3322,7 +3454,7 @@ mod tests {
     async fn a_renewal_announced_in_band_is_not_claimed_by_the_next_connect() {
         let credential = TokenSource::new(Some("first-token".into()));
         let mut renewals = credential.watch();
-        let mut marked = mark_renewals_current(&mut renewals, None);
+        let mut marked = mark_renewals_current(&mut renewals, credential.read().version(), None);
         note_marked_at_connect(marked.take());
 
         // The session is live, and its pump consumes the renewal in band.
@@ -3330,8 +3462,9 @@ mod tests {
         assert_eq!(renewals.changed().await, 1, "the pump sees the write");
 
         // The session drops; the driver reconnects with nothing outstanding.
+        let carried = credential.read().version();
         let events = captured_events(|| {
-            marked = mark_renewals_current(&mut renewals, marked);
+            marked = mark_renewals_current(&mut renewals, carried, marked);
             note_marked_at_connect(marked.take());
         });
         assert!(
@@ -3359,8 +3492,9 @@ mod tests {
         credential.set(Some("second-token".into()));
 
         let mut marked = None;
+        let carried = credential.read().version();
         let during_the_failure = captured_events(|| {
-            marked = mark_renewals_current(&mut renewals, marked);
+            marked = mark_renewals_current(&mut renewals, carried, marked);
         });
         assert!(
             during_the_failure.is_empty(),
@@ -3371,7 +3505,7 @@ mod tests {
         // renewal — and finds the handle already current, with nothing of its
         // own to bring forward.
         let on_the_connect = captured_events(|| {
-            marked = mark_renewals_current(&mut renewals, marked);
+            marked = mark_renewals_current(&mut renewals, carried, marked);
             note_marked_at_connect(marked.take());
         });
         assert_eq!(
@@ -3391,24 +3525,29 @@ mod tests {
     /// workspace can resolve one to `Err` — the shipped two build an
     /// `SseTransport`, which dials nothing — so a report made in `run`'s `Ok`
     /// arm would be made by every attempt, including the ones the relay never
-    /// answers. Here attempt 1 consumes the renewal and then loses its
-    /// handshake against a peer that is already gone; attempt 2 is the one the
+    /// answers. Here attempt 2 consumes the renewal and then loses its
+    /// handshake against a peer that is already gone; attempt 3 is the one the
     /// relay answers, and it is the one that speaks.
+    ///
+    /// The renewal is written inside attempt 1's factory call — after `run`
+    /// read attempt 1's credential, so attempt 1 did not carry it and its mark
+    /// leaves it pending — and attempt 2's read is the first to carry it. That
+    /// is the offline window placed by ordering rather than by a clock.
     ///
     /// Four mutations this fails that nothing else catches: moving
     /// `note_marked_at_connect` back into `run`'s `Ok` arm (the event lands
-    /// *before* attempt 1's `sync.session.closed`), deleting the call (no
+    /// *before* attempt 2's `sync.session.closed`), deleting the call (no
     /// event at all), dropping the carry-forward — passing `None` to
-    /// `mark_renewals_current`, or `renewals.mark_current()` without the
-    /// `.or(unreported)` — after which attempt 2 finds the handle current and
-    /// nothing is ever reported, and **dropping the `.take()`**, after which
-    /// the mark stays outstanding and session 3 reports the same version a
-    /// second time.
+    /// `mark_renewals_current`, or `renewals.mark_carried(carried)` without
+    /// the `.or(unreported)` — after which attempt 3 finds the handle current
+    /// and nothing is ever reported, and **dropping the `.take()`**, after
+    /// which the mark stays outstanding and session 4 reports the same version
+    /// a second time.
     ///
-    /// The third session is what makes that last one reachable. Session 2 is
+    /// The fourth session is what makes that last one reachable. Session 3 is
     /// scripted to drop after its subscribe, because `run_fake_server` runs
     /// until a `Close` or a dead peer and would otherwise hold the driver in
-    /// session 2 until shutdown, leaving nothing to re-report into.
+    /// session 3 until shutdown, leaving nothing to re-report into.
     ///
     /// The driver is built here rather than through `Core::start_sync` so a
     /// subscriber can be attached to `run`'s own future. `captured_events`
@@ -3439,9 +3578,9 @@ mod tests {
             .unwrap(),
         );
 
-        // One script, and attempt 1 never reaches `inner` — it returns its own
-        // dead-peer transport — so the script is popped by attempt 2. Attempt 3
-        // gets `Script::default()` and stays up until shutdown.
+        // One script, and attempts 1 and 2 never reach `inner` — each returns
+        // its own dead-peer transport — so the script is popped by attempt 3.
+        // Attempt 4 gets `Script::default()` and stays up until shutdown.
         let (inner, server, _batch_rx, subs, _refreshes) = harness_full(
             vec![Script {
                 close_after_subscribe: true,
@@ -3451,19 +3590,14 @@ mod tests {
         );
         let attempts = Arc::new(AtomicU64::new(0));
         let renewing = credential.clone();
-        let factory: TransportFactory = Arc::new(move || {
+        let factory: TransportFactory = Arc::new(move |read: CredentialRead| {
             let n = attempts.fetch_add(1, Ordering::SeqCst);
             if n == 0 {
-                // The offline window, placed by ordering rather than by a
-                // clock: `run` has taken its watch handle (it does that before
-                // the loop) and this attempt has not yet fixed its bearer, so
-                // the mark that follows this closure consumes this write.
+                // After `run` read this attempt's credential, so attempt 1
+                // does not carry it and attempt 2 is the first that does.
                 renewing.set(Some("renewed-token".into()));
             }
-            // Read per attempt, in the closure body, as `TransportFactory`
-            // requires.
-            let _bearer = renewing.get();
-            if n == 0 {
+            if n < 2 {
                 // A transport whose peer is already gone. The connect future
                 // still resolves `Ok` — that is the whole point — and the
                 // `Hello` is what fails.
@@ -3472,7 +3606,7 @@ mod tests {
                 return Box::pin(async move { Ok(Box::new(client) as BoxTransport) })
                     as ConnectFuture;
             }
-            inner()
+            inner(read)
         });
 
         let log = EventLog::default();
@@ -3485,11 +3619,11 @@ mod tests {
                 .with_subscriber(tracing_subscriber::registry().with(log.clone())),
         );
 
-        // Wait for the report, and then for session 3 to be past the point at
+        // Wait for the report, and then for session 4 to be past the point at
         // which it could repeat it. `session` reports immediately after the
         // handshake and subscribes immediately after that, so the second
-        // Subscribe frame the fake relay sees is session 3's, and by then
-        // session 3 has already had its turn to speak.
+        // Subscribe frame the fake relay sees is session 4's, and by then
+        // session 4 has already had its turn to speak.
         timeout(Duration::from_secs(10), async {
             loop {
                 let seen = log
@@ -3504,7 +3638,7 @@ mod tests {
             }
         })
         .await
-        .expect("no attempt reported the renewal it consumed, or no third session opened");
+        .expect("no attempt reported the renewal it consumed, or no fourth session opened");
 
         shared.request_shutdown();
         timeout(Duration::from_secs(10), driver)
@@ -3512,18 +3646,25 @@ mod tests {
             .expect("the driver never stopped")
             .unwrap();
 
-        // `subs >= 2` above is a proxy for "session 3 opened", and it is sound
+        // `subs >= 2` above is a proxy for "session 4 opened", and it is sound
         // only via three properties nothing here states. Say it in the
-        // harness's own counter instead. **Two, not three**: `connect_count`
-        // is bumped inside `harness_full`'s closure, and attempt 1 returns its
-        // own dead-peer duplex without ever calling `inner()`, so the harness
-        // sees attempts 2 and 3 and nothing else.
-        assert_eq!(
-            server.lock().connect_count,
-            2,
-            "sessions 2 and 3 must both have been built through the harness, or \
-             `reports.len() == 1` below proves nothing about repetition"
-        );
+        // harness's own counter instead. **Two, not four**: `connect_count`
+        // is bumped inside `harness_full`'s closure, and attempts 1 and 2
+        // return their own dead-peer duplex without ever calling `inner()`, so
+        // the harness sees attempts 3 and 4 and nothing else.
+        {
+            let seen = server.lock();
+            assert_eq!(
+                seen.connect_count, 2,
+                "sessions 3 and 4 must both have been built through the harness, or \
+                 `reports.len() == 1` below proves nothing about repetition"
+            );
+            assert_eq!(
+                seen.presented,
+                [Some("renewed-token".into()), Some("renewed-token".into())],
+                "both answered sessions presented the renewal"
+            );
+        }
 
         let events = log.0.lock().clone();
         let reports: Vec<&LoggedEvent> = events
@@ -3533,7 +3674,7 @@ mod tests {
         assert_eq!(
             reports.len(),
             1,
-            "the carried mark is reported exactly once — session 3 handshook too \
+            "the carried mark is reported exactly once — session 4 handshook too \
              and must not repeat it, saw {events:?}"
         );
         assert_eq!(
@@ -3544,8 +3685,11 @@ mod tests {
         let names: Vec<&str> = events.iter().filter_map(|e| e.ev.as_deref()).collect();
         let failed = names
             .iter()
-            .position(|n| *n == "sync.session.closed")
-            .expect("attempt 1's session must have closed");
+            .enumerate()
+            .filter(|(_, n)| **n == "sync.session.closed")
+            .nth(1)
+            .map(|(i, _)| i)
+            .expect("attempt 2's session must have closed");
         let reported = names
             .iter()
             .position(|n| *n == MARKED_AT_CONNECT)
@@ -3598,9 +3742,9 @@ mod tests {
             true,
         );
         let attempts = Arc::new(AtomicU64::new(0));
-        let factory: TransportFactory = Arc::new(move || {
+        let factory: TransportFactory = Arc::new(move |read: CredentialRead| {
             if attempts.fetch_add(1, Ordering::SeqCst) == ANSWERED_ATTEMPT {
-                return inner();
+                return inner(read);
             }
             // A relay that is unreachable, as the shipped factory presents
             // one: the connect still resolves `Ok`, and the `Hello` fails.
@@ -3680,33 +3824,28 @@ mod tests {
         core.shutdown().await;
     }
 
-    /// End to end: a renewal that lands while the driver is disconnected
-    /// produces **no** `0x12 RefreshToken` in the next session.
+    /// End to end: a renewal that lands while the driver is disconnected is
+    /// **presented** by the reconnect, and so produces no `0x12 RefreshToken`
+    /// in the session that follows.
     ///
-    /// Driven through `run` — a real connect, a scripted drop, a real
-    /// `Backoff` sleep, a reconnect, a handshake, a subscribe and the pump —
-    /// rather than through the seam. The offline window is genuine:
-    /// `Disconnected` is broadcast immediately before `backoff_sleep`, so the
-    /// write below lands with no session up.
+    /// Driven through `run` — a real connect, a scripted drop, real `Backoff`
+    /// sleeps, reconnects, a handshake, a subscribe and the pump — rather than
+    /// through the seam. The offline window is placed by ordering rather than
+    /// by `Backoff::canonical`'s jittered delays: attempt 2 is a transport
+    /// whose peer is already gone, and the renewal is written inside its
+    /// factory call — after `run` read attempt 2's credential and before it
+    /// reads attempt 3's. Attempt 2 therefore does not carry it, no session is
+    /// up to announce it, and attempt 3 is the reconnect that carries it.
     ///
-    /// # What this proves, and what it does not
-    ///
-    /// The absence of a `0x12`, and nothing about *why*. `harness_full` is an
-    /// in-process duplex that reads no `TokenSource` and presents no bearer at
-    /// all, so this cannot fail for a driver that swallows an offline renewal
-    /// a non-conforming factory never carried — the exact failure
-    /// [`TransportFactory`]'s precondition exists to prevent. The causal half
-    /// — that the reconnect presented the renewed bearer, which is *why* no
-    /// `0x12` follows — is
-    /// [`the_reconnect_presents_the_renewed_bearer_it_then_does_not_re_announce`]
-    /// below.
-    ///
-    /// It is what makes the placement falsifiable. Deleting the
-    /// `mark_renewals_current` call in `run` fails it 30 times in 30 with
-    /// `saw ["renewed-token"]`, which is precisely the wasted round trip
-    /// #244 reported.
+    /// The two clauses are independent, which is why both are here. The
+    /// harness records the bearer each attempt was handed, so the reconnect
+    /// presenting the renewal is asserted directly rather than inferred from a
+    /// missing frame. Deleting the `mark_renewals_current` call in `run`
+    /// leaves that assertion green and fails the frame assertion with
+    /// `saw ["renewed-token"]`, which is precisely the wasted round trip #244
+    /// reported.
     #[tokio::test(flavor = "multi_thread")]
-    async fn a_renewal_from_the_offline_window_produces_no_refresh_frame_on_reconnect() {
+    async fn a_renewal_from_the_offline_window_is_presented_and_not_re_announced() {
         let dir = tempfile::tempdir().unwrap();
         let credential = TokenSource::new(Some("first-token".into()));
         let mut cfg = make_cfg(dir.path());
@@ -3723,8 +3862,9 @@ mod tests {
             .unwrap(),
         );
 
-        let mut status_rx = core.sync_status();
-        let (factory, server, _batch_rx, _subs, refreshes) = harness_full(
+        // Two scripts: session 1, dropped after its subscribe, and session 3,
+        // which stays up. Attempt 2 never reaches the harness.
+        let (inner, server, _batch_rx, _subs, refreshes) = harness_full(
             vec![
                 Script {
                     close_after_subscribe: true,
@@ -3734,39 +3874,21 @@ mod tests {
             ],
             true,
         );
-        core.start_sync(factory).unwrap();
-
-        // The scripted close ends session 1; `Disconnected` is set immediately
-        // before `backoff_sleep`, so this wakes at the top of the offline
-        // window.
-        timeout(Duration::from_secs(10), async {
-            loop {
-                match status_rx.recv().await {
-                    Ok(s) if s.state == SyncState::Disconnected => return,
-                    Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
-                    Err(broadcast::error::RecvError::Closed) => return,
-                }
+        let attempts = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let renewing = credential.clone();
+        let factory: TransportFactory = Arc::new(move |read: CredentialRead| {
+            if attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 1 {
+                // The offline window: session 1 is gone, and this attempt's
+                // credential has already been read.
+                renewing.set(Some("renewed-token".into()));
+                let (client, server) = duplex();
+                drop(server);
+                return Box::pin(async move { Ok(Box::new(client) as BoxTransport) })
+                    as ConnectFuture;
             }
-        })
-        .await
-        .expect("session 1 never closed");
-        // Ordered against the harness rather than against `Backoff::canonical`'s
-        // jittered 80-120 ms first delay: attempt 2's factory closure takes
-        // this same lock before it returns, and `run` marks the renewal handle
-        // the instant it does return, so holding it here puts the write ahead
-        // of the mark that has to consume it. Left to the jitter, a scheduling
-        // stall on a loaded runner pushes the write past the reconnect, the
-        // pump sends a `0x12`, and the assertion below fails for a reason this
-        // test is not about.
-        {
-            let attempts = server.lock();
-            assert_eq!(
-                attempts.connect_count, 1,
-                "attempt 2 dialled before the write; the offline window was missed"
-            );
-            credential.set(Some("renewed-token".into()));
-            drop(attempts);
-        }
+            inner(read)
+        });
+        core.start_sync(factory).unwrap();
 
         timeout(Duration::from_secs(10), async {
             while server.lock().connect_count < 2 {
@@ -3776,10 +3898,18 @@ mod tests {
         .await
         .expect("the driver never reconnected");
         tokio::time::sleep(Duration::from_millis(400)).await;
+        assert_eq!(
+            server.lock().presented,
+            [
+                Some("first-token".to_string()),
+                Some("renewed-token".to_string())
+            ],
+            "the reconnect must present the renewal, not the bearer it opened with"
+        );
         let seen = refreshes.lock().clone();
         assert!(
             seen.is_empty(),
-            "a renewal the reconnect carried must not be re-announced, saw {seen:?}"
+            "and having presented it, must not re-announce it, saw {seen:?}"
         );
 
         // And the handle was not marked *past* the source: a renewal arriving
@@ -3802,130 +3932,15 @@ mod tests {
         core.shutdown().await;
     }
 
-    /// The causal half of the test above: the reconnect **presented** the
-    /// renewed bearer, which is why no `0x12` follows it.
-    ///
-    /// The proposition #244 reports is "no refresh frame *because* the connect
-    /// already carried the token", and `harness_full` alone cannot reach the
-    /// second clause — it presents no bearer, so the absence of a frame is
-    /// equally consistent with a driver that swallowed a renewal nothing
-    /// carried. Here the harness is wrapped in a factory in the shape
-    /// [`TransportFactory`] requires: the credential is read in the closure's
-    /// own body, per attempt, and what it read is recorded.
-    ///
-    /// Deleting the `mark_renewals_current` call in `run` leaves the bearer
-    /// assertion green and fails the frame assertion; freezing the read by
-    /// hoisting `reading.get()` out of the closure leaves the frame assertion
-    /// green and fails the bearer assertion. The two clauses are independent,
-    /// which is why both are here.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn the_reconnect_presents_the_renewed_bearer_it_then_does_not_re_announce() {
-        let dir = tempfile::tempdir().unwrap();
-        let credential = TokenSource::new(Some("first-token".into()));
-        let mut cfg = make_cfg(dir.path());
-        cfg.sync = Some(SyncConfig::new("ws://unused/sync").with_credential(credential.clone()));
-        let core = Arc::new(
-            Core::open(
-                cfg,
-                Unlock::DevicePaired {
-                    root: VaultRootKey::from_bytes(ROOT),
-                    paired: None,
-                },
-            )
-            .await
-            .unwrap(),
-        );
-
-        let mut status_rx = core.sync_status();
-        let (inner, _server, _batch_rx, _subs, refreshes) = harness_full(
-            vec![
-                Script {
-                    close_after_subscribe: true,
-                    ..Default::default()
-                },
-                Script::default(),
-            ],
-            true,
-        );
-        // The bearer each attempt fixed, in order.
-        let presented: Arc<parking_lot::Mutex<Vec<Option<String>>>> =
-            Arc::new(parking_lot::Mutex::new(Vec::new()));
-        let reading = credential.clone();
-        let recorded = presented.clone();
-        let factory: TransportFactory = Arc::new(move || {
-            // The lock is taken in its own statement, before the read, and the
-            // test below holds it while it writes the renewal — so an attempt
-            // that starts during the write waits here and reads afterwards.
-            // Written as `recorded.lock().push(reading.get())` this works only
-            // because Rust evaluates a method call's receiver before its
-            // arguments, which is not something the next reader should have to
-            // know to keep the ordering intact.
-            let mut recorded = recorded.lock();
-            let bearer = reading.get();
-            recorded.push(bearer);
-            drop(recorded);
-            inner()
-        });
-        core.start_sync(factory).unwrap();
-
-        timeout(Duration::from_secs(10), async {
-            loop {
-                match status_rx.recv().await {
-                    Ok(s) if s.state == SyncState::Disconnected => return,
-                    Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
-                    Err(broadcast::error::RecvError::Closed) => return,
-                }
-            }
-        })
-        .await
-        .expect("session 1 never closed");
-        // The same ordering the test above takes, against the observable that
-        // matters here: attempt 2's factory takes this lock before it reads
-        // the credential, so holding it here puts the write ahead of that read.
-        {
-            let reads = presented.lock();
-            assert_eq!(
-                reads.len(),
-                1,
-                "attempt 2 read the credential before the write; the window was missed"
-            );
-            credential.set(Some("renewed-token".into()));
-            drop(reads);
-        }
-
-        timeout(Duration::from_secs(10), async {
-            while presented.lock().len() < 2 {
-                tokio::time::sleep(Duration::from_millis(5)).await;
-            }
-        })
-        .await
-        .expect("the driver never reconnected");
-        tokio::time::sleep(Duration::from_millis(400)).await;
-        assert_eq!(
-            presented.lock().as_slice(),
-            [
-                Some("first-token".to_string()),
-                Some("renewed-token".to_string())
-            ],
-            "the reconnect must present the renewal, not the bearer it opened with"
-        );
-        let seen = refreshes.lock().clone();
-        assert!(
-            seen.is_empty(),
-            "and having presented it, must not re-announce it, saw {seen:?}"
-        );
-        core.shutdown().await;
-    }
-
     /// The placement, stated as the thing that distinguishes it from the site
     /// the dead guard occupied: a renewal landing **during the dial** is still
     /// announced in band.
     ///
-    /// `run` marks the handle immediately after `factory()` returns, which is
-    /// when the attempt's bearer is fixed. Everything after that moment — the
-    /// dial, the handshake, the subscribe, the whole session — is still ahead
-    /// of the relay, so a write landing there must reach it as a `0x12` rather
-    /// than wait for the next reconnect.
+    /// `run` marks the handle to the version it read for this attempt,
+    /// immediately after `factory(read)` returns. Everything after the read —
+    /// the dial, the handshake, the subscribe, the whole session — is still
+    /// ahead of the relay, so a write landing there must reach it as a `0x12`
+    /// rather than wait for the next reconnect.
     ///
     /// Moving the call back inside `session`, where the dead guard stood,
     /// leaves the test above green and fails this one: the mark would then
@@ -3957,15 +3972,13 @@ mod tests {
 
         let mut status_rx = core.sync_status();
         let (inner, _server, _batch_rx, _subs, refreshes) = harness_full(vec![], true);
-        // A factory in the shape `TransportFactory` requires — it reads the
-        // credential in its own body — whose connect future then performs the
-        // renewal, putting the write after this attempt's bearer was fixed and
-        // before the session that will carry it exists.
+        // A factory whose connect future performs the renewal, putting the
+        // write after this attempt's bearer was read and before the session
+        // that will carry it exists.
         let dialing = credential.clone();
-        let factory: TransportFactory = Arc::new(move || {
-            let _bearer = dialing.get();
+        let factory: TransportFactory = Arc::new(move |read: CredentialRead| {
             let dialing = dialing.clone();
-            let fut = inner();
+            let fut = inner(read);
             Box::pin(async move {
                 dialing.set(Some("dialed-token".into()));
                 fut.await
@@ -3980,11 +3993,76 @@ mod tests {
             }
         })
         .await
-        .expect("a renewal landing after the factory read must not be consumed by the mark");
+        .expect("a renewal landing after the read must not be consumed by the mark");
         assert_eq!(
             refreshes.lock().as_slice(),
             ["dialed-token".to_string()],
             "the relay is told the bearer this connect did not carry, exactly once"
+        );
+        core.shutdown().await;
+    }
+
+    /// **The falsifier for #273.** A renewal landing between the driver's read
+    /// of an attempt's credential and its mark is announced in band, not
+    /// consumed.
+    ///
+    /// When the factory read the credential itself, `run` could only mark the
+    /// handle to whatever the source held once the factory returned, so a write
+    /// landing inside the factory call — after its read, before the mark — was
+    /// consumed without having been carried, and the relay kept the old bearer
+    /// until the next reconnect. That window was disclosed as a residual and
+    /// could not be tested. The write here lands in exactly that window, on
+    /// the factory's own thread, so it is deterministic: the mark must leave it
+    /// pending, and the pump must announce it.
+    ///
+    /// Marking to the source's current version instead of the carried one
+    /// (`renewals.mark_current()` in the old shape) fails this with no frame.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_renewal_between_the_read_and_the_mark_still_reaches_the_live_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let credential = TokenSource::new(Some("first-token".into()));
+        let mut cfg = make_cfg(dir.path());
+        cfg.sync = Some(SyncConfig::new("ws://unused/sync").with_credential(credential.clone()));
+        let core = Arc::new(
+            Core::open(
+                cfg,
+                Unlock::DevicePaired {
+                    root: VaultRootKey::from_bytes(ROOT),
+                    paired: None,
+                },
+            )
+            .await
+            .unwrap(),
+        );
+
+        let mut status_rx = core.sync_status();
+        let (inner, server, _batch_rx, _subs, refreshes) = harness_full(vec![], true);
+        let renewing = credential.clone();
+        let factory: TransportFactory = Arc::new(move |read: CredentialRead| {
+            // Inside the factory call: `run` has read this attempt's
+            // credential and has not yet marked the handle.
+            renewing.set(Some("raced-token".into()));
+            inner(read)
+        });
+        core.start_sync(factory).unwrap();
+        let _ = collect_until_live(&mut status_rx).await;
+
+        timeout(Duration::from_secs(10), async {
+            while refreshes.lock().is_empty() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("a renewal landing between the read and the mark was consumed");
+        assert_eq!(
+            server.lock().presented,
+            [Some("first-token".to_string())],
+            "the attempt presented the bearer the driver read, not the racing write"
+        );
+        assert_eq!(
+            refreshes.lock().as_slice(),
+            ["raced-token".to_string()],
+            "so the relay is told the racing write in band, exactly once"
         );
         core.shutdown().await;
     }
@@ -4629,7 +4707,7 @@ mod tests {
         ));
         let connects = Arc::new(AtomicU64::new(0));
         let counted = Arc::clone(&connects);
-        let factory: TransportFactory = Arc::new(move || {
+        let factory: TransportFactory = Arc::new(move |_: CredentialRead| {
             counted.fetch_add(1, AtomicOrdering::SeqCst);
             let script = scripts.lock().pop_front().unwrap_or_default();
             Box::pin(async move {
