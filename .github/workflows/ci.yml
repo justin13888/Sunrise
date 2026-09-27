@@ -1617,7 +1617,7 @@ jobs:
     # toolchain, no cargo, no network past the checkout. Seconds of work.
     timeout-minutes: 5
     # Deliberately without an `if:`, like the other gate contracts, so it runs
-    # on pull requests. The gate's own `--self-test` runs `scan_text` over six
+    # on pull requests. The gate's own `--self-test` runs `scan_text` over seven
     # string literals and reaches nothing else: not the `git ls-files` listing,
     # not the 50-file floor that says "the scan is broken" rather than "the tree
     # is clean", not the exit codes those produce. It also pins the

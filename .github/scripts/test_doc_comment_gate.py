@@ -5,18 +5,21 @@ Why this file exists
 --------------------
 
 The gate carries its own `--self-test`, and that self-test runs `scan_text`
-over six string literals. It is a good check of the five rules and no check
+over seven string literals. It is a good check of the six rules and no check
 at all of everything around them: the `git ls-files` listing, the 50-file
 floor that says "this scan is broken" rather than "this tree is clean", the
 exit codes those two produce, and the annotation format a reader follows
 back to a line. Those are what `ci.yml` and a person reading a red check
 depend on, and nothing exercised them.
 
-Both directions are here. `Rejects` pins each of the five shapes the gate
-exists for, and `Accepts` pins the shapes a plausible implementation of
-those five rules gets wrong — a list continuation indented past its marker,
-a lazy paragraph wrap, four columns inside a fence, a doc comment under an
-*inner* attribute. A gate that fires on those is one people route around.
+Both directions are here. `Rejects` pins each of the six shapes the gate
+exists for — `stranded` against both instances this repository has had,
+reproduced from the source before each was fixed — and `Accepts` pins the
+shapes a plausible implementation of those six rules gets wrong — a list
+continuation indented past its marker, a lazy paragraph wrap, four columns
+inside a fence, a doc comment under an *inner* attribute, a summary that
+names a table rather than a parameter. A gate that fires on those is one
+people route around.
 
 The masking contract
 --------------------
@@ -121,7 +124,7 @@ class GateCase(unittest.TestCase):
 
 
 class SelfTest(GateCase):
-    """The gate's five rules, asserted before it reads a tree."""
+    """The gate's six rules, asserted before it reads a tree."""
 
     def test_the_self_test_passes_alone(self):
         result = subprocess.run(
@@ -144,7 +147,7 @@ class Clean(GateCase):
 
 
 class Rejects(GateCase):
-    """Each of the five shapes the gate exists for, by its code."""
+    """Each of the six shapes the gate exists for, by its code."""
 
     def test_two_markers_folded_onto_one_line(self):
         # The #77 shape: it renders as one run-on line and `cargo fmt` is
@@ -196,6 +199,62 @@ class Rejects(GateCase):
             VIOLATION,
             "doc-comments[split]",
             "Rust joins them into one doc string",
+        )
+
+    def test_a_summary_stranded_on_top_of_another_items_in_tests_rs(self):
+        # #290, `crates/sunrise-core/src/engine/tests.rs` at daec844e: the
+        # doc of `ledger_rows` left directly above that of `events_emitted_by`,
+        # no blank line between, so `split` sees one well-formed block.
+        self.source(
+            "mod support {\n"
+            "    /// How many `device_revoke` ops this replica has kept, believed or not.\n"
+            "    ///\n"
+            "    /// The register is a fold over these, so \"stored and skipped\" and \"never\n"
+            "    /// arrived\" look identical in `device_revocations` and are told apart only\n"
+            "    /// here.\n"
+            "    /// The `ev` names of every event emitted while `f` runs, in order.\n"
+            "    ///\n"
+            "    /// Hand-rolled rather than borrowed from `sunrise-log`'s capture target:\n"
+            "    /// this crate depends on `tracing` and not on `tracing-subscriber`.\n"
+            "    pub(super) fn events_emitted_by(f: impl FnOnce()) -> Vec<String> {\n"
+            "        Vec::new()\n"
+            "    }\n"
+            "}\n"
+        )
+        self.assert_code(
+            self.run_gate(),
+            VIOLATION,
+            "doc-comments[stranded]: crates/c/src/lib.rs:7:",
+            "names `f` from the item's signature",
+            "the summary above it at line 2 names only `device_revoke`",
+        )
+
+    def test_a_summary_stranded_on_top_of_another_items_in_oplog_rs(self):
+        # #268, `crates/sunrise-core/src/engine/oplog.rs` before #289: the
+        # doc of `ops_run_end` left above `record_envelope_recipient`, whose
+        # own summary became the first paragraph's second sentence.
+        self.source(
+            "/// The end of the run of `ops` seqs starting at `start`, or `start - 1` when\n"
+            "/// `start` itself is absent.\n"
+            "/// Note that `recipient` has been sent the key for `(stream_id, epoch)`.\n"
+            "///\n"
+            "/// `INSERT OR IGNORE`: two devices can back-fill the same recipient\n"
+            "/// concurrently, and both will record it.\n"
+            "pub(super) fn record_envelope_recipient(\n"
+            "    tx: &Transaction<'_>,\n"
+            "    stream_id: &[u8; 16],\n"
+            "    epoch: u32,\n"
+            "    recipient: &[u8; 16],\n"
+            ") -> Result<()> {\n"
+            "    Ok(())\n"
+            "}\n"
+        )
+        self.assert_code(
+            self.run_gate(),
+            VIOLATION,
+            "doc-comments[stranded]: crates/c/src/lib.rs:3:",
+            "names `recipient` from the item's signature",
+            "names only `ops`, `start`, none of which the item has",
         )
 
     def test_every_violation_is_reported_not_only_the_first(self):
@@ -270,6 +329,61 @@ class Accepts(GateCase):
 
     def test_a_blank_line_between_two_different_items_is_not_a_split(self):
         self.accept("/// One item.\npub fn f() {}\n\n/// Another item.\npub fn g() {}\n")
+
+    def test_the_repaired_tests_rs_shape(self):
+        # Both halves of #290 after the fix: `ledger_rows`'s summary names a
+        # table its signature does not, which is legitimate on its own.
+        self.accept(
+            "/// The `ev` names of every event emitted while `f` runs, in order.\n"
+            "pub(super) fn events_emitted_by(f: impl FnOnce()) -> Vec<String> {\n"
+            "    Vec::new()\n"
+            "}\n"
+            "\n"
+            "/// How many `device_revoke` ops this replica has kept, believed or not.\n"
+            "///\n"
+            "/// The register is a fold over these, so they are told apart only\n"
+            "/// here.\n"
+            "pub(super) fn ledger_rows(db: &Db) -> i64 {\n"
+            "    0\n"
+            "}\n"
+        )
+
+    def test_a_summary_naming_a_table_then_a_sentence_naming_no_parameter(self):
+        # The weaker rule — "the summary names something the signature does
+        # not" — fires here, and on most of the tree. This one needs the
+        # sentence below to name the item's own signature before it reports.
+        self.accept(
+            "/// How many `device_revoke` ops are stored.\n"
+            "/// The `sunrise-log` catalogue is not consulted.\n"
+            "pub fn ledger_rows(db: &Db) -> i64 {\n"
+            "    0\n"
+            "}\n"
+        )
+
+    def test_a_sentence_naming_a_parameter_inside_a_fence_or_mid_line(self):
+        self.accept(
+            "/// Rows of `device_revoke_ops`, once. Then `db` mid-line is prose:\n"
+            "///\n"
+            "/// ```text\n"
+            "/// done.\n"
+            "/// Then `db` again.\n"
+            "/// ```\n"
+            "pub fn rows(db: &Db) -> i64 {\n"
+            "    0\n"
+            "}\n"
+        )
+
+    def test_an_attribute_sharing_a_line_with_its_item(self):
+        # The signature is read from the attribute's line when the item
+        # follows the `]` on it, so `tests` is in it. Skipping that line as an
+        # attribute would read `fn helper` as the signature and report this.
+        self.accept(
+            "/// The `tests` module, and nothing else.\n"
+            "/// Its `helper` is below.\n"
+            "#[cfg(test)] mod tests {\n"
+            "    fn helper() {}\n"
+            "}\n"
+        )
 
 
 class InlineCodeIsBlanked(GateCase):
