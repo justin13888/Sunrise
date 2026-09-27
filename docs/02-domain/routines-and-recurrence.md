@@ -86,7 +86,7 @@ Frequency = "DAILY" / "WEEKLY" / "MONTHLY" / "YEARLY" / tstr
 CatchupPolicy = "skip"        ; past open occurrences lapse
               / "merge"       ; past open occurrences collapse into the latest
               / "queue"       ; every past open occurrence stays
-              / tstr          ; unknown: read as "queue", the policy that hides nothing
+              / tstr          ; unknown: preserved; generates as "skip", shows as "queue" (below)
 ```
 
 **Removed from the previous shape.** `timezone` and `starts_at` are replaced by
@@ -100,8 +100,19 @@ counter beside the set it counts is two values that can disagree.
 nothing.** An unknown `Frequency` or `Weekday` round-trips byte for byte
 ([#321](https://github.com/justin13888/Sunrise/issues/321)). Recurring on the wrong schedule is worse than not recurring, so a
 routine whose rule contains an unknown value generates no occurrences on this
-build and is shown as "needs a newer Sunrise". The op that carried it is never
-rejected.
+build and is flagged: its summary reads "unrecognised schedule (…)" with the
+rule's RFC 5545 text in the parentheses
+(`crates/sunrise-domain/src/rrule.rs#rrule_summary`), and clients see the
+`.unknown` case on the rule's `Frequency` or `Weekday`. The op that carried it
+is never rejected.
+
+**An unknown `CatchupPolicy` generates as `skip` and shows as `queue`.** It
+round-trips byte for byte. At generation (§Generation, step 3) it writes
+nothing for a past key: this build must not author a backlog of tasks under a
+policy it cannot read, and a build that can read it generates what that policy
+asks for, which then syncs here. At read time (§Catch-up for occurrences
+already materialized) it lapses nothing: an occurrence a newer build chose to
+generate is shown as an ordinary task, not hidden.
 
 ## Occurrence key
 
@@ -402,4 +413,9 @@ merge):
 - `RoutinePatch` has no edit scope (`crates/sunrise-domain/src/routine.rs#RoutinePatch`),
   and template edits do not reach existing occurrences.
 - There is no un-skip, and `skip_dates` is still read.
-- `Frequency` and `Weekday` fail the whole op on an unknown value.
+- Unknown enum values already follow §Fields: an unknown `Frequency` or
+  `Weekday` no longer fails the op, the rule is kept and generates nothing, and
+  its flag is the rule's summary rather than a field of its own
+  (`crates/sunrise-domain/src/rrule.rs#rrule_summary`). Every rule is also
+  stored as CBOR in `routines.rrule_cbor` and read from there first, because
+  the RFC 5545 text cannot carry a raw token containing `;`, `,` or `=`.
