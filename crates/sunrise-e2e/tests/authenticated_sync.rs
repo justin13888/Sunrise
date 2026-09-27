@@ -142,16 +142,18 @@ async fn a_renewed_token_reaches_the_next_connect() {
     let (addr, h) = spawn_authenticating_relay().await;
     let url = format!("http://{addr}");
 
-    // The factory shape the CLI and the bindings both build: read per attempt.
+    // The shape the sync driver and the factories the CLI and the bindings
+    // build compose into: the credential is read per attempt, and the attempt
+    // presents that read.
     let credential = TokenSource::new(Some("stale-token".into()));
     let dial = {
         let credential = credential.clone();
         let url = url.clone();
         move || {
-            let bearer = credential.get();
+            let read = credential.read();
             let url = url.clone();
             async move {
-                let mut t = SseTransport::connect_with_bearer(&url, bearer.as_deref());
+                let mut t = SseTransport::connect_with_bearer(&url, read.bearer());
                 handshake(&mut t).await.map(|()| t)
             }
         }

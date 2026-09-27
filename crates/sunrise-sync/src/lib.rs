@@ -8,7 +8,8 @@
 //! Surface:
 //! - [`SyncState`] — the session state a driver reports to the UI.
 //! - [`Backoff`] — exponential backoff with jitter.
-//! - [`TokenSource`] — the shared, swappable bearer a session presents.
+//! - [`TokenSource`] — the shared, swappable bearer a session presents, and
+//!   [`CredentialRead`], one read of it that a connect attempt carries.
 //! - [`Transport`] — async trait the driver drives.
 //! - [`DeviceSigner`] — the device binding a transport puts on every request.
 //! - [`SseTransport`] — the production SSE + POST client transport (`sse`
@@ -31,7 +32,7 @@ pub mod state;
 pub mod transport;
 
 pub use backoff::Backoff;
-pub use credential::{TokenSource, TokenWatch};
+pub use credential::{CredentialRead, TokenSource, TokenWatch};
 pub use signer::DeviceSigner;
 #[cfg(feature = "sse")]
 pub use sse::SseTransport;

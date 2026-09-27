@@ -126,15 +126,18 @@ Rust source on every build, so committing them would let the two drift.
 **CI builds this.** `.github/workflows/ci.yml` has a `macos-app` job on the
 `macos-26` runner — pinned because `project.yml` sets a macOS 26.0 deployment
 target that no earlier image can build — which runs `mise run macos-app` as a
-single step on every push to `master` and on every pull request that touches
-something the app is built from, whatever it targets. (A pull request that
-touches no Rust, no manifest, no `apps/apple/**` and no `mise.toml` skips it;
-the `changes` job decides, and a skipped job still reports a passing check.)
-The framework it links is built upstream, once per run, by the
-`apple-xcframework` job. Plus a 04:00 UTC nightly on `master` alone, since GitHub fires a
-`schedule` only on the repository's default branch, which is `master`. Any
-other ref builds on demand through `workflow_dispatch` — `gh workflow run
-ci.yml --ref <branch>`. So a Swift-side break is caught.
+single step on every push to `master`. It does **not** run on a pull request,
+because a macOS job queues for up to two hours behind the account's
+five-runner cap; there it is skipped, and a skipped job still reports a
+passing check. The evidence before merge is the same command run locally —
+`mise run apple-app` on a Mac, for any change that touches something the app
+is built from (see the README's Apple section for that list). The framework it links is built
+upstream, once per run, by the `apple-xcframework` job. Plus a 04:00 UTC
+nightly on `master` alone, since GitHub fires a `schedule` only on the
+repository's default branch, which is `master`. Any other ref builds on demand
+through `workflow_dispatch` — `gh workflow run ci.yml --ref <branch>` — and
+the results appear on that branch's pull request. So a Swift-side break is
+caught, at the latest by the merge that brings it in.
 
 **The UI tests are not run by that job.** `SunriseUITests` is `skipped: true` in
 the `Sunrise` scheme, because a macOS XCUITest takes control of another process

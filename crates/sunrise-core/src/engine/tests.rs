@@ -7289,8 +7289,10 @@ fn the_discount_rehabilitates_a_device_whose_sole_revoker_a_third_party_revokes(
 ///
 /// The remedy is the mutual pair's remedy and no better: a device X2 reaches
 /// may revoke X2 back, which re-gates X2 and leaves that device revoked as
-/// well, because the exception lands X2's op too. What the account needs is
-/// still a current device the attacker never reached.
+/// well, because the exception lands X2's op too. A current device the
+/// attacker never reached re-gates X2 only while X1 stays silent:
+/// `a_second_expelled_device_discounts_the_third_device_that_revoked_the_first`
+/// is the op that undoes it.
 ///
 /// Pinned separately from the general statement of shape (1) because the cost
 /// is one op from a device the account has already expelled, and the
@@ -7347,6 +7349,70 @@ fn the_discount_lets_one_of_two_devices_revoked_together_ungate_the_other() {
         Some(x1_id.to_vec()),
         "X2 is gated again, so its second attempt on O does not move the row"
     );
+}
+
+/// **What the discount gives up (1b): the attacker's first device undoes the
+/// third current device's remedy with one gated op.**
+///
+/// Shape (1a) above ends with T, a current device the attacker never reached,
+/// revoking X2, and X2 gated again. That holds only while X1 stays silent. The
+/// discount of `s` from `v`'s revoker set asks whether the ledger holds a row
+/// revoking `s` from a sender other than `v`, and it counts every stored row,
+/// gated or not. So X1 names T. The op is gated and revokes nobody. It is
+/// still a row revoking T from a sender other than X2, so it discounts T out
+/// of X2's set. O is already discounted by X1's first row, so X2's set is
+/// empty again. X2 then revokes a device nobody had touched, and then T
+/// itself.
+///
+/// So two devices one attacker holds, once the same revoker has expelled both,
+/// neutralise every revocation the account sends against either of them. Each
+/// honest revoker costs the attacker one op. No current device settles this
+/// through the ledger, because the answer is always another row the other
+/// attacker device can discount. Pinned so the residual stays deliberate
+/// until the membership authority
+/// [#394](https://github.com/justin13888/Sunrise/issues/394) tracks lands.
+#[test]
+fn a_second_expelled_device_discounts_the_third_device_that_revoked_the_first() {
+    let ex1 = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let ex2 = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eo = engine_seeded(ROOT, [3u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let et = engine_seeded(ROOT, [5u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let ed = engine_seeded(ROOT, [6u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let er = engine_seeded(ROOT, [4u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut db = db_root(ROOT);
+    let (x1_id, x2_id) = (ex1.keychain.device_id(), ex2.keychain.device_id());
+    let (o_id, t_id) = (eo.keychain.device_id(), et.keychain.device_id());
+    let d_id = ed.keychain.device_id();
+
+    // Shape (1a): O expels both, and one op from X1 ungates X2.
+    revoke(&er, &mut db, &eo, x1_id, T0);
+    revoke(&er, &mut db, &eo, x2_id, T0 + 10_000);
+    revoke(&er, &mut db, &ex1, o_id, T0 + 20_000);
+
+    // The documented remedy: T, which the attacker never reached, revokes X2.
+    revoke(&er, &mut db, &et, x2_id, T0 + 30_000);
+    assert!(er.is_revoked(db.conn(), &x2_id).unwrap());
+
+    // X1 names T. The op is gated, so T stays current...
+    revoke(&er, &mut db, &ex1, t_id, T0 + 40_000);
+    assert_eq!(
+        revocation_row(&db, &t_id),
+        None,
+        "X1 is gated, so its revocation of T does not land"
+    );
+
+    // ...and its stored row still discounts T out of X2's revoker set.
+    revoke(&er, &mut db, &ex2, d_id, T0 + 50_000);
+    assert!(
+        er.is_revoked(db.conn(), &d_id).unwrap(),
+        "the residual: X2 is on the revoked list and revokes an untouched device"
+    );
+    revoke(&er, &mut db, &ex2, t_id, T0 + 60_000);
+    assert!(
+        er.is_revoked(db.conn(), &t_id).unwrap(),
+        "and it revokes the device that tried to settle it"
+    );
+    assert!(er.is_revoked(db.conn(), &x2_id).unwrap());
 }
 
 /// **What the discount gives up (2): a device that is still on the revoked

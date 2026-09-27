@@ -365,11 +365,11 @@ is mostly not shell: a TOML `run = '''` fence and a YAML scalar with an
 apostrophe in it are both unbalanced quotations to a shell lexer, and blocking a
 merge for one is how a gate gets switched off. The tally is printed rather than
 kept quiet, so that a number which grew from forty-odd to four hundred would say
-so. On this repository it is 51: **44** of `mise.toml`'s triple-quote fences
-plus `mise.toml:637`, **three** in `.github/scripts/sparkle-tools.sh` where one
+so. On this repository it is 53: **46** of `mise.toml`'s triple-quote fences
+plus `mise.toml:691`, **three** in `.github/scripts/sparkle-tools.sh` where one
 `awk` program's single-quoted body spans three lines inside a `$( )`, and
 **three** `- name:` scalars whose English apostrophe is an unbalanced quotation
-— two in `ci.yml`, one in `release.yml`. Six of the 51 are not in `mise.toml`,
+— two in `ci.yml`, one in `release.yml`. Six of the 53 are not in `mise.toml`,
 which matters because the three workflow entries are the visible half of the
 limit two paragraphs up: the gate cannot tell an executable line from prose.
 Prose that does not lex lands in this tally and is skipped, which is the safe
@@ -517,8 +517,9 @@ treats more shards as sub-proportional relief rather than free.
 
 `sunrise-core`'s row is a partial sample over its first 76 mutants — it is the
 one crate no local pass has run to completion — and projects to roughly 5.4
-hours whole. It is why `sunrise-core` is still the only scoped crate without a
-recorded floor. It is also the one row that cannot be recomputed here, because
+hours whole. It is why `sunrise-core` is the one scoped crate whose floor was
+recorded from a nightly's four shards rather than a local pass (#272; see
+`mutants/baseline.json`). It is also the one row that cannot be recomputed here, because
 its `wall` cell is empty: nothing in this repository records whether 15.4 is
 the same full-pass average, taken over those 76 mutants, or a marginal rate
 read off `cargo mutants`' own output. The two differ by one baseline build's

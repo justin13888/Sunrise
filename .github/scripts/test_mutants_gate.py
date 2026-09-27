@@ -1149,7 +1149,8 @@ class FloorProvenance(unittest.TestCase):
 
     def test_crate_with_no_floor_needs_no_provenance(self):
         # An entry carrying no `caught_pct` constrains nothing, so there is
-        # nothing to account for. This is the shape `sunrise-core` is in.
+        # nothing to account for. This is the shape `sunrise-core` was in
+        # until #272 recorded its floor.
         run = outcomes_file(self.tmp / "a.json", "sunrise-sync", caught=1)
         base = self.tmp / "base.json"
         base.write_text(json.dumps({"crates": {"sunrise-core": {}}}))

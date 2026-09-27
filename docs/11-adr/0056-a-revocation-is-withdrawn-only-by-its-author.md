@@ -136,6 +136,14 @@ already say it, by revoking again from a third current device:
   list and ungated. A current device that revokes X adds a revoker nobody
   discounts, so X is gated again.
 
+Both hold while the attacker holds one expelled device. With two that the
+same revoker expelled, the second device's gated row discounts the current
+device that revoked the first, so no third device settles it
+([ADR-0041](./0041-peer-side-revocation-is-a-fold.md) §"What a user sees"
+item 4, [#394](https://github.com/justin13888/Sunrise/issues/394)). A
+withdrawal does not settle it either, because the rows at issue are the
+attacker's own.
+
 A withdrawal adds the one reading the ledger could not express: the author
 itself saying "I did not mean it". So #248's "permanently" holds only in an
 account with no third current device. ADR-0041 §"What a user sees" item 4

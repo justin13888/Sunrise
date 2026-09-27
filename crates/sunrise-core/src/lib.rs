@@ -81,6 +81,8 @@ pub use queries::{
     ActionableTask, ContextRow, DeviceRow, FocusPlanRow, FocusSessionRow, Query, QueryResult,
     StreamRow,
 };
-pub use sync_driver::{BoxTransport, ConnectFuture, SyncConfig, TokenSource, TransportFactory};
+pub use sync_driver::{
+    BoxTransport, ConnectFuture, CredentialRead, SyncConfig, TokenSource, TransportFactory,
+};
 pub use unlock::{IdentitySeed, Unlock};
 pub use vault_lock::{VaultLock, VaultLockError};
