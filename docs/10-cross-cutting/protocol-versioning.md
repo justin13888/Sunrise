@@ -455,7 +455,9 @@ needs three things, and it fails without any one of them:
    means every entity, every nested value type, and the `Patch` op's own map.
    An unfamiliar field is then kept rather than discarded by serde's default
    behaviour. The one exception is `Interruption`, whose whole value is its
-   primary key. *Today:* this holds at the top level of an entity only
+   primary key. *Today:* this holds for every entity and for the nested
+   constraint, rule and template types; `Chunk`, `ReviewTotals` and
+   `ReviewSnapshotStream` have no map yet
    ([#322](https://github.com/justin13888/Sunrise/issues/322)).
 2. **Every synced entity's table persists that map in its own `extra BLOB`
    column**, so the field survives materialization rather than living for one
@@ -488,8 +490,9 @@ Every enum that crosses the wire or storage keeps an `Unknown(raw)` arm.
 *Today:* every string-valued enum, `StreamColor`, `Frequency` and `Weekday`
 included, keeps its raw value on the wire and in storage (`lossy_enum!` in
 `crates/sunrise-domain/src/unknown.rs`,
-[#321](https://github.com/justin13888/Sunrise/issues/321)). `SunriseTime` has
-no `Unknown` case yet ([#322](https://github.com/justin13888/Sunrise/issues/322)).
+[#321](https://github.com/justin13888/Sunrise/issues/321)). So does a
+`SunriseTime` of a kind this build does not know, as `Unknown { kind, raw }`
+([#322](https://github.com/justin13888/Sunrise/issues/322)).
 
 ### 7.5 Invariants are read-time
 
