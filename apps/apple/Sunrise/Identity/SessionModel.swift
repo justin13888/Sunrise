@@ -354,11 +354,8 @@ final class SessionModel {
     /// for another account (#183). Each platform's sync start calls it before
     /// reading ``relayDeviceID(relayURL:bearer:)``. Skipped while a recovery
     /// ceremony, which registers the device itself, is outstanding. A failed
-    /// registration leaves the driver unbound, and the next start tries again.
-    /// A relay id read the Keychain refuses is not that: `bind` throws before
-    /// registering, and the ``relayDeviceID(relayURL:bearer:)`` read that
-    /// follows meets the same refusal, so `SyncPlan` stays off and names the
-    /// Keychain rather than starting an unbound driver (#284).
+    /// registration leaves the driver unbound and the next start tries again;
+    /// a refused Keychain read makes `bind` throw, and `SyncPlan` stays off (#284).
     func bindRelayDevice() async {
         guard recoveryCeremony == nil, !isBindingRelayDevice, let bridge else { return }
         let settings = AppSettings(defaults: settingsDefaults)
