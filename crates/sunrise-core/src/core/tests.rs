@@ -113,6 +113,70 @@ async fn a_freshly_opened_vault_already_carries_its_base_epochs() {
     core.close().await.unwrap();
 }
 
+/// **A paired device starts with its sponsor's read bound** (#282).
+///
+/// The bound is a ratchet over what the sponsor's own folds produced, so it
+/// can hold a device no fold of the ledger bounds today: retire C from A while
+/// A is trusted, then retire A from B, and a replica that met the ops in that
+/// order keeps C bounded while one that met `B -> A` first never bounds it. A
+/// joiner that paired with nothing met every op late and was always the
+/// second kind. The sponsor's rows are written straight into its table here,
+/// because what is under test is the carriage and not how the sponsor earned
+/// them, which `the_register_is_the_same_whichever_order_the_two_revocations_arrive`
+/// covers.
+#[tokio::test]
+async fn a_paired_device_adopts_its_sponsors_read_bound() {
+    use rusqlite::OptionalExtension as _;
+    let c_id = [0xc1u8; 16];
+    let dir = tempfile::tempdir().unwrap();
+    let sponsor = Core::open(cfg(dir.path()), unlock()).await.unwrap();
+    sponsor
+        .db
+        .lock()
+        .conn()
+        .execute(
+            "INSERT INTO device_read_bounds (device_id, first_bound_at_ms) VALUES (?, 1)",
+            [&c_id[..]],
+        )
+        .unwrap();
+    let payload = sponsor
+        .pair_device_in_process("joiner".into(), "test".into(), [0x71; 32], [0x72; 32])
+        .unwrap();
+    assert!(
+        payload.read_bounds.contains(&c_id),
+        "the grant carries the sponsor's bound"
+    );
+    sponsor.close().await.unwrap();
+
+    let joiner_dir = tempfile::tempdir().unwrap();
+    let joiner = Core::open(
+        cfg(joiner_dir.path()),
+        Unlock::DevicePaired {
+            root: VaultRootKey::from_bytes([2u8; 32]),
+            paired: Some(Box::new(payload)),
+        },
+    )
+    .await
+    .unwrap();
+    let adopted: Option<i64> = joiner
+        .db
+        .lock()
+        .conn()
+        .query_row(
+            "SELECT from_sponsor FROM device_read_bounds WHERE device_id = ?",
+            [&c_id[..]],
+            |r| r.get(0),
+        )
+        .optional()
+        .unwrap();
+    assert_eq!(
+        adopted,
+        Some(1),
+        "the joiner holds the sponsor's bound from its first open, marked as adopted"
+    );
+    joiner.close().await.unwrap();
+}
+
 #[tokio::test]
 async fn open_and_close() {
     let dir = tempfile::tempdir().unwrap();

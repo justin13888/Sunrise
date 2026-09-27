@@ -117,6 +117,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "stream_key_senders",
         sql: include_str!("../migrations/0029_stream_key_senders.sql"),
     },
+    Migration {
+        id: 30,
+        name: "read_bounds_from_sponsor",
+        sql: include_str!("../migrations/0030_read_bounds_from_sponsor.sql"),
+    },
 ];
 
 /// Current storage version (= last migration id).

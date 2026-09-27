@@ -103,6 +103,7 @@ mod tests;
 pub(crate) use self::attachment::read_attachment;
 pub(crate) use self::ids::hex_short;
 use self::lww::LwwStamp;
+pub(crate) use self::revocation::{adopt_sponsor_read_bounds, read_bounds_for_pairing};
 
 /// Vault-meta op-log stream id: 16 zero bytes.
 ///

@@ -1580,10 +1580,20 @@ impl Engine {
     /// keeps its bound. That is the non-convergence the bound already has
     /// ([#282](https://github.com/justin13888/Sunrise/issues/282)), reached
     /// here only through a sender that named more ids than the cap.
+    ///
+    /// **A bound adopted from a sponsor is never released here**
+    /// (`from_sponsor = 1`, migration 0030). This function's premise is that
+    /// the fold wrote the bound from a ledger row, so a certless id no row
+    /// names is one only the cap could have emptied. An adopted bound had no
+    /// ledger row here to begin with: the joiner writes it before it holds any
+    /// cert but its own, and releasing it at the joiner's first
+    /// `device_revoke` would readmit the device the moment its cert arrived.
+    /// See [`adopt_sponsor_read_bounds`].
     fn release_orphan_read_bounds(tx: &Transaction<'_>) -> rusqlite::Result<usize> {
         tx.execute(
             "DELETE FROM device_read_bounds
-             WHERE NOT EXISTS (
+             WHERE from_sponsor = 0
+               AND NOT EXISTS (
                        SELECT 1 FROM devices d
                        WHERE d.device_id = device_read_bounds.device_id
                    )
@@ -1605,3 +1615,69 @@ impl Engine {
 /// ledger is then at most this times the number of senders, and so is each
 /// fold's work.
 pub(super) const REVOKE_TARGETS_PER_SENDER: i64 = 256;
+
+/// This replica's whole read bound, as a pairing grant carries it to a joiner.
+///
+/// # Why a joiner is handed the bound
+///
+/// The bound is a ratchet over the registers *this* replica computed along its
+/// own arrival order, so it holds a device that no fold of the ledger would
+/// bound today: one whose revocation this replica applied while its revoker was
+/// still ungated. A joiner that started empty learned the ops from the relay
+/// afterwards, met every such revocation already gated, and never bounded the
+/// device — so every freshly paired device was the weakest replica in the
+/// account and sealed keys to devices its sponsor had cut off
+/// ([#282](https://github.com/justin13888/Sunrise/issues/282)). Carrying the
+/// bound makes a joiner start where its sponsor stands.
+///
+/// It is the bound and not the ledger because the ledger folds to the
+/// account's final register, which is exactly what the joiner computes from
+/// the relay anyway: the history is the one thing only the sponsor holds.
+///
+/// Every row, including one for an id the sponsor holds no cert for: the device
+/// may have been revoked before its cert reached the sponsor, and it is the
+/// joiner that will meet the cert. An id that is not 16 bytes is left out,
+/// because it cannot name a device — every `devices` row and every
+/// `device_revoke` target is 16 — so no key site could ever reach it.
+pub(crate) fn read_bounds_for_pairing(
+    conn: &rusqlite::Connection,
+) -> rusqlite::Result<BTreeSet<[u8; 16]>> {
+    let mut stmt = conn.prepare("SELECT device_id FROM device_read_bounds")?;
+    let ids = stmt
+        .query_map([], |r| r.get::<_, Vec<u8>>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(ids
+        .into_iter()
+        .filter_map(|id| <[u8; 16]>::try_from(id.as_slice()).ok())
+        .collect())
+}
+
+/// Adopt a sponsor's read bound into a vault being created by pairing.
+///
+/// Run in the same transaction that creates the vault, so a vault that exists
+/// has adopted its sponsor's bound: there is no window in which a joiner is
+/// open and still the weakest replica. `INSERT OR IGNORE` because the table is
+/// a ratchet and a bound already here stays as it is.
+///
+/// The rows are marked `from_sponsor = 1` (migration 0030), which is what keeps
+/// [`Engine::release_orphan_read_bounds`] from taking one back before its
+/// device's cert or revocation has reached this replica.
+///
+/// `first_bound_at_ms` is `now_ms`, this replica's reading, because the column
+/// records when *this* replica first wrote the bound and a sponsor's wall clock
+/// is not comparable with it.
+pub(crate) fn adopt_sponsor_read_bounds(
+    tx: &Transaction<'_>,
+    bounds: &BTreeSet<[u8; 16]>,
+    now_ms: u64,
+) -> rusqlite::Result<()> {
+    let mut insert = tx.prepare(
+        "INSERT OR IGNORE INTO device_read_bounds (device_id, first_bound_at_ms, from_sponsor)
+         VALUES (?1, ?2, 1)",
+    )?;
+    let at = i64::try_from(now_ms).unwrap_or(i64::MAX);
+    for id in bounds {
+        insert.execute(params![&id[..], at])?;
+    }
+    Ok(())
+}

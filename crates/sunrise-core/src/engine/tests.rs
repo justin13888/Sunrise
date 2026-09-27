@@ -6823,6 +6823,100 @@ fn the_register_is_the_same_whichever_order_the_two_revocations_arrive() {
     );
 }
 
+/// **A device paired from the replica that bounded C keeps C bounded, whatever
+/// order it then meets the ops in** (#282).
+///
+/// The test above leaves two existing replicas apart. What pairing can close is
+/// the systematic case: a joiner used to start with no bound and learn both ops
+/// from the relay later, so it met `A -> C` already gated and never bounded C —
+/// the weakest replica in the account by construction. `sponsor` here is `two`
+/// above, which bounded C; the joiner adopts its bound at vault creation, then
+/// meets `B -> A` first, the order that left `one` unbounded.
+///
+/// Asserted after `B -> A` alone as well as after both ops: at that point the
+/// joiner holds no cert for C and no ledger row naming it, which is exactly
+/// the row `release_orphan_read_bounds` deletes when this replica's own fold
+/// wrote it. An adopted row is exempt, or the bound would be gone before C's
+/// cert arrived.
+#[test]
+fn a_joiner_keeps_its_sponsors_bound_on_c_whichever_order_it_meets_the_ops() {
+    let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let ec = engine_seeded(ROOT, [3u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let er = engine_seeded(ROOT, [4u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let (a_id, c_id) = (ea.keychain.device_id(), ec.keychain.device_id());
+
+    let mut sponsor = db_root(ROOT);
+    revoke(&er, &mut sponsor, &ea, c_id, T0 + 60_000);
+    revoke(&er, &mut sponsor, &eb, a_id, T0);
+    let carried = super::read_bounds_for_pairing(sponsor.conn()).unwrap();
+    assert_eq!(carried, std::collections::BTreeSet::from([a_id, c_id]));
+
+    // What `Keychain::create` does with a pairing grant's bound.
+    let mut joiner = db_root(ROOT);
+    joiner
+        .with_tx(|tx| super::adopt_sponsor_read_bounds(tx, &carried, T0))
+        .unwrap();
+
+    revoke(&er, &mut joiner, &eb, a_id, T0);
+    assert!(
+        er.is_read_bounded(joiner.conn(), &c_id).unwrap(),
+        "an adopted bound survives the orphan release, though no cert or ledger \
+         row here names C yet"
+    );
+    revoke(&er, &mut joiner, &ea, c_id, T0 + 60_000);
+    assert!(
+        er.is_read_bounded(joiner.conn(), &c_id).unwrap(),
+        "and survives meeting A -> C already gated, which is where a joiner that \
+         paired with nothing lost it"
+    );
+    assert_eq!(
+        revocation_row(&joiner, &c_id),
+        revocation_row(&sponsor, &c_id),
+        "the register is untouched by the adoption: it is still the fold"
+    );
+
+    // The same arrival order without the adoption, which is every joiner
+    // before this change.
+    let mut bare = db_root(ROOT);
+    revoke(&er, &mut bare, &eb, a_id, T0);
+    revoke(&er, &mut bare, &ea, c_id, T0 + 60_000);
+    assert!(!er.is_read_bounded(bare.conn(), &c_id).unwrap());
+}
+
+/// **The orphan release still takes back what this replica's own fold wrote**
+/// (#315), with the adopted rows beside it.
+///
+/// The exemption is for rows a sponsor handed over, and it must not widen: a
+/// certless id only a capped sender named, whose bound this replica's fold
+/// wrote, is released exactly as before.
+#[test]
+fn the_orphan_release_spares_only_adopted_bounds() {
+    use super::revocation::REVOKE_TARGETS_PER_SENDER as CAP;
+    let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let er = engine_seeded(ROOT, [4u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let cap = u64::try_from(CAP).unwrap();
+    let adopted = made_up_device(9_999);
+    let mut db = db_root(ROOT);
+    db.with_tx(|tx| {
+        super::adopt_sponsor_read_bounds(tx, &std::collections::BTreeSet::from([adopted]), T0)
+    })
+    .unwrap();
+
+    for n in 0..=cap {
+        revoke(&er, &mut db, &eb, made_up_device(n), T0 + 1_000 + n);
+    }
+
+    assert!(
+        !er.is_read_bounded(db.conn(), &made_up_device(0)).unwrap(),
+        "the id B's own flood evicted gives its bound back, as before"
+    );
+    assert!(
+        er.is_read_bounded(db.conn(), &adopted).unwrap(),
+        "while a bound adopted from the sponsor, certless and unnamed here, stays"
+    );
+}
+
 /// **A cut correction does not bring a skipped revocation back, and the
 /// remedy is to make it again.**
 ///

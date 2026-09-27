@@ -234,4 +234,12 @@ pub const CRYPTO_SUITE_V: u16 = 5;
 /// §Decision 4). A key a read-bounded device delivered is still stored, so
 /// every op sealed under it stays readable, and it is never the key this
 /// device writes under.
-pub const STORAGE_V: u16 = 29;
+///
+/// `30` is migration `0030_read_bounds_from_sponsor.sql`, which marks the read
+/// bounds a paired device adopted from its sponsor's pairing grant (issue
+/// #282). A device that paired used to start with no bound and learn the
+/// revocations from the relay in whatever order it had them, which left it the
+/// weakest replica in the account; it now starts with its sponsor's bound, and
+/// the mark keeps the orphan release from taking an adopted bound back before
+/// the device's cert arrives.
+pub const STORAGE_V: u16 = 30;

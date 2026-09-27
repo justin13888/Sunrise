@@ -140,7 +140,7 @@ use crate::engine::hex_short;
 use crate::unlock::IdentitySeed;
 use parking_lot::Mutex;
 use rusqlite::{params, OptionalExtension};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use sunrise_crypto::aead::AEAD_NONCE_LEN;
 use sunrise_crypto::blake3_kdf::derive_key_32;
 use sunrise_crypto::identity_transition::{
@@ -1012,6 +1012,14 @@ impl Keychain {
                     )?;
                 }
             }
+            // The sponsor's read bound, in the transaction that creates the
+            // vault, so no paired vault is ever open without it. Without it a
+            // joiner learned every revocation from the relay after the fact,
+            // met the ones whose revoker had since been revoked already gated,
+            // and sealed keys to devices its sponsor had cut off (#282).
+            if let IdentitySeed::Paired(p) = seed {
+                crate::engine::adopt_sponsor_read_bounds(tx, &p.read_bounds, now_ms)?;
+            }
             Ok(())
         })?;
 
@@ -1592,9 +1600,15 @@ impl Keychain {
     /// pairing, [`KeychainError::IdentityConflict`] when the request answers a
     /// different account's offer, and [`KeychainError::Cert`] for a nickname
     /// outside `1..=`[`sunrise_crypto::MAX_NICKNAME_BYTES`] bytes.
+    ///
+    /// `read_bounds` is this vault's `device_read_bounds`, read by the caller
+    /// with [`crate::engine::read_bounds_for_pairing`] because the table is the
+    /// engine's; the grant carries it so the joiner starts with this device's
+    /// bound rather than none (issue #282).
     pub fn issue_pairing_grant(
         &self,
         request: &PairingRequest,
+        read_bounds: BTreeSet<[u8; 16]>,
         now_ms: u64,
     ) -> Result<PairingGrant, KeychainError> {
         if request.identity_id != self.identity_id() {
@@ -1612,6 +1626,7 @@ impl Keychain {
             device_cert,
             vault_root: *self.vault_root.as_bytes(),
             stream_keys: self.held_stream_keys(),
+            read_bounds,
         })
     }
 
@@ -1675,7 +1690,8 @@ impl Keychain {
     ) -> Result<PairingPayload, KeychainError> {
         let offer = self.export_pairing_offer(db)?;
         let joiner = sunrise_pairing::PairingJoiner::new(offer, nickname, platform, seed_s, seed_d);
-        let grant = self.issue_pairing_grant(joiner.request(), now_ms)?;
+        let read_bounds = crate::engine::read_bounds_for_pairing(db.conn())?;
+        let grant = self.issue_pairing_grant(joiner.request(), read_bounds, now_ms)?;
         Ok(joiner.accept(grant)?)
     }
 
@@ -4819,6 +4835,7 @@ mod tests {
                     nickname: "a fresh id".into(),
                     platform: "test".into(),
                 },
+                BTreeSet::new(),
                 1_700_000_002_000
             ),
             Err(KeychainError::IdentitySigningKeyAbsent)
