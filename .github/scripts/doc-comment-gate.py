@@ -73,11 +73,20 @@ Six shapes, each of which a tool can settle without an opinion about prose:
   sentence — the item's real summary, naming its own parameter — is what makes
   the rule decidable, and it reports nothing on the tree today.
 
+  The later sentence opens with an uppercase letter, or with a backticked
+  name when it sits in the block's first paragraph. Past the first paragraph
+  a line opening with a backticked name is how this tree documents its
+  parameters one per line, and admitting it there reported three correct
+  blocks (`sunrise-core-bindings`' `import_ical`, `sunrise-domain`'s
+  `parse`, `sunrise-sync`'s `mark_carried`).
+
   What it therefore does not see: a stranded run whose first sentence names no
   backticked identifier, or names one the new item's signature happens to
-  share; and a displaced summary whose true one names nothing in the signature
-  either. Those need a reader, the way `citation-gate.py` leaves aboutness to
-  one.
+  share; a displaced summary whose true one names nothing in the signature
+  either; and a true summary that opens with a backticked name below a
+  stranded run of more than one paragraph, which is the #290 shape with its
+  second sentence reworded. Those need a reader, the way `citation-gate.py`
+  leaves aboutness to one.
 
 Scope
 -----
@@ -142,10 +151,13 @@ SENTENCE_END = re.compile(r"[.!?](?=\s|$)")
 # A line that finishes a sentence, allowing closing markup after the stop.
 ENDS_SENTENCE = re.compile(r"[.!?][)\"'`*_]*$")
 # The line that finishes an item's signature, once no parenthesis is open:
-# it opens a body, or ends a declaration, a field or a variant.
-SIGNATURE_END = re.compile(r"\{|[;,}]\s*$")
-# A signature longer than this is not one the reader of this file will meet.
-SIGNATURE_LINES = 40
+# it opens a body, or ends a declaration or a braced item.
+SIGNATURE_END = re.compile(r"\{|[;}]\s*$")
+# A field or a variant, which ends with a `,` on the item's own first line or
+# on the line that closes its parenthesised fields. Only there: on any other
+# line a trailing `,` ends one bound of a `where` clause or one parameter of a
+# generic list, and the signature reads on.
+ONE_LINE_ITEM_END = re.compile(r",\s*$")
 
 
 @dataclass(frozen=True)
@@ -364,9 +376,14 @@ def signature_names(lines: list[str], after: int) -> set[str]:
     `after` is the 0-based index of the line following the block. Blank lines,
     ordinary comments and outer attributes (a multi-line one to its closing
     `]`) are skipped; the signature then runs to the line that opens a body or
-    ends a declaration, a field or a variant, reading through any line that
-    leaves a parenthesis open so a parameter list spread over several lines is
-    read whole.
+    ends a declaration, reading through any line that leaves a parenthesis
+    open so a parameter list spread over several lines is read whole. A
+    trailing `,` ends it only on its first line or on the line that closes a
+    parenthesis, which is a field or a variant, and never once `where` has
+    been read: on any other line it ends one bound or one generic parameter,
+    and the ones after it are still the signature. There is no line cap. A signature cut short
+    drops the names below the cut, and a name missing from it can make the
+    summary look like another item's, so it is read to its end or the file's.
     """
     index = after
     while index < len(lines):
@@ -387,10 +404,17 @@ def signature_names(lines: list[str], after: int) -> set[str]:
             break
     names: set[str] = set()
     depth = 0
-    for line in lines[index : index + SIGNATURE_LINES]:
+    for offset, line in enumerate(lines[index:]):
         names.update(IDENTIFIER.findall(line))
+        opened = depth > 0
         depth += line.count("(") - line.count(")")
-        if depth <= 0 and SIGNATURE_END.search(line):
+        if depth > 0:
+            continue
+        if SIGNATURE_END.search(line):
+            break
+        if "where" in names:
+            continue  # every `,` from here on ends one bound
+        if (offset == 0 or opened) and ONE_LINE_ITEM_END.search(line):
             break
     return names
 
@@ -417,15 +441,23 @@ def check_stranded(lines: list[str], block: Block) -> list[Finding]:
         return []
 
     fence: str | None = None
+    first_paragraph = True
     for offset in range(1, len(block.body)):
         previous, current = block.body[offset - 1].strip(), block.body[offset].strip()
         opener = FENCE.match(block.body[offset - 1])
         if opener:
             char = opener.group("char")[0]
             fence = None if fence == char else (fence or char)
+        if not previous:
+            first_paragraph = False
         if fence is not None or not previous or not current:
             continue
-        if not ENDS_SENTENCE.search(previous) or not current[0].isupper():
+        if not ENDS_SENTENCE.search(previous):
+            continue
+        # A sentence opening with a backticked name is a seam only in the
+        # first paragraph. Further down, a line opening with a parameter's
+        # name is how this tree documents its parameters one by one.
+        if not (current[0].isupper() or (current[0] == "`" and first_paragraph)):
             continue
         rest = " ".join(line.strip() for line in block.body[offset:])
         own = [name for name in BACKTICKED_IDENT.findall(first_sentence(rest)) if name in names]

@@ -257,6 +257,63 @@ class Rejects(GateCase):
             "names only `ops`, `start`, none of which the item has",
         )
 
+    def test_a_stranded_summary_whose_own_opens_with_a_backticked_name(self):
+        # The item's own summary opens with its parameter's name, which a
+        # rule reading only uppercase openings would miss.
+        self.source(
+            "/// Rows of `device_revoke_ops`, counted once.\n"
+            "/// `db` is borrowed for the count.\n"
+            "pub fn rows(db: &Db) -> i64 {\n"
+            "    0\n"
+            "}\n"
+        )
+        self.assert_code(
+            self.run_gate(),
+            VIOLATION,
+            "doc-comments[stranded]: crates/c/src/lib.rs:2:",
+            "names `db` from the item's signature",
+        )
+
+    def test_a_stranded_summary_above_a_multi_line_attribute(self):
+        # The signature is read after the attribute's closing `]`. Reading the
+        # attribute as part of it would find `ledger` there and report
+        # nothing.
+        self.source(
+            "/// Rows the `ledger` feature keeps, counted once.\n"
+            "/// The `db` handle is borrowed for the count.\n"
+            "#[cfg_attr(\n"
+            "    feature = \"ledger\",\n"
+            "    doc(alias = \"ledger_rows\")\n"
+            ")]\n"
+            "pub fn rows(db: &Db) -> i64 {\n"
+            "    0\n"
+            "}\n"
+        )
+        self.assert_code(
+            self.run_gate(),
+            VIOLATION,
+            "doc-comments[stranded]: crates/c/src/lib.rs:2:",
+            "names `db` from the item's signature",
+        )
+
+    def test_a_stranded_summary_above_an_ordinary_comment(self):
+        # A `//` line between the block and its item is skipped. Read as the
+        # signature, it would end at its own `,` and hold no `db`.
+        self.source(
+            "/// Rows of `device_revoke_ops`, counted once.\n"
+            "/// The `db` handle is borrowed for the count.\n"
+            "// Kept private for now,\n"
+            "pub fn rows(db: &Db) -> i64 {\n"
+            "    0\n"
+            "}\n"
+        )
+        self.assert_code(
+            self.run_gate(),
+            VIOLATION,
+            "doc-comments[stranded]: crates/c/src/lib.rs:2:",
+            "names `db` from the item's signature",
+        )
+
     def test_every_violation_is_reported_not_only_the_first(self):
         self.pad()
         self.write("crates/c/src/a.rs", "#[test]\n/// Detached.\nfn t() {}\n")
@@ -383,6 +440,94 @@ class Accepts(GateCase):
             "#[cfg(test)] mod tests {\n"
             "    fn helper() {}\n"
             "}\n"
+        )
+
+    def test_a_multi_line_attribute_between_the_comment_and_its_item(self):
+        # Reading the signature from the attribute's `test,` line would find
+        # `test` but not `db`, and report this.
+        self.accept(
+            "/// Counts the rows `db` holds.\n"
+            "/// The `test` build skips it.\n"
+            "#[cfg_attr(\n"
+            "    test,\n"
+            "    allow(dead_code)\n"
+            ")]\n"
+            "pub fn rows(db: &Db) -> i64 {\n"
+            "    0\n"
+            "}\n"
+        )
+
+    def test_an_ordinary_comment_between_the_comment_and_its_item(self):
+        # Reading the `//` line as the signature would find `caller` but not
+        # `db`, and report this.
+        self.accept(
+            "/// Counts the rows `db` holds.\n"
+            "/// The `caller` drops the handle.\n"
+            "// Held until the caller drops it,\n"
+            "pub fn rows(db: &Db) -> i64 {\n"
+            "    0\n"
+            "}\n"
+        )
+
+    def test_a_bound_named_only_in_a_where_clause(self):
+        # A `,` that ends one `where` bound does not end the signature, so
+        # `Foo` on the bound below it is still read.
+        self.accept(
+            "/// Bounded by `Foo`.\n"
+            "/// The `x` is cloned.\n"
+            "pub fn f<T, U>(x: T)\n"
+            "where\n"
+            "    T: Clone,\n"
+            "    U: Foo,\n"
+            "{\n"
+            "}\n"
+        )
+
+    def test_a_bound_after_a_where_bound_that_closes_a_parenthesis(self):
+        # `) -> T,` closes a parenthesis and ends with `,`, which is how a
+        # tuple variant ends. After `where` it ends one bound, not the item.
+        self.accept(
+            "/// Bounded by `Foo`.\n"
+            "/// The `x` is cloned.\n"
+            "pub fn f<T, F>(x: T, g: F)\n"
+            "where\n"
+            "    F: Fn(\n"
+            "        T,\n"
+            "    ) -> T,\n"
+            "    T: Foo,\n"
+            "{\n"
+            "}\n"
+        )
+
+    def test_a_bound_named_only_in_a_multi_line_generic_list(self):
+        self.accept(
+            "/// Bounded by `Foo`.\n"
+            "/// Each `T` is cloned.\n"
+            "pub fn f<\n"
+            "    T: Clone,\n"
+            "    U: Foo,\n"
+            ">(x: T) {\n"
+            "}\n"
+        )
+
+    def test_a_parameter_named_past_the_fortieth_signature_line(self):
+        # No line cap: a name at the end of a long signature is still in it.
+        params = "".join(f"    p{index}: u8,\n" for index in range(45))
+        self.accept(
+            "/// Reads `last`.\n"
+            "/// The `p0` byte is first.\n"
+            f"pub fn f(\n{params}    last: u8,\n) {{\n}}\n"
+        )
+
+    def test_a_backticked_parameter_line_past_the_first_paragraph(self):
+        # One line per parameter, each opening with its name: the shape of
+        # `import_ical` in `sunrise-core-bindings`, which is not a seam.
+        self.accept(
+            "/// Import a document's `VEVENT` entries as blocks.\n"
+            "///\n"
+            "/// `stream_id` is where the blocks land.\n"
+            "/// `source` names the calendar they came from.\n"
+            "pub fn import_ical(stream_id: u8, source: u8) {}\n"
         )
 
 
