@@ -41,6 +41,11 @@ Not safe, and read:
 - A field that wraps: the lines after a label, up to a blank line or the next
   label, list item, heading or fence, are read as one field, so a keyword at
   the end of one line and the number at the start of the next is caught.
+- A label with no content of its own, whose content is the list under it
+  (`Reverses:` then `- close #282`). The list is read as the field, through
+  blank lines between its items, until a heading, rule or fence, the next
+  label, an unindented paragraph after a blank line, or a list item indented
+  less than the label (the next entry of an enclosing list).
 
 Where GitHub's own parser is not documented, the gate errs towards failing:
 emphasis or backticks between the keyword and the number, a `:` after the
@@ -66,6 +71,7 @@ file, run by the `reverses-gate-contract` job in ci.yml.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import pathlib
@@ -86,8 +92,15 @@ FIELD = re.compile(
     re.IGNORECASE | re.VERBOSE,
 )
 
-# What ends a wrapped field: a list item, a heading, a horizontal rule.
+# What ends a wrapped field: a list item, a heading, a horizontal rule. A label
+# with no content of its own is the exception for list items: its content is
+# the list under it, read as the field (see `violations`).
+LIST_ITEM = re.compile(r"^(?P<indent>\s*)(?:>\s*)*(?:[-*+]|\d+[.)])\s")
 BOUNDARY = re.compile(r"^\s*(?:>\s*)*(?:[-*+]\s|\d+[.)]\s|#{1,6}\s|[-*_]{3,}\s*$)")
+
+# What may follow a label that has no content of its own: the label's own
+# closing emphasis or backticks, and whitespace.
+BARE_LABEL_REST = re.compile(r"^[\s*_`]*$")
 
 # GitHub's nine closing keywords, then the reference. Emphasis, backticks and a
 # colon between the two are tolerated because GitHub's handling of them is not
@@ -135,35 +148,96 @@ def unfenced_lines(body: str) -> list[tuple[int, str | None]]:
     return out
 
 
+@dataclasses.dataclass
+class Field:
+    """A decision-record field being read: its label line and what follows."""
+
+    start: int
+    label: str
+    parts: list[str]
+    # The label line's leading whitespace, against which a list item is judged
+    # to sit under the label or in an enclosing list.
+    indent: int
+    # The label has no content of its own yet, so a list may follow it.
+    bare: bool
+    # The field is the list under a bare label.
+    in_list: bool = False
+    # A blank line was seen inside the field.
+    gap: bool = False
+
+
 def violations(body: str) -> list[tuple[int, str, str, str]]:
     """Every closing reference inside a decision-record field.
 
     Returns (line of the label, label, keyword, reference) per finding.
     """
     found: list[tuple[int, str, str, str]] = []
-    field: tuple[int, str, list[str]] | None = None
+    field: Field | None = None
 
     def flush() -> None:
         if field is None:
             return
-        start, label, parts = field
-        for match in CLOSING.finditer(" ".join(parts)):
-            found.append((start, label, match["keyword"], match["ref"]))
+        for match in CLOSING.finditer(" ".join(field.parts)):
+            found.append((field.start, field.label, match["keyword"], match["ref"]))
 
     for number, line in unfenced_lines(body):
-        if line is None or not line.strip():
+        if line is None:
+            flush()
+            field = None
+            continue
+        if not line.strip():
+            # A blank line ends a field, unless the field is a bare label or
+            # the list under one: a list may start after a blank line, and a
+            # loose list has blank lines between its items.
+            if field is not None and (field.bare or field.in_list):
+                field.gap = True
+                continue
             flush()
             field = None
             continue
         label = FIELD.match(line)
         if label:
             flush()
-            field = (number, label["label"].capitalize(), [line])
-        elif field is not None and BOUNDARY.match(line):
+            field = Field(
+                start=number,
+                label=label["label"].capitalize(),
+                parts=[line],
+                indent=len(line) - len(line.lstrip()),
+                bare=bool(BARE_LABEL_REST.match(line[label.end() :])),
+            )
+            continue
+        if field is None:
+            continue
+        if field.bare or field.in_list:
+            item = LIST_ITEM.match(line)
+            indent = len(line) - len(line.lstrip())
+            if item and len(item["indent"]) >= field.indent:
+                # An item of the list under the label. An item indented less
+                # than the label belongs to an enclosing list, such as the
+                # next entry of the decision record, and ends the field.
+                field.bare, field.in_list, field.gap = False, True, False
+                field.parts.append(line)
+                continue
+            if not item and not BOUNDARY.match(line):
+                if field.in_list and (not field.gap or indent > field.indent):
+                    # An item's continuation line, or a paragraph indented
+                    # into the item after a blank line.
+                    field.gap = False
+                    field.parts.append(line)
+                    continue
+                if field.bare and not field.gap:
+                    # The label's content wraps onto the next line.
+                    field.bare = False
+                    field.parts.append(line)
+                    continue
             flush()
             field = None
-        elif field is not None:
-            field[2].append(line)
+            continue
+        if BOUNDARY.match(line):
+            flush()
+            field = None
+        else:
+            field.parts.append(line)
     flush()
     return found
 

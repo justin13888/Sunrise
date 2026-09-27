@@ -161,6 +161,20 @@ class ClosingShapes(GateCase):
         self.assertExit(result, CLOSES_AN_ISSUE)
         self.assertIn("3 closing reference(s)", result.stdout)
 
+    def test_bare_label_reads_the_list_under_it(self) -> None:
+        for body in (
+            "Reverses:\n- close #282\n",
+            "**Reverses:**\n* revert decision 11\n* close #282 as wontfix\n",
+            "Reverses:\n\n- revert decision 11\n\n- close #282\n",
+            "Reverses:\n1. revert\n2. close\n   #282 as wontfix\n",
+            "> Reverses:\n> - close #282\n",
+            "1. Fork.\n   Taken: keep\n   Reverses:\n   - revert\n     - close #282\n",
+        ):
+            with self.subTest(body=body):
+                result = self.on_body(body)
+                self.assertExit(result, CLOSES_AN_ISSUE)
+                self.assertIn("#282", result.stdout)
+
     def test_after_a_closed_fence_the_record_is_read_again(self) -> None:
         body = "```\nReverses: close #1\n```\n\nReverses: close #2\n"
         result = self.on_body(body)
@@ -226,6 +240,24 @@ class SafeShapes(GateCase):
     def test_next_entry_ends_a_field(self) -> None:
         body = "1. Fork.\n   Reverses: revert\n2. Close #5 separately.\n"
         self.assertExit(self.on_body(body), CLEAN)
+
+    def test_where_the_list_under_a_bare_label_ends(self) -> None:
+        for body in (
+            # The next entry of the enclosing decision-record list.
+            "1. Fork.\n   Reverses:\n   - revert\n2. Close #5 separately.\n",
+            # An unindented paragraph after a blank line.
+            "Reverses:\n- revert\n\nCloses #5\n",
+            # A bare label followed by a paragraph, not a list.
+            "Reverses:\n\nCloses #5\n",
+            "Reverses:\n- revert\n## Issue\nCloses #5\n",
+            "Reverses:\n- revert\n---\nCloses #5\n",
+            "Reverses:\n- revert\n```\nclose #5\n```\n",
+        ):
+            with self.subTest(body=body):
+                self.assertExit(self.on_body(body), CLEAN)
+
+    def test_a_label_with_content_still_ends_at_a_list_item(self) -> None:
+        self.assertExit(self.on_body("Reverses: revert\n- Closes #5\n"), CLEAN)
 
     def test_heading_ends_a_field(self) -> None:
         for heading in ("# Issue", "## Issue", "###### Issue", "> ## Issue"):
