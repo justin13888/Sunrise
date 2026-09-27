@@ -130,12 +130,9 @@ async fn bound_core(
 ) -> Arc<Core> {
     let core = open_core_offline(dir, root, addr, Arc::clone(clock)).await;
     let device_id = register(store, account_id, &core, nickname, clock.now_ms());
-    core.start_sync(signed_ws_factory(
-        addr,
-        Some(BEARER.to_owned()),
-        core.device_signer(device_id),
-    ))
-    .expect("start sync");
+    core.sync_credential().set(Some(BEARER.to_owned()));
+    core.start_sync(signed_ws_factory(addr, core.device_signer(device_id)))
+        .expect("start sync");
     core
 }
 
@@ -219,12 +216,9 @@ async fn two_bound_devices_converge_through_a_relay_that_requires_the_binding() 
     // untestable — the relay could not tell which device sent a request.
     let b = open_paired_core_offline(dir_b.path(), &a, addr, Arc::clone(&clock)).await;
     let b_device = register(&store, &account.account_id, &b, "b", clock.now_ms());
-    b.start_sync(signed_ws_factory(
-        addr,
-        Some(BEARER.to_owned()),
-        b.device_signer(b_device),
-    ))
-    .expect("start sync");
+    b.sync_credential().set(Some(BEARER.to_owned()));
+    b.start_sync(signed_ws_factory(addr, b.device_signer(b_device)))
+        .expect("start sync");
 
     wait_live(&a, TIMEOUT).await;
     wait_live(&b, TIMEOUT).await;
@@ -360,12 +354,9 @@ async fn a_bound_client_can_revoke_a_device_at_a_relay_that_requires_the_binding
     // has a vault row for, and B's `device_cert` op is how A learns it exists.
     let b = open_paired_core_offline(dir_b.path(), &a, addr, Arc::clone(&clock)).await;
     let b_relay_id = register(&store, &account.account_id, &b, "b", clock.now_ms());
-    b.start_sync(signed_ws_factory(
-        addr,
-        Some(BEARER.to_owned()),
-        b.device_signer(b_relay_id.clone()),
-    ))
-    .expect("start sync");
+    b.sync_credential().set(Some(BEARER.to_owned()));
+    b.start_sync(signed_ws_factory(addr, b.device_signer(b_relay_id.clone())))
+        .expect("start sync");
     wait_live(&a, TIMEOUT).await;
     wait_live(&b, TIMEOUT).await;
     wait_device_known(&a, &b, TIMEOUT).await;

@@ -151,10 +151,10 @@ async fn a_recovery_code_restores_a_vault_that_reads_what_was_written_before_it(
     .await
     .expect("bootstrap must not hang")
     .expect("the recovered device registers into the account it recovered");
+    recovered.sync_credential().set(Some(FRESH.to_owned()));
     recovered
         .start_sync(signed_ws_factory(
             addr,
-            Some(FRESH.to_owned()),
             recovered.device_signer(recovered_outcome.device_id),
         ))
         .expect("start sync");
@@ -270,10 +270,10 @@ async fn found_and_lose_an_account(
 
     // Push it to the relay and wait for the outbox to drain, so the op is on
     // the relay before the only device that holds it goes away.
+    founder.sync_credential().set(Some(FRESH.to_owned()));
     founder
         .start_sync(signed_ws_factory(
             addr,
-            Some(FRESH.to_owned()),
             founder.device_signer(founder_outcome.device_id),
         ))
         .expect("start sync");
