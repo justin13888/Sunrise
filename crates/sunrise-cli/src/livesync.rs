@@ -667,4 +667,44 @@ mod tests {
             "an expired token must not be presented"
         );
     }
+
+    /// The plan's bearer reaches the cell the driver reads, even when the core
+    /// was opened before the plan existed.
+    ///
+    /// `main` opens the vault with an empty plan and `recover` builds its plan
+    /// only after registering, so in both the core's credential cell is not the
+    /// plan's. The driver reads the core's cell per attempt and hands that read
+    /// to the factory; without the hand-over in `apply_plan` every connect
+    /// would present no bearer at all.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_plan_bearer_reaches_a_core_opened_without_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (core, _) = open_with_plan(
+            dir.path().to_path_buf(),
+            "0.1.0+test",
+            [7u8; 32],
+            &SyncPlan::default(),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(core.sync_credential().get(), None, "opened with no plan");
+
+        let plan = SyncPlan {
+            // Nothing listens on port 9; the driver retries in the background
+            // and the assertion does not wait on it.
+            sync: Some(
+                SyncConfig::new("http://127.0.0.1:9")
+                    .with_credential(TokenSource::new(Some("planned-bearer".into()))),
+            ),
+            device_id: None,
+        };
+        let _ = apply_plan(&core, &plan);
+        assert_eq!(
+            core.sync_credential().get().as_deref(),
+            Some("planned-bearer"),
+            "the driver's cell must hold the bearer the plan carries"
+        );
+        core.shutdown().await;
+    }
 }
