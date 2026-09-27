@@ -76,8 +76,8 @@ docstring is where it is written down.** No ADR carries it: `docs/11-adr/`
 records architecture decisions and a lint grammar is not one. The two other
 places a maintainer meets this gate — `mise.toml`'s `citations` task and the
 `citations` job in `.github/workflows/ci.yml` — state the same rule in short,
-and point here. If the grammar changes, those three move together or the
-records lag the code, which is the exact defect this gate was built to catch.
+and point here. If the grammar or a failure it reports changes, all three
+move together or the records lag the code: the defect this gate catches.
 
 Three things the suffix deliberately does, each of them a decision rather than
 a detail:
