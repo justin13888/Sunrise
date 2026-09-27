@@ -40,6 +40,21 @@ enum UITestHarness {
     /// nothing keeps the configuration it was written against.
     static let multiVaultFlag = "-sunrise-ui-test-multi-vault"
 
+    /// The launch argument a UI test passes to make every quick-capture
+    /// commit **fail**.
+    ///
+    /// `quick-capture.failure` is the sheet's durable refusal label, and a UI
+    /// test that asserts it is *absent* proves nothing unless some test also
+    /// proves it is drawn when a commit is refused. Nothing a UI test can do
+    /// to the scratch vault makes the core refuse a one-line capture, so the
+    /// refusal is injected at ``AppSurfaces/commitCapture(_:)`` — the seam the
+    /// sheet commits through — as ``RefusedByUITestHarness`` (#295).
+    ///
+    /// Opt **in**, for the same reason as ``recoveryFlag``. Only the sheet's
+    /// commit is failed: the inline capture bar writes through its own model
+    /// and is untouched, so a suite under this flag can still create tasks.
+    static let failCaptureFlag = "-sunrise-ui-test-fail-capture"
+
     /// The `UserDefaults` suite the multi-vault registry is kept in.
     ///
     /// Never `.standard`: the registry persists its list, and a list a previous
@@ -63,6 +78,28 @@ enum UITestHarness {
         arguments: [String] = ProcessInfo.processInfo.arguments
     ) -> Bool {
         scratchVault(arguments: arguments) != nil && arguments.contains(multiVaultFlag)
+    }
+
+    /// Whether this process should refuse every quick-capture commit.
+    ///
+    /// `false` without a scratch vault, whatever else was passed, exactly as
+    /// ``usesMultiVault(arguments:)`` is: no launch that can reach a real vault
+    /// can have its captures thrown away by a stray argument.
+    static func failsQuickCapture(
+        arguments: [String] = ProcessInfo.processInfo.arguments
+    ) -> Bool {
+        scratchVault(arguments: arguments) != nil && arguments.contains(failCaptureFlag)
+    }
+
+    /// Throw ``RefusedByUITestHarness`` when ``failsQuickCapture(arguments:)``.
+    ///
+    /// Called by ``AppSurfaces/commitCapture(_:)`` after its no-open-vault
+    /// guard and before the core is reached, so the sheet sees the refusal
+    /// exactly as it would see one the core returned.
+    static func refuseQuickCaptureIfAsked(
+        arguments: [String] = ProcessInfo.processInfo.arguments
+    ) throws {
+        if failsQuickCapture(arguments: arguments) { throw RefusedByUITestHarness() }
     }
 
     /// The session a UI-test launch runs, or `nil` for every other launch.
@@ -173,5 +210,13 @@ final class InMemoryVaultRootStore: VaultRootStore, @unchecked Sendable {
         defer { lock.unlock() }
         root = nil
     }
+}
+
+/// The refusal ``UITestHarness/failCaptureFlag`` injects into a quick capture.
+///
+/// Its own type rather than a `CaptureError` case, so the production error
+/// enum carries no case a release build could never produce.
+struct RefusedByUITestHarness: LocalizedError, Equatable {
+    var errorDescription: String? { "The UI-test harness refused this capture." }
 }
 #endif
