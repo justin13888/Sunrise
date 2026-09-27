@@ -499,12 +499,13 @@ run = ".github/scripts/observability-catalog-gate.py"
 description = "Reject a doc comment mangled into a shape rustdoc misreads (the CI gate, run locally)"
 # `cargo fmt` does not reflow comments and clippy has no rule for comment
 # *shape*, so a folded, split or detached doc comment passes every other gate
-# here. Five decidable shapes, no prose style rule: two markers on one physical
+# here. Six decidable shapes, no prose style rule: two markers on one physical
 # line (the PR #77 defect, created twice in one branch), an unclosed code fence,
 # a paragraph indented into a code block that rustdoc then compiles (the #58/#60
 # defect), a doc comment stranded below an outer attribute (the PR #63 defect),
-# and two blocks split by a blank line that Rust silently rejoins. Standard
-# library Python over every tracked `.rs`, in under a second.
+# two blocks split by a blank line that Rust silently rejoins, and another
+# item's summary left on top of this one's with no blank line (#268, #290).
+# Standard library Python over every tracked `.rs`, in under a second.
 run = ".github/scripts/doc-comment-gate.py"
 
 [tasks.citations]

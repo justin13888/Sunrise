@@ -20,7 +20,7 @@ formatting comments is not rustfmt's job.
 What this checks, and why each is decidable
 -------------------------------------------
 
-Five shapes, each of which a tool can settle without an opinion about prose:
+Six shapes, each of which a tool can settle without an opinion about prose:
 
 * **`collapsed`** — a second `///` or `//!` on the same physical line. The #77
   shape above. Code spans are masked first, so a comment that *documents* the
@@ -51,6 +51,42 @@ Five shapes, each of which a tool can settle without an opinion about prose:
   line. Rust joins them into one doc string and the blank line does not
   survive, so two paragraphs run together in the rendered output. It normally
   means an edit split one comment in two.
+* **`stranded`** — a `///` block that opens with another item's summary, and
+  whose own summary starts further down with no blank line before it. This is
+  what `split` cannot see: an edit that moved or inserted an item and left the
+  old item's doc lines sitting directly on top of the new item's, so the two
+  runs are one well-formed block. Both instances this repository has had were
+  this shape (#268 in `engine/oplog.rs`, #290 in `engine/tests.rs`), and both
+  survived review until someone read them. The rule is two facts about names,
+  not prose: the block's first sentence names one or more backticked
+  identifiers and *none* of them occurs in the documented item's signature,
+  and a later sentence that opens at the start of a line — directly after a
+  line that ended one — names a backticked identifier that *does*. That second
+  sentence is the item's own summary, and the lines above it belong to
+  somebody else.
+
+  It is deliberately narrower than "the summary names something the signature
+  does not". That weaker rule fires on 1,096 of the tree's 1,658 summaries
+  that name an identifier, because a summary legitimately names the table a
+  function counts, the op kind it folds, or the type it returns; a rule that
+  needs an allowlist of a thousand entries is not a gate. Requiring the second
+  sentence — the item's real summary, naming its own parameter — is what makes
+  the rule decidable, and it reports nothing on the tree today.
+
+  The later sentence opens with an uppercase letter, or with a backticked
+  name when it sits in the block's first paragraph. Past the first paragraph
+  a line opening with a backticked name is how this tree documents its
+  parameters one per line, and admitting it there reported three correct
+  blocks (`sunrise-core-bindings`' `import_ical`, `sunrise-domain`'s
+  `parse`, `sunrise-sync`'s `mark_carried`).
+
+  What it therefore does not see: a stranded run whose first sentence names no
+  backticked identifier, or names one the new item's signature happens to
+  share; a displaced summary whose true one names nothing in the signature
+  either; and a true summary that opens with a backticked name below a
+  stranded run of more than one paragraph, which is the #290 shape with its
+  second sentence reworded. Those need a reader, the way `citation-gate.py`
+  leaves aboutness to one.
 
 Scope
 -----
@@ -106,6 +142,26 @@ LIST_ITEM = re.compile(r"^(?P<indent>[ \t]*)(?P<marker>[-*+]|\d{1,9}[.)])(?P<gap
 # `sunrise-cli`'s two `#![allow(clippy::print_stdout)]` functions do, correctly.
 ATTRIBUTE = re.compile(r"^[ \t]*#\[")
 TAB_WIDTH = 4
+# A backticked span that is exactly one Rust identifier: `start`, `ops`.
+# `(stream_id, epoch)` or `Foo::bar` is not one, and is not compared.
+BACKTICKED_IDENT = re.compile(r"`([A-Za-z_][A-Za-z0-9_]*)`")
+# Values rather than items: a summary saying it returns `None` names what the
+# item yields, not another item, and no item this could be stranded from is
+# called that.
+VALUE_WORDS = frozenset({"None", "Some", "Ok", "Err", "true", "false", "self", "Self"})
+IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+# The end of a sentence: a terminator followed by whitespace or the end.
+SENTENCE_END = re.compile(r"[.!?](?=\s|$)")
+# A line that finishes a sentence, allowing closing markup after the stop.
+ENDS_SENTENCE = re.compile(r"[.!?][)\"'`*_]*$")
+# The line that finishes an item's signature, once no parenthesis is open:
+# it opens a body, or ends a declaration or a braced item.
+SIGNATURE_END = re.compile(r"\{|[;}]\s*$")
+# A field or a variant, which ends with a `,` on the item's own first line or
+# on the line that closes its parenthesised fields. Only there: on any other
+# line a trailing `,` ends one bound of a `where` clause or one parameter of a
+# generic list, and the signature reads on.
+ONE_LINE_ITEM_END = re.compile(r",\s*$")
 
 
 @dataclass(frozen=True)
@@ -312,6 +368,119 @@ def check_attachment(lines: list[str], blocks: list[Block]) -> list[Finding]:
     return found
 
 
+def first_sentence(text: str) -> str:
+    """`text` up to and including its first sentence terminator."""
+    end = SENTENCE_END.search(text)
+    return text[: end.end()] if end else text
+
+
+def signature_names(lines: list[str], after: int) -> set[str]:
+    """Every identifier in the signature of the item a doc block ends above.
+
+    `after` is the 0-based index of the line following the block. Blank lines,
+    ordinary comments and outer attributes (a multi-line one to its closing
+    `]`) are skipped; the signature then runs to the line that opens a body or
+    ends a declaration, reading through any line that leaves a parenthesis
+    open so a parameter list spread over several lines is read whole. A
+    trailing `,` ends it only on its first line or on the line that closes a
+    parenthesis, which is a field or a variant, and never once `where` has
+    been read: on any other line it ends one bound or one generic parameter,
+    and the ones after it are still the signature. There is no line cap. A signature cut short
+    drops the names below the cut, and a name missing from it can make the
+    summary look like another item's, so it is read to its end or the file's.
+    """
+    index = after
+    while index < len(lines):
+        stripped = lines[index].strip()
+        if not stripped or stripped.startswith("//"):
+            index += 1
+        elif ATTRIBUTE.match(stripped):
+            depth = 0
+            while index < len(lines):
+                depth += lines[index].count("[") - lines[index].count("]")
+                if depth <= 0:
+                    break
+                index += 1
+            if index < len(lines) and not lines[index].rstrip().endswith("]"):
+                break  # `#[cfg(test)] mod tests {`: the item shares the line
+            index += 1
+        else:
+            break
+    names: set[str] = set()
+    depth = 0
+    for offset, line in enumerate(lines[index:]):
+        names.update(IDENTIFIER.findall(line))
+        opened = depth > 0
+        depth += line.count("(") - line.count(")")
+        if depth > 0:
+            continue
+        if SIGNATURE_END.search(line):
+            break
+        if "where" in names:
+            continue  # every `,` from here on ends one bound
+        if (offset == 0 or opened) and ONE_LINE_ITEM_END.search(line):
+            break
+    return names
+
+
+def check_stranded(lines: list[str], block: Block) -> list[Finding]:
+    """Another item's summary left on top of this item's, with no blank line.
+
+    Reported at the line where the item's own summary starts, which is where
+    the lines above it should be cut from. Lines inside a code fence are never
+    read as a sentence.
+    """
+    if block.marker != "///":
+        return []
+    summary: list[str] = []
+    for body in block.body:
+        if not body.strip():
+            break
+        summary.append(body.strip())
+    opening = [
+        name for name in BACKTICKED_IDENT.findall(first_sentence(" ".join(summary))) if name not in VALUE_WORDS
+    ]
+    if not opening:
+        return []
+    names = signature_names(lines, block.end)
+    if any(name in names for name in opening):
+        return []
+
+    fence: str | None = None
+    first_paragraph = True
+    for offset in range(1, len(block.body)):
+        previous, current = block.body[offset - 1].strip(), block.body[offset].strip()
+        opener = FENCE.match(block.body[offset - 1])
+        if opener:
+            char = opener.group("char")[0]
+            fence = None if fence == char else (fence or char)
+        if not previous:
+            first_paragraph = False
+        if fence is not None or not previous or not current:
+            continue
+        if not ENDS_SENTENCE.search(previous):
+            continue
+        # A sentence opening with a backticked name is a seam only in the
+        # first paragraph. Further down, a line opening with a parameter's
+        # name is how this tree documents its parameters one by one.
+        if not (current[0].isupper() or (current[0] == "`" and first_paragraph)):
+            continue
+        rest = " ".join(line.strip() for line in block.body[offset:])
+        own = [name for name in BACKTICKED_IDENT.findall(first_sentence(rest)) if name in names]
+        if own:
+            return [
+                Finding(
+                    block.start + offset,
+                    "stranded",
+                    f"this sentence names `{own[0]}` from the item's signature, but the summary above "
+                    f"it at line {block.start} names only {', '.join(f'`{n}`' for n in dict.fromkeys(opening))}, "
+                    "none of which the item has. The lines above this one are another item's doc "
+                    "comment left behind by an edit — move them to the item they describe.",
+                )
+            ]
+    return []
+
+
 def scan_text(text: str) -> list[Finding]:
     """Every finding in one file's source, ordered by line then code."""
     lines = text.splitlines()
@@ -319,6 +488,7 @@ def scan_text(text: str) -> list[Finding]:
     found = check_collapsed(lines) + check_attachment(lines, blocks)
     for block in blocks:
         found += check_block_shape(block)
+        found += check_stranded(lines, block)
     return sorted(found, key=lambda f: (f.line, f.code))
 
 
@@ -411,6 +581,22 @@ SPLIT = '''
 pub fn f() {}
 '''
 
+# The #290 shape, from `engine/tests.rs` before it was fixed: `ledger_rows`'s
+# summary left on top of `events_emitted_by`'s, with no blank line between.
+STRANDED = '''
+    /// How many `device_revoke` ops this replica has kept, believed or not.
+    ///
+    /// The register is a fold over these, so "stored and skipped" and "never
+    /// arrived" look identical in `device_revocations` and are told apart only
+    /// here.
+    /// The `ev` names of every event emitted while `f` runs, in order.
+    ///
+    /// Hand-rolled rather than borrowed from `sunrise-log`'s capture target.
+    pub(super) fn events_emitted_by(f: impl FnOnce()) -> Vec<String> {
+        Vec::new()
+    }
+'''
+
 # Every shape below must be accepted. Each one exists because a plausible
 # implementation of a rule above rejects it.
 CLEAN = '''
@@ -452,6 +638,32 @@ pub fn h() -> u32 {
 /// An outer comment directly below an inner one is two blocks, not one split
 //! block — different markers, so no `split` finding.
 pub fn g() {}
+
+/// How many `device_revoke` ops are stored — a table the signature never names.
+/// Nothing here names the parameter either, so this is prose, not a seam.
+#[must_use]
+pub(super) fn ledger_rows(db: &Db) -> i64 {
+    0
+}
+
+/// The `ev` name of `record`, which is what the signature holds.
+/// The `sunrise-log` catalogue is the gate on it.
+pub fn ev(record: &Record) -> &str {
+    ""
+}
+
+/// Rows of `device_revoke_ops`, and only once. A later sentence naming `db`
+/// mid-line is not a seam, and neither is one inside a fence:
+///
+/// ```text
+/// done.
+/// Then `db` again.
+/// ```
+pub fn rows(
+    db: &Db,
+) -> i64 {
+    0
+}
 '''
 
 
@@ -470,6 +682,7 @@ def self_test() -> int:
     expect("UNCLOSED", UNCLOSED, ["unclosed-fence"])
     expect("DETACHED", DETACHED, ["detached"])
     expect("SPLIT", SPLIT, ["split"])
+    expect("STRANDED", STRANDED, ["stranded"])
     expect("CLEAN", CLEAN, [])
 
     # The findings have to name the right line, or the message sends a reader
@@ -482,18 +695,24 @@ def self_test() -> int:
     if not unclosed or unclosed[0].line != 4:
         print(f"::error::doc-comments self-test: unclosed fence reported at {unclosed}, expected line 4")
         failures += 1
+    # `stranded` names the line the item's own summary starts on, which is
+    # where the lines above it have to be cut from.
+    stranded = scan_text(STRANDED)
+    if not stranded or stranded[0].line != 7:
+        print(f"::error::doc-comments self-test: stranded reported at {stranded}, expected line 7")
+        failures += 1
 
     # `doc_blocks` splits on the marker, which is what makes the `split` rule
     # safe next to an inner comment following an outer one.
     blocks = doc_blocks(CLEAN.splitlines())
     markers = [b.marker for b in blocks]
-    if markers != ["//!", "///", "///", "///", "///", "//!"]:
+    if markers != ["//!", "///", "///", "///", "///", "//!", "///", "///", "///"]:
         print(f"::error::doc-comments self-test: blocks read as {markers}")
         failures += 1
 
     if failures:
         return 1
-    print("OK: doc-comments self-test clean (9 cases).")
+    print("OK: doc-comments self-test clean (11 cases).")
     return 0
 
 
