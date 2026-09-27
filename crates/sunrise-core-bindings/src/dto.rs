@@ -108,6 +108,12 @@ impl From<&SunriseTime> for TimeValue {
             },
             SunriseTime::Floating { civil } => Self::Floating { civil: *civil },
             SunriseTime::AllDay { date } => Self::AllDay { date: *date },
+            // The mirror has no case for a kind this build does not know; a
+            // client sees the instant it resolves to. A value a client hands
+            // back replaces the stored one, as for any explicit set.
+            SunriseTime::Unknown { .. } => Self::Instant {
+                at: t.to_instant(&jiff::tz::TimeZone::UTC),
+            },
         }
     }
 }

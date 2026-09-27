@@ -64,12 +64,12 @@ pub(super) fn decode_unknowns(blob: Option<Vec<u8>>) -> sunrise_domain::Unknowns
 /// `0013_baseline.sql`.
 pub(super) fn time_to_parts(
     t: Option<&SunriseTime>,
-) -> (Option<i64>, Option<&'static str>, Option<String>) {
+) -> (Option<i64>, Option<&str>, Option<String>) {
     match t {
         None => (None, None, None),
         Some(v) => {
             let (ms, kind, tz) = v.to_parts();
-            (Some(ms), Some(kind), tz.map(ToOwned::to_owned))
+            (Some(ms), Some(kind), tz.map(std::borrow::Cow::into_owned))
         }
     }
 }

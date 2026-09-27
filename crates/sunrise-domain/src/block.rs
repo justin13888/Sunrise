@@ -318,8 +318,11 @@ fn merged_title(x: Option<&str>, y: Option<&str>) -> Option<String> {
 }
 
 /// `ends_at` must resolve strictly after `starts_at`.
+///
+/// A kind this build cannot place on the timeline is compared with nothing:
+/// its stand-in key would invent a violation.
 fn validate_range(starts_at: &SunriseTime, ends_at: &SunriseTime) -> Result<(), ValidationError> {
-    if ends_at.index_ms() <= starts_at.index_ms() {
+    if matches!((ends_at.index_key(), starts_at.index_key()), (Some(e), Some(s)) if e <= s) {
         return Err(ValidationError::Field {
             field: "block.ends_at",
             constraint: "after_starts_at",
@@ -498,6 +501,25 @@ mod tests {
             ..block()
         };
         assert!(b.validate_invariants().is_err());
+    }
+
+    /// A time kind this build cannot place is compared with nothing.
+    #[test]
+    fn invariants_accept_an_unplaceable_bound() {
+        let unknown = SunriseTime::Unknown {
+            kind: "lunar".into(),
+            raw: crate::Unknowns::new(),
+        };
+        let b = Block {
+            starts_at: unknown.clone(),
+            ..block()
+        };
+        b.validate_invariants().unwrap();
+        let b = Block {
+            ends_at: unknown,
+            ..block()
+        };
+        b.validate_invariants().unwrap();
     }
 
     #[test]

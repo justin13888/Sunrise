@@ -36,17 +36,19 @@
 //! unchanged while the kind survives a round trip. See [`SunriseTime::to_parts`]
 //! and [`SunriseTime::from_parts`].
 
+use crate::unknown::Unknowns;
 use jiff::civil;
 use jiff::tz::TimeZone;
 use jiff::Timestamp;
+use serde::ser::SerializeMap;
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 
 /// A time value that knows what kind of time it is.
 ///
 /// Ordering is by [`SunriseTime::index_ms`] — the same key storage indexes on —
 /// so a sorted list of mixed kinds matches a `ORDER BY *_at_ms` from SQL.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SunriseTime {
     /// A fixed point on the timeline, zone-independent.
     Instant {
@@ -70,7 +72,32 @@ pub enum SunriseTime {
         /// The date.
         date: civil::Date,
     },
+    /// A kind this build does not know, kept verbatim (ADR-0045 §6).
+    ///
+    /// A newer build added it. This build cannot resolve it, so it never
+    /// fails the op that carries it and it writes it back byte for byte. It
+    /// is placed on the timeline only when `raw` carries an `at` instant
+    /// (see [`SunriseTime::index_ms`]).
+    Unknown {
+        /// The `kind` string exactly as it arrived.
+        kind: String,
+        /// Every other field of the value, verbatim.
+        raw: Unknowns,
+    },
 }
+
+/// The key an [`SunriseTime::Unknown`] value with no `at` instant is indexed
+/// and resolved at: `9999-01-01T00:00:00Z`.
+///
+/// Late rather than early, so a value this build cannot place sorts after
+/// every value it can, and never reads as overdue or already past. A year
+/// short of `jiff`'s maximum, so arithmetic on the resolved instant does not
+/// overflow.
+pub const UNANCHORED_MS: i64 = 253_370_764_800_000;
+
+/// The prefix of the `_tz` sidecar that holds an [`SunriseTime::Unknown`]
+/// value's other fields: this, then their canonical CBOR in lowercase hex.
+const RAW_SIDECAR_PREFIX: &str = "cbor:";
 
 /// The `_kind` sidecar values. Stable strings: they are persisted.
 pub mod kind {
@@ -82,6 +109,10 @@ pub mod kind {
     pub const FLOATING: &str = "floating";
     /// [`super::SunriseTime::AllDay`].
     pub const ALL_DAY: &str = "all_day";
+
+    /// Every kind this build knows. Any other `kind` is
+    /// [`super::SunriseTime::Unknown`].
+    pub const KNOWN: [&str; 4] = [INSTANT, ZONED, FLOATING, ALL_DAY];
 }
 
 impl SunriseTime {
@@ -112,14 +143,38 @@ impl SunriseTime {
         Self::AllDay { date }
     }
 
-    /// The `_kind` sidecar for this value.
+    /// The `_kind` sidecar for this value; an unknown kind's raw string.
     #[must_use]
-    pub const fn kind_str(&self) -> &'static str {
+    pub fn kind_str(&self) -> &str {
         match self {
             Self::Instant { .. } => kind::INSTANT,
             Self::Zoned { .. } => kind::ZONED,
             Self::Floating { .. } => kind::FLOATING,
             Self::AllDay { .. } => kind::ALL_DAY,
+            Self::Unknown { kind, .. } => kind,
+        }
+    }
+
+    /// Whether this is a kind this build does not know.
+    #[must_use]
+    pub const fn is_unknown(&self) -> bool {
+        matches!(self, Self::Unknown { .. })
+    }
+
+    /// The instant an unknown kind carries in its `at` field, if it carries
+    /// one in the wire form of a timestamp. `None` for every known kind.
+    ///
+    /// `at` because it is the field the one kind that IS an instant spells
+    /// its instant with, and a newer kind that is anchored on the timeline
+    /// has no better name for it.
+    #[must_use]
+    pub fn unknown_anchor(&self) -> Option<Timestamp> {
+        match self {
+            Self::Unknown { raw, .. } => raw
+                .get("at")
+                .and_then(|v| v.get().as_text())
+                .and_then(|s| s.parse::<Timestamp>().ok()),
+            _ => None,
         }
     }
 
@@ -137,9 +192,15 @@ impl SunriseTime {
     /// offers rather than failing: a scheduled time that cannot be rendered is
     /// worse than one rendered an hour off, and the stored civil value is
     /// unchanged either way.
+    ///
+    /// An unknown kind resolves to its `at` instant when it carries one
+    /// ([`SunriseTime::unknown_anchor`]), and to [`UNANCHORED_MS`] otherwise.
     #[must_use]
     pub fn to_instant(&self, tz: &TimeZone) -> Timestamp {
         match self {
+            Self::Unknown { .. } => self.unknown_anchor().unwrap_or_else(|| {
+                Timestamp::from_millisecond(UNANCHORED_MS).unwrap_or(Timestamp::UNIX_EPOCH)
+            }),
             Self::Instant { at } => *at,
             Self::Zoned { civil, tz: name } => {
                 let zone = TimeZone::get(name).unwrap_or_else(|_| tz.clone());
@@ -171,24 +232,45 @@ impl SunriseTime {
     /// It is within a day of the true instant for any real zone, which is what
     /// makes it a usable coarse filter. Anything that must be exact resolves
     /// with `to_instant` after reading.
+    ///
+    /// An unknown kind indexes at its `at` instant when it carries one, and at
+    /// [`UNANCHORED_MS`] otherwise, so it sorts after every value this build
+    /// can place. [`SunriseTime::index_key`] tells the two apart.
     #[must_use]
     pub fn index_ms(&self) -> i64 {
         match self {
             Self::Instant { at } => at.as_millisecond(),
-            Self::Zoned { .. } | Self::Floating { .. } | Self::AllDay { .. } => {
-                self.to_instant(&TimeZone::UTC).as_millisecond()
-            }
+            Self::Zoned { .. }
+            | Self::Floating { .. }
+            | Self::AllDay { .. }
+            | Self::Unknown { .. } => self.to_instant(&TimeZone::UTC).as_millisecond(),
+        }
+    }
+
+    /// [`SunriseTime::index_ms`], or `None` for an unknown kind that carries
+    /// no `at` instant: a value this build cannot place on the timeline.
+    ///
+    /// For a check that compares two times, where comparing against the
+    /// [`UNANCHORED_MS`] stand-in would invent a violation.
+    #[must_use]
+    pub fn index_key(&self) -> Option<i64> {
+        match self {
+            Self::Unknown { .. } => self.unknown_anchor().map(Timestamp::as_millisecond),
+            _ => Some(self.index_ms()),
         }
     }
 
     /// Project to the three storage columns: `(index_ms, kind, tz)`.
     ///
-    /// The `tz` sidecar is `Some` only for [`SunriseTime::Zoned`]; the other
+    /// The `tz` sidecar is `Some` for [`SunriseTime::Zoned`], where it is the
+    /// zone name, and for [`SunriseTime::Unknown`], where it is the value's
+    /// other fields as `cbor:` and their canonical CBOR in hex. The other
     /// kinds either carry no zone or are defined by not having one.
     #[must_use]
-    pub fn to_parts(&self) -> (i64, &'static str, Option<&str>) {
+    pub fn to_parts(&self) -> (i64, &str, Option<Cow<'_, str>>) {
         let tz = match self {
-            Self::Zoned { tz, .. } => Some(tz.as_str()),
+            Self::Zoned { tz, .. } => Some(Cow::Borrowed(tz.as_str())),
+            Self::Unknown { raw, .. } => Some(Cow::Owned(encode_raw_sidecar(raw))),
             _ => None,
         };
         (self.index_ms(), self.kind_str(), tz)
@@ -196,11 +278,15 @@ impl SunriseTime {
 
     /// Rebuild from the three storage columns.
     ///
-    /// An unrecognised `kind` degrades to [`SunriseTime::Instant`] rather than
-    /// failing: a row written by a newer build that added a fifth kind is still
-    /// a real time at `index_ms`, and refusing to read it would lose the whole
-    /// task over one column. Same rule as every other lossy enum decode in the
-    /// domain.
+    /// An unrecognised `kind` reads back as the [`SunriseTime::Unknown`] value
+    /// [`SunriseTime::to_parts`] stored, its other fields decoded from the
+    /// `tz` sidecar, so a round trip through storage does not degrade it.
+    ///
+    /// A row with an unrecognised `kind` and no sidecar this build wrote has
+    /// nothing to rebuild the value from. It degrades to
+    /// [`SunriseTime::Instant`] at `index_ms` rather than failing: that is
+    /// still a real time, a well-formed one to re-emit, and refusing to read
+    /// it would lose the whole task over one column.
     #[must_use]
     pub fn from_parts(index_ms: i64, kind: &str, tz: Option<&str>) -> Self {
         let at = Timestamp::from_millisecond(index_ms).unwrap_or(Timestamp::UNIX_EPOCH);
@@ -220,7 +306,14 @@ impl SunriseTime {
             kind::ALL_DAY => Self::AllDay {
                 date: utc_civil().date(),
             },
-            _ => Self::Instant { at },
+            kind::INSTANT => Self::Instant { at },
+            other => match tz.and_then(decode_raw_sidecar) {
+                Some(raw) => Self::Unknown {
+                    kind: other.to_string(),
+                    raw,
+                },
+                None => Self::Instant { at },
+            },
         }
     }
 
@@ -238,12 +331,22 @@ impl SunriseTime {
 /// still reads, as an [`SunriseTime::Instant`]. That is the promise
 /// `docs/10-cross-cutting/protocol-versioning.md` makes about minor schema
 /// changes, and the cheapest possible place to keep it.
+///
+/// The third form is a kind this build does not know. It is tried last, so a
+/// value of a known kind always decodes as that kind; a known kind whose
+/// fields do not parse is refused rather than kept as unknown, because a
+/// build that knows the kind would read the same bytes as an error too.
+///
+/// `untagged` buffers the value once and each form reads that buffer, so the
+/// cost of a peer's value is linear in its size.
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum SunriseTimeRepr {
     Tagged(Tagged),
     /// `DOC_SCHEMA_V = 1`: a bare instant, no kind.
     Legacy(Timestamp),
+    /// A kind this build does not know.
+    Unknown(UnknownTagged),
 }
 
 #[derive(Deserialize)]
@@ -255,6 +358,55 @@ enum Tagged {
     AllDay { date: civil::Date },
 }
 
+#[derive(Deserialize)]
+struct UnknownTagged {
+    kind: String,
+    #[serde(flatten)]
+    raw: Unknowns,
+}
+
+/// The wire form of the four known kinds, borrowed. Derived, so the known
+/// kinds encode exactly as they did before `Unknown` existed.
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum TaggedRef<'a> {
+    Instant {
+        at: &'a Timestamp,
+    },
+    Zoned {
+        civil: &'a civil::DateTime,
+        tz: &'a str,
+    },
+    Floating {
+        civil: &'a civil::DateTime,
+    },
+    AllDay {
+        date: &'a civil::Date,
+    },
+}
+
+impl Serialize for SunriseTime {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Instant { at } => TaggedRef::Instant { at }.serialize(s),
+            Self::Zoned { civil, tz } => TaggedRef::Zoned { civil, tz }.serialize(s),
+            Self::Floating { civil } => TaggedRef::Floating { civil }.serialize(s),
+            Self::AllDay { date } => TaggedRef::AllDay { date }.serialize(s),
+            Self::Unknown { kind, raw } => {
+                // The decoder never puts `kind` in `raw`; a value built by hand
+                // could, and a map must not carry the key twice.
+                let fields = raw.iter().filter(|(k, _)| k.as_str() != "kind");
+                let mut m = s.serialize_map(Some(1 + fields.clone().count()))?;
+                m.serialize_entry("kind", kind)?;
+                for (k, v) in fields {
+                    m.serialize_entry(k, v)?;
+                }
+                m.end()
+            }
+        }
+    }
+}
+
 impl<'de> Deserialize<'de> for SunriseTime {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         Ok(match SunriseTimeRepr::deserialize(d)? {
@@ -264,8 +416,52 @@ impl<'de> Deserialize<'de> for SunriseTime {
             SunriseTimeRepr::Tagged(Tagged::Zoned { civil, tz }) => Self::Zoned { civil, tz },
             SunriseTimeRepr::Tagged(Tagged::Floating { civil }) => Self::Floating { civil },
             SunriseTimeRepr::Tagged(Tagged::AllDay { date }) => Self::AllDay { date },
+            SunriseTimeRepr::Unknown(UnknownTagged { kind, raw }) => {
+                if kind::KNOWN.contains(&kind.as_str()) {
+                    return Err(serde::de::Error::custom(format!("malformed `{kind}` time")));
+                }
+                Self::Unknown { kind, raw }
+            }
         })
     }
+}
+
+/// The `_tz` sidecar of an [`SunriseTime::Unknown`] value: its other fields'
+/// canonical CBOR, hex-encoded after [`RAW_SIDECAR_PREFIX`].
+fn encode_raw_sidecar(raw: &Unknowns) -> String {
+    // A map of `CborValue`s holds no float and nothing else the canonical
+    // encoder refuses, so this does not fail; an empty body is the fallback
+    // a failure would read back as.
+    let bytes = sunrise_cbor::encode_canonical(raw).unwrap_or_default();
+    let mut s = String::with_capacity(RAW_SIDECAR_PREFIX.len() + bytes.len() * 2);
+    s.push_str(RAW_SIDECAR_PREFIX);
+    for b in bytes {
+        use std::fmt::Write as _;
+        let _ = write!(s, "{b:02x}");
+    }
+    s
+}
+
+/// The inverse of [`encode_raw_sidecar`]; `None` for a sidecar it did not
+/// write.
+fn decode_raw_sidecar(s: &str) -> Option<Unknowns> {
+    let hex = s.strip_prefix(RAW_SIDECAR_PREFIX)?.as_bytes();
+    if hex.len() % 2 != 0 {
+        return None;
+    }
+    let nibble = |c: u8| match c {
+        b'0'..=b'9' => Some(c - b'0'),
+        b'a'..=b'f' => Some(c - b'a' + 10),
+        _ => None,
+    };
+    let bytes = hex
+        .chunks_exact(2)
+        .map(|p| Some((nibble(p[0])? << 4) | nibble(p[1])?))
+        .collect::<Option<Vec<u8>>>()?;
+    if bytes.is_empty() {
+        return Some(Unknowns::new());
+    }
+    sunrise_cbor::decode_lenient(&bytes).ok()
 }
 
 impl std::fmt::Display for SunriseTime {
@@ -279,6 +475,10 @@ impl std::fmt::Display for SunriseTime {
             Self::Zoned { civil, tz } => write!(f, "{civil}[{tz}]"),
             Self::Floating { civil } => write!(f, "{civil}"),
             Self::AllDay { date } => write!(f, "{date}"),
+            Self::Unknown { kind, .. } => match self.unknown_anchor() {
+                Some(at) => write!(f, "{at}[unknown kind {kind}]"),
+                None => write!(f, "[unknown kind {kind}]"),
+            },
         }
     }
 }
@@ -304,6 +504,11 @@ impl Ord for SunriseTime {
             .then_with(|| self.kind_str().cmp(other.kind_str()))
             .then_with(|| match (self, other) {
                 (Self::Zoned { tz: a, .. }, Self::Zoned { tz: b, .. }) => a.cmp(b),
+                // Same index and kind: the fields decide, compared as the
+                // bytes they are stored as.
+                (Self::Unknown { raw: a, .. }, Self::Unknown { raw: b, .. }) if a != b => {
+                    encode_raw_sidecar(a).cmp(&encode_raw_sidecar(b))
+                }
                 _ => std::cmp::Ordering::Equal,
             })
     }
@@ -312,6 +517,7 @@ impl Ord for SunriseTime {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::unknown::CborValue;
 
     fn ny() -> TimeZone {
         TimeZone::get("America/New_York").unwrap()
@@ -375,10 +581,128 @@ mod tests {
             SunriseTime::zoned(civil::date(2024, 6, 1).at(9, 30, 0, 0), "America/New_York"),
             SunriseTime::floating(civil::date(2024, 6, 1).at(9, 30, 0, 0)),
             SunriseTime::all_day(civil::date(2024, 7, 4)),
+            lunar(Some("2024-06-01T09:30:00Z")),
+            lunar(None),
+            SunriseTime::Unknown {
+                kind: "bare".into(),
+                raw: Unknowns::new(),
+            },
         ];
         for c in cases {
             let (ms, k, tz) = c.to_parts();
-            assert_eq!(SunriseTime::from_parts(ms, k, tz), c, "round trip {c:?}");
+            assert_eq!(
+                SunriseTime::from_parts(ms, k, tz.as_deref()),
+                c,
+                "round trip {c:?}"
+            );
+        }
+    }
+
+    /// A kind a newer build added, with an optional `at` anchor.
+    fn lunar(at: Option<&str>) -> SunriseTime {
+        let mut raw = Unknowns::new();
+        raw.insert(
+            "phase".into(),
+            CborValue(ciborium::value::Value::Text("waxing".into())),
+        );
+        if let Some(at) = at {
+            raw.insert(
+                "at".into(),
+                CborValue(ciborium::value::Value::Text(at.into())),
+            );
+        }
+        SunriseTime::Unknown {
+            kind: "lunar".into(),
+            raw,
+        }
+    }
+
+    #[test]
+    fn the_unanchored_key_is_the_start_of_9999() {
+        assert_eq!(
+            Timestamp::from_millisecond(UNANCHORED_MS).unwrap(),
+            "9999-01-01T00:00:00Z".parse::<Timestamp>().unwrap()
+        );
+    }
+
+    /// A kind this build does not know decodes, keeps every field, and writes
+    /// back the bytes it arrived as.
+    #[test]
+    fn an_unknown_kind_round_trips_byte_exact() {
+        for t in [lunar(Some("2024-06-01T09:30:00Z")), lunar(None)] {
+            let bytes = sunrise_cbor::encode_canonical(&t).unwrap();
+            let back: SunriseTime = sunrise_cbor::decode_canonical(&bytes).unwrap();
+            assert_eq!(back, t);
+            assert!(back.is_unknown());
+            assert_eq!(back.kind_str(), "lunar");
+            assert_eq!(sunrise_cbor::encode_canonical(&back).unwrap(), bytes);
+        }
+        let j = serde_json::json!({ "kind": "lunar", "phase": "waxing" });
+        let t: SunriseTime = serde_json::from_value(j.clone()).unwrap();
+        assert_eq!(t, lunar(None));
+        assert_eq!(serde_json::to_value(&t).unwrap(), j);
+    }
+
+    /// A known kind whose fields do not parse is still an error: it is not
+    /// "a kind this build does not know".
+    #[test]
+    fn a_malformed_known_kind_is_refused_not_kept() {
+        for j in [
+            serde_json::json!({ "kind": "instant", "at": "not a time" }),
+            serde_json::json!({ "kind": "zoned", "civil": "2024-06-01T09:00:00" }),
+        ] {
+            assert!(serde_json::from_value::<SunriseTime>(j).is_err());
+        }
+    }
+
+    /// Placed by its `at` when it has one; after everything else when not.
+    #[test]
+    fn an_unknown_kind_orders_by_its_anchor_or_last() {
+        let anchored = lunar(Some("2024-06-01T09:30:00Z"));
+        assert_eq!(
+            anchored.index_ms(),
+            "2024-06-01T09:30:00Z"
+                .parse::<Timestamp>()
+                .unwrap()
+                .as_millisecond()
+        );
+        assert_eq!(anchored.index_key(), Some(anchored.index_ms()));
+
+        let unanchored = lunar(None);
+        assert_eq!(unanchored.index_ms(), UNANCHORED_MS);
+        assert_eq!(unanchored.index_key(), None);
+
+        let mut v = [
+            unanchored.clone(),
+            SunriseTime::all_day(civil::date(2024, 7, 4)),
+            anchored.clone(),
+            SunriseTime::instant(Timestamp::from_millisecond(0).unwrap()),
+        ];
+        v.sort();
+        assert_eq!(v[1], anchored);
+        assert_eq!(v[3], unanchored);
+
+        // Two unknown values that differ only in a field are not Equal.
+        let mut other = lunar(None);
+        if let SunriseTime::Unknown { raw, .. } = &mut other {
+            raw.insert(
+                "phase".into(),
+                CborValue(ciborium::value::Value::Text("waning".into())),
+            );
+        }
+        assert_ne!(unanchored.cmp(&other), std::cmp::Ordering::Equal);
+    }
+
+    /// A row with an unknown kind and no sidecar this build wrote has nothing
+    /// to rebuild from; it degrades to an instant, as before.
+    #[test]
+    fn an_unknown_kind_without_its_sidecar_degrades_to_an_instant() {
+        for tz in [None, Some("Europe/Berlin"), Some("cbor:zz"), Some("cbor:0")] {
+            assert_eq!(
+                SunriseTime::from_parts(1_700_000_000_000, "lunar_phase", tz),
+                SunriseTime::instant(Timestamp::from_millisecond(1_700_000_000_000).unwrap()),
+                "sidecar {tz:?}"
+            );
         }
     }
 
@@ -392,15 +716,6 @@ mod tests {
         // rather than the implementation, by checking the value equals the UTC
         // resolution and nothing else.
         assert_eq!(before, t.to_instant(&TimeZone::UTC).as_millisecond());
-    }
-
-    #[test]
-    fn an_unknown_kind_degrades_to_an_instant() {
-        let t = SunriseTime::from_parts(1_700_000_000_000, "lunar_phase", None);
-        assert_eq!(
-            t,
-            SunriseTime::instant(Timestamp::from_millisecond(1_700_000_000_000).unwrap())
-        );
     }
 
     #[test]

@@ -298,7 +298,9 @@ impl Engine {
         let Some(at) = task.scheduled_at.as_ref() else {
             return Ok(Vec::new());
         };
-        if task.scheduling_constraints.is_empty() {
+        // A time kind this build cannot place on the timeline is checked
+        // against nothing: its stand-in instant would invent a violation.
+        if task.scheduling_constraints.is_empty() || at.index_key().is_none() {
             return Ok(Vec::new());
         }
         let tz = jiff::tz::TimeZone::get(&self.clock.timezone()).unwrap_or(jiff::tz::TimeZone::UTC);

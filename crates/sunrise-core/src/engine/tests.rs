@@ -18443,6 +18443,71 @@ fn an_unknown_state_and_energy_survive_a_peers_unrelated_edit() {
     assert_eq!(task_of(&eb, &dbb, task).state, TaskState::Done);
 }
 
+/// ADR-0045 §6, one level down: a time kind this build does not know, and a
+/// field a newer build added inside a nested constraint, both land, are
+/// stored, and are re-emitted unchanged by this build's unrelated edit.
+#[test]
+fn an_unknown_time_kind_and_nested_fields_survive_a_peers_unrelated_edit() {
+    let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0 + 1))));
+    let mut dba = db_root(ROOT);
+    let mut dbb = db_root(ROOT);
+    trust(&ea, &mut dba, &eb);
+    trust(&eb, &mut dbb, &ea);
+
+    let text = |s: &str| sunrise_domain::CborValue(ciborium::value::Value::Text(s.into()));
+    let mut raw = Unknowns::new();
+    raw.insert("phase".into(), text("waxing"));
+    let lunar = SunriseTime::Unknown {
+        kind: "lunar".into(),
+        raw,
+    };
+    let mut constraint = sample_constraint();
+    constraint.unknown.insert("place".into(), text("office"));
+    if let Some(w) = constraint.time_of_day.as_mut() {
+        w.unknown.insert("slack_m".into(), text("15"));
+    }
+
+    let task = new_task(&ea, &mut dba, "from a newer build");
+    ea.apply(
+        &mut dba,
+        Command::UpdateTask {
+            id: task,
+            patch: TaskPatch {
+                scheduled_at: Some(Some(lunar.clone())),
+                scheduling_constraints: Some(vec![constraint.clone()]),
+                ..Default::default()
+            },
+        },
+    )
+    .unwrap();
+    eb.apply_remote_all(&mut dbb, &create_env_for(&dba, task.bytes()))
+        .unwrap();
+    for env in update_envs_for(&dba, task.bytes()) {
+        eb.apply_remote_all(&mut dbb, &env).unwrap();
+    }
+
+    // B's projection holds both, not an instant and a truncated constraint.
+    let stored = task_of(&eb, &dbb, task);
+    assert_eq!(stored.scheduled_at.as_ref(), Some(&lunar));
+    assert_eq!(stored.scheduling_constraints, vec![constraint.clone()]);
+
+    eb.apply(
+        &mut dbb,
+        Command::UpdateTask {
+            id: task,
+            patch: TaskPatch {
+                title: Some("renamed by an older build".into()),
+                ..Default::default()
+            },
+        },
+    )
+    .unwrap();
+    let emitted = last_task_update(&eb, &dbb, task);
+    assert_eq!(emitted.scheduled_at, Some(lunar));
+    assert_eq!(emitted.scheduling_constraints, vec![constraint]);
+}
+
 /// An unknown state counts as open in the SQL that lists and counts open
 /// work, as `todo` does in Rust.
 #[test]
