@@ -53,7 +53,7 @@ Where the body comes from
 With a path argument, that file (`-` for stdin), so a body can be checked
 before it is published:
 
-    gh pr view N --json body --jq .body | .github/scripts/reverses-gate.py -
+    gh pr view N --json body --jq .body | mise run reverses-gate -
 
 With no argument, the `pull_request.body` of the event payload at
 `$GITHUB_EVENT_PATH`, which is how the `pr-body` workflow runs it. The body is

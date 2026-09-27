@@ -20,7 +20,8 @@ Each case runs the gate as a subprocess, either on a body file or on a
 synthesised event payload through `GITHUB_EVENT_PATH`, the two ways it reads a
 body.
 
-Run it directly: `python3 .github/scripts/test_reverses_gate.py`.
+Run it with `mise run reverses-gate-test`, or directly:
+`python3 .github/scripts/test_reverses_gate.py`.
 """
 
 from __future__ import annotations
