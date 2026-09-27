@@ -181,7 +181,7 @@ impl Engine {
     ///    parked in `deferred_ops` and this returns `Ok(vec![])` without
     ///    reaching any step below. It is retried after every absorbed key.
     ///    **An unknown inner kind is not an error either**: the op verified and
-    ///    opened, so it is a newer build's family, and [`Self::park_op`] keeps
+    ///    opened, so it is a newer build's family, and `Engine::park_op` keeps
     ///    it in `ops` and `parked_ops`, counts it toward the cursor, and
     ///    returns `Ok(vec![])`. [`Self::replay_parked_ops`] applies it once a
     ///    build that knows the kind opens the vault.
