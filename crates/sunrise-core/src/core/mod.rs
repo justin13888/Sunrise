@@ -694,10 +694,17 @@ impl Core {
         &self,
         request: &sunrise_pairing::PairingRequest,
     ) -> Result<sunrise_pairing::PairingGrant, CoreError> {
+        // The read bound travels with the keys, so the joiner starts with
+        // this device's bound rather than none (#282). Read under the same
+        // lock the keys are held under, from the table the engine owns.
+        let read_bounds = {
+            let db = self.db.lock();
+            crate::engine::read_bounds_for_pairing(db.conn())?
+        };
         Ok(self
             .engine
             .keychain()
-            .issue_pairing_grant(request, self.now_ms())?)
+            .issue_pairing_grant(request, read_bounds, self.now_ms())?)
     }
 
     /// Every Stream key this device holds: `stream_id -> epoch -> key`.

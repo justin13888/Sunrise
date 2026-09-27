@@ -192,7 +192,7 @@ replica that never re-seals does not hand them over.
 - **The release is per-replica, like the bound.** A replica that learned the
   author was revoked before it saw the withdrawal fails (c) and keeps the
   bound. One that saw the withdrawal first has already released it. This is
-  the non-convergence [#282](https://github.com/justin13888/Sunrise/issues/282)
+  the non-convergence [#411](https://github.com/justin13888/Sunrise/issues/411)
   owns, reached one more way. It is disclosed on `DeviceRow::read_bounded`
   as the unwind already is.
 - **Keys handed out are not taken back.** If a withdrawal's author is later
@@ -201,7 +201,7 @@ replica that never re-seals does not hand them over.
 - **A rehabilitated half of a mutual pair stays bounded.** Condition (b) is
   what keeps it bounded, because its revoker's claim is still live. §3's
   third-party settlement restores that device's standing and not its keys.
-  #282 is where that belongs.
+  #411 is where that belongs.
 - **The identity is not restored.** Suppose the revocation rotated the account
   identity, which happens when the account's creator makes it (see
   `docs/03-crypto/key-rotation.md` §Revocation). The device's certificate
@@ -392,7 +392,7 @@ is to land the decision now and the schema with its only writer.
 - **[#248](https://github.com/justin13888/Sunrise/issues/248)'s "permanently"
   is conditional.** It holds only in an account with no third current device,
   and even there the half of the pair that a third device later restores stays
-  read-bounded. That is #282's to close.
+  read-bounded. That is #411's to close.
 - **`docs/03-crypto/key-rotation.md` §Revocation** states that a revocation
   cannot be undone at HEAD, and records the withdrawal this ADR decides.
 
@@ -403,7 +403,7 @@ is to land the decision now and the schema with its only writer.
    so this record's sequencing has to be re-derived. The same holds if #324
    lands a feature gate that differs from ADR-0045 §7, or closes the pairing
    residual §7 discloses.
-2. **#282 makes the read bound a function of the op set.** §4's per-replica
+2. **#411 makes the read bound a function of the op set.** §4's per-replica
    release then becomes an account-wide rule, and conditions (b) and (c)
    should be re-derived from that function rather than carried over.
 3. **The relay learns the revoking device some other way**, for example by

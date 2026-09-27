@@ -741,7 +741,7 @@ impl Engine {
                         // `backfill_key_envelopes` emits the envelope. More
                         // senders refused can only mean *more* backfill, never
                         // less. It is also why the bound being per-replica
-                        // (#282) costs nothing at this site: two replicas
+                        // (#411) costs nothing at this site: two replicas
                         // disagreeing about one hint row cannot withhold a key
                         // from anybody.
                         if self.is_read_bounded(tx, sender)? {
@@ -980,8 +980,21 @@ impl Engine {
                     // not depend on, and it is the same table swap the four
                     // key-distribution sites needed for reasons that *are*
                     // live. See `Engine::is_read_bounded`.
-                    let revocations: i64 =
-                        tx.query_row("SELECT count(*) FROM device_read_bounds", [], |r| r.get(0))?;
+                    //
+                    // Only this replica's own rows count (`from_sponsor = 0`,
+                    // migration 0030). A joiner adopts its sponsor's bound
+                    // before it holds any cert but its own. Counting those rows
+                    // would mark the sponsor and every device that paired
+                    // before any revocation as joined after one, on the
+                    // joiner's first sync and on no older replica. The joiner
+                    // counts a revocation once its own fold applies it, in the
+                    // same relay order an older replica met it. The fold then
+                    // clears `from_sponsor` on an adopted row it also bounds.
+                    let revocations: i64 = tx.query_row(
+                        "SELECT count(*) FROM device_read_bounds WHERE from_sponsor = 0",
+                        [],
+                        |r| r.get(0),
+                    )?;
                     !known && revocations > 0
                 };
                 if readmission {

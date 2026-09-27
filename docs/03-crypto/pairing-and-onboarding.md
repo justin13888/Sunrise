@@ -130,10 +130,13 @@ Maximum payload: 64 KiB. Routing: each side authenticates its WebSocket with `(a
    PairingGrant = {
        1: bstr,                  ; DeviceCert for N, signed by ID_S_priv
        2: bstr .size 32,         ; vault_root
-       3: { * bstr .size 16 => { * uint => bstr .size 32 } }
+       3: { * bstr .size 16 => { * uint => bstr .size 32 } },
                                  ; stream_keys: stream_id => epoch => key
+     ? 4: [ * bstr .size 16 ]    ; read_bounds: E's device_read_bounds, omitted when empty
    }
    ```
+
+   Field 4 is E's whole read bound, and N adopts it in the transaction that creates its vault. The bound is a ratchet over what E's own folds produced, so it holds devices no fold of the ledger bounds today; a device that paired without it learned every revocation afterwards and was the weakest replica in the account ([ADR-0041](../11-adr/0041-peer-side-revocation-is-a-fold.md) §Decision 5). N does not verify the claim, because the same message already hands over every Stream key. An E that predates the field sends none and N adopts nothing; an N that predates it ignores it.
 
 7. **What each side checks**, and every field is a value the *other* side chose, so each is recomputed rather than believed. All comparisons are constant-time via `subtle::ConstantTimeEq`.
 
@@ -141,7 +144,7 @@ Maximum payload: 64 KiB. Routing: each side authenticates its WebSocket with `(a
    - **E, on the request**: `device_id == BLAKE3("sunrise.device_id.v1" || D_S_pub, 16)`, and `identity_id` is this account's. A joiner that could name its own id would choose one the revocation register already excludes, or one that collides with a sibling's row.
    - **N, on the grant**: the cert parses, verifies under the `ID_S_pub` **the offer named** — not under whatever identity the cert claims, so a cert that is internally consistent under some other well-formed identity is refused — and names N's own `device_id`, `d_s_pub` and `d_d_pub`. This is the check that makes a captured request useless at a second sponsor: that sponsor will happily issue, and N refuses what comes back.
 
-8. **N assembles a `PairingPayload`** from the three — the account's public identity, its own device keys, its cert, the vault root and the Stream keys — and opens its vault with it. That type is no longer a wire message; it exists because two seams have to carry the assembled result across a process or language boundary (UniFFI's `paired_bundle`, the CLI's pending-pairing file). Fields 1, 2, 7 and 8 of its encoding are **burned**: 1 was `ID_S_priv` and 2 was `ID_D_priv`, and a payload still carrying either is refused rather than silently stripped, because tolerating it would leave the operator believing a revocation binds when it does not.
+8. **N assembles a `PairingPayload`** from the three — the account's public identity, its own device keys, its cert, the vault root, the Stream keys and E's read bound (field 15, omitted when empty) — and opens its vault with it. That type is no longer a wire message; it exists because two seams have to carry the assembled result across a process or language boundary (UniFFI's `paired_bundle`, the CLI's pending-pairing file). Fields 1, 2, 7 and 8 of its encoding are **burned**: 1 was `ID_S_priv` and 2 was `ID_D_priv`, and a payload still carrying either is refused rather than silently stripped, because tolerating it would leave the operator believing a revocation binds when it does not.
 9. **N publishes its `device_cert` op** (signed by its new `D_S_priv`, control envelope) into the vault-meta log, and stores keys per [`identity-and-device-keys.md`](./identity-and-device-keys.md).
 10. **E displays** "Paired with N at `<time>`" in its devices list; N displays "Ready."
 
