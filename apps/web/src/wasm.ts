@@ -14,10 +14,27 @@
 
 export type TaskState = "todo" | "in_progress" | "done" | "cancelled";
 
+const TASK_STATES: ReadonlySet<string> = new Set<TaskState>([
+    "todo",
+    "in_progress",
+    "done",
+    "cancelled",
+]);
+
+/**
+ * The state logic and rendering act on. The core sends a state a newer build
+ * wrote as its raw string (ADR-0045 §6); like the core, this reads it as
+ * `todo`, the open fallback.
+ */
+export function effectiveTaskState(state: string): TaskState {
+    return TASK_STATES.has(state) ? (state as TaskState) : "todo";
+}
+
 export interface Task {
     id: string;
     title: string;
-    state: TaskState;
+    /** A known `TaskState`, or a newer build's state kept verbatim. */
+    state: string;
     stream_id: string;
     scheduled_at?: string | null;
     due_at?: string | null;
@@ -100,7 +117,7 @@ export const queries = {
 interface CoreTask {
     id: string;
     title: string;
-    state: TaskState;
+    state: string;
     stream_id: string;
 }
 
