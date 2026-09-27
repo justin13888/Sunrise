@@ -89,6 +89,38 @@ struct AccountRenewalTickTests {
         #expect(handed.value == ["access-new"])
     }
 
+    /// A renewal that lands after its tick was cancelled still publishes to the
+    /// model, but reaches no `tokenChanged`: the owner that cancelled it has
+    /// let go of the vault whose sync driver that callback names. The driver
+    /// cancels the tick from inside `refresh`, so the cancel lands while
+    /// ``AccountModel/refreshIfNeeded(issuer:clientID:nowMs:)`` is in flight
+    /// with a changed token.
+    @Test
+    func aRenewalLandingAfterCancellationIsNotHandedOn() async {
+        let store = StubCredentialStore(value: credentials(accessToken: "access-old"))
+        let driver = CancellingLoginDriver(
+            renewed: credentials(accessToken: "access-new", expiresAtMs: 9_000, renewAtMs: 8_000)
+        )
+        let account = AccountModel(store: store, makeDriver: { _, _ in driver }, openURL: { _ in })
+        account.restore()
+        let handed = Observed<[String?]>()
+        handed.value = []
+
+        let tick = _Concurrency.Task {
+            await account.renewWhileRunning(
+                issuer: { "https://issuer.example" },
+                clientID: { "client" },
+                now: { 3_000 },
+                every: .seconds(3_600),
+                tokenChanged: { handed.value?.append($0) }
+            )
+        }
+        await tick.value
+
+        #expect(account.accessToken == "access-new", "the renewal in flight landed")
+        #expect(handed.value == [], "and was handed to nothing")
+    }
+
     /// An expired renewal that fails drops the bearer, and the driver is told
     /// so rather than left presenting a token the relay refuses.
     @Test
@@ -282,6 +314,22 @@ final class ScriptedLoginDriver: LoginDriver, @unchecked Sendable {
             return true
         }
         if fails { throw StubLoginError() }
+        return renewed
+    }
+}
+
+/// A renewal that cancels the task running it, then succeeds: the cancel lands
+/// while the renewal is in flight, as a session letting go of its vault would
+/// mid-refresh, with no timing for the test to arrange.
+struct CancellingLoginDriver: LoginDriver {
+    let renewed: StoredCredentials
+
+    func begin(deviceID: String) async throws -> URL { StubLoginDriver().authorizeURL }
+
+    func complete(timeoutMs: UInt64, nowMs: UInt64) async throws -> StoredCredentials { renewed }
+
+    func refresh(refreshToken: String, nowMs: UInt64) async throws -> StoredCredentials {
+        withUnsafeCurrentTask { $0?.cancel() }
         return renewed
     }
 }
