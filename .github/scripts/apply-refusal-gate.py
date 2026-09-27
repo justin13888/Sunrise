@@ -62,7 +62,14 @@ What it does not see
 A refusal minted *inside* a classified callee, or in a callee reached as a
 tail expression rather than through `?` (`apply_control_op`'s
 `DeviceRevoke` arm reaches `apply_device_revoke` that way, which is why that
-function is a span of its own). Following every call transitively was tried
+function is a span of its own). `materialize_remote` in `lww.rs` tail-returns
+into two such callees that no span reads: `materialize_focus_remote`
+(`focus.rs`) and `insert_review_snapshot_row` (`review.rs`). Neither holds a
+policy branch -- each is an `INSERT OR IGNORE` of an append-only record -- and
+`insert_review_snapshot_row`'s one `.map_err` is an encoding failure mapped
+onto a rusqlite error, the kind of conversion a span would have to exempt; so
+they stay outside `SPANS`, and a refusal added to either is not seen here.
+Following every call transitively was tried
 and rejected: the closure is some 150 functions across the keychain and the
 entity writers, with dozens of legitimate encoding-failure conversions and
 same-named methods in unrelated modules, and a gate that has to be taught

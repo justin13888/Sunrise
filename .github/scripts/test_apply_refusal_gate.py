@@ -79,6 +79,9 @@ CLEAN_LWW = (
     "    let existing = read_row_lww(tx, \"tasks\", \"id\", b\"x\")?;\n"
     "    if existing.is_some() { return Ok(()); }\n"
     "    let c = '?';\n"
+    "    match tx.query_row(\"SELECT 1\", [], |r| r.get::<_, i64>(0)) {\n"
+    "        Err(a) | Ok(a) => drop(a),\n"
+    "    }\n"
     '    let s = r#"return Err(x)?"#;\n'
     "    Ok(())\n"
     "}\n"
@@ -160,17 +163,31 @@ class GateCase(unittest.TestCase):
             ("let k = key.ok_or(e)?;", ".ok_or("),
             ("let k = key.ok_or_else(|| e)?;", ".ok_or_else("),
             ("let k = decode(b).map_err(|_| e)?;", ".map_err("),
-            ('bail!("stale");', "bail!"),
+            ('bail!("stale");', "minted: bail!"),
+            ('ensure!(fresh, "stale");', "minted: ensure!"),
+            ('let e = anyhow!("stale");', "minted: anyhow!"),
         ):
             with self.subTest(plant=plant):
                 self.plant_control(plant)
                 self.assert_flags(shown)
 
     def test_a_panic_is_a_violation(self):
-        for plant in ('panic!("no");', "let x = y.unwrap();", 'y.expect("z");', "assert!(ok);"):
+        # Each plant is asserted by the token the gate names, so dropping any
+        # one alternative from MINTED turns its subtest red.
+        for plant, shown in (
+            ('panic!("no");', "minted: panic!"),
+            ("unreachable!();", "minted: unreachable!"),
+            ("todo!();", "minted: todo!"),
+            ("unimplemented!();", "minted: unimplemented!"),
+            ("assert!(ok);", "minted: assert!"),
+            ("assert_eq!(a, b);", "minted: assert_eq!"),
+            ("assert_ne!(a, b);", "minted: assert_ne!"),
+            ("let x = y.unwrap();", "minted: .unwrap()"),
+            ('y.expect("z");', "minted: .expect("),
+        ):
             with self.subTest(plant=plant):
                 self.plant_control(plant)
-                self.assert_flags("an error or panic minted")
+                self.assert_flags(shown)
 
     def test_a_question_mark_on_a_non_call_is_a_violation(self):
         self.plant_control("let v = pending?;")
