@@ -7943,7 +7943,7 @@ fn a_self_refused_revoke_still_advances_the_cursor() {
 /// cursor counts the op anyway.**
 ///
 /// This is the delivery half of the gate at
-/// `crates/sunrise-core/src/engine/sync.rs:741#apply_control_op`. The two
+/// `crates/sunrise-core/src/engine/sync.rs:943#apply_control_op`. The two
 /// units that reach that gate today —
 /// `a_revoked_devices_third_party_envelope_claim_is_not_recorded` and
 /// `an_unwound_devices_third_party_envelope_claim_is_not_recorded` — call
@@ -17837,4 +17837,249 @@ fn ops_run_end_reads_from_any_start() {
         "the run above the hole ends at 6, not at D2's 7"
     );
     assert_eq!(run_end(&mut db, &RUN_S, &RUN_D2, 4), Ok(4));
+}
+
+// --- Parked ops (issue #320, ADR-0045 §4) ------------------------------------
+
+/// Emit, as `sender`, a genuine sealed and signed op on `stream` whose inner
+/// CBOR is `inner`, and return its envelope. This is how a newer build's op
+/// family looks to this one: every envelope check passes, and only the
+/// payload is foreign.
+fn emit_raw_inner(sender: &Engine, db: &mut Db, stream: &[u8; 16], inner: &[u8]) -> Vec<u8> {
+    let device = sender.keychain.device_id();
+    let op_id = db
+        .with_tx(|tx| {
+            let seq = sender.next_seq_tx(tx, stream)?;
+            let op_id = remote_op_id(stream, &device, seq);
+            sender.ops_insert(
+                tx,
+                &op_id,
+                stream,
+                seq,
+                sender.hlc.send(),
+                inner,
+                "future.kind",
+                "future",
+                None,
+                Some(T0),
+                None,
+                T0,
+                &[],
+            )?;
+            Ok(op_id)
+        })
+        .unwrap();
+    env_bytes(db, &op_id)
+}
+
+fn future_kind_inner(name: &str) -> Vec<u8> {
+    use ciborium::value::Value;
+    let mut buf = Vec::new();
+    ciborium::ser::into_writer(
+        &Value::Map(vec![(
+            Value::Text(name.into()),
+            Value::Map(vec![(Value::Text("title".into()), Value::Text("x".into()))]),
+        )]),
+        &mut buf,
+    )
+    .unwrap();
+    buf
+}
+
+/// `(reason, kind, parked_under_doc_schema_v)` of every parked row.
+fn parked_rows(db: &Db) -> Vec<(String, String, i64)> {
+    let mut stmt = db
+        .conn()
+        .prepare("SELECT reason, kind, parked_under_doc_schema_v FROM parked_ops")
+        .unwrap();
+    stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap()
+}
+
+/// `(inner_kind, applied_at)` of the `ops` row for `op_id`.
+fn op_row(db: &Db, op_id: &[u8; 16]) -> (String, Option<i64>) {
+    db.conn()
+        .query_row(
+            "SELECT inner_kind, applied_at FROM ops WHERE op_id = ?",
+            params![&op_id[..]],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap()
+}
+
+/// A verified op of a kind this build does not know is kept, not refused: it
+/// is in `ops` unapplied, marked in `parked_ops`, and the cursor counts it, so
+/// the relay stops re-sending it and the ops above it are not held behind it.
+/// A re-delivery adds nothing.
+#[test]
+fn an_op_of_a_kind_this_build_does_not_know_is_parked_and_counted() {
+    let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut dba = db_root(ROOT);
+    let mut dbb = db_root(ROOT);
+    trust(&eb, &mut dbb, &ea);
+    let a_id = ea.keychain.device_id();
+
+    let first = new_task(&ea, &mut dba, "first");
+    let first_env = create_env_for(&dba, first.bytes());
+    let first_op = decode_envelope(&first_env).unwrap();
+    let stream = first_op.stream_id;
+    assert!(eb.apply_remote(&mut dbb, &first_env).unwrap().is_some());
+    assert_eq!(cursor_for(&dbb, &stream, &a_id), 1);
+
+    let future = emit_raw_inner(&ea, &mut dba, &stream, &future_kind_inner("FutureKind"));
+    let future_op = decode_envelope(&future).unwrap();
+    let future_id = remote_op_id(&stream, &a_id, future_op.seq);
+    assert!(
+        eb.apply_remote_all(&mut dbb, &future).unwrap().is_empty(),
+        "parked, not refused, and nothing on screen changed"
+    );
+    assert_eq!(cursor_for(&dbb, &stream, &a_id), 2, "the parked op counts");
+    assert_eq!(op_row(&dbb, &future_id), ("unknown".into(), None));
+    assert_eq!(
+        parked_rows(&dbb),
+        vec![(
+            "unknown_kind".into(),
+            "FutureKind".into(),
+            i64::from(sunrise_cbor::version::DOC_SCHEMA_V)
+        )]
+    );
+
+    // The op above it applies and the cursor runs past both.
+    let second = new_task(&ea, &mut dba, "second");
+    assert!(eb
+        .apply_remote(&mut dbb, &create_env_for(&dba, second.bytes()))
+        .unwrap()
+        .is_some());
+    assert_eq!(cursor_for(&dbb, &stream, &a_id), 3);
+
+    // Re-delivery and a replay by the same build both change nothing.
+    let ops_before = op_count(&dbb);
+    assert!(eb.apply_remote_all(&mut dbb, &future).unwrap().is_empty());
+    assert!(eb.replay_parked_ops(&mut dbb).unwrap().is_empty());
+    assert_eq!(op_count(&dbb), ops_before);
+    assert_eq!(parked_rows(&dbb).len(), 1);
+    assert_eq!(op_row(&dbb, &future_id), ("unknown".into(), None));
+}
+
+/// The upgrade. A build that did not know `TaskCreate` parked one; this
+/// build knows it, and the replay `Core::open` runs materializes it through
+/// the full apply path, releases the marker, and is idempotent afterwards.
+///
+/// The parked row is written by `park_op` itself with the older build's
+/// `DOC_SCHEMA_V`, which is exactly the row that build's apply path would
+/// have left: one table, one writer.
+#[test]
+fn a_parked_op_is_materialized_once_a_build_that_knows_its_kind_replays_it() {
+    let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut dba = db_root(ROOT);
+    let mut dbb = db_root(ROOT);
+    trust(&eb, &mut dbb, &ea);
+    let a_id = ea.keychain.device_id();
+
+    let task = new_task(&ea, &mut dba, "from the future");
+    let env = create_env_for(&dba, task.bytes());
+    let op = decode_envelope(&env).unwrap();
+    let op_id = remote_op_id(&op.stream_id, &a_id, op.seq);
+    let older = sunrise_cbor::version::DOC_SCHEMA_V - 1;
+    eb.park_op(&mut dbb, &env, &op, "TaskCreate", older)
+        .unwrap();
+    assert!(
+        eb.query(&dbb, Query::EntityById(task)).is_err(),
+        "a parked op materializes nothing"
+    );
+    assert_eq!(cursor_for(&dbb, &op.stream_id, &a_id), 1);
+
+    let events = eb.replay_parked_ops(&mut dbb).unwrap();
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, DomainEvent::Created(r) if *r == task)),
+        "the replay reports what it materialized"
+    );
+    assert_eq!(read_task_t(&eb, &dbb, task).title, "from the future");
+    assert!(parked_rows(&dbb).is_empty(), "the marker is released");
+    let (kind, applied) = op_row(&dbb, &op_id);
+    assert_eq!(kind, "task.create");
+    assert!(applied.is_some());
+    assert_eq!(op_count(&dbb), 1, "the same op row, now applied");
+
+    // Idempotent: a second replay and a relay re-send both stop at the gate.
+    assert!(eb.replay_parked_ops(&mut dbb).unwrap().is_empty());
+    assert!(eb.apply_remote(&mut dbb, &env).unwrap().is_none());
+    assert_eq!(read_task_t(&eb, &dbb, task).title, "from the future");
+}
+
+/// A replay by a build that still cannot read the op leaves it parked and
+/// re-stamps it, so the next open does not try it again.
+#[test]
+fn a_parked_op_this_build_still_cannot_read_stays_parked_and_is_restamped() {
+    let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut dba = db_root(ROOT);
+    let mut dbb = db_root(ROOT);
+    trust(&eb, &mut dbb, &ea);
+
+    let anchor = new_task(&ea, &mut dba, "anchor");
+    let stream = decode_envelope(&create_env_for(&dba, anchor.bytes()))
+        .unwrap()
+        .stream_id;
+    let env = emit_raw_inner(&ea, &mut dba, &stream, &future_kind_inner("StillUnknown"));
+    let op = decode_envelope(&env).unwrap();
+    let current = sunrise_cbor::version::DOC_SCHEMA_V;
+    eb.park_op(&mut dbb, &env, &op, "StillUnknown", current - 1)
+        .unwrap();
+    assert_eq!(OpLog::parked_for_replay(&dbb, current).unwrap().len(), 1);
+
+    assert!(eb.replay_parked_ops(&mut dbb).unwrap().is_empty());
+    assert_eq!(
+        parked_rows(&dbb),
+        vec![(
+            "unknown_kind".into(),
+            "StillUnknown".into(),
+            i64::from(current)
+        )]
+    );
+    assert!(
+        OpLog::parked_for_replay(&dbb, current).unwrap().is_empty(),
+        "tried by this build, so not tried again until the build changes"
+    );
+}
+
+/// Only an unknown *name* parks. A family this build reads, with a payload
+/// that does not decode, is still damage: refused, with no op row and no
+/// marker, exactly as before.
+#[test]
+fn a_known_kind_with_a_damaged_payload_is_still_refused() {
+    use ciborium::value::Value;
+    let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut dba = db_root(ROOT);
+    let mut dbb = db_root(ROOT);
+    trust(&eb, &mut dbb, &ea);
+
+    let anchor = new_task(&ea, &mut dba, "anchor");
+    let stream = decode_envelope(&create_env_for(&dba, anchor.bytes()))
+        .unwrap()
+        .stream_id;
+    let mut damaged = Vec::new();
+    ciborium::ser::into_writer(
+        &Value::Map(vec![(
+            Value::Text("TaskCreate".into()),
+            Value::Integer(7.into()),
+        )]),
+        &mut damaged,
+    )
+    .unwrap();
+    let env = emit_raw_inner(&ea, &mut dba, &stream, &damaged);
+    let ops_before = op_count(&dbb);
+    assert!(matches!(
+        eb.apply_remote_all(&mut dbb, &env),
+        Err(EngineError::RemoteOpInvalid(_))
+    ));
+    assert_eq!(op_count(&dbb), ops_before);
+    assert!(parked_rows(&dbb).is_empty());
 }

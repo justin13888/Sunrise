@@ -22,18 +22,27 @@ use super::{
 use crate::commands::CommandResult;
 use crate::control_op::Recipient;
 use crate::events::DomainEvent;
-use crate::inner_op::{decode_inner_op, encode_inner_op, InnerOp, OpEffect};
+use crate::inner_op::{decode_inner_op, encode_inner_op, InnerOp, InnerOpError, OpEffect};
 use crate::keychain::{EnvelopeRecipient, KeySource};
 use rusqlite::{params, OptionalExtension, Transaction};
 use std::collections::BTreeSet;
 use sunrise_cbor::hlc::Hlc;
+use sunrise_cbor::version::DOC_SCHEMA_V;
 use sunrise_crypto::op_envelope::open_envelope;
 use sunrise_crypto::{
     decode_envelope, identity_id_from_pub, open_envelope_unverified, roster_digest, shares_digest,
     stream_key_id, verify_envelope, DeviceCert,
 };
 use sunrise_id::EntityRef;
-use sunrise_storage::{Db, OpLog};
+use sunrise_storage::{Db, OpLog, OpLogError, ParkReason, Parking, PARKED_KIND};
+
+/// The op log's error, as the `rusqlite` error a `with_tx` closure returns.
+fn oplog_to_sqlite(e: OpLogError) -> rusqlite::Error {
+    match e {
+        OpLogError::Sqlite(s) => s,
+        OpLogError::Db(_) => rusqlite::Error::ExecuteReturnedResults,
+    }
+}
 
 impl Engine {
     /// Mint a new epoch for one Stream and distribute it.
@@ -171,6 +180,11 @@ impl Engine {
     ///    `key_envelope` op carrying it may not have arrived, so the op is
     ///    parked in `deferred_ops` and this returns `Ok(vec![])` without
     ///    reaching any step below. It is retried after every absorbed key.
+    ///    **An unknown inner kind is not an error either**: the op verified and
+    ///    opened, so it is a newer build's family, and [`Self::park_op`] keeps
+    ///    it in `ops` and `parked_ops`, counts it toward the cursor, and
+    ///    returns `Ok(vec![])`. [`Self::replay_parked_ops`] applies it once a
+    ///    build that knows the kind opens the vault.
     /// 5. Clock gate: the envelope's `hlc` is observed into this device's HLC.
     ///    A reading beyond `MAX_DRIFT_MS` in the future is refused outright —
     ///    see [`sunrise_cbor::hlc`].
@@ -291,8 +305,18 @@ impl Engine {
                     "no key at this (stream, epoch) opens the envelope".into(),
                 )
             })?;
-        let mut inner = decode_inner_op(&inner_cbor)
-            .map_err(|e| EngineError::RemoteOpInvalid(format!("inner op: {e}")))?;
+        //    An op of a kind this build does not know verified and opened, so
+        //    it is not damage: it is a newer build's family. It is kept and
+        //    counted rather than refused (ADR-0045 §4), and replayed once a
+        //    build that knows it opens the vault.
+        let mut inner = match decode_inner_op(&inner_cbor) {
+            Ok(inner) => inner,
+            Err(InnerOpError::UnknownKind(kind)) => {
+                self.park_op(db, envelope_bytes, &env, &kind, DOC_SCHEMA_V)?;
+                return Ok(Vec::new());
+            }
+            Err(e) => return Err(EngineError::RemoteOpInvalid(format!("inner op: {e}"))),
+        };
         remap_legacy_inbox(&mut inner);
 
         // e. Clock gate. A reading far in OUR future is a broken or hostile
@@ -340,12 +364,24 @@ impl Engine {
                 now_ms,
                 &[],
             )
-            .map_err(|e| match e {
-                sunrise_storage::OpLogError::Sqlite(s) => s,
-                sunrise_storage::OpLogError::Db(_) => rusqlite::Error::ExecuteReturnedResults,
-            })?;
-            if tx.changes() == 0 {
-                // Already applied: nothing further.
+            .map_err(oplog_to_sqlite)?;
+            // Already in the log. Either it was applied, and there is nothing
+            // further, or a build that could not read it parked it, and this
+            // delivery (a replay after an upgrade, or the relay re-sending it)
+            // is the one that can. Releasing it here, inside this transaction,
+            // is what keeps the marker and the materialization together.
+            if tx.changes() == 0
+                && !OpLog::unpark(
+                    tx,
+                    &op_id,
+                    envelope_bytes,
+                    inner_kind,
+                    target_kind,
+                    Some(target.bytes()),
+                    now_ms,
+                )
+                .map_err(oplog_to_sqlite)?
+            {
                 return Ok(());
             }
             applied = true;
@@ -612,6 +648,159 @@ impl Engine {
             if let Ok(more) = self.apply_remote_all(db, &envelope) {
                 events.extend(more);
             }
+        }
+        Ok(events)
+    }
+
+    /// Keep an op that verified and opened but whose inner kind this build
+    /// does not know (issue #320, ADR-0045 §4).
+    ///
+    /// The op goes into `ops` like any delivery, unapplied and under
+    /// [`PARKED_KIND`], and `parked_ops` marks it with the build that parked
+    /// it. Being in `ops` is what makes it count as received:
+    /// [`upsert_sync_cursor`] runs here exactly as it does on the apply path,
+    /// so the relay stops re-sending the op and the seqs above it are not held
+    /// back behind it. Nothing is refused and nothing is reported as damage.
+    ///
+    /// Unlike [`Self::defer_op`] this has no TTL and no cap. What reaches it
+    /// has passed the signature check and the AEAD open, which is the standing
+    /// that writes any op into `ops` for good, and it has advanced the cursor,
+    /// so nothing would ever send it again: dropping it would be permanent.
+    ///
+    /// The sender's stamp **is** observed, unlike a deferred op's, and before
+    /// the row is written: the row is in `ops`, which is what
+    /// [`Self::prime_hlc`] restores the clock from, so the clock has to have
+    /// seen it or the next open would put the process above a reading this
+    /// session never took. A stamp beyond the drift window is refused here as
+    /// it is on the apply path, and leaves no row.
+    ///
+    /// `doc_schema_v` is the parking build's `DOC_SCHEMA_V`, a parameter only
+    /// so a test can write the row an older build would have.
+    pub(crate) fn park_op(
+        &self,
+        db: &mut Db,
+        envelope_bytes: &[u8],
+        env: &sunrise_crypto::OpEnvelope,
+        kind: &str,
+        doc_schema_v: u16,
+    ) -> Result<(), EngineError> {
+        self.hlc
+            .observe(env.hlc)
+            .map_err(|e| EngineError::RemoteOpInvalid(format!("hlc: {e}")))?;
+        let op_id = remote_op_id(&env.stream_id, &env.device_id, env.seq);
+        let now_ms = self.clock.now_ms();
+        let mut parked = false;
+        db.with_tx(|tx| {
+            OpLog::insert(
+                tx,
+                &op_id,
+                &env.stream_id,
+                &env.device_id,
+                env.seq,
+                env.hlc.physical_ms,
+                envelope_bytes,
+                PARKED_KIND,
+                PARKED_KIND,
+                None,
+                None,
+                Some(&env.device_id),
+                now_ms,
+                &[],
+            )
+            .map_err(oplog_to_sqlite)?;
+            // A re-delivery of an op already in the log, parked or not, adds
+            // nothing: the row and its marker are the first delivery's.
+            if tx.changes() == 0 {
+                return Ok(());
+            }
+            OpLog::park(
+                tx,
+                &Parking {
+                    op_id: &op_id,
+                    reason: ParkReason::UnknownKind,
+                    kind,
+                    hlc_logical: env.hlc.logical,
+                    doc_schema_v,
+                    parked_at_ms: now_ms,
+                },
+            )
+            .map_err(oplog_to_sqlite)?;
+            upsert_sync_cursor(tx, &env.stream_id, &env.device_id)?;
+            parked = true;
+            Ok(())
+        })?;
+        if parked {
+            tracing::info!(
+                ev = "core.op.parked",
+                reason = ParkReason::UnknownKind.as_str(),
+                stream_h = hex_short(&env.stream_id),
+                "kept an op of a kind this build does not know; it replays after an upgrade"
+            );
+        }
+        Ok(())
+    }
+
+    /// Retry every parked op that a build with a different `DOC_SCHEMA_V`
+    /// parked or last tried, through the full apply path, in
+    /// `(hlc, device_id, seq)` order. Returns the events the released ops
+    /// produced.
+    ///
+    /// [`crate::Core::open`] calls this, which is what "replayed after an
+    /// upgrade" means: a vault whose parked ops were all tried by this build
+    /// reads one indexed query and returns.
+    ///
+    /// Each op goes back through [`Self::apply_remote_all`] with the bytes it
+    /// was parked with, so it meets the signature, key, clock and LWW gates
+    /// exactly as a first delivery would. What releases it is that path's
+    /// idempotence gate: the `ops` row is already there, so the insert changes
+    /// nothing, and [`OpLog::unpark`] turns the parked row into an applied one
+    /// in the transaction that materializes it. Replay is therefore idempotent
+    /// the way apply is: a released op is an ordinary applied op, and a second
+    /// replay, or the relay re-sending it, returns at the same gate.
+    ///
+    /// An op this build still cannot apply stays parked, and is re-stamped
+    /// with this build so the next open does not try it again. That covers a
+    /// kind this build does not know either (the apply path parks it again,
+    /// which changes nothing) and an op that now decodes but is refused: its
+    /// bytes verified once and advanced the cursor, so keeping them is the
+    /// only answer that loses nothing. A refusal is logged.
+    ///
+    /// # Errors
+    /// Storage failures reading or re-stamping `parked_ops`. A failure to
+    /// apply one op is not an error.
+    pub fn replay_parked_ops(&self, db: &mut Db) -> Result<Vec<DomainEvent>, EngineError> {
+        let parked = OpLog::parked_for_replay(db, DOC_SCHEMA_V)?;
+        let mut events = Vec::new();
+        for op in parked {
+            match self.apply_remote_all(db, &op.envelope) {
+                Ok(more) => events.extend(more),
+                // A class and not the message: a decode error can quote the
+                // payload it failed on, and this payload is plaintext.
+                Err(e) => {
+                    let header = decode_envelope(&op.envelope).ok();
+                    tracing::warn!(
+                        ev = "core.op.parked_replay_refused",
+                        stream_h = header
+                            .as_ref()
+                            .map(|h| hex_short(&h.stream_id))
+                            .unwrap_or_default(),
+                        sender_h = header
+                            .as_ref()
+                            .map(|h| hex_short(&h.device_id))
+                            .unwrap_or_default(),
+                        seq = header.as_ref().map_or(0, |h| h.seq),
+                        cause = match e {
+                            EngineError::RemoteOpInvalid(_) => "remote_op_invalid",
+                            EngineError::UnknownDevice => "unknown_device",
+                            _ => "other",
+                        },
+                        "a parked op still does not apply; it stays parked"
+                    );
+                }
+            }
+            db.with_tx(|tx| {
+                OpLog::restamp_parked(tx, &op.op_id, DOC_SCHEMA_V).map_err(oplog_to_sqlite)
+            })?;
         }
         Ok(events)
     }

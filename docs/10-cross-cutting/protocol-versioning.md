@@ -136,8 +136,15 @@ From now on:
 - **Changing an existing variant's shape** is a new variant alongside the old
   one. The old one stays readable forever.
 
-*Today:* an older build reports an unknown variant as `RemoteOpInvalid`, which
-is classed as corruption, and drops it ([#320](https://github.com/justin13888/Sunrise/issues/320)).
+A build at `STORAGE_V` 31 or later parks an op whose variant it does not know
+([#320](https://github.com/justin13888/Sunrise/issues/320)): the op is kept in
+`ops` with a `parked_ops` marker, counts toward the sync cursor, is not loss
+evidence, and replays through the full apply path when a build with a
+different `DOC_SCHEMA_V` opens the vault. A build older than that still
+reports the variant as `RemoteOpInvalid` and drops it, and only the feature
+gate (§7, [#324](https://github.com/justin13888/Sunrise/issues/324)) protects
+it. A known variant whose payload does not decode is still refused as damage
+until the fingerprint of ADR-0045 §3 can tell a writer bug from corruption.
 
 `STORAGE_V` is per-device, never appears on the wire, and is deliberately not
 named here. It moves with every migration, and a number that has to be
@@ -428,9 +435,14 @@ loss evidence and does not trigger a resync. After an upgrade it is replayed
 through the full apply path, in `(hlc, device_id, seq)` order.
 
 Only envelope-level failures are corruption: a bad magic, non-canonical CBOR, a
-failed signature, or a failed AEAD tag. *Today:* a decode failure is
-`RemoteOpInvalid`, and `crates/sunrise-core/src/sync_driver.rs#is_corruption`
-drops it ([#320](https://github.com/justin13888/Sunrise/issues/320)).
+failed signature, or a failed AEAD tag. *Today:* the first reason parks
+([#320](https://github.com/justin13888/Sunrise/issues/320)): `parked_ops`
+marks the op, `Engine::replay_parked_ops` retries it from `Core::open`, and
+`crates/sunrise-core/src/sync_driver.rs#is_corruption` never sees it. The
+others do not exist yet. A field-op kind arrives with ADR-0044, the
+fingerprint with [#323](https://github.com/justin13888/Sunrise/issues/323),
+and until then every other inner decode failure is still `RemoteOpInvalid`
+and dropped as corruption.
 
 ### 7.3 Unknown map keys round-trip unchanged, at every level
 

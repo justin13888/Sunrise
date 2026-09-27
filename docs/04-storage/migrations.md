@@ -323,8 +323,10 @@ with opposite consequences:
 > the full apply path after an upgrade. A new op family also carries a feature
 > id in `vault_requires`, so an older build goes read-only for that scope
 > rather than writing around data it cannot see. The op log is still never
-> migrated. Parking is what makes that safe. *Today:* not built ([#320](https://github.com/justin13888/Sunrise/issues/320),
-> [#324](https://github.com/justin13888/Sunrise/issues/324)).
+> migrated. Parking is what makes that safe. *Today:* parking is built for an
+> unknown op kind (migration `0031_parked_ops.sql`,
+> [#320](https://github.com/justin13888/Sunrise/issues/320)); the feature id
+> is not ([#324](https://github.com/justin13888/Sunrise/issues/324)).
 
 [ADR-0024](../11-adr/0024-key-hierarchy.md) has landed three of them —
 `key_envelope`, `device_revoke` and `device_cert`, at `DOC_SCHEMA_V = 5` — and

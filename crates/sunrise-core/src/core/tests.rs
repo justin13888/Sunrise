@@ -216,6 +216,110 @@ async fn a_grant_core_issues_carries_the_sponsors_read_bound() {
     sponsor.close().await.unwrap();
 }
 
+/// Issue #320 end to end through `Core::open`: a device whose build did not
+/// know an op's kind parked it, then upgraded, and the op is in its vault.
+///
+/// The joiner holds the sponsor's cert and keys, as any device in the account
+/// does. The sponsor's task op is parked by `park_op` under the previous
+/// `DOC_SCHEMA_V` — the row a build that could not read `TaskCreate` would
+/// have written — and everything else applies normally. Reopening the vault
+/// is the upgrade.
+#[tokio::test]
+async fn an_op_an_older_build_parked_is_materialized_when_the_vault_reopens() {
+    use sunrise_domain::TaskDraft;
+    let sponsor_dir = tempfile::tempdir().unwrap();
+    let sponsor = Core::open(cfg(sponsor_dir.path()), unlock()).await.unwrap();
+    let task = sponsor
+        .submit(Command::CreateTask(TaskDraft {
+            title: "written by a newer build".into(),
+            ..Default::default()
+        }))
+        .await
+        .unwrap()
+        .entity;
+    let payload = sponsor
+        .pair_device_in_process("joiner".into(), "test".into(), [0x75; 32], [0x76; 32])
+        .unwrap();
+    let envelopes: Vec<(Vec<u8>, String)> = {
+        let db = sponsor.db.lock();
+        let mut stmt = db
+            .conn()
+            .prepare("SELECT envelope, inner_kind FROM ops ORDER BY rowid")
+            .unwrap();
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    };
+    sponsor.close().await.unwrap();
+
+    let joiner_root = VaultRootKey::from_bytes([2u8; 32]);
+    let joiner_dir = tempfile::tempdir().unwrap();
+    let joiner = Core::open(
+        cfg(joiner_dir.path()),
+        Unlock::DevicePaired {
+            root: joiner_root.clone(),
+            paired: Some(Box::new(payload)),
+        },
+    )
+    .await
+    .unwrap();
+    let task_rows = |core: &Core| -> i64 {
+        core.db
+            .lock()
+            .conn()
+            .query_row(
+                "SELECT count(*) FROM tasks WHERE id = ?",
+                [&task.bytes()[..]],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    let parked_rows = |core: &Core| -> i64 {
+        core.db
+            .lock()
+            .conn()
+            .query_row("SELECT count(*) FROM parked_ops", [], |r| r.get(0))
+            .unwrap()
+    };
+    for (env, kind) in &envelopes {
+        if kind == "task.create" {
+            let op = sunrise_crypto::decode_envelope(env).unwrap();
+            joiner
+                .engine
+                .park_op(
+                    &mut joiner.db.lock(),
+                    env,
+                    &op,
+                    "TaskCreate",
+                    sunrise_cbor::version::DOC_SCHEMA_V - 1,
+                )
+                .unwrap();
+        } else {
+            // The sponsor's cert and key envelopes. Whether each one applies
+            // is not the subject; that the joiner can verify the task op at
+            // replay is, and the assertion below is what shows it could.
+            let _ = joiner.apply_remote_all(env).await;
+        }
+    }
+    assert_eq!(task_rows(&joiner), 0, "parked, so not materialized");
+    assert_eq!(parked_rows(&joiner), 1);
+    joiner.close().await.unwrap();
+
+    let upgraded = Core::open(
+        cfg(joiner_dir.path()),
+        Unlock::DevicePaired {
+            root: joiner_root,
+            paired: None,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(task_rows(&upgraded), 1, "the open replayed it");
+    assert_eq!(parked_rows(&upgraded), 0, "and released the marker");
+    upgraded.close().await.unwrap();
+}
+
 #[tokio::test]
 async fn open_and_close() {
     let dir = tempfile::tempdir().unwrap();
