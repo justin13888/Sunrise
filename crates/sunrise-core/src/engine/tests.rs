@@ -6919,6 +6919,76 @@ fn the_orphan_release_spares_only_adopted_bounds() {
     );
 }
 
+/// **An adopted bound is not a revocation this replica applied, so it marks
+/// nobody as joined after one.**
+///
+/// A joiner adopts its sponsor's bound before it holds any cert but its own.
+/// If the readmission check counted those rows, the joiner's first sync would
+/// mark its sponsor and every device that paired before any revocation as
+/// `admitted_after_revocation`. No older replica marks them, and the #105 signal
+/// would become a badge every sibling wears. The joiner counts a revocation
+/// once its own fold applies it, which is the order an older replica met it
+/// in. A device that turns up after that is marked. That second half also
+/// checks that the fold clears `from_sponsor` on the adopted row it bounds
+/// again, because otherwise the joiner would count nothing.
+#[test]
+fn an_adopted_bound_marks_no_device_as_joined_after_a_revocation() {
+    let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let ec = engine_seeded(ROOT, [3u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let ed = engine_seeded(ROOT, [5u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let er = engine_seeded(ROOT, [4u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let (a_id, b_id, c_id, d_id) = (
+        ea.keychain.device_id(),
+        eb.keychain.device_id(),
+        ec.keychain.device_id(),
+        ed.keychain.device_id(),
+    );
+    let from_sponsor = |db: &Db| -> i64 {
+        db.conn()
+            .query_row(
+                "SELECT from_sponsor FROM device_read_bounds WHERE device_id = ?",
+                params![&c_id[..]],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+
+    let mut joiner = db_root(ROOT);
+    joiner
+        .with_tx(|tx| {
+            super::adopt_sponsor_read_bounds(tx, &std::collections::BTreeSet::from([c_id]), T0)
+        })
+        .unwrap();
+
+    // The sponsor and a sibling that were here before C was revoked.
+    trust(&er, &mut joiner, &ea);
+    trust(&er, &mut joiner, &eb);
+    assert!(
+        !device_list_row(&er, &joiner, &a_id).admitted_after_revocation,
+        "the sponsor did not join after anything this replica applied"
+    );
+    assert!(
+        !device_list_row(&er, &joiner, &b_id).admitted_after_revocation,
+        "nor did a sibling that paired before any revocation"
+    );
+
+    // The joiner now applies A -> C itself, from the relay.
+    revoke(&er, &mut joiner, &ea, c_id, T0);
+    assert_eq!(
+        from_sponsor(&joiner),
+        0,
+        "the fold bounding an adopted device makes the row this replica's own"
+    );
+    assert!(er.is_read_bounded(joiner.conn(), &c_id).unwrap());
+
+    trust_at(&er, &mut joiner, &ed, T0 + 1);
+    assert!(
+        device_list_row(&er, &joiner, &d_id).admitted_after_revocation,
+        "a device that turns up after a revocation this replica applied is marked"
+    );
+}
+
 /// **A cut correction does not bring a skipped revocation back, and the
 /// remedy is to make it again.**
 ///

@@ -1252,10 +1252,20 @@ impl Engine {
         // device list while receiving no keys; that asymmetry is real, and
         // `DeviceRow::read_bounded` is what puts it on screen instead of
         // leaving a user to infer it.
+        //
+        // A row adopted from a sponsor that this fold bounds too becomes this
+        // replica's own (`from_sponsor = 0`), keeping its first timestamp. The
+        // readmission check in `sync.rs` counts only this replica's own rows,
+        // so without the flip a joiner that adopted C and then applied
+        // `A -> C` itself would never count its own revocation of C. The row
+        // then gives up the orphan-release exemption. It has no further need
+        // of it, because this fold wrote it from a ledger row, which is the
+        // premise that release is built on.
         {
             let mut bound = tx.prepare(
-                "INSERT OR IGNORE INTO device_read_bounds (device_id, first_bound_at_ms)
-                 VALUES (?1, ?2)",
+                "INSERT INTO device_read_bounds (device_id, first_bound_at_ms)
+                 VALUES (?1, ?2)
+                 ON CONFLICT(device_id) DO UPDATE SET from_sponsor = 0",
             )?;
             for (device_id, row) in &register {
                 bound.execute(params![device_id, row.recorded_at_ms])?;
@@ -1670,7 +1680,10 @@ pub(crate) fn read_bounds_for_pairing(
 ///
 /// The rows are marked `from_sponsor = 1` (migration 0030), which is what keeps
 /// [`Engine::release_orphan_read_bounds`] from taking one back before its
-/// device's cert or revocation has reached this replica.
+/// device's cert or revocation has reached this replica. The mark also keeps
+/// the rows out of the readmission count in `sync.rs`, which asks whether this
+/// replica has itself applied a revocation. A row stays marked until this
+/// replica's own fold bounds the same device, which clears the mark.
 ///
 /// `first_bound_at_ms` is `now_ms`, this replica's reading, because the column
 /// records when *this* replica first wrote the bound and a sponsor's wall clock
