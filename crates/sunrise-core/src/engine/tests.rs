@@ -13315,6 +13315,101 @@ fn lww_earlier_remote_update_loses_to_later_local() {
     assert_eq!(op_count(&dbb), 3, "create + local update + remote update");
 }
 
+/// **A remote write that loses LWW keeps its op row, and the cursor counts it.**
+///
+/// `materialize_remote` refuses a losing write by returning `Ok(())` before it
+/// touches the entity row. That is the entity path's refusal below
+/// `apply_remote_all`'s idempotence gate, and `upsert_sync_cursor`'s doc says
+/// every refusal there declines a write and never the delivery: the op row
+/// went in first, so it stays, and step g counts it.
+///
+/// `lww_earlier_remote_update_loses_to_later_local` confirms the losing op
+/// only by a total row count, and reaches it through `apply_remote`. This
+/// holds the premise itself for the entity path, through `apply_remote_all`:
+/// the op row is at the losing op's own `(stream, device, seq)`, and the
+/// cursor for that sender covers it. The control path's two refusals are held
+/// the same way by `a_self_refused_revoke_still_advances_the_cursor` and
+/// `a_read_bounded_senders_recipient_claim_is_refused_and_the_cursor_counts_the_op`.
+///
+/// Turning the early return into an error -- the shape
+/// `.github/scripts/apply-refusal-gate.py` rejects statically (#298) -- rolls
+/// the transaction back, and this delivery then fails rather than applies.
+#[test]
+fn a_losing_lww_write_keeps_its_op_row_and_is_counted() {
+    let ca = Arc::new(FakeClock(PLMutex::new(T0)));
+    let cb = Arc::new(FakeClock(PLMutex::new(T0)));
+    let ea = engine_seeded(ROOT, [1u8; 32], ca.clone());
+    let eb = engine_seeded(ROOT, [2u8; 32], cb.clone());
+    let mut dba = db_root(ROOT);
+    let mut dbb = db_root(ROOT);
+    trust(&eb, &mut dbb, &ea);
+
+    let created = ea
+        .apply(
+            &mut dba,
+            Command::CreateTask(TaskDraft {
+                title: "orig".into(),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+    eb.apply_remote_all(&mut dbb, &env_bytes(&dba, &created.op_id))
+        .expect("the create applies");
+
+    // B's own later write is the one the remote op has to lose to.
+    set_clock(&cb, T0 + 10_000);
+    eb.apply(
+        &mut dbb,
+        Command::UpdateTask {
+            id: created.entity,
+            patch: TaskPatch {
+                title: Some("B-late".into()),
+                ..Default::default()
+            },
+        },
+    )
+    .unwrap();
+
+    set_clock(&ca, T0 + 5_000);
+    let loser = ea
+        .apply(
+            &mut dba,
+            Command::UpdateTask {
+                id: created.entity,
+                patch: TaskPatch {
+                    title: Some("A-early".into()),
+                    ..Default::default()
+                },
+            },
+        )
+        .unwrap();
+    let env = env_bytes(&dba, &loser.op_id);
+    let head = sunrise_cbor::decode_envelope_header(&env).unwrap();
+    assert_eq!(
+        cursor_for(&dbb, &head.stream_id, &head.device_id),
+        head.seq - 1,
+        "going in, B's cursor for A covers exactly the ops below the loser"
+    );
+
+    eb.apply_remote_all(&mut dbb, &env)
+        .expect("a write that loses LWW is still a well-formed delivery");
+
+    // The refusal: the entity row is B's.
+    assert_eq!(read_task_t(&eb, &dbb, created.entity).title, "B-late");
+    // What it did not take: the op row, and the cursor that counts it.
+    assert_eq!(
+        ops_at(dbb.conn(), &head.stream_id, &head.device_id, head.seq),
+        1,
+        "the refusal is the entity row's, not the delivery's: the op row is in"
+    );
+    assert_eq!(
+        cursor_for(&dbb, &head.stream_id, &head.device_id),
+        head.seq,
+        "`upsert_sync_cursor` runs at step g with that row in the log, so the \
+         contiguous prefix covers it"
+    );
+}
+
 #[test]
 fn lww_later_remote_update_wins_over_earlier_local() {
     let ca = Arc::new(FakeClock(PLMutex::new(T0)));

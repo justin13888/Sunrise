@@ -483,6 +483,16 @@ description = "Reject a tests/ proptest that does not set failure_persistence (t
 # existing counterexample untracked.
 run = ".github/scripts/proptest-persistence-gate.py"
 
+[tasks.apply-refusal]
+description = "Reject a refusal below apply_remote_all's idempotence gate that raises (the CI gate, run locally)"
+# #298. `upsert_sync_cursor`'s doc rests on every refusal below the op-row
+# insert returning Ok, so the op row stays and the cursor counts it. One `?` or
+# `return Err` on a policy branch rolls the transaction back and takes the row
+# with it, and no unit, citation or doc-comment check notices. The script reads
+# `apply_control_op`, `apply_device_revoke` and `lww.rs` for minted errors,
+# panics, and a `?` on a callee its PROPAGATES table has not classified.
+run = ".github/scripts/apply-refusal-gate.py"
+
 [tasks.observability-catalog]
 description = "Reject an observability.md event or metric block that has drifted from the tree (the CI gate, run locally)"
 # `docs/06-server/observability.md` carries the operator-facing inventory of
@@ -1386,6 +1396,13 @@ description = "Assert the proptest persistence gate's exit-code contract (fast, 
 # decided by the filesystem and the index rather than by the source text, so the
 # gate's own self-test cannot reach them from a string literal.
 run = "python3 .github/scripts/test_proptest_persistence_gate.py"
+
+[tasks.apply-refusal-gate-test]
+description = "Assert the apply-path refusal gate can still say no (fast, synthesised engine files)"
+# On the real tree the gate exits 0, which is also what a gate that reads
+# nothing exits. These cases plant the `?` and `return Err` #298 describes and
+# assert exit 1, and keep the caught-and-logged shapes at 0.
+run = "python3 .github/scripts/test_apply_refusal_gate.py"
 
 [tasks.workflow-hardening]
 description = "Reject an unpinned action or a workflow with no declared token scope (the CI gate, run locally)"
