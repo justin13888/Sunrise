@@ -320,9 +320,12 @@ impl RoutinePatch {
 /// Per-FREQ materialization horizon (per spec: DAILY=14d, WEEKLY=60d,
 /// MONTHLY=180d, YEARLY=540d). Returned in days.
 #[must_use]
-pub fn materialization_horizon_days(freq: crate::rrule::Frequency) -> u32 {
+///
+/// An unknown frequency gets the shortest horizon: its rule expands to nothing
+/// anyway, so a longer one would only be a longer scan of nothing.
+pub fn materialization_horizon_days(freq: &crate::rrule::Frequency) -> u32 {
     match freq {
-        crate::rrule::Frequency::Daily => 14,
+        crate::rrule::Frequency::Daily | crate::rrule::Frequency::Unknown(_) => 14,
         crate::rrule::Frequency::Weekly => 60,
         crate::rrule::Frequency::Monthly => 180,
         crate::rrule::Frequency::Yearly => 540,

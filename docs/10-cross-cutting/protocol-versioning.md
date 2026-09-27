@@ -485,9 +485,11 @@ Every enum that crosses the wire or storage keeps an `Unknown(raw)` arm.
   flagged.
 - **`SunriseTime`** gains `Unknown { kind, raw }`.
 
-*Today:* `lossy_enum!` writes the fallback back
-(`lossy_enum!` in `crates/sunrise-domain/src/unknown.rs`), and `StreamColor`,
-`Frequency` and `Weekday` reject unknown values ([#321](https://github.com/justin13888/Sunrise/issues/321)).
+*Today:* every string-valued enum, `StreamColor`, `Frequency` and `Weekday`
+included, keeps its raw value on the wire and in storage (`lossy_enum!` in
+`crates/sunrise-domain/src/unknown.rs`,
+[#321](https://github.com/justin13888/Sunrise/issues/321)). `SunriseTime` has
+no `Unknown` case yet ([#322](https://github.com/justin13888/Sunrise/issues/322)).
 
 ### 7.5 Invariants are read-time
 

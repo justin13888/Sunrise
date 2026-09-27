@@ -79,9 +79,10 @@ pub enum ExpandError {
     InvalidTimeZone(String),
 }
 
-/// Map a domain [`Weekday`] to a jiff civil weekday.
-fn to_jiff_weekday(w: Weekday) -> JiffWeekday {
-    match w {
+/// Map a domain [`Weekday`] to a jiff civil weekday; `None` for a token this
+/// build does not know, which names no day.
+fn to_jiff_weekday(w: &Weekday) -> Option<JiffWeekday> {
+    Some(match w {
         Weekday::Su => JiffWeekday::Sunday,
         Weekday::Mo => JiffWeekday::Monday,
         Weekday::Tu => JiffWeekday::Tuesday,
@@ -89,7 +90,8 @@ fn to_jiff_weekday(w: Weekday) -> JiffWeekday {
         Weekday::Th => JiffWeekday::Thursday,
         Weekday::Fr => JiffWeekday::Friday,
         Weekday::Sa => JiffWeekday::Saturday,
-    }
+        Weekday::Unknown(_) => return None,
+    })
 }
 
 /// Start-of-week date for `date`, given the week-start weekday `wkst`.
@@ -128,7 +130,7 @@ fn matches_byday(date: Date, rrule: &RRule) -> bool {
     rrule
         .by_day
         .iter()
-        .any(|w| to_jiff_weekday(*w) == date.weekday())
+        .any(|w| to_jiff_weekday(w) == Some(date.weekday()))
 }
 
 /// Does `date` satisfy the `BYMONTHDAY` filter (empty list = no constraint)?
@@ -202,6 +204,8 @@ fn period_start_date(
             let y = i64::from(anchor_date.year()) + p * interval;
             i16::try_from(y).ok().and_then(|y| Date::new(y, 1, 1).ok())
         }
+        // `expand` never gets here with one; no period is the safe answer.
+        Frequency::Unknown(_) => None,
     }
 }
 
@@ -284,6 +288,7 @@ fn period_candidates(
             }
             out
         }
+        Frequency::Unknown(_) => Vec::new(),
     }
 }
 
@@ -360,6 +365,10 @@ fn apply_setpos(dates: &[Date], setpos: &[i32]) -> Vec<Date> {
 /// just the window); `UNTIL` bounds instants inclusively. Invalid civil dates
 /// (e.g. Feb 30 from `BYMONTHDAY=30`) are silently skipped per RFC 5545.
 ///
+/// A rule holding a `FREQ`, `BYDAY` or `WKST` value this build does not know
+/// ([`RRule::is_understood`]) expands to **no occurrences** (ADR-0045 §6):
+/// any schedule this build guessed for it could be the wrong one.
+///
 /// # Errors
 ///
 /// Returns [`ExpandError::WindowTooLarge`] if the scan would exceed
@@ -370,12 +379,19 @@ pub fn expand(
     tz: &TimeZone,
     window: (Timestamp, Timestamp),
 ) -> Result<Vec<Occurrence>, ExpandError> {
+    if !rrule.is_understood() {
+        return Ok(Vec::new());
+    }
     let (win_start, win_end) = window;
     let anchor_zoned = anchor.to_zoned(tz.clone());
     let anchor_dt = anchor_zoned.datetime();
     let anchor_date = anchor_dt.date();
     let tod = anchor_dt.time();
-    let wkst = to_jiff_weekday(rrule.wkst.unwrap_or(Weekday::Mo));
+    let wkst = rrule
+        .wkst
+        .as_ref()
+        .and_then(to_jiff_weekday)
+        .unwrap_or(JiffWeekday::Monday);
     let interval = i64::from(rrule.interval.max(1));
     let win_end_date = win_end.to_zoned(tz.clone()).date();
 
@@ -565,7 +581,7 @@ pub fn routine_rows(routines: &[Routine], now: Timestamp) -> Vec<RoutineRow> {
         .iter()
         .map(|r| {
             let horizon_h =
-                i64::from(crate::routine::materialization_horizon_days(r.rrule.freq)) * 24;
+                i64::from(crate::routine::materialization_horizon_days(&r.rrule.freq)) * 24;
             let next = now
                 .checked_add(jiff::SignedDuration::from_hours(horizon_h))
                 .ok()

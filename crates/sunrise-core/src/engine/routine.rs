@@ -405,7 +405,7 @@ impl Engine {
             return Ok(());
         }
         let mat_until = read_materialized_until(db.conn(), routine.id.bytes())?;
-        let horizon_ms = u64::from(materialization_horizon_days(routine.rrule.freq)) * 86_400_000;
+        let horizon_ms = u64::from(materialization_horizon_days(&routine.rrule.freq)) * 86_400_000;
         let window_end_ms = now_ms.saturating_add(horizon_ms);
         let starts_ms = u64::try_from(routine.starts_at.as_millisecond().max(0)).unwrap_or(0);
         let window_start_ms = starts_ms.max(mat_until);
@@ -505,7 +505,7 @@ impl Engine {
         routine: &Routine,
         now_ms: u64,
     ) -> Result<(), EngineError> {
-        let horizon_ms = u64::from(materialization_horizon_days(routine.rrule.freq)) * 86_400_000;
+        let horizon_ms = u64::from(materialization_horizon_days(&routine.rrule.freq)) * 86_400_000;
         let now_ts = ms_to_ts(now_ms as i64);
         let window = (now_ts, ms_to_ts(now_ms.saturating_add(horizon_ms) as i64));
         let valid: BTreeSet<[u8; 16]> = routine
@@ -773,6 +773,7 @@ pub(super) fn insert_routine_row(
     let id_blob: Vec<u8> = r.id.bytes().to_vec();
     let stream_blob: Vec<u8> = r.template.stream_id.bytes().to_vec();
     let rrule_text = r.rrule.to_rfc5545();
+    let rrule_blob = encode_rrule(&r.rrule)?;
     let template_blob = sunrise_cbor::encode_canonical(&r.template)
         .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
     let skip_dates_blob = encode_blob_opt(&r.skip_dates, r.skip_dates.is_empty())?;
@@ -782,16 +783,17 @@ pub(super) fn insert_routine_row(
     let extra_blob = encode_unknowns(&r.unknown)?;
     tx.execute(
         "INSERT INTO routines
-         (id, stream_id, rrule_text, timezone, starts_at_ms, ends_at_ms,
+         (id, stream_id, rrule_text, rrule_cbor, timezone, starts_at_ms, ends_at_ms,
           streak_counter, paused, archived, deleted, scheduling_constraints,
           template, skip_dates, skipped_keys, catchup_policy,
           last_completed_at_ms, paused_until_ms, created_at_ms, updated_at_ms,
           streak_state, extra, lww_hlc_ms, lww_hlc_logical, lww_seq, lww_device)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         params![
             id_blob,
             stream_blob,
             rrule_text,
+            rrule_blob,
             r.timezone,
             r.starts_at.as_millisecond(),
             r.ends_at.map(|d| d.as_millisecond()),
@@ -827,6 +829,7 @@ pub(super) fn update_routine_row(
     let id_blob: Vec<u8> = r.id.bytes().to_vec();
     let stream_blob: Vec<u8> = r.template.stream_id.bytes().to_vec();
     let rrule_text = r.rrule.to_rfc5545();
+    let rrule_blob = encode_rrule(&r.rrule)?;
     let template_blob = sunrise_cbor::encode_canonical(&r.template)
         .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
     let skip_dates_blob = encode_blob_opt(&r.skip_dates, r.skip_dates.is_empty())?;
@@ -836,7 +839,7 @@ pub(super) fn update_routine_row(
     let extra_blob = encode_unknowns(&r.unknown)?;
     tx.execute(
         "UPDATE routines SET
-            stream_id = ?, rrule_text = ?, timezone = ?,
+            stream_id = ?, rrule_text = ?, rrule_cbor = ?, timezone = ?,
             starts_at_ms = ?, ends_at_ms = ?, streak_counter = ?, paused = ?,
             archived = ?, deleted = ?, scheduling_constraints = ?, template = ?,
             skip_dates = ?, skipped_keys = ?, catchup_policy = ?,
@@ -847,6 +850,7 @@ pub(super) fn update_routine_row(
         params![
             stream_blob,
             rrule_text,
+            rrule_blob,
             r.timezone,
             r.starts_at.as_millisecond(),
             r.ends_at.map(|d| d.as_millisecond()),
@@ -895,9 +899,35 @@ fn set_materialized_until(tx: &Transaction<'_>, id: &[u8; 16], ms: u64) -> rusql
     Ok(())
 }
 
+/// A routine's rule as canonical CBOR, for `routines.rrule_cbor` (migration
+/// 0032).
+///
+/// The RFC 5545 text beside it cannot hold a raw `FREQ`/`BYDAY`/`WKST` value
+/// that contains `;`, `,` or `=`, and those values are now kept verbatim
+/// (ADR-0045 §6); the blob holds any string.
+fn encode_rrule(rule: &sunrise_domain::RRule) -> rusqlite::Result<Vec<u8>> {
+    sunrise_cbor::encode_canonical(rule)
+        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
+}
+
+/// Read a stored rule: the CBOR blob when the row has one, else the text, which
+/// is all a row written before migration 0032 has — and which only ever held
+/// values its writer knew, so it parses back exactly.
+fn decode_rrule(
+    rrule_blob: Option<&[u8]>,
+    rrule_text: &str,
+) -> Result<sunrise_domain::RRule, EngineError> {
+    match rrule_blob {
+        Some(b) => sunrise_cbor::decode_canonical(b).map_err(|e| EngineError::Cbor(e.to_string())),
+        None => sunrise_domain::RRule::parse(rrule_text)
+            .map_err(|e| EngineError::Invalid(format!("stored rrule: {e}"))),
+    }
+}
+
 fn routine_from_row(
     id: &[u8; 16],
     rrule_text: &str,
+    rrule_blob: Option<&[u8]>,
     timezone: String,
     starts_ms: i64,
     ends_ms: Option<i64>,
@@ -917,8 +947,7 @@ fn routine_from_row(
     streak_state: Option<Vec<u8>>,
     extra: Option<Vec<u8>>,
 ) -> Result<Routine, EngineError> {
-    let rrule = sunrise_domain::RRule::parse(rrule_text)
-        .map_err(|e| EngineError::Invalid(format!("stored rrule: {e}")))?;
+    let rrule = decode_rrule(rrule_blob, rrule_text)?;
     let template: TaskTemplate = match template {
         Some(b) => {
             sunrise_cbor::decode_canonical(&b).map_err(|e| EngineError::Cbor(e.to_string()))?
@@ -959,7 +988,7 @@ fn routine_from_row(
 const ROUTINE_COLUMNS: &str = "rrule_text, timezone, starts_at_ms, ends_at_ms,
      streak_counter, paused, archived, deleted, scheduling_constraints,
      template, skip_dates, skipped_keys, catchup_policy, last_completed_at_ms,
-     paused_until_ms, created_at_ms, updated_at_ms, streak_state, extra";
+     paused_until_ms, created_at_ms, updated_at_ms, streak_state, extra, rrule_cbor";
 
 pub(super) fn read_routine(
     conn: &rusqlite::Connection,
@@ -991,6 +1020,7 @@ pub(super) fn read_routine(
                 r.get::<_, i64>(16)?,
                 r.get::<_, Option<Vec<u8>>>(17)?,
                 r.get::<_, Option<Vec<u8>>>(18)?,
+                r.get::<_, Option<Vec<u8>>>(19)?,
             ))
         })
         .optional()?;
@@ -998,8 +1028,27 @@ pub(super) fn read_routine(
         return Ok(None);
     };
     let routine = routine_from_row(
-        id, &v.0, v.1, v.2, v.3, v.4, v.5, v.6, v.7, v.8, v.9, v.10, v.11, &v.12, v.13, v.14, v.15,
-        v.16, v.17, v.18,
+        id,
+        &v.0,
+        v.19.as_deref(),
+        v.1,
+        v.2,
+        v.3,
+        v.4,
+        v.5,
+        v.6,
+        v.7,
+        v.8,
+        v.9,
+        v.10,
+        v.11,
+        &v.12,
+        v.13,
+        v.14,
+        v.15,
+        v.16,
+        v.17,
+        v.18,
     )?;
     Ok(Some(routine))
 }
@@ -1032,6 +1081,7 @@ pub(super) fn read_routines(conn: &rusqlite::Connection) -> Result<Vec<Routine>,
                 r.get::<_, i64>(17)?,
                 r.get::<_, Option<Vec<u8>>>(18)?,
                 r.get::<_, Option<Vec<u8>>>(19)?,
+                r.get::<_, Option<Vec<u8>>>(20)?,
             ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1041,8 +1091,27 @@ pub(super) fn read_routines(conn: &rusqlite::Connection) -> Result<Vec<Routine>,
         let take = v.0.len().min(16);
         id[..take].copy_from_slice(&v.0[..take]);
         out.push(routine_from_row(
-            &id, &v.1, v.2, v.3, v.4, v.5, v.6, v.7, v.8, v.9, v.10, v.11, v.12, &v.13, v.14, v.15,
-            v.16, v.17, v.18, v.19,
+            &id,
+            &v.1,
+            v.20.as_deref(),
+            v.2,
+            v.3,
+            v.4,
+            v.5,
+            v.6,
+            v.7,
+            v.8,
+            v.9,
+            v.10,
+            v.11,
+            v.12,
+            &v.13,
+            v.14,
+            v.15,
+            v.16,
+            v.17,
+            v.18,
+            v.19,
         )?);
     }
     Ok(out)

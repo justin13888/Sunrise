@@ -44,17 +44,6 @@ use sunrise_domain::{
 };
 use sunrise_id::{EntityKind, EntityRef};
 
-/// Monday-first, matching how the domain orders a weekday set.
-const ALL_WEEKDAYS: [Weekday; 7] = [
-    Weekday::Mo,
-    Weekday::Tu,
-    Weekday::We,
-    Weekday::Th,
-    Weekday::Fr,
-    Weekday::Sa,
-    Weekday::Su,
-];
-
 /// Format the 16-byte op/device/identity ids UniFFI cannot carry as lowercase
 /// hex.
 pub(crate) fn hex16(bytes: &[u8; 16]) -> String {
@@ -184,10 +173,9 @@ impl From<&ScheduleConstraint> for Constraint {
                 start: w.start,
                 end: w.end,
             }),
-            days_of_week: ALL_WEEKDAYS
-                .into_iter()
-                .filter(|d| days_of_week.contains(*d))
-                .collect(),
+            // Monday-first, then any day token this build does not know, so a
+            // client that hands the list back carries it through.
+            days_of_week: days_of_week.iter().collect(),
             date_range: date_range.as_ref().map(|r| DateWindow {
                 start: r.start,
                 end: r.end,
@@ -255,7 +243,7 @@ impl From<&RRule> for Recurrence {
             wkst,
         } = r;
         Self {
-            freq: *freq,
+            freq: freq.clone(),
             interval: *interval,
             by_day: by_day.clone(),
             by_month_day: by_month_day.clone(),
@@ -263,7 +251,7 @@ impl From<&RRule> for Recurrence {
             by_set_pos: by_set_pos.clone(),
             count: *count,
             until: *until,
-            wkst: *wkst,
+            wkst: wkst.clone(),
         }
     }
 }

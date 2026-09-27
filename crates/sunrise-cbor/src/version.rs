@@ -257,4 +257,11 @@ pub const CRYPTO_SUITE_V: u16 = 5;
 /// toward the sync cursor; `parked_ops` marks it and orders its replay after
 /// an upgrade. Unlike `deferred_ops` it has no TTL and no cap, because what it
 /// holds has been verified and cannot be fetched again.
-pub const STORAGE_V: u16 = 31;
+///
+/// `32` is migration `0032_routine_rrule_blob.sql`, which stores a routine's
+/// recurrence rule as canonical CBOR beside its RFC 5545 text (issue #321,
+/// ADR-0045 §6). A `FREQ`, `BYDAY` or `WKST` value this build does not know is
+/// now kept verbatim, and a raw value holding `;`, `,` or `=` cannot survive
+/// the text form; the blob holds any string. Schema-only: rows written before
+/// it read their text, which only ever held known values.
+pub const STORAGE_V: u16 = 32;

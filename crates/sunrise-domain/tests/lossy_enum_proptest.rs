@@ -18,8 +18,8 @@ use serde::Serialize;
 use std::fmt::Debug;
 use sunrise_cbor::{decode_canonical, encode_canonical};
 use sunrise_domain::{
-    ConstraintSeverity, Energy, FocusKind, InterruptionReason, RoutineCatchupPolicy, StreamColor,
-    StreamReviewCadence, TaskState,
+    ConstraintSeverity, Energy, FocusKind, Frequency, InterruptionReason, RRule,
+    RoutineCatchupPolicy, StreamColor, StreamReviewCadence, TaskState, Weekday,
 };
 
 /// Arbitrary strings, weighted toward `known` spellings and near misses.
@@ -102,6 +102,46 @@ lossless!(
     StreamColor,
     ["slate", "rose", "amber", "emerald", "sky", "indigo", "violet", "pink"]
 );
+lossless!(
+    frequency,
+    Frequency,
+    ["DAILY", "WEEKLY", "MONTHLY", "YEARLY"]
+);
+lossless!(weekday, Weekday, ["SU", "MO", "TU", "WE", "TH", "FR", "SA"]);
+
+proptest! {
+    /// A whole rule carrying unknown values — in `FREQ`, `BYDAY` and `WKST`
+    /// at once — survives its canonical CBOR, the form the op carries and
+    /// `routines.rrule_cbor` stores, byte for byte; and a rule holding any of them
+    /// is flagged rather than expanded.
+    #[test]
+    fn a_rule_with_unknown_values_round_trips_and_is_flagged(
+        freq in raw(&["DAILY", "WEEKLY", "MONTHLY", "YEARLY"]),
+        days in proptest::collection::vec(raw(&["MO", "TU", "SU"]), 0..4),
+        wkst in proptest::option::of(raw(&["MO", "SU"])),
+    ) {
+        let rule = RRule {
+            freq: Frequency::from_raw(&freq),
+            interval: 1,
+            by_day: days.iter().map(|d| Weekday::from_raw(d)).collect(),
+            by_month_day: Vec::new(),
+            by_month: Vec::new(),
+            by_set_pos: Vec::new(),
+            count: None,
+            until: None,
+            wkst: wkst.as_deref().map(Weekday::from_raw),
+        };
+        let bytes = encode_canonical(&rule).unwrap();
+        let back: RRule = decode_canonical(&bytes).unwrap();
+        prop_assert_eq!(&back, &rule);
+        prop_assert_eq!(encode_canonical(&back).unwrap(), bytes);
+
+        let any_unknown = rule.freq.is_unknown()
+            || rule.by_day.iter().any(Weekday::is_unknown)
+            || rule.wkst.as_ref().is_some_and(Weekday::is_unknown);
+        prop_assert_eq!(rule.is_understood(), !any_unknown);
+    }
+}
 
 /// Logic reads an unknown value as the named safe fallback; encoding never
 /// writes that fallback.

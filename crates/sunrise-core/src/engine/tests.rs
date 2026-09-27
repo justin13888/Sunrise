@@ -18300,6 +18300,70 @@ fn a_known_kind_with_a_damaged_payload_is_still_refused() {
     assert!(parked_rows(&dbb).is_empty());
 }
 
+/// ADR-0045 §6: a rule holding a `FREQ` and a `BYDAY` token this build does
+/// not know is kept — including raw values the RFC 5545 text cannot hold —
+/// generates no occurrences, and survives an unrelated edit byte for byte.
+#[test]
+fn a_routine_with_an_unknown_frequency_is_kept_and_generates_nothing() {
+    let mut db = db();
+    let e = engine();
+    let mut draft = routine_draft(
+        stream_ref(5),
+        "FREQ=WEEKLY",
+        NOW + 3_600_000,
+        RoutineCatchupPolicy::Skip,
+        Vec::new(),
+    );
+    // Separators the text form splits on, inside the raw values.
+    draft.rrule.freq = sunrise_domain::Frequency::from_raw("HOURLY;X=1");
+    draft.rrule.by_day = vec![
+        sunrise_domain::Weekday::Mo,
+        sunrise_domain::Weekday::from_raw("A,B"),
+    ];
+    let rule = draft.rrule.clone();
+    let rid = e
+        .apply(&mut db, Command::CreateRoutine(draft))
+        .unwrap()
+        .entity;
+
+    assert!(
+        past_task_count(&db, rid) == 0 && live_task_ids(&db).is_empty(),
+        "a rule this build cannot read materializes nothing"
+    );
+    let rows = match e.query(&db, Query::Routines).unwrap() {
+        QueryResult::Routines(v) => v,
+        _ => panic!(),
+    };
+    let stored = rows.iter().find(|r| r.id == rid).unwrap();
+    assert_eq!(stored.rrule, rule, "the stored rule reads back verbatim");
+    let row = sunrise_domain::routine_rows(std::slice::from_ref(stored), ms_to_ts(NOW))
+        .pop()
+        .unwrap();
+    assert!(
+        row.rrule.starts_with("unrecognised schedule"),
+        "{}",
+        row.rrule
+    );
+    assert_eq!(row.next, None);
+
+    e.apply(
+        &mut db,
+        Command::UpdateRoutine {
+            id: rid,
+            patch: RoutinePatch {
+                paused: Some(true),
+                ..Default::default()
+            },
+        },
+    )
+    .unwrap();
+    let env = env_for_kind(&db, rid.bytes(), "routine.update");
+    match decode_inner_op(&e.keychain.open_op(&env).unwrap()).unwrap() {
+        InnerOp::RoutineUpdate(r) => assert_eq!(r.rrule, rule, "carried through verbatim"),
+        other => panic!("expected a routine.update, got {}", other.inner_kind()),
+    }
+}
+
 /// The `Task` the most recent `task.update` op on `target` carries.
 fn last_task_update(e: &Engine, db: &Db, target: EntityRef) -> Task {
     let env = env_for_kind(db, target.bytes(), "task.update");

@@ -240,6 +240,7 @@ pub enum Frequency {
     Weekly,
     Monthly,
     Yearly,
+    Unknown(UnknownVariant),
 }
 
 /// See [`sunrise_domain::Weekday`].
@@ -252,6 +253,7 @@ pub enum Weekday {
     Fr,
     Sa,
     Su,
+    Unknown(UnknownVariant),
 }
 
 /// See [`sunrise_sync::SyncState`].

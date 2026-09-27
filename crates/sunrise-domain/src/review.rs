@@ -712,7 +712,7 @@ mod tests {
             MON + 6 * DAY,
             3,
             &jiff::tz::TimeZone::UTC,
-            crate::Weekday::Mo,
+            &crate::Weekday::Mo,
         )
         .unwrap();
         build_weekly_review(WeeklyReviewInput {
@@ -820,7 +820,7 @@ mod tests {
             MON + 6 * DAY,
             3,
             &jiff::tz::TimeZone::UTC,
-            crate::Weekday::Mo,
+            &crate::Weekday::Mo,
         )
         .unwrap();
         // Review the *previous* week; nothing in the fixture happened then.
@@ -960,7 +960,7 @@ mod tests {
             MON + 6 * DAY,
             3,
             &jiff::tz::TimeZone::UTC,
-            crate::Weekday::Mo,
+            &crate::Weekday::Mo,
         )
         .unwrap();
         let mut deleted = routine(3, "gone", 99);

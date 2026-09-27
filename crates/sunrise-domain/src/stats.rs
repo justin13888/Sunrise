@@ -90,7 +90,7 @@ impl WeekGrid {
         now_ms: u64,
         weeks: u32,
         tz: &TimeZone,
-        week_start: Weekday,
+        week_start: &Weekday,
     ) -> Result<Self, StatsError> {
         let weeks = weeks.max(1);
         let now = to_timestamp(now_ms)?;
@@ -483,11 +483,12 @@ fn zone_start_ms(date: jiff::civil::Date, tz: &TimeZone) -> Result<u64, StatsErr
     u64::try_from(zoned.timestamp().as_millisecond()).map_err(|_| StatsError::Overflow)
 }
 
-/// Domain weekday → jiff weekday.
-const fn to_jiff(w: Weekday) -> JiffWeekday {
+/// Domain weekday → jiff weekday. A day token this build does not know starts
+/// the week on Monday, the ISO default every other caller passes.
+const fn to_jiff(w: &Weekday) -> JiffWeekday {
     match w {
         Weekday::Su => JiffWeekday::Sunday,
-        Weekday::Mo => JiffWeekday::Monday,
+        Weekday::Mo | Weekday::Unknown(_) => JiffWeekday::Monday,
         Weekday::Tu => JiffWeekday::Tuesday,
         Weekday::We => JiffWeekday::Wednesday,
         Weekday::Th => JiffWeekday::Thursday,
@@ -576,7 +577,7 @@ mod tests {
 
     /// A 3-week grid whose last week starts on `MON`.
     fn grid3() -> WeekGrid {
-        WeekGrid::trailing(MON + 3_600_000, 3, &utc(), Weekday::Mo).unwrap()
+        WeekGrid::trailing(MON + 3_600_000, 3, &utc(), &Weekday::Mo).unwrap()
     }
 
     #[test]
@@ -619,7 +620,7 @@ mod tests {
                 .as_millisecond(),
         )
         .unwrap();
-        let g = WeekGrid::trailing(now, 2, &tz, Weekday::Mo).unwrap();
+        let g = WeekGrid::trailing(now, 2, &tz, &Weekday::Mo).unwrap();
         let [a, b] = [g.starts()[0], g.starts()[1]];
         assert_eq!(
             b - a,
@@ -646,7 +647,7 @@ mod tests {
     fn a_sunday_start_grid_begins_its_weeks_on_the_sunday_before() {
         // `MON` is a Monday, so a Sunday-start week containing it began the
         // day before — the one boundary a Monday-only test can never catch.
-        let g = WeekGrid::trailing(MON + 3_600_000, 3, &utc(), Weekday::Su).unwrap();
+        let g = WeekGrid::trailing(MON + 3_600_000, 3, &utc(), &Weekday::Su).unwrap();
         let sun = MON - 86_400_000;
         assert_eq!(
             g.starts(),
@@ -677,7 +678,7 @@ mod tests {
     /// for every instant, which reads as "no activity" instead of "bad call".
     #[test]
     fn a_grid_of_zero_weeks_is_clamped_to_one() {
-        let g = WeekGrid::trailing(MON + 3_600_000, 0, &utc(), Weekday::Mo).unwrap();
+        let g = WeekGrid::trailing(MON + 3_600_000, 0, &utc(), &Weekday::Mo).unwrap();
         assert_eq!(g.len(), 1, "clamped, not empty");
         assert!(!g.is_empty());
         assert_eq!(g.starts(), [MON]);

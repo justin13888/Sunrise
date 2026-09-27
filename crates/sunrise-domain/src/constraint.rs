@@ -81,9 +81,10 @@ const WEEKDAY_ORDER: [Weekday; 7] = [
     Weekday::Su,
 ];
 
-/// Bit index of a weekday within [`WeekdaySet`] (`MO`=0 .. `SU`=6).
-const fn weekday_bit(w: Weekday) -> u8 {
-    match w {
+/// Bit index of a weekday within [`WeekdaySet`] (`MO`=0 .. `SU`=6); `None`
+/// for a token this build does not know.
+const fn weekday_bit(w: &Weekday) -> Option<u8> {
+    Some(match w {
         Weekday::Mo => 0,
         Weekday::Tu => 1,
         Weekday::We => 2,
@@ -91,61 +92,109 @@ const fn weekday_bit(w: Weekday) -> u8 {
         Weekday::Fr => 4,
         Weekday::Sa => 5,
         Weekday::Su => 6,
-    }
+        Weekday::Unknown(_) => return None,
+    })
 }
 
-/// A compact set over the seven weekdays.
+/// A set over the seven weekdays, plus any day tokens this build does not
+/// know.
 ///
-/// Backed by a 7-bit mask, so membership is O(1) and duplicate tokens are
-/// collapsed automatically (the spec's "entries MUST be distinct" rule is
-/// free). Serializes as a list of `"MO".."SU"` strings in canonical `MO..SU`
-/// order; an **empty** set means "all days" and is skipped on the wire.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct WeekdaySet(u8);
+/// The known days are a 7-bit mask, so membership is O(1) and duplicate
+/// tokens are collapsed automatically (the spec's "entries MUST be distinct"
+/// rule is free). Serializes as a list of `"MO".."SU"` strings in canonical
+/// `MO..SU` order; an **empty** set means "all days" and is skipped on the
+/// wire.
+///
+/// An unknown token is kept, in arrival order after the known days, and
+/// written back verbatim (ADR-0045 §6). It names no day this build can match,
+/// and a set that holds one places **no** restriction on the day: reading the
+/// set as only its known days could turn a newer peer's "Mondays or <new
+/// token>" into a hard block on every day but Monday, and inventing a block
+/// is exactly what an unknown value must never do.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct WeekdaySet {
+    mask: u8,
+    unknown: Vec<UnknownVariant>,
+}
 
 impl WeekdaySet {
     /// The empty set (== "all days").
     #[must_use]
     pub const fn new() -> Self {
-        Self(0)
+        Self {
+            mask: 0,
+            unknown: Vec::new(),
+        }
     }
 
     /// Build from an iterator of weekdays.
     #[must_use]
     pub fn from_days<I: IntoIterator<Item = Weekday>>(days: I) -> Self {
-        let mut s = Self(0);
+        let mut s = Self::new();
         for d in days {
             s.insert(d);
         }
         s
     }
 
-    /// Insert a weekday.
+    /// Insert a weekday. An unknown token is kept once, in arrival order.
     pub fn insert(&mut self, w: Weekday) {
-        self.0 |= 1 << weekday_bit(w);
+        match (weekday_bit(&w), w) {
+            (Some(bit), _) => self.mask |= 1 << bit,
+            (None, Weekday::Unknown(raw)) => {
+                if !self.unknown.contains(&raw) {
+                    self.unknown.push(raw);
+                }
+            }
+            // `weekday_bit` is `None` only for `Unknown`.
+            (None, _) => {}
+        }
     }
 
-    /// True if `w` is present.
+    /// True if `w` is present. An unknown token is compared by its spelling.
     #[must_use]
-    pub const fn contains(self, w: Weekday) -> bool {
-        self.0 & (1 << weekday_bit(w)) != 0
+    pub fn contains(&self, w: &Weekday) -> bool {
+        match (weekday_bit(w), w) {
+            (Some(bit), _) => self.mask & (1 << bit) != 0,
+            (None, Weekday::Unknown(raw)) => self.unknown.contains(raw),
+            (None, _) => false,
+        }
     }
 
     /// True if the set is empty ("all days").
     #[must_use]
-    pub const fn is_empty(&self) -> bool {
-        self.0 == 0
+    pub fn is_empty(&self) -> bool {
+        self.mask == 0 && self.unknown.is_empty()
     }
 
-    /// Number of weekdays in the set.
+    /// Number of entries in the set, unknown tokens included.
     #[must_use]
-    pub const fn len(&self) -> u32 {
-        self.0.count_ones()
+    pub fn len(&self) -> u32 {
+        self.mask.count_ones() + u32::try_from(self.unknown.len()).unwrap_or(u32::MAX)
     }
 
-    /// Iterate the members in canonical `MO..SU` order.
-    fn iter(self) -> impl Iterator<Item = Weekday> {
-        WEEKDAY_ORDER.into_iter().filter(move |&w| self.contains(w))
+    /// Whether the set restricts which day it is: non-empty, and every token
+    /// in it one this build knows. See the type's docs for why an unknown
+    /// token lifts the restriction.
+    #[must_use]
+    pub fn restricts(&self) -> bool {
+        self.mask != 0 && self.unknown.is_empty()
+    }
+
+    /// Whether the set admits `w`, the weekday of a moment being checked:
+    /// true when it places no restriction, or when `w` is in it.
+    #[must_use]
+    pub fn admits(&self, w: &Weekday) -> bool {
+        !self.restricts() || self.contains(w)
+    }
+
+    /// Iterate the members: known days in canonical `MO..SU` order, then any
+    /// unknown tokens in arrival order.
+    pub fn iter(&self) -> impl Iterator<Item = Weekday> + '_ {
+        WEEKDAY_ORDER
+            .into_iter()
+            .filter(move |w| self.contains(w))
+            .chain(self.unknown.iter().cloned().map(Weekday::Unknown))
     }
 }
 
@@ -241,7 +290,7 @@ impl ScheduleConstraint {
     /// Bitmask of populated dimensions: bit0=time_of_day, bit1=days_of_week
     /// (non-empty), bit2=date_range. This is the constraint's "kind" for the
     /// OR/AND combination semantics. Always non-zero for a valid constraint.
-    const fn kind_key(&self) -> u8 {
+    fn kind_key(&self) -> u8 {
         let mut k = 0u8;
         if self.time_of_day.is_some() {
             k |= 1;
@@ -279,7 +328,9 @@ impl ScheduleConstraint {
     /// zoned datetime's local wall-clock terms).
     ///
     /// - `time_of_day`: local time within `[start, end)`.
-    /// - `days_of_week`: local weekday in the set (empty set == all days).
+    /// - `days_of_week`: local weekday in the set (empty set == all days; a
+    ///   set holding a day token this build does not know == all days too,
+    ///   see [`WeekdaySet`]).
     /// - `date_range`: local date within the inclusive range.
     #[must_use]
     pub fn is_satisfied_at(&self, zdt: &Zoned) -> bool {
@@ -289,7 +340,7 @@ impl ScheduleConstraint {
                 return false;
             }
         }
-        if !self.days_of_week.is_empty() && !self.days_of_week.contains(weekday_of(zdt)) {
+        if !self.days_of_week.admits(&weekday_of(zdt)) {
             return false;
         }
         if let Some(d) = self.date_range {
@@ -500,9 +551,9 @@ mod tests {
     fn weekday_set_collapses_duplicates() {
         let s = WeekdaySet::from_days([Weekday::Mo, Weekday::Mo, Weekday::Tu]);
         assert_eq!(s.len(), 2);
-        assert!(s.contains(Weekday::Mo));
-        assert!(s.contains(Weekday::Tu));
-        assert!(!s.contains(Weekday::We));
+        assert!(s.contains(&Weekday::Mo));
+        assert!(s.contains(&Weekday::Tu));
+        assert!(!s.contains(&Weekday::We));
     }
 
     #[test]
@@ -752,5 +803,26 @@ mod tests {
         });
         let c: ScheduleConstraint = serde_json::from_value(j).unwrap();
         assert!(c.days_of_week.is_empty());
+    }
+
+    #[test]
+    fn an_unknown_day_token_is_kept_and_lifts_the_day_restriction() {
+        let j = serde_json::json!({
+            "days_of_week": ["MO", "XX", "MO", "XX"],
+            "severity": "hard"
+        });
+        let c: ScheduleConstraint = serde_json::from_value(j).unwrap();
+        // Kept once each, and written back: known days first, then unknown.
+        assert_eq!(c.days_of_week.len(), 2);
+        assert!(c.days_of_week.contains(&Weekday::from_raw("XX")));
+        let back = serde_json::to_value(&c).unwrap();
+        assert_eq!(back["days_of_week"], serde_json::json!(["MO", "XX"]));
+
+        // A Saturday is not Monday, but the set holds a token this build
+        // cannot read, so it does not block the Saturday.
+        assert!(!c.days_of_week.restricts());
+        assert!(c.is_satisfied_at(&zoned(2026, 8, 8, 12, 0)));
+        let (hard, _) = violations_by_severity(std::slice::from_ref(&c), &zoned(2026, 8, 8, 12, 0));
+        assert!(hard.is_empty(), "an unknown day never invents a hard block");
     }
 }
