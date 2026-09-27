@@ -52,6 +52,7 @@ extension VaultTabs {
     /// and for the same reasons.
     struct Lifecycle: ViewModifier {
         let bridge: CoreBridge
+        let session: SessionModel
         let models: VaultModels
         let surfaces: AppSurfaces
         @Binding var deviceID: String
@@ -65,13 +66,9 @@ extension VaultTabs {
                     models.account.restoreIfUnread()
                     await startSync()
                     // Renews the session for as long as the vault is open;
-                    // after `restoreIfUnread()`, in this task, so its first look sees
-                    // the restored token. See the macOS window for the twin.
-                    await models.account.renewWhileRunning(
-                        issuer: { models.settings.oidcIssuer },
-                        clientID: { models.settings.oidcClientID },
-                        now: { await bridge.nowMs() }
-                    )
+                    // after `restoreIfUnread()` so its first look sees the
+                    // restored token. The session owns it, as on the Mac (#307).
+                    session.renewSessionWhileOpen()
                 }
                 .task { await models.sync.poll(from: bridge) }
                 .task { await surfaces.reminders?.follow() }

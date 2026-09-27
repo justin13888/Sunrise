@@ -332,7 +332,7 @@ final class AccountModel {
 
     /// Renew if the token has reached its renewal point. A no-op otherwise, so
     /// it is safe to call on every tick — and
-    /// ``renewWhileRunning(issuer:clientID:now:every:sleep:)`` is the tick.
+    /// ``renewWhileRunning(issuer:clientID:now:every:sleep:tokenChanged:)`` is the tick.
     ///
     /// Renewal is silent by design: the point of a refresh token is that the
     /// user is not interrupted, and interrupting them at 75% of a token's life
@@ -467,7 +467,7 @@ final class AccountModel {
 // MARK: - The renewal tick
 
 extension AccountModel {
-    /// How often ``renewWhileRunning(issuer:clientID:now:every:sleep:)``
+    /// How often ``renewWhileRunning(issuer:clientID:now:every:sleep:tokenChanged:)``
     /// looks at the clock.
     ///
     /// ``refreshIfNeeded(issuer:clientID:nowMs:)`` decides *whether* to renew
@@ -480,15 +480,15 @@ extension AccountModel {
     /// Renew the session for as long as the calling task runs.
     ///
     /// The one production caller of ``refreshIfNeeded(issuer:clientID:nowMs:)``.
-    /// Each shell runs it from a `.task` on the view that owns ``VaultModels``,
-    /// so it ends when that view does — a closed Mac window or a torn-down
-    /// vault — and never outlives the model it renews. Cancellation stops it
-    /// at the next sleep; a renewal already in flight finishes under the
-    /// model's own ``sessionGeneration`` rules.
+    /// Run by ``SessionModel/renewSessionWhileOpen(every:sleep:)`` for as long
+    /// as the vault is open — not by a window, whose closing left sync on the
+    /// last bearer (#307). Cancellation stops it at the next sleep; a renewal
+    /// already in flight finishes under ``sessionGeneration``'s rules.
     ///
     /// Looks once before the first sleep, so a launch that restored a token
     /// already past its renewal point renews it at once rather than an
-    /// interval later.
+    /// interval later. A look that changed the bearer hands it to
+    /// `tokenChanged` — the sync driver, which no window is left to tell.
     ///
     /// The settings are read on every look rather than captured once, so an
     /// issuer edited in Settings is the one the next renewal asks. `now` and
@@ -498,11 +498,14 @@ extension AccountModel {
         clientID: @escaping @MainActor () -> String,
         now: @escaping @MainActor () async -> UInt64,
         every interval: Duration = AccountModel.renewalCheckInterval,
-        sleep: @escaping (Duration) async throws -> Void = { try await _Concurrency.Task.sleep(for: $0) }
+        sleep: @escaping (Duration) async throws -> Void = { try await _Concurrency.Task.sleep(for: $0) },
+        tokenChanged: @escaping @MainActor (String?) async -> Void = { _ in }
     ) async {
         while !_Concurrency.Task.isCancelled {
-            let nowMs = await now()
+            let (nowMs, before) = (await now(), accessToken)
             await refreshIfNeeded(issuer: issuer(), clientID: clientID(), nowMs: nowMs)
+            // Not after a cancel: the owner has let go of the vault it names.
+            if accessToken != before, !_Concurrency.Task.isCancelled { await tokenChanged(accessToken) }
             do {
                 try await sleep(interval)
             } catch {
