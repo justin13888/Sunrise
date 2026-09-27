@@ -1048,8 +1048,7 @@ impl SunriseCore {
         relay_device_id: Option<String>,
     ) -> Result<(), BindingError> {
         let _guard = self.rt.enter();
-        let credential = self.inner.sync_credential();
-        credential.set(bearer);
+        self.inner.sync_credential().set(bearer);
         // An empty string is not an id. A foreign caller reading a missing
         // value out of a store that answers with `""` would otherwise start a
         // driver that presents an `X-Sunrise-Device` naming no row, and the
@@ -1057,8 +1056,7 @@ impl SunriseCore {
         let signer = relay_device_id
             .filter(|id| !id.trim().is_empty())
             .map(|id| self.inner.device_signer(id.trim()));
-        self.inner
-            .start_sync(ws_factory(&url, credential, signer))?;
+        self.inner.start_sync(ws_factory(&url, signer))?;
         Ok(())
     }
 
@@ -1146,26 +1144,26 @@ impl SunriseCore {
 /// Build the transport factory the sync driver dials with, once per connection
 /// attempt (initial connect and every reconnect).
 ///
-/// The bearer is read from `credential` on every attempt rather than captured,
-/// so a reconnect after a renewal presents the *current* token. `signer` — the
-/// ADR-0022 device binding — is cloned per attempt for the same reason: the
-/// route where that matters most is the revocation `DELETE`, which runs on
-/// whatever connection the driver holds at the time.
+/// The factory holds no bearer: the driver reads the core's sync credential on
+/// every attempt and hands the read over, so a reconnect after a renewal
+/// presents the *current* token and the driver knows which version each
+/// attempt carried. `signer` — the ADR-0022 device binding — is cloned per
+/// attempt for the same reason: the route where that matters most is the
+/// revocation `DELETE`, which runs on whatever connection the driver holds at
+/// the time.
 ///
 /// The same shape as `sunrise_cli::livesync::ws_factory`; the driver is
 /// transport-agnostic and calls this once per connection attempt.
 fn ws_factory(
     url: &str,
-    credential: sunrise_core::TokenSource,
     signer: Option<Arc<dyn sunrise_sync::DeviceSigner>>,
 ) -> sunrise_core::TransportFactory {
     let url = url.to_string();
-    Arc::new(move || {
+    Arc::new(move |read: sunrise_core::CredentialRead| {
         let url = url.clone();
-        let bearer = credential.get();
         let signer = signer.clone();
         Box::pin(async move {
-            let t = sunrise_sync::SseTransport::connect_with_bearer(&url, bearer.as_deref());
+            let t = sunrise_sync::SseTransport::connect_with_bearer(&url, read.bearer());
             let t = match signer {
                 Some(s) => t.with_device_signer(s),
                 None => t,
