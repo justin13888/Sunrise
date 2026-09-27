@@ -80,7 +80,7 @@ old rule made impossible.
 | `seq` | The writer's per-`(stream, device)` counter, already envelope field 4. Reached only when two ops from the **same** device carry an equal `hlc`. |
 
 `seq` closes the residual documented on `LwwStamp`
-(`crates/sunrise-core/src/engine/lww.rs:28-42`). The send rule makes a
+(`crates/sunrise-core/src/engine/lww.rs:28-43#LwwStamp`). The send rule makes a
 same-device HLC tie impossible *while a device's clock state lives*; it becomes
 possible across a process restart. In that window `seq` still orders the two ops
 correctly. This paragraph understated what a restart did until ADR-0036: the
