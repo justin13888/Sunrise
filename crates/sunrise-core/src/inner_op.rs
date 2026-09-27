@@ -170,6 +170,13 @@ pub enum InnerOpError {
     /// CBOR encode/decode failure for an inner-op blob.
     #[error("inner-op cbor: {0}")]
     Cbor(String),
+    /// The blob is a well-formed externally tagged op whose variant name this
+    /// build does not know: a family added by a newer build, not damage.
+    ///
+    /// Carries the name. The receive path parks the op rather than refusing
+    /// it (ADR-0045 §4).
+    #[error("inner-op kind `{0}` is not one this build knows")]
+    UnknownKind(String),
 }
 
 impl InnerOp {
@@ -330,10 +337,88 @@ pub(crate) fn encode_inner_op(op: &InnerOp) -> Result<Vec<u8>, InnerOpError> {
 /// Decode an inner-op CBOR blob back into an [`InnerOp`].
 ///
 /// # Errors
-/// [`InnerOpError::Cbor`] if the bytes are not a valid inner-op CBOR map (an
-/// unknown variant, a malformed payload, or trailing garbage).
+/// [`InnerOpError::UnknownKind`] if the bytes are an externally tagged op —
+/// a single-entry map keyed by a text variant name, or a bare text name — and
+/// that name is not one [`InnerOp`] declares. The payload under an unknown
+/// name is not inspected: this build has no shape to check it against.
+///
+/// [`InnerOpError::Cbor`] for anything else that does not decode: bytes that
+/// are not CBOR, a shape that is not an externally tagged op, or a known
+/// variant whose payload is malformed. A known name with a bad payload is
+/// never `UnknownKind`, so a damaged op of a family this build reads is still
+/// reported as damage.
 pub(crate) fn decode_inner_op(bytes: &[u8]) -> Result<InnerOp, InnerOpError> {
-    ciborium::de::from_reader(bytes).map_err(|e| InnerOpError::Cbor(e.to_string()))
+    ciborium::de::from_reader(bytes).map_err(|e| {
+        unknown_kind(bytes).map_or_else(
+            || InnerOpError::Cbor(e.to_string()),
+            InnerOpError::UnknownKind,
+        )
+    })
+}
+
+/// The variant name of an externally tagged op whose name [`InnerOp`] does
+/// not declare, or `None` when the bytes are not that shape or the name is
+/// known.
+fn unknown_kind(bytes: &[u8]) -> Option<String> {
+    use ciborium::value::Value;
+    let name = match ciborium::de::from_reader::<Value, _>(bytes).ok()? {
+        // `{"Name": payload}`: every variant this build declares.
+        Value::Map(mut entries) if entries.len() == 1 => match entries.pop()?.0 {
+            Value::Text(name) => name,
+            _ => return None,
+        },
+        // `"Name"`: serde's external tagging of a unit variant, which a later
+        // family is free to be.
+        Value::Text(name) => name,
+        _ => return None,
+    };
+    (!known_kinds().contains(&name.as_str())).then_some(name)
+}
+
+/// Every variant name [`InnerOp`]'s derived `Deserialize` accepts.
+///
+/// Read out of the derive itself, not kept as a second list: serde passes the
+/// enum's variant names to `Deserializer::deserialize_enum`, and a probe
+/// deserializer that records them and stops is the only way to get the list
+/// the decoder actually uses. A hand-kept list would drift the first time a
+/// family was added without it, and the op of that family would then be
+/// parked by the very build that knows how to apply it.
+fn known_kinds() -> &'static [&'static str] {
+    use serde::de::{self, Deserializer, Visitor};
+    use std::sync::OnceLock;
+
+    struct Probe<'a>(&'a mut &'static [&'static str]);
+
+    impl<'de> Deserializer<'de> for Probe<'_> {
+        type Error = de::value::Error;
+
+        fn deserialize_any<V: Visitor<'de>>(self, _: V) -> Result<V::Value, Self::Error> {
+            Err(de::Error::custom("probe"))
+        }
+
+        fn deserialize_enum<V: Visitor<'de>>(
+            self,
+            _name: &'static str,
+            variants: &'static [&'static str],
+            _: V,
+        ) -> Result<V::Value, Self::Error> {
+            *self.0 = variants;
+            Err(de::Error::custom("probe"))
+        }
+
+        serde::forward_to_deserialize_any! {
+            bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
+            bytes byte_buf option unit unit_struct newtype_struct seq tuple
+            tuple_struct map struct identifier ignored_any
+        }
+    }
+
+    static KINDS: OnceLock<&'static [&'static str]> = OnceLock::new();
+    KINDS.get_or_init(|| {
+        let mut kinds: &'static [&'static str] = &[];
+        let _ = InnerOp::deserialize(Probe(&mut kinds));
+        kinds
+    })
 }
 
 #[cfg(test)]
@@ -390,6 +475,77 @@ mod tests {
         // Boxing must not show on the wire: `Box<T>` is transparent to serde,
         // so the entry is the payload map and not a wrapper around it.
         assert!(matches!(map[0].1, ciborium::value::Value::Map(_)));
+    }
+
+    fn cbor(value: &ciborium::value::Value) -> Vec<u8> {
+        let mut buf = Vec::new();
+        ciborium::ser::into_writer(value, &mut buf).unwrap();
+        buf
+    }
+
+    /// The probe reads the derive's own list. Were it to come back empty,
+    /// every op would read as unknown and park, including a damaged op of a
+    /// family this build applies, so the list is pinned from both ends.
+    #[test]
+    fn known_kinds_is_the_derives_variant_list() {
+        let kinds = known_kinds();
+        assert_eq!(kinds.first(), Some(&"TaskCreate"));
+        assert_eq!(kinds.last(), Some(&"IdentityTransition"));
+        for name in [
+            "BlockCreate",
+            "AttachmentDelete",
+            "FocusInterrupt",
+            "KeyEnvelope",
+        ] {
+            assert!(kinds.contains(&name), "{name} is declared");
+        }
+        let bytes = encode_inner_op(&transition()).unwrap();
+        assert!(unknown_kind(&bytes).is_none(), "a known op is not unknown");
+    }
+
+    #[test]
+    fn a_variant_this_build_does_not_declare_is_an_unknown_kind() {
+        use ciborium::value::Value;
+        let newtype = cbor(&Value::Map(vec![(
+            Value::Text("FutureKind".into()),
+            Value::Map(vec![(Value::Text("x".into()), Value::Integer(1.into()))]),
+        )]));
+        assert!(matches!(
+            decode_inner_op(&newtype),
+            Err(InnerOpError::UnknownKind(k)) if k == "FutureKind"
+        ));
+        let unit = cbor(&Value::Text("FutureUnit".into()));
+        assert!(matches!(
+            decode_inner_op(&unit),
+            Err(InnerOpError::UnknownKind(k)) if k == "FutureUnit"
+        ));
+    }
+
+    /// Only the variant name decides. A family this build reads, with a
+    /// payload that does not decode, is damage and not a newer build's op,
+    /// and so is anything that is not an externally tagged op at all.
+    #[test]
+    fn damage_is_never_an_unknown_kind() {
+        use ciborium::value::Value;
+        let cases = [
+            cbor(&Value::Map(vec![(
+                Value::Text("TaskCreate".into()),
+                Value::Integer(7.into()),
+            )])),
+            cbor(&Value::Map(vec![
+                (Value::Text("FutureA".into()), Value::Null),
+                (Value::Text("FutureB".into()), Value::Null),
+            ])),
+            cbor(&Value::Map(vec![(Value::Integer(1.into()), Value::Null)])),
+            cbor(&Value::Integer(3.into())),
+            vec![0xff, 0x00, 0x13],
+        ];
+        for bytes in cases {
+            assert!(
+                matches!(decode_inner_op(&bytes), Err(InnerOpError::Cbor(_))),
+                "{bytes:02x?} must stay damage"
+            );
+        }
     }
 
     /// The six tables every new variant has to be added to, asserted together
