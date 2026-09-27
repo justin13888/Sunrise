@@ -10374,8 +10374,10 @@ fn an_op_sealed_at_the_derived_genesis_epoch_opens_but_outranks_nothing() {
 ///
 /// Parking is correct here and is not a weakness: from the receiver's side
 /// "I hold no key at epoch 3" is indistinguishable from an honest op that
-/// overtook its `key_envelope`, and refusing would lose that op for good —
-/// the relay does not redeliver. What matters is that parking is *inert*:
+/// overtook its `key_envelope`, and refusing would hold the device's cursor
+/// below that op until the relay replayed it, and lose it for good once the
+/// relay's retention window (30 days or 256 MiB per channel) evicted the frame.
+/// What matters is that parking is *inert*:
 /// the op never applies, the head never moves, and the row is swept at
 /// [`DEFERRED_TTL_MS`] rather than sitting there forever waiting for a key
 /// that cannot exist, because no honest device ever minted that epoch.

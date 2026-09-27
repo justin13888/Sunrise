@@ -267,10 +267,17 @@ impl Engine {
         //
         //    No key at all is NOT an error: the `key_envelope` op that carries
         //    it may simply not have arrived yet, and the two have no ordering
-        //    guarantee across streams. Refusing would lose the op (the relay
-        //    does not redeliver), and a cursor barrier would stall the whole
-        //    stream. It is parked in `deferred_ops` and retried after every
-        //    absorbed key.
+        //    guarantee across streams. Refusing would not lose the op at
+        //    once: it writes no op row, so the contiguous sync cursor stays
+        //    below it and the relay replays it on the next `Subscribe` — but
+        //    only while the relay's durable log still retains the frame (30
+        //    days or 256 MiB per channel, whichever evicts first; see
+        //    `crates/sunrise-server/src/relay_log.rs`). Past that it is gone.
+        //    And until then a refusal is a cursor barrier: the key's arrival
+        //    triggers no replay, so the op waits for the next resync or
+        //    reconnect, and every later op from that device is re-sent with
+        //    it. It is parked in `deferred_ops` instead and retried after
+        //    every absorbed key, which applies it the moment its key lands.
         let keys = self.keychain.stream_keys_at(&env.stream_id, env.epoch);
         if keys.is_empty() {
             self.defer_op(db, envelope_bytes, &env)?;

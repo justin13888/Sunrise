@@ -140,8 +140,12 @@ one integer comparison at each point of use and cannot drift.
 **3. Refuse a transition at apply time unless it succeeds the current head.**
 Tempting and wrong, for ADR-0034's reason. A transition naming an identity two
 links ahead is legitimate — the replica simply has not seen the intermediate one
-— and refusing it loses the op, because the relay does not redeliver. It is
-stored, and the fold ignores it until its predecessor arrives.
+— and refusing it writes no op row, so the sender's sync cursor stalls below it.
+The relay replays it on the next subscribe, but only while its log retains the
+frame (30 days or 256 MiB per channel, whichever evicts first); past that the op
+is lost. Until then every later op from that device is replayed with it, and the
+predecessor's arrival triggers no replay of its own. It is stored, and the fold
+ignores it until its predecessor arrives.
 
 **4. A per-transition `effective_at`, as key-rotation.md draws it.** Rejected
 for `DeviceRevokePayload`'s reasons, worse. See Context.
