@@ -173,7 +173,24 @@ impl Core {
         // device arriving by pairing has already imported the account's epochs
         // in `Keychain::open` above, so this finds them and mints nothing.
         engine.ensure_base_epochs(&mut db)?;
-        // Between the two, and in that order for two reasons.
+        // Replay what an earlier build parked because it did not know the
+        // op's kind (issue #320, ADR-0045 §4). This is the upgrade the parking
+        // was waiting for, and nothing else would bring those ops back: they
+        // advanced the sync cursor, so the relay will not send them again.
+        //
+        // After `prime_hlc`, because a released op goes through the clock gate
+        // like any delivery. Before `recompute_identity_head`, because a parked
+        // op can be an identity transition, and the head it moves is the one
+        // `publish_device_cert` below announces under. No subscriber exists
+        // yet, so the events it returns have nobody to reach; every screen
+        // reads the vault fresh after open.
+        //
+        // It cannot fail the open. A parked op whose replay fails in storage is
+        // logged and left for the next open, so a fault that recurs on every
+        // try costs one retry per open and never locks the vault.
+        let _ = engine.replay_parked_ops(&mut db);
+        // Between `ensure_base_epochs` and `publish_device_cert`, and in that
+        // order for two reasons.
         //
         // After `ensure_base_epochs`, because adopting a successor identity
         // re-issues this device's cert and writes it into `local_identity`, and

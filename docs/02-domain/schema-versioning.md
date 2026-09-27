@@ -137,8 +137,12 @@ can be lost ([#319](https://github.com/justin13888/Sunrise/issues/319)).
   - a schema-fingerprint mismatch
 
   See [ADR-0045](../11-adr/0045-schema-identity-and-feature-gating.md) §4.
-  *Today:* an unknown op kind is reported as `RemoteOpInvalid`, classed as
-  corruption and dropped ([#320](https://github.com/justin13888/Sunrise/issues/320)).
+  *Today:* an unknown op kind parks
+  ([#320](https://github.com/justin13888/Sunrise/issues/320), `STORAGE_V` 31),
+  and the replay runs at `Core::open` when the `DOC_SCHEMA_V` that parked or
+  last tried an op differs from the build's. The other three reasons do not
+  exist yet, so any other inner decode failure is still `RemoteOpInvalid`,
+  classed as corruption and dropped.
 - **Document schema: unknowns are lossless at every level.** Three rules, all
   required:
   1. **Every struct that crosses the wire keeps an unknown map.** That means

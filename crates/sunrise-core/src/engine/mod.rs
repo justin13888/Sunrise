@@ -179,7 +179,7 @@ const FOCUS_PLAN_SCAN_CAP: u32 = 512;
 /// envelope still enters `ops`, and the op counts toward the contiguous prefix
 /// exactly like an applied one. Whether the cursor then moves past it is a
 /// question about the seqs *below* it and never about the refusal — see
-/// `crates/sunrise-core/src/engine/oplog.rs:921#upsert_sync_cursor`. Once it
+/// `crates/sunrise-core/src/engine/oplog.rs:925#upsert_sync_cursor`. Once it
 /// does, the relay will not re-send the op and nothing re-offers the key. Ops
 /// sealed under that `(stream, epoch)` therefore stay unreadable on this
 /// replica until the device is re-paired, which is what hands it every Stream
@@ -260,6 +260,17 @@ const DEFERRED_TOTAL_CAP: i64 = 4096;
 /// re-emits one on request. Keeping it is keeping ciphertext this device will
 /// never read. Thirty days is generous against every offline window a person
 /// actually has and still bounds a slow drip that never reaches either cap.
+///
+/// # Neither this nor the two caps bound `parked_ops`
+///
+/// An op of a kind this build does not know parks in `parked_ops` instead
+/// (`Engine::park_op`, issue #320), and that table has no TTL and no cap on
+/// purpose. Everything that justifies the three bounds above is false of it:
+/// its op verified and opened, so its epoch is not a free claim and its bytes
+/// are not ciphertext this device may never read; and it advanced the sync
+/// cursor, so the relay will never re-send it, and an evicted row would be an
+/// op lost rather than one fetched again. What bounds it is what bounds `ops`:
+/// only a member can write one.
 const DEFERRED_TTL_MS: u64 = 30 * 24 * 60 * 60 * 1000;
 
 /// Engine error. Maps to `CoreError::Engine` at the public API.

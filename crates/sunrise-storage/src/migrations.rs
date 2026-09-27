@@ -122,6 +122,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "read_bounds_from_sponsor",
         sql: include_str!("../migrations/0030_read_bounds_from_sponsor.sql"),
     },
+    Migration {
+        id: 31,
+        name: "parked_ops",
+        sql: include_str!("../migrations/0031_parked_ops.sql"),
+    },
 ];
 
 /// Current storage version (= last migration id).

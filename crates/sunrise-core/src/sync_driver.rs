@@ -1467,7 +1467,8 @@ async fn handle_frame(
                         subscribe_to_new_streams(&events, subscribed, pending_sends);
                         shared.mark_synced(core.now_ms());
                     }
-                    // Idempotent re-receive, or an op parked awaiting its key:
+                    // Idempotent re-receive, an op parked awaiting its key, or
+                    // one parked because this build does not know its kind:
                     // nothing to do, nothing wrong.
                     Ok(_) => {}
                     Err(e) => {
@@ -1997,6 +1998,9 @@ fn subscribe_to_new_streams(
 
 /// Whether an `apply_remote` failure means the bytes were damaged, as opposed
 /// to the op being well-formed but from a device this vault does not trust.
+///
+/// An op of a kind this build does not know never reaches this: it verified
+/// and opened, so the engine parks it and returns `Ok` (issue #320).
 fn is_corruption(e: &crate::core::CoreError) -> bool {
     matches!(
         e,
