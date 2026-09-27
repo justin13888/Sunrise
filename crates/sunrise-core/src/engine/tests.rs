@@ -13811,6 +13811,82 @@ fn unknown_entity_fields_survive_the_materialized_row() {
     assert_eq!(decoded.unknown, future_fields());
 }
 
+/// ADR-0045 §6: an `extra` blob this build cannot parse is kept, not emptied.
+///
+/// It reads as "no unknowns", which is what used to make the next write of
+/// the row store `NULL` over it. Now the write keeps the bytes and says so;
+/// a write whose entity carries unknown fields of its own still replaces them.
+#[test]
+fn an_unparseable_extra_blob_survives_an_edit_and_is_logged() {
+    let clock = Arc::new(FakeClock(PLMutex::new(T0)));
+    let e = engine_seeded(ROOT, [1u8; 32], clock);
+    let mut db = db_root(ROOT);
+    let task = new_task(&e, &mut db, "holds bytes this build cannot read");
+    // A float: canonical CBOR a newer build could write, and a value
+    // `CborValue` refuses, so the whole map fails to decode here.
+    let opaque: Vec<u8> = vec![0xa1, 0x61, b'x', 0xf9, 0x3c, 0x00];
+    let extra = |db: &Db| -> Option<Vec<u8>> {
+        db.conn()
+            .query_row(
+                "SELECT extra FROM tasks WHERE id = ?",
+                [&task.bytes()[..]],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    db.conn()
+        .execute(
+            "UPDATE tasks SET extra = ? WHERE id = ?",
+            rusqlite::params![&opaque, &task.bytes()[..]],
+        )
+        .unwrap();
+    assert!(read_task_t(&e, &db, task).unknown.is_empty());
+
+    let logged = events_emitted_by(|| {
+        e.apply(
+            &mut db,
+            Command::UpdateTask {
+                id: task,
+                patch: TaskPatch {
+                    title: Some("renamed".into()),
+                    ..Default::default()
+                },
+            },
+        )
+        .unwrap();
+    });
+    assert_eq!(
+        extra(&db),
+        Some(opaque),
+        "the bytes are written back unchanged"
+    );
+    assert!(
+        logged
+            .iter()
+            .any(|ev| ev == "core.storage.extra_kept_opaque"),
+        "keeping them is announced; got {logged:?}"
+    );
+
+    // An entity with unknown fields of its own replaces them.
+    let mut t = read_task_t(&e, &db, task);
+    t.unknown = future_fields();
+    let lww = e.lww_stamp(9);
+    db.with_tx(|tx| update_task_row(tx, &t, &lww)).unwrap();
+    assert_eq!(read_task_t(&e, &db, task).unknown, future_fields());
+}
+
+/// Every table's `extra` lookup names a real key column: a query that does
+/// not prepare fails the write it guards, for every row of that table.
+#[test]
+fn every_extra_lookup_prepares_against_the_schema() {
+    let db = db_root(ROOT);
+    for table in ExtraTable::ALL {
+        db.conn()
+            .prepare(table.select_extra())
+            .unwrap_or_else(|e| panic!("{table:?}: {e}"));
+    }
+}
+
 /// `Stream.description` was accepted, carried in the op, and never stored.
 ///
 /// `create_stream` copied it onto the entity and `update_stream` applied

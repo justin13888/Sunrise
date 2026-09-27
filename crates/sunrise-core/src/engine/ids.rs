@@ -47,12 +47,106 @@ pub(super) fn encode_unknowns(u: &sunrise_domain::Unknowns) -> rusqlite::Result<
 
 /// Decode the `extra` column back into an entity's unknown map.
 ///
-/// A blob this build cannot parse degrades to "no unknowns" rather than
-/// failing the read: losing a field nobody here can interpret is bad, and
-/// losing the whole Task because of it is worse.
+/// A blob this build cannot parse reads as "no unknowns" rather than failing
+/// the read: losing the whole Task over a column nobody here can interpret
+/// would be worse. The read does not lose the blob, though. It stays in the
+/// row, and [`extra_over_opaque`] keeps it there when the entity is written
+/// back with nothing of its own to put in the column.
 pub(super) fn decode_unknowns(blob: Option<Vec<u8>>) -> sunrise_domain::Unknowns {
     blob.and_then(|b| sunrise_cbor::decode_lenient(&b).ok())
         .unwrap_or_default()
+}
+
+/// A table whose rows carry an `extra` column that a write can overwrite.
+#[derive(Debug, Clone, Copy)]
+pub(super) enum ExtraTable {
+    Streams,
+    Contexts,
+    Tasks,
+    Routines,
+    Blocks,
+    Attachments,
+}
+
+impl ExtraTable {
+    /// Every table, for the test that prepares each query against the schema.
+    #[cfg(test)]
+    pub(super) const ALL: [Self; 6] = [
+        Self::Streams,
+        Self::Contexts,
+        Self::Tasks,
+        Self::Routines,
+        Self::Blocks,
+        Self::Attachments,
+    ];
+
+    /// The query for a row's current `extra`. A constant per table, so no
+    /// table name is ever formatted into SQL.
+    pub(super) const fn select_extra(self) -> &'static str {
+        match self {
+            Self::Streams => "SELECT extra FROM streams WHERE stream_id = ?",
+            Self::Contexts => "SELECT extra FROM contexts WHERE id = ?",
+            Self::Tasks => "SELECT extra FROM tasks WHERE id = ?",
+            Self::Routines => "SELECT extra FROM routines WHERE id = ?",
+            Self::Blocks => "SELECT extra FROM blocks WHERE id = ?",
+            Self::Attachments => "SELECT extra FROM attachments WHERE id = ?",
+        }
+    }
+
+    /// The entity kind the table holds, for the log line.
+    const fn kind(self) -> &'static str {
+        match self {
+            Self::Streams => "stream",
+            Self::Contexts => "context",
+            Self::Tasks => "task",
+            Self::Routines => "routine",
+            Self::Blocks => "block",
+            Self::Attachments => "attachment",
+        }
+    }
+}
+
+/// The `extra` value to write over row `id` of `table`, given `new`, the
+/// entity's own [`encode_unknowns`].
+///
+/// `new` when the entity carries unknown fields. When it carries none, and the
+/// row already holds a blob this build cannot parse, that blob: it read as
+/// "no unknowns" ([`decode_unknowns`]), and writing the empty map back would
+/// delete a newer build's fields nobody here can see (ADR-0045 §6). The kept
+/// blob is logged, because it means the row holds data this build cannot
+/// read. Otherwise `None`.
+///
+/// An op from a peer whose entity carries no unknown fields keeps the blob
+/// too. It is not the peer's data being resurrected: the blob was never
+/// readable here, so nothing reads it, and a later write that carries unknown
+/// fields of its own replaces it.
+pub(super) fn extra_over_opaque(
+    tx: &rusqlite::Connection,
+    table: ExtraTable,
+    id: &[u8],
+    new: Option<Vec<u8>>,
+) -> rusqlite::Result<Option<Vec<u8>>> {
+    use rusqlite::OptionalExtension as _;
+    if new.is_some() {
+        return Ok(new);
+    }
+    let prior: Option<Vec<u8>> = tx
+        .query_row(table.select_extra(), [id], |r| r.get(0))
+        .optional()?
+        .flatten();
+    Ok(prior.filter(|b| {
+        let opaque = sunrise_cbor::decode_lenient::<sunrise_domain::Unknowns>(b).is_err();
+        if opaque {
+            tracing::warn!(
+                ev = "core.storage.extra_kept_opaque",
+                kind = table.kind(),
+                n_bytes = b.len(),
+                "an entity's unknown-field column holds bytes this build cannot parse; \
+                 kept them rather than writing an empty map over them"
+            );
+        }
+        opaque
+    }))
 }
 
 /// Split an optional [`SunriseTime`] into its three storage columns:
