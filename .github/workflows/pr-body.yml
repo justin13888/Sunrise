@@ -1,0 +1,40 @@
+name: PR body
+
+# A gate over the pull request's description rather than its tree, so it lives
+# apart from ci.yml for one reason: it has to run when the body changes, and a
+# body changes without a push. `edited` fires on a title, body or base edit.
+# Adding `edited` to ci.yml's trigger instead would rerun every Rust, Apple and
+# docs job on each body edit, and cancel the run in flight for the head while
+# doing it. This workflow holds one job that finishes in seconds.
+#
+# Its contract test is not here: it reads no body, so it is the
+# `reverses-gate-contract` job in ci.yml, beside the other gate contracts.
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+# The job checks out and reads the event payload the runner already holds on
+# disk. It calls no API and reads no secret.
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  reverses:
+    name: Reverses gate
+    runs-on: ubuntu-latest
+    # One stdlib Python script over one string. Under a second.
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - name: Reject a decision record that spells a closing keyword
+        # #300. GitHub's closing-keyword parser reads the whole body, so a
+        # `Reverses:` line saying what undoing a decision would do - "close
+        # #282 as wontfix" - closed #282 when #240 merged, and #293 closed #297
+        # the same way. The script reads `pull_request.body` from
+        # `$GITHUB_EVENT_PATH`; the body is never interpolated into this
+        # command, because it is text anyone opening a pull request writes.
+        run: .github/scripts/reverses-gate.py

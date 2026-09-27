@@ -1425,6 +1425,21 @@ description = "Assert the workflow hardening gate's exit-code contract (fast, sy
 # mistaken for a top-level one.
 run = "python3 .github/scripts/test_workflow_hardening_gate.py"
 
+[tasks.reverses-gate]
+description = "Reject a PR body whose decision record spells a closing keyword (the pr-body gate, run locally)"
+# CI reads the body from the pull_request event payload; locally there is no
+# payload, so name a body file, or `-` and pipe it in, before publishing it:
+# `gh pr view N --json body --jq .body | mise run reverses-gate -`.
+run = ".github/scripts/reverses-gate.py"
+
+[tasks.reverses-gate-test]
+description = "Assert the reverses gate's exit-code contract (fast, synthesised bodies and event payloads)"
+# The gate is a line reader over markdown, and a reader over prose goes quietly
+# green when its reading is wrong. These cases plant the two `Reverses:` lines
+# that closed #282 and #297 and assert exit 1, and keep the shapes #300 names
+# as safe at 0.
+run = "python3 .github/scripts/test_reverses_gate.py"
+
 # --- Release artifacts ---
 #
 # Same Dockerfile and the same build args the release workflow uses, so a
