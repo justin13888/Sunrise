@@ -1,4 +1,5 @@
 import Foundation
+import Security
 import Testing
 
 @testable import Sunrise
@@ -231,6 +232,95 @@ struct AccountRenewalTickTests {
         #expect(account.accessToken == "access-login")
     }
 
+    /// What the issuer says about a refresh token it has revoked or expired.
+    private static let refusal = BindingError.LoginRefused(
+        message: "login: issuer declined: refresh: invalid_grant: Token is not active"
+    )
+
+    /// A refused refresh token ends the session at the first look, while the
+    /// bearer is still good (3 500 < 4 000), and the tick stops asking: the
+    /// look at 4 500 finds nothing to renew. Keeping it asked the issuer again
+    /// every thirty seconds until the user signed in or out.
+    @Test
+    func aRefusedRenewalEndsTheSessionWhileTheTokenIsStillValid() async {
+        let store = StubCredentialStore(value: credentials(accessToken: "access-old"))
+        let driver = ScriptedLoginDriver(
+            failures: .max,
+            renewed: credentials(accessToken: "unused"),
+            failWith: Self.refusal
+        )
+        let account = AccountModel(store: store, makeDriver: { _, _ in driver }, openURL: { _ in })
+        account.restore()
+        let clock = FakeRenewalClock(startMs: 3_500, stopAfter: 1)
+        let handed = Observed<[String?]>()
+        handed.value = []
+
+        await account.renewWhileRunning(
+            issuer: { "https://issuer.example" },
+            clientID: { "client" },
+            now: { clock.nowMs },
+            every: .seconds(1),
+            sleep: { try clock.sleep($0) },
+            tokenChanged: { handed.value?.append($0) }
+        )
+
+        #expect(driver.refreshCount == 1, "the refused token was offered to the issuer again")
+        #expect(store.stored == nil)
+        #expect(store.clearCount == 1)
+        #expect(account.accessToken == nil)
+        #expect(handed.value == [nil], "the sync driver heard the bearer go")
+        #expect(account.state == .failed(AccountError.refusedByIssuer.localizedDescription))
+        #expect(!account.offersBareSignOut, "nothing is left for a bare Sign out to remove")
+    }
+
+    /// The refusal goes through ``AccountModel/signOut()``, so a Keychain that
+    /// will not let go of the refused token is disclosed, not swallowed.
+    @Test
+    func aRefusedRenewalWhoseClearIsRefusedSaysSo() async {
+        let store = StubCredentialStore(
+            value: credentials(accessToken: "access-old"),
+            clearFailure: KeychainError.unexpected(errSecInteractionNotAllowed)
+        )
+        let account = model(store: store, driver: StubLoginDriver(failure: Self.refusal))
+        account.restore()
+
+        await account.refreshIfNeeded(issuer: "https://issuer.example", clientID: "c", nowMs: 3_500)
+
+        #expect(store.stored?.refreshToken == "refresh-1", "the stub keeps what a refused clear keeps")
+        #expect(account.accessToken == nil)
+        #expect(account.signOutResidue != .none)
+        #expect(account.state == .failed(AccountError.refusedByIssuer.localizedDescription))
+    }
+
+    /// A refusal that lands while **Try again** has a login in the browser
+    /// leaves that login alone: it is about to replace the refused token, and
+    /// a sign-out here would discard it on its way back.
+    @Test
+    func aRefusalDuringALoginLeavesTheLoginToFinish() async {
+        let store = StubCredentialStore(value: credentials(accessToken: "access-old"))
+        let driver = ScriptedLoginDriver(
+            failures: .max,
+            renewed: credentials(accessToken: "unused"),
+            completed: credentials(accessToken: "access-login", expiresAtMs: 9_000, renewAtMs: 8_000),
+            failWith: Self.refusal
+        )
+        let account = AccountModel(store: store, makeDriver: { _, _ in driver }, openURL: { _ in })
+        account.restore()
+        let seen = Observed<AccountModel.State>()
+        driver.setWhileParked {
+            await account.refreshIfNeeded(issuer: "https://issuer.example", clientID: "c", nowMs: 3_500)
+            seen.value = account.state
+        }
+
+        await account.signIn(issuer: "https://issuer.example", clientID: "c", deviceID: "d", nowMs: 3_500)
+
+        #expect(driver.refreshCount == 1, "the renewal ran while the browser was open")
+        #expect(seen.value == .awaitingBrowser)
+        #expect(store.clearCount == 0)
+        #expect(account.state == .signedIn(expiresAtMs: 9_000))
+        #expect(store.stored?.accessToken == "access-login")
+    }
+
     /// The session runs the tick in a task it holds, and ends it by
     /// cancelling that task (#307). The default sleep is a real `Task.sleep`, so a cancel
     /// that arrives while the loop is asleep has to end the loop rather than
@@ -286,11 +376,20 @@ final class ScriptedLoginDriver: LoginDriver, @unchecked Sendable {
     private var whileParked: (@MainActor @Sendable () async -> Void)?
     private let renewed: StoredCredentials
     private let completed: StoredCredentials
+    /// What each failing renewal throws: a network-shaped failure by default,
+    /// or the issuer's refusal.
+    private let failure: any Error
 
-    init(failures: Int, renewed: StoredCredentials, completed: StoredCredentials? = nil) {
+    init(
+        failures: Int,
+        renewed: StoredCredentials,
+        completed: StoredCredentials? = nil,
+        failWith failure: any Error = StubLoginError()
+    ) {
         failuresLeft = failures
         self.renewed = renewed
         self.completed = completed ?? renewed
+        self.failure = failure
     }
 
     var refreshCount: Int { lock.withLock { refreshes } }
@@ -313,7 +412,7 @@ final class ScriptedLoginDriver: LoginDriver, @unchecked Sendable {
             failuresLeft -= 1
             return true
         }
-        if fails { throw StubLoginError() }
+        if fails { throw failure }
         return renewed
     }
 }

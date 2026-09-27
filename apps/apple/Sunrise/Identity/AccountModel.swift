@@ -39,6 +39,8 @@ struct OIDCLoginDriver: LoginDriver {
 enum AccountError: Error, Equatable, LocalizedError {
     case notConfigured
     case badAuthorizeURL(String)
+    /// The issuer refused the refresh token, so the session cannot be renewed.
+    case refusedByIssuer
 
     var errorDescription: String? {
         switch self {
@@ -46,6 +48,8 @@ enum AccountError: Error, Equatable, LocalizedError {
             "Set an OIDC issuer and client ID before signing in."
         case .badAuthorizeURL:
             "The identity provider returned an address Sunrise could not open."
+        case .refusedByIssuer:
+            "The identity provider ended this session. Sign in again to keep syncing."
         }
     }
 }
@@ -366,23 +370,28 @@ final class AccountModel {
             credentials = fresh
             publish()
         } catch {
-            // A failed renewal is not a signed-out session: the current token
-            // is still good until `expiresAtMs`, and the next tick tries
-            // again. Dropping it here would sign the user out early, every
-            // time the network blinked.
-            //
             // A sign-out that landed meanwhile already chose the screen: `.failed`
             // written over its `.signedOut` would report a session it ended.
-            guard sessionGeneration == generation, current.hasExpired(nowMs: nowMs) else { return }
-            // Expired and not renewed. The bearer goes, since the relay refuses
-            // it now anyway, but the refresh token stays, here and in the
-            // Keychain: the binding reports an unreachable issuer and a refusal
-            // as the same `BindingError.Login` string, and deleting the token on
-            // a network failure made every offline launch, and every Mac waking
-            // before its network, end in a browser sign-in. The next tick asks
-            // again and a success publishes as usual; until then
+            guard sessionGeneration == generation else { return }
+            // The issuer refused the refresh token in OAuth's own words, and it
+            // will refuse it again: the session is over whether or not the
+            // bearer has expired, and keeping the token asked the issuer again
+            // on every tick. So it goes, here and in the Keychain, through the
+            // one path that says so when the Keychain will not let go. A login
+            // already in the browser is replacing it and keeps its spinner.
+            if case .LoginRefused? = error as? BindingError {
+                guard state != .awaitingBrowser else { return }
+                signOut()
+                state = .failed(AccountError.refusedByIssuer.localizedDescription)
+                return
+            }
+            // Anything else, an unreachable issuer above all, says nothing about
+            // the refresh token. Before `expiresAtMs` the bearer is still good and
+            // the next tick tries again. After it the bearer goes, since the relay
+            // refuses it anyway, but the refresh token stays, so an offline launch
+            // or a Mac waking before its network recovers without a browser;
             // ``offersBareSignOut`` keeps a **Sign out** on the `.failed` row.
-            // A login already in the browser keeps its spinner.
+            guard current.hasExpired(nowMs: nowMs) else { return }
             accessToken = nil
             if state != .awaitingBrowser { state = .failed(error.localizedDescription) }
         }
@@ -461,56 +470,5 @@ final class AccountModel {
         }
         accessToken = credentials.accessToken
         state = .signedIn(expiresAtMs: credentials.expiresAtMs)
-    }
-}
-
-// MARK: - The renewal tick
-
-extension AccountModel {
-    /// How often ``renewWhileRunning(issuer:clientID:now:every:sleep:tokenChanged:)``
-    /// looks at the clock.
-    ///
-    /// ``refreshIfNeeded(issuer:clientID:nowMs:)`` decides *whether* to renew
-    /// — at the token's own renewal point, 75% of its life — so this only
-    /// bounds how late after that point the renewal starts. A look that is
-    /// not due is one clock read and one comparison; thirty seconds is far
-    /// inside the quarter of a token's life that is left when it comes due.
-    nonisolated static let renewalCheckInterval: Duration = .seconds(30)
-
-    /// Renew the session for as long as the calling task runs.
-    ///
-    /// The one production caller of ``refreshIfNeeded(issuer:clientID:nowMs:)``.
-    /// Run by ``SessionModel/renewSessionWhileOpen(every:sleep:)`` for as long
-    /// as the vault is open — not by a window, whose closing left sync on the
-    /// last bearer (#307). Cancellation stops it at the next sleep; a renewal
-    /// already in flight finishes under ``sessionGeneration``'s rules.
-    ///
-    /// Looks once before the first sleep, so a launch that restored a token
-    /// already past its renewal point renews it at once rather than an
-    /// interval later. A look that changed the bearer hands it to
-    /// `tokenChanged` — the sync driver, which no window is left to tell.
-    ///
-    /// The settings are read on every look rather than captured once, so an
-    /// issuer edited in Settings is the one the next renewal asks. `now` and
-    /// `sleep` are parameters so a test drives the loop on a fake clock.
-    func renewWhileRunning(
-        issuer: @escaping @MainActor () -> String,
-        clientID: @escaping @MainActor () -> String,
-        now: @escaping @MainActor () async -> UInt64,
-        every interval: Duration = AccountModel.renewalCheckInterval,
-        sleep: @escaping (Duration) async throws -> Void = { try await _Concurrency.Task.sleep(for: $0) },
-        tokenChanged: @escaping @MainActor (String?) async -> Void = { _ in }
-    ) async {
-        while !_Concurrency.Task.isCancelled {
-            let (nowMs, before) = (await now(), accessToken)
-            await refreshIfNeeded(issuer: issuer(), clientID: clientID(), nowMs: nowMs)
-            // Not after a cancel: the owner has let go of the vault it names.
-            if accessToken != before, !_Concurrency.Task.isCancelled { await tokenChanged(accessToken) }
-            do {
-                try await sleep(interval)
-            } catch {
-                return
-            }
-        }
     }
 }

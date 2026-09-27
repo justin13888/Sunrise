@@ -119,9 +119,22 @@ pub enum BindingError {
         /// How many bytes arrived.
         len: u32,
     },
-    /// The OIDC login flow failed.
+    /// The OIDC login flow failed, for any reason but
+    /// [`BindingError::LoginRefused`]'s.
     #[error("login: {0}")]
     Login(String),
+    /// The issuer refused the grant in OAuth's own words
+    /// (`sunrise_auth::LoginError::Rejected`): a revoked or expired refresh
+    /// token, or a login the user declined.
+    ///
+    /// Its own variant because a client does something different with it. A
+    /// refused refresh token will be refused again, so the client drops it and
+    /// asks the user to sign in; any other [`BindingError::Login`], an
+    /// unreachable issuer above all, says nothing about the token, and dropping
+    /// it there turns every offline launch into a browser sign-in. The message
+    /// reads the same as [`BindingError::Login`]'s.
+    #[error("login: {0}")]
+    LoginRefused(String),
     /// A recurrence phrase could not be read.
     ///
     /// Carries the phrase back so a routine editor can leave what was typed in
@@ -231,7 +244,10 @@ impl From<sunrise_core::AttachError> for BindingError {
 
 impl From<sunrise_auth::LoginError> for BindingError {
     fn from(e: sunrise_auth::LoginError) -> Self {
-        Self::Login(e.to_string())
+        match e {
+            sunrise_auth::LoginError::Rejected(_) => Self::LoginRefused(e.to_string()),
+            other => Self::Login(other.to_string()),
+        }
     }
 }
 
@@ -1415,6 +1431,12 @@ impl SunriseLogin {
 
     /// Exchange a refresh token for a fresh access token, without user
     /// interaction. Drive it from [`LoginCredentials::renew_at_ms`].
+    ///
+    /// # Errors
+    /// [`BindingError::LoginRefused`] when the issuer refused the refresh
+    /// token, which it will do again: drop it. [`BindingError::Login`] for
+    /// everything else, an unreachable issuer included, which says nothing
+    /// about the token.
     pub async fn refresh(
         &self,
         refresh_token: String,
@@ -1426,5 +1448,43 @@ impl SunriseLogin {
             .refresh(&metadata, &refresh_token, now_ms)
             .await?
             .into())
+    }
+}
+
+#[cfg(test)]
+mod login_error_tests {
+    use super::BindingError;
+    use sunrise_auth::LoginError;
+
+    /// The one variant a client drops a refresh token on crosses the seam as
+    /// its own, and nothing else does: an unreachable issuer arriving as a
+    /// refusal is what would turn every offline launch into a browser sign-in.
+    #[test]
+    fn only_an_issuer_refusal_crosses_as_login_refused() {
+        let refused = BindingError::from(LoginError::Rejected("refresh: invalid_grant".into()));
+        assert!(
+            matches!(&refused, BindingError::LoginRefused(m) if m.contains("invalid_grant")),
+            "{refused:?}"
+        );
+
+        for other in [
+            LoginError::Transport("connection refused".into()),
+            LoginError::Malformed("not json".into()),
+            LoginError::Provider("no token_endpoint".into()),
+            LoginError::TimedOut,
+        ] {
+            let crossed = BindingError::from(other);
+            assert!(matches!(crossed, BindingError::Login(_)), "{crossed:?}");
+        }
+    }
+
+    /// The split changes what a client branches on, not what it shows.
+    #[test]
+    fn a_refusal_reads_the_same_as_any_other_login_failure() {
+        let refused = BindingError::from(LoginError::Rejected("refresh: invalid_grant".into()));
+        assert_eq!(
+            refused.to_string(),
+            "login: issuer declined: refresh: invalid_grant"
+        );
     }
 }

@@ -20,8 +20,15 @@ pub enum LoginError {
     /// The issuer's response did not parse.
     #[error("issuer response: {0}")]
     Malformed(String),
-    /// The issuer declined the request (`error=` in the callback, or a
-    /// non-2xx token response).
+    /// The issuer declined the request: `error=` in the callback, or a token
+    /// response carrying one of RFC 6749 §5.2's error codes.
+    ///
+    /// Only an answer the issuer gave in OAuth's own words. A token endpoint
+    /// that could not be reached is [`LoginError::Transport`], and one whose
+    /// failure did not parse, or named a code outside §5.2, is
+    /// [`LoginError::Malformed`] or [`LoginError::Transport`]: a client drops
+    /// a refresh token on this variant, and must not on a network blink or an
+    /// outage page.
     #[error("issuer declined: {0}")]
     Rejected(String),
     /// The redirect came back with the wrong `state`.
