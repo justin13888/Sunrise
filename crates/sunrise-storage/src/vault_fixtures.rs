@@ -530,6 +530,10 @@ fn a_v13_vault_migrates_all_the_way_forward() {
         "stream_key_senders",
         "key_envelope_recipients",
         "relay_revocation_intents",
+        // The parked-op marker. Without it every delivery of a kind this build
+        // does not know fails its transaction, and the op is refused rather
+        // than kept.
+        "parked_ops",
     ] {
         assert!(
             table_exists(&db, table),

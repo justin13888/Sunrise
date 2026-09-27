@@ -63,6 +63,14 @@ pub const ENVELOPE_FORMAT_V: u16 = 3;
 /// build that skipped a transition would go on verifying every later op
 /// against an identity the account has retired. Every v1..v5 payload shape is
 /// unchanged, so the floor still does not move.
+///
+/// Those refusals describe the builds that shipped them. A build with
+/// `STORAGE_V` 31 or later no longer refuses a variant it does not know: it
+/// parks the verified op in `ops` and `parked_ops`, counts it toward the sync
+/// cursor, and replays it through the full apply path once a build with a
+/// different `DOC_SCHEMA_V` opens the vault (issue #320, ADR-0045 §4). That
+/// replay is keyed on this constant, so a new variant MUST move it, or a
+/// parked op of that kind is not retried until something else does.
 pub const DOC_SCHEMA_V: u16 = 6;
 
 /// Lowest [`DOC_SCHEMA_V`] this build can still interpret.
@@ -242,4 +250,11 @@ pub const CRYPTO_SUITE_V: u16 = 5;
 /// weakest replica in the account; it now starts with its sponsor's bound, and
 /// the mark keeps the orphan release from taking an adopted bound back before
 /// the device's cert arrives.
-pub const STORAGE_V: u16 = 30;
+///
+/// `31` is migration `0031_parked_ops.sql`, which parks a verified op whose
+/// inner kind this build does not know instead of dropping it as corruption
+/// (issue #320, ADR-0045 §4). The op is kept in `ops`, unapplied, and counts
+/// toward the sync cursor; `parked_ops` marks it and orders its replay after
+/// an upgrade. Unlike `deferred_ops` it has no TTL and no cap, because what it
+/// holds has been verified and cannot be fetched again.
+pub const STORAGE_V: u16 = 31;
