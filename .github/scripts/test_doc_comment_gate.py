@@ -519,6 +519,19 @@ class Accepts(GateCase):
             f"pub fn f(\n{params}    last: u8,\n) {{\n}}\n"
         )
 
+    def test_a_summary_naming_only_a_value_it_returns(self):
+        # `read_bounds_value` in `sunrise-pairing`: `None` is what the item
+        # yields, not another item's name, so it opens no stranded run.
+        self.accept(
+            "/// The array a set travels as, or `None` for an empty set.\n"
+            "///\n"
+            "/// Absent when there is nothing to carry.\n"
+            "/// Ascending, because a `BTreeSet` iterates in order.\n"
+            "pub fn read_bounds_value(bounds: &BTreeSet<u8>) -> Option<u8> {\n"
+            "    None\n"
+            "}\n"
+        )
+
     def test_a_backticked_parameter_line_past_the_first_paragraph(self):
         # One line per parameter, each opening with its name: the shape of
         # `import_ical` in `sunrise-core-bindings`, which is not a seam.

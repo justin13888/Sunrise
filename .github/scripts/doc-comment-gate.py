@@ -145,6 +145,10 @@ TAB_WIDTH = 4
 # A backticked span that is exactly one Rust identifier: `start`, `ops`.
 # `(stream_id, epoch)` or `Foo::bar` is not one, and is not compared.
 BACKTICKED_IDENT = re.compile(r"`([A-Za-z_][A-Za-z0-9_]*)`")
+# Values rather than items: a summary saying it returns `None` names what the
+# item yields, not another item, and no item this could be stranded from is
+# called that.
+VALUE_WORDS = frozenset({"None", "Some", "Ok", "Err", "true", "false", "self", "Self"})
 IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 # The end of a sentence: a terminator followed by whitespace or the end.
 SENTENCE_END = re.compile(r"[.!?](?=\s|$)")
@@ -433,7 +437,9 @@ def check_stranded(lines: list[str], block: Block) -> list[Finding]:
         if not body.strip():
             break
         summary.append(body.strip())
-    opening = BACKTICKED_IDENT.findall(first_sentence(" ".join(summary)))
+    opening = [
+        name for name in BACKTICKED_IDENT.findall(first_sentence(" ".join(summary))) if name not in VALUE_WORDS
+    ]
     if not opening:
         return []
     names = signature_names(lines, block.end)
