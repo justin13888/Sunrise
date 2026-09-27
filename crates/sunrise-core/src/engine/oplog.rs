@@ -706,7 +706,7 @@ fn ops_run_end(
 /// removes it, so the cursor counts the op whatever answer it got. Refusals
 /// above it return before the transaction opens and leave no op row and no
 /// cursor, the half pinned by
-/// `crates/sunrise-core/src/engine/tests.rs:8571#a_stranger_cert_through_apply_remote_is_refused_and_writes_no_cursor`.
+/// `crates/sunrise-core/src/engine/tests.rs:8641#a_stranger_cert_through_apply_remote_is_refused_and_writes_no_cursor`.
 ///
 /// That is a weaker claim than "the apply path does not consult revocation",
 /// and deliberately so, because the apply path does consult it — in three
@@ -729,7 +729,7 @@ fn ops_run_end(
 /// `crates/sunrise-core/src/engine/revocation.rs:1146#refold_device_revocations`
 /// — precisely so a cut from a slow clock is corrected by revoking again from
 /// a healthy device. The rationale for choosing LWW over `MIN` is recorded at
-/// `crates/sunrise-core/src/engine/revocation.rs:1298#apply_device_revoke`.
+/// `crates/sunrise-core/src/engine/revocation.rs:1308#apply_device_revoke`.
 /// Nothing below rests on that, because nothing below un-writes an op row.
 ///
 /// # What the apply path consults, and what that read decides
@@ -753,15 +753,15 @@ fn ops_run_end(
 /// *not* decide is whether the op applies. The op row went in at the
 /// idempotence gate before the control op was dispatched, the `devices` row is
 /// written before the backfill is attempted, and a backfill error is logged rather than
-/// raised (`crates/sunrise-core/src/engine/sync.rs:1041#apply_control_op`). Not one of
+/// raised (`crates/sunrise-core/src/engine/sync.rs:1054#apply_control_op`). Not one of
 /// those answers skips this function: it runs on the delivery like any other,
 /// and the op row it left behind counts toward the prefix like any other.
 /// Whether the number this writes actually moves is a question about the seqs
 /// *below* that op and never about the answer the op got — see the
 /// out-of-order paragraph at the end.
-/// `crates/sunrise-core/src/engine/tests.rs:8042#a_revoked_device_cert_through_apply_remote_seals_no_keys`
+/// `crates/sunrise-core/src/engine/tests.rs:8112#a_revoked_device_cert_through_apply_remote_seals_no_keys`
 /// walks that trace from the envelope down to the early return, and
-/// `crates/sunrise-core/src/engine/tests.rs:8302#a_failed_backfill_is_logged_and_the_cert_delivery_still_applies`
+/// `crates/sunrise-core/src/engine/tests.rs:8372#a_failed_backfill_is_logged_and_the_cert_delivery_still_applies`
 /// holds the backfill-error answer: the error is logged, the cert stands, and
 /// this still runs.
 ///
@@ -777,9 +777,9 @@ fn ops_run_end(
 /// (`docs/11-adr/0034-revocation-bounds-reads-not-writes.md`) is where that
 /// was decided — revocation bounds what a device may *read*, not whether what
 /// it writes lands.
-/// `crates/sunrise-core/src/engine/tests.rs:7639#a_revoked_devices_ops_still_apply_at_the_replica`
+/// `crates/sunrise-core/src/engine/tests.rs:7709#a_revoked_devices_ops_still_apply_at_the_replica`
 /// holds the admitting half, and
-/// `crates/sunrise-core/src/engine/tests.rs:8571#a_stranger_cert_through_apply_remote_is_refused_and_writes_no_cursor`
+/// `crates/sunrise-core/src/engine/tests.rs:8641#a_stranger_cert_through_apply_remote_is_refused_and_writes_no_cursor`
 /// the refusing one, which never reaches this function at all.
 ///
 /// # Where this sits relative to the op row
@@ -799,7 +799,7 @@ fn ops_run_end(
 /// `crates/sunrise-core/src/engine/oplog.rs:124#ops_insert_at`, and the
 /// `Outbox::enqueue` at
 /// `crates/sunrise-core/src/engine/oplog.rs:146#ops_insert_at` — and
-/// `crates/sunrise-core/src/engine/tests.rs:8438#a_failed_local_emit_leaves_the_cursor_where_it_was`
+/// `crates/sunrise-core/src/engine/tests.rs:8508#a_failed_local_emit_leaves_the_cursor_where_it_was`
 /// walks the second and the third, inside the transaction rather than after
 /// the rollback. The seal is the one it does not walk. Nor could any of them
 /// move the number if it did: the prefix is read out of `ops`, never off the
@@ -811,13 +811,13 @@ fn ops_run_end(
 ///
 /// The first. `crates/sunrise-core/src/engine/sync.rs:803#apply_control_op` hands a
 /// `device_revoke` to
-/// `crates/sunrise-core/src/engine/revocation.rs:1322#apply_device_revoke`,
+/// `crates/sunrise-core/src/engine/revocation.rs:1332#apply_device_revoke`,
 /// which refuses one naming its own sender — logging
 /// `core.device.revoke_refused` with `reason = "self"` — and writes no
 /// register row. That event has a second emitter at
-/// `crates/sunrise-core/src/engine/revocation.rs:1392#apply_device_revoke`,
+/// `crates/sunrise-core/src/engine/revocation.rs:1402#apply_device_revoke`,
 /// `reason = "revoked_sender"`: the fold declines to believe the row. A third,
-/// `crates/sunrise-core/src/engine/revocation.rs:1374#apply_device_revoke`,
+/// `crates/sunrise-core/src/engine/revocation.rs:1384#apply_device_revoke`,
 /// `reason = "sender_over_cap"`, drops a pair past its sender's cap.
 ///
 /// What is refused in the first case is a *register write* rather than the
@@ -825,7 +825,7 @@ fn ops_run_end(
 /// still runs afterwards and counts that op toward the prefix like any other.
 /// A reader arrives here expecting the opposite, which is why it is named, and
 /// why
-/// `crates/sunrise-core/src/engine/tests.rs:7728#a_self_refused_revoke_still_advances_the_cursor`
+/// `crates/sunrise-core/src/engine/tests.rs:7798#a_self_refused_revoke_still_advances_the_cursor`
 /// holds both halves — for a delivery at seq 1, where the contiguous prefix is
 /// that op alone — and observes the log line rather than assuming it.
 ///
@@ -844,7 +844,7 @@ fn ops_run_end(
 /// `crates/sunrise-core/src/engine/revocation.rs:637#is_read_bounded` and
 /// tolerates that predicate being per-replica
 /// ([#411](https://github.com/justin13888/Sunrise/issues/411)).
-/// `crates/sunrise-core/src/engine/tests.rs:7899#a_read_bounded_senders_recipient_claim_is_refused_and_the_cursor_counts_the_op`
+/// `crates/sunrise-core/src/engine/tests.rs:7969#a_read_bounded_senders_recipient_claim_is_refused_and_the_cursor_counts_the_op`
 /// delivers one through `apply_remote_all` — the only route that can see this
 /// half at all — and holds all three: the declined hint row, the op row, and
 /// the cursor.
@@ -872,7 +872,7 @@ fn ops_run_end(
 /// re-running materialization or [`Engine::apply_control_op`] at all. That is
 /// `crates/sunrise-core/src/engine/tests.rs:5884#apply_remote_is_idempotent`
 /// for an entity op, and the tail of
-/// `crates/sunrise-core/src/engine/tests.rs:7728#a_self_refused_revoke_still_advances_the_cursor`
+/// `crates/sunrise-core/src/engine/tests.rs:7798#a_self_refused_revoke_still_advances_the_cursor`
 /// for a control one, which resends *different* payload bytes under the same
 /// `(stream, device, seq)` and observes that the control arm never sees them.
 ///
@@ -890,7 +890,7 @@ fn ops_run_end(
 /// no call site triggers is an *extra* run for the devices whose revocations
 /// that fold unwound, and none is needed, because their cursors are facts
 /// about `ops` that the fold did not touch.
-/// `crates/sunrise-core/src/engine/tests.rs:8680#a_refold_that_unwinds_a_revocation_moves_no_cursor`
+/// `crates/sunrise-core/src/engine/tests.rs:8750#a_refold_that_unwinds_a_revocation_moves_no_cursor`
 /// pins all of it, including the half that does *not* unwind:
 /// `device_read_bounds` keeps the device it bounded, which is the asymmetry
 /// `crates/sunrise-core/src/engine/revocation.rs:637#is_read_bounded` exists
@@ -916,7 +916,7 @@ fn ops_run_end(
 /// the prefix: with the log holding `{2}` the `ELSE ?3 - 1` arm writes 0, and with
 /// it holding `{1, 3}` the run ends at 1. Refused or applied makes no
 /// difference to either, which is what
-/// `crates/sunrise-core/src/engine/tests.rs:8183#a_self_refused_revoke_out_of_order_leaves_the_cursor_short`
+/// `crates/sunrise-core/src/engine/tests.rs:8253#a_self_refused_revoke_out_of_order_leaves_the_cursor_short`
 /// pins.
 pub(super) fn upsert_sync_cursor(
     tx: &Transaction<'_>,

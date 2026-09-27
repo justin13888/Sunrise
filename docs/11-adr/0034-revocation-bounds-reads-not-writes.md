@@ -100,7 +100,7 @@ the code rather than from the issue:
   control op into `apply_control_op`
   (`crates/sunrise-core/src/engine/sync.rs:348#apply_remote_all`), and a
   published device cert carries it on into `backfill_key_envelopes`
-  (`crates/sunrise-core/src/engine/sync.rs:1041#apply_control_op`). What no
+  (`crates/sunrise-core/src/engine/sync.rs:1054#apply_control_op`). What no
   read of either table decides is whether an op **applies**; it decides which
   device is sealed key material, and that is this whole decision in one
   sentence. An earlier draft of this bullet said nothing in the apply path
@@ -115,7 +115,7 @@ the code rather than from the issue:
   It was, briefly."* Cited without a line on purpose — that paragraph is being
   rewritten, and a line number into it is a citation built to rot.
 - The test `a_revoked_devices_ops_still_apply_at_the_replica`
-  (`crates/sunrise-core/src/engine/tests.rs:7648-7650#a_revoked_devices_ops_still_apply_at_the_replica`)
+  (`crates/sunrise-core/src/engine/tests.rs:7718-7720#a_revoked_devices_ops_still_apply_at_the_replica`)
   revokes a device at a cut before
   every op it writes — the strongest form of the premise — and asserts the op
   applies, materializes and is passed by the cursor.
@@ -136,7 +136,7 @@ Revocation today is a **register plus a read bound**:
 - `device_revoke` is **recorded whatever its sender's standing**, in
   `device_revoke_ops`, and `device_revocations` is rebuilt from that ledger on
   every such op
-  (`crates/sunrise-core/src/engine/revocation.rs:1289#apply_device_revoke`)
+  (`crates/sunrise-core/src/engine/revocation.rs:1299#apply_device_revoke`)
   rather than upserted into: the fold deletes the register outright and
   re-inserts the winners
   (`crates/sunrise-core/src/engine/revocation.rs:1254#refold_device_revocations`).
@@ -152,7 +152,7 @@ Revocation today is a **register plus a read bound**:
 - A device may not move its own cut: the one edit the register never accepts
   from the party it is about. It is refused at ingest with a
   `core.device.revoke_refused` warning
-  (`crates/sunrise-core/src/engine/revocation.rs:1321#apply_device_revoke`), and
+  (`crates/sunrise-core/src/engine/revocation.rs:1331#apply_device_revoke`), and
   since ADR-0041 the same rule is held **again** in the fold
   (`crates/sunrise-core/src/engine/revocation.rs:1113#refold_device_revocations`),
   because the fold is the register's sole author and a rule enforced only on the
@@ -187,7 +187,7 @@ Revocation today is a **register plus a read bound**:
   of the ledger** is skipped
   (`crates/sunrise-core/src/engine/revocation.rs:1135-1145#refold_device_revocations`),
   one naming its own sender is refused at ingest
-  (`crates/sunrise-core/src/engine/revocation.rs:1321#apply_device_revoke`), and
+  (`crates/sunrise-core/src/engine/revocation.rs:1331#apply_device_revoke`), and
   a read-bounded sender's third-party `key_envelope` recipient claim is not
   recorded (`crates/sunrise-core/src/engine/sync.rs:741#apply_control_op`). That
   is [ADR-0041](./0041-peer-side-revocation-is-a-fold.md), and it reaches no
@@ -245,7 +245,7 @@ took five review rounds to bottom out, and it is not about convergence:
   ascending so a later row overwrites an earlier one
   (`crates/sunrise-core/src/engine/revocation.rs:1085-1086#refold_device_revocations`),
   a cut that landed wrong is corrected by revoking again from a healthy device
-  (`crates/sunrise-core/src/engine/revocation.rs:1298-1304#apply_device_revoke`),
+  (`crates/sunrise-core/src/engine/revocation.rs:1308-1314#apply_device_revoke`),
   and since ADR-0041 a re-fold can lower a cut or drop the row outright, because
   the register is a pure function of the op set rather than something edited in
   place
@@ -457,7 +457,7 @@ and that is what the relay bound is for.
   outright for a device admitted by pairing, which is the half this bullet is
   not about.
 - **No code changes.** The test doc at
-  `crates/sunrise-core/src/engine/tests.rs:7608#a_revoked_devices_ops_still_apply_at_the_replica`
+  `crates/sunrise-core/src/engine/tests.rs:7678#a_revoked_devices_ops_still_apply_at_the_replica`
   and `apply_remote_all`'s step b gain
   a citation of this ADR in place of a bare issue number, so the next reader
   finds a decision rather than an open question.
