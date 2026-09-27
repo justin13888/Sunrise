@@ -909,7 +909,7 @@ fn ops_run_end(
 /// starts at seq 1 because this function asks for it there —
 /// `crates/sunrise-core/src/engine/oplog.rs:921#upsert_sync_cursor` is where
 /// the literal lives;
-/// `crates/sunrise-core/src/engine/oplog.rs:670#ops_run_end` is parameterised
+/// `crates/sunrise-core/src/engine/oplog.rs:675#ops_run_end` is parameterised
 /// on `start` at
 /// `crates/sunrise-core/src/engine/oplog.rs:674#ops_run_end` and hard-codes
 /// nothing. So an op delivered with a gap below it is in the log and outside
