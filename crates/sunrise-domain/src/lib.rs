@@ -136,7 +136,7 @@ pub use streak::{
 pub use stream::{Stream, StreamColor, StreamDraft, StreamPatch, StreamReviewCadence};
 pub use task::{Task, TaskDraft, TaskPatch, TaskState};
 pub use time::SunriseTime;
-pub use unknown::{CborValue, Unknowns};
+pub use unknown::{CborValue, UnknownVariant, Unknowns};
 pub use validation::{
     ValidationError, MAX_ATTACHMENT_BYTES, MAX_BLOCK_TITLE_LEN, MAX_CONTEXT_NAME_LEN,
     MAX_FILENAME_LEN, MAX_MIME_TYPE_LEN, MAX_TASK_ENVELOPE_BYTES, MAX_TASK_TITLE_LEN,

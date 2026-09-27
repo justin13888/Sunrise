@@ -1,11 +1,15 @@
 //! Shared scalar types used across multiple entities.
 
+use crate::unknown::UnknownVariant;
 use serde::{Deserialize, Serialize};
 
 /// Energy level facet on Task / Routine. Multi-stream operators sort work by
 /// energy in addition to priority.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
-#[serde(rename_all = "lowercase")]
+///
+/// An unrecognised value reads as [`Energy::Med`] and is written back
+/// verbatim. The middle rung: an unknown energy must not make a task look
+/// unusually cheap or unusually expensive to the planner.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Energy {
     /// Low cognitive demand.
     Low,
@@ -13,36 +17,15 @@ pub enum Energy {
     Med,
     /// High cognitive demand; deep-work block.
     High,
+    /// An energy this build does not know, kept verbatim (ADR-0045 §6).
+    Unknown(UnknownVariant),
 }
 
-impl Energy {
-    /// The stable lowercase wire/storage string.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Low => "low",
-            Self::Med => "med",
-            Self::High => "high",
-        }
-    }
-
-    /// Parse from the wire/storage string. An unrecognised value degrades to
-    /// [`Energy::Med`] rather than failing.
-    ///
-    /// The middle rung: an unknown energy must not make a task look unusually
-    /// cheap or unusually expensive to the planner.
-    #[must_use]
-    pub fn from_str_lossy(s: &str) -> Self {
-        match s {
-            "low" => Self::Low,
-            "high" => Self::High,
-            // "med" and anything this build has never heard of.
-            _ => Self::Med,
-        }
-    }
-}
-
-crate::unknown::lossy_enum!(Energy);
+crate::unknown::lossy_enum!(Energy, fallback = Med, {
+    Low => "low",
+    Med => "med",
+    High => "high",
+});
 
 /// Rich-text body, stored as opaque bytes; richer rendering is the UI's job.
 ///

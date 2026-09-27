@@ -229,7 +229,7 @@ pub fn rebind_creates(applied: &[Command], inverse: &mut [Command], entities: &[
 fn invert_one<S: EntityLookup + ?Sized>(state: &S, cmd: &Command) -> Result<Command, NotUndoable> {
     match cmd {
         Command::CompleteTask(id) => {
-            let prev = task(state, *id)?.state;
+            let prev = task(state, *id)?.state.clone();
             Ok(Command::UpdateTask {
                 id: *id,
                 patch: TaskPatch {
@@ -338,9 +338,9 @@ fn inverse_task_patch(t: &Task, patch: &TaskPatch) -> TaskPatch {
             .contexts
             .as_ref()
             .map(|_| t.contexts.iter().copied().collect()),
-        state: patch.state.map(|_| restore_state(t.state)),
+        state: patch.state.as_ref().map(|_| restore_state(&t.state)),
         priority: patch.priority.map(|_| t.priority),
-        energy: patch.energy.map(|_| t.energy),
+        energy: patch.energy.as_ref().map(|_| t.energy.clone()),
         estimated_duration_s: patch.estimated_duration_s.map(|_| t.estimated_duration_s),
         scheduled_at: patch.scheduled_at.as_ref().map(|_| t.scheduled_at.clone()),
         due_at: patch.due_at.as_ref().map(|_| t.due_at.clone()),
@@ -363,10 +363,13 @@ fn inverse_task_patch(t: &Task, patch: &TaskPatch) -> TaskPatch {
 /// `Task.state` does not record how far along something was before it was
 /// finished, so restoring `InProgress` would be inventing a claim. `Todo` is
 /// the honest reading: it is back on the list.
-const fn restore_state(current: TaskState) -> TaskState {
+///
+/// Any other state, including one this build does not know, is restored
+/// verbatim.
+fn restore_state(current: &TaskState) -> TaskState {
     match current {
         TaskState::Done | TaskState::Cancelled => TaskState::Todo,
-        other => other,
+        other => other.clone(),
     }
 }
 

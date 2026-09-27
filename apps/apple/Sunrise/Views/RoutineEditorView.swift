@@ -87,6 +87,11 @@ struct RoutineEditorView: View {
                     Text("Skip").tag(RoutineCatchupPolicy.skip)
                     Text("Merge into one").tag(RoutineCatchupPolicy.merge)
                     Text("Queue them all").tag(RoutineCatchupPolicy.queue)
+                    // A policy a newer client wrote: offered as itself, so
+                    // saving without touching it keeps it.
+                    if let held = routine?.catchupPolicy, case .unknown = held {
+                        Text("Unknown").tag(held)
+                    }
                 }
                 Toggle("Stops on a date", isOn: $hasEnd)
                 if hasEnd {
@@ -109,6 +114,9 @@ struct RoutineEditorView: View {
                     Text(energyLabel(energy: .low)).tag(Energy.low as Energy?)
                     Text(energyLabel(energy: .med)).tag(Energy.med as Energy?)
                     Text(energyLabel(energy: .high)).tag(Energy.high as Energy?)
+                    if let held = routine?.template.energy, case .unknown = held {
+                        Text(energyLabel(energy: held)).tag(held as Energy?)
+                    }
                 }
                 LabeledContent("Estimate") {
                     HStack {

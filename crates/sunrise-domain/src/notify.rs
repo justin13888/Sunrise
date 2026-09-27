@@ -444,7 +444,8 @@ pub fn build_end_of_day_plan(
 /// user already made, and re-offering it for triage every morning would be
 /// nagging rather than summarizing.
 fn is_open(t: &Task) -> bool {
-    !t.deleted && matches!(t.state, TaskState::Todo | TaskState::InProgress)
+    // An unknown state reads as `todo`: open.
+    !t.deleted && matches!(t.state.effective(), TaskState::Todo | TaskState::InProgress)
 }
 
 fn completion_ms(t: &Task) -> i64 {

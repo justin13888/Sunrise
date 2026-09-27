@@ -415,21 +415,15 @@ pub struct CanonicalStream {
     pub archived: bool,
 }
 
-fn state_str(s: TaskState) -> String {
-    match s {
-        TaskState::Todo => "todo",
-        TaskState::InProgress => "in_progress",
-        TaskState::Done => "done",
-        TaskState::Cancelled => "cancelled",
-    }
-    .to_string()
+fn state_str(s: &TaskState) -> String {
+    s.as_str().to_string()
 }
 
 fn project_task(t: &Task) -> CanonicalTask {
     CanonicalTask {
         id: t.id.to_str(),
         title: t.title.clone(),
-        state: state_str(t.state),
+        state: state_str(&t.state),
         stream_id: *t.stream_id.bytes(),
         scheduled_at_ms: t.scheduled_at.as_ref().map(SunriseTime::index_ms),
         due_at_ms: t.due_at.as_ref().map(SunriseTime::index_ms),

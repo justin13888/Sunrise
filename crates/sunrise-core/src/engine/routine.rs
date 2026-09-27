@@ -307,7 +307,7 @@ impl Engine {
             .as_ref()
             .filter(|t| {
                 !t.deleted
-                    && t.state == TaskState::Todo
+                    && t.state.effective() == TaskState::Todo
                     && t.deferred_count == 0
                     && t.routine_id == Some(id)
             })
@@ -427,7 +427,9 @@ impl Engine {
         // Build the (key, instant, optional-title-override) tuples to insert.
         let mut jobs: Vec<(String, jiff::Timestamp, Option<String>)> = Vec::new();
         match routine.catchup_policy {
-            RoutineCatchupPolicy::Skip => {}
+            // An unknown policy reads as `skip`, its fallback: it must not
+            // materialize a backlog nobody asked for.
+            RoutineCatchupPolicy::Skip | RoutineCatchupPolicy::Unknown(_) => {}
             RoutineCatchupPolicy::Queue => {
                 for o in &missed {
                     jobs.push((o.key.clone(), o.at, None));
@@ -517,7 +519,9 @@ impl Engine {
         let rid_blob: Vec<u8> = routine.id.bytes().to_vec();
         let mut stmt = db.conn().prepare(
             "SELECT id FROM tasks
-             WHERE routine_id = ? AND deleted = 0 AND state = 'todo'
+             WHERE routine_id = ? AND deleted = 0
+               -- `todo`, spelled so an unknown state reads as it (ADR-0045 §6).
+               AND state NOT IN ('in_progress', 'done', 'cancelled')
                AND deferred_count = 0
                AND scheduled_at_ms IS NOT NULL AND scheduled_at_ms > ?",
         )?;
@@ -606,9 +610,9 @@ fn insert_task_row_or_ignore(
             id_blob,
             stream_blob,
             t.title,
-            task_state_str(t.state),
+            task_state_str(&t.state),
             t.priority.map(i64::from),
-            t.energy.map(energy_str),
+            t.energy.as_ref().map(energy_str),
             t.estimated_duration_s
                 .and_then(|s| i64::try_from(s / 60).ok()),
             sched_ms,
@@ -680,20 +684,15 @@ fn build_routine_task(
     }
 }
 
-fn catchup_policy_str(p: RoutineCatchupPolicy) -> &'static str {
-    match p {
-        RoutineCatchupPolicy::Skip => "skip",
-        RoutineCatchupPolicy::Merge => "merge",
-        RoutineCatchupPolicy::Queue => "queue",
-    }
+/// The stored spelling of a catch-up policy; an unknown one's raw string.
+fn catchup_policy_str(p: &RoutineCatchupPolicy) -> &str {
+    p.as_str()
 }
 
+/// Read a stored catch-up policy. Lossless (ADR-0045 §6): an unknown
+/// spelling is kept, and reads as `skip` wherever logic acts on it.
 fn parse_catchup_policy(s: &str) -> RoutineCatchupPolicy {
-    match s {
-        "merge" => RoutineCatchupPolicy::Merge,
-        "queue" => RoutineCatchupPolicy::Queue,
-        _ => RoutineCatchupPolicy::Skip,
-    }
+    RoutineCatchupPolicy::from_raw(s)
 }
 
 /// Encode a CBOR blob for a non-empty serializable value, or `None` when empty
@@ -804,7 +803,7 @@ pub(super) fn insert_routine_row(
             template_blob,
             skip_dates_blob,
             skipped_keys_blob,
-            catchup_policy_str(r.catchup_policy),
+            catchup_policy_str(&r.catchup_policy),
             r.last_completed_at.map(|d| d.as_millisecond()),
             r.paused_until.map(|d| d.as_millisecond()),
             now_ms,
@@ -859,7 +858,7 @@ pub(super) fn update_routine_row(
             template_blob,
             skip_dates_blob,
             skipped_keys_blob,
-            catchup_policy_str(r.catchup_policy),
+            catchup_policy_str(&r.catchup_policy),
             r.last_completed_at.map(|d| d.as_millisecond()),
             r.paused_until.map(|d| d.as_millisecond()),
             r.updated_at.as_millisecond(),

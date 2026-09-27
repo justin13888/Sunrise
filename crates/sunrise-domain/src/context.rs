@@ -65,7 +65,7 @@ pub struct Context {
 /// does not name one of `low` / `med` / `high` is [`ContextFacet::Plain`],
 /// because the spec defines the prefix's meaning only for those three values
 /// and guessing at anything else would be worse than leaving it uninterpreted.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ContextFacet<'a> {
     /// `waiting-on:<who>` — carries the non-empty remainder.
     WaitingOn(&'a str),

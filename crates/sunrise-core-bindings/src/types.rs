@@ -19,7 +19,7 @@ use sunrise_domain::{
     ConstraintSeverity, EffectiveTaskState, Energy, EnergyFit, ExportDataset, ExportFormat,
     FocusKind, Frequency, InterruptionReason, NoteBody, QuietHoursPolicy, ReminderKind,
     RoutineCatchupPolicy, SessionLength, SnoozeSpan, StreamColor, StreamReviewCadence, TaskState,
-    Weekday,
+    UnknownVariant, Weekday,
 };
 use sunrise_id::EntityRef;
 use sunrise_sync::SyncState;
@@ -93,9 +93,23 @@ uniffi::custom_type!(NoteBody, Vec<u8>, {
     try_lift: |v: Vec<u8>| Ok(NoteBody(v)),
 });
 
+// The raw spelling of an enum value this build does not recognise
+// (ADR-0045 §6). The foreign side sees the string, renders the value as
+// "unknown", and hands it back unchanged so a write carries it through.
+uniffi::custom_type!(UnknownVariant, String, {
+    remote,
+    lower: |u| u.as_str().to_owned(),
+    try_lift: |s: String| Ok(UnknownVariant::new(&s)),
+});
+
 // ---------------------------------------------------------------------------
-// Unit enums, declared remotely
+// Enums, declared remotely
 // ---------------------------------------------------------------------------
+//
+// Every enum that crosses the wire or storage carries an `Unknown` case
+// holding the raw value a newer client wrote (ADR-0045 §6). A client renders
+// it as "unknown", never as the fallback the core's logic reads it as, and
+// passes it back untouched.
 
 /// See [`sunrise_domain::TaskState`].
 #[uniffi::remote(Enum)]
@@ -104,6 +118,7 @@ pub enum TaskState {
     InProgress,
     Done,
     Cancelled,
+    Unknown(UnknownVariant),
 }
 
 /// See [`sunrise_domain::EffectiveTaskState`] — the read-time widening of
@@ -123,6 +138,7 @@ pub enum Energy {
     Low,
     Med,
     High,
+    Unknown(UnknownVariant),
 }
 
 /// See [`sunrise_domain::StreamColor`].
@@ -136,6 +152,7 @@ pub enum StreamColor {
     Indigo,
     Violet,
     Pink,
+    Unknown(UnknownVariant),
 }
 
 /// See [`sunrise_domain::StreamReviewCadence`].
@@ -145,6 +162,7 @@ pub enum StreamReviewCadence {
     Biweekly,
     Monthly,
     None,
+    Unknown(UnknownVariant),
 }
 
 /// See [`sunrise_domain::RoutineCatchupPolicy`].
@@ -153,6 +171,7 @@ pub enum RoutineCatchupPolicy {
     Skip,
     Merge,
     Queue,
+    Unknown(UnknownVariant),
 }
 
 /// See [`sunrise_domain::FocusKind`].
@@ -160,6 +179,7 @@ pub enum RoutineCatchupPolicy {
 pub enum FocusKind {
     Work,
     Break,
+    Unknown(UnknownVariant),
 }
 
 /// See [`sunrise_domain::SessionLength`].
@@ -177,6 +197,7 @@ pub enum InterruptionReason {
     Meeting,
     Blocked,
     Other,
+    Unknown(UnknownVariant),
 }
 
 /// See [`sunrise_domain::EnergyFit`].
@@ -193,6 +214,7 @@ pub enum EnergyFit {
 pub enum ConstraintSeverity {
     Hard,
     Soft,
+    Unknown(UnknownVariant),
 }
 
 /// See [`sunrise_domain::ExportFormat`].

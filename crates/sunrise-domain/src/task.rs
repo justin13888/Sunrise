@@ -3,7 +3,7 @@
 use crate::common::{Energy, NoteBody};
 use crate::constraint::{validate_list as validate_constraint_list, ScheduleConstraint};
 use crate::time::SunriseTime;
-use crate::unknown::Unknowns;
+use crate::unknown::{UnknownVariant, Unknowns};
 use crate::validation::{validate_title, ValidationError, MAX_TASK_TITLE_LEN};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -13,8 +13,12 @@ use sunrise_id::EntityRef;
 /// User-visible Task state. `done` and `cancelled` are NOT terminal: a task
 /// can transition back to `todo`. `blocked` is **derived** at read time from
 /// `blocked_by` and the blockers' states; it is NOT persisted.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
+///
+/// An unrecognised state reads as [`TaskState::Todo`] (its
+/// [`TaskState::effective`]) and is written back verbatim. It is an OPEN item:
+/// reading it as `Done` would silently mark someone's work complete; reading
+/// it as `Todo` at worst shows a task that a newer client considers handled.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TaskState {
     /// Pending; not yet started.
     Todo,
@@ -24,52 +28,34 @@ pub enum TaskState {
     Done,
     /// User explicitly cancelled. Not terminal.
     Cancelled,
+    /// A state this build does not know, kept verbatim (ADR-0045 §6).
+    Unknown(UnknownVariant),
 }
 
-impl TaskState {
-    /// The stable lowercase wire/storage string.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Todo => "todo",
-            Self::InProgress => "in_progress",
-            Self::Done => "done",
-            Self::Cancelled => "cancelled",
-        }
-    }
-
-    /// Parse from the wire/storage string. An unrecognised value degrades to
-    /// [`TaskState::Todo`] rather than failing.
-    ///
-    /// An unrecognised state is an OPEN item. Degrading to `Done` would silently
-    /// mark someone's work complete; degrading to `Todo` at worst shows a task
-    /// that a newer client considers handled.
-    #[must_use]
-    pub fn from_str_lossy(s: &str) -> Self {
-        match s {
-            "in_progress" => Self::InProgress,
-            "done" => Self::Done,
-            "cancelled" => Self::Cancelled,
-            // "todo" and anything this build has never heard of.
-            _ => Self::Todo,
-        }
-    }
-}
-
-crate::unknown::lossy_enum!(TaskState);
+crate::unknown::lossy_enum!(TaskState, fallback = Todo, {
+    Todo => "todo",
+    InProgress => "in_progress",
+    Done => "done",
+    Cancelled => "cancelled",
+});
 
 impl TaskState {
     /// Allowed self-set transitions. (Note: `blocked` is derived, not
     /// persisted; it does not appear here.)
+    ///
+    /// An unknown current state transitions as its fallback, `todo`. An
+    /// unknown *target* is allowed: no picker offers one, so it only arrives
+    /// as a value restored verbatim — an undo putting back the state a newer
+    /// client wrote — and this build has no rule to judge it by.
     #[must_use]
-    pub fn can_transition_to(self, next: Self) -> bool {
+    pub fn can_transition_to(&self, next: &Self) -> bool {
         // todo ↔ in_progress, todo ↔ cancelled, in_progress ↔ done,
         // done → todo (resurrect), cancelled → todo. Same-state is a no-op.
-        if self == next {
+        if self == next || next.is_unknown() {
             return true;
         }
         matches!(
-            (self, next),
+            (self.effective(), next),
             (Self::Todo, Self::InProgress | Self::Cancelled | Self::Done)
                 | (Self::InProgress, Self::Todo | Self::Done | Self::Cancelled)
                 | (Self::Done | Self::Cancelled, Self::Todo | Self::InProgress)
@@ -324,10 +310,21 @@ mod tests {
 
     #[test]
     fn task_state_transitions() {
-        assert!(TaskState::Todo.can_transition_to(TaskState::InProgress));
-        assert!(TaskState::InProgress.can_transition_to(TaskState::Done));
-        assert!(TaskState::Done.can_transition_to(TaskState::Todo));
-        assert!(TaskState::Cancelled.can_transition_to(TaskState::Todo));
+        assert!(TaskState::Todo.can_transition_to(&TaskState::InProgress));
+        assert!(TaskState::InProgress.can_transition_to(&TaskState::Done));
+        assert!(TaskState::Done.can_transition_to(&TaskState::Todo));
+        assert!(TaskState::Cancelled.can_transition_to(&TaskState::Todo));
+    }
+
+    #[test]
+    fn an_unknown_state_transitions_as_todo_and_can_be_restored() {
+        let unknown = TaskState::from_raw("archived");
+        // Out of it: as `todo` would.
+        assert!(unknown.can_transition_to(&TaskState::InProgress));
+        assert!(unknown.can_transition_to(&TaskState::Done));
+        // Back into it, as an undo restoring it verbatim does.
+        assert!(TaskState::Done.can_transition_to(&unknown));
+        assert!(unknown.can_transition_to(&unknown.clone()));
     }
 
     #[test]

@@ -13,6 +13,7 @@
 //! spec's stated forms for whole-second times.
 
 use crate::rrule::Weekday;
+use crate::unknown::UnknownVariant;
 use crate::validation::ValidationError;
 use jiff::civil::{Date, Time};
 use jiff::Zoned;
@@ -29,41 +30,25 @@ pub const MAX_CONSTRAINTS: usize = 16;
 /// A `hard` violation blocks auto-scheduling and fails validation when the
 /// user schedules against it; a `soft` violation never blocks and only
 /// demotes ranking in planning views.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
+///
+/// An unrecognised severity reads as [`ConstraintSeverity::Soft`] and is
+/// written back verbatim. An unknown severity must not HARD-block scheduling:
+/// a soft constraint influences ranking; a hard one rejects the user's command
+/// outright.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConstraintSeverity {
     /// Blocks scheduling and fails validation.
     Hard,
     /// Only demotes ranking; never blocks.
     Soft,
+    /// A severity this build does not know, kept verbatim (ADR-0045 §6).
+    Unknown(UnknownVariant),
 }
 
-impl ConstraintSeverity {
-    /// The stable lowercase wire/storage string.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Soft => "soft",
-            Self::Hard => "hard",
-        }
-    }
-
-    /// Parse from the wire/storage string. An unrecognised value degrades to
-    /// [`ConstraintSeverity::Soft`] rather than failing.
-    ///
-    /// An unknown severity must not HARD-block scheduling. A soft constraint
-    /// influences ranking; a hard one rejects the user's command outright.
-    #[must_use]
-    pub fn from_str_lossy(s: &str) -> Self {
-        match s {
-            "hard" => Self::Hard,
-            // "soft" and anything this build has never heard of.
-            _ => Self::Soft,
-        }
-    }
-}
-
-crate::unknown::lossy_enum!(ConstraintSeverity);
+crate::unknown::lossy_enum!(ConstraintSeverity, fallback = Soft, {
+    Hard => "hard",
+    Soft => "soft",
+});
 
 /// Local wall-clock time-of-day window. Half-open `[start, end)`; `start` MUST
 /// be strictly `< end` (midnight wrap is not supported).
@@ -195,7 +180,10 @@ impl<'de> Deserialize<'de> for WeekdaySet {
 }
 
 /// One scheduling constraint. At least one window dimension MUST be populated.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Not `Copy`: its severity can hold a value this build does not know, kept
+/// verbatim (ADR-0045 §6).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScheduleConstraint {
     /// Time-of-day window (local wall-clock).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -388,10 +376,12 @@ pub fn violations_by_severity(
     let mut hard = Vec::new();
     let mut soft = Vec::new();
     for i in list_violations(list, zdt) {
-        let c = list[i];
-        match c.severity {
+        let c = list[i].clone();
+        // An unknown severity reads as its fallback, `soft`: it must never
+        // invent a hard block.
+        match &c.severity {
             ConstraintSeverity::Hard => hard.push(c),
-            ConstraintSeverity::Soft => soft.push(c),
+            ConstraintSeverity::Soft | ConstraintSeverity::Unknown(_) => soft.push(c),
         }
     }
     (hard, soft)
@@ -500,7 +490,7 @@ mod tests {
             },
             ConstraintSeverity::Soft,
         );
-        let ok = vec![c; 16];
+        let ok = vec![c.clone(); 16];
         assert!(validate_list(&ok).is_ok());
         let too_many = vec![c; 17];
         assert_eq!(validate_list(&too_many), Err(ConstraintError::TooMany));
@@ -692,10 +682,10 @@ mod tests {
             },
             ConstraintSeverity::Soft,
         );
-        let list = [weekdays, evening];
+        let list = [weekdays.clone(), evening.clone()];
         let (hard, soft) = violations_by_severity(&list, &zoned(2026, 8, 8, 12, 0));
         assert_eq!(hard, vec![weekdays]);
-        assert_eq!(soft, vec![evening]);
+        assert_eq!(soft, vec![evening.clone()]);
 
         // Monday 19:00 satisfies both.
         let (hard, soft) = violations_by_severity(&list, &zoned(2026, 8, 3, 19, 0));
@@ -721,7 +711,7 @@ mod tests {
             }),
             severity: ConstraintSeverity::Hard,
         };
-        let j = serde_json::to_value(c).unwrap();
+        let j = serde_json::to_value(&c).unwrap();
         assert_eq!(j["time_of_day"]["start"], "09:00:00");
         assert_eq!(j["time_of_day"]["end"], "17:30:00");
         assert_eq!(

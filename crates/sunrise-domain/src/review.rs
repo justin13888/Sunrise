@@ -299,7 +299,10 @@ pub fn build_weekly_review(input: WeeklyReviewInput) -> WeeklyReview {
     let mut inbox: Vec<Task> = tasks
         .iter()
         .filter(|t| {
-            t.stream_id == inbox_id && !t.deleted && !t.archived && t.state == TaskState::Todo
+            t.stream_id == inbox_id
+                && !t.deleted
+                && !t.archived
+                && t.state.effective() == TaskState::Todo
         })
         .cloned()
         .collect();

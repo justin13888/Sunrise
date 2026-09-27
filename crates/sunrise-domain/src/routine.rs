@@ -4,15 +4,18 @@ use crate::common::{Energy, NoteBody};
 use crate::constraint::{validate_list as validate_constraint_list, ScheduleConstraint};
 use crate::rrule::RRule;
 use crate::task::TaskDraft;
-use crate::unknown::Unknowns;
+use crate::unknown::{UnknownVariant, Unknowns};
 use crate::validation::{validate_title, ValidationError, MAX_TASK_TITLE_LEN};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use sunrise_id::EntityRef;
 
 /// What to do when an occurrence is missed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
+///
+/// An unrecognised policy reads as [`RoutineCatchupPolicy::Skip`] and is
+/// written back verbatim. The least surprising reading: an unknown policy must
+/// not materialize a backlog of missed occurrences the user never asked for.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RoutineCatchupPolicy {
     /// Skip missed occurrences silently.
     Skip,
@@ -20,36 +23,15 @@ pub enum RoutineCatchupPolicy {
     Merge,
     /// Queue every missed occurrence as a separate task.
     Queue,
+    /// A policy this build does not know, kept verbatim (ADR-0045 §6).
+    Unknown(UnknownVariant),
 }
 
-impl RoutineCatchupPolicy {
-    /// The stable lowercase wire/storage string.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Skip => "skip",
-            Self::Merge => "merge",
-            Self::Queue => "queue",
-        }
-    }
-
-    /// Parse from the wire/storage string. An unrecognised value degrades to
-    /// [`RoutineCatchupPolicy::Skip`] rather than failing.
-    ///
-    /// The least surprising: an unknown policy must not materialize a backlog of
-    /// missed occurrences the user never asked for.
-    #[must_use]
-    pub fn from_str_lossy(s: &str) -> Self {
-        match s {
-            "merge" => Self::Merge,
-            "queue" => Self::Queue,
-            // "skip" and anything this build has never heard of.
-            _ => Self::Skip,
-        }
-    }
-}
-
-crate::unknown::lossy_enum!(RoutineCatchupPolicy);
+crate::unknown::lossy_enum!(RoutineCatchupPolicy, fallback = Skip, {
+    Skip => "skip",
+    Merge => "merge",
+    Queue => "queue",
+});
 
 /// Review cadence for routines (mirrors Stream cadences).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -100,7 +82,7 @@ impl TaskTemplate {
             stream_id: Some(self.stream_id),
             contexts: self.contexts.clone(),
             priority: self.priority,
-            energy: self.energy,
+            energy: self.energy.clone(),
             estimated_duration_s: self.estimated_duration_s,
             scheduled_at: scheduled_at.map(Into::into),
             due_at: None,

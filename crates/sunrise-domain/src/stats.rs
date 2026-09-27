@@ -355,7 +355,7 @@ pub fn fold_trends(ops: &[OpRecord], grid: &WeekGrid) -> Trends {
         trace.insert(
             task.id,
             TaskTrace {
-                state: task.state,
+                state: task.state.clone(),
                 deferred_count: task.deferred_count,
                 counted,
             },
