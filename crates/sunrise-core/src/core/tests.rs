@@ -177,6 +177,45 @@ async fn a_paired_device_adopts_its_sponsors_read_bound() {
     joiner.close().await.unwrap();
 }
 
+/// `Core::issue_pairing_grant` is the path the CLI and the Apple apps pair
+/// through, and it reads the bound itself rather than through
+/// `pair_device_in_process`. A grant it issues must carry the sponsor's bound.
+#[tokio::test]
+async fn a_grant_core_issues_carries_the_sponsors_read_bound() {
+    let c_id = [0xc2u8; 16];
+    let dir = tempfile::tempdir().unwrap();
+    let sponsor = Core::open(cfg(dir.path()), unlock()).await.unwrap();
+    sponsor
+        .db
+        .lock()
+        .conn()
+        .execute(
+            "INSERT INTO device_read_bounds (device_id, first_bound_at_ms) VALUES (?, 1)",
+            [&c_id[..]],
+        )
+        .unwrap();
+    let offer = sponsor.export_pairing_offer().unwrap();
+    let joiner = sunrise_pairing::PairingJoiner::new(
+        offer,
+        "joiner".into(),
+        "test".into(),
+        [0x73; 32],
+        [0x74; 32],
+    );
+    let grant = sponsor.issue_pairing_grant(joiner.request()).unwrap();
+    assert_eq!(
+        grant.read_bounds,
+        std::collections::BTreeSet::from([c_id]),
+        "the grant carries exactly the sponsor's bound"
+    );
+    let payload = joiner.accept(grant).unwrap();
+    assert!(
+        payload.read_bounds.contains(&c_id),
+        "the bound reaches the joiner's payload"
+    );
+    sponsor.close().await.unwrap();
+}
+
 #[tokio::test]
 async fn open_and_close() {
     let dir = tempfile::tempdir().unwrap();
