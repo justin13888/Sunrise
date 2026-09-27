@@ -177,8 +177,8 @@ class SelfTest(GateCase):
     # decision this change took, and exactly one self-test case asserts it, so
     # the failure below is attributable rather than a wall of them.
     IMPL_BACK = (
-        r'r"(?:fn|struct|enum|trait|type|static|union)[ \t]+"',
-        r'r"(?:fn|struct|enum|trait|type|static|union|impl)[ \t]+"',
+        r'r"(?P<kind>fn|struct|enum|trait|type|static|union|const)[ \t]+"',
+        r'r"(?P<kind>fn|struct|enum|trait|type|static|union|const|impl)[ \t]+"',
     )
 
     def test_a_broken_rule_makes_the_self_test_exit_one(self):
