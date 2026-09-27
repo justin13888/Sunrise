@@ -221,7 +221,10 @@ struct VaultWindow: View {
             // must not re-read a credential a sign-out left behind (#276).
             account.restoreIfUnread()
             await startSync()
-            await renewSession()
+            // After the first look, so the tick's first look sees the token.
+            // The session owns the tick: closing this window, while the menu
+            // bar keeps the vault and its sync open, leaves it running (#307).
+            session.renewSessionWhileOpen()
         }
         .task { await sync.poll(from: bridge) }
         // The schedule is only correct until the next write. A task created on
@@ -418,8 +421,9 @@ struct VaultWindow: View {
     }
 }
 
-// The account's two drivers, in an extension so the window's own body stays
-// inside the length this project lints for.
+// The account's sign-in, in an extension so the window's own body stays inside
+// the length this project lints for. Its renewal is the session's — see
+// ``SessionModel/renewSessionWhileOpen(every:sleep:)``.
 extension VaultWindow {
     private func signIn() async {
         await account.signIn(
@@ -427,20 +431,6 @@ extension VaultWindow {
             clientID: settings.oidcClientID,
             deviceID: deviceID,
             nowMs: await bridge.nowMs()
-        )
-    }
-
-    /// Keep the session renewed for as long as this window is open.
-    ///
-    /// Called after `restoreIfUnread()` on purpose, from the same task: a
-    /// `.task` of its own could take its first look before the token is back.
-    /// Scoped to this window: closing it cancels this loop. The account itself
-    /// is the session's and outlives the window.
-    private func renewSession() async {
-        await account.renewWhileRunning(
-            issuer: { settings.oidcIssuer },
-            clientID: { settings.oidcClientID },
-            now: { await bridge.nowMs() }
         )
     }
 }

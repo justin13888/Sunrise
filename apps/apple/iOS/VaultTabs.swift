@@ -54,7 +54,7 @@ struct VaultTabs: View {
             .modifier(library)
             .modifier(Routing(surfaces: surfaces, show: show, reveal: reveal, perform: perform))
             .modifier(Lifecycle(
-                bridge: bridge,
+                bridge: bridge, session: session,
                 models: models,
                 surfaces: surfaces,
                 deviceID: $deviceID,

@@ -62,6 +62,87 @@ struct AccountRenewalTickTests {
         #expect(account.state == .signedIn(expiresAtMs: 9_000))
     }
 
+    /// Each bearer a look changes reaches `tokenChanged` once, and a look that
+    /// changed nothing reaches it not at all: the sync driver hears of the
+    /// renewal at 3 000 and of nothing at 2 000 or 4 000.
+    @Test
+    func theTickHandsEachRenewedBearerOnOnce() async {
+        let store = StubCredentialStore(value: credentials(accessToken: "access-old"))
+        var driver = StubLoginDriver()
+        driver.refreshed = credentials(accessToken: "access-new", expiresAtMs: 9_000, renewAtMs: 8_000)
+        let account = model(store: store, driver: driver)
+        account.restore()
+        let clock = FakeRenewalClock(startMs: 2_000, stopAfter: 2)
+        let handed = Observed<[String?]>()
+        handed.value = []
+
+        await account.renewWhileRunning(
+            issuer: { "https://issuer.example" },
+            clientID: { "client" },
+            now: { clock.nowMs },
+            every: .seconds(1),
+            sleep: { try clock.sleep($0) },
+            tokenChanged: { handed.value?.append($0) }
+        )
+
+        #expect(clock.sleeps == 2)
+        #expect(handed.value == ["access-new"])
+    }
+
+    /// A renewal that lands after its tick was cancelled still publishes to the
+    /// model, but reaches no `tokenChanged`: the owner that cancelled it has
+    /// let go of the vault whose sync driver that callback names. The driver
+    /// cancels the tick from inside `refresh`, so the cancel lands while
+    /// ``AccountModel/refreshIfNeeded(issuer:clientID:nowMs:)`` is in flight
+    /// with a changed token.
+    @Test
+    func aRenewalLandingAfterCancellationIsNotHandedOn() async {
+        let store = StubCredentialStore(value: credentials(accessToken: "access-old"))
+        let driver = CancellingLoginDriver(
+            renewed: credentials(accessToken: "access-new", expiresAtMs: 9_000, renewAtMs: 8_000)
+        )
+        let account = AccountModel(store: store, makeDriver: { _, _ in driver }, openURL: { _ in })
+        account.restore()
+        let handed = Observed<[String?]>()
+        handed.value = []
+
+        let tick = _Concurrency.Task {
+            await account.renewWhileRunning(
+                issuer: { "https://issuer.example" },
+                clientID: { "client" },
+                now: { 3_000 },
+                every: .seconds(3_600),
+                tokenChanged: { handed.value?.append($0) }
+            )
+        }
+        await tick.value
+
+        #expect(account.accessToken == "access-new", "the renewal in flight landed")
+        #expect(handed.value == [], "and was handed to nothing")
+    }
+
+    /// An expired renewal that fails drops the bearer, and the driver is told
+    /// so rather than left presenting a token the relay refuses.
+    @Test
+    func aBearerDroppedOnExpiryIsHandedOnAsNil() async {
+        let store = StubCredentialStore(value: credentials(accessToken: "access-old"))
+        let account = model(store: store, driver: StubLoginDriver(failure: StubLoginError()))
+        account.restore()
+        let clock = FakeRenewalClock(startMs: 4_500, stopAfter: 0)
+        let handed = Observed<[String?]>()
+        handed.value = []
+
+        await account.renewWhileRunning(
+            issuer: { "https://issuer.example" },
+            clientID: { "client" },
+            now: { clock.nowMs },
+            sleep: { try clock.sleep($0) },
+            tokenChanged: { handed.value?.append($0) }
+        )
+
+        #expect(handed.value == [nil])
+    }
+
     /// The first look is before the first sleep: a restored token already
     /// past its renewal point is renewed at once, not an interval later.
     @Test
@@ -150,8 +231,8 @@ struct AccountRenewalTickTests {
         #expect(account.accessToken == "access-login")
     }
 
-    /// The shells run the tick from a `.task`, and SwiftUI ends one by
-    /// cancelling it. The default sleep is a real `Task.sleep`, so a cancel
+    /// The session runs the tick in a task it holds, and ends it by
+    /// cancelling that task (#307). The default sleep is a real `Task.sleep`, so a cancel
     /// that arrives while the loop is asleep has to end the loop rather than
     /// leave it looking forever. The cancel waits until the loop has entered
     /// its sleep, so the loop's own `isCancelled` check cannot be what ends it.
@@ -233,6 +314,22 @@ final class ScriptedLoginDriver: LoginDriver, @unchecked Sendable {
             return true
         }
         if fails { throw StubLoginError() }
+        return renewed
+    }
+}
+
+/// A renewal that cancels the task running it, then succeeds: the cancel lands
+/// while the renewal is in flight, as a session letting go of its vault would
+/// mid-refresh, with no timing for the test to arrange.
+struct CancellingLoginDriver: LoginDriver {
+    let renewed: StoredCredentials
+
+    func begin(deviceID: String) async throws -> URL { StubLoginDriver().authorizeURL }
+
+    func complete(timeoutMs: UInt64, nowMs: UInt64) async throws -> StoredCredentials { renewed }
+
+    func refresh(refreshToken: String, nowMs: UInt64) async throws -> StoredCredentials {
+        withUnsafeCurrentTask { $0?.cancel() }
         return renewed
     }
 }
