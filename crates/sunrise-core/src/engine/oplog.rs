@@ -191,8 +191,13 @@ impl Engine {
         .map_err(EngineError::Storage)
     }
 
-    /// The live `(epoch, key)` for `stream_id`, minting epoch 1 and telling
-    /// every other member about it if the stream has none.
+    /// The live `(epoch, key)` for `stream_id`, minting the next epoch and
+    /// telling every other member about it if the stream has none.
+    ///
+    /// "None" includes a stream whose highest epoch holds only keys a
+    /// read-bounded device delivered: [`Keychain::current_epoch_tx`](crate::keychain::Keychain::current_epoch_tx)
+    /// reads such a stream as keyless, and the mint lands above every held key.
+    /// The vault-meta stream is the exception, and that function says why.
     ///
     /// The order inside the mint branch matters and is not incidental: the key
     /// row is written **before** the `key_envelope` ops are emitted, because
@@ -904,7 +909,7 @@ fn ops_run_end(
 /// starts at seq 1 because this function asks for it there —
 /// `crates/sunrise-core/src/engine/oplog.rs:921#upsert_sync_cursor` is where
 /// the literal lives;
-/// `crates/sunrise-core/src/engine/oplog.rs:670#ops_run_end` is parameterised
+/// `crates/sunrise-core/src/engine/oplog.rs:675#ops_run_end` is parameterised
 /// on `start` at
 /// `crates/sunrise-core/src/engine/oplog.rs:674#ops_run_end` and hard-codes
 /// nothing. So an op delivered with a gap below it is in the log and outside

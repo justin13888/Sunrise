@@ -525,6 +525,9 @@ fn a_v13_vault_migrates_all_the_way_forward() {
         // one of them would run the four key-distribution anti-joins against a
         // table that does not exist.
         "device_read_bounds",
+        // Read beside `device_read_bounds` by `Keychain::current_epoch_tx`,
+        // which would fail on every write without it.
+        "stream_key_senders",
         "key_envelope_recipients",
         "relay_revocation_intents",
     ] {

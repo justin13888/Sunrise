@@ -24,9 +24,10 @@ from the issue.
 
 **Storage:** `STORAGE_V` 26 → 28, migrations `0027_device_revoke_ops.sql` (the
 ledger the register folds from) and `0028_device_read_bounds.sql` (the monotone
-read bound the register can no longer be). No new op, no wire change, no
-primitive change: `DOC_SCHEMA_V`, `CRYPTO_SUITE_V` and `ENVELOPE_FORMAT_V` stay
-where they are.
+read bound the register can no longer be). §Decision 4 took `STORAGE_V` to 29
+with `0029_stream_key_senders.sql` (who delivered each absorbed Stream key). No
+new op, no wire change, no primitive change: `DOC_SCHEMA_V`, `CRYPTO_SUITE_V`
+and `ENVELOPE_FORMAT_V` stay where they are.
 
 ## Context
 
@@ -299,6 +300,100 @@ less. Two replicas disagreeing about one row cannot withhold a key from anybody.
   recovery path when a compromised device gets its op in first. A local guard
   would close the recovery path to buy a clearer error for the case that does
   not matter.
+
+### 4. A key a read-bounded device delivered is absorbed and never written under
+
+Added by [#280](https://github.com/justin13888/Sunrise/issues/280).
+`emit_key_envelopes` keeps a read-bounded device from being *given* a key.
+Nothing kept an honest device from *taking* one from it. The `key_envelope` arm
+stored whatever key was sealed to this device, and the live epoch was
+`MAX(epoch)`. So a revoked device running a modified client could mint an epoch
+above the live one, seal it to an honest device's public `D_D` under the
+vault-meta epoch it was cut at, and read everything that device wrote on the
+stream afterwards. The two guards §Consequences names, `revoke_device`'s
+`effective` and `rotate_stream_key`'s refusal, bind an unmodified build and
+nothing else.
+
+**Refusing the key is not the answer.** A replica that declines it cannot open
+the ops sealed under it, including an honest peer's ops written before that peer
+applied the revocation. A replica that met the envelope first can open them. So
+what a replica can read would depend on delivery order, which ADR-0034
+corollary 3 forbids, and the cost would be honest user content that does not
+open. §Decision 2's argument does not transfer either. Declining a *recipient
+row* can only cause more key distribution. Declining a *key* causes less.
+
+**What is decided instead is which key this device writes under.** That choice
+was already per-replica.
+
+- **Every key is still absorbed**, so every op sealed under it still opens.
+  `KeySource::Envelope` carries the envelope's signer, and
+  `insert_stream_key_row` records each `(key, sender)` delivery in
+  `stream_key_senders` (`0029_stream_key_senders.sql`). A delivery proves
+  possession: the arm re-derives the `key_id` from the opened key before it
+  absorbs anything.
+- **`Keychain::current_epoch_tx` passes over a key any read-bounded device
+  delivered.** On an ordinary stream the live epoch is the highest epoch held,
+  and only if that epoch holds a key no device in `device_read_bounds`
+  delivered; the same-epoch tie-break prefers such a key. It never falls back
+  to an older epoch below a non-writable one, because the epoch above exists
+  to supersede those below and an earlier-revoked device holds them: with Q
+  revoked and R the sole sender of the rotation that cut Q, bounding R must
+  not return this device to an epoch Q was sealed. The test runs when the key is chosen, not when it arrived, so a
+  revocation applied after the envelope still takes effect. A later delivery
+  of the same key by a current device does not clear it, because the bounded
+  device still holds the key.
+- **The predicate is the read bound, not the register**, for §Decision 2's
+  reason: the class to keep out is the devices whose reads are bounded, and an
+  unwound device is in that class after the register has stopped naming it.
+- **Minting counts from the highest epoch held** (`Keychain::max_epoch_tx`), so
+  a rotation lands above every key a bounded device delivered, not beside one
+  of them. `MAX_EPOCH_LEAP` is measured from the same number, so an honest
+  epoch minted that way is not refused as a leap.
+
+**A stream whose highest epoch is not writable mints.** That is the case on a
+stream whose highest epoch the bounded device delivered here, by its own
+rotation or through `backfill_key_envelopes` when this peer's cert arrived. An
+ordinary stream then reads as keyless, and `ensure_stream_epoch` mints above
+every held key and seals the new key to every unbounded device. On the revoking
+device the rotation has already done this. Elsewhere, it is a mint that the
+rotation's own envelope would otherwise have supplied shortly after. The
+**vault-meta stream** never mints here: it reads as its highest writable epoch
+and, failing one, as its highest held epoch. The revocation is sealed there,
+under the epoch the cut device still holds, so that the cut device and every
+peer without the rotation can read it. A meta mint at that point would also
+seal its own `key_envelope`s under the epoch being minted, and no other device
+could open them.
+
+**Pre-revocation keys stay live.** Nothing records who holds a key minted here
+or delivered only by current devices, and the revoked device was sealed every
+epoch minted while it was trusted. So a stream whose highest epoch predates the
+cut, and which no bounded device delivered here, keeps it as the live epoch
+after the revocation is applied, and the revoked device can read what this
+device writes under it until the rotation's envelope arrives and moves the
+highest epoch past it. This decision bounds a key the revoked device *chose*;
+the rotation is what bounds the keys it was *given*.
+
+**What it does not cover.**
+
+- *A replica that has not bounded the device.* It adopts the key as before.
+  That is the propagation half of the read bound, and the two local guards are
+  what protect it from an unmodified build.
+- *The vault-meta window.* Take a replica that has bounded a device but has not
+  yet applied the rotation's meta key. On that replica, meta ops are written
+  under an epoch a revoked device holds: one the bounded device planted, or,
+  when the bounded device was the sole sender of the meta rotation that cut an
+  earlier device, the older writable epoch that earlier device was sealed. The rotation's envelopes follow the revocation in
+  the same stream, so the window closes as the rotation is applied.
+- *A key re-sealed by a current device.* `backfill_key_envelopes` hands a
+  newly certified device every held epoch under the backfilling device's own
+  signature. The new device records that sender and nothing about the key's
+  origin, so if the bounded device's planted epoch is the highest on that
+  stream, the new device writes under it until the next rotation. Carrying
+  provenance across a re-seal needs a field in the `key_envelope` payload. That
+  is a wire change, and it is left open rather than taken here.
+- *Keys absorbed before `STORAGE_V` 29.* No sender was recorded for them, and
+  none can be reconstructed. Each stops being live at its stream's next
+  rotation.
 
 ## What a user sees when an op is refused
 
@@ -783,8 +878,10 @@ does not: the second device's gated row discounts that current device, and
   device revoked ([#279](https://github.com/justin13888/Sunrise/issues/279)) —
   the local "refuse if revoked" guard §Decision 3 declines for
   `RevokeDevice`, taken here because rotating a key is no recovery path. Both
-  guards are local, and `Keychain::absorb_stream_key` still checks no sender
-  standing, so a replica that has not applied the revocation is not covered.
+  guards are local, so they bind an unmodified build and cover the replicas
+  that have not yet bounded the device. On a replica that has bounded it,
+  §Decision 4 covers a modified build too: the key is absorbed and never
+  written under.
 - **An upgraded vault folds *from* what it already held, and not necessarily
   back to it.** 0027 seeds the ledger from the register, and what the seed
   preserves is the fold's **input**, not its output. It folds back to the same

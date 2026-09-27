@@ -192,14 +192,38 @@ const GENESIS_EPOCH: u32 = 1;
 /// to the derivation is a new key rather than a silently different one.
 const META_GENESIS_CONTEXT: &str = "sunrise.meta_genesis_key.v1";
 
-/// Where a Stream key came from. Recorded for forensics, never for policy: a
-/// key opens an op or it does not, whichever route delivered it.
+/// The SQL predicate, over a `stream_keys` row aliased `k`, that the row is a
+/// key this device may **write** under: no device in `device_read_bounds`
+/// delivered it (issue #280, ADR-0041 §Decision 4).
+///
+/// `device_read_bounds` is the engine's table and not this module's; the
+/// keychain reads it here, in one place, because the live epoch is the
+/// keychain's answer and the bound is part of the question.
+const WRITABLE_KEY: &str = "NOT EXISTS (
+    SELECT 1 FROM stream_key_senders s
+    JOIN device_read_bounds b ON b.device_id = s.sender_device_id
+    WHERE s.stream_id = k.stream_id AND s.epoch = k.epoch AND s.key_id = k.key_id)";
+
+/// Where a Stream key came from.
+///
+/// The route never decides whether a key is *read*: a key opens an op or it
+/// does not, whichever route delivered it. It decides one thing about whether
+/// the key is *written under*. An [`Envelope`](Self::Envelope) key names the
+/// device that sealed it, and a key a read-bounded device sealed is never the
+/// live key (see [`Keychain::current_epoch_tx`]). Carrying the sender in the
+/// variant, rather than beside it, means no caller can record an envelope key
+/// without saying who sent it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeySource {
     /// Minted on this device.
     Local,
-    /// Arrived in a `key_envelope` op.
-    Envelope,
+    /// Arrived in a `key_envelope` op signed by `sender`.
+    Envelope {
+        /// The device that signed the `key_envelope`. Opening the envelope
+        /// proves it holds the key, because the `key_id` is re-derived from
+        /// the opened key before this is recorded.
+        sender: [u8; 16],
+    },
     /// Arrived in a pairing payload.
     Pairing,
     /// Recomputed from the pre-ADR-0024 derivation while adopting a legacy
@@ -211,7 +235,7 @@ impl KeySource {
     const fn as_str(self) -> &'static str {
         match self {
             Self::Local => "local",
-            Self::Envelope => "envelope",
+            Self::Envelope { .. } => "envelope",
             Self::Pairing => "pairing",
             Self::Legacy => "legacy",
         }
@@ -1785,7 +1809,68 @@ impl Keychain {
         cached
     }
 
-    /// The live epoch for `stream_id`, read from the table inside `tx`.
+    /// The live epoch for `stream_id`: the one this device seals its own writes
+    /// under, read from the table inside `tx`.
+    ///
+    /// On an ordinary stream it is the highest epoch held, **provided that
+    /// epoch holds a key no read-bounded device delivered** (issue #280,
+    /// ADR-0041 §Decision 4). A key a read-bounded device sealed to this one
+    /// is still stored, still in the cache, and still opens every op sealed
+    /// under it; it is only never chosen to write under. Without that, a
+    /// revoked device running a modified client could mint an epoch above the
+    /// live one, seal it to every honest device's public `D_D`, and read what
+    /// they wrote next, because this was `MAX(epoch)`.
+    ///
+    /// When the highest epoch is not writable the answer is `None`, never an
+    /// older writable epoch below it. The epoch above exists because a
+    /// rotation superseded the ones below, and a device an earlier revocation
+    /// cut held every epoch sealed before its cut. Falling back would write
+    /// under one of them: with Q revoked and R the sole sender of the
+    /// rotation that cut Q, bounding R later must not send this device back
+    /// to an epoch Q holds.
+    ///
+    /// What this cannot see is who holds a key minted here or delivered by a
+    /// current device. An epoch live before a revocation stays live after it,
+    /// on a replica where no bounded device delivered it, and the revoked
+    /// device holds it until the rotation's envelope arrives and moves the
+    /// highest epoch past it.
+    ///
+    /// The bound is read here, at the moment of choosing, and not when the
+    /// key arrived, so a revocation applied after the envelope still takes
+    /// effect. It is `device_read_bounds`, the engine's per-replica ratchet,
+    /// for the reason every key-distribution site reads it: the class to keep
+    /// out is the devices whose reads are bounded, and an unwound device is
+    /// in it while the register has stopped naming it.
+    ///
+    /// # When no key is writable
+    ///
+    /// That happens on a stream whose highest epoch the revoked device
+    /// delivered here, by its own rotation or by `backfill_key_envelopes` when
+    /// this device's cert arrived. An epoch minted here, or delivered only by
+    /// current devices, stays writable. What happens next depends on the
+    /// stream.
+    ///
+    /// * **An ordinary stream reads as having no live key**, so
+    ///   `Engine::ensure_stream_epoch` mints one above every held key and
+    ///   seals it to every unbounded device. On the revoking device the
+    ///   rotation has already done that; elsewhere it is a mint the rotation's
+    ///   own envelope would otherwise have supplied a moment later.
+    /// * **The vault-meta stream never mints here.** It reads as its highest
+    ///   writable epoch and, failing one, as the highest epoch held whoever
+    ///   delivered it. It carries the revocation itself, and the revocation
+    ///   is sealed under the epoch the cut device still holds so that the cut
+    ///   device, and every peer that has not yet received the rotation, can
+    ///   read it. A meta mint here would also seal its own `key_envelope`s
+    ///   under the epoch being minted, which no other device can open. The
+    ///   residual is a window: on a replica that has bounded a device and not
+    ///   yet received the rotation's meta key, meta ops are written under an
+    ///   epoch a revoked device holds, either one the bounded device planted
+    ///   or an older one an earlier-revoked device was sealed before its cut.
+    ///   The rotation's envelopes follow the revocation in the same stream,
+    ///   so the window closes as the rotation is applied.
+    ///
+    /// [`Self::max_epoch_tx`] is the other question, "what is the highest
+    /// epoch this device holds at all", and it is what minting counts from.
     ///
     /// # Errors
     /// SQLite failure.
@@ -1794,12 +1879,62 @@ impl Keychain {
         tx: &rusqlite::Transaction<'_>,
         stream_id: &[u8; 16],
     ) -> rusqlite::Result<Option<u32>> {
+        if *stream_id == crate::engine::META_STREAM {
+            let sql = format!(
+                "SELECT MAX(k.epoch) FROM stream_keys k WHERE k.stream_id = ? AND {WRITABLE_KEY}"
+            );
+            return match Self::epoch_query(tx, &sql, stream_id)? {
+                None => self.max_epoch_tx(tx, stream_id),
+                found => Ok(found),
+            };
+        }
+        // The highest held epoch, and only if it is writable. Never an older
+        // one below it: the epoch above exists because someone rotated, and
+        // the epochs it superseded are held by whoever that rotation cut.
+        let Some(max) = self.max_epoch_tx(tx, stream_id)? else {
+            return Ok(None);
+        };
+        let writable: bool = tx.query_row(
+            &format!(
+                "SELECT EXISTS (SELECT 1 FROM stream_keys k
+                 WHERE k.stream_id = ? AND k.epoch = ? AND {WRITABLE_KEY})"
+            ),
+            params![&stream_id[..], max],
+            |r| r.get(0),
+        )?;
+        Ok(writable.then_some(max))
+    }
+
+    /// The highest epoch this device holds a key for on `stream_id`, whoever
+    /// delivered it.
+    ///
+    /// Minting counts from this and not from [`Self::current_epoch_tx`], so a
+    /// fresh epoch lands above every key a read-bounded device delivered
+    /// rather than beside one of them. The `MAX_EPOCH_LEAP` bound on an
+    /// absorbed epoch reads it too: it is a bound on how far this device's
+    /// epochs can be dragged, which is a question about every key it holds.
+    ///
+    /// # Errors
+    /// SQLite failure.
+    pub fn max_epoch_tx(
+        &self,
+        tx: &rusqlite::Transaction<'_>,
+        stream_id: &[u8; 16],
+    ) -> rusqlite::Result<Option<u32>> {
+        Self::epoch_query(
+            tx,
+            "SELECT MAX(epoch) FROM stream_keys WHERE stream_id = ?",
+            stream_id,
+        )
+    }
+
+    fn epoch_query(
+        tx: &rusqlite::Transaction<'_>,
+        sql: &str,
+        stream_id: &[u8; 16],
+    ) -> rusqlite::Result<Option<u32>> {
         let epoch: Option<i64> = tx
-            .query_row(
-                "SELECT MAX(epoch) FROM stream_keys WHERE stream_id = ?",
-                params![&stream_id[..]],
-                |r| r.get(0),
-            )
+            .query_row(sql, params![&stream_id[..]], |r| r.get(0))
             .optional()?
             .flatten();
         // A negative or out-of-`u32` epoch used to read as `1`, the genesis
@@ -1815,9 +1950,11 @@ impl Keychain {
     /// The live `(epoch, key)` for `stream_id`, or `None` if this device holds
     /// no key for it at all.
     ///
-    /// When two devices minted the same epoch this returns the lowest `key_id`,
-    /// so a device's choice of which to seal under is deterministic rather
-    /// than dependent on row order.
+    /// When two devices minted the same epoch this returns the lowest `key_id`
+    /// among the keys [`Self::current_epoch_tx`] may choose, so a device's
+    /// choice of which to seal under is deterministic rather than dependent on
+    /// row order, and a key a read-bounded device delivered at the live epoch
+    /// is passed over there too.
     ///
     /// # Errors
     /// SQLite failure.
@@ -1842,10 +1979,18 @@ impl Keychain {
         let Some(epoch) = self.current_epoch_tx(tx, stream_id)? else {
             return Ok(None);
         };
+        // A writable key first, then the lowest `key_id`. At an epoch
+        // `current_epoch_tx` chose for holding a writable key, that is the
+        // lowest writable one. At the vault-meta fallback epoch none is
+        // writable, and it is the plain lowest.
         let wrapped: Option<Vec<u8>> = tx
             .query_row(
-                "SELECT wrapped FROM stream_keys
-                 WHERE stream_id = ? AND epoch = ? ORDER BY key_id LIMIT 1",
+                &format!(
+                    "SELECT k.wrapped FROM stream_keys k
+                     WHERE k.stream_id = ? AND k.epoch = ?
+                     ORDER BY CASE WHEN {WRITABLE_KEY} THEN 0 ELSE 1 END, k.key_id
+                     LIMIT 1"
+                ),
                 params![&stream_id[..], epoch],
                 |r| r.get(0),
             )
@@ -1890,8 +2035,15 @@ impl Keychain {
         rng: &dyn Rng,
         now_ms: u64,
     ) -> rusqlite::Result<(u32, StreamKey)> {
+        // Above every key held, not only above the live one. Minting beside a
+        // key a read-bounded device delivered would share its epoch number,
+        // and on a replica that has not bounded that device the two would tie
+        // on epoch and be split by `key_id`, a coin the minter does not hold.
+        // It also keeps the one derived key, the vault-meta genesis, from ever
+        // being minted over a row that already holds it: epoch 1 is chosen
+        // only when this stream holds no key at all.
         let epoch = self
-            .current_epoch_tx(tx, stream_id)?
+            .max_epoch_tx(tx, stream_id)?
             .map_or(1, |e| e.saturating_add(1));
         let key = self.fresh_key(stream_id, epoch, rng);
         insert_stream_key_row(
@@ -2915,6 +3067,10 @@ mod tests {
         Db::open_memory(root).unwrap()
     }
 
+    /// The device a test's `key_envelope` keys arrive from, when which device
+    /// it is does not matter to the test.
+    const PEER: [u8; 16] = [0xee; 16];
+
     fn open(d: &mut Db, root: &VaultRootKey) -> Keychain {
         Keychain::open(d, root.clone(), &clock(), &SystemRng, &IdentitySeed::Own).unwrap()
     }
@@ -3306,7 +3462,15 @@ mod tests {
         // A second device's concurrently minted key for the same epoch.
         let theirs = StreamKey::from_bytes([0x99; 32]);
         d.with_tx(|tx| {
-            kc.absorb_stream_key(tx, &sid, epoch, &theirs, KeySource::Envelope, &SystemRng, 0)
+            kc.absorb_stream_key(
+                tx,
+                &sid,
+                epoch,
+                &theirs,
+                KeySource::Envelope { sender: PEER },
+                &SystemRng,
+                0,
+            )
         })
         .unwrap();
         assert_eq!(kc.stream_keys_at(&sid, epoch).len(), 2);
@@ -3359,11 +3523,27 @@ mod tests {
             let mut d = db(&root);
             let kc = open(&mut d, &root);
             d.with_tx(|tx| {
-                kc.absorb_stream_key(tx, &sid, 1, first, KeySource::Envelope, &SystemRng, 10)
+                kc.absorb_stream_key(
+                    tx,
+                    &sid,
+                    1,
+                    first,
+                    KeySource::Envelope { sender: PEER },
+                    &SystemRng,
+                    10,
+                )
             })
             .unwrap();
             d.with_tx(|tx| {
-                kc.absorb_stream_key(tx, &sid, 1, second, KeySource::Envelope, &SystemRng, 20)
+                kc.absorb_stream_key(
+                    tx,
+                    &sid,
+                    1,
+                    second,
+                    KeySource::Envelope { sender: PEER },
+                    &SystemRng,
+                    20,
+                )
             })
             .unwrap();
             assert_eq!(
@@ -3432,7 +3612,7 @@ mod tests {
                 &sid,
                 1,
                 &key,
-                KeySource::Envelope,
+                KeySource::Envelope { sender: PEER },
                 &SystemRng,
                 0
             ))
@@ -3443,12 +3623,311 @@ mod tests {
                 &sid,
                 1,
                 &key,
-                KeySource::Envelope,
+                KeySource::Envelope { sender: PEER },
                 &SystemRng,
                 0
             ))
             .unwrap());
         assert_eq!(kc.stream_keys_at(&sid, 1).len(), 1);
+    }
+
+    /// Put `device` in the engine's read bound, as its revocation fold does.
+    fn read_bound(d: &Db, device: &[u8; 16]) {
+        d.conn()
+            .execute(
+                "INSERT INTO device_read_bounds (device_id, first_bound_at_ms) VALUES (?, 0)",
+                params![&device[..]],
+            )
+            .unwrap();
+    }
+
+    /// **A key a read-bounded device delivered is kept for reading and never
+    /// written under** (issue #280, ADR-0041 §Decision 4).
+    ///
+    /// A revoked device running a modified client mints an epoch above the
+    /// live one and seals it to this device. The key must still be stored,
+    /// or ops sealed under it would be unreadable here and readable on a
+    /// replica that met the envelope first. It must not be live, or this
+    /// device's next write is sealed under a key the revoked device delivered.
+    /// Nor may the epoch below it, which the revoked device held while it was
+    /// a member: the stream reads as keyless and the next write mints.
+    ///
+    /// The bound is applied *after* the key arrives, so this also pins that
+    /// the test runs when the live epoch is read and not at absorb time.
+    #[test]
+    fn a_key_a_read_bounded_device_delivered_is_read_but_never_written_under() {
+        let root = VaultRootKey::from_bytes([0x15; 32]);
+        let mut d = db(&root);
+        let kc = open(&mut d, &root);
+        let sid = [7u8; 16];
+        let cut = [0xc1; 16];
+        let (_, mine) = d
+            .with_tx(|tx| kc.mint_epoch(tx, &sid, &SystemRng, 0))
+            .unwrap();
+        let theirs = StreamKey::from_bytes([0x5a; 32]);
+        assert!(d
+            .with_tx(|tx| kc.absorb_stream_key(
+                tx,
+                &sid,
+                2,
+                &theirs,
+                KeySource::Envelope { sender: cut },
+                &SystemRng,
+                0
+            ))
+            .unwrap());
+
+        // Before the bound, the sender is a member like any other.
+        let live = |d: &mut Db| {
+            d.with_tx(|tx| kc.current_stream_key_tx(tx, &sid))
+                .unwrap()
+                .expect("a live key")
+        };
+        let (epoch, key) = live(&mut d);
+        assert_eq!((epoch, stream_key_id(&key)), (2, stream_key_id(&theirs)));
+
+        read_bound(&d, &cut);
+
+        assert!(
+            d.with_tx(|tx| kc.current_stream_key_tx(tx, &sid))
+                .unwrap()
+                .is_none(),
+            "no live key: not the bounded device's epoch 2, and not epoch 1 \
+             below it, which the bounded device was a member for"
+        );
+        assert_eq!(d.with_tx(|tx| kc.current_epoch_tx(tx, &sid)).unwrap(), None);
+        assert!(
+            kc.stream_keys_at(&sid, 1)
+                .iter()
+                .any(|k| stream_key_id(k) == stream_key_id(&mine)),
+            "the epoch minted here is still held"
+        );
+        assert_eq!(
+            d.with_tx(|tx| kc.max_epoch_tx(tx, &sid)).unwrap(),
+            Some(2),
+            "and it still holds the bounded device's epoch"
+        );
+        assert!(
+            kc.stream_keys_at(&sid, 2)
+                .iter()
+                .any(|k| stream_key_id(k) == stream_key_id(&theirs)),
+            "which still opens every op sealed under it"
+        );
+
+        let (minted, _) = d
+            .with_tx(|tx| kc.mint_epoch(tx, &sid, &SystemRng, 0))
+            .unwrap();
+        assert_eq!(
+            minted, 3,
+            "a rotation lands above every held key, not beside the bounded one"
+        );
+        assert_eq!(live(&mut d).0, 3);
+    }
+
+    /// A second delivery of the same key, by a device this replica has not
+    /// bounded, does not make it writable: the first sender still holds it.
+    #[test]
+    fn a_later_delivery_by_a_current_device_does_not_clear_a_bounded_senders_key() {
+        let root = VaultRootKey::from_bytes([0x16; 32]);
+        let mut d = db(&root);
+        let kc = open(&mut d, &root);
+        let sid = [8u8; 16];
+        let cut = [0xc2; 16];
+        d.with_tx(|tx| kc.mint_epoch(tx, &sid, &SystemRng, 0))
+            .unwrap();
+        let theirs = StreamKey::from_bytes([0x5b; 32]);
+        let absorb = |d: &mut Db, sender: [u8; 16]| {
+            d.with_tx(|tx| {
+                kc.absorb_stream_key(
+                    tx,
+                    &sid,
+                    2,
+                    &theirs,
+                    KeySource::Envelope { sender },
+                    &SystemRng,
+                    0,
+                )
+            })
+            .unwrap()
+        };
+        assert!(absorb(&mut d, cut));
+        assert!(
+            !absorb(&mut d, PEER),
+            "the key is not new, and the caller drains nothing"
+        );
+        read_bound(&d, &cut);
+        assert_eq!(d.with_tx(|tx| kc.current_epoch_tx(tx, &sid)).unwrap(), None);
+
+        // And the other order: the current device first, the bounded one
+        // second. The bounded delivery still counts though the key was known.
+        let sid2 = [9u8; 16];
+        d.with_tx(|tx| kc.mint_epoch(tx, &sid2, &SystemRng, 0))
+            .unwrap();
+        for sender in [PEER, cut] {
+            d.with_tx(|tx| {
+                kc.absorb_stream_key(
+                    tx,
+                    &sid2,
+                    2,
+                    &theirs,
+                    KeySource::Envelope { sender },
+                    &SystemRng,
+                    0,
+                )
+            })
+            .unwrap();
+        }
+        assert_eq!(
+            d.with_tx(|tx| kc.current_epoch_tx(tx, &sid2)).unwrap(),
+            None
+        );
+    }
+
+    /// Two keys at the live epoch, the lower `key_id` delivered by a
+    /// read-bounded device: the tie-break passes over it rather than
+    /// choosing it for being lowest.
+    #[test]
+    fn the_same_epoch_tie_break_passes_over_a_bounded_senders_key() {
+        let root = VaultRootKey::from_bytes([0x17; 32]);
+        let mut d = db(&root);
+        let kc = open(&mut d, &root);
+        let sid = [0x0a; 16];
+        let cut = [0xc3; 16];
+        let one = StreamKey::from_bytes([0x31; 32]);
+        let two = StreamKey::from_bytes([0x77; 32]);
+        let (low, high) = if stream_key_id(&one) <= stream_key_id(&two) {
+            (&one, &two)
+        } else {
+            (&two, &one)
+        };
+        for (key, sender) in [(low, cut), (high, PEER)] {
+            d.with_tx(|tx| {
+                kc.absorb_stream_key(
+                    tx,
+                    &sid,
+                    1,
+                    key,
+                    KeySource::Envelope { sender },
+                    &SystemRng,
+                    0,
+                )
+            })
+            .unwrap();
+        }
+        read_bound(&d, &cut);
+        let (epoch, key) = d
+            .with_tx(|tx| kc.current_stream_key_tx(tx, &sid))
+            .unwrap()
+            .expect("the current device's key is live");
+        assert_eq!((epoch, stream_key_id(&key)), (1, stream_key_id(high)));
+    }
+
+    /// Every held key delivered by a read-bounded device, which is what a
+    /// revocation leaves on most streams until the rotation arrives.
+    ///
+    /// An ordinary stream reads as having no live key, so the engine mints one.
+    /// The vault-meta stream reads as its highest held epoch instead, because
+    /// the revocation itself is sealed there under the epoch the cut device
+    /// still holds, and a meta mint would seal its own envelopes under itself.
+    #[test]
+    fn with_no_writable_key_only_the_vault_meta_stream_falls_back_to_the_held_epoch() {
+        let root = VaultRootKey::from_bytes([0x18; 32]);
+        let mut d = db(&root);
+        let kc = open(&mut d, &root);
+        let cut = [0xc4; 16];
+        let ordinary = [0x0b; 16];
+        let meta = crate::engine::META_STREAM;
+        for (sid, byte) in [(ordinary, 0x41), (meta, 0x42)] {
+            for epoch in [3, 4] {
+                d.with_tx(|tx| {
+                    kc.absorb_stream_key(
+                        tx,
+                        &sid,
+                        epoch,
+                        &StreamKey::from_bytes([byte ^ epoch.to_le_bytes()[0]; 32]),
+                        KeySource::Envelope { sender: cut },
+                        &SystemRng,
+                        0,
+                    )
+                })
+                .unwrap();
+            }
+        }
+        read_bound(&d, &cut);
+
+        assert_eq!(
+            d.with_tx(|tx| kc.current_epoch_tx(tx, &ordinary)).unwrap(),
+            None
+        );
+        assert!(d
+            .with_tx(|tx| kc.current_stream_key_tx(tx, &ordinary))
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            d.with_tx(|tx| kc.current_epoch_tx(tx, &meta)).unwrap(),
+            Some(4)
+        );
+        assert_eq!(
+            d.with_tx(|tx| kc.current_stream_key_tx(tx, &meta))
+                .unwrap()
+                .map(|(e, _)| e),
+            Some(4)
+        );
+    }
+
+    /// **Two revocations: bounding a rotation's sole sender does not send
+    /// this device back to an epoch the first revoked device holds.**
+    ///
+    /// Q is revoked while epoch 1, minted here, is live, so Q holds it. R
+    /// rotates the stream to epoch 2 and is its sole sender here. Then R is
+    /// revoked too. Epoch 2 is not writable, and epoch 1 below it is writable
+    /// by sender but held by Q, so an ordinary stream reads as keyless and the
+    /// next write mints above both. Before R is bounded, epoch 1 is the
+    /// pre-revocation key that stays live until a rotation arrives: nothing
+    /// here records that Q holds it.
+    #[test]
+    fn bounding_a_rotations_sole_sender_mints_rather_than_falling_back_below_it() {
+        let root = VaultRootKey::from_bytes([0x19; 32]);
+        let mut d = db(&root);
+        let kc = open(&mut d, &root);
+        let sid = [0x0c; 16];
+        let (q, r) = ([0xc5; 16], [0xc6; 16]);
+        d.with_tx(|tx| kc.mint_epoch(tx, &sid, &SystemRng, 0))
+            .unwrap();
+        let epoch = |d: &mut Db| d.with_tx(|tx| kc.current_epoch_tx(tx, &sid)).unwrap();
+
+        read_bound(&d, &q);
+        assert_eq!(
+            epoch(&mut d),
+            Some(1),
+            "a key minted here stays live after Q's revocation, and Q holds it"
+        );
+
+        d.with_tx(|tx| {
+            kc.absorb_stream_key(
+                tx,
+                &sid,
+                2,
+                &StreamKey::from_bytes([0x5c; 32]),
+                KeySource::Envelope { sender: r },
+                &SystemRng,
+                0,
+            )
+        })
+        .unwrap();
+        assert_eq!(epoch(&mut d), Some(2), "R's rotation, which Q never held");
+
+        read_bound(&d, &r);
+        assert_eq!(
+            epoch(&mut d),
+            None,
+            "not epoch 1, which Q was sealed before its cut"
+        );
+        let (minted, _) = d
+            .with_tx(|tx| kc.mint_epoch(tx, &sid, &SystemRng, 0))
+            .unwrap();
+        assert_eq!(minted, 3);
+        assert_eq!(epoch(&mut d), Some(3));
     }
 
     #[test]
