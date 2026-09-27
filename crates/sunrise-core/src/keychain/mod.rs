@@ -679,8 +679,9 @@ pub struct Keychain {
     ///
     /// The real path is covered where it can be: `sunrise-e2e` runs a live
     /// relay and carries the envelope ops for real, and
-    /// [`Self::for_test_random_keys`] opts one engine test back into random
-    /// keys so the deferral path has coverage here too.
+    /// [`Self::for_test_random_keys`] opts an engine test back into random
+    /// keys wherever it needs a key this device genuinely does not hold, so
+    /// the deferral path has coverage here too.
     #[cfg(test)]
     test_derived_keys: bool,
 }
@@ -2920,8 +2921,13 @@ impl Keychain {
         Self::for_test_inner(vault_root, signing_seed, true)
     }
 
-    /// A test keychain that mints **real random** keys, for the one engine test
-    /// that has to observe an op arriving before the key that opens it.
+    /// A test keychain that mints **real random** keys, so a Stream key this
+    /// device was never handed is one it genuinely does not hold.
+    ///
+    /// A keychain from [`Self::for_test_seeded`] derives every key from the
+    /// shared vault root, so it can always open an op and never observe one
+    /// arriving before the key that opens it. A test about that case needs
+    /// this constructor instead.
     #[cfg(test)]
     pub(crate) fn for_test_random_keys(vault_root: VaultRootKey, signing_seed: [u8; 32]) -> Self {
         Self::for_test_inner(vault_root, signing_seed, false)
