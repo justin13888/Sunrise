@@ -18,8 +18,9 @@ struct SessionRenewalTests {
     /// Due at once against the core's wall clock; renewed into a token that
     /// is not due again for the life of the test.
     private func account() -> AccountModel {
-        var driver = StubLoginDriver()
-        driver.refreshed = credentials(accessToken: "access-new", expiresAtMs: 1 << 62, renewAtMs: 1 << 61)
+        var stub = StubLoginDriver()
+        stub.refreshed = credentials(accessToken: "access-new", expiresAtMs: 1 << 62, renewAtMs: 1 << 61)
+        let driver = stub
         let account = AccountModel(
             store: StubCredentialStore(value: credentials(accessToken: "access-old")),
             makeDriver: { _, _ in driver },
