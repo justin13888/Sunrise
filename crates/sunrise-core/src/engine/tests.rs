@@ -7943,7 +7943,7 @@ fn a_self_refused_revoke_still_advances_the_cursor() {
 /// cursor counts the op anyway.**
 ///
 /// This is the delivery half of the gate at
-/// `crates/sunrise-core/src/engine/sync.rs:943#apply_control_op`. The two
+/// `crates/sunrise-core/src/engine/sync.rs:955#apply_control_op`. The two
 /// units that reach that gate today —
 /// `a_revoked_devices_third_party_envelope_claim_is_not_recorded` and
 /// `an_unwound_devices_third_party_envelope_claim_is_not_recorded` — call
@@ -18047,6 +18047,61 @@ fn a_parked_op_this_build_still_cannot_read_stays_parked_and_is_restamped() {
         OpLog::parked_for_replay(&dbb, current).unwrap().is_empty(),
         "tried by this build, so not tried again until the build changes"
     );
+}
+
+/// A storage failure while replaying is not a refusal. The replay returns it
+/// and leaves the op's old stamp alone, so the next open applies it; a
+/// re-stamp here would keep an op this build can read parked until the next
+/// `DOC_SCHEMA_V` bump.
+///
+/// The failure is a trigger on the release's `DELETE FROM parked_ops`, which
+/// runs inside the apply transaction and nowhere in the read or the re-stamp.
+#[test]
+fn a_storage_failure_during_replay_is_returned_and_the_op_is_not_restamped() {
+    let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut dba = db_root(ROOT);
+    let mut dbb = db_root(ROOT);
+    trust(&eb, &mut dbb, &ea);
+
+    let task = new_task(&ea, &mut dba, "held up by the disk");
+    let env = create_env_for(&dba, task.bytes());
+    let op = decode_envelope(&env).unwrap();
+    let older = sunrise_cbor::version::DOC_SCHEMA_V - 1;
+    eb.park_op(&mut dbb, &env, &op, "TaskCreate", older)
+        .unwrap();
+
+    dbb.conn()
+        .execute_batch(
+            "CREATE TEMP TRIGGER fail_release BEFORE DELETE ON parked_ops
+             BEGIN SELECT RAISE(ABORT, 'disk full'); END;",
+        )
+        .unwrap();
+    let err = eb.replay_parked_ops(&mut dbb).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            EngineError::Sqlite(_) | EngineError::Storage(_) | EngineError::OpLog(_)
+        ),
+        "a storage error, not a refusal: {err:?}"
+    );
+    assert_eq!(
+        parked_rows(&dbb),
+        vec![("unknown_kind".into(), "TaskCreate".into(), i64::from(older))],
+        "the stamp is the one it was parked under"
+    );
+    assert!(eb.query(&dbb, Query::EntityById(task)).is_err());
+
+    // The next open, with the disk healthy, applies it.
+    dbb.conn()
+        .execute_batch("DROP TRIGGER fail_release;")
+        .unwrap();
+    let events = eb.replay_parked_ops(&mut dbb).unwrap();
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, DomainEvent::Created(r) if *r == task)));
+    assert_eq!(read_task_t(&eb, &dbb, task).title, "held up by the disk");
+    assert!(parked_rows(&dbb).is_empty());
 }
 
 /// Only an unknown *name* parks. A family this build reads, with a payload

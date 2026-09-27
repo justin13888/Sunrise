@@ -753,7 +753,7 @@ pub(super) fn ops_run_end(
 /// *not* decide is whether the op applies. The op row went in at the
 /// idempotence gate before the control op was dispatched, the `devices` row is
 /// written before the backfill is attempted, and a backfill error is logged rather than
-/// raised (`crates/sunrise-core/src/engine/sync.rs:1266#apply_control_op`). Not one of
+/// raised (`crates/sunrise-core/src/engine/sync.rs:1278#apply_control_op`). Not one of
 /// those answers skips this function: it runs on the delivery like any other,
 /// and the op row it left behind counts toward the prefix like any other.
 /// Whether the number this writes actually moves is a question about the seqs
@@ -813,7 +813,7 @@ pub(super) fn ops_run_end(
 ///
 /// Two of them belong to revocation, and neither is an op's.
 ///
-/// The first. `crates/sunrise-core/src/engine/sync.rs:1015#apply_control_op` hands a
+/// The first. `crates/sunrise-core/src/engine/sync.rs:1027#apply_control_op` hands a
 /// `device_revoke` to
 /// `crates/sunrise-core/src/engine/revocation.rs:1349#apply_device_revoke`,
 /// which refuses one naming its own sender — logging
@@ -835,7 +835,7 @@ pub(super) fn ops_run_end(
 ///
 /// The second, and it is the one keyed on the *sender's* standing that the
 /// premise at the top of this comment turns on.
-/// `crates/sunrise-core/src/engine/sync.rs:943#apply_control_op` refuses a
+/// `crates/sunrise-core/src/engine/sync.rs:955#apply_control_op` refuses a
 /// read-bounded sender's claim that some third device already holds the key at
 /// a `(stream, epoch)`, logging `core.key.recipient_claim_refused`. What it
 /// declines is a `key_envelope_recipients` **hint** row and nothing else: the
@@ -863,7 +863,7 @@ pub(super) fn ops_run_end(
 /// at this `(stream, epoch)` opens the envelope,
 /// `crates/sunrise-core/src/engine/sync.rs:329#apply_remote_all` when the
 /// sender's clock is outside the drift window, and
-/// `crates/sunrise-core/src/engine/sync.rs:851#apply_control_op` when a key
+/// `crates/sunrise-core/src/engine/sync.rs:863#apply_control_op` when a key
 /// envelope names an epoch above `MAX_EPOCH_LEAP`. The first two return an
 /// error before the transaction opens, so no op row and no cursor; the third
 /// drops a payload with the op row already in, so the op counts toward the

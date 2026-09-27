@@ -765,15 +765,27 @@ impl Engine {
     /// bytes verified once and advanced the cursor, so keeping them is the
     /// only answer that loses nothing. A refusal is logged.
     ///
+    /// A storage failure while applying one is not a refusal: the replay stops
+    /// there and returns it, and that op keeps its old stamp, so the next open
+    /// tries it again.
+    ///
     /// # Errors
-    /// Storage failures reading or re-stamping `parked_ops`. A failure to
-    /// apply one op is not an error.
+    /// Storage failures reading or re-stamping `parked_ops`, and a storage
+    /// failure (`Storage`, `Sqlite` or `OpLog`) while applying a parked op.
+    /// Any other failure to apply one op is not an error.
     pub fn replay_parked_ops(&self, db: &mut Db) -> Result<Vec<DomainEvent>, EngineError> {
         let parked = OpLog::parked_for_replay(db, DOC_SCHEMA_V)?;
         let mut events = Vec::new();
         for op in parked {
             match self.apply_remote_all(db, &op.envelope) {
                 Ok(more) => events.extend(more),
+                // A storage failure says nothing about the op. Re-stamping it
+                // would keep an op this build can apply parked until the next
+                // `DOC_SCHEMA_V` bump, so the stamp stays as it was and the
+                // next open tries it again.
+                Err(
+                    e @ (EngineError::Storage(_) | EngineError::Sqlite(_) | EngineError::OpLog(_)),
+                ) => return Err(e),
                 // A class and not the message: a decode error can quote the
                 // payload it failed on, and this payload is plaintext.
                 Err(e) => {
