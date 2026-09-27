@@ -911,7 +911,7 @@ pub(super) fn ops_run_end(
 /// the literal lives;
 /// `crates/sunrise-core/src/engine/oplog.rs:675#ops_run_end` is parameterised
 /// on `start` at
-/// `crates/sunrise-core/src/engine/oplog.rs:674#ops_run_end` and hard-codes
+/// `crates/sunrise-core/src/engine/oplog.rs:679#ops_run_end` and hard-codes
 /// nothing. So an op delivered with a gap below it is in the log and outside
 /// the prefix: with the log holding `{2}` the `ELSE ?3 - 1` arm writes 0, and with
 /// it holding `{1, 3}` the run ends at 1. Refused or applied makes no

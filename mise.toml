@@ -542,7 +542,7 @@ description = "Reject a backticked path:line#symbol citation that points at noth
 # onto unrelated code goes red instead of passing because the line still
 # exists. `path#symbol` with no line checks only that the item is still
 # declared, which is what a citation into a file somebody is rewriting this
-# week should say. Four declines and failures worth knowing before you write
+# week should say. Five declines and failures worth knowing before you write
 # one:
 #
 #   * A suffix that is not a bare Rust item name — `#Engine::f`, `#f()` — is a
@@ -562,6 +562,12 @@ description = "Reject a backticked path:line#symbol citation that points at noth
 #   * Neither an `impl` block nor a `mod` is a legal target. `#Engine` spanned
 #     97.7% of `sync.rs` and `mod tests` in `api/sync/suite.rs` spans 99.5%
 #     of it, which checks nothing; cite the `struct`, `trait` or `fn`.
+#   * A single-line `path:LINE#symbol` whose line is a `///` line of the
+#     item's doc comment below its summary line is a FAILURE, in every
+#     declaration of the name that contains it. That is where a line written
+#     for the declaration lands once the doc comment above it grows. The
+#     summary, attribute, declaration and body lines stay clean; cite a doc
+#     passage on purpose with a range, `N-N` included.
 #
 # The full rule, and why each of those is the way it is, lives in the script's
 # own module docstring. Keep this comment and that docstring in step.
