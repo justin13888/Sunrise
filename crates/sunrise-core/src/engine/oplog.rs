@@ -720,16 +720,16 @@ fn ops_run_end(
 /// The argument that removed the old behaviour — that advancing made a
 /// reversible decision irreversible — is now settled rather than hedged, and
 /// settled in its favour. The register really is reversible:
-/// `crates/sunrise-core/src/engine/revocation.rs:1262#refold_device_revocations`
+/// `crates/sunrise-core/src/engine/revocation.rs:1282#refold_device_revocations`
 /// empties `device_revocations` and rebuilds it on every applied revocation,
 /// and what it rebuilds is last-writer-wins rather than `MIN` — the ledger is
 /// folded in ascending order at
-/// `crates/sunrise-core/src/engine/revocation.rs:1091#refold_device_revocations`
+/// `crates/sunrise-core/src/engine/revocation.rs:1098-1099#refold_device_revocations`
 /// so a later row simply overwrites an earlier one, written at
-/// `crates/sunrise-core/src/engine/revocation.rs:1152#refold_device_revocations`
+/// `crates/sunrise-core/src/engine/revocation.rs:1159#refold_device_revocations`
 /// — precisely so a cut from a slow clock is corrected by revoking again from
 /// a healthy device. The rationale for choosing LWW over `MIN` is recorded at
-/// `crates/sunrise-core/src/engine/revocation.rs:1316#apply_device_revoke`.
+/// `crates/sunrise-core/src/engine/revocation.rs:1326-1332#apply_device_revoke`.
 /// Nothing below rests on that, because nothing below un-writes an op row.
 ///
 /// # What the apply path consults, and what that read decides
@@ -738,11 +738,11 @@ fn ops_run_end(
 /// dispatched out of `crates/sunrise-core/src/engine/sync.rs:348#apply_remote_all`
 /// reaches `crates/sunrise-core/src/engine/oplog.rs:418#backfill_key_envelopes`,
 /// which returns early on a device
-/// `crates/sunrise-core/src/engine/revocation.rs:643#is_read_bounded` names —
+/// `crates/sunrise-core/src/engine/revocation.rs:650#is_read_bounded` names —
 /// a presence test over `device_read_bounds`, inside the apply transaction, on
 /// remote input. [`Engine::is_revoked`] is consulted nowhere on this path: its
 /// one non-test caller is the local command at
-/// `crates/sunrise-core/src/engine/revocation.rs:259#revoke_device`. ADR-0041
+/// `crates/sunrise-core/src/engine/revocation.rs:263#revoke_device`. ADR-0041
 /// (`docs/11-adr/0041-peer-side-revocation-is-a-fold.md`) is where the two
 /// tables were split, and the split is why the distinction earns a sentence:
 /// the register is a fold and shrinks, `device_read_bounds` never releases a
@@ -811,13 +811,13 @@ fn ops_run_end(
 ///
 /// The first. `crates/sunrise-core/src/engine/sync.rs:803#apply_control_op` hands a
 /// `device_revoke` to
-/// `crates/sunrise-core/src/engine/revocation.rs:1340#apply_device_revoke`,
+/// `crates/sunrise-core/src/engine/revocation.rs:1349#apply_device_revoke`,
 /// which refuses one naming its own sender — logging
 /// `core.device.revoke_refused` with `reason = "self"` — and writes no
 /// register row. That event has a second emitter at
-/// `crates/sunrise-core/src/engine/revocation.rs:1410#apply_device_revoke`,
+/// `crates/sunrise-core/src/engine/revocation.rs:1419-1421#apply_device_revoke`,
 /// `reason = "revoked_sender"`: the fold declines to believe the row. A third,
-/// `crates/sunrise-core/src/engine/revocation.rs:1392#apply_device_revoke`,
+/// `crates/sunrise-core/src/engine/revocation.rs:1400-1403#apply_device_revoke`,
 /// `reason = "sender_over_cap"`, drops a pair past its sender's cap.
 ///
 /// What is refused in the first case is a *register write* rather than the
@@ -841,7 +841,7 @@ fn ops_run_end(
 /// than state, so a replica that declines the row finds no row and
 /// `backfill_key_envelopes` emits the envelope anyway — the gate can only ever
 /// cause *more* key distribution, never less, which is why it reads
-/// `crates/sunrise-core/src/engine/revocation.rs:643#is_read_bounded` and
+/// `crates/sunrise-core/src/engine/revocation.rs:650#is_read_bounded` and
 /// tolerates that predicate being per-replica
 /// ([#411](https://github.com/justin13888/Sunrise/issues/411)).
 /// `crates/sunrise-core/src/engine/tests.rs:7969#a_read_bounded_senders_recipient_claim_is_refused_and_the_cursor_counts_the_op`
@@ -893,7 +893,7 @@ fn ops_run_end(
 /// `crates/sunrise-core/src/engine/tests.rs:8750#a_refold_that_unwinds_a_revocation_moves_no_cursor`
 /// pins all of it, including the half that does *not* unwind:
 /// `device_read_bounds` keeps the device it bounded, which is the asymmetry
-/// `crates/sunrise-core/src/engine/revocation.rs:643#is_read_bounded` exists
+/// `crates/sunrise-core/src/engine/revocation.rs:650#is_read_bounded` exists
 /// for.
 ///
 /// A high-water mark would be wrong, and used to be what this wrote. Ops do

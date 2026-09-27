@@ -225,7 +225,7 @@ pub const CRYPTO_SUITE_V: u16 = 5;
 /// to be a fold that can take a row back out; the four key-distribution sites
 /// ask "is this device read-bounded?", which has to be monotone or it is not a
 /// bound. One table could not be both, so the second question gets its own
-/// ratchet — written only by `INSERT OR IGNORE`, never deleted — and an
+/// ratchet — never deleted for a device this replica holds a cert for — and an
 /// unwound revocation stops handing the device back every epoch the vault
 /// mints (ADR-0041 §Decision 1 records the unwind; this is its read half).
 ///
