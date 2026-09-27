@@ -7,7 +7,9 @@
 //! rows — `purge_context_from_tasks` and the FTS refresh behind it — because a
 //! Task's contexts live in a join table the Task does not own.
 
-use super::ids::{decode_unknowns, encode_unknowns, ms_to_ts, require_kind};
+use super::ids::{
+    decode_unknowns, encode_unknowns, extra_over_opaque, ms_to_ts, require_kind, ExtraTable,
+};
 use super::lww::LwwStamp;
 use super::task::read_task;
 use super::{Engine, EngineError, META_STREAM};
@@ -296,7 +298,12 @@ pub(super) fn update_context_row(
     c: &Context,
     lww: &LwwStamp,
 ) -> rusqlite::Result<()> {
-    let extra_blob = encode_unknowns(&c.unknown)?;
+    let extra_blob = extra_over_opaque(
+        tx,
+        ExtraTable::Contexts,
+        &c.id.bytes()[..],
+        encode_unknowns(&c.unknown)?,
+    )?;
     tx.execute(
         "UPDATE contexts
          SET name = ?, description = ?, archived = ?, deleted = ?, updated_at_ms = ?,

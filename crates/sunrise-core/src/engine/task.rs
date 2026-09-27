@@ -10,8 +10,9 @@
 
 use super::block::read_task_blocks;
 use super::ids::{
-    blob16, decode_unknowns, encode_unknowns, energy_str, ms_to_ts, parse_energy, parse_task_state,
-    require_kind, require_writable_stream, task_state_str, time_from_parts, time_to_parts,
+    blob16, decode_unknowns, encode_unknowns, energy_str, extra_over_opaque, ms_to_ts,
+    parse_energy, parse_task_state, require_kind, require_writable_stream, task_state_str,
+    time_from_parts, time_to_parts, ExtraTable,
 };
 use super::lww::LwwStamp;
 use super::routine::update_routine_row;
@@ -298,7 +299,9 @@ impl Engine {
         let Some(at) = task.scheduled_at.as_ref() else {
             return Ok(Vec::new());
         };
-        if task.scheduling_constraints.is_empty() {
+        // A time kind this build cannot place on the timeline is checked
+        // against nothing: its stand-in instant would invent a violation.
+        if task.scheduling_constraints.is_empty() || at.index_key().is_none() {
             return Ok(Vec::new());
         }
         let tz = jiff::tz::TimeZone::get(&self.clock.timezone()).unwrap_or(jiff::tz::TimeZone::UTC);
@@ -573,9 +576,13 @@ pub(super) fn update_task_row(
     let (sched_ms, sched_kind, sched_tz) = time_to_parts(t.scheduled_at.as_ref());
     let (due_ms, due_kind, due_tz) = time_to_parts(t.due_at.as_ref());
     let (done_ms, done_kind, done_tz) = time_to_parts(t.completed_at.as_ref());
-    let extra_blob = encode_unknowns(&t.unknown)?;
-
     let id_blob: Vec<u8> = t.id.bytes().to_vec();
+    let extra_blob = extra_over_opaque(
+        tx,
+        ExtraTable::Tasks,
+        &id_blob,
+        encode_unknowns(&t.unknown)?,
+    )?;
     let stream_blob: Vec<u8> = t.stream_id.bytes().to_vec();
     let body_blob: Option<Vec<u8>> = t.body.as_ref().map(|b| b.0.clone());
     let constraints_blob = encode_constraints(&t.scheduling_constraints)?;

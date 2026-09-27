@@ -234,6 +234,7 @@ fn blank() -> RRule {
         count: None,
         until: None,
         wkst: None,
+        unknown: crate::Unknowns::new(),
     }
 }
 

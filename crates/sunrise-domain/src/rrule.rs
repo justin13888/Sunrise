@@ -8,7 +8,7 @@
 //! This module implements parsing + recognition; full DST-aware expansion
 //! lives in [`crate::routine_gen`].
 
-use crate::unknown::UnknownVariant;
+use crate::unknown::{UnknownVariant, Unknowns};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -119,6 +119,12 @@ pub struct RRule {
     /// `WKST` (optional; defaults to Monday per RFC 5545).
     #[serde(default)]
     pub wkst: Option<Weekday>,
+    /// Fields this build does not know, re-emitted verbatim. See
+    /// [`crate::unknown`]. The RFC 5545 text form cannot carry them; the
+    /// canonical CBOR form, which is what the op and `routines.rrule_cbor`
+    /// hold, does.
+    #[serde(flatten)]
+    pub unknown: Unknowns,
 }
 
 /// RRULE parse errors.
@@ -150,6 +156,7 @@ impl RRule {
             count: None,
             until: None,
             wkst: None,
+            unknown: Unknowns::new(),
         };
         for part in body.split(';').filter(|p| !p.is_empty()) {
             let (k, v) = part

@@ -62,17 +62,20 @@ fn valid_constraint_strategy() -> impl Strategy<Value = ScheduleConstraint> {
                 } else {
                     start
                 };
-                TimeOfDayRange { start, end }
+                TimeOfDayRange::new(start, end)
             });
-            let date_range = dr.map(|(start, add)| DateRange {
-                start,
-                end: add.map(|days| start.saturating_add(jiff::Span::new().days(days))),
+            let date_range = dr.map(|(start, add)| {
+                DateRange::new(
+                    start,
+                    add.map(|days| start.saturating_add(jiff::Span::new().days(days))),
+                )
             });
             ScheduleConstraint {
                 time_of_day,
                 days_of_week: days,
                 date_range,
                 severity,
+                unknown: sunrise_domain::Unknowns::new(),
             }
         })
         // Guarantee at least one dimension is populated.

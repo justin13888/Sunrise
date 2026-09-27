@@ -8,7 +8,10 @@
 //! materializes a remote entity into a Stream has to know the Stream row is
 //! there first — which is why it is `pub(super)` here rather than duplicated.
 
-use super::ids::{blob16, decode_unknowns, encode_unknowns, ms_to_ts, require_writable_stream};
+use super::ids::{
+    blob16, decode_unknowns, encode_unknowns, extra_over_opaque, ms_to_ts, require_writable_stream,
+    ExtraTable,
+};
 use super::lww::LwwStamp;
 use super::task::read_task;
 use super::{Engine, EngineError, META_STREAM};
@@ -456,7 +459,12 @@ pub(super) fn update_stream_row(
 ) -> rusqlite::Result<()> {
     let id_blob: Vec<u8> = s.id.bytes().to_vec();
     let parent_blob: Option<Vec<u8>> = s.parent_id.map(|p| p.bytes().to_vec());
-    let extra_blob = encode_unknowns(&s.unknown)?;
+    let extra_blob = extra_over_opaque(
+        tx,
+        ExtraTable::Streams,
+        &id_blob,
+        encode_unknowns(&s.unknown)?,
+    )?;
     let description_blob: Option<Vec<u8>> = s.description.as_ref().map(|b| b.0.clone());
     let default_ctx_blob: Option<Vec<u8>> = s.default_context.map(|c| c.bytes().to_vec());
     tx.execute(

@@ -254,13 +254,14 @@ mod tests {
 
     fn window() -> ScheduleConstraint {
         ScheduleConstraint {
-            time_of_day: Some(TimeOfDayRange {
-                start: jiff::civil::time(9, 0, 0, 0),
-                end: jiff::civil::time(17, 0, 0, 0),
-            }),
+            time_of_day: Some(TimeOfDayRange::new(
+                jiff::civil::time(9, 0, 0, 0),
+                jiff::civil::time(17, 0, 0, 0),
+            )),
             days_of_week: WeekdaySet::new(),
             date_range: None,
             severity: ConstraintSeverity::Soft,
+            unknown: crate::Unknowns::new(),
         }
     }
 

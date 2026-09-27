@@ -626,6 +626,7 @@ mod row_tests {
                 priority: None,
                 estimated_duration_s: None,
                 body: None,
+                unknown: crate::Unknowns::new(),
             },
             rrule: RRule::parse(rrule).expect("valid rrule"),
             timezone: "UTC".into(),
