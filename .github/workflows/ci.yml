@@ -1681,6 +1681,36 @@ jobs:
       - name: Exit-code contract
         run: python3 .github/scripts/test_proptest_persistence_gate.py
 
+  apply-refusal:
+    name: Apply-path refusal gate
+    runs-on: ubuntu-latest
+    # `actions/checkout` and one standard-library Python script over three
+    # files in `crates/sunrise-core/src/engine`. No toolchain, nothing to cache.
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - name: Reject a refusal below the idempotence gate that raises
+        # #298. `upsert_sync_cursor`'s doc says a refusal below
+        # `apply_remote_all`'s op-row insert declines a register write, a hint
+        # row or a payload and never the delivery, so the cursor counts the op.
+        # That holds only while every such refusal returns Ok. A `?` or a
+        # `return Err` on a policy branch rolls the transaction back and deletes
+        # the op row, and every unit and doc gate stays green when it does.
+        run: .github/scripts/apply-refusal-gate.py
+
+  apply-refusal-gate-contract:
+    name: Apply-path refusal gate contract
+    runs-on: ubuntu-latest
+    # One Python script over engine files it synthesises in a temp directory.
+    timeout-minutes: 5
+    # Deliberately without an `if:`, like the other gate contracts. The gate
+    # exits 0 on the real tree, which a gate that reads nothing also does; this
+    # plants the refusal it exists for and asserts it can still say 1.
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - name: Exit-code contract
+        run: python3 .github/scripts/test_apply_refusal_gate.py
+
   workflow-hardening:
     name: Workflow hardening gate
     runs-on: ubuntu-latest
