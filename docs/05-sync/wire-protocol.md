@@ -53,7 +53,7 @@ The rule covers **all** payloads including the handshake. `Hello` and
 client-side: `crates/sunrise-core/src/sync_driver.rs` encodes the `Hello` frame
 with `ciborium::ser::into_writer`, and `SseTransport` reads it back with
 `ciborium::de::from_reader` and writes the `HelloAck` frame the same way
-(`crates/sunrise-sync/src/sse.rs:320-366`). Both bypass the canonicality check
+(`crates/sunrise-sync/src/sse.rs:839-889#send_frame`). Both bypass the canonicality check
 every other payload gets. The server sees neither frame — `POST /sync/session`
 takes a typed body and rebuilds a `Hello` from its fields
 (`crates/sunrise-server/src/api/sync/credential.rs`) — so the handshake's two hops through
@@ -301,7 +301,7 @@ is accepted — the fold order lost its clamp under
 [ADR-0027](../11-adr/0027-v1-self-host-first.md) precisely because a relay input
 into it was a hole (see
 [`../03-crypto/audit-and-tamper-evidence.md`](../03-crypto/audit-and-tamper-evidence.md)
-§Per-Stream Merkle root). No client persists it today: `crates/sunrise-sync/src/sse.rs:435`
+§Per-Stream Merkle root). No client persists it today: `crates/sunrise-sync/src/sse.rs:962#send_frame`
 parses it onto the synthesized `Ack` frame and nothing downstream reads it.
 
 ## Connection lifecycle
