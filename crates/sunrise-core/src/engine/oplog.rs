@@ -191,8 +191,13 @@ impl Engine {
         .map_err(EngineError::Storage)
     }
 
-    /// The live `(epoch, key)` for `stream_id`, minting epoch 1 and telling
-    /// every other member about it if the stream has none.
+    /// The live `(epoch, key)` for `stream_id`, minting the next epoch and
+    /// telling every other member about it if the stream has none.
+    ///
+    /// "None" includes a stream whose every key a read-bounded device
+    /// delivered: [`Keychain::current_epoch_tx`](crate::keychain::Keychain::current_epoch_tx)
+    /// reads such a stream as keyless, and the mint lands above every held key.
+    /// The vault-meta stream is the exception, and that function says why.
     ///
     /// The order inside the mint branch matters and is not incidental: the key
     /// row is written **before** the `key_envelope` ops are emitted, because

@@ -1828,6 +1828,31 @@ impl Keychain {
     /// out is the devices whose reads are bounded, and an unwound device is
     /// in it while the register has stopped naming it.
     ///
+    /// # When no key is writable
+    ///
+    /// That is the ordinary state of every stream the moment a revocation is
+    /// applied, not a corner: the revoked device held every key the account
+    /// had until then, and it delivered most of them here, if only by
+    /// `backfill_key_envelopes` when this device's cert arrived. What happens
+    /// next depends on the stream.
+    ///
+    /// * **An ordinary stream reads as having no live key**, so
+    ///   `Engine::ensure_stream_epoch` mints one above every held key and
+    ///   seals it to every unbounded device. On the revoking device the
+    ///   rotation has already done that; elsewhere it is a mint the rotation's
+    ///   own envelope would otherwise have supplied a moment later.
+    /// * **The vault-meta stream falls back to the highest epoch held**,
+    ///   whoever delivered it. It carries the revocation itself, and the
+    ///   revocation is sealed under the epoch the cut device still holds so
+    ///   that the cut device, and every peer that has not yet received the
+    ///   rotation, can read it. A meta mint here would also seal its own
+    ///   `key_envelope`s under the epoch being minted, which no other device
+    ///   can open. The residual is a window: on a replica that has bounded a
+    ///   device and not yet received the rotation's meta key, a meta epoch that
+    ///   device planted is written under. The rotation's envelopes follow the
+    ///   revocation in the same stream, so the window closes as the rotation
+    ///   is applied.
+    ///
     /// [`Self::max_epoch_tx`] is the other question, "what is the highest
     /// epoch this device holds at all", and it is what minting counts from.
     ///
@@ -1841,7 +1866,10 @@ impl Keychain {
         let sql = format!(
             "SELECT MAX(k.epoch) FROM stream_keys k WHERE k.stream_id = ? AND {WRITABLE_KEY}"
         );
-        Self::epoch_query(tx, &sql, stream_id)
+        match Self::epoch_query(tx, &sql, stream_id)? {
+            None if *stream_id == crate::engine::META_STREAM => self.max_epoch_tx(tx, stream_id),
+            found => Ok(found),
+        }
     }
 
     /// The highest epoch this device holds a key for on `stream_id`, whoever
@@ -1918,12 +1946,17 @@ impl Keychain {
         let Some(epoch) = self.current_epoch_tx(tx, stream_id)? else {
             return Ok(None);
         };
+        // A writable key first, then the lowest `key_id`. At an epoch
+        // `current_epoch_tx` chose for holding a writable key, that is the
+        // lowest writable one. At the vault-meta fallback epoch none is
+        // writable, and it is the plain lowest.
         let wrapped: Option<Vec<u8>> = tx
             .query_row(
                 &format!(
                     "SELECT k.wrapped FROM stream_keys k
-                     WHERE k.stream_id = ? AND k.epoch = ? AND {WRITABLE_KEY}
-                     ORDER BY k.key_id LIMIT 1"
+                     WHERE k.stream_id = ? AND k.epoch = ?
+                     ORDER BY CASE WHEN {WRITABLE_KEY} THEN 0 ELSE 1 END, k.key_id
+                     LIMIT 1"
                 ),
                 params![&stream_id[..], epoch],
                 |r| r.get(0),
@@ -3751,6 +3784,59 @@ mod tests {
             .unwrap()
             .expect("the current device's key is live");
         assert_eq!((epoch, stream_key_id(&key)), (1, stream_key_id(high)));
+    }
+
+    /// Every held key delivered by a read-bounded device, which is what a
+    /// revocation leaves on most streams until the rotation arrives.
+    ///
+    /// An ordinary stream reads as having no live key, so the engine mints one.
+    /// The vault-meta stream reads as its highest held epoch instead, because
+    /// the revocation itself is sealed there under the epoch the cut device
+    /// still holds, and a meta mint would seal its own envelopes under itself.
+    #[test]
+    fn with_no_writable_key_only_the_vault_meta_stream_falls_back_to_the_held_epoch() {
+        let root = VaultRootKey::from_bytes([0x18; 32]);
+        let mut d = db(&root);
+        let kc = open(&mut d, &root);
+        let cut = [0xc4; 16];
+        let ordinary = [0x0b; 16];
+        let meta = crate::engine::META_STREAM;
+        for (sid, byte) in [(ordinary, 0x41), (meta, 0x42)] {
+            for epoch in [3, 4] {
+                d.with_tx(|tx| {
+                    kc.absorb_stream_key(
+                        tx,
+                        &sid,
+                        epoch,
+                        &StreamKey::from_bytes([byte ^ epoch.to_le_bytes()[0]; 32]),
+                        KeySource::Envelope { sender: cut },
+                        &SystemRng,
+                        0,
+                    )
+                })
+                .unwrap();
+            }
+        }
+        read_bound(&d, &cut);
+
+        assert_eq!(
+            d.with_tx(|tx| kc.current_epoch_tx(tx, &ordinary)).unwrap(),
+            None
+        );
+        assert!(d
+            .with_tx(|tx| kc.current_stream_key_tx(tx, &ordinary))
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            d.with_tx(|tx| kc.current_epoch_tx(tx, &meta)).unwrap(),
+            Some(4)
+        );
+        assert_eq!(
+            d.with_tx(|tx| kc.current_stream_key_tx(tx, &meta))
+                .unwrap()
+                .map(|(e, _)| e),
+            Some(4)
+        );
     }
 
     #[test]

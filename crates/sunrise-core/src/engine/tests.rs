@@ -11705,6 +11705,36 @@ fn a_key_a_revoked_device_seals_to_a_peer_is_absorbed_and_never_written_under() 
     ea.keychain
         .open_op(&env)
         .expect("and A reads its own write");
+
+    // A stream X keyed alone — one it created after its revocation — has no
+    // key A may write under, so A mints its own above X's rather than
+    // writing under X's.
+    let lone = [0x5f; 16];
+    let lone_key = StreamKey::from_bytes([0x6c; 32]);
+    let sealed = ex
+        .keychain
+        .seal_key_envelope(
+            &ea.keychain.device_dh_pub(),
+            &lone,
+            1,
+            &lone_key,
+            ex.rng.as_ref(),
+        )
+        .unwrap();
+    let inner = InnerOp::KeyEnvelope(KeyEnvelopePayload {
+        stream_id: lone,
+        epoch: 1,
+        recipient: Recipient::Device(a_id),
+        key_id: stream_key_id(&lone_key),
+        hpke_ciphertext: sealed,
+    });
+    dba.with_tx(|tx| ea.apply_control_op(tx, &inner, &x_id, Hlc::at(T0), T0, 1))
+        .unwrap();
+    let (epoch, key) = dba
+        .with_tx(|tx| ea.ensure_stream_epoch(tx, &lone, T0 + 2_000))
+        .unwrap();
+    assert_eq!(epoch, 2, "minted above the epoch X holds");
+    assert_ne!(stream_key_id(&key), stream_key_id(&lone_key));
 }
 
 /// The epoch separation the ordering argument rests on, asserted against the
