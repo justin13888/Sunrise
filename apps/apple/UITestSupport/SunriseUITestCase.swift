@@ -37,6 +37,18 @@ class SunriseUITestCase: XCTestCase {
         try await super.tearDown()
     }
 
+    /// Launch again, against the same scratch directory, with `flags` added.
+    ///
+    /// For a suite that needs a harness configuration the default launch does
+    /// not give it — the multi-vault session, say, which is opt-in so that
+    /// every suite that does not name it keeps the one it was written against.
+    /// Called from `setUp` after `super.setUp()`, before anything is asserted.
+    func relaunch(adding flags: [String]) {
+        app.terminate()
+        app.launchArguments.append(contentsOf: flags)
+        app.launch()
+    }
+
     // MARK: - Driving the app
 
     /// Press it, whatever pressing means here — and not before it can be

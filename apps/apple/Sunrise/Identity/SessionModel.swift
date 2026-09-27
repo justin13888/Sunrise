@@ -72,8 +72,8 @@ final class SessionModel {
     private(set) var canSponsorPairing = false
 
     /// The vaults this Mac knows about, or `nil` in the single-vault
-    /// configuration the tests and the UI-test harness use. Non-`nil` is what
-    /// puts the switcher on screen.
+    /// configuration the unit tests and the UI-test harness's default use.
+    /// Non-`nil` is what puts the switcher on screen.
     let vaults: VaultRegistry?
 
     /// The process's one signed-in account (#276). The Account screen, the
@@ -103,7 +103,8 @@ final class SessionModel {
     /// falling through to a first-run screen against a nonsense path.
     private var configurationError: String?
 
-    /// The single-vault configuration: the unit tests and the UI-test harness.
+    /// The single-vault configuration: the unit tests and the UI-test
+    /// harness's default.
     ///
     /// `relayDeviceStore` defaults to the in-memory one because that is what
     /// both of its callers want — neither may write a device id into the
@@ -195,15 +196,9 @@ final class SessionModel {
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString")
         let appVersion = (version as? String) ?? "0.0.0"
         #if DEBUG
-        if let scratch = UITestHarness.scratchVault() {
-            // A UI test drives the real window, and the real window must not
-            // open the developer's vault or write to their login Keychain.
-            return SessionModel(
-                location: VaultLocation(directory: scratch),
-                rootStore: InMemoryVaultRootStore(),
-                appVersion: appVersion
-            )
-        }
+        // A UI test drives the real window, and the real window must not open
+        // the developer's vault or write to their login Keychain.
+        if let session = UITestHarness.session(appVersion: appVersion) { return session }
         #endif
         return SessionModel(
             vaults: VaultRegistry(),
