@@ -172,6 +172,14 @@ class ClosingShapes(GateCase):
         body = "````\n```\n````\nReverses: close #2\n"
         self.assertExit(self.on_body(body), CLOSES_AN_ISSUE)
 
+    def test_backtick_in_the_info_string_is_not_a_fence(self) -> None:
+        # CommonMark: a backtick fence's info string may not hold a backtick,
+        # so this line opens nothing and the field after it is read.
+        for opener in ("```a`b", "```` x ` y", "> ```py`"):
+            with self.subTest(opener=opener):
+                body = f"{opener}\nReverses: close #5\n"
+                self.assertExit(self.on_body(body), CLOSES_AN_ISSUE)
+
 
 class SafeShapes(GateCase):
     def test_empty_body(self) -> None:
@@ -218,6 +226,18 @@ class SafeShapes(GateCase):
     def test_next_entry_ends_a_field(self) -> None:
         body = "1. Fork.\n   Reverses: revert\n2. Close #5 separately.\n"
         self.assertExit(self.on_body(body), CLEAN)
+
+    def test_heading_ends_a_field(self) -> None:
+        for heading in ("# Issue", "## Issue", "###### Issue", "> ## Issue"):
+            with self.subTest(heading=heading):
+                body = f"Reverses: revert\n{heading}\nCloses #5\n"
+                self.assertExit(self.on_body(body), CLEAN)
+
+    def test_horizontal_rule_ends_a_field(self) -> None:
+        for rule in ("---", "***", "___", "-----", "   ***  "):
+            with self.subTest(rule=rule):
+                body = f"Reverses: revert\n{rule}\nCloses #5\n"
+                self.assertExit(self.on_body(body), CLEAN)
 
     def test_stdin(self) -> None:
         self.assertExit(self.run_gate("-", stdin=PR_240), CLOSES_AN_ISSUE)
