@@ -102,11 +102,22 @@ class SunriseUITestCase: XCTestCase {
     /// the key store lives and dies with the process, so there is never a
     /// vault to reopen. Opening one is a real `Core::open`, which is why the
     /// timeout is generous.
-    func createVault() {
-        let create = app.buttons["onboarding.create"]
-        if create.waitForExistence(timeout: 20) {
-            activate(create, named: "first run's Create button", timeout: 20)
-        }
+    ///
+    /// The button is **required**, not waited for and skipped when it is late.
+    /// Every caller expects first run, so a Create button that never appears
+    /// means the app never left onboarding, and the only honest place to say so
+    /// is here: returning quietly let the test fail on its next line instead,
+    /// naming a tab or a list that was never the problem. ``activate(_:named:timeout:file:line:)``
+    /// already fails on a missing element with a message naming its subject,
+    /// and `file`/`line` are forwarded so that failure points at the test.
+    func createVault(file: StaticString = #filePath, line: UInt = #line) {
+        activate(
+            app.buttons["onboarding.create"],
+            named: "first run's Create button",
+            timeout: 20,
+            file: file,
+            line: line
+        )
     }
 
     /// Capture one line through the inline bar and wait for its row.

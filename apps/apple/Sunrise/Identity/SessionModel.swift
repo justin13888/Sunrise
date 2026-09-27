@@ -353,8 +353,9 @@ final class SessionModel {
     /// device never had, and the recovery for an id minted on another relay or
     /// for another account (#183). Each platform's sync start calls it before
     /// reading ``relayDeviceID(relayURL:bearer:)``. Skipped while a recovery
-    /// ceremony, which registers the device itself, is outstanding; a failure
-    /// leaves the driver unbound as before, and the next start tries again.
+    /// ceremony, which registers the device itself, is outstanding. A failed
+    /// registration leaves the driver unbound and the next start tries again;
+    /// a refused Keychain read makes `bind` throw, and `SyncPlan` stays off (#284).
     func bindRelayDevice() async {
         guard recoveryCeremony == nil, !isBindingRelayDevice, let bridge else { return }
         let settings = AppSettings(defaults: settingsDefaults)
@@ -477,20 +478,22 @@ final class SessionModel {
     }
 
     /// The relay's id for this device against the open vault, valid on
-    /// `relayURL` under `bearer`'s account, or `nil` for an unbound sync driver.
-    /// Takes the same two values the caller's `SyncPlan` does, so the id and
-    /// the connection it is presented on describe one relay and one account.
+    /// `relayURL` under `bearer`'s account, `nil` for an unbound sync driver,
+    /// or the Keychain's refusal to say which. Takes the same two values the
+    /// caller's `SyncPlan` does, so the id and the connection it is presented
+    /// on describe one relay and one account.
+    ///
+    /// A `Result`, not a throw: its one consumer, `SyncPlan`, turns a refusal
+    /// into a plan to stay off (#284), so each sync start passes it through.
     ///
     /// A read rather than stored state: the environment override
     /// `RelayDeviceID.resolve` consults is a launch-time fact, and the stored
     /// half is written by registration — the recovery ceremony's or
     /// ``bindRelayDevice()``'s — so re-reading is what makes a driver started
     /// after registration pick the binding up.
-    func relayDeviceID(relayURL: String, bearer: String?) -> String? {
-        RelayDeviceID.resolve(
-            store: relayDeviceStore,
-            scope: RelayDeviceScope(relayURL: relayURL, bearer: bearer)
-        )
+    func relayDeviceID(relayURL: String, bearer: String?) -> Result<String?, any Error> {
+        let scope = RelayDeviceScope(relayURL: relayURL, bearer: bearer)
+        return Result { try RelayDeviceID.resolve(store: relayDeviceStore, scope: scope) }
     }
 
     /// Close the vault, releasing the core's lock on it.

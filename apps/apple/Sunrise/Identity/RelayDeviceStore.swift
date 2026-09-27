@@ -18,6 +18,7 @@ import Foundation
 /// row only on the relay, and under the account, that minted it.
 protocol RelayDeviceIDStore: Sendable {
     /// The recorded binding, or `nil` when this device has never registered.
+    /// Throws when the store could not answer, which is not the same thing.
     func load() throws -> RelayDeviceBinding?
     /// Record `binding`, replacing any previous value.
     func store(_ binding: RelayDeviceBinding) throws
@@ -255,17 +256,38 @@ enum RelayDeviceID {
     /// under another account's bearer — resolves to nothing rather than to an
     /// id that names no row there. The override is taken as given: whoever
     /// set it registered against the relay they are pointing at.
+    ///
+    /// **Throws** when the store was reached and would not answer (#284). A
+    /// locked keychain, a dismissed access prompt, a class the Keychain would
+    /// not raise, or another keychain that could not be read is not a device
+    /// that never registered: the id may be sitting in the store, and the
+    /// remedy is to make the store readable, not to register a second relay
+    /// row or to connect as nobody. Answering `nil` for those is what let
+    /// ``RelayDeviceRegistration/bind(store:scope:environment:register:)``
+    /// mint a fresh row on every sync start while the refusal lasted, and let
+    /// a registered device run unbound with no signal anywhere.
+    ///
+    /// ``KeychainError/migrationUnverified`` is the one refusal read as no id,
+    /// on the ground `AccountModel.mayHaveLeftACopyUnread(_:)` takes for the
+    /// credential: both copies were read and they disagree, so nothing sits
+    /// unread, and the registration `bind` then runs is what collapses them —
+    /// ``KeychainRelayDeviceIDStore/store(_:)`` writes this domain and deletes
+    /// the other. Throwing there would leave that state with no remedy at all.
     static func resolve(
         store: RelayDeviceIDStore,
         scope: RelayDeviceScope,
         environment: [String: String] = ProcessInfo.processInfo.environment
-    ) -> String? {
+    ) throws -> String? {
         if let override = environment[environmentKey]?.trimmed, !override.isEmpty {
             return override
         }
-        guard let binding = (try? store.load()).flatMap({ $0 }), binding.scope == scope else {
-            return nil
+        let stored: RelayDeviceBinding?
+        do {
+            stored = try store.load()
+        } catch KeychainError.migrationUnverified {
+            stored = nil
         }
+        guard let binding = stored, binding.scope == scope else { return nil }
         return binding.id
     }
 }
@@ -322,13 +344,19 @@ enum RelayDeviceRegistration {
     /// would otherwise be presented where it names no row. A record the
     /// Keychain refuses is not an error here: the next start registers again
     /// rather than the device staying unbound for good.
+    ///
+    /// A *read* the Keychain refuses is, and it is thrown before `register`
+    /// runs: the store may hold an id this device is already bound by, and a
+    /// registration on top of it is a second relay row per sync start for as
+    /// long as the refusal lasts (#284). See ``RelayDeviceID/resolve(store:scope:environment:)``
+    /// for the one refusal that registers anyway.
     static func bind(
         store: any RelayDeviceIDStore,
         scope: RelayDeviceScope,
         environment: [String: String] = ProcessInfo.processInfo.environment,
         register: () async throws -> String
     ) async throws -> String {
-        if let known = RelayDeviceID.resolve(store: store, scope: scope, environment: environment) {
+        if let known = try RelayDeviceID.resolve(store: store, scope: scope, environment: environment) {
             return known
         }
         let id = try await register().trimmed
