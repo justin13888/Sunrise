@@ -133,8 +133,8 @@ struct AccountView: View {
 
     /// The vaults on this Mac, and the two things you can do about them.
     ///
-    /// Absent entirely when the session has no registry — the UI-test harness
-    /// and the unit tests run one fixed vault, and a switcher over a list of
+    /// Absent entirely when the session has no registry — the unit tests and
+    /// the UI-test harness's default run one fixed vault, and a switcher over a list of
     /// one it cannot change would be a control that does nothing.
     @ViewBuilder
     private var vaultSection: some View {
@@ -170,6 +170,7 @@ struct AccountView: View {
                         .disabled(!canSponsor(session))
                         .accessibilityIdentifier("account.addDevice")
                 }
+                .formRowButtons()
                 Text(
                     canSponsor(session)
                         ? """
@@ -470,6 +471,7 @@ private struct SignOutIncompleteRow: View {
                 Button("Sign out") { account.signOut() }
                 Button("Dismiss") { account.dismissSignOutIncomplete() }
             }
+            .formRowButtons()
         }
         .accessibilityIdentifier("account.signOutIncomplete")
     }
@@ -508,6 +510,7 @@ private struct SignOutRetryRow: View {
                 Button("Sign out") { account.signOut() }
                 Button("Dismiss") { account.dismissSignOutRetry() }
             }
+            .formRowButtons()
         }
         .accessibilityIdentifier("account.signOutRetry")
     }
