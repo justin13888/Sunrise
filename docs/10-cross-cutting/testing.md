@@ -517,8 +517,9 @@ treats more shards as sub-proportional relief rather than free.
 
 `sunrise-core`'s row is a partial sample over its first 76 mutants — it is the
 one crate no local pass has run to completion — and projects to roughly 5.4
-hours whole. It is why `sunrise-core` is still the only scoped crate without a
-recorded floor. It is also the one row that cannot be recomputed here, because
+hours whole. It is why `sunrise-core` is the one scoped crate whose floor was
+recorded from a nightly's four shards rather than a local pass (#272; see
+`mutants/baseline.json`). It is also the one row that cannot be recomputed here, because
 its `wall` cell is empty: nothing in this repository records whether 15.4 is
 the same full-pass average, taken over those 76 mutants, or a marginal rate
 read off `cargo mutants`' own output. The two differ by one baseline build's

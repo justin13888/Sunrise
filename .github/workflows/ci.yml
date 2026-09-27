@@ -753,8 +753,11 @@ jobs:
     # fewer.
     #
     # The third term is `15.4` itself, and it is the one that decides which
-    # way the bound points. `sunrise-core` has no completed pass and no
-    # recorded wall clock, and nothing in this repository says whether 15.4
+    # way the bound points. `sunrise-core`'s only completed pass is nightly
+    # 35978884844's four shards at d9566ad (54-90 min each), and 812 of its
+    # 1313 mutants failed to build under this workflow's `-D warnings` (#403),
+    # so those wall clocks do not price a mutant that builds and runs its
+    # tests. Nothing in this repository says whether 15.4
     # is that same full-pass average taken over its first 76 mutants or a
     # marginal rate off cargo-mutants' own output. If it is the average, it
     # carries 1/76th of a baseline build and `315 x 15.4` charges that build
@@ -764,21 +767,24 @@ jobs:
     #
     # So ~1.5x is not a measured break-even, and it is not established as a
     # bound in either direction: the second term pushes it down, the third
-    # pushes it up if 15.4 is an average, and no shard has completed at any
-    # revision to settle which dominates. No corrected figure is offered: a
+    # pushes it up if 15.4 is an average, and no completed shard settles
+    # which dominates, for the reason above. No corrected figure is offered: a
     # second number derived from the same missing measurement is exactly what
     # this comment exists to stop. What would settle it is one completed
-    # `sunrise-core` pass with its wall clock recorded — the same pass #246 is
-    # waiting on for that crate's floor.
+    # `sunrise-core` pass with its wall clock recorded, built the way the
+    # local task builds it: the first run after #403 aligns the two builds,
+    # which is also the run that re-records the crate's floor.
     #
     # The lever if it turns out to be wrong is `sunrise-core`'s shard count,
     # not this number: the longest shard is the only one near the ceiling, and
     # raising `timeout-minutes` only lets a bad ratio cost more. Splitting
     # core further does shorten the longest shard, but **sub**-proportionally
     # — each new shard pays another baseline build — and total runner minutes
-    # rise with every split. And the failure is cheap while it lasts —
-    # `sunrise-core` has no recorded floor, so a shard that times out spends
-    # runner minutes and gates nothing.
+    # rise with every split. And the failure is no longer cheap. Until #272
+    # recorded `sunrise-core`'s floor, the gate failed that crate as unfloored
+    # whatever its shards did, so a timed-out shard cost runner minutes and
+    # nothing else. Now the crate is compared against a floor, and a shard
+    # that times out puts that comparison at stake.
     #
     # If core's shard count rises, this can come down with it.
     timeout-minutes: 120
