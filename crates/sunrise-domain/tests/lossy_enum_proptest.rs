@@ -66,6 +66,19 @@ where
 macro_rules! lossless {
     ($name:ident, $ty:ident, [$($s:literal),+ $(,)?]) => {
         proptest! {
+            // `Direct`, not the `SourceParallel` default: nothing above a
+            // `tests/` file holds a `lib.rs` or `main.rs`. See
+            // docs/10-cross-cutting/testing.md section 2.
+            #![proptest_config(ProptestConfig {
+                rng_seed: sunrise_test_seed::proptest_rng_seed(),
+                failure_persistence: Some(Box::new(
+                    proptest::test_runner::FileFailurePersistence::Direct(
+                        "proptest-regressions/tests/lossy_enum_proptest.txt",
+                    ),
+                )),
+                ..ProptestConfig::default()
+            })]
+
             #[test]
             fn $name(s in raw(&[$($s),+])) {
                 round_trips::<$ty>(&s, $ty::from_raw, $ty::as_str, &[$($s),+]);
@@ -110,6 +123,16 @@ lossless!(
 lossless!(weekday, Weekday, ["SU", "MO", "TU", "WE", "TH", "FR", "SA"]);
 
 proptest! {
+    #![proptest_config(ProptestConfig {
+        rng_seed: sunrise_test_seed::proptest_rng_seed(),
+        failure_persistence: Some(Box::new(
+            proptest::test_runner::FileFailurePersistence::Direct(
+                "proptest-regressions/tests/lossy_enum_proptest.txt",
+            ),
+        )),
+        ..ProptestConfig::default()
+    })]
+
     /// A whole rule carrying unknown values — in `FREQ`, `BYDAY` and `WKST`
     /// at once — survives its canonical CBOR, the form the op carries and
     /// `routines.rrule_cbor` stores, byte for byte; and a rule holding any of them

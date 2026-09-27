@@ -108,8 +108,9 @@ const fn weekday_bit(w: &Weekday) -> Option<u8> {
 /// An unknown token is kept, in arrival order after the known days, and
 /// written back verbatim (ADR-0045 §6). It names no day this build can match,
 /// and a set that holds one places **no** restriction on the day: reading the
-/// set as only its known days could turn a newer peer's "Mondays or <new
-/// token>" into a hard block on every day but Monday, and inventing a block
+/// set as only its known days could turn a newer peer's "Mondays or a day
+/// this build has no name for" into a hard block on every day but Monday, and
+/// inventing a block
 /// is exactly what an unknown value must never do.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct WeekdaySet {
