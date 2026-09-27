@@ -128,7 +128,10 @@ pub struct CursorEntry {
     /// 16-byte originating device id this cursor tracks.
     #[serde(with = "serde_bytes")]
     pub device_id: [u8; 16],
-    /// Highest `seq` the subscriber has already applied from that device.
+    /// End of the contiguous prefix the subscriber holds from that device on
+    /// this stream: the largest `n` for which every `seq` in `1..=n` is
+    /// present. Not the highest `seq` applied — a hole below a later op keeps
+    /// the cursor at the hole, so the relay replays the op that fills it.
     pub last_applied_seq: u64,
 }
 
@@ -137,8 +140,10 @@ pub struct CursorEntry {
 /// Fields are ordered for canonical CBOR: `cursors` (7), `stream_id` (9).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SubscribeEntry {
-    /// Per-device cursors. The relay today replays everything retained, so cursors
-    /// are carried but may be unused server-side.
+    /// Per-device cursors. The relay filters its replay by them: it skips a
+    /// retained frame only when every op in it is at or below the matching
+    /// cursor, and replays everything else it still retains. A device with no
+    /// cursor here is replayed from the start of retention.
     pub cursors: Vec<CursorEntry>,
     /// 16-byte stream id to subscribe to.
     #[serde(with = "serde_bytes")]

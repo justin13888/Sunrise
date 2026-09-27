@@ -58,9 +58,10 @@ DROP TABLE stream_keys_old;
 -- --- ops that arrived before the key that opens them ---
 -- A `key_envelope` op and the ops sealed under the epoch it carries have no
 -- ordering guarantee across streams, so an op can legitimately land first.
--- Refusing it would lose it (the relay does not redeliver); a cursor barrier
--- would stall the whole stream. It is parked here and drained after every
--- absorbed key.
+-- Refusing it leaves the sync cursor below it, so the relay replays it on the
+-- next subscribe, but only within the relay's retention window; and until then
+-- the refusal is a cursor barrier on that device. It is parked here and drained
+-- after every absorbed key, which applies it as soon as the key lands.
 CREATE TABLE deferred_ops (
     op_id           BLOB PRIMARY KEY,
     stream_id       BLOB NOT NULL,

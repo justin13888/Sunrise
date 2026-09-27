@@ -302,9 +302,10 @@ async fn a_paired_device_receives_the_vault_root_and_syncs() {
     wait_live(&core_b, TIMEOUT).await;
 
     // B's first subscribe replayed A's pre-pairing op while B had not yet seen
-    // A's `device_cert` op, so that op was refused as `UnknownDevice` and the
-    // relay does not redeliver. Reconnecting replays the retained ring with the
-    // cert in place. This is exactly what a real client does after completing a
+    // A's `device_cert` op, so that op was refused as `UnknownDevice`. A refusal
+    // writes no op row, so B's cursor stays below it and the relay redelivers it
+    // on the next subscribe, for as long as its log retains the frame.
+    // Reconnecting replays it with the cert in place. This is exactly what a real client does after completing a
     // pair, and it doubles as a check that the vault lock is released on
     // shutdown and reacquirable — which it was not before the lock rewrite.
     core_b.shutdown().await;
