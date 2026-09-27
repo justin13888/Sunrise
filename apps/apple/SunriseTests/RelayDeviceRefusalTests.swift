@@ -80,6 +80,41 @@ struct RelayDeviceRefusalTests {
         ) { Self.id }
         #expect(id == Self.id)
     }
+
+    private static let relayURL = "https://relay.example"
+
+    @MainActor
+    private static func session(store: any RelayDeviceIDStore) -> SessionModel {
+        SessionModel(
+            location: VaultLocation(directory: URL(filePath: "/dev/null")),
+            rootStore: StubRootStore(),
+            appVersion: "test",
+            relayDeviceStore: store
+        )
+    }
+
+    /// The layer `SyncPlan` reads: the refusal reaches it as a `.failure`
+    /// carrying the Keychain's own error. A `try?` here would turn a locked
+    /// Keychain back into an unbound driver, which is #284 again one call up.
+    @Test @MainActor
+    func theSessionPassesARefusedReadThroughAsAFailure() {
+        let result = Self.session(store: FailingRelayDeviceIDStore())
+            .relayDeviceID(relayURL: Self.relayURL, bearer: RelayScopeFixture.alice)
+        guard case .failure(let error) = result else {
+            Issue.record("a refused read must not read as \(result)")
+            return
+        }
+        #expect(error as? KeychainError == FailingRelayDeviceIDStore.refusal)
+    }
+
+    /// Two disagreeing copies are still no id at this layer, as they are one
+    /// call down: `.success(nil)`, so the next start registers.
+    @Test @MainActor
+    func theSessionReadsTwoDisagreeingCopiesAsNoID() throws {
+        let result = Self.session(store: FailingRelayDeviceIDStore(loadRefusal: .migrationUnverified))
+            .relayDeviceID(relayURL: Self.relayURL, bearer: RelayScopeFixture.alice)
+        #expect(try result.get() == nil)
+    }
 }
 
 /// A store whose writes the Keychain refuses, and whose reads it refuses too
