@@ -46,6 +46,10 @@ Not safe, and read:
   blank lines between its items, until a heading, rule or fence, the next
   label, an unindented paragraph after a blank line, or a list item indented
   less than the label (the next entry of an enclosing list).
+- A label with no content of its own whose content is a paragraph: on the
+  next line, or after a blank line when the paragraph is indented, at least
+  as far as the label (`1. Fork` / `   Reverses:` / blank / `   close #5`).
+  An unindented paragraph after a blank line is not the label's field.
 
 Where GitHub's own parser is not documented, the gate errs towards failing:
 emphasis or backticks between the keyword and the number, a `:` after the
@@ -225,8 +229,10 @@ def violations(body: str) -> list[tuple[int, str, str, str]]:
                     field.gap = False
                     field.parts.append(line)
                     continue
-                if field.bare and not field.gap:
-                    # The label's content wraps onto the next line.
+                if field.bare and (not field.gap or indent >= max(field.indent, 1)):
+                    # The label's content wraps onto the next line, or is a
+                    # paragraph indented under it after a blank line (inside
+                    # the label's list item, where GitHub still reads it).
                     field.bare = False
                     field.parts.append(line)
                     continue

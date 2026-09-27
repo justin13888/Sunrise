@@ -175,6 +175,28 @@ class ClosingShapes(GateCase):
                 self.assertExit(result, CLOSES_AN_ISSUE)
                 self.assertIn("#282", result.stdout)
 
+    def test_bare_label_content_wraps_onto_the_next_line(self) -> None:
+        for body in (
+            "Reverses:\n   close #5\n",
+            "1. Fork\n   Reverses:\n   close #5 as wontfix\n",
+        ):
+            with self.subTest(body=body):
+                result = self.on_body(body)
+                self.assertExit(result, CLOSES_AN_ISSUE)
+                self.assertIn("#5", result.stdout)
+
+    def test_bare_label_reads_an_indented_paragraph_after_a_gap(self) -> None:
+        # GitHub closes #5 here; a blank line under the label is no escape,
+        # just as it is none for a list (decision 6).
+        for body in (
+            "1. Fork\n   Reverses:\n\n   close #5\n",
+            "Reverses:\n\n   close #5\n",
+        ):
+            with self.subTest(body=body):
+                result = self.on_body(body)
+                self.assertExit(result, CLOSES_AN_ISSUE)
+                self.assertIn("#5", result.stdout)
+
     def test_after_a_closed_fence_the_record_is_read_again(self) -> None:
         body = "```\nReverses: close #1\n```\n\nReverses: close #2\n"
         result = self.on_body(body)
@@ -249,6 +271,10 @@ class SafeShapes(GateCase):
             "Reverses:\n- revert\n\nCloses #5\n",
             # A bare label followed by a paragraph, not a list.
             "Reverses:\n\nCloses #5\n",
+            # A paragraph after a gap, indented less than the label: outside
+            # the label's list item.
+            "1. Fork.\n   Reverses:\n\nCloses #5\n",
+            "   1. Fork.\n      Reverses:\n\n   Closes #5\n",
             "Reverses:\n- revert\n## Issue\nCloses #5\n",
             "Reverses:\n- revert\n---\nCloses #5\n",
             "Reverses:\n- revert\n```\nclose #5\n```\n",
