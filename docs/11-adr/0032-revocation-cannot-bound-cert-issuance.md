@@ -164,10 +164,17 @@ device that was offline across the rotation.
    ADR's *analysis* still holds — a `DeviceCert` names no issuer, so there is
    still no narrower check keyed on who signed one — but its premise is gone:
    the capability it concluded could not be bounded is no longer distributed.
-2. **A relay-side write bound** ([#80](https://github.com/justin13888/Sunrise/issues/80)).
+2. ~~**A relay-side write bound**~~ **Done, conditionally** ([#80](https://github.com/justin13888/Sunrise/issues/80)).
    A revoked device that cannot upload cannot publish a cert either, which
    bounds the bypass without any vault-side check — but only for the relay's
    own accounts, and only while the device stays off every other transport.
+   `Command::RevokeDevice` now queues a durable intent the sync driver drains
+   to `DELETE /api/v1/devices/by-vault-id/{id}`. The relay enforces it only
+   against a device-bound request, so with `[auth] require_device_sig` at its
+   default `false` a revoked device that stops signing still uploads and the
+   bound is absent; [`key-rotation.md`](../03-crypto/key-rotation.md)
+   §Implementation status states all three conditions. This ADR's decision
+   stands on that ground as well as on item 1's.
 3. ~~**A user-visible device list.**~~ **Done** ([#144](https://github.com/justin13888/Sunrise/issues/144)).
    Alternative 2's over-block and this ADR's disclosure are both decisions about
    who tells the user what, and the disclosure now reaches one: the readmission
