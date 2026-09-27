@@ -1602,7 +1602,7 @@ impl Keychain {
     /// outside `1..=`[`sunrise_crypto::MAX_NICKNAME_BYTES`] bytes.
     ///
     /// `read_bounds` is this vault's `device_read_bounds`, read by the caller
-    /// with [`crate::engine::read_bounds_for_pairing`] because the table is the
+    /// with `crate::engine::read_bounds_for_pairing` because the table is the
     /// engine's; the grant carries it so the joiner starts with this device's
     /// bound rather than none (issue #282).
     pub fn issue_pairing_grant(
