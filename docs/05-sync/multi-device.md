@@ -63,12 +63,22 @@ A revoked device **cannot** unwrap the new epoch. Every epoch is still sealed
 to the account identity as well as to each device, so recovery can reach it, but
 a device admitted by pairing holds no `ID_D_priv` to open that copy with and is
 excluded from the device recipients — so the rotation is a real cut. Its writes
-are **not** stopped: the relay would have to be told out of band and cannot be
-([#80](https://github.com/justin13888/Sunrise/issues/80)), and a peer declining
-its ops is not convergent without a projection rebuild, so that is
-[#82](https://github.com/justin13888/Sunrise/issues/82), with
-[#78](https://github.com/justin13888/Sunrise/issues/78) for converging the
-*effect*. Two bounds remain — the account's creator keeps `ID_D_priv` until the
+are stopped **at the relay, conditionally**: `Command::RevokeDevice` queues a
+durable intent that the sync driver drains to
+`DELETE /api/v1/devices/by-vault-id/{id}`
+([#80](https://github.com/justin13888/Sunrise/issues/80), closed), and the relay
+enforces it only against a device-bound request — with `[auth]
+require_device_sig` at its default `false` there is no write bound at all
+([`key-rotation.md`](../03-crypto/key-rotation.md) §Implementation status has
+the three conditions). Peers
+refuse two of its **control** ops, `device_revoke` and a read-bounded sender's
+claim that a third device was sent a key, because the register is a fold the
+engine re-derives ([ADR-0041](../11-adr/0041-peer-side-revocation-is-a-fold.md),
+which closed [#82](https://github.com/justin13888/Sunrise/issues/82)). Its
+**entity** ops they still apply: declining one is not convergent without a
+projection rebuild, and
+[ADR-0034](../11-adr/0034-revocation-bounds-reads-not-writes.md) decides that,
+closing [#78](https://github.com/justin13888/Sunrise/issues/78). Two bounds remain — the account's creator keeps `ID_D_priv` until the
 recovery blob exists, and a revoked device keeps `ID_S_priv` and so can certify
 itself afresh — so do not yet treat revocation as an absolute cryptographic
 boundary. For everything an ordinary paired device can reach, it is one.
