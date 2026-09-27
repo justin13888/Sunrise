@@ -1,7 +1,7 @@
 import { taskStateGlyph } from "@sunrise/ui";
 import { useEffect, useState } from "react";
 import { t } from "./i18n";
-import { loadCore, type Task } from "./wasm";
+import { effectiveTaskState, loadCore, type Task } from "./wasm";
 
 export function App() {
     const [tasks, setTasks] = useState<Task[]>([]);
@@ -32,7 +32,11 @@ export function App() {
                                 style={{ paddingBlock: 4, paddingInline: 0 }}
                             >
                                 <span style={{ fontFamily: "monospace" }}>
-                                    {taskStateGlyph[task.state]}
+                                    {
+                                        taskStateGlyph[
+                                            effectiveTaskState(task.state)
+                                        ]
+                                    }
                                 </span>{" "}
                                 {task.title}
                             </li>

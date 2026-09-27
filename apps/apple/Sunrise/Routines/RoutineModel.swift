@@ -178,7 +178,25 @@ final class RecurrenceField {
     /// for a non-empty phrase: an empty field is not yet an error.
     private(set) var problem: String?
 
+    /// The rule an existing routine already holds, and the text it was
+    /// described back as. While the field still reads that text, the rule is
+    /// the held one rather than a reparse: a rule a newer client wrote with a
+    /// value this build does not know describes back as "unrecognised
+    /// schedule (…)", which `parse_recurrence` refuses, and an edit to any
+    /// other field must neither be blocked by that nor replace the rule.
+    private let held: (text: String, rule: Recurrence)?
+
     init(text: String = "every day") {
+        self.held = nil
+        self.text = text
+        reparse()
+    }
+
+    /// A field for editing a routine: starts from its rule described back,
+    /// and keeps that rule until the text is changed.
+    init(held rule: Recurrence) {
+        let text = recurrenceSummary(rule: rule)
+        self.held = (text, rule)
         self.text = text
         reparse()
     }
@@ -194,6 +212,11 @@ final class RecurrenceField {
     private func reparse() {
         guard !text.trimmed.isEmpty else {
             rule = nil
+            problem = nil
+            return
+        }
+        if let held, text == held.text {
+            rule = held.rule
             problem = nil
             return
         }

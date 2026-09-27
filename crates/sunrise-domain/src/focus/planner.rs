@@ -39,17 +39,19 @@ pub enum EnergyFit {
 }
 
 /// Rank of an [`Energy`] for comparison purposes.
-pub(super) const fn energy_rank(e: Energy) -> u8 {
+///
+/// An unknown energy ranks as its fallback, `med`.
+pub(super) const fn energy_rank(e: &Energy) -> u8 {
     match e {
         Energy::Low => 0,
-        Energy::Med => 1,
+        Energy::Med | Energy::Unknown(_) => 1,
         Energy::High => 2,
     }
 }
 
 /// Score a task's energy facet against the session's energy budget.
 #[must_use]
-pub fn energy_fit(task: Option<Energy>, budget: Option<Energy>) -> EnergyFit {
+pub fn energy_fit(task: Option<&Energy>, budget: Option<&Energy>) -> EnergyFit {
     let Some(budget) = budget else {
         return EnergyFit::Exact;
     };
@@ -111,12 +113,12 @@ pub struct PlanRanked {
 /// 3. **Ranked by leverage**, then `due_at`, `priority`, `scheduled_at` —
 ///    finally by id, so the result is deterministic for equal work.
 #[must_use]
-pub fn rank_focus_plan(candidates: Vec<PlanCandidate>, budget: Option<Energy>) -> Vec<PlanRanked> {
+pub fn rank_focus_plan(candidates: Vec<PlanCandidate>, budget: Option<&Energy>) -> Vec<PlanRanked> {
     let mut out: Vec<PlanRanked> = candidates
         .into_iter()
         .filter(|c| c.open_blockers == 0)
         .map(|c| PlanRanked {
-            fit: energy_fit(c.energy, budget),
+            fit: energy_fit(c.energy.as_ref(), budget),
             candidate: c,
         })
         .collect();
@@ -235,7 +237,7 @@ mod tests {
                 cand(1, 0, Some(Energy::High)),
                 cand(2, 3, Some(Energy::High)),
             ],
-            Some(Energy::High),
+            Some(&Energy::High),
         );
         assert_eq!(ranked.len(), 2);
         assert_eq!(ranked[0].candidate.task, tsk(2));
@@ -262,7 +264,7 @@ mod tests {
                 cand(1, 9, Some(Energy::High)),
                 cand(2, 0, Some(Energy::Low)),
             ],
-            Some(Energy::Low),
+            Some(&Energy::Low),
         );
         assert_eq!(ranked[0].candidate.task, tsk(2));
         assert_eq!(ranked[0].fit, EnergyFit::Exact);
@@ -272,20 +274,30 @@ mod tests {
     #[test]
     fn energy_fit_ordering() {
         assert_eq!(
-            energy_fit(Some(Energy::High), Some(Energy::High)),
+            energy_fit(Some(&Energy::High), Some(&Energy::High)),
             EnergyFit::Exact
         );
-        assert_eq!(energy_fit(None, Some(Energy::High)), EnergyFit::Unknown);
+        assert_eq!(energy_fit(None, Some(&Energy::High)), EnergyFit::Unknown);
         assert_eq!(
-            energy_fit(Some(Energy::Low), Some(Energy::High)),
+            energy_fit(Some(&Energy::Low), Some(&Energy::High)),
             EnergyFit::Under
         );
         assert_eq!(
-            energy_fit(Some(Energy::High), Some(Energy::Low)),
+            energy_fit(Some(&Energy::High), Some(&Energy::Low)),
+            EnergyFit::Over
+        );
+        // An energy this build does not know ranks as `med`, its fallback.
+        let unknown = Energy::from_raw("frantic");
+        assert_eq!(
+            energy_fit(Some(&unknown), Some(&Energy::Med)),
+            EnergyFit::Exact
+        );
+        assert_eq!(
+            energy_fit(Some(&unknown), Some(&Energy::Low)),
             EnergyFit::Over
         );
         // No declared budget: energy carries no signal, everything ties.
-        assert_eq!(energy_fit(Some(Energy::High), None), EnergyFit::Exact);
+        assert_eq!(energy_fit(Some(&Energy::High), None), EnergyFit::Exact);
         assert_eq!(energy_fit(None, None), EnergyFit::Exact);
         assert!(EnergyFit::Exact < EnergyFit::Unknown);
         assert!(EnergyFit::Unknown < EnergyFit::Under);

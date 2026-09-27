@@ -169,10 +169,21 @@ can be lost ([#319](https://github.com/justin13888/Sunrise/issues/319)).
     `extra BLOB` from
     `crates/sunrise-storage/migrations/0015_entity_extra_columns.sql`.
 
-  *Today:* rule 1 holds at the top level of an entity only ([#322](https://github.com/justin13888/Sunrise/issues/322)). Rule 2 is
-  lossy, because `lossy_enum!` writes the fallback back
-  (`lossy_enum!` in `crates/sunrise-domain/src/unknown.rs`, [#321](https://github.com/justin13888/Sunrise/issues/321)). `StreamColor`,
-  `Frequency` and `Weekday` still reject unknown values.
+  *Today:* rule 1 holds at the top level of an entity only ([#322](https://github.com/justin13888/Sunrise/issues/322)). Rule 2
+  holds for every string-valued enum ([#321](https://github.com/justin13888/Sunrise/issues/321)): `lossy_enum!` in
+  `crates/sunrise-domain/src/unknown.rs` gives each one an
+  `Unknown(UnknownVariant)` arm, an `effective()` that reads it as the
+  fallback, and a `Serialize` that writes the raw string back. The storage
+  projection keeps the raw string in the enum's own column, and SQL that
+  filters on an enum is spelled so an unknown value reads as its fallback
+  (`state NOT IN ('done', 'cancelled')`, not `state IN ('todo',
+  'in_progress')`). A routine's rule is also stored as canonical CBOR in
+  `routines.rrule_cbor` (migration `0032_routine_rrule_blob.sql`), because its
+  RFC 5545 text cannot hold a raw token that contains `;`, `,` or `=`. An
+  unknown `Frequency` or `Weekday` in `BYDAY`/`WKST` makes the routine generate
+  no occurrences, and its summary says so. An unknown weekday in a scheduling
+  constraint's `days_of_week` lifts that day restriction rather than blocking
+  every day. `SunriseTime` has no `Unknown` case yet ([#322](https://github.com/justin13888/Sunrise/issues/322)).
 - **Document schema: a missing feature makes a build read-only, not broken.**
   A vault lists the features its data requires in a signed, grow-only
   `vault_requires` set. A build that lacks one of them:

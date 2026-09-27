@@ -129,41 +129,33 @@ pub(super) fn require_kind(r: EntityRef, k: EntityKind) -> Result<(), EngineErro
     Ok(())
 }
 
-pub(super) fn task_state_str(s: TaskState) -> &'static str {
-    match s {
-        TaskState::Todo => "todo",
-        TaskState::InProgress => "in_progress",
-        TaskState::Done => "done",
-        TaskState::Cancelled => "cancelled",
-    }
+/// The stored spelling of a task state: the domain's wire spelling, so an
+/// unknown state is stored as the raw string it arrived as.
+pub(super) fn task_state_str(s: &TaskState) -> &str {
+    s.as_str()
 }
 
 /// Read a stored task state.
 ///
-/// Lossy on purpose, and delegated to the domain so the storage projection and
-/// the wire decoder degrade the same way. A row written by a newer binary with
-/// a state this build has never heard of reads as `todo` — the task is still
-/// there and still open — rather than failing the whole read and taking every
-/// query that touches it down with it.
+/// Lossless, and delegated to the domain so the storage projection and the
+/// wire decoder agree (ADR-0045 §6). A row written by a newer binary with a
+/// state this build has never heard of reads back as that same unknown state
+/// — which logic treats as `todo`, so the task is still there and still open
+/// — rather than failing the whole read, and the next write of the row
+/// carries the raw state through instead of overwriting it with `todo`.
 pub(super) fn parse_task_state(s: &str) -> TaskState {
-    TaskState::from_str_lossy(s)
+    TaskState::from_raw(s)
 }
 
-pub(super) fn energy_str(e: sunrise_domain::Energy) -> &'static str {
-    match e {
-        sunrise_domain::Energy::Low => "low",
-        sunrise_domain::Energy::Med => "med",
-        sunrise_domain::Energy::High => "high",
-    }
+/// The stored spelling of an energy level; an unknown one's raw string.
+pub(super) fn energy_str(e: &sunrise_domain::Energy) -> &str {
+    e.as_str()
 }
 
-pub(super) fn parse_energy(s: &str) -> Option<sunrise_domain::Energy> {
-    match s {
-        "low" => Some(sunrise_domain::Energy::Low),
-        "med" => Some(sunrise_domain::Energy::Med),
-        "high" => Some(sunrise_domain::Energy::High),
-        _ => None,
-    }
+/// Read a stored energy level. Lossless: an unknown spelling is kept, where
+/// it used to read as no energy at all and be written back as `NULL`.
+pub(super) fn parse_energy(s: &str) -> sunrise_domain::Energy {
+    sunrise_domain::Energy::from_raw(s)
 }
 
 pub(super) fn ms_to_ts(ms: i64) -> jiff::Timestamp {

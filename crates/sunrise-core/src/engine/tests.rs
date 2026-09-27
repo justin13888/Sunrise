@@ -3344,7 +3344,7 @@ fn create_task_with_constraints_round_trips() {
             &mut db,
             Command::CreateTask(TaskDraft {
                 title: "with constraint".into(),
-                scheduling_constraints: vec![c],
+                scheduling_constraints: vec![c.clone()],
                 ..Default::default()
             }),
         )
@@ -3379,7 +3379,7 @@ fn update_task_replaces_whole_constraint_list() {
         severity: sunrise_domain::ConstraintSeverity::Soft,
     };
     let patch = TaskPatch {
-        scheduling_constraints: Some(vec![c2]),
+        scheduling_constraints: Some(vec![c2.clone()]),
         ..Default::default()
     };
     e.apply(
@@ -3469,7 +3469,7 @@ fn invalid_constraint_list_rejected_on_create_and_update() {
         &mut db,
         Command::CreateTask(TaskDraft {
             title: "x".into(),
-            scheduling_constraints: vec![bad],
+            scheduling_constraints: vec![bad.clone()],
             ..Default::default()
         }),
     );
@@ -3548,7 +3548,7 @@ fn create_routine_materializes_future_tasks_with_linkage() {
         "FREQ=DAILY",
         NOW + 3_600_000,
         RoutineCatchupPolicy::Skip,
-        vec![c],
+        vec![c.clone()],
     );
     let res = e.apply(&mut db, Command::CreateRoutine(draft)).unwrap();
     let rid = res.entity;
@@ -3579,7 +3579,7 @@ fn create_routine_materializes_future_tasks_with_linkage() {
         assert_eq!(t.routine_id, Some(rid));
         assert_eq!(t.routine_occurrence, Some(o.at));
         assert_eq!(t.scheduled_at, Some(o.at.into()));
-        assert_eq!(t.scheduling_constraints, vec![c]);
+        assert_eq!(t.scheduling_constraints, vec![c.clone()]);
     }
 }
 
@@ -14110,11 +14110,12 @@ fn unknown_focus_fields_survive_the_materialized_row() {
     );
 }
 
-/// An enum value from a newer schema must degrade, not reject: rejecting
+/// An enum value from a newer schema must be kept, not rejected: rejecting
 /// one field's value rejects the whole op, and two replicas then diverge
-/// permanently over one string.
+/// permanently over one string. It reads as the safe fallback and is kept
+/// verbatim (ADR-0045 §6).
 #[test]
-fn an_unknown_enum_variant_degrades_instead_of_failing_the_op() {
+fn an_unknown_enum_variant_is_kept_instead_of_failing_the_op() {
     use ciborium::value::Value;
 
     let clock = Arc::new(FakeClock(PLMutex::new(T0)));
@@ -14140,7 +14141,12 @@ fn an_unknown_enum_variant_degrades_instead_of_failing_the_op() {
 
     let back = read_task_t(&e, &db, created.entity);
     assert_eq!(
-        back.state,
+        back.state.as_str(),
+        "delegated",
+        "the stored raw state is kept, not degraded"
+    );
+    assert_eq!(
+        back.state.effective(),
         TaskState::Todo,
         "an unrecognised state must read as OPEN, never as done"
     );
@@ -14158,7 +14164,12 @@ fn an_unknown_enum_variant_degrades_instead_of_failing_the_op() {
     let bytes = sunrise_cbor::encode_canonical(&v).unwrap();
     let decoded: sunrise_domain::Task =
         sunrise_cbor::decode_lenient(&bytes).expect("an unknown variant must not reject the op");
-    assert_eq!(decoded.state, TaskState::Todo);
+    assert_eq!(decoded.state, TaskState::from_raw("delegated"));
+    assert_eq!(
+        sunrise_cbor::encode_canonical(&decoded).unwrap(),
+        bytes,
+        "and it re-encodes byte for byte"
+    );
 }
 
 /// #6: the three zone-less kinds must survive being written on one device
@@ -15103,7 +15114,7 @@ fn a_soft_violation_is_surfaced_rather_than_blocking() {
             Command::CreateTask(TaskDraft {
                 title: "deploy at 10pm".into(),
                 scheduled_at: Some(ms_to_ts(OUTSIDE_WINDOW_MS).into()),
-                scheduling_constraints: vec![soft],
+                scheduling_constraints: vec![soft.clone()],
                 ..Default::default()
             }),
         )
@@ -18287,4 +18298,507 @@ fn a_known_kind_with_a_damaged_payload_is_still_refused() {
     ));
     assert_eq!(op_count(&dbb), ops_before);
     assert!(parked_rows(&dbb).is_empty());
+}
+
+/// ADR-0045 §6: a rule holding a `FREQ` and a `BYDAY` token this build does
+/// not know is kept — including raw values the RFC 5545 text cannot hold —
+/// generates no occurrences, and survives an unrelated edit byte for byte.
+#[test]
+fn a_routine_with_an_unknown_frequency_is_kept_and_generates_nothing() {
+    let mut db = db();
+    let e = engine();
+    let mut draft = routine_draft(
+        stream_ref(5),
+        "FREQ=WEEKLY",
+        NOW + 3_600_000,
+        RoutineCatchupPolicy::Skip,
+        Vec::new(),
+    );
+    // Separators the text form splits on, inside the raw values.
+    draft.rrule.freq = sunrise_domain::Frequency::from_raw("HOURLY;X=1");
+    draft.rrule.by_day = vec![
+        sunrise_domain::Weekday::Mo,
+        sunrise_domain::Weekday::from_raw("A,B"),
+    ];
+    let rule = draft.rrule.clone();
+    let rid = e
+        .apply(&mut db, Command::CreateRoutine(draft))
+        .unwrap()
+        .entity;
+
+    assert!(
+        past_task_count(&db, rid) == 0 && live_task_ids(&db).is_empty(),
+        "a rule this build cannot read materializes nothing"
+    );
+    let rows = match e.query(&db, Query::Routines).unwrap() {
+        QueryResult::Routines(v) => v,
+        _ => panic!(),
+    };
+    let stored = rows.iter().find(|r| r.id == rid).unwrap();
+    assert_eq!(stored.rrule, rule, "the stored rule reads back verbatim");
+    let row = sunrise_domain::routine_rows(std::slice::from_ref(stored), ms_to_ts(NOW))
+        .pop()
+        .unwrap();
+    assert!(
+        row.rrule.starts_with("unrecognised schedule"),
+        "{}",
+        row.rrule
+    );
+    assert_eq!(row.next, None);
+
+    e.apply(
+        &mut db,
+        Command::UpdateRoutine {
+            id: rid,
+            patch: RoutinePatch {
+                paused: Some(true),
+                ..Default::default()
+            },
+        },
+    )
+    .unwrap();
+    let env = env_for_kind(&db, rid.bytes(), "routine.update");
+    match decode_inner_op(&e.keychain.open_op(&env).unwrap()).unwrap() {
+        InnerOp::RoutineUpdate(r) => assert_eq!(r.rrule, rule, "carried through verbatim"),
+        other => panic!("expected a routine.update, got {}", other.inner_kind()),
+    }
+}
+
+/// The `Task` the most recent `task.update` op on `target` carries.
+fn last_task_update(e: &Engine, db: &Db, target: EntityRef) -> Task {
+    let env = env_for_kind(db, target.bytes(), "task.update");
+    match decode_inner_op(&e.keychain.open_op(&env).unwrap()).unwrap() {
+        InnerOp::TaskUpdate(t) => t,
+        other => panic!("expected a task.update, got {}", other.inner_kind()),
+    }
+}
+
+/// ADR-0045 §6: a value this build does not know is carried through every
+/// write it did not make. A newer peer (A) sets a task state and an energy
+/// this build's vocabulary lacks; B stores them, and B's own unrelated edit
+/// re-emits them byte for byte — where it used to write `todo` and no energy
+/// back to every replica.
+#[test]
+fn an_unknown_state_and_energy_survive_a_peers_unrelated_edit() {
+    let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0 + 1))));
+    let mut dba = db_root(ROOT);
+    let mut dbb = db_root(ROOT);
+    trust(&ea, &mut dba, &eb);
+    trust(&eb, &mut dbb, &ea);
+
+    let task = new_task(&ea, &mut dba, "from a newer build");
+    ea.apply(
+        &mut dba,
+        Command::UpdateTask {
+            id: task,
+            patch: TaskPatch {
+                state: Some(TaskState::from_raw("archived")),
+                energy: Some(Some(sunrise_domain::Energy::from_raw("frantic"))),
+                ..Default::default()
+            },
+        },
+    )
+    .unwrap();
+    eb.apply_remote_all(&mut dbb, &create_env_for(&dba, task.bytes()))
+        .unwrap();
+    for env in update_envs_for(&dba, task.bytes()) {
+        eb.apply_remote_all(&mut dbb, &env).unwrap();
+    }
+
+    // B's projection holds the raw values, not their fallbacks.
+    let stored = task_of(&eb, &dbb, task);
+    assert_eq!(stored.state.as_str(), "archived");
+    assert_eq!(stored.energy.as_ref().map(|e| e.as_str()), Some("frantic"));
+    // And reads them as the fallbacks where logic acts: the task is open.
+    assert_eq!(stored.state.effective(), TaskState::Todo);
+
+    // B renames it: the op B writes carries A's values through.
+    eb.apply(
+        &mut dbb,
+        Command::UpdateTask {
+            id: task,
+            patch: TaskPatch {
+                title: Some("renamed by an older build".into()),
+                ..Default::default()
+            },
+        },
+    )
+    .unwrap();
+    let emitted = last_task_update(&eb, &dbb, task);
+    assert_eq!(emitted.state, TaskState::from_raw("archived"));
+    assert_eq!(
+        emitted.energy,
+        Some(sunrise_domain::Energy::from_raw("frantic"))
+    );
+
+    // A command that sets the field explicitly replaces it.
+    eb.apply(&mut dbb, Command::CompleteTask(task)).unwrap();
+    assert_eq!(task_of(&eb, &dbb, task).state, TaskState::Done);
+}
+
+/// An unknown state counts as open in the SQL that lists and counts open
+/// work, as `todo` does in Rust.
+#[test]
+fn an_unknown_state_counts_as_open_in_the_stream_list() {
+    let mut db = db();
+    let e = engine();
+    let task = new_task(&e, &mut db, "open, in a state this build lacks");
+    e.apply(
+        &mut db,
+        Command::UpdateTask {
+            id: task,
+            patch: TaskPatch {
+                state: Some(TaskState::from_raw("archived")),
+                ..Default::default()
+            },
+        },
+    )
+    .unwrap();
+    let rows = match e.query(&db, Query::StreamList).unwrap() {
+        QueryResult::Streams(r) => r,
+        _ => panic!(),
+    };
+    assert_eq!(rows[0].open_task_count, 1, "the Inbox counts it as open");
+}
+
+/// Set a task's state to one this build does not know.
+fn set_unknown_state(e: &Engine, db: &mut Db, task: EntityRef, raw: &str) {
+    e.apply(
+        db,
+        Command::UpdateTask {
+            id: task,
+            patch: TaskPatch {
+                state: Some(TaskState::from_raw(raw)),
+                ..Default::default()
+            },
+        },
+    )
+    .unwrap();
+}
+
+/// A stream's own open count (the non-Inbox rows of the stream list) counts
+/// an unknown state as open.
+#[test]
+fn an_unknown_state_counts_as_open_in_a_streams_own_count() {
+    let mut db = db();
+    let e = engine();
+    let s = e
+        .apply(
+            &mut db,
+            Command::CreateStream(StreamDraft {
+                name: "Work".into(),
+                ..Default::default()
+            }),
+        )
+        .unwrap()
+        .entity;
+    let task = task_with(
+        &e,
+        &mut db,
+        "in a state this build lacks",
+        TaskDraft {
+            stream_id: Some(s),
+            ..Default::default()
+        },
+    );
+    set_unknown_state(&e, &mut db, task, "archived");
+    let rows = match e.query(&db, Query::StreamList).unwrap() {
+        QueryResult::Streams(r) => r,
+        _ => panic!(),
+    };
+    let row = rows.iter().find(|r| r.id == s).unwrap();
+    assert_eq!(row.open_task_count, 1, "the stream counts it as open");
+}
+
+/// The actionable scan reads an unknown state as open in all three places it
+/// filters on state: the task itself, a blocker, and a dependent.
+#[test]
+fn the_actionable_scan_reads_an_unknown_state_as_open() {
+    let mut db = db();
+    let e = engine();
+    let blocker = new_task(&e, &mut db, "blocker");
+    let dependent = new_task(&e, &mut db, "dependent");
+    e.apply(
+        &mut db,
+        Command::UpdateTask {
+            id: dependent,
+            patch: TaskPatch {
+                blocked_by: Some(vec![blocker]),
+                ..Default::default()
+            },
+        },
+    )
+    .unwrap();
+    set_unknown_state(&e, &mut db, blocker, "archived");
+    set_unknown_state(&e, &mut db, dependent, "archived");
+
+    let rows = actionable_rows(&e, &db);
+    let b = row_for(&rows, blocker);
+    assert_eq!(
+        b.unblocks, 1,
+        "the unknown-state dependent is waiting on it"
+    );
+    assert_eq!(b.open_blockers, 0);
+    let d = row_for(&rows, dependent);
+    assert_eq!(
+        d.open_blockers, 1,
+        "the unknown-state blocker is still open"
+    );
+    assert_eq!(d.effective_state, EffectiveTaskState::Blocked);
+}
+
+/// Editing a routine's rule regenerates an untouched future task in an
+/// unknown state as it does a `todo` one, and keeps an in-progress one.
+#[test]
+fn update_routine_regenerates_a_future_task_in_an_unknown_state() {
+    let mut db = db();
+    let e = engine();
+    let d = routine_draft(
+        stream_ref(5),
+        "FREQ=DAILY",
+        NOW + 3_600_000,
+        RoutineCatchupPolicy::Skip,
+        Vec::new(),
+    );
+    let rid = e.apply(&mut db, Command::CreateRoutine(d)).unwrap().entity;
+    let routine = read_routine(db.conn(), rid.bytes()).unwrap().unwrap();
+    let window = (ms_to_ts(NOW), ms_to_ts(NOW + 20 * DAY_MS));
+    let daily = routine.occurrences_in(window).unwrap();
+    // occ[2] falls on a weekday a weekly rule drops.
+    let drop_id = occurrence_task_id(&rid, &daily[2].key);
+    set_unknown_state(&e, &mut db, drop_id, "snoozed");
+
+    let patch = RoutinePatch {
+        rrule: Some(RRule::parse("FREQ=WEEKLY").unwrap()),
+        ..Default::default()
+    };
+    e.apply(&mut db, Command::UpdateRoutine { id: rid, patch })
+        .unwrap();
+
+    let t = match e.query(&db, Query::EntityById(drop_id)).unwrap() {
+        QueryResult::Task(t) => *t,
+        _ => panic!(),
+    };
+    assert!(
+        t.deleted,
+        "an unknown state is regenerated away like `todo`"
+    );
+}
+
+/// A focus session of a kind this build does not know counts as work: it
+/// advances the next session's chunk and the planner's prior-session count.
+#[test]
+fn an_unknown_focus_kind_counts_as_a_work_session() {
+    let mut db = db();
+    let (e, clock) = focus_engine(0);
+    let task = task_with(
+        &e,
+        &mut db,
+        "75 minutes of work",
+        TaskDraft {
+            estimated_duration_s: Some(75 * 60),
+            ..Default::default()
+        },
+    );
+    let s = e
+        .apply(
+            &mut db,
+            Command::StartFocus(FocusStartDraft {
+                task_id: task,
+                kind: FocusKind::from_raw("deep_work"),
+                length: SessionLength::OnePomodoro,
+                energy: None,
+            }),
+        )
+        .unwrap()
+        .entity;
+    set_clock(&clock, POMODORO_MS);
+    e.apply(
+        &mut db,
+        Command::EndFocus {
+            session: s,
+            actual_focused_ms: None,
+            completed_task: false,
+        },
+    )
+    .unwrap();
+
+    let rows = plan(&e, &db, None);
+    let row = rows.iter().find(|r| r.task.id == task).unwrap();
+    assert_eq!(row.prior_sessions, 1, "the planner counts it as work");
+
+    set_clock(&clock, POMODORO_MS + 1);
+    let next = start_work(&e, &mut db, task, SessionLength::SizedToEstimate);
+    let row = sessions_for(&e, &db, task)
+        .into_iter()
+        .find(|r| r.session.start.id == next)
+        .unwrap();
+    assert_eq!(
+        row.session.start.chunk,
+        Some(Chunk { index: 2, total: 3 }),
+        "the next sitting counts it as a prior work session"
+    );
+}
+
+/// Storage keeps a stream's unknown colour and cadence verbatim through a
+/// rename, where it used to read them back as `slate` and `weekly`.
+#[test]
+fn an_unknown_stream_color_and_cadence_survive_a_rename() {
+    let mut db = db();
+    let e = engine();
+    let s = e
+        .apply(
+            &mut db,
+            Command::CreateStream(StreamDraft {
+                name: "Work".into(),
+                color: Some(StreamColor::from_raw("teal")),
+                review_cadence: Some(StreamReviewCadence::from_raw("quarterly")),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+    e.apply(
+        &mut db,
+        Command::UpdateStream {
+            id: s.entity,
+            patch: StreamPatch {
+                name: Some("Personal".into()),
+                ..Default::default()
+            },
+        },
+    )
+    .unwrap();
+
+    let st = match e.query(&db, Query::EntityById(s.entity)).unwrap() {
+        QueryResult::Stream(s) => *s,
+        _ => panic!(),
+    };
+    assert_eq!(st.color.as_str(), "teal");
+    assert_eq!(st.review_cadence.as_str(), "quarterly");
+    let listed = match e.query(&db, Query::StreamList).unwrap() {
+        QueryResult::Streams(r) => r,
+        _ => panic!(),
+    };
+    assert!(listed.iter().any(|r| r.color.as_str() == "teal"));
+
+    let env = env_for_kind(&db, s.entity.bytes(), "stream.update");
+    match decode_inner_op(&e.keychain.open_op(&env).unwrap()).unwrap() {
+        InnerOp::StreamUpdate(emitted) => {
+            assert_eq!(emitted.color, StreamColor::from_raw("teal"));
+            assert_eq!(
+                emitted.review_cadence,
+                StreamReviewCadence::from_raw("quarterly")
+            );
+        }
+        other => panic!("expected a stream.update, got {}", other.inner_kind()),
+    }
+}
+
+/// ADR-0045 §6: a catch-up policy this build does not know reads as `skip`,
+/// its fallback. Six missed daily occurrences materialize no backlog (`queue`
+/// would make six, `merge` one), and the future ones are still generated.
+#[test]
+fn an_unknown_catchup_policy_materializes_no_backlog() {
+    let mut db = db();
+    let e = engine();
+    let d = routine_draft(
+        stream_ref(5),
+        "FREQ=DAILY",
+        NOW - (5 * DAY_MS + 3_600_000),
+        RoutineCatchupPolicy::from_raw("backfill_weekends"),
+        Vec::new(),
+    );
+    let rid = e.apply(&mut db, Command::CreateRoutine(d)).unwrap().entity;
+    assert_eq!(past_task_count(&db, rid), 0, "an unknown policy skips");
+    assert!(
+        !live_task_ids(&db).is_empty(),
+        "future occurrences are still materialized"
+    );
+    assert_eq!(
+        routine_of(&e, &db, rid).catchup_policy.as_str(),
+        "backfill_weekends",
+        "the raw policy is kept"
+    );
+}
+
+/// Skipping an occurrence tombstones its untouched task when that task is in
+/// a state this build does not know, as it does a `todo` one.
+#[test]
+fn skipping_an_occurrence_tombstones_its_task_in_an_unknown_state() {
+    let mut db = db();
+    let e = engine();
+    let d = routine_draft(
+        stream_ref(5),
+        "FREQ=DAILY",
+        NOW + 3_600_000,
+        RoutineCatchupPolicy::Skip,
+        Vec::new(),
+    );
+    let rid = e.apply(&mut db, Command::CreateRoutine(d)).unwrap().entity;
+    let routine = read_routine(db.conn(), rid.bytes()).unwrap().unwrap();
+    let window = (ms_to_ts(NOW), ms_to_ts(NOW + 20 * DAY_MS));
+    let key = routine.occurrences_in(window).unwrap()[2].key.clone();
+    let tid = occurrence_task_id(&rid, &key);
+    set_unknown_state(&e, &mut db, tid, "snoozed");
+
+    e.apply(
+        &mut db,
+        Command::SkipRoutineOccurrence {
+            id: rid,
+            occurrence_key: key,
+        },
+    )
+    .unwrap();
+    let t = match e.query(&db, Query::EntityById(tid)).unwrap() {
+        QueryResult::Task(t) => *t,
+        _ => panic!(),
+    };
+    assert!(t.deleted, "an unknown state is tombstoned like `todo`");
+}
+
+/// A scheduled task in a state this build does not know is open, so it still
+/// produces a reminder.
+#[test]
+fn a_task_in_an_unknown_state_still_produces_a_reminder() {
+    let (e, mut db) = engine_at(NOTIFY_NOON);
+    let task = e
+        .apply(
+            &mut db,
+            Command::CreateTask(TaskDraft {
+                title: "Call the bank".into(),
+                scheduled_at: Some(SunriseTime::instant(ms_to_ts(NOTIFY_NOON + 3_600_000))),
+                ..Default::default()
+            }),
+        )
+        .unwrap()
+        .entity;
+    set_unknown_state(&e, &mut db, task, "snoozed");
+    let out = reminders(
+        &e,
+        &db,
+        NOTIFY_NOON,
+        NOTIFY_NOON + 86_400_000,
+        ReminderSettings::default(),
+    );
+    assert_eq!(
+        out.iter().map(|r| r.entity).collect::<Vec<_>>(),
+        vec![task],
+        "an unknown state reads as `todo`"
+    );
+}
+
+/// A session that says it finished its task completes a task in a state this
+/// build does not know, as it would a `todo` one.
+#[test]
+fn a_finished_session_completes_a_task_in_an_unknown_state() {
+    let mut db = db();
+    let e = engine();
+    let task = new_task(&e, &mut db, "Write the report");
+    let session = open_session(&e, &mut db, task);
+    set_unknown_state(&e, &mut db, task, "snoozed");
+    let res = end_session(&e, &mut db, session, true);
+
+    assert_eq!(task_of(&e, &db, task).state, TaskState::Done);
+    assert_eq!(res.state, Some(TaskState::Done));
 }

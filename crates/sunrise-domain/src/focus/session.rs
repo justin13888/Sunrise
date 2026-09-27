@@ -12,7 +12,7 @@
 
 use crate::common::Energy;
 use crate::epoch_ms;
-use crate::unknown::Unknowns;
+use crate::unknown::{UnknownVariant, Unknowns};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use sunrise_id::EntityRef;
@@ -24,59 +24,32 @@ use sunrise_id::EntityRef;
 /// What a session *is*: focused work, or the break that follows it. Breaks are
 /// recorded so the timeline reconstructs, but they never count as focused time
 /// and never feed estimate calibration.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
-#[serde(rename_all = "snake_case")]
+///
+/// An unrecognised kind reads as [`FocusKind::Work`] and is written back
+/// verbatim. Focus sessions default to work; counting an unknown kind as a
+/// break would under-report time actually spent.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum FocusKind {
     /// A work segment.
     Work,
     /// A break segment.
     Break,
+    /// A kind this build does not know, kept verbatim (ADR-0045 §6).
+    Unknown(UnknownVariant),
 }
 
-impl FocusKind {
-    /// Parse from the wire/storage string. An unrecognised value degrades to
-    /// [`FocusKind::Work`] rather than failing.
-    ///
-    /// Focus sessions default to work; counting an unknown kind as a break would
-    /// under-report time actually spent.
-    #[must_use]
-    pub fn from_str_lossy(s: &str) -> Self {
-        match s {
-            "break" => Self::Break,
-            // "work" and anything this build has never heard of.
-            _ => Self::Work,
-        }
-    }
-}
-
-crate::unknown::lossy_enum!(FocusKind);
-
-impl FocusKind {
-    /// Wire/storage tag.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Work => "work",
-            Self::Break => "break",
-        }
-    }
-
-    /// Parse a storage tag. `None` for anything else.
-    #[must_use]
-    pub fn from_str_opt(s: &str) -> Option<Self> {
-        match s {
-            "work" => Some(Self::Work),
-            "break" => Some(Self::Break),
-            _ => None,
-        }
-    }
-}
+crate::unknown::lossy_enum!(FocusKind, fallback = Work, {
+    Work => "work",
+    Break => "break",
+});
 
 /// A one-tap reason for bailing out early or switching task
 /// (`docs/08-features/focus-mode.md` §Interruption capture). Data the user
 /// opted into; there is no shame UI and no score attached to it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
-#[serde(rename_all = "snake_case")]
+///
+/// An unrecognised reason reads as [`InterruptionReason::Other`] and is
+/// written back verbatim — an interruption reason is never load-bearing.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum InterruptionReason {
     /// The user interrupted themselves.
     SelfInterrupt,
@@ -86,7 +59,16 @@ pub enum InterruptionReason {
     Blocked,
     /// Anything else.
     Other,
+    /// A reason this build does not know, kept verbatim (ADR-0045 §6).
+    Unknown(UnknownVariant),
 }
+
+crate::unknown::lossy_enum!(InterruptionReason, fallback = Other, {
+    SelfInterrupt => "self",
+    Meeting => "meeting",
+    Blocked => "blocked",
+    Other => "other",
+});
 
 impl Interruption {
     /// Interruption instant as epoch milliseconds.
@@ -95,33 +77,6 @@ impl Interruption {
         epoch_ms::to_u64(self.at)
     }
 }
-
-impl InterruptionReason {
-    /// Wire/storage tag.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::SelfInterrupt => "self",
-            Self::Meeting => "meeting",
-            Self::Blocked => "blocked",
-            Self::Other => "other",
-        }
-    }
-
-    /// Parse a storage tag; unknown values degrade to [`Self::Other`] rather
-    /// than failing a read — an interruption reason is never load-bearing.
-    #[must_use]
-    pub fn from_str_lossy(s: &str) -> Self {
-        match s {
-            "self" => Self::SelfInterrupt,
-            "meeting" => Self::Meeting,
-            "blocked" => Self::Blocked,
-            _ => Self::Other,
-        }
-    }
-}
-
-crate::unknown::lossy_enum!(InterruptionReason);
 
 /// "Chunk N of M" — the checkpoint marker shown when a task's estimate exceeds
 /// one session, so a long task shows visible progress *within* a sitting.
@@ -225,8 +180,10 @@ impl FocusEnd {
 /// three fields — the whole triple IS the key — so a preserved unknown field
 /// would change what the record *is* rather than what it says, and would give
 /// two records that a peer considers the same one different identities here.
-/// It is `Copy` and totally ordered for the same reason.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+/// It is totally ordered for the same reason. It is not `Copy`: its reason
+/// can be one this build does not know, kept verbatim (ADR-0045 §6) — which
+/// is also what keeps two unknown reasons distinct keys.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Interruption {
     /// Session interrupted.
     pub session_id: EntityRef,
@@ -419,22 +376,16 @@ mod tests {
 
     #[test]
     fn scalar_tags_round_trip() {
-        for k in [FocusKind::Work, FocusKind::Break] {
-            assert_eq!(FocusKind::from_str_opt(k.as_str()), Some(k));
+        for k in FocusKind::KNOWN {
+            assert_eq!(&FocusKind::from_raw(k.as_str()), k);
         }
-        assert_eq!(FocusKind::from_str_opt("nope"), None);
-        for r in [
-            InterruptionReason::SelfInterrupt,
-            InterruptionReason::Meeting,
-            InterruptionReason::Blocked,
-            InterruptionReason::Other,
-        ] {
-            assert_eq!(InterruptionReason::from_str_lossy(r.as_str()), r);
+        assert!(FocusKind::from_raw("nope").is_unknown());
+        for r in InterruptionReason::KNOWN {
+            assert_eq!(&InterruptionReason::from_raw(r.as_str()), r);
         }
-        // Unknown reasons degrade rather than fail a read.
-        assert_eq!(
-            InterruptionReason::from_str_lossy("garbage"),
-            InterruptionReason::Other
-        );
+        // Unknown reasons are kept verbatim, and read as `other`.
+        let garbage = InterruptionReason::from_raw("garbage");
+        assert_eq!(garbage.as_str(), "garbage");
+        assert_eq!(garbage.effective(), InterruptionReason::Other);
     }
 }

@@ -114,7 +114,7 @@ pub struct EnergyFocus {
 }
 
 /// How often one interruption reason came up.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InterruptionTally {
     /// The reason.
     pub reason: InterruptionReason,
@@ -231,12 +231,13 @@ pub fn fold_focus_stats(records: &[SessionRecord], now_ms: u64) -> FocusStats {
             running = running.saturating_add(1);
         }
         for i in &r.interruptions {
-            if seen_interruptions.insert(*i) {
+            if seen_interruptions.insert(i.clone()) {
                 interruptions = interruptions.saturating_add(1);
-                *reasons.entry(i.reason).or_insert(0) += 1;
+                *reasons.entry(i.reason.clone()).or_insert(0) += 1;
             }
         }
-        if r.kind != FocusKind::Work {
+        // An unknown kind reads as work, its fallback.
+        if r.kind.effective() != FocusKind::Work {
             continue;
         }
         work_sessions = work_sessions.saturating_add(1);
@@ -247,13 +248,13 @@ pub fn fold_focus_stats(records: &[SessionRecord], now_ms: u64) -> FocusStats {
         s.0 = s.0.saturating_add(1);
         s.1 = s.1.saturating_add(focused);
 
-        let e = energy_sessions.entry(r.energy).or_insert((0, 0));
+        let e = energy_sessions.entry(r.energy.clone()).or_insert((0, 0));
         e.0 = e.0.saturating_add(1);
         e.1 = e.1.saturating_add(focused);
 
         overall.observe(r);
         stream_calib.entry(r.stream).or_default().observe(r);
-        energy_calib.entry(r.energy).or_default().observe(r);
+        energy_calib.entry(r.energy.clone()).or_default().observe(r);
     }
 
     let per_stream = stream_sessions
@@ -269,14 +270,16 @@ pub fn fold_focus_stats(records: &[SessionRecord], now_ms: u64) -> FocusStats {
     let mut per_energy: Vec<EnergyFocus> = energy_sessions
         .into_iter()
         .map(|(energy, (n, ms))| EnergyFocus {
+            calibration: energy_calib.get(&energy).and_then(CalibAcc::finish),
             energy,
             sessions: n,
             focused_ms: ms,
-            calibration: energy_calib.get(&energy).and_then(CalibAcc::finish),
         })
         .collect();
     // `Option<Energy>` sorts None first; Low → Med → High → unset reads better.
-    per_energy.sort_by_key(|e| e.energy.map_or(u8::MAX, energy_rank));
+    // An unknown energy ranks as `med`; `sort_by_key` is stable, so it stays
+    // in the map's order among its equals.
+    per_energy.sort_by_key(|e| e.energy.as_ref().map_or(u8::MAX, energy_rank));
 
     let mut top_interruptions: Vec<InterruptionTally> = reasons
         .into_iter()
@@ -409,6 +412,19 @@ mod tests {
         );
     }
 
+    /// ADR-0045 §6: a kind this build does not know reads as `work`, its
+    /// fallback, so its time is counted and it calibrates.
+    #[test]
+    fn an_unknown_kind_is_counted_as_work() {
+        let mut deep = record(2, 2, Some(600), Some(300_000), true);
+        deep.kind = FocusKind::from_raw("deep_work");
+        let s = fold_focus_stats(&[record(1, 1, Some(600), Some(600_000), true), deep], 0);
+        assert_eq!(s.sessions, 2);
+        assert_eq!(s.work_sessions, 2, "the unknown kind counts as work");
+        assert_eq!(s.total_focused_ms, 900_000);
+        assert!(s.overall.is_some(), "it calibrates as work does");
+    }
+
     #[test]
     fn stats_bucket_per_stream_and_per_energy() {
         let mut a = record(1, 1, Some(600), Some(1_200_000), true); // 2.0x
@@ -425,7 +441,10 @@ mod tests {
         assert!((s2.calibration.unwrap().factor - 0.5).abs() < 1e-9);
         // Low before High, per the ordering contract.
         assert_eq!(
-            s.per_energy.iter().map(|e| e.energy).collect::<Vec<_>>(),
+            s.per_energy
+                .iter()
+                .map(|e| e.energy.clone())
+                .collect::<Vec<_>>(),
             vec![Some(Energy::Low), Some(Energy::High)]
         );
         // Overall pools both: 1500 s actual against 1200 s estimated.
@@ -445,7 +464,7 @@ mod tests {
         // The same triple reaching us twice — once as its own op, once inside
         // the `end` op — is one interruption.
         r1.interruptions = vec![
-            dup,
+            dup.clone(),
             dup,
             Interruption {
                 session_id: fcs(1),

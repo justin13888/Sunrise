@@ -30,7 +30,7 @@ acyclic across devices (§Dependencies).
 ; one register. See tasks.md and routines-and-recurrence.md.
 SchedulingConstraint = {
     ? time_of_day:  TimeOfDayRange,                            ; local wall clock; may wrap midnight
-    ? days_of_week: [* Weekday],                               ; set of weekdays; empty/absent = all days
+    ? days_of_week: [* Weekday],                               ; set of weekdays; empty/absent = all days; an unknown day lifts it (below)
     ? date_range:   { start: civil-date, ? end: civil-date, unknown-fields }, ; inclusive; open-ended if end absent
     ? at_place:     [+ entity-ref],                            ; plc_ refs; any one satisfies
     severity:       ConstraintSeverity,                        ; required
@@ -58,6 +58,17 @@ constraint with only a `severity` is meaningless and rejected at validation.
 
 Every nested map carries `unknown-fields`, so a dimension a newer build adds is
 preserved by an older one ([#322](https://github.com/justin13888/Sunrise/issues/322)).
+
+**An unknown day token keeps the set but lifts the day restriction.** A
+`days_of_week` entry this build does not know is kept and written back
+verbatim, after the known days (which are written in `MO..SU` order), and it
+matches no day. A set that holds one places no restriction on the day at all
+(`crates/sunrise-domain/src/constraint.rs#WeekdaySet`). Reading the set as only
+its known days could turn a newer peer's "Mondays or a day this build has no
+name for" into a hard block on every day but Monday, and an unknown value must
+never invent a block, as an unknown severity reads as `soft`
+([ADR-0045](../11-adr/0045-schema-identity-and-feature-gating.md) §6). The
+constraint's other dimensions still apply.
 
 ## Semantics
 

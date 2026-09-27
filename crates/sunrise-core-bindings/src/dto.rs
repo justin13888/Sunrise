@@ -44,17 +44,6 @@ use sunrise_domain::{
 };
 use sunrise_id::{EntityKind, EntityRef};
 
-/// Monday-first, matching how the domain orders a weekday set.
-const ALL_WEEKDAYS: [Weekday; 7] = [
-    Weekday::Mo,
-    Weekday::Tu,
-    Weekday::We,
-    Weekday::Th,
-    Weekday::Fr,
-    Weekday::Sa,
-    Weekday::Su,
-];
-
 /// Format the 16-byte op/device/identity ids UniFFI cannot carry as lowercase
 /// hex.
 pub(crate) fn hex16(bytes: &[u8; 16]) -> String {
@@ -184,15 +173,14 @@ impl From<&ScheduleConstraint> for Constraint {
                 start: w.start,
                 end: w.end,
             }),
-            days_of_week: ALL_WEEKDAYS
-                .into_iter()
-                .filter(|d| days_of_week.contains(*d))
-                .collect(),
+            // Monday-first, then any day token this build does not know, so a
+            // client that hands the list back carries it through.
+            days_of_week: days_of_week.iter().collect(),
             date_range: date_range.as_ref().map(|r| DateWindow {
                 start: r.start,
                 end: r.end,
             }),
-            severity: *severity,
+            severity: severity.clone(),
         }
     }
 }
@@ -255,7 +243,7 @@ impl From<&RRule> for Recurrence {
             wkst,
         } = r;
         Self {
-            freq: *freq,
+            freq: freq.clone(),
             interval: *interval,
             by_day: by_day.clone(),
             by_month_day: by_month_day.clone(),
@@ -263,7 +251,7 @@ impl From<&RRule> for Recurrence {
             by_set_pos: by_set_pos.clone(),
             count: *count,
             until: *until,
-            wkst: *wkst,
+            wkst: wkst.clone(),
         }
     }
 }
@@ -384,9 +372,9 @@ impl From<&Task> for TaskItem {
             body: body.clone(),
             stream_id: *stream_id,
             contexts: contexts.iter().copied().collect(),
-            state: *state,
+            state: state.clone(),
             priority: *priority,
-            energy: *energy,
+            energy: energy.clone(),
             estimated_duration_s: *estimated_duration_s,
             scheduled_at: scheduled_at.as_ref().map(TimeValue::from),
             due_at: due_at.as_ref().map(TimeValue::from),
@@ -659,14 +647,14 @@ impl From<&Stream> for StreamItem {
             updated_at: *updated_at,
             name: name.clone(),
             description: description.clone(),
-            color: *color,
+            color: color.clone(),
             icon: icon.clone(),
             parent_id: *parent_id,
             sort_order: sort_order.clone(),
             archived: *archived,
             paused: *paused,
             paused_until: *paused_until,
-            review_cadence: *review_cadence,
+            review_cadence: review_cadence.clone(),
             default_context: *default_context,
             reminder_lead_s: *reminder_lead_s,
             deleted: *deleted,
@@ -921,7 +909,7 @@ impl From<&TaskTemplate> for Template {
             title: title.clone(),
             stream_id: *stream_id,
             contexts: contexts.clone(),
-            energy: *energy,
+            energy: energy.clone(),
             priority: *priority,
             estimated_duration_s: *estimated_duration_s,
             body: body.clone(),
@@ -1035,7 +1023,7 @@ impl From<&Routine> for RoutineItem {
                 .map(Constraint::from)
                 .collect(),
             skipped_keys: skipped_keys.clone(),
-            catchup_policy: *catchup_policy,
+            catchup_policy: catchup_policy.clone(),
             streak_counter: *streak_counter,
             last_completed_at: *last_completed_at,
             grace_window_s: *grace_window_s,
@@ -1265,7 +1253,7 @@ impl From<&Interruption> for InterruptionRow {
         Self {
             session_id: *session_id,
             at: *at,
-            reason: *reason,
+            reason: reason.clone(),
         }
     }
 }
@@ -1310,8 +1298,8 @@ impl From<&FocusStart> for SessionStart {
             stream_id: *stream_id,
             started_at: *started_at,
             planned_ms: *planned_ms,
-            energy: *energy,
-            kind: *kind,
+            energy: energy.clone(),
+            kind: kind.clone(),
             chunk: chunk.as_ref().map(ChunkMarker::from),
         }
     }
@@ -1325,8 +1313,8 @@ impl From<&SessionStart> for FocusStart {
             stream_id: s.stream_id,
             started_at: s.started_at,
             planned_ms: s.planned_ms,
-            energy: s.energy,
-            kind: s.kind,
+            energy: s.energy.clone(),
+            kind: s.kind.clone(),
             chunk: s.chunk.map(|c| Chunk {
                 index: c.index,
                 total: c.total,
@@ -1389,7 +1377,7 @@ impl From<&InterruptionRow> for Interruption {
         Self {
             session_id: i.session_id,
             at: i.at,
-            reason: i.reason,
+            reason: i.reason.clone(),
         }
     }
 }
@@ -1524,7 +1512,7 @@ impl From<&EnergyFocus> for EnergyFocusRow {
             calibration,
         } = e;
         Self {
-            energy: *energy,
+            energy: energy.clone(),
             sessions: *sessions,
             focused_ms: *focused_ms,
             calibration: calibration.as_ref().map(CalibrationRow::from),
@@ -1533,7 +1521,7 @@ impl From<&EnergyFocus> for EnergyFocusRow {
 }
 
 /// See [`sunrise_domain::InterruptionTally`].
-#[derive(Debug, Clone, Copy, uniffi::Record)]
+#[derive(Debug, Clone, uniffi::Record)]
 pub struct InterruptionTallyRow {
     /// The reason.
     pub reason: InterruptionReason,
@@ -1545,7 +1533,7 @@ impl From<&InterruptionTally> for InterruptionTallyRow {
     fn from(t: &InterruptionTally) -> Self {
         let InterruptionTally { reason, count } = t;
         Self {
-            reason: *reason,
+            reason: reason.clone(),
             count: *count,
         }
     }
@@ -2368,7 +2356,7 @@ impl From<&StreamRow> for StreamListRow {
         Self {
             id: *id,
             name: name.clone(),
-            color: *color,
+            color: color.clone(),
             open_task_count: *open_task_count,
             archived: *archived,
             paused: *paused,
@@ -2606,7 +2594,7 @@ impl From<&CommandResult> for CommandOutcome {
         } = r;
         Self {
             entity: *entity,
-            state: *state,
+            state: state.clone(),
             op_id: hex16(op_id),
             seq: *seq,
             soft_violations: soft_violations.iter().map(Constraint::from).collect(),
@@ -3251,7 +3239,7 @@ impl From<&sunrise_domain::TaskDraft> for TaskDraftIn {
             stream_id: *stream_id,
             contexts: contexts.clone(),
             priority: *priority,
-            energy: *energy,
+            energy: energy.clone(),
             estimated_duration_s: *estimated_duration_s,
             scheduled_at: scheduled_at.as_ref().map(TimeValue::from),
             due_at: due_at.as_ref().map(TimeValue::from),

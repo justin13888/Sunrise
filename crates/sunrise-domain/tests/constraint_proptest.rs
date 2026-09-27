@@ -36,7 +36,7 @@ const ALL_WEEKDAYS: [Weekday; 7] = [
 
 fn weekday_set_strategy() -> impl Strategy<Value = WeekdaySet> {
     proptest::collection::vec(0usize..7, 0..7)
-        .prop_map(|idxs| WeekdaySet::from_days(idxs.into_iter().map(|i| ALL_WEEKDAYS[i])))
+        .prop_map(|idxs| WeekdaySet::from_days(idxs.into_iter().map(|i| ALL_WEEKDAYS[i].clone())))
 }
 
 /// Build an always-*valid* constraint: at least one dimension populated,

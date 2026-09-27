@@ -42,7 +42,7 @@ struct StreamEditorView: View {
                 .accessibilityIdentifier("stream.name")
 
             Picker("Colour", selection: $color) {
-                ForEach(StreamColor.all, id: \.self) { option in
+                ForEach(StreamColor.options(holding: stream?.color), id: \.self) { option in
                     Label {
                         Text(option.label)
                     } icon: {
@@ -57,6 +57,11 @@ struct StreamEditorView: View {
                 Text("Weekly").tag(StreamReviewCadence.weekly)
                 Text("Biweekly").tag(StreamReviewCadence.biweekly)
                 Text("Monthly").tag(StreamReviewCadence.monthly)
+                // A cadence a newer client wrote: offered as itself, so saving
+                // the sheet without touching it keeps it.
+                if let held = stream?.reviewCadence, case .unknown = held {
+                    Text("Unknown").tag(held)
+                }
             }
 
             Section {

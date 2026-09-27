@@ -8,13 +8,18 @@
 //! This module implements parsing + recognition; full DST-aware expansion
 //! lives in [`crate::routine_gen`].
 
+use crate::unknown::UnknownVariant;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 /// Recurrence frequency.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "UPPERCASE")]
+///
+/// An unrecognised frequency is kept verbatim (ADR-0045 §6) and has no safe
+/// reading: a rule that holds one generates no occurrences (see
+/// [`RRule::is_understood`]), because recurring on a guessed cadence is worse
+/// than not recurring.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Frequency {
     /// Once a day, plus `INTERVAL`.
     Daily,
@@ -24,25 +29,30 @@ pub enum Frequency {
     Monthly,
     /// Once a year.
     Yearly,
+    /// A frequency this build does not know, kept verbatim.
+    Unknown(UnknownVariant),
 }
 
+crate::unknown::lossy_enum!(Frequency, {
+    Daily => "DAILY",
+    Weekly => "WEEKLY",
+    Monthly => "MONTHLY",
+    Yearly => "YEARLY",
+});
+
 impl Frequency {
-    /// Parse from canonical RFC 5545 spelling (uppercase).
+    /// Parse a known RFC 5545 spelling (uppercase); `None` for anything else.
+    /// [`Frequency::from_raw`] is the lossless form.
     #[must_use]
     pub fn parse(s: &str) -> Option<Self> {
-        match s {
-            "DAILY" => Some(Self::Daily),
-            "WEEKLY" => Some(Self::Weekly),
-            "MONTHLY" => Some(Self::Monthly),
-            "YEARLY" => Some(Self::Yearly),
-            _ => None,
-        }
+        Some(Self::from_raw(s)).filter(|f| !f.is_unknown())
     }
 }
 
 /// Day-of-week token used in `BYDAY`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "UPPERCASE")]
+///
+/// An unrecognised token is kept verbatim (ADR-0045 §6) and matches no day.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Weekday {
     /// Sunday.
     Su,
@@ -58,22 +68,26 @@ pub enum Weekday {
     Fr,
     /// Saturday.
     Sa,
+    /// A day token this build does not know, kept verbatim.
+    Unknown(UnknownVariant),
 }
 
+crate::unknown::lossy_enum!(Weekday, {
+    Su => "SU",
+    Mo => "MO",
+    Tu => "TU",
+    We => "WE",
+    Th => "TH",
+    Fr => "FR",
+    Sa => "SA",
+});
+
 impl Weekday {
-    /// Parse from canonical 2-letter token.
+    /// Parse a known 2-letter token; `None` for anything else.
+    /// [`Weekday::from_raw`] is the lossless form.
     #[must_use]
     pub fn parse(s: &str) -> Option<Self> {
-        match s {
-            "SU" => Some(Self::Su),
-            "MO" => Some(Self::Mo),
-            "TU" => Some(Self::Tu),
-            "WE" => Some(Self::We),
-            "TH" => Some(Self::Th),
-            "FR" => Some(Self::Fr),
-            "SA" => Some(Self::Sa),
-            _ => None,
-        }
+        Some(Self::from_raw(s)).filter(|w| !w.is_unknown())
     }
 }
 
@@ -142,11 +156,12 @@ impl RRule {
                 .split_once('=')
                 .ok_or_else(|| RRuleParseError::UnknownPart(part.to_string()))?;
             match k {
+                // A value this build does not know is kept, not refused
+                // (ADR-0045 §6): this parser also reads the stored rule back.
+                // Input a user typed is refused one level up, in
+                // `crate::recur::parse_recurrence`, via `first_unknown`.
                 "FREQ" => {
-                    freq = Some(
-                        Frequency::parse(v)
-                            .ok_or_else(|| RRuleParseError::BadValue("FREQ", v.into()))?,
-                    );
+                    freq = Some(Frequency::from_raw(v));
                 }
                 "INTERVAL" => {
                     out.interval = v
@@ -158,10 +173,7 @@ impl RRule {
                 }
                 "BYDAY" => {
                     for tok in v.split(',') {
-                        out.by_day.push(
-                            Weekday::parse(tok)
-                                .ok_or_else(|| RRuleParseError::BadValue("BYDAY", tok.into()))?,
-                        );
+                        out.by_day.push(Weekday::from_raw(tok));
                     }
                 }
                 "BYMONTHDAY" => {
@@ -201,10 +213,7 @@ impl RRule {
                     out.until = Some(parsed);
                 }
                 "WKST" => {
-                    out.wkst = Some(
-                        Weekday::parse(v)
-                            .ok_or_else(|| RRuleParseError::BadValue("WKST", v.into()))?,
-                    );
+                    out.wkst = Some(Weekday::from_raw(v));
                 }
                 "BYYEARDAY" | "BYWEEKNO" => {
                     return Err(RRuleParseError::UnknownPart(format!(
@@ -223,20 +232,19 @@ impl RRule {
     /// Round-trips losslessly through [`RRule::parse`]: only non-default parts
     /// are emitted (`INTERVAL=1` and an unset `WKST` are omitted). Used by the
     /// storage layer to persist the rule as text.
+    ///
+    /// That holds for every rule [`RRule::parse`] produces. It does not hold
+    /// for a rule that arrived as CBOR holding an unknown value with `;`, `,`
+    /// or `=` in it, which is why storage also keeps the rule's canonical CBOR
+    /// (`routines.rrule_cbor`) and reads that first.
     #[must_use]
     pub fn to_rfc5545(&self) -> String {
-        let freq = match self.freq {
-            Frequency::Daily => "DAILY",
-            Frequency::Weekly => "WEEKLY",
-            Frequency::Monthly => "MONTHLY",
-            Frequency::Yearly => "YEARLY",
-        };
-        let mut parts = vec![format!("FREQ={freq}")];
+        let mut parts = vec![format!("FREQ={}", self.freq.as_str())];
         if self.interval != 1 {
             parts.push(format!("INTERVAL={}", self.interval));
         }
         if !self.by_day.is_empty() {
-            let days: Vec<&str> = self.by_day.iter().map(|w| weekday_token(*w)).collect();
+            let days: Vec<&str> = self.by_day.iter().map(Weekday::as_str).collect();
             parts.push(format!("BYDAY={}", days.join(",")));
         }
         if !self.by_month_day.is_empty() {
@@ -257,23 +265,38 @@ impl RRule {
         if let Some(u) = self.until {
             parts.push(format!("UNTIL={u}"));
         }
-        if let Some(w) = self.wkst {
-            parts.push(format!("WKST={}", weekday_token(w)));
+        if let Some(w) = &self.wkst {
+            parts.push(format!("WKST={}", w.as_str()));
         }
         parts.join(";")
     }
-}
 
-/// Canonical 2-letter RFC 5545 token for a weekday.
-fn weekday_token(w: Weekday) -> &'static str {
-    match w {
-        Weekday::Su => "SU",
-        Weekday::Mo => "MO",
-        Weekday::Tu => "TU",
-        Weekday::We => "WE",
-        Weekday::Th => "TH",
-        Weekday::Fr => "FR",
-        Weekday::Sa => "SA",
+    /// The first value in the rule this build does not know, as
+    /// `(part, raw value)`; `None` when every value is known.
+    #[must_use]
+    pub fn first_unknown(&self) -> Option<(&'static str, &str)> {
+        if let Frequency::Unknown(raw) = &self.freq {
+            return Some(("FREQ", raw.as_str()));
+        }
+        if let Some(Weekday::Unknown(raw)) = self.by_day.iter().find(|w| w.is_unknown()) {
+            return Some(("BYDAY", raw.as_str()));
+        }
+        if let Some(Weekday::Unknown(raw)) = &self.wkst {
+            return Some(("WKST", raw.as_str()));
+        }
+        None
+    }
+
+    /// Whether this build can expand the rule: every `FREQ`, `BYDAY` and
+    /// `WKST` value is one it knows.
+    ///
+    /// A rule that is not understood generates **no occurrences** and is
+    /// flagged in its summary (ADR-0045 §6). It is still kept and written back
+    /// verbatim; only its expansion stops. Recurring on a guessed schedule
+    /// would materialize tasks on the wrong days, which is worse than none.
+    #[must_use]
+    pub fn is_understood(&self) -> bool {
+        self.first_unknown().is_none()
     }
 }
 
@@ -285,11 +308,18 @@ fn weekday_token(w: Weekday) -> &'static str {
 #[must_use]
 pub fn rrule_summary(r: &RRule) -> String {
     use std::fmt::Write as _;
+    // The flag ADR-0045 §6 asks for: a rule this build cannot expand says so,
+    // rather than reading as a schedule it is not following.
+    if !r.is_understood() {
+        return format!("unrecognised schedule ({})", r.to_rfc5545());
+    }
     let unit = match r.freq {
         Frequency::Daily => "day",
         Frequency::Weekly => "week",
         Frequency::Monthly => "month",
         Frequency::Yearly => "year",
+        // Unreachable behind `is_understood`, and harmless if not.
+        Frequency::Unknown(_) => "period",
     };
     let mut s = if r.interval <= 1 {
         format!("every {unit}")
@@ -378,6 +408,27 @@ mod tests {
             1_798_761_600_000,
             "2027-01-01T00:00:00Z in epoch milliseconds"
         );
+    }
+
+    #[test]
+    fn unknown_values_are_kept_and_flagged_not_refused() {
+        let r = RRule::parse("FREQ=HOURLY;BYDAY=MO,XX;WKST=ZZ").unwrap();
+        assert_eq!(r.freq.as_str(), "HOURLY");
+        assert_eq!(r.by_day[0], Weekday::Mo);
+        assert_eq!(r.by_day[1].as_str(), "XX");
+        assert_eq!(r.wkst.as_ref().map(Weekday::as_str), Some("ZZ"));
+        assert_eq!(r.to_rfc5545(), "FREQ=HOURLY;BYDAY=MO,XX;WKST=ZZ");
+        assert_eq!(r.first_unknown(), Some(("FREQ", "HOURLY")));
+        assert!(!r.is_understood());
+        assert!(rrule_summary(&r).starts_with("unrecognised schedule"));
+
+        let day_only = RRule::parse("FREQ=WEEKLY;BYDAY=XX").unwrap();
+        assert_eq!(day_only.first_unknown(), Some(("BYDAY", "XX")));
+        let wkst_only = RRule::parse("FREQ=WEEKLY;WKST=ZZ").unwrap();
+        assert_eq!(wkst_only.first_unknown(), Some(("WKST", "ZZ")));
+        assert!(RRule::parse("FREQ=WEEKLY;BYDAY=MO")
+            .unwrap()
+            .is_understood());
     }
 
     #[test]

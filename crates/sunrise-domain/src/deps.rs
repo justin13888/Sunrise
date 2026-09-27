@@ -50,7 +50,7 @@ pub enum EffectiveTaskState {
 /// nobody is waiting on any more); a tombstoned blocker releases them too,
 /// since a deleted task will never reach `done`.
 #[must_use]
-pub const fn blocker_is_open(state: TaskState, deleted: bool) -> bool {
+pub const fn blocker_is_open(state: &TaskState, deleted: bool) -> bool {
     !deleted && !matches!(state, TaskState::Done | TaskState::Cancelled)
 }
 
@@ -60,19 +60,22 @@ pub const fn blocker_is_open(state: TaskState, deleted: bool) -> bool {
 /// `blocked_by` (see [`blocker_is_open`]; unknown blockers count as open).
 /// A `done`/`cancelled` task is never reported blocked — its own state wins.
 #[must_use]
-pub const fn effective_state(state: TaskState, open_blockers: u32) -> EffectiveTaskState {
+pub const fn effective_state(state: &TaskState, open_blockers: u32) -> EffectiveTaskState {
+    // An unknown state reads as its fallback, `todo` (ADR-0045 §6).
     match state {
         TaskState::Done => EffectiveTaskState::Done,
         TaskState::Cancelled => EffectiveTaskState::Cancelled,
-        TaskState::Todo if open_blockers == 0 => EffectiveTaskState::Todo,
+        TaskState::Todo | TaskState::Unknown(_) if open_blockers == 0 => EffectiveTaskState::Todo,
         TaskState::InProgress if open_blockers == 0 => EffectiveTaskState::InProgress,
-        TaskState::Todo | TaskState::InProgress => EffectiveTaskState::Blocked,
+        TaskState::Todo | TaskState::InProgress | TaskState::Unknown(_) => {
+            EffectiveTaskState::Blocked
+        }
     }
 }
 
 /// True when a task can be worked on right now: open, and nothing blocking it.
 #[must_use]
-pub const fn is_actionable(state: TaskState, open_blockers: u32) -> bool {
+pub const fn is_actionable(state: &TaskState, open_blockers: u32) -> bool {
     matches!(
         effective_state(state, open_blockers),
         EffectiveTaskState::Todo | EffectiveTaskState::InProgress
@@ -181,40 +184,50 @@ mod tests {
 
     #[test]
     fn done_and_cancelled_blockers_release_dependents() {
-        assert!(blocker_is_open(TaskState::Todo, false));
-        assert!(blocker_is_open(TaskState::InProgress, false));
-        assert!(!blocker_is_open(TaskState::Done, false));
-        assert!(!blocker_is_open(TaskState::Cancelled, false));
+        assert!(blocker_is_open(&TaskState::Todo, false));
+        assert!(blocker_is_open(&TaskState::InProgress, false));
+        assert!(!blocker_is_open(&TaskState::Done, false));
+        assert!(!blocker_is_open(&TaskState::Cancelled, false));
         // A tombstoned blocker will never reach done; it must not block forever.
-        assert!(!blocker_is_open(TaskState::Todo, true));
+        assert!(!blocker_is_open(&TaskState::Todo, true));
+    }
+
+    #[test]
+    fn an_unknown_state_reads_as_todo() {
+        let unknown = TaskState::from_raw("archived");
+        // Open, like `todo`: an unknown state never releases a dependent.
+        assert!(blocker_is_open(&unknown, false));
+        assert_eq!(effective_state(&unknown, 0), EffectiveTaskState::Todo);
+        assert_eq!(effective_state(&unknown, 1), EffectiveTaskState::Blocked);
+        assert!(is_actionable(&unknown, 0));
     }
 
     #[test]
     fn effective_state_reports_blocked_only_for_open_tasks() {
         assert_eq!(
-            effective_state(TaskState::Todo, 0),
+            effective_state(&TaskState::Todo, 0),
             EffectiveTaskState::Todo
         );
         assert_eq!(
-            effective_state(TaskState::Todo, 1),
+            effective_state(&TaskState::Todo, 1),
             EffectiveTaskState::Blocked
         );
         assert_eq!(
-            effective_state(TaskState::InProgress, 2),
+            effective_state(&TaskState::InProgress, 2),
             EffectiveTaskState::Blocked
         );
         // A finished task is never "blocked", however many blockers it names.
         assert_eq!(
-            effective_state(TaskState::Done, 3),
+            effective_state(&TaskState::Done, 3),
             EffectiveTaskState::Done
         );
         assert_eq!(
-            effective_state(TaskState::Cancelled, 3),
+            effective_state(&TaskState::Cancelled, 3),
             EffectiveTaskState::Cancelled
         );
-        assert!(is_actionable(TaskState::Todo, 0));
-        assert!(!is_actionable(TaskState::Todo, 1));
-        assert!(!is_actionable(TaskState::Done, 0));
+        assert!(is_actionable(&TaskState::Todo, 0));
+        assert!(!is_actionable(&TaskState::Todo, 1));
+        assert!(!is_actionable(&TaskState::Done, 0));
     }
 
     #[test]
@@ -229,13 +242,13 @@ mod tests {
         let open = u32::try_from(
             states
                 .iter()
-                .filter(|(s, d)| blocker_is_open(*s, *d))
+                .filter(|(s, d)| blocker_is_open(s, *d))
                 .count(),
         )
         .unwrap();
         assert_eq!(open, 1);
         assert_eq!(
-            effective_state(TaskState::Todo, open),
+            effective_state(&TaskState::Todo, open),
             EffectiveTaskState::Blocked
         );
     }

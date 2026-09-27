@@ -4,6 +4,7 @@ import {
     type CoreCall,
     type CoreRequest,
     commands,
+    effectiveTaskState,
     makeWorkerCore,
     queries,
     supportsWorkerCore,
@@ -47,6 +48,21 @@ describe("the web core bridge", () => {
         expect(
             tasksFromQueryResult(JSON.stringify({ StreamTasks: [row] })),
         ).toEqual(expected);
+    });
+
+    it("keeps a newer build's state raw and reads it as todo", () => {
+        const row = {
+            id: "tsk_b",
+            title: "B",
+            state: "someday",
+            stream_id: "str_inbox",
+        };
+        const [task] = tasksFromQueryResult(JSON.stringify({ Tasks: [row] }));
+        expect(task?.state).toBe("someday");
+        expect(effectiveTaskState("someday")).toBe("todo");
+        for (const known of ["todo", "in_progress", "done", "cancelled"]) {
+            expect(effectiveTaskState(known)).toBe(known);
+        }
     });
 
     it("refuses a result that is not a task list", () => {

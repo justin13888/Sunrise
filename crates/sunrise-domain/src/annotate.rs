@@ -146,9 +146,9 @@ impl TaskEdit {
                 Set::Clear => None,
             });
         }
-        if let Some(set) = self.energy {
+        if let Some(set) = &self.energy {
             patch.energy = Some(match set {
-                Set::To(e) => Some(e),
+                Set::To(e) => Some(e.clone()),
                 Set::Clear => None,
             });
         }
@@ -219,8 +219,8 @@ impl TaskEdit {
             parts.push("clear contexts".into());
         }
         push_set(&mut parts, self.priority, "priority", |p| format!("!{p}"));
-        push_set(&mut parts, self.energy, "energy", |e| {
-            energy_word(e).to_string()
+        push_set(&mut parts, self.energy.clone(), "energy", |e| {
+            energy_word(&e).to_string()
         });
         push_set(&mut parts, self.duration_s, "estimate", |s| {
             format!("~{}", duration_label(s))
@@ -255,7 +255,7 @@ impl TaskEdit {
 }
 
 /// Render one `Set` into the preview list.
-fn push_set<T: Copy>(
+fn push_set<T>(
     parts: &mut Vec<String>,
     set: Option<Set<T>>,
     label: &str,
@@ -478,10 +478,12 @@ fn stamp(ts: Timestamp, tz: &TimeZone) -> String {
 }
 
 /// Word for an energy level.
-const fn energy_word(e: Energy) -> &'static str {
+const fn energy_word(e: &Energy) -> &'static str {
     match e {
         Energy::Low => "%low",
-        Energy::Med => "%med",
+        // The parser only produces known levels; an unknown one reads as its
+        // fallback, like everywhere else logic reads it.
+        Energy::Med | Energy::Unknown(_) => "%med",
         Energy::High => "%high",
     }
 }

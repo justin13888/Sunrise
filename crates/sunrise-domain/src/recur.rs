@@ -51,7 +51,14 @@ pub fn parse_recurrence(input: &str) -> Result<RRule, String> {
         let body = text
             .trim_start_matches("RRULE:")
             .trim_start_matches("rrule:");
-        return RRule::parse(body).map_err(|e| e.to_string());
+        let rule = RRule::parse(body).map_err(|e| e.to_string())?;
+        // `RRule::parse` keeps a value it does not know, because it also reads
+        // stored rules back (ADR-0045 §6). A rule someone typed is a request,
+        // and a request for a schedule this build cannot run is an error.
+        if let Some((part, raw)) = rule.first_unknown() {
+            return Err(format!("RRULE bad value for {part}: {raw}"));
+        }
+        return Ok(rule);
     }
 
     let lower = text.to_ascii_lowercase();
@@ -132,6 +139,11 @@ pub fn parse_recurrence(input: &str) -> Result<RRule, String> {
             Frequency::Monthly | Frequency::Yearly => rule.by_month_day = read_month_days(&tail)?,
             Frequency::Daily => {
                 return Err("a daily rule has no \"on\" clause".into());
+            }
+            // Every arm above sets a known frequency; this one cannot be
+            // reached from a phrase.
+            Frequency::Unknown(_) => {
+                return Err(format!("cannot read the recurrence \"{text}\""));
             }
         }
     }
@@ -291,6 +303,20 @@ mod tests {
         assert_eq!(r.by_day, vec![Weekday::Mo, Weekday::We]);
         // …including with the wire prefix people copy along with it.
         assert_eq!(ok("RRULE:FREQ=DAILY").freq, Frequency::Daily);
+    }
+
+    #[test]
+    fn a_typed_rfc_5545_body_with_an_unknown_value_is_refused() {
+        // The domain parser keeps unknown values so a stored rule survives;
+        // a rule someone typed is still refused, naming what it could not run.
+        for (body, part) in [
+            ("FREQ=HOURLY", "FREQ"),
+            ("FREQ=WEEKLY;BYDAY=XX", "BYDAY"),
+            ("FREQ=WEEKLY;WKST=ZZ", "WKST"),
+        ] {
+            let err = parse_recurrence(body).unwrap_err();
+            assert!(err.contains(part), "{body}: {err}");
+        }
     }
 
     #[test]

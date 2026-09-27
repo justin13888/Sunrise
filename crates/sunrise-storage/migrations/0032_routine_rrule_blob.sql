@@ -1,0 +1,31 @@
+-- 0032: store a routine's recurrence rule losslessly (issue #321,
+-- ADR-0045 §6).
+--
+-- What used to happen
+-- -------------------
+--
+-- A routine's rule was stored only as RFC 5545 text in `rrule_text`, and read
+-- back with `RRule::parse`. That was lossless while every `FREQ`, `BYDAY` and
+-- `WKST` value was one this build knew. It stops being lossless once those
+-- values can be ones it does not know: `Frequency` and `Weekday` now keep an
+-- unfamiliar value verbatim rather than rejecting the op, and a raw value that
+-- contains `;`, `,` or `=` cannot be written into the text form and read back
+-- as the same rule. The routine would come back with a different rule, or
+-- fail to load.
+--
+-- What happens now
+-- ----------------
+--
+-- `rrule_cbor` holds the rule's canonical CBOR, the same encoding the op carries,
+-- which holds any string. A read prefers it and falls back to `rrule_text`
+-- when it is NULL, which it is for every row written before this migration.
+-- Those rows' rules were written by a build that knew every value in them, so
+-- their text is still exact. `rrule_text` is still written on every write: it
+-- is what a human reading the database sees.
+--
+-- Not named `rrule`: that is the dead text column the 0013 baseline dropped,
+-- and `db.rs` asserts it stays dropped.
+--
+-- Schema-only: no row is rewritten, and no fixture is needed.
+
+ALTER TABLE routines ADD COLUMN rrule_cbor BLOB;

@@ -101,25 +101,27 @@ describe("the two themes are the same shape", () => {
 
 describe("the stream palette is keyed on the domain enum", () => {
     /**
-     * `StreamColor`, read four ways, because each one alone can be fooled.
+     * `StreamColor`, read three ways, because each one alone can be fooled.
      *
      * The palette's keys are not a naming convenience — they are the strings
-     * `#[serde(rename_all = "lowercase")]` persists into the vault, so a
-     * palette that disagrees with the enum is a colour storage can hold and no
-     * client can draw. Every check below closes a way that disagreement can
-     * hide:
+     * `StreamColor` persists into the vault, so a palette that disagrees with
+     * the enum is a colour storage can hold and no client can draw. Every
+     * check below closes a way that disagreement can hide:
      *
      * - **The declaration**, so a variant that exists is in the palette. A
-     *   ninth `Teal` behind `_ => "slate"` otherwise leaves the `as_str` scrape
-     *   at eight.
-     * - **`as_str`**, so a variant's own spelling is the one the palette uses.
-     * - **No per-variant `#[serde(rename …)]`**, because both scrapes read the
-     *   *identifier*: renaming `Pink` to `"fuchsia"` changes what is persisted
-     *   and nothing else, which is exactly the drift this test exists to stop.
-     * - **Unit variants only**, because `Custom(u8)` matches neither scrape, so
-     *   both lists agree at eight while a ninth case exists.
-     * - **`from_str_lossy`**, which nothing else reads: dropping
-     *   `"pink" => Self::Pink` silently loads every stored `"pink"` as `Slate`.
+     *   ninth `Teal` missing from the spelling table otherwise leaves that
+     *   scrape at eight.
+     * - **The `lossy_enum!` table**, which is both directions at once: it
+     *   generates `as_str` and `from_raw`, and is the only place a spelling
+     *   is written. Each variant's spelling must be its own name, so renaming
+     *   `Pink` to `"fuchsia"` — which changes what is persisted and nothing
+     *   else — fails here. Dropping `Pink => "pink"` would load every stored
+     *   `"pink"` as an unknown colour drawn as `Slate`.
+     * - **Unit variants only, plus exactly one `Unknown(UnknownVariant)`**
+     *   (ADR-0045 §6). That arm holds a colour a newer build wrote, and the
+     *   palette does not key it: a client draws it as the table's fallback.
+     *   Any other payload, say `Custom(u8)`, matches neither scrape, so both
+     *   lists would agree at eight while a ninth drawable case exists.
      */
     it("matches StreamColor in crates/sunrise-domain/src/stream.rs", async () => {
         const source = await readFile(STREAM_RS, "utf8");
@@ -139,86 +141,60 @@ describe("the stream palette is keyed on the domain enum", () => {
         const variants = [...body.matchAll(/^ {4}([A-Z]\w*)(.*)$/gm)].map(
             (m) => ({ name: m[1] as string, tail: m[2] as string }),
         );
+        const unknown = variants.filter(({ name }) => name === "Unknown");
         expect(
-            variants.length,
-            "stream.rs must declare at least one variant",
+            unknown.map(({ tail }) => tail),
+            "StreamColor keeps exactly one Unknown(UnknownVariant) arm",
+        ).toEqual(["(UnknownVariant),"]);
+        const known = variants.filter(({ name }) => name !== "Unknown");
+        expect(
+            known.length,
+            "stream.rs must declare at least one colour",
         ).toBeGreaterThan(0);
 
-        for (const { name, tail } of variants) {
+        for (const { name, tail } of known) {
             expect(
                 tail,
                 `${name} must be a unit variant: a payload is a case the palette cannot key`,
             ).toBe(",");
         }
 
-        // The type-level `rename_all` is the contract. A per-variant rename
-        // changes the persisted string while leaving the identifier — and so
-        // both scrapes below — untouched.
-        expect(
-            body,
-            "no variant may carry its own #[serde(rename …)]",
-        ).not.toMatch(/#\[serde\(rename\s*=/);
-        expect(source).toContain('#[serde(rename_all = "lowercase")]');
+        const declared = known.map(({ name }) => name.toLowerCase());
 
-        const declared = variants.map(({ name }) => name.toLowerCase());
-
-        const asStr =
-            /pub const fn as_str\(self\) -> &'static str \{([\s\S]*?)\n {4}\}/.exec(
+        const table =
+            /lossy_enum!\(StreamColor, fallback = (\w+), \{([\s\S]*?)\n\}\);/.exec(
                 source,
             );
         expect(
-            asStr,
-            "StreamColor::as_str must still be findable in stream.rs",
+            table,
+            "StreamColor's lossy_enum! table must still be findable in stream.rs",
         ).not.toBeNull();
         const spelled = [
-            ...(asStr?.[1] ?? "").matchAll(/Self::(\w+) => "(\w+)",/g),
+            ...(table?.[2] ?? "").matchAll(/^ {4}(\w+) => "([^"]*)",$/gm),
         ].map((m) => ({
             variant: (m[1] as string).toLowerCase(),
             text: m[2] as string,
         }));
         for (const { variant, text } of spelled) {
-            expect(text, `as_str must spell ${variant} as its own name`).toBe(
-                variant,
-            );
+            expect(
+                text,
+                `the table must spell ${variant} as its own name`,
+            ).toBe(variant);
         }
 
         // The two lists must agree with each other before either is worth
-        // comparing to the palette: a mismatch here is a catch-all arm.
+        // comparing to the palette.
         expect(spelled.map(({ text }) => text).sort()).toEqual(
             [...declared].sort(),
         );
         expect([...tokens.streamKeys].sort()).toEqual([...declared].sort());
 
-        // The parser is the other direction of the same contract, and nothing
-        // else in this repository reads it.
-        const lossy =
-            /pub fn from_str_lossy\(s: &str\) -> Self \{([\s\S]*?)\n {4}\}/.exec(
-                source,
-            );
+        // The fallback an unknown colour is drawn as has to be drawable.
+        const fallback = table?.[1]?.toLowerCase();
         expect(
-            lossy,
-            "StreamColor::from_str_lossy must still be findable in stream.rs",
-        ).not.toBeNull();
-        const parsed = new Map(
-            [...(lossy?.[1] ?? "").matchAll(/"(\w+)" => Self::(\w+),/g)].map(
-                (m) => [m[1] as string, (m[2] as string).toLowerCase()],
-            ),
-        );
-        const fallback = /_ => Self::(\w+),/
-            .exec(lossy?.[1] ?? "")?.[1]
-            ?.toLowerCase();
-        expect(
-            fallback,
-            "from_str_lossy must keep a lossy fallback",
-        ).toBeDefined();
-        for (const key of tokens.streamKeys) {
-            const round =
-                parsed.get(key) ?? (key === fallback ? key : undefined);
-            expect(
-                round,
-                `from_str_lossy must map "${key}" back to ${key}, not silently to ${fallback}`,
-            ).toBe(key);
-        }
+            tokens.streamKeys as readonly string[],
+            "the fallback an unknown colour reads as must be in the palette",
+        ).toContain(fallback);
     });
 });
 
