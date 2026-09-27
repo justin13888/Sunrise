@@ -421,12 +421,31 @@ joiner adopts it in the transaction that creates its vault.** The rules:
   `ID_S_priv`, and the same message hands over every Stream key in the account.
   A sponsor that lied about the bound could more simply hand the keys over
   itself.
-- **An adopted row is never released.** `release_orphan_read_bounds` deletes a
-  bound whose id has no cert here and no ledger row naming it. The joiner holds
-  neither when it adopts, so without an exemption its first `device_revoke`
-  would release every adopted bound whose cert had not arrived yet.
-  `from_sponsor = 1` (migration 0030) marks the adopted rows. The cost is
-  bounded: the exempt rows are the sponsor's table at one moment, written once.
+- **An adopted row is not released while it is still only adopted.**
+  `release_orphan_read_bounds` deletes a bound whose id has no cert here and no
+  ledger row naming it. The joiner holds neither when it adopts, so without an
+  exemption its first `device_revoke` would release every adopted bound whose
+  cert had not arrived yet. `from_sponsor = 1` (migration 0030) marks the
+  adopted rows, and the release skips them. The cost is bounded: the exempt
+  rows are the sponsor's table at one moment, written once.
+- **An adopted row counts toward readmission only once the joiner's own fold
+  bounds it.** The `DeviceCertPublish` arm's readmission check
+  (`core.device.admitted_after_revocation`) counts `from_sponsor = 0` rows
+  only. Counting adopted rows would mark the sponsor and every device that
+  paired before any revocation as "joined after a device was removed" on the
+  joiner's first sync, which no older replica does. The fold's bound write is
+  therefore an upsert that sets `from_sponsor = 0` on an adopted row it bounds
+  itself. Without that flip, a joiner that adopted C and then applied `A -> C`
+  from the relay would count nothing, and would not mark a device that paired
+  after the revocation although older replicas mark it. With both, the joiner
+  counts a revocation when its own fold applies it, in the relay order an older
+  replica met it in. The cost is that the flipped row loses the exemption
+  above. It has no further need of it: the fold wrote it from a ledger row,
+  which is the premise the release is built on, so it stands where the
+  sponsor's own row for the device stands. A row the joiner's fold never
+  bounds, which is the #282 case, keeps the exemption.
+  `an_adopted_bound_marks_no_device_as_joined_after_a_revocation` pins both
+  halves.
 - **The field is optional on the wire.** Grant field 4 and payload field 15 are
   omitted when empty. A sponsor that predates them pairs a joiner that adopts
   nothing, which is where every joiner used to start. A joiner that predates
@@ -632,8 +651,8 @@ there are five visible consequences:
    stops being a pure function of the op set. `device_revocations` answers "is
    this device currently called revoked?" and has to converge, so it is derived
    and reversible; all four key-distribution sites read `device_read_bounds`
-   instead, which is written by `INSERT OR IGNORE` and never deleted from
-   (migration 0028). Without the split an unwind released the read bound —
+   instead, which the fold only ever adds to and never deletes a certed device
+   from (migration 0028). Without the split an unwind released the read bound —
    the device re-entered `emit_key_envelopes`' recipient set for every
    subsequent epoch, and one `DeviceCertPublish` from it drove
    `backfill_key_envelopes` to hand back every held epoch of every stream.
@@ -642,8 +661,8 @@ there are five visible consequences:
    and **does not converge**. A replica that believed a revocation before
    learning it was unwound holds the row; one that met the two ops the other way
    round never held it and never will, because from then on both replicas
-   compute the same gated register and the `INSERT OR IGNORE` has nothing new to
-   write. Retire laptop C from desktop A, then months later retire A from phone
+   compute the same gated register and the fold's bound write has nothing new
+   to add. Retire laptop C from desktop A, then months later retire A from phone
    B: a replica applying `A -> C` first ends with the bound `{C, A}`, and a
    replica applying `B -> A` first ends with `{A}` — C is never bounded there, so
    it stays a recipient of every epoch that replica mints and one
@@ -895,9 +914,10 @@ does not: the second device's gated row discounts that current device, and
   throttles the honest devices along with the flooding one. And a rate is not a
   bound: at any rate a flood arrives in the end, and the ledger would still
   grow without limit on every replica.
-- **The read bound is a second table and is never rewritten**, only added to
-  (`0028_device_read_bounds.sql`), with one exception for ids no device here
-  has. `Engine::release_orphan_read_bounds` deletes a row whose id has no row
+- **The read bound is a second table and only gains devices**
+  (`0028_device_read_bounds.sql`). The one thing the fold changes on an
+  existing row is §Decision 5's `from_sponsor` mark. There is one exception
+  to "only gains", for ids no device here has. `Engine::release_orphan_read_bounds` deletes a row whose id has no row
   in `devices` and no ledger row naming it. Pair compaction keeps every pair,
   so only the cap above can remove the last ledger row naming an id. Without
   the release, a sender over the cap would still grow this table by one row
@@ -908,11 +928,15 @@ does not: the second device's gated row discounts that current device, and
   arrives later is current, as the capped ledger says. A replica that held the
   cert first keeps its bound, which is the non-convergence #411 already
   records, reached here only through a sender over the cap. A bound a paired
-  device adopted from its sponsor is exempt (`from_sponsor = 1`, §Decision 5):
-  the joiner holds no cert or ledger row for it yet, and releasing it would
-  readmit the device when its cert arrived. One `INSERT OR IGNORE` per surviving row runs
-  immediately before the `DELETE` above, so no row passes through a window where
-  it is in neither. `Engine::is_read_bounded` is the read, and the four
+  device adopted from its sponsor is exempt while it stays marked
+  (`from_sponsor = 1`, §Decision 5): the joiner holds no cert or ledger row for
+  it yet, and releasing it would readmit the device when its cert arrived. The
+  fold writes one row per surviving register row with
+  `INSERT ... ON CONFLICT(device_id) DO UPDATE SET from_sponsor = 0`, which
+  clears that mark on an adopted row it bounds itself, immediately before the
+  `DELETE` above, so no row passes through a window where it is in neither.
+  `adopt_sponsor_read_bounds` is the table's only other writer, once, when a
+  paired vault is created. `Engine::is_read_bounded` is the read, and the four
   key-distribution sites are **not** its only askers: a **fifth** asks it
   without distributing a key, a sender's authority to claim a third-party
   `key_envelope` recipient row (§Decision 2 above), which is the one this ADR

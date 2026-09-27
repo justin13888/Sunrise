@@ -24,8 +24,10 @@
 //!   through a `LEFT JOIN` rather than through this function (`super::query`),
 //!   and `CommandResult::revocation_gated` in [`Engine::revoke_device`] below.
 //! - **"Is this device read-bounded?"** — `device_read_bounds`, via
-//!   [`Engine::is_read_bounded`]. A ratchet: written only by the fold's
-//!   `INSERT OR IGNORE`, never deleted for a device with a cert here. It has
+//!   [`Engine::is_read_bounded`]. A ratchet: written by the fold's upsert
+//!   (`INSERT ... ON CONFLICT(device_id) DO UPDATE SET from_sponsor = 0`) and,
+//!   once at pairing, by [`adopt_sponsor_read_bounds`]; never deleted for a
+//!   device with a cert here. It has
 //!   to be monotone or it is not a bound; it gates all four key sites —
 //!   `emit_key_envelopes`' anti-join and `backfill_key_envelopes`' early
 //!   return in [`super::oplog`], the survivor roster `rotate_identity` builds
@@ -603,10 +605,14 @@ impl Engine {
     /// to false when the fold learns a revocation's author was itself revoked.
     /// This one answers "may this device be given a key?", and it only ever
     /// goes from false to true for a device with a cert here: written by the
-    /// fold's `INSERT OR IGNORE` and 0028's seed, and deleted only by
+    /// fold's upsert and 0028's seed, and deleted only by
     /// [`Self::release_orphan_read_bounds`], for certless ids no row names. A
     /// paired vault also starts with its sponsor's rows, adopted at creation by
-    /// [`adopt_sponsor_read_bounds`] and never released.
+    /// [`adopt_sponsor_read_bounds`] and marked `from_sponsor = 1`, which
+    /// exempts them from that release. The exemption lasts until this
+    /// replica's own fold bounds the same device: the upsert then sets
+    /// `from_sponsor = 0`, and the row is releasable like any row the fold
+    /// wrote.
     ///
     /// Keeping them apart is what makes the threat model's A3 sentence true.
     /// While one table served both, a routine unwind — retire the old laptop
@@ -1197,16 +1203,18 @@ impl Engine {
         // from it drove `backfill_key_envelopes` to hand back every held epoch
         // of every stream.
         //
-        // So the bound is its own table and this is its only writer:
-        // `INSERT OR IGNORE` over the register this fold just computed, run
+        // So the bound is its own table and this fold is its writer over the
+        // ledger: an upsert over the register this fold just computed, run
         // **before** the `DELETE`, so no row can pass through a window where it
-        // is in neither. Only `release_orphan_read_bounds` deletes, and never a
-        // certed device — `migrations/0028_device_read_bounds.sql` is why a ratchet
-        // rather than a second fold, and why making the register itself the
-        // ratchet was rejected.
+        // is in neither. The only other writer is `adopt_sponsor_read_bounds`,
+        // once, when a paired vault is created. Only `release_orphan_read_bounds`
+        // deletes, and never a certed device —
+        // `migrations/0028_device_read_bounds.sql` is why a ratchet rather than
+        // a second fold, and why making the register itself the ratchet was
+        // rejected.
         //
         // **The cost, and it is larger than a floor: the bound does not
-        // converge.** What this `INSERT OR IGNORE` buys is monotonicity along
+        // converge.** What this insert buys is monotonicity along
         // *this replica's own arrival order*, and nothing more. The bound is a
         // union of the registers this replica happened to compute, so a row
         // gated at every fold this replica runs never enters `register` and
@@ -1600,8 +1608,10 @@ impl Engine {
     /// ([#411](https://github.com/justin13888/Sunrise/issues/411)), reached
     /// here only through a sender that named more ids than the cap.
     ///
-    /// **A bound adopted from a sponsor is never released here**
-    /// (`from_sponsor = 1`, migration 0030). This function's premise is that
+    /// **A bound adopted from a sponsor is not released here while it stays
+    /// marked** (`from_sponsor = 1`, migration 0030). The fold clears the mark
+    /// when it bounds the same device itself, and from then on the row is the
+    /// fold's own and meets this function's premise. That premise is that
     /// the fold wrote the bound from a ledger row, so a certless id no row
     /// names is one only the cap could have emptied. An adopted bound had no
     /// ledger row here to begin with: the joiner writes it before it holds any

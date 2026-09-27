@@ -82,10 +82,10 @@ the code rather than from the issue:
   sentence that mentions the table.
 - Since migration 0028 the key-distribution side reads `device_read_bounds`
   rather than the register, so the register's own predicate `Engine::is_revoked`
-  (`crates/sunrise-core/src/engine/revocation.rs:577#is_revoked`) has exactly
+  (`crates/sunrise-core/src/engine/revocation.rs:579#is_revoked`) has exactly
   **one** non-test caller and it is not on the apply path at all: the revoking
   command reads it to report whether its own row survived the fold
-  (`crates/sunrise-core/src/engine/revocation.rs:257#revoke_device`). What the
+  (`crates/sunrise-core/src/engine/revocation.rs:259#revoke_device`). What the
   apply path reaches is the **bound**, twice, and both reads are on the
   **key-distribution** side: the anti-join is `emit_key_envelopes`'s
   `NOT EXISTS` against `device_read_bounds`
@@ -136,14 +136,14 @@ Revocation today is a **register plus a read bound**:
 - `device_revoke` is **recorded whatever its sender's standing**, in
   `device_revoke_ops`, and `device_revocations` is rebuilt from that ledger on
   every such op
-  (`crates/sunrise-core/src/engine/revocation.rs:1299#apply_device_revoke`)
+  (`crates/sunrise-core/src/engine/revocation.rs:1307#apply_device_revoke`)
   rather than upserted into: the fold deletes the register outright and
   re-inserts the winners
-  (`crates/sunrise-core/src/engine/revocation.rs:1254#refold_device_revocations`).
+  (`crates/sunrise-core/src/engine/revocation.rs:1262#refold_device_revocations`).
   It is still an LWW register on the op's own HLC with `revoked_by` as the
   tie-break, but that rule is now the fold's ascending walk — a later row simply
   overwriting an earlier one
-  (`crates/sunrise-core/src/engine/revocation.rs:1085-1086#refold_device_revocations`).
+  (`crates/sunrise-core/src/engine/revocation.rs:1091-1092#refold_device_revocations`).
   The guarded upsert this bullet described until
   [ADR-0041](./0041-peer-side-revocation-is-a-fold.md) is gone, and both
   citations it carried had rotted onto identity-transition code inside
@@ -152,9 +152,9 @@ Revocation today is a **register plus a read bound**:
 - A device may not move its own cut: the one edit the register never accepts
   from the party it is about. It is refused at ingest with a
   `core.device.revoke_refused` warning
-  (`crates/sunrise-core/src/engine/revocation.rs:1331#apply_device_revoke`), and
+  (`crates/sunrise-core/src/engine/revocation.rs:1339#apply_device_revoke`), and
   since ADR-0041 the same rule is held **again** in the fold
-  (`crates/sunrise-core/src/engine/revocation.rs:1113#refold_device_revocations`),
+  (`crates/sunrise-core/src/engine/revocation.rs:1119#refold_device_revocations`),
   because the fold is the register's sole author and a rule enforced only on the
   way in would be absent for every row already in the ledger.
 - The cut's `(cut_ms, cut_logical)` decides **which** revocation wins when two
@@ -174,7 +174,7 @@ Revocation today is a **register plus a read bound**:
   (`crates/sunrise-server/src/api/devices.rs:310#revoke_by_vault_id`).
   `RevokeDevice` now inserts a `relay_revocation_intents` row in the op's own
   transaction, when the fold finds the revocation effective
-  (`crates/sunrise-core/src/engine/revocation.rs:311-318#revoke_device`), and
+  (`crates/sunrise-core/src/engine/revocation.rs:313-320#revoke_device`), and
   `sync_driver::drain_relay_revocations` retries it on every session
   (`crates/sunrise-core/src/sync_driver.rs:1671#drain_relay_revocations`). The
   bound is real and **conditional**: the relay enforces only against a
@@ -185,9 +185,9 @@ Revocation today is a **register plus a read bound**:
 - **Two control ops are refused at the peer; entity writes are not.** A
   `device_revoke` whose sender is revoked **in the fold's own discounted view
   of the ledger** is skipped
-  (`crates/sunrise-core/src/engine/revocation.rs:1135-1145#refold_device_revocations`),
+  (`crates/sunrise-core/src/engine/revocation.rs:1141-1151#refold_device_revocations`),
   one naming its own sender is refused at ingest
-  (`crates/sunrise-core/src/engine/revocation.rs:1331#apply_device_revoke`), and
+  (`crates/sunrise-core/src/engine/revocation.rs:1339#apply_device_revoke`), and
   a read-bounded sender's third-party `key_envelope` recipient claim is not
   recorded (`crates/sunrise-core/src/engine/sync.rs:741#apply_control_op`). That
   is [ADR-0041](./0041-peer-side-revocation-is-a-fold.md), and it reaches no
@@ -199,7 +199,7 @@ Revocation today is a **register plus a read bound**:
   which keeps two devices revoking each other converging on *both* revocations
   instead of letting a back-dated op silence its target. And the discount pass
   that builds the view
-  (`crates/sunrise-core/src/engine/revocation.rs:1069-1083#refold_device_revocations`)
+  (`crates/sunrise-core/src/engine/revocation.rs:1075-1089#refold_device_revocations`)
   drops a revoker `S` out of `V`'s set whenever the ledger holds a row revoking
   `S` from a sender that is not `V`. So a device **the ledger revokes** can
   still seat rows: `O` revokes `X`, `P` revokes `O`, `Q` revokes `P`, and `X`
@@ -243,13 +243,13 @@ took five review rounds to bottom out, and it is not about convergence:
   because the cut cannot move. It can, in both directions, and always could: the
   register is not a ratchet and was never a `MIN`, the fold walks the ledger
   ascending so a later row overwrites an earlier one
-  (`crates/sunrise-core/src/engine/revocation.rs:1085-1086#refold_device_revocations`),
+  (`crates/sunrise-core/src/engine/revocation.rs:1091-1092#refold_device_revocations`),
   a cut that landed wrong is corrected by revoking again from a healthy device
-  (`crates/sunrise-core/src/engine/revocation.rs:1308-1314#apply_device_revoke`),
+  (`crates/sunrise-core/src/engine/revocation.rs:1316-1322#apply_device_revoke`),
   and since ADR-0041 a re-fold can lower a cut or drop the row outright, because
   the register is a pure function of the op set rather than something edited in
   place
-  (`crates/sunrise-core/src/engine/revocation.rs:1149-1155#refold_device_revocations`).
+  (`crates/sunrise-core/src/engine/revocation.rs:1155-1161#refold_device_revocations`).
   **None of that reaches an op the cursor has already passed.** A correction
   changes what is sealed *next*; it brings nothing back. The loss is permanent
   because the correction is forward-only, not because the cut is — which is the
@@ -260,7 +260,7 @@ took five review rounds to bottom out, and it is not about convergence:
   all**: `revokers_all`, the discount pass and the walk's condition are built
   from `(sender, revoked)` pairs and nothing else, and the HLC decides only
   which row wins the register
-  (`crates/sunrise-core/src/engine/revocation.rs:906-918#refold_device_revocations`).
+  (`crates/sunrise-core/src/engine/revocation.rs:912-924#refold_device_revocations`).
   A correction therefore leaves the gate's answer exactly as it was, whichever
   direction it moves the cut. Recoverability was never a function of the
   register's direction; it is a function of whether anything was thrown away,
@@ -309,7 +309,7 @@ decides who is revoked. The recipient-claim gate does not have that property: it
 reads `device_read_bounds`, a ratchet over the registers *this* replica computed
 along its own arrival order rather than a function of the op set — "a derivation
 this table does not have"
-(`crates/sunrise-core/src/engine/revocation.rs:1231-1239#refold_device_revocations`),
+(`crates/sunrise-core/src/engine/revocation.rs:1239-1247#refold_device_revocations`),
 a predicate that "does not converge across replicas"
 ([`key-rotation.md` §Revocation](../03-crypto/key-rotation.md#revocation)), and
 a concession ADR-0041 makes for itself ([ADR-0041 §2. A read-bounded device's
@@ -331,9 +331,9 @@ The guarantee, stated positively and in the terms a reader of
 > minted at or after the cut, so the device can read nothing written after it.
 > A row the fold gated bounds nobody: `device_read_bounds` is written only from
 > the fold's surviving register
-> (`crates/sunrise-core/src/engine/revocation.rs:1245-1253#refold_device_revocations`)
+> (`crates/sunrise-core/src/engine/revocation.rs:1253-1261#refold_device_revocations`)
 > and a gated row never reaches it
-> (`crates/sunrise-core/src/engine/revocation.rs:1135-1145#refold_device_revocations`).
+> (`crates/sunrise-core/src/engine/revocation.rs:1141-1151#refold_device_revocations`).
 > Every replica applies every **entity** op it can decrypt, whatever its
 > sender's revocation state and whatever order the
 > `device_revoke` and the op arrive in, so two replicas holding the same op set
@@ -362,7 +362,7 @@ Three corollaries, recorded so they are not rediscovered:
    [ADR-0041](./0041-peer-side-revocation-is-a-fold.md)**: the two control ops
    it gates *are* refused, and a correction does not un-skip one, because the
    gate reads no cut at all and a correction leaves its answer exactly as it was
-   (`crates/sunrise-core/src/engine/revocation.rs:906-918#refold_device_revocations`).
+   (`crates/sunrise-core/src/engine/revocation.rs:912-924#refold_device_revocations`).
    The remedy there is to revoke again from a device the account still trusts,
    which is tolerable for an administrative act and would not be for a task
    edit.
@@ -492,10 +492,10 @@ and that is what the relay bound is for.
    **This record sanctions no screen copy about what a revoked device may still
    revoke.** Three attempts at one have stood here and each was falsified by a
    guard the one before it had not met: the `effective` guard in `revoke_device`
-   (`crates/sunrise-core/src/engine/revocation.rs:257#revoke_device`), which
+   (`crates/sunrise-core/src/engine/revocation.rs:259#revoke_device`), which
    withholds the cut where the local fold discards the op; then the fold's one
    exception; then the **discount pass**
-   (`crates/sunrise-core/src/engine/revocation.rs:1069-1083#refold_device_revocations`),
+   (`crates/sunrise-core/src/engine/revocation.rs:1075-1089#refold_device_revocations`),
    which drops a revoker `S` out of `V`'s set whenever the ledger holds a row
    revoking `S` from a sender that is not `V`. Three links of that — `O` revokes
    `X`, `P` revokes `O`, `Q` revokes `P` — leave `X` **on the revoked list while
