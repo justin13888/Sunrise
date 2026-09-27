@@ -107,6 +107,15 @@ enum UITestHarness {
             }
         )
     }
+
+    /// The scratch vault directory this process was launched with, if any.
+    static func scratchVault(
+        arguments: [String] = ProcessInfo.processInfo.arguments
+    ) -> URL? {
+        guard let index = arguments.firstIndex(of: flag),
+              arguments.index(after: index) < arguments.endIndex else { return nil }
+        return URL(filePath: arguments[arguments.index(after: index)])
+    }
 }
 
 /// The multi-vault harness's key stores, one pair per vault id.
@@ -136,15 +145,6 @@ final class ScratchVaultStores: @unchecked Sendable {
         let store = InMemoryRelayDeviceIDStore()
         relayDevices[id] = store
         return store
-    }
-
-    /// The scratch vault directory this process was launched with, if any.
-    static func scratchVault(
-        arguments: [String] = ProcessInfo.processInfo.arguments
-    ) -> URL? {
-        guard let index = arguments.firstIndex(of: flag),
-              arguments.index(after: index) < arguments.endIndex else { return nil }
-        return URL(filePath: arguments[arguments.index(after: index)])
     }
 }
 
