@@ -1568,7 +1568,7 @@ jobs:
         # while the gate stayed green. `path#symbol` with no line checks only
         # that the item is still declared.
         #
-        # Three behaviours to know before writing one. A suffix that is not a
+        # Four behaviours to know before writing one. A suffix that is not a
         # bare Rust item name (`#Engine::f`, `#f()`) is a FAILURE, reported
         # after the path and line checks have run on the same span, so it can
         # never subtract a check the citation already had. A github.com
@@ -1583,7 +1583,13 @@ jobs:
         # always failed on. Neither an
         # `impl` block nor a `mod` is a legal target, because `#Engine`
         # spanned 97.7% of `sync.rs` and `mod tests` in `api/sync/suite.rs`
-        # spans 99.5% of it, so neither checked anything.
+        # spans 99.5% of it, so neither checked anything. A single-line
+        # `path:LINE#symbol` whose line is a `///` line of the item's doc
+        # comment below its summary line FAILS, in every declaration of the
+        # name that contains it: that is where a line written for the
+        # declaration lands once the doc comment above it grows. The summary,
+        # attribute, declaration and body lines stay clean, and a range —
+        # `N-N` included — is how a doc passage is cited on purpose.
         #
         # The full rule lives in the script's own module docstring, and
         # `mise.toml`'s `citations` task carries the same summary. All three
