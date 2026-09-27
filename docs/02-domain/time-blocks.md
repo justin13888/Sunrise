@@ -272,7 +272,10 @@ Overlap is decided by resolving both blocks' bounds in the reader's zone
 ([`time.md` §2](../10-cross-cutting/time.md#2-comparisons-resolve-through-the-readers-zone-never-through-index_ms)),
 never on the storage index key, and recurring blocks overlap per occurrence.
 Today `overlaps` compares index keys
-(`crates/sunrise-domain/src/block.rs#overlaps`), tracked in [#336](https://github.com/justin13888/Sunrise/issues/336).
+(`crates/sunrise-domain/src/block/conflict.rs#overlaps`), tracked in [#336](https://github.com/justin13888/Sunrise/issues/336).
+A block with a bound this build cannot place (an unknown time kind with no
+`at` instant, or the 9999-01-01 instant a client mirror shows it as) conflicts
+with nothing, and loses a merge's union to the other block's bound.
 
 The Calendar view shades the overlap region and shows a "Resolve" overflow menu with three actions:
 
