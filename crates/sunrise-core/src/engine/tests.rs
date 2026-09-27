@@ -11619,6 +11619,11 @@ fn a_revoked_device_cannot_rotate_a_stream_key() {
 /// `key_envelope` arm. The envelope lands *before* A learns X is revoked, so
 /// the test also pins that the standing is read when A chooses a key to write
 /// under, and not when the key arrived.
+///
+/// A does not fall back to its own `honest_epoch` either: X was trusted when
+/// A minted it, so X holds it. Pre-revocation keys stay live only while they
+/// are the highest epoch a replica holds, and the revoked device holds them
+/// until the rotation's envelope arrives.
 #[test]
 fn a_key_a_revoked_device_seals_to_a_peer_is_absorbed_and_never_written_under() {
     let ea = engine_random_keys(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
@@ -11678,11 +11683,13 @@ fn a_key_a_revoked_device_seals_to_a_peer_is_absorbed_and_never_written_under() 
     revoke(&ea, &mut dba, &eo, x_id, T0 + 1_000);
     assert!(read_bound_row(&dba, &x_id).is_some(), "A bounded X");
 
-    let (epoch, key) = live(&mut dba);
-    assert_eq!(
-        (epoch, stream_key_id(&key)),
-        (honest_epoch, stream_key_id(&honest_key)),
-        "A writes under the highest epoch no read-bounded device holds"
+    // Not X's epoch, which X delivered. Nor `honest_epoch` below it: A minted
+    // that while X was trusted, so X was sealed it and holds it too.
+    assert!(
+        dba.with_tx(|tx| ea.keychain.current_stream_key_tx(tx, &inbox))
+            .unwrap()
+            .is_none(),
+        "A holds no inbox key it may write under"
     );
     assert!(
         ea.keychain
@@ -11691,16 +11698,32 @@ fn a_key_a_revoked_device_seals_to_a_peer_is_absorbed_and_never_written_under() 
             .any(|k| stream_key_id(k) == stream_key_id(&planted)),
         "and still holds X's key, so what was sealed under it stays readable"
     );
+    assert!(
+        ea.keychain
+            .stream_keys_at(&inbox, honest_epoch)
+            .iter()
+            .any(|k| stream_key_id(k) == stream_key_id(&honest_key)),
+        "as it does its own pre-revocation key"
+    );
 
-    // And A's next write really is sealed where X cannot read it.
+    // So A's next write mints above both, and the fresh epoch is delivered to
+    // O and not to X.
     let task = new_task(&ea, &mut dba, "written after the revocation");
     let env = create_env_for(&dba, task.bytes());
     let sealed_at = sunrise_crypto::decode_envelope(&env)
         .expect("the op this engine just wrote decodes")
         .epoch;
     assert_eq!(
-        sealed_at, honest_epoch,
-        "the task was sealed under epoch {sealed_at}; X holds epoch {planted_epoch}"
+        sealed_at,
+        planted_epoch + 1,
+        "the task was sealed under epoch {sealed_at}; X holds epochs \
+         {honest_epoch} and {planted_epoch}"
+    );
+    let o_id = eo.keychain.device_id();
+    assert!(envelopes_to(&ea, &dba, &o_id).contains(&(inbox, sealed_at)));
+    assert!(
+        !envelopes_to(&ea, &dba, &x_id).contains(&(inbox, sealed_at)),
+        "X was not delivered the epoch A wrote under"
     );
     ea.keychain
         .open_op(&env)
