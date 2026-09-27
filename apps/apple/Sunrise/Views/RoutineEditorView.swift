@@ -38,10 +38,11 @@ struct RoutineEditorView: View {
         _title = State(initialValue: template?.title ?? "")
         // An existing routine's phrase is its rule described back. That is the
         // only honest starting text: the phrase originally typed is not
-        // stored, and the summary is what the rule actually means.
-        _recurrence = State(initialValue: RecurrenceField(
-            text: routine.map { recurrenceSummary(rule: $0.rrule) } ?? "every day"
-        ))
+        // stored, and the summary is what the rule actually means. Untouched,
+        // the field keeps the held rule, so a rule this build cannot read
+        // back from its summary still saves as itself.
+        _recurrence = State(initialValue: routine.map { RecurrenceField(held: $0.rrule) }
+            ?? RecurrenceField(text: "every day"))
         _streamID = State(initialValue: template?.streamId ?? inboxStreamId())
         _timeZone = State(initialValue: routine?.timezone ?? TimeZone.current.identifier)
         _priority = State(initialValue: Int(template?.priority ?? 0))
