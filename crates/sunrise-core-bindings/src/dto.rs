@@ -167,6 +167,9 @@ impl From<&ScheduleConstraint> for Constraint {
             days_of_week,
             date_range,
             severity,
+            // The mirror does not carry fields this build does not know; a
+            // value a client hands back replaces the stored one whole.
+            unknown: _,
         } = c;
         Self {
             time_of_day: time_of_day.as_ref().map(|w| TimeWindow {
@@ -188,16 +191,11 @@ impl From<&ScheduleConstraint> for Constraint {
 impl From<Constraint> for ScheduleConstraint {
     fn from(c: Constraint) -> Self {
         Self {
-            time_of_day: c.time_of_day.map(|w| TimeOfDayRange {
-                start: w.start,
-                end: w.end,
-            }),
+            time_of_day: c.time_of_day.map(|w| TimeOfDayRange::new(w.start, w.end)),
             days_of_week: sunrise_domain::WeekdaySet::from_days(c.days_of_week),
-            date_range: c.date_range.map(|r| DateRange {
-                start: r.start,
-                end: r.end,
-            }),
+            date_range: c.date_range.map(|r| DateRange::new(r.start, r.end)),
             severity: c.severity,
+            unknown: sunrise_domain::Unknowns::new(),
         }
     }
 }
@@ -241,6 +239,8 @@ impl From<&RRule> for Recurrence {
             count,
             until,
             wkst,
+            // Not mirrored; see `Constraint`.
+            unknown: _,
         } = r;
         Self {
             freq: freq.clone(),
@@ -268,6 +268,7 @@ impl From<Recurrence> for RRule {
             count: r.count,
             until: r.until,
             wkst: r.wkst,
+            unknown: sunrise_domain::Unknowns::new(),
         }
     }
 }
@@ -904,6 +905,8 @@ impl From<&TaskTemplate> for Template {
             priority,
             estimated_duration_s,
             body,
+            // Not mirrored; see `Constraint`.
+            unknown: _,
         } = t;
         Self {
             title: title.clone(),
@@ -927,6 +930,7 @@ impl From<Template> for TaskTemplate {
             priority: t.priority,
             estimated_duration_s: t.estimated_duration_s,
             body: t.body,
+            unknown: sunrise_domain::Unknowns::new(),
         }
     }
 }

@@ -13,7 +13,7 @@
 //! spec's stated forms for whole-second times.
 
 use crate::rrule::Weekday;
-use crate::unknown::UnknownVariant;
+use crate::unknown::{UnknownVariant, Unknowns};
 use crate::validation::ValidationError;
 use jiff::civil::{Date, Time};
 use jiff::Zoned;
@@ -53,22 +53,58 @@ crate::unknown::lossy_enum!(ConstraintSeverity, fallback = Soft, {
 
 /// Local wall-clock time-of-day window. Half-open `[start, end)`; `start` MUST
 /// be strictly `< end` (midnight wrap is not supported).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Not `Copy`: it keeps the fields a newer build adds to it (ADR-0045 §6).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TimeOfDayRange {
     /// Inclusive lower bound (local wall-clock).
     pub start: Time,
     /// Exclusive upper bound (local wall-clock).
     pub end: Time,
+    /// Fields this build does not know, re-emitted verbatim. See
+    /// [`crate::unknown`].
+    #[serde(flatten)]
+    pub unknown: Unknowns,
+}
+
+impl TimeOfDayRange {
+    /// A window with no unknown fields.
+    #[must_use]
+    pub fn new(start: Time, end: Time) -> Self {
+        Self {
+            start,
+            end,
+            unknown: Unknowns::new(),
+        }
+    }
 }
 
 /// Inclusive civil-date range. Open-ended when `end` is absent.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Not `Copy`: it keeps the fields a newer build adds to it (ADR-0045 §6).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DateRange {
     /// Inclusive lower bound.
     pub start: Date,
     /// Inclusive upper bound; open-ended if `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub end: Option<Date>,
+    /// Fields this build does not know, re-emitted verbatim. See
+    /// [`crate::unknown`].
+    #[serde(flatten)]
+    pub unknown: Unknowns,
+}
+
+impl DateRange {
+    /// A range with no unknown fields.
+    #[must_use]
+    pub fn new(start: Date, end: Option<Date>) -> Self {
+        Self {
+            start,
+            end,
+            unknown: Unknowns::new(),
+        }
+    }
 }
 
 /// Canonical weekday order (`MO`..`SU`) used for the compact set.
@@ -251,6 +287,12 @@ pub struct ScheduleConstraint {
     pub date_range: Option<DateRange>,
     /// Severity (required).
     pub severity: ConstraintSeverity,
+    /// Fields this build does not know, re-emitted verbatim. See
+    /// [`crate::unknown`]. A newer build's window dimension lands here: it
+    /// makes the constraint non-empty, and it restricts nothing this build
+    /// evaluates.
+    #[serde(flatten)]
+    pub unknown: Unknowns,
 }
 
 /// Errors from validating a scheduling constraint (or a list of them).
@@ -311,16 +353,20 @@ impl ScheduleConstraint {
     }
 
     /// Validate a single constraint against the domain rules.
+    ///
+    /// A constraint whose only populated fields are ones this build does not
+    /// know is not empty: a newer build's window dimension is a real
+    /// restriction there, and refusing it here would refuse the whole list.
     pub fn validate(&self) -> Result<(), ConstraintError> {
-        if self.kind_key() == 0 {
+        if self.kind_key() == 0 && self.unknown.is_empty() {
             return Err(ConstraintError::Empty);
         }
-        if let Some(t) = self.time_of_day {
+        if let Some(t) = &self.time_of_day {
             if t.start >= t.end {
                 return Err(ConstraintError::TimeRange);
             }
         }
-        if let Some(d) = self.date_range {
+        if let Some(d) = &self.date_range {
             if let Some(end) = d.end {
                 if d.start > end {
                     return Err(ConstraintError::DateRange);
@@ -338,9 +384,12 @@ impl ScheduleConstraint {
     ///   set holding a day token this build does not know == all days too,
     ///   see [`WeekdaySet`]).
     /// - `date_range`: local date within the inclusive range.
+    ///
+    /// A field this build does not know is not evaluated: it cannot say what
+    /// the field restricts, and an unknown value must never invent a block.
     #[must_use]
     pub fn is_satisfied_at(&self, zdt: &Zoned) -> bool {
-        if let Some(t) = self.time_of_day {
+        if let Some(t) = &self.time_of_day {
             let now = zdt.time();
             if now < t.start || now >= t.end {
                 return false;
@@ -349,7 +398,7 @@ impl ScheduleConstraint {
         if !self.days_of_week.admits(&weekday_of(zdt)) {
             return false;
         }
-        if let Some(d) = self.date_range {
+        if let Some(d) = &self.date_range {
             let day = zdt.date();
             if day < d.start {
                 return false;
@@ -463,6 +512,7 @@ mod tests {
             days_of_week: WeekdaySet::new(),
             date_range: None,
             severity: sev,
+            unknown: Unknowns::new(),
         }
     }
 
@@ -473,6 +523,7 @@ mod tests {
             days_of_week: WeekdaySet::new(),
             date_range: None,
             severity: ConstraintSeverity::Hard,
+            unknown: Unknowns::new(),
         };
         assert_eq!(c.validate(), Err(ConstraintError::Empty));
     }
@@ -483,6 +534,7 @@ mod tests {
             TimeOfDayRange {
                 start: time(18, 0, 0, 0),
                 end: time(9, 0, 0, 0),
+                unknown: Unknowns::new(),
             },
             ConstraintSeverity::Hard,
         );
@@ -493,6 +545,7 @@ mod tests {
             TimeOfDayRange {
                 start: time(9, 0, 0, 0),
                 end: time(9, 0, 0, 0),
+                unknown: Unknowns::new(),
             },
             ConstraintSeverity::Hard,
         );
@@ -507,8 +560,10 @@ mod tests {
             date_range: Some(DateRange {
                 start: date(2026, 8, 17),
                 end: Some(date(2026, 8, 3)),
+                unknown: Unknowns::new(),
             }),
             severity: ConstraintSeverity::Hard,
+            unknown: Unknowns::new(),
         };
         assert_eq!(c.validate(), Err(ConstraintError::DateRange));
     }
@@ -521,8 +576,10 @@ mod tests {
             date_range: Some(DateRange {
                 start: date(2026, 8, 3),
                 end: None,
+                unknown: Unknowns::new(),
             }),
             severity: ConstraintSeverity::Soft,
+            unknown: Unknowns::new(),
         };
         c.validate().unwrap();
     }
@@ -534,6 +591,7 @@ mod tests {
             days_of_week: WeekdaySet::from_days([Weekday::Mo, Weekday::We]),
             date_range: None,
             severity: ConstraintSeverity::Hard,
+            unknown: Unknowns::new(),
         };
         c.validate().unwrap();
     }
@@ -544,6 +602,7 @@ mod tests {
             TimeOfDayRange {
                 start: time(9, 0, 0, 0),
                 end: time(17, 0, 0, 0),
+                unknown: Unknowns::new(),
             },
             ConstraintSeverity::Soft,
         );
@@ -568,6 +627,7 @@ mod tests {
             TimeOfDayRange {
                 start: time(9, 0, 0, 0),
                 end: time(17, 0, 0, 0),
+                unknown: Unknowns::new(),
             },
             ConstraintSeverity::Hard,
         );
@@ -585,6 +645,7 @@ mod tests {
             days_of_week: WeekdaySet::from_days([Weekday::Mo]),
             date_range: None,
             severity: ConstraintSeverity::Hard,
+            unknown: Unknowns::new(),
         };
         assert!(c.is_satisfied_at(&zoned(2026, 8, 3, 12, 0))); // Monday
         assert!(!c.is_satisfied_at(&zoned(2026, 8, 4, 12, 0))); // Tuesday
@@ -598,8 +659,10 @@ mod tests {
             date_range: Some(DateRange {
                 start: date(2026, 8, 3),
                 end: Some(date(2026, 8, 17)),
+                unknown: Unknowns::new(),
             }),
             severity: ConstraintSeverity::Hard,
+            unknown: Unknowns::new(),
         };
         assert!(c.is_satisfied_at(&zoned(2026, 8, 3, 0, 0))); // inclusive start
         assert!(c.is_satisfied_at(&zoned(2026, 8, 17, 23, 0))); // inclusive end
@@ -614,6 +677,7 @@ mod tests {
             time_of_day: Some(TimeOfDayRange {
                 start: time(9, 0, 0, 0),
                 end: time(12, 0, 0, 0),
+                unknown: Unknowns::new(),
             }),
             days_of_week: WeekdaySet::from_days([
                 Weekday::Mo,
@@ -625,8 +689,10 @@ mod tests {
             date_range: Some(DateRange {
                 start: date(2026, 8, 1),
                 end: Some(date(2026, 8, 31)),
+                unknown: Unknowns::new(),
             }),
             severity: ConstraintSeverity::Hard,
+            unknown: Unknowns::new(),
         };
         assert!(c.is_satisfied_at(&zoned(2026, 8, 3, 10, 0))); // Mon 10:00 in range
         assert!(!c.is_satisfied_at(&zoned(2026, 8, 3, 13, 0))); // right day, wrong time
@@ -642,6 +708,7 @@ mod tests {
             TimeOfDayRange {
                 start: time(6, 0, 0, 0),
                 end: time(12, 0, 0, 0),
+                unknown: Unknowns::new(),
             },
             ConstraintSeverity::Hard,
         );
@@ -649,6 +716,7 @@ mod tests {
             TimeOfDayRange {
                 start: time(18, 0, 0, 0),
                 end: time(22, 0, 0, 0),
+                unknown: Unknowns::new(),
             },
             ConstraintSeverity::Hard,
         );
@@ -668,6 +736,7 @@ mod tests {
             TimeOfDayRange {
                 start: time(18, 0, 0, 0),
                 end: time(23, 0, 0, 0),
+                unknown: Unknowns::new(),
             },
             ConstraintSeverity::Hard,
         );
@@ -682,6 +751,7 @@ mod tests {
             ]),
             date_range: None,
             severity: ConstraintSeverity::Hard,
+            unknown: Unknowns::new(),
         };
         let list = [after_six, weekdays];
         // Mon 19:00: both satisfied → no violations.
@@ -700,6 +770,7 @@ mod tests {
             TimeOfDayRange {
                 start: time(6, 0, 0, 0),
                 end: time(8, 0, 0, 0),
+                unknown: Unknowns::new(),
             },
             ConstraintSeverity::Hard,
         );
@@ -707,6 +778,7 @@ mod tests {
             TimeOfDayRange {
                 start: time(20, 0, 0, 0),
                 end: time(22, 0, 0, 0),
+                unknown: Unknowns::new(),
             },
             ConstraintSeverity::Hard,
         );
@@ -731,11 +803,13 @@ mod tests {
             ]),
             date_range: None,
             severity: ConstraintSeverity::Hard,
+            unknown: Unknowns::new(),
         };
         let evening = tod(
             TimeOfDayRange {
                 start: time(18, 0, 0, 0),
                 end: time(22, 0, 0, 0),
+                unknown: Unknowns::new(),
             },
             ConstraintSeverity::Soft,
         );
@@ -760,13 +834,16 @@ mod tests {
             time_of_day: Some(TimeOfDayRange {
                 start: time(9, 0, 0, 0),
                 end: time(17, 30, 0, 0),
+                unknown: Unknowns::new(),
             }),
             days_of_week: WeekdaySet::from_days([Weekday::Mo, Weekday::We, Weekday::Fr]),
             date_range: Some(DateRange {
                 start: date(2026, 8, 3),
                 end: Some(date(2026, 8, 17)),
+                unknown: Unknowns::new(),
             }),
             severity: ConstraintSeverity::Hard,
+            unknown: Unknowns::new(),
         };
         let j = serde_json::to_value(&c).unwrap();
         assert_eq!(j["time_of_day"]["start"], "09:00:00");
@@ -792,6 +869,7 @@ mod tests {
             days_of_week: WeekdaySet::from_days([Weekday::Sa, Weekday::Su]),
             date_range: None,
             severity: ConstraintSeverity::Soft,
+            unknown: Unknowns::new(),
         };
         let j = serde_json::to_value(c).unwrap();
         assert!(j.get("time_of_day").is_none());
@@ -856,5 +934,39 @@ mod tests {
         for (i, v) in back[1..].iter().enumerate() {
             assert_eq!(v.as_str(), Some(format!("X{i}").as_str()));
         }
+    }
+
+    /// A newer build's field at each nesting level survives decode and is
+    /// written back byte for byte.
+    #[test]
+    fn unknown_fields_at_every_level_round_trip_byte_exact() {
+        let j = serde_json::json!({
+            "time_of_day": { "start": "09:00:00", "end": "17:00:00", "slack_m": 15 },
+            "date_range": { "start": "2026-08-03", "zz": [1, "a"] },
+            "severity": "soft",
+            "place": "office"
+        });
+        let c: ScheduleConstraint = serde_json::from_value(j).unwrap();
+        assert_eq!(c.unknown.len(), 1);
+        assert_eq!(c.time_of_day.as_ref().unwrap().unknown.len(), 1);
+        assert_eq!(c.date_range.as_ref().unwrap().unknown.len(), 1);
+
+        let bytes = sunrise_cbor::encode_canonical(&c).unwrap();
+        let back: ScheduleConstraint = sunrise_cbor::decode_canonical(&bytes).unwrap();
+        assert_eq!(back, c);
+        assert_eq!(sunrise_cbor::encode_canonical(&back).unwrap(), bytes);
+    }
+
+    /// A constraint whose only dimension is one this build does not know is
+    /// valid, and restricts nothing here.
+    #[test]
+    fn a_constraint_of_only_unknown_fields_validates_and_never_blocks() {
+        let j = serde_json::json!({ "place": "office", "severity": "hard" });
+        let c: ScheduleConstraint = serde_json::from_value(j).unwrap();
+        c.validate().unwrap();
+        assert!(c.is_satisfied_at(&zoned(2026, 8, 8, 3, 0)));
+        let (hard, soft) =
+            violations_by_severity(std::slice::from_ref(&c), &zoned(2026, 8, 8, 3, 0));
+        assert!(hard.is_empty() && soft.is_empty());
     }
 }

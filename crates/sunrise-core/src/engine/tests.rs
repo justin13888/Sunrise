@@ -169,13 +169,14 @@ mod testutil {
 
     pub(super) fn sample_constraint() -> ScheduleConstraint {
         ScheduleConstraint {
-            time_of_day: Some(sunrise_domain::TimeOfDayRange {
-                start: jiff::civil::time(9, 0, 0, 0),
-                end: jiff::civil::time(17, 0, 0, 0),
-            }),
+            time_of_day: Some(sunrise_domain::TimeOfDayRange::new(
+                jiff::civil::time(9, 0, 0, 0),
+                jiff::civil::time(17, 0, 0, 0),
+            )),
             days_of_week: sunrise_domain::WeekdaySet::new(),
             date_range: None,
             severity: sunrise_domain::ConstraintSeverity::Hard,
+            unknown: Unknowns::new(),
         }
     }
 
@@ -203,6 +204,7 @@ mod testutil {
                 priority: None,
                 estimated_duration_s: None,
                 body: None,
+                unknown: Unknowns::new(),
             },
             rrule: RRule::parse(rrule).unwrap(),
             timezone: "UTC".into(),
@@ -3377,6 +3379,7 @@ fn update_task_replaces_whole_constraint_list() {
         days_of_week: sunrise_domain::WeekdaySet::from_days([sunrise_domain::Weekday::Sa]),
         date_range: None,
         severity: sunrise_domain::ConstraintSeverity::Soft,
+        unknown: Unknowns::new(),
     };
     let patch = TaskPatch {
         scheduling_constraints: Some(vec![c2.clone()]),
@@ -3464,6 +3467,7 @@ fn invalid_constraint_list_rejected_on_create_and_update() {
         days_of_week: sunrise_domain::WeekdaySet::new(),
         date_range: None,
         severity: sunrise_domain::ConstraintSeverity::Hard,
+        unknown: Unknowns::new(),
     };
     let create = e.apply(
         &mut db,
@@ -3622,6 +3626,7 @@ fn two_engines_produce_identical_task_ids() {
                 priority: None,
                 estimated_duration_s: None,
                 body: None,
+                unknown: Unknowns::new(),
             },
             rrule: RRule::parse("FREQ=DAILY").unwrap(),
             timezone: "UTC".into(),
@@ -14715,6 +14720,7 @@ fn deterministic_routine_task_converges() {
                 priority: None,
                 estimated_duration_s: None,
                 body: None,
+                unknown: Unknowns::new(),
             },
             rrule: RRule::parse("FREQ=DAILY").unwrap(),
             timezone: "UTC".into(),

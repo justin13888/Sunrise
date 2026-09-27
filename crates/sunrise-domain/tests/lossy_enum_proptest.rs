@@ -153,6 +153,7 @@ proptest! {
             count: None,
             until: None,
             wkst: wkst.as_deref().map(Weekday::from_raw),
+            unknown: sunrise_domain::Unknowns::new(),
         };
         let bytes = encode_canonical(&rule).unwrap();
         let back: RRule = decode_canonical(&bytes).unwrap();
@@ -210,6 +211,7 @@ fn an_unknown_severity_survives_its_constraint_and_reads_as_soft() {
         days_of_week: WeekdaySet::from_days([Weekday::Mo]),
         date_range: None,
         severity: ConstraintSeverity::from_raw("critical"),
+        unknown: sunrise_domain::Unknowns::new(),
     };
     let bytes = encode_canonical(&c).unwrap();
     let back: ScheduleConstraint = decode_canonical(&bytes).unwrap();
