@@ -84,7 +84,10 @@ final class SessionModel {
     /// each time it is built rather than holding an ``AppSettings`` from
     /// launch: the Settings screen edits its own instance, and a relay or
     /// email entered there before the vault was created must reach the upload.
-    private let settingsDefaults: UserDefaults
+    /// The renewal tick reads it the same way, and for the same reason.
+    let settingsDefaults: UserDefaults
+    /// The account's renewal tick, owned for as long as a vault is open (#307).
+    @ObservationIgnored let renewal = SessionRenewal()
 
     /// Both `var`: switching vaults replaces them together, and replacing only
     /// one would file a vault's key under another vault's name.
@@ -432,6 +435,7 @@ final class SessionModel {
         }
 
         // 1. Let go. Nothing below can succeed until this returns.
+        renewal.stop()
         await bridge?.shutdown()
         bridge = nil
         canSponsorPairing = false
@@ -507,6 +511,7 @@ final class SessionModel {
     /// the vault it was just asked to close, which is not a lock and would also
     /// make this useless as the release path the tests use for cleanup.
     func lock() async {
+        renewal.stop()
         await bridge?.shutdown()
         bridge = nil
         canSponsorPairing = false
