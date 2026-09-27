@@ -17590,3 +17590,154 @@ fn a_gated_sender_flooding_past_the_cap_stays_gated() {
         "none of X's gated claims reached the register"
     );
 }
+
+/// Put bare `ops` rows for `(stream, device)` at each of `seqs`.
+///
+/// `ops_run_end` reads only `stream_id`, `device_id` and `seq`, so the rest of
+/// the row is filler that satisfies the schema's `NOT NULL` columns.
+fn put_op_rows(db: &Db, stream: &[u8; 16], device: &[u8; 16], seqs: &[u64]) {
+    for &seq in seqs {
+        db.conn()
+            .execute(
+                "INSERT INTO ops (op_id, stream_id, device_id, seq, ts_ms, envelope,
+                                  inner_kind, target_kind, received_at)
+                 VALUES (?, ?, ?, ?, 0, x'', 'test', 'test', 0)",
+                params![
+                    &remote_op_id(stream, device, seq)[..],
+                    &stream[..],
+                    &device[..],
+                    i64::try_from(seq).unwrap()
+                ],
+            )
+            .unwrap();
+    }
+}
+
+/// `ops_run_end` for `(stream, device)` from `start`, in a transaction of its
+/// own. An `Err` is returned rather than unwrapped, because one mutation of
+/// the SQL fails as `InvalidColumnType` and the test should say which.
+fn run_end(db: &mut Db, stream: &[u8; 16], device: &[u8; 16], start: i64) -> rusqlite::Result<i64> {
+    let tx = db.conn_mut().transaction().unwrap();
+    let end = ops_run_end(&tx, stream, device, start);
+    tx.rollback().unwrap();
+    end
+}
+
+const RUN_S: [u8; 16] = [0x51; 16];
+const RUN_S2: [u8; 16] = [0x52; 16];
+const RUN_D1: [u8; 16] = [0xd1; 16];
+const RUN_D2: [u8; 16] = [0xd2; 16];
+
+/// A run ends per `(stream_id, device_id)`, not per stream: another device's
+/// seqs on the same stream neither extend this device's run nor cut it short.
+///
+/// Issue #294. `ops_run_end` names `stream_id = ?1 AND device_id = ?2` three
+/// times — the `EXISTS` probe, the `o` scan, and the `n` successor anti-join —
+/// and every cursor assertion elsewhere in this file observes a stream fed by
+/// one device, so none of them could tell the difference. Each case below
+/// names the mutation it catches; each was established by making the mutation
+/// and watching the assertion fail.
+///
+/// The `o` scan's pair is the exception, and deliberately so: dropping it alone
+/// is an equivalent mutant. The probe has established that this device holds
+/// `start`, so its run `start..=e` exists. A foreign row at any `s` in
+/// `start..e` has this device's `s + 1` as a successor and is excluded; one at
+/// `e` is the same candidate as this device's own; one above `e` loses to it
+/// in `MIN`. The pair bounds the scan, not the answer. What an `o`-side test
+/// can catch is the `(stream)`-scoped run end — both pairs dropped together —
+/// and the first assertion here is that one.
+#[test]
+fn ops_run_end_is_scoped_per_device_on_a_shared_stream() {
+    let mut db = db();
+    put_op_rows(&db, &RUN_S, &RUN_D1, &[1, 2, 3]);
+    put_op_rows(&db, &RUN_S, &RUN_D2, &[4]);
+
+    // A stream-scoped run end reads 4 here; dropping only the anti-join's
+    // `device_id` excludes 3 (D2's 4 is its successor) and every other
+    // candidate, so `MIN` is NULL and the read fails as `InvalidColumnType`.
+    assert_eq!(
+        run_end(&mut db, &RUN_S, &RUN_D1, 1),
+        Ok(3),
+        "D1's run is 1..=3 whatever D2 holds on the same stream"
+    );
+    // Dropping the probe's `device_id` lets D1's seq 1 answer for D2, and the
+    // run is then read from D2's rows alone: 4, a cursor past three holes.
+    assert_eq!(
+        run_end(&mut db, &RUN_S, &RUN_D2, 1),
+        Ok(0),
+        "D2 holds no seq 1, so its run from 1 is empty"
+    );
+
+    // And the cursor `upsert_sync_cursor` writes carries the same answer.
+    let tx = db.conn_mut().transaction().unwrap();
+    upsert_sync_cursor(&tx, &RUN_S, &RUN_D1).unwrap();
+    upsert_sync_cursor(&tx, &RUN_S, &RUN_D2).unwrap();
+    tx.commit().unwrap();
+    assert_eq!(cursor_for(&db, &RUN_S, &RUN_D1), 3);
+    assert_eq!(cursor_row(&db, &RUN_S, &RUN_D2), Some(0));
+}
+
+/// The anti-join's mutation is not only a failed read: where this device holds
+/// a later seq past a hole, it is a cursor past the hole, which the relay's
+/// replay filter honours by never re-sending the missing op.
+#[test]
+fn ops_run_end_does_not_cross_a_hole_another_device_fills() {
+    let mut db = db();
+    put_op_rows(&db, &RUN_S, &RUN_D1, &[1, 2, 3, 5]);
+    put_op_rows(&db, &RUN_S, &RUN_D2, &[4]);
+
+    // With the anti-join unscoped by device, D2's 4 excludes D1's 3 and the
+    // next candidate is D1's 5: the run would claim D1's missing 4.
+    assert_eq!(
+        run_end(&mut db, &RUN_S, &RUN_D1, 1),
+        Ok(3),
+        "D1 is missing its own seq 4, and D2's seq 4 does not stand in for it"
+    );
+}
+
+/// The same scoping on the other axis: one device's seqs on another stream
+/// neither extend nor cut short its run on this one.
+#[test]
+fn ops_run_end_is_scoped_per_stream_for_one_device() {
+    let mut db = db();
+    put_op_rows(&db, &RUN_S, &RUN_D1, &[1, 2]);
+    put_op_rows(&db, &RUN_S2, &RUN_D1, &[3]);
+
+    // Dropping the anti-join's `stream_id` makes S2's 3 the successor of S's
+    // 2, and `MIN` over the empty remainder fails the read.
+    assert_eq!(
+        run_end(&mut db, &RUN_S, &RUN_D1, 1),
+        Ok(2),
+        "D1's run on S is 1..=2 whatever it holds on S2"
+    );
+    // Dropping the probe's `stream_id` lets S's seq 1 answer for S2.
+    assert_eq!(
+        run_end(&mut db, &RUN_S2, &RUN_D1, 1),
+        Ok(0),
+        "D1 holds no seq 1 on S2"
+    );
+}
+
+/// `start` other than 1, which `upsert_sync_cursor` never passes: the run is
+/// read from `start` upward, and an absent `start` is `start - 1` whatever
+/// lies above it.
+#[test]
+fn ops_run_end_reads_from_any_start() {
+    let mut db = db();
+    put_op_rows(&db, &RUN_S, &RUN_D1, &[1, 2, 3, 5, 6]);
+    put_op_rows(&db, &RUN_S, &RUN_D2, &[4, 7]);
+
+    assert_eq!(run_end(&mut db, &RUN_S, &RUN_D1, 1), Ok(3));
+    assert_eq!(run_end(&mut db, &RUN_S, &RUN_D1, 3), Ok(3), "a run of one");
+    assert_eq!(
+        run_end(&mut db, &RUN_S, &RUN_D1, 4),
+        Ok(3),
+        "D1 holds no seq 4, and D2's does not count"
+    );
+    assert_eq!(
+        run_end(&mut db, &RUN_S, &RUN_D1, 5),
+        Ok(6),
+        "the run above the hole ends at 6, not at D2's 7"
+    );
+    assert_eq!(run_end(&mut db, &RUN_S, &RUN_D2, 4), Ok(4));
+}
