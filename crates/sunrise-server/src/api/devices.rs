@@ -175,7 +175,6 @@ pub async fn list(
     let devices = state
         .store
         .list_devices(&caller.principal.account.account_id)?;
-    state.metrics.incr("sunrise_devices_list_total");
     Ok(Json(devices.into_iter().map(DeviceMeta::from).collect()))
 }
 
@@ -584,11 +583,21 @@ mod tests {
             .await
             .assert_status(StatusCode::NO_CONTENT);
 
-        let rendered = client.metrics.render();
-        assert!(
-            rendered.contains("sunrise_devices_list_total"),
-            "listing devices must be counted; got:\n{rendered}"
+        // `sunrise_devices_list_total` folded into the HTTP family, which
+        // counts the same requests by route.
+        assert_eq!(
+            client.metrics.get_with(
+                "sunrise_http_requests_total",
+                &[
+                    ("endpoint", "/api/v1/devices"),
+                    ("method", "GET"),
+                    ("status", "200"),
+                ],
+            ),
+            1,
+            "listing devices must be counted"
         );
+        let rendered = client.metrics.render();
         assert!(
             rendered.contains("sunrise_push_register_total"),
             "filing a push token must be counted; got:\n{rendered}"

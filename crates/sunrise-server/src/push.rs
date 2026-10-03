@@ -1,7 +1,8 @@
 //! Push notification fanout interface (APNs / FCM / WebPush).
 //!
-//! Self-host build: `LoggingProvider` echoes intents to the metrics
-//! registry. Production binds `apns2` / `fcm` / `web-push` clients.
+//! Self-host build: `LoggingProvider` records each intent as a successful
+//! `sunrise_push_dispatch_total{provider,result}` and delivers nothing.
+//! Production binds `apns2` / `fcm` / `web-push` clients.
 //! The trait is async so HTTP delivery doesn't block the relay loop.
 
 use async_trait::async_trait;
@@ -72,7 +73,7 @@ pub trait PushProvider: Send + Sync + std::fmt::Debug {
     async fn send(&self, intent: &PushIntent) -> Result<(), PushError>;
 }
 
-/// Self-host provider that records a counter per intent and returns OK.
+/// Self-host provider that counts each intent as dispatched and returns OK.
 #[derive(Debug, Clone)]
 pub struct LoggingProvider {
     metrics: crate::Metrics,
@@ -89,12 +90,15 @@ impl LoggingProvider {
 #[async_trait]
 impl PushProvider for LoggingProvider {
     async fn send(&self, intent: &PushIntent) -> Result<(), PushError> {
-        let metric = match intent.registration.platform {
-            PushPlatform::Apns => "sunrise_push_apns_total",
-            PushPlatform::Fcm => "sunrise_push_fcm_total",
-            PushPlatform::WebPush => "sunrise_push_web_total",
+        let provider = match intent.registration.platform {
+            PushPlatform::Apns => "apns",
+            PushPlatform::Fcm => "fcm",
+            PushPlatform::WebPush => "web",
         };
-        self.metrics.incr(metric);
+        self.metrics.incr_with(
+            "sunrise_push_dispatch_total",
+            &[("provider", provider), ("result", "ok")],
+        );
         Ok(())
     }
 }
@@ -137,6 +141,12 @@ mod tests {
             payload: String::new(),
         };
         p.send(&intent).await.unwrap();
-        assert_eq!(m.get("sunrise_push_fcm_total"), 1);
+        assert_eq!(
+            m.get_with(
+                "sunrise_push_dispatch_total",
+                &[("provider", "fcm"), ("result", "ok")]
+            ),
+            1
+        );
     }
 }

@@ -218,7 +218,10 @@ pub fn verify_bytes(
         state.clock.now_ms(),
     )
     .map_err(|e| {
-        state.metrics.incr("sunrise_device_sig_rejected_total");
+        state.metrics.incr_with(
+            "sunrise_device_sig_rejected_total",
+            &[("reason", sig_reject_reason(&e))],
+        );
         tracing::warn!(
             ev = "srv.auth.device_sig_rejected",
             err_code = %sunrise_error::ErrorCode::AuthDeviceSigInvalid,
@@ -233,6 +236,25 @@ pub fn verify_bytes(
         .store
         .touch_device(&device.device_id, state.clock.now_ms());
     Ok(Some(device))
+}
+
+/// The `reason` label on `sunrise_device_sig_rejected_total`.
+///
+/// Every rejection answers with the one code `AUTH_DEVICE_SIG_INVALID`, so the
+/// code cannot tell an operator *which* failure is rising. This closed set can:
+/// `skew` is a client clock, `bad_signature` is a key or canonicalisation
+/// disagreement, `malformed` is a client building the headers wrong, and
+/// `bad_device_key` is a registration row the relay should never have accepted.
+fn sig_reject_reason(e: &sunrise_http_sig::SigError) -> &'static str {
+    use sunrise_http_sig::SigError;
+    match e {
+        SigError::StaleDate { .. } => "skew",
+        SigError::BadSignature => "bad_signature",
+        SigError::BadDeviceKey => "bad_device_key",
+        SigError::MissingHeader(_)
+        | SigError::MalformedHeader(_)
+        | SigError::NotCanonicalizable(_) => "malformed",
+    }
 }
 
 /// Whether a route demands a binding or merely checks one that is offered.

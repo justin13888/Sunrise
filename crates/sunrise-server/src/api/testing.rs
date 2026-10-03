@@ -287,7 +287,7 @@ impl Client {
 /// Build the router over `state`.
 fn state_service(state: ServerState) -> Service<ServerState> {
     let config = ServerConfig::clone(&state.config);
-    super::router(&config)
+    super::router(&config, &state.metrics)
         .build(state)
         .expect("the typed surface must build")
 }

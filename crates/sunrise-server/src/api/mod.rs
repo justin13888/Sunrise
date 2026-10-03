@@ -54,7 +54,8 @@ pub fn document() -> kynos::Result<kynos::openapi::Document> {
     // them: `BodySize` contributes 413 to every operation whatever the limit
     // is, and an undocumented `Cors` contributes nothing either way. What would
     // vary is the numbers, and no number appears in the document.
-    router(&crate::ServerConfig::default()).openapi_as(kynos::openapi::SpecVersion::V3_2)
+    router(&crate::ServerConfig::default(), &crate::Metrics::new())
+        .openapi_as(kynos::openapi::SpecVersion::V3_2)
 }
 
 /// The router's type, interceptor stack included.
@@ -74,10 +75,14 @@ pub type ApiRouter = kynos::Router<
 
 /// Build the typed router for every ported operation.
 ///
+/// `metrics` is the registry the HTTP observer records into. It is the
+/// context's own registry in every built service — an observer is not handed
+/// the context when the response is known, so it is given the registry here.
+///
 /// # Errors
 /// Returns kynos's build error when the router cannot be described — a route
 /// whose operations conflict, or a handler whose types do not resolve.
-pub fn router(config: &crate::ServerConfig) -> ApiRouter {
+pub fn router(config: &crate::ServerConfig, metrics: &crate::Metrics) -> ApiRouter {
     kynos::Router::<ServerState>::new()
         // Named, because the description is about to become a published
         // artefact that `spargen` reads: kynos's default `Info` is
@@ -123,6 +128,7 @@ pub fn router(config: &crate::ServerConfig) -> ApiRouter {
         ))
         .intercept(cors(config))
         .observe(observe::RequestLog)
+        .observe(observe::HttpMetrics::new(metrics.clone()))
 }
 
 /// `/metrics`, mounted only where the documented contract allows serving it.

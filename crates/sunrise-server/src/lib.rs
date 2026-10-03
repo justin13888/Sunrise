@@ -75,7 +75,7 @@ use kynos::router::service::Service;
 /// Returns kynos's error naming every violation found.
 pub fn build_service(state: ServerState) -> kynos::Result<Service<ServerState>> {
     let config = ServerConfig::clone(&state.config);
-    api::router(&config).build(state)
+    api::router(&config, &state.metrics).build(state)
 }
 
 /// Serve the typed surface on `listener` until the process ends.
