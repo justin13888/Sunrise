@@ -60,8 +60,9 @@ own protocol.
 
 ### 3. The newer build's vocabulary is sealed by the harness, as a real device
 
-`HEAD` relative to any baseline adds little that the baseline cannot read, and
-relative to itself adds nothing. So the harness writes what a newer build would:
+Relative to the floor (§6), `HEAD` adds no field, enum value or op kind: both
+are at `DOC_SCHEMA_V` 6. Relative to itself it adds nothing. So the harness
+writes what a newer build would:
 an unknown top-level field, an unknown enum value, an unknown `SunriseTime` kind
 inside `due_at`, and an unknown op kind (`cross_version/future.rs`). Each is a
 `HEAD` `Task` with that one thing added, sealed with `seal_envelope` as device
