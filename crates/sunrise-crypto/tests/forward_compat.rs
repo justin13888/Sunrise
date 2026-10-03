@@ -12,15 +12,19 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use sunrise_cbor::hlc::Hlc;
-use sunrise_cbor::CborValue;
-use sunrise_crypto::keys::DeviceSigningKeyPair;
+use sunrise_cbor::{decode_envelope_header, CborValue, ENVELOPE_FORMAT_FLOOR, ENVELOPE_FORMAT_V};
+use sunrise_crypto::keys::{DeviceSigningKeyPair, StreamKey};
+use sunrise_crypto::op_envelope::open_envelope;
 use sunrise_crypto::{decode_envelope, seal_envelope, verify_envelope, AeadAlgId, OpEnvelope};
 use sunrise_crypto_test_vectors as vectors;
 
 /// Field ids a FUTURE container format might add. Both sit above every field
-/// this build knows (1..=12), and one is above 23 so its CBOR key needs two
-/// bytes — which is where a naive "sort by decoded key" would go wrong.
-const FUTURE_SMALL_FIELD: u64 = 13;
+/// this build knows (1..=12) and above the ids ADR-0045 assigns or reserves
+/// (13 for the schema fingerprint, 14–15 for the commit tree), so neither stops
+/// naming an unknown field when those land. 23 is the largest id whose CBOR key
+/// is one byte; 40 needs two, which is where a naive "sort by decoded key"
+/// would go wrong.
+const FUTURE_SMALL_FIELD: u64 = 23;
 const FUTURE_LARGE_FIELD: u64 = 40;
 
 fn fixture_path() -> PathBuf {
@@ -132,5 +136,101 @@ fn dropping_an_unknown_field_breaks_the_senders_signature() {
         verify_envelope(&env, &vectors::DEVICE_SIGNING_PUBLIC).is_err(),
         "if this passed, the unknown fields were never inside the signature and \
          preserving them would be pointless"
+    );
+}
+
+/// ADR-0045 §5, issue #329: an envelope from a container one step newer than
+/// this build's, carrying a field this build does not know, at a floor this
+/// build implements. It is sealed, so the new field is inside the AEAD's
+/// associated data as well as the signature input.
+fn next_container_envelope() -> (Vec<u8>, StreamKey) {
+    use ciborium::value::Value;
+
+    let mut unknown = BTreeMap::new();
+    unknown.insert(
+        FUTURE_SMALL_FIELD,
+        CborValue(Value::Text("a field from the next container".into())),
+    );
+    let stream_key = StreamKey::from_bytes([0x44; 32]);
+    let kp = DeviceSigningKeyPair::from_secret_bytes(&vectors::DEVICE_SIGNING_SECRET);
+    let bytes = seal_envelope(
+        OpEnvelope {
+            v: u32::from(ENVELOPE_FORMAT_V) + 1,
+            doc_schema_v: u32::from(sunrise_cbor::DOC_SCHEMA_V),
+            stream_id: vectors::STREAM_ID,
+            device_id: vectors::DEVICE_ID,
+            seq: 12,
+            hlc: Hlc {
+                physical_ms: 1_700_000_000_000,
+                logical: 4,
+            },
+            aead_alg: AeadAlgId::XChaCha20Poly1305,
+            sig_alg: sunrise_crypto::SigAlgId::Ed25519,
+            epoch: 1,
+            nonce: [0x55; 24],
+            payload: vectors::ENVELOPE_INNER.to_vec(),
+            sig: [0u8; 64],
+            unknown,
+        },
+        Some(&stream_key),
+        &kp,
+    )
+    .expect("seal an envelope from the next container");
+    (bytes, stream_key)
+}
+
+#[test]
+fn a_newer_container_at_this_floor_decodes_verifies_opens_and_round_trips() {
+    let (original, stream_key) = next_container_envelope();
+    // The writer stamps its floor, which this build implements, and its own
+    // newer container in field 1.
+    assert_eq!(
+        u16::from_be_bytes([original[3], original[4]]),
+        ENVELOPE_FORMAT_FLOOR
+    );
+
+    let env = decode_envelope(&original).expect("a newer container at this floor decodes");
+    assert_eq!(env.v, u32::from(ENVELOPE_FORMAT_V) + 1);
+    assert_eq!(
+        env.unknown.keys().copied().collect::<Vec<_>>(),
+        vec![FUTURE_SMALL_FIELD],
+        "the new field is kept, not discarded"
+    );
+
+    // Verify and open: the new field is inside both the signature input and
+    // the AAD, so either succeeding proves it was kept where it arrived.
+    let plaintext = open_envelope(&env, &vectors::DEVICE_SIGNING_PUBLIC, Some(&stream_key))
+        .expect("verifies and opens");
+    assert_eq!(plaintext, vectors::ENVELOPE_INNER);
+
+    // Re-emit byte for byte. Sealing again under the same key and nonce with
+    // the new field still in place reproduces the same AAD, ciphertext and
+    // deterministic signature, and only if the field was kept where it was.
+    let kp = DeviceSigningKeyPair::from_secret_bytes(&vectors::DEVICE_SIGNING_SECRET);
+    let mut round_tripped = env;
+    round_tripped.payload = plaintext;
+    let re = seal_envelope(round_tripped, Some(&stream_key), &kp).expect("re-encode");
+    assert_eq!(re, original, "re-emission must be byte-identical");
+
+    // The relay's header decoder applies the same floor rule, so it routes it.
+    let head = decode_envelope_header(&original).expect("the relay routes it");
+    assert_eq!(head.stream_id, vectors::STREAM_ID);
+    assert_eq!(head.device_id, vectors::DEVICE_ID);
+    assert_eq!(head.seq, 12);
+}
+
+/// The other side of the floor: a writer whose floor is above this build's
+/// container has said this build would misread it, and both decoders refuse.
+#[test]
+fn a_floor_above_this_build_is_refused_by_client_and_relay() {
+    let (mut bytes, _) = next_container_envelope();
+    bytes[3..5].copy_from_slice(&(ENVELOPE_FORMAT_V + 1).to_be_bytes());
+    assert!(matches!(
+        decode_envelope(&bytes),
+        Err(sunrise_crypto::OpEnvelopeError::BadMagic)
+    ));
+    assert_eq!(
+        decode_envelope_header(&bytes),
+        Err(sunrise_cbor::EnvelopeHeaderError::BadMagic)
     );
 }

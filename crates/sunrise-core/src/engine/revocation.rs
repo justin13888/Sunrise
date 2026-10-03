@@ -905,7 +905,7 @@ impl Engine {
     ///   [`Self::self_authenticating_signer`].
     /// - `crates/sunrise-core/src/engine/sync.rs:257` verifies the envelope
     ///   under that key before the op is decrypted or applied, and
-    ///   `crates/sunrise-crypto/src/op_envelope.rs:491-497` is the check
+    ///   `crates/sunrise-crypto/src/op_envelope.rs#verify_envelope` is the check
     ///   itself: an Ed25519 verify over the envelope's own signed bytes.
     /// - `crates/sunrise-core/src/engine/sync.rs:411` closes the
     ///   self-authenticating half, refusing a published cert whose
