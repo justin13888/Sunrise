@@ -15,7 +15,7 @@
 //! | `sunrise-id` (this module) | [`EntityKind`], its prefixes, [`ENTITIES`] | build |
 //! | `sunrise-domain::registry` | a field-by-field check of each record type | build |
 //! | `sunrise-core::inner_op` | `InnerOp`'s entity variants and their routing | build |
-//! | `sunrise-core::engine::lww` | the materializer's table, key and merge class | test |
+//! | `sunrise-core::engine::lww` | the materializer's table, key and merge class | build: its per-op match is exhaustive |
 //! | `sunrise-core-bindings::dto` | that every synced record names a `UniFFI` mirror that converts from it | build |
 //! | `sunrise-storage::db` | that every projected table holds its key and unknowns column | test |
 //!
