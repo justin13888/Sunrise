@@ -344,7 +344,7 @@ pub(super) fn materialize_remote(
         // its own `start`. Running an LWW comparison here would be actively wrong:
         // a `start` stamped later than its `end` would suppress the `end`.
         InnerOp::FocusStart(_) | InnerOp::FocusEnd(_) | InnerOp::FocusInterrupt(_) => {
-            materialize_focus_remote(tx, inner, lww)?;
+            return materialize_focus_remote(tx, inner, lww);
         }
         // A review snapshot is append-only for the same reason: it is keyed by its
         // own `rvw_` id, written once, and never edited. Running LWW here would let
@@ -354,7 +354,7 @@ pub(super) fn materialize_remote(
         // an opaque blob, so a snapshot that overtakes a `stream.create` still
         // lands intact.
         InnerOp::ReviewSnapshotCreate(snapshot) => {
-            insert_review_snapshot_row(tx, snapshot, lww)?;
+            return insert_review_snapshot_row(tx, snapshot, lww);
         }
         // Unreachable: the guard at the top of this function returns before
         // the LWW read. Spelled out rather than caught by a `_ =>` arm so a
