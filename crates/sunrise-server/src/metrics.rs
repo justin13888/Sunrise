@@ -162,6 +162,11 @@ pub struct Metrics {
 #[derive(Debug)]
 struct Inner {
     slots: Box<[OnceLock<Series>]>,
+    /// The type each metric name was first used under, probed from a hash of
+    /// the name alone. Keyed on the name rather than the series, so a name
+    /// reused under a second type is refused whatever labels it carries: one
+    /// family renders under one `# TYPE` line.
+    kinds: Box<[OnceLock<(&'static str, Kind)>]>,
     /// Observations refused: a full table, a label off the allowlist, or a
     /// name reused under a second type.
     dropped: AtomicU64,
@@ -240,6 +245,7 @@ impl Metrics {
         Self {
             inner: Arc::new(Inner {
                 slots: (0..CAPACITY).map(|_| OnceLock::new()).collect(),
+                kinds: (0..CAPACITY).map(|_| OnceLock::new()).collect(),
                 dropped: AtomicU64::new(0),
             }),
         }
@@ -266,6 +272,11 @@ impl Metrics {
         let start = home(name, labels);
         for step in 0..CAPACITY {
             let slot = &self.inner.slots[(start + step) % CAPACITY];
+            // Only a series about to be created consults the name's type, so
+            // an observation of an existing series stays a probe and an add.
+            if slot.get().is_none() && !self.claim(name, kind) {
+                break;
+            }
             let series = slot.get_or_init(|| Series::new(name, labels, kind, bounds));
             if series.is(name, labels) {
                 if series.kind == kind {
@@ -276,6 +287,23 @@ impl Metrics {
         }
         self.inner.dropped.fetch_add(1, Ordering::Relaxed);
         None
+    }
+
+    /// Whether `name` may carry a series of `kind`: it may when the name is
+    /// new, which records `kind` as its type, or was first used as `kind`.
+    ///
+    /// Racing first uses of one name under two types settle in one slot's
+    /// `OnceLock`, so exactly one type wins and the other is refused.
+    fn claim(&self, name: &'static str, kind: Kind) -> bool {
+        let start = home(name, &[]);
+        for step in 0..CAPACITY {
+            let slot = &self.inner.kinds[(start + step) % CAPACITY];
+            let &(first, first_kind) = slot.get_or_init(|| (name, kind));
+            if first == name {
+                return first_kind == kind;
+            }
+        }
+        false
     }
 
     /// The series for `name` and `labels` if it exists. Never creates one.
@@ -628,6 +656,39 @@ mod tests {
         assert!(s.contains("test_mixed 1\n"), "{s}");
         assert!(
             s.contains("sunrise_metrics_series_dropped_total 1\n"),
+            "{s}"
+        );
+    }
+
+    /// The type belongs to the name, not to one label set: a second type under
+    /// different labels is refused too, rather than rendering as a series of
+    /// the first type's family.
+    #[test]
+    fn a_name_is_one_type_whatever_its_labels() {
+        let m = Metrics::new();
+        m.incr_with("test_mixed_total", &[("result", "ok")]);
+        m.set_gauge("test_mixed_total", &[("result", "failed")], 9.0);
+        m.observe(
+            "test_mixed_total",
+            &[("method", "GET")],
+            LATENCY_BUCKETS,
+            0.1,
+        );
+        m.incr_with("test_mixed_total", &[("result", "failed")]);
+        let s = m.render();
+        assert_eq!(
+            types(&s)
+                .into_iter()
+                .filter(|(name, _)| *name == "test_mixed_total")
+                .collect::<Vec<_>>(),
+            [("test_mixed_total", "counter")],
+            "{s}"
+        );
+        assert!(!s.contains("test_mixed_total_bucket"), "{s}");
+        assert!(s.contains("test_mixed_total{result=\"ok\"} 1\n"), "{s}");
+        assert!(s.contains("test_mixed_total{result=\"failed\"} 1\n"), "{s}");
+        assert!(
+            s.contains("sunrise_metrics_series_dropped_total 2\n"),
             "{s}"
         );
     }
