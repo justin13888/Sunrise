@@ -169,13 +169,14 @@ mod testutil {
 
     pub(super) fn sample_constraint() -> ScheduleConstraint {
         ScheduleConstraint {
-            time_of_day: Some(sunrise_domain::TimeOfDayRange {
-                start: jiff::civil::time(9, 0, 0, 0),
-                end: jiff::civil::time(17, 0, 0, 0),
-            }),
+            time_of_day: Some(sunrise_domain::TimeOfDayRange::new(
+                jiff::civil::time(9, 0, 0, 0),
+                jiff::civil::time(17, 0, 0, 0),
+            )),
             days_of_week: sunrise_domain::WeekdaySet::new(),
             date_range: None,
             severity: sunrise_domain::ConstraintSeverity::Hard,
+            unknown: Unknowns::new(),
         }
     }
 
@@ -203,6 +204,7 @@ mod testutil {
                 priority: None,
                 estimated_duration_s: None,
                 body: None,
+                unknown: Unknowns::new(),
             },
             rrule: RRule::parse(rrule).unwrap(),
             timezone: "UTC".into(),
@@ -3377,6 +3379,7 @@ fn update_task_replaces_whole_constraint_list() {
         days_of_week: sunrise_domain::WeekdaySet::from_days([sunrise_domain::Weekday::Sa]),
         date_range: None,
         severity: sunrise_domain::ConstraintSeverity::Soft,
+        unknown: Unknowns::new(),
     };
     let patch = TaskPatch {
         scheduling_constraints: Some(vec![c2.clone()]),
@@ -3464,6 +3467,7 @@ fn invalid_constraint_list_rejected_on_create_and_update() {
         days_of_week: sunrise_domain::WeekdaySet::new(),
         date_range: None,
         severity: sunrise_domain::ConstraintSeverity::Hard,
+        unknown: Unknowns::new(),
     };
     let create = e.apply(
         &mut db,
@@ -3622,6 +3626,7 @@ fn two_engines_produce_identical_task_ids() {
                 priority: None,
                 estimated_duration_s: None,
                 body: None,
+                unknown: Unknowns::new(),
             },
             rrule: RRule::parse("FREQ=DAILY").unwrap(),
             timezone: "UTC".into(),
@@ -13806,6 +13811,82 @@ fn unknown_entity_fields_survive_the_materialized_row() {
     assert_eq!(decoded.unknown, future_fields());
 }
 
+/// ADR-0045 §6: an `extra` blob this build cannot parse is kept, not emptied.
+///
+/// It reads as "no unknowns", which is what used to make the next write of
+/// the row store `NULL` over it. Now the write keeps the bytes and says so;
+/// a write whose entity carries unknown fields of its own still replaces them.
+#[test]
+fn an_unparseable_extra_blob_survives_an_edit_and_is_logged() {
+    let clock = Arc::new(FakeClock(PLMutex::new(T0)));
+    let e = engine_seeded(ROOT, [1u8; 32], clock);
+    let mut db = db_root(ROOT);
+    let task = new_task(&e, &mut db, "holds bytes this build cannot read");
+    // A float: canonical CBOR a newer build could write, and a value
+    // `CborValue` refuses, so the whole map fails to decode here.
+    let opaque: Vec<u8> = vec![0xa1, 0x61, b'x', 0xf9, 0x3c, 0x00];
+    let extra = |db: &Db| -> Option<Vec<u8>> {
+        db.conn()
+            .query_row(
+                "SELECT extra FROM tasks WHERE id = ?",
+                [&task.bytes()[..]],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    db.conn()
+        .execute(
+            "UPDATE tasks SET extra = ? WHERE id = ?",
+            rusqlite::params![&opaque, &task.bytes()[..]],
+        )
+        .unwrap();
+    assert!(read_task_t(&e, &db, task).unknown.is_empty());
+
+    let logged = events_emitted_by(|| {
+        e.apply(
+            &mut db,
+            Command::UpdateTask {
+                id: task,
+                patch: TaskPatch {
+                    title: Some("renamed".into()),
+                    ..Default::default()
+                },
+            },
+        )
+        .unwrap();
+    });
+    assert_eq!(
+        extra(&db),
+        Some(opaque),
+        "the bytes are written back unchanged"
+    );
+    assert!(
+        logged
+            .iter()
+            .any(|ev| ev == "core.storage.extra_kept_opaque"),
+        "keeping them is announced; got {logged:?}"
+    );
+
+    // An entity with unknown fields of its own replaces them.
+    let mut t = read_task_t(&e, &db, task);
+    t.unknown = future_fields();
+    let lww = e.lww_stamp(9);
+    db.with_tx(|tx| update_task_row(tx, &t, &lww)).unwrap();
+    assert_eq!(read_task_t(&e, &db, task).unknown, future_fields());
+}
+
+/// Every table's `extra` lookup names a real key column: a query that does
+/// not prepare fails the write it guards, for every row of that table.
+#[test]
+fn every_extra_lookup_prepares_against_the_schema() {
+    let db = db_root(ROOT);
+    for table in ExtraTable::ALL {
+        db.conn()
+            .prepare(table.select_extra())
+            .unwrap_or_else(|e| panic!("{table:?}: {e}"));
+    }
+}
+
 /// `Stream.description` was accepted, carried in the op, and never stored.
 ///
 /// `create_stream` copied it onto the entity and `update_stream` applied
@@ -14715,6 +14796,7 @@ fn deterministic_routine_task_converges() {
                 priority: None,
                 estimated_duration_s: None,
                 body: None,
+                unknown: Unknowns::new(),
             },
             rrule: RRule::parse("FREQ=DAILY").unwrap(),
             timezone: "UTC".into(),
@@ -18435,6 +18517,71 @@ fn an_unknown_state_and_energy_survive_a_peers_unrelated_edit() {
     // A command that sets the field explicitly replaces it.
     eb.apply(&mut dbb, Command::CompleteTask(task)).unwrap();
     assert_eq!(task_of(&eb, &dbb, task).state, TaskState::Done);
+}
+
+/// ADR-0045 §6, one level down: a time kind this build does not know, and a
+/// field a newer build added inside a nested constraint, both land, are
+/// stored, and are re-emitted unchanged by this build's unrelated edit.
+#[test]
+fn an_unknown_time_kind_and_nested_fields_survive_a_peers_unrelated_edit() {
+    let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0 + 1))));
+    let mut dba = db_root(ROOT);
+    let mut dbb = db_root(ROOT);
+    trust(&ea, &mut dba, &eb);
+    trust(&eb, &mut dbb, &ea);
+
+    let text = |s: &str| sunrise_domain::CborValue(ciborium::value::Value::Text(s.into()));
+    let mut raw = Unknowns::new();
+    raw.insert("phase".into(), text("waxing"));
+    let lunar = SunriseTime::Unknown {
+        kind: "lunar".into(),
+        raw,
+    };
+    let mut constraint = sample_constraint();
+    constraint.unknown.insert("place".into(), text("office"));
+    if let Some(w) = constraint.time_of_day.as_mut() {
+        w.unknown.insert("slack_m".into(), text("15"));
+    }
+
+    let task = new_task(&ea, &mut dba, "from a newer build");
+    ea.apply(
+        &mut dba,
+        Command::UpdateTask {
+            id: task,
+            patch: TaskPatch {
+                scheduled_at: Some(Some(lunar.clone())),
+                scheduling_constraints: Some(vec![constraint.clone()]),
+                ..Default::default()
+            },
+        },
+    )
+    .unwrap();
+    eb.apply_remote_all(&mut dbb, &create_env_for(&dba, task.bytes()))
+        .unwrap();
+    for env in update_envs_for(&dba, task.bytes()) {
+        eb.apply_remote_all(&mut dbb, &env).unwrap();
+    }
+
+    // B's projection holds both, not an instant and a truncated constraint.
+    let stored = task_of(&eb, &dbb, task);
+    assert_eq!(stored.scheduled_at.as_ref(), Some(&lunar));
+    assert_eq!(stored.scheduling_constraints, vec![constraint.clone()]);
+
+    eb.apply(
+        &mut dbb,
+        Command::UpdateTask {
+            id: task,
+            patch: TaskPatch {
+                title: Some("renamed by an older build".into()),
+                ..Default::default()
+            },
+        },
+    )
+    .unwrap();
+    let emitted = last_task_update(&eb, &dbb, task);
+    assert_eq!(emitted.scheduled_at, Some(lunar));
+    assert_eq!(emitted.scheduling_constraints, vec![constraint]);
 }
 
 /// An unknown state counts as open in the SQL that lists and counts open

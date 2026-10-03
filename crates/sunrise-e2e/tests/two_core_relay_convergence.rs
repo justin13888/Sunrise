@@ -107,13 +107,11 @@ async fn two_core_relay_convergence() {
     //        B converges to identical canonical state. ---
     let shared = create_stream(&a, "Shared").await;
     let constraint = ScheduleConstraint {
-        time_of_day: Some(TimeOfDayRange {
-            start: time(9, 0, 0, 0),
-            end: time(17, 0, 0, 0),
-        }),
+        time_of_day: Some(TimeOfDayRange::new(time(9, 0, 0, 0), time(17, 0, 0, 0))),
         days_of_week: WeekdaySet::from_days([Weekday::Mo, Weekday::We, Weekday::Fr]),
         date_range: None,
         severity: ConstraintSeverity::Hard,
+        unknown: sunrise_domain::Unknowns::new(),
     };
     let t1 = create_task(&a, "task one", shared, vec![]).await;
     let t2 = create_task(&a, "task two", shared, vec![]).await;
@@ -229,6 +227,7 @@ async fn routine_materialization_convergence() {
             priority: None,
             estimated_duration_s: None,
             body: None,
+            unknown: sunrise_domain::Unknowns::new(),
         },
         rrule: RRule {
             freq: Frequency::Daily,
@@ -240,6 +239,7 @@ async fn routine_materialization_convergence() {
             count: Some(3),
             until: None,
             wkst: None,
+            unknown: sunrise_domain::Unknowns::new(),
         },
         timezone: "UTC".into(),
         starts_at: Timestamp::from_millisecond(i64::try_from(starts_ms).unwrap()).unwrap(),

@@ -238,8 +238,10 @@ impl TaskDraft {
             // Compared on the storage index key, which is the same key SQL
             // orders on — so "the deadline is before the plan" means the same
             // thing to the validator and to a `WHERE due_at_ms < ?` query,
-            // whatever kinds the two values are.
-            if d.index_ms() < s.index_ms() {
+            // whatever kinds the two values are. A kind this build cannot
+            // place on the timeline is compared with nothing: its stand-in
+            // key would invent a violation.
+            if matches!((d.index_key(), s.index_key()), (Some(d), Some(s)) if d < s) {
                 return Err(ValidationError::DueBeforeScheduled);
             }
         }
@@ -268,8 +270,10 @@ impl Task {
             // Compared on the storage index key, which is the same key SQL
             // orders on — so "the deadline is before the plan" means the same
             // thing to the validator and to a `WHERE due_at_ms < ?` query,
-            // whatever kinds the two values are.
-            if d.index_ms() < s.index_ms() {
+            // whatever kinds the two values are. A kind this build cannot
+            // place on the timeline is compared with nothing: its stand-in
+            // key would invent a violation.
+            if matches!((d.index_key(), s.index_key()), (Some(d), Some(s)) if d < s) {
                 return Err(ValidationError::DueBeforeScheduled);
             }
         }
@@ -350,6 +354,29 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(d.validate(), Err(ValidationError::DueBeforeScheduled));
+    }
+
+    /// A time kind this build cannot place is compared with nothing, on
+    /// either side.
+    #[test]
+    fn an_unplaceable_time_kind_never_violates_due_after_scheduled() {
+        let now = Timestamp::from_millisecond(1_700_000_000_000).unwrap();
+        let unknown = crate::SunriseTime::Unknown {
+            kind: "lunar".into(),
+            raw: crate::Unknowns::new(),
+        };
+        for (scheduled_at, due_at) in [
+            (Some(unknown.clone()), Some(now.into())),
+            (Some(now.into()), Some(unknown)),
+        ] {
+            let d = TaskDraft {
+                title: "x".into(),
+                scheduled_at,
+                due_at,
+                ..Default::default()
+            };
+            d.validate().unwrap();
+        }
     }
 
     #[test]

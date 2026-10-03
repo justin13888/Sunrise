@@ -67,6 +67,11 @@ pub struct TaskTemplate {
     /// Optional body.
     #[serde(default)]
     pub body: Option<NoteBody>,
+    /// Fields this build does not know, re-emitted verbatim. See
+    /// [`crate::unknown`]. They stay on the template; an occurrence is a new
+    /// Task this build writes, and it cannot say which of them apply to one.
+    #[serde(flatten)]
+    pub unknown: Unknowns,
 }
 
 impl TaskTemplate {

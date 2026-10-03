@@ -105,6 +105,7 @@ fn expected_routine() -> Routine {
             priority: Some(2),
             estimated_duration_s: Some(600),
             body: Some(NoteBody(vec![9, 8, 7])),
+            unknown: Unknowns::new(),
         },
         rrule: RRule {
             freq: Frequency::Weekly,
@@ -116,6 +117,7 @@ fn expected_routine() -> Routine {
             count: Some(10),
             until: Some(ts(R_UNTIL)),
             wkst: Some(Weekday::Su),
+            unknown: Unknowns::new(),
         },
         timezone: "America/Los_Angeles".to_string(),
         starts_at: ts(R_STARTS),
