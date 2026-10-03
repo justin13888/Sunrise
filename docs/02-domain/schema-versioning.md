@@ -169,7 +169,14 @@ can be lost ([#319](https://github.com/justin13888/Sunrise/issues/319)).
     `extra BLOB` from
     `crates/sunrise-storage/migrations/0015_entity_extra_columns.sql`.
 
-  *Today:* rule 1 holds at the top level of an entity only ([#322](https://github.com/justin13888/Sunrise/issues/322)). Rule 2
+  *Today:* rule 1 holds for every entity and for the nested value types
+  `ScheduleConstraint`, `TimeOfDayRange`, `DateRange`, `RRule` and
+  `TaskTemplate` ([#322](https://github.com/justin13888/Sunrise/issues/322)).
+  `Chunk` (in `FocusStart`) and `ReviewTotals` and `ReviewSnapshotStream` (in
+  `ReviewSnapshot`) have no map yet, nor do the four known `SunriseTime`
+  kinds. Rule 3 holds for every table whose `extra` a write can overwrite: a
+  write whose entity carries no unknown fields keeps a blob this build cannot
+  parse, and logs `core.storage.extra_kept_opaque`. Rule 2
   holds for every string-valued enum ([#321](https://github.com/justin13888/Sunrise/issues/321)): `lossy_enum!` in
   `crates/sunrise-domain/src/unknown.rs` gives each one an
   `Unknown(UnknownVariant)` arm, an `effective()` that reads it as the
@@ -183,7 +190,10 @@ can be lost ([#319](https://github.com/justin13888/Sunrise/issues/319)).
   unknown `Frequency` or `Weekday` in `BYDAY`/`WKST` makes the routine generate
   no occurrences, and its summary says so. An unknown weekday in a scheduling
   constraint's `days_of_week` lifts that day restriction rather than blocking
-  every day. `SunriseTime` has no `Unknown` case yet ([#322](https://github.com/justin13888/Sunrise/issues/322)).
+  every day. `SunriseTime::Unknown { kind, raw }` keeps a kind this build does
+  not know, on the wire and in storage, where the `_kind` column holds the raw
+  kind and the `_tz` sidecar the other fields' canonical CBOR, hex-encoded
+  after `cbor:` ([#322](https://github.com/justin13888/Sunrise/issues/322)).
 - **Document schema: a missing feature makes a build read-only, not broken.**
   A vault lists the features its data requires in a signed, grow-only
   `vault_requires` set. A build that lacks one of them:

@@ -197,6 +197,7 @@ mod tests {
                 priority: None,
                 estimated_duration_s: None,
                 body: None,
+                unknown: crate::Unknowns::new(),
             },
             rrule: RRule::parse("FREQ=DAILY").unwrap(),
             timezone: "UTC".into(),

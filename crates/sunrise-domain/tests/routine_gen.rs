@@ -321,6 +321,7 @@ mod prop {
                 count,
                 until: None,
                 wkst: None,
+                unknown: sunrise_domain::Unknowns::new(),
             };
             let ws = Timestamp::from_millisecond(
                 ((anchor_day + win_start_off) * 86_400) * 1000,

@@ -232,7 +232,7 @@ SQL; evaluation happens in Rust. See
   (`crates/sunrise-domain/src/constraint.rs#TimeOfDayRange`).
 - Constraints are checked once at write time in the device zone and never
   re-evaluated (`crates/sunrise-core/src/engine/task.rs#check_schedule_constraints`).
-- There is no `at_place` dimension, and nested maps have no unknown-field map
+- There is no `at_place` dimension
   (`crates/sunrise-domain/src/constraint.rs#ScheduleConstraint`).
 - A concurrent `blocked_by` cycle persists and leaves both tasks blocked; no
   merge-path code resolves it.

@@ -132,6 +132,7 @@ fn each_tracked_field_is_reported_under_its_own_name() {
         days_of_week: WeekdaySet::default(),
         date_range: None,
         severity: ConstraintSeverity::Hard,
+        unknown: sunrise_domain::Unknowns::new(),
     }];
     assert_eq!(
         changed_task_fields(&base, &next),

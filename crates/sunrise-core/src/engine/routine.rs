@@ -14,8 +14,8 @@
 //! that already exists is not an error.
 
 use super::ids::{
-    decode_unknowns, encode_unknowns, energy_str, ms_to_ts, require_kind, require_writable_stream,
-    task_state_str, time_to_parts,
+    decode_unknowns, encode_unknowns, energy_str, extra_over_opaque, ms_to_ts, require_kind,
+    require_writable_stream, task_state_str, time_to_parts, ExtraTable,
 };
 use super::lww::LwwStamp;
 use super::stream::ensure_stream_row;
@@ -836,7 +836,12 @@ pub(super) fn update_routine_row(
     let skipped_keys_blob = encode_blob_opt(&r.skipped_keys, r.skipped_keys.is_empty())?;
     let constraints_blob = encode_constraints(&r.scheduling_constraints)?;
     let streak_blob = encode_streak_state(r)?;
-    let extra_blob = encode_unknowns(&r.unknown)?;
+    let extra_blob = extra_over_opaque(
+        tx,
+        ExtraTable::Routines,
+        &id_blob,
+        encode_unknowns(&r.unknown)?,
+    )?;
     tx.execute(
         "UPDATE routines SET
             stream_id = ?, rrule_text = ?, rrule_cbor = ?, timezone = ?,

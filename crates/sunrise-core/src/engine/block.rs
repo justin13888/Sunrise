@@ -14,7 +14,8 @@
 //! their one other caller.
 
 use super::ids::{
-    blob16, decode_unknowns, encode_unknowns, ms_to_ts, require_kind, require_writable_stream,
+    blob16, decode_unknowns, encode_unknowns, extra_over_opaque, ms_to_ts, require_kind,
+    require_writable_stream, ExtraTable,
 };
 use super::lww::LwwStamp;
 use super::stream::ensure_stream_row;
@@ -439,6 +440,12 @@ pub(super) fn upsert_block_row(
 ) -> rusqlite::Result<()> {
     let (start_ms, start_kind, start_tz) = b.starts_at.to_parts();
     let (end_ms, end_kind, end_tz) = b.ends_at.to_parts();
+    let extra_blob = extra_over_opaque(
+        tx,
+        ExtraTable::Blocks,
+        &b.id.bytes()[..],
+        encode_unknowns(&b.unknown)?,
+    )?;
     tx.execute(
         "INSERT INTO blocks
          (id, stream_id, starts_at_ms, starts_at_kind, starts_at_tz,
@@ -475,7 +482,7 @@ pub(super) fn upsert_block_row(
             b.title.as_deref(),
             b.title_track_task as i64,
             b.deleted as i64,
-            encode_unknowns(&b.unknown)?,
+            extra_blob,
             b.created_at.as_millisecond(),
             b.updated_at.as_millisecond(),
             lww.hlc.physical_ms as i64,
