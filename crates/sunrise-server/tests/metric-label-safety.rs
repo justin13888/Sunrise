@@ -278,8 +278,10 @@ async fn metric_labels_are_allowlisted_and_bounded() {
     let templates: BTreeSet<String> = operations().into_iter().map(|(_, p)| p).collect();
     for (label, values) in &before.values {
         for value in values {
+            // `commit` is a build constant, not request data: a full git SHA
+            // is id-shaped by design, and its own arm below bounds it.
             assert!(
-                !value.contains(first) && !id_shaped(value),
+                !value.contains(first) && (label == "commit" || !id_shaped(value)),
                 "label `{label}` carries an id-shaped value `{value}`:\n{text}"
             );
             let closed = match label.as_str() {
@@ -295,6 +297,17 @@ async fn metric_labels_are_allowlisted_and_bounded() {
                 "scope" => ["ip", "account", "device"].contains(&value.as_str()),
                 "state" => ["active", "revoked"].contains(&value.as_str()),
                 "version" => value == env!("CARGO_PKG_VERSION"),
+                // `SUNRISE_BUILD_COMMIT` at compile time: `unknown`, or a git
+                // object name, abbreviated or full (SHA-1 or SHA-256). One
+                // value per process, so it adds one series, not one per user.
+                "commit" => {
+                    values.len() == 1
+                        && (value == "unknown"
+                            || ((7..=64).contains(&value.len())
+                                && value
+                                    .bytes()
+                                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))))
+                }
                 // A typed error code, or a per-metric closed enum.
                 "reason" => value
                     .bytes()
