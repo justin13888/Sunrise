@@ -439,6 +439,11 @@ mod tests {
                 serde_json::json!(expected),
                 "a refusal on {field} must carry {expected}, not a shared code"
             );
+            // The metric splits on the same code, so a dashboard can tell a
+            // stale app from a stale relay too.
+            let reason = [("reason", expected)];
+            let refused = "sunrise_sync_negotiate_refused_total";
+            assert_eq!(client.metrics.get_with(refused, &reason), 1, "{expected}");
         }
     }
 
@@ -1476,6 +1481,14 @@ mod tests {
             "a re-send is acked with the timestamp the first copy got"
         );
         assert_eq!(client.metrics.get("sunrise_relay_batch_duplicate_total"), 1);
+        // Received work counts the first copy only; the re-send is churn.
+        assert_eq!(client.metrics.get("sunrise_sync_ops_received_total"), 1);
+        assert_eq!(
+            client
+                .metrics
+                .histogram_count("sunrise_sync_batch_ops", &[]),
+            1
+        );
 
         let body = read(&client, &id, &[]).await;
         assert_eq!(

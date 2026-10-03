@@ -781,6 +781,15 @@ mod tests {
             .await;
         fetched.assert_status(StatusCode::OK);
         assert_eq!(fetched.bytes, whole, "the streamed body must reassemble");
+
+        // Both directions counted the ciphertext they moved, and nothing else.
+        let bytes = |direction| {
+            client
+                .metrics
+                .get_with("sunrise_blob_bytes_total", &[("direction", direction)])
+        };
+        assert_eq!(bytes("upload"), whole.len() as u64);
+        assert_eq!(bytes("download"), whole.len() as u64);
     }
 
     /// The client's hashes are a claim; finalize is the check.

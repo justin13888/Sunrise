@@ -33,11 +33,14 @@ emits it.
 5. **Cost.** Recording a metric on a hot path MUST NOT take a lock. The registry
    (`crates/sunrise-server/src/metrics.rs#Metrics`) is a fixed table of `OnceLock` slots probed from
    a hash of the name and labels: a series is written once, on first touch, and every later
-   observation is a probe and an atomic add.
+   observation is a probe and an atomic add. The only wait is two threads racing to create the same
+   slot's series, once per series for the life of the process.
 6. **Bounded series.** The table holds a fixed number of series (`metrics::CAPACITY`, 4096) and
    never grows. An observation that would need a new series in a full table, that carries a label
    off the allowlist, or that reuses a name under a second type is dropped and counted in
    `sunrise_metrics_series_dropped_total`. That counter is always present, so a zero is a reading.
+   A debug build panics on the off-allowlist label instead, so a test that adds one fails at the
+   call.
 
 ## Label allowlist
 
