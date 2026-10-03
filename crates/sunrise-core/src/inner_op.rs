@@ -49,8 +49,15 @@ use thiserror::Error;
 /// target field and its entity are read from the registry; only the four
 /// control families, which carry key material and trust rather than an
 /// entity, are written here. An entity op therefore cannot be added without
-/// every routing table below learning it, and cannot be routed to the wrong
-/// kind or op-log tag.
+/// every routing table below learning it.
+///
+/// The derived `inner_kind` and `target_kind` reach the op log only on the
+/// paths that read them from the op: a remote op
+/// ([`crate::engine::Engine::apply_remote`]) and a control op
+/// (`emit_control_op`). A local entity write passes its two op-log strings to
+/// `ops_insert` by hand, and nothing checks them against the op it seals. One
+/// differs on purpose: a local defer is logged as `task.defer`, while the
+/// same `TaskUpdate` is logged as `task.update` when a peer receives it.
 macro_rules! define_inner_op {
     (
         $(
