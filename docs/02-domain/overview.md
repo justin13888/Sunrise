@@ -162,3 +162,55 @@ for it (the catalogue is [`../05-sync/crdt-design.md`](../05-sync/crdt-design.md
   no list CRDT.
 
 Each entity spec's §Merge mapping names its fields' types.
+
+## The entity registry
+
+Every entity kind is declared once, in the entity registry: the
+`for_each_entity!` macro in `crates/sunrise-id/src/registry.rs`. An entry
+records the kind's id prefix, its op-log tag, how its ops merge (`Lww`,
+`AppendOnly`, `Control` or `Unsynced`), which stream seals its ops, the feature
+ids scoped to it, the op variants that carry it, and the records those ops
+write. Each record names its table, its key column and where it keeps unknown
+fields, and declares every field with its wire name, its Rust type and its
+CRDT type (`Register`, `Map`, `OrSet`, `Counter`, `Nested`, or `Derived` for a
+field computed at read time).
+
+The registry is a list of tokens that each consumer expands for itself, so
+none of them keeps a second list:
+
+| Consumer | What it derives | A missed entity fails |
+|---|---|---|
+| `sunrise-id` | `EntityKind`, its prefixes and tags, and the machine-readable `ENTITIES` table | the build |
+| `sunrise-domain` (`registry.rs`) | an exhaustive, type-checked destructuring of every record, and a wire-name check | the build; the wire names fail a test |
+| `sunrise-core` (`inner_op.rs`) | `InnerOp`'s entity variants and their `inner_kind`, `target_kind`, target, effect and kind | the build |
+| `sunrise-core` (`engine/lww.rs`) | the materializer's merge class, table and key column | the build: its per-op match is exhaustive |
+| `sunrise-core-bindings` (`dto.rs`) | that every record of a synced entity names a `UniFFI` mirror that converts from it | the build |
+| `sunrise-storage` (`db.rs`) | that every projected table holds its key, its unknowns column and, for `Lww`, its stamp | a test |
+
+`ENTITIES` is also the input the canonical schema and its fingerprint are built
+from ([#323](https://github.com/justin13888/Sunrise/issues/323)), and the field
+catalogue per-field merge reads
+([ADR-0044](../11-adr/0044-per-field-ops.md) §2).
+
+### Adding an entity
+
+1. Declare it in the registry: a prefix and a tag that have never been used,
+   its merge class, its owner, its feature id (`<entity>.entity`, see
+   [`schema-versioning.md`](./schema-versioning.md) §Adding an op kind), its op
+   variants and its records with every field. The variant names and
+   `inner_kind` strings are a wire contract from the first op written.
+2. Define the domain type in `crates/sunrise-domain/src/`, with a flattened
+   `unknown: Unknowns` field. Until its fields match the registry, the domain
+   crate does not build.
+3. Write the migration that creates its table with the registered key column,
+   the four `lww_*` stamp columns for an `Lww` entity, and an `extra` blob.
+4. Write its row writers in `crates/sunrise-core/src/engine/` and its arms in
+   `materialize_remote`. The match there is exhaustive over `InnerOp`, so each
+   new op variant fails the build until it has an arm.
+5. Write its `UniFFI` mirror and `From` conversion in
+   `crates/sunrise-core-bindings/src/dto.rs`, and add its `Mirrored` impl.
+6. Add the commands, queries and undo rules the feature needs. These are
+   product surfaces rather than wiring, so the registry does not require them:
+   an append-only entity has no delete command, and an attachment has no
+   update.
+7. Add its spec to this directory and a row to the entity summary above.
