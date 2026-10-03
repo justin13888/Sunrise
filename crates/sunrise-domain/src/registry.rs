@@ -138,6 +138,7 @@ mod tests {
             priority: None,
             estimated_duration_s: None,
             body: None,
+            unknown: Unknowns::new(),
         }
     }
 
@@ -228,6 +229,7 @@ mod tests {
                     count: None,
                     until: None,
                     wkst: None,
+                    unknown: Unknowns::new(),
                 },
                 timezone: "UTC".into(),
                 starts_at: ts(),

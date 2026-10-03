@@ -247,6 +247,7 @@ macro_rules! for_each_entity {
                         priority: Option<u8> => Register;
                         estimated_duration_s: Option<u64> => Register;
                         body: Option<NoteBody> => Register;
+                        ..unknown
                     }
                 ],
             }
