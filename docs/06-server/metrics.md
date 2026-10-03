@@ -73,8 +73,10 @@ written by the renderer from the fixed bucket set, and no call site supplies it.
 an id-shaped sentinel in every path parameter and the query string, plus one path nothing matches,
 and scrapes `/metrics`. It asserts that only allowlisted label names appear, that every family has a
 `# TYPE` line, that every label value is drawn from the set above and is not id-shaped, and that a
-second pass with a different id adds no series. A route added later is in the description, so it is
-driven without anyone adding it to the test.
+second pass with a different id adds no series. The one exemption from the id-shape check is
+`commit`, a build constant whose full git SHA is id-shaped by design: it is held instead to
+`unknown` or 7 to 64 lowercase hex digits, and to a single value per process. A route added later is
+in the description, so it is driven without anyone adding it to the test.
 
 ## Catalogue
 
