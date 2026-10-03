@@ -99,6 +99,23 @@ replaced with a gate everywhere else.
 - Verify integrity warnings fire on tampered envelopes.
 - **Seed**: the harness's RNG seed comes from `SUNRISE_FUZZ_SEED` when set — hex, a leading `0x` forcing hex, and a plain decimal also accepted — and otherwise from the fixed `DEFAULT_FUZZ_SEED` (`0x5352_5f43_4841_4f53`, "SR_CHAOS"), so a chaos run reproduces out of the box without reading git state. `sunrise_test_seed::seed_from_env` is the reader, re-exported on `sunrise_e2e::chaos` where callers already name it, and its unit tests cover hex, `0x`, decimal and absence; `crates/sunrise-e2e/tests/chaos.rs` xors the resolved value with a per-scenario tag so two scenarios never draw the same stream, and `Toxic::new` announces the base value. **The variable is workspace-wide** — the property tests read the same one (see [§2](#convergence-property-test-determinism)) — but the two harnesses fall back differently when it is unset, because a chaos run wants the same fault schedule twice and a property run wants a wider search.
 
+#### Cross-version merge
+
+The one place two builds of `sunrise-core` meet: `crates/sunrise-e2e/tests/cross_version_convergence.rs`, designed in [ADR-0057](../11-adr/0057-cross-version-merge-harness.md). What it asserts is [`../02-domain/schema-versioning.md`](../02-domain/schema-versioning.md) §Compatibility testing.
+
+- **The control** (`head_and_head_merge_without_loss_or_break`, `head_known_gaps_still_reproduce`) runs `HEAD` against `HEAD` and needs nothing built. It is part of `cargo test --workspace`, so it runs on every pull request.
+- **The baseline run** (`baseline_and_head_merge_without_loss_or_break`, `baseline_known_gaps_still_reproduce`) is `#[ignore]`d, because it needs the baseline driver, which is built from another tree:
+
+    ```sh
+    SUNRISE_BASELINE_DRIVER=$(crates/sunrise-e2e/baseline-driver/build-baseline.sh d9566ade714bf49714ea1b034625a5b6a1792984 | tail -n1) \
+      cargo test -p sunrise-e2e --test cross_version_convergence -- --ignored
+    ```
+
+  With `SUNRISE_BASELINE_DRIVER` unset, the ignored tests fail and say how to build it. They never pass with nothing run. The `Cross-version merge` CI job runs them on every merge to master, nightly, and on a manual dispatch, once per baseline in its matrix.
+- **Cases:** `SUNRISE_CROSS_VERSION_CASES`, 4 by default and 64 in CI. Every case boots a relay and three vaults, about 0.2 s each locally.
+- **Reproducing a failure:** the same two mechanisms as every other property test (§2). The counterexample is persisted at `proptest-regressions/tests/cross_version_convergence.txt` under `crates/sunrise-e2e/`, which the CI job uploads when it fails, and the run is replayed with `SUNRISE_FUZZ_SEED`.
+- **Expected failures:** a violation listed in `crates/sunrise-e2e/src/cross_version/gaps.rs` is reported against its issue and passes. A violation not listed fails. Each entry has a fixed reproduction in the test file, which fails the day the violation stops happening, and that is when its entry is removed.
+
 ### 6. Performance tests
 
 - Per-platform benchmark suite (op apply rate, capture latency, search latency).
@@ -146,7 +163,7 @@ replaced with a gate everywhere else.
 ## CI matrix
 
 - Per PR: Rust core unit + property + integration; web + desktop UI smoke.
-- Nightly: full mobile UI on real-device simulators; chaos suite; performance benchmarks.
+- Nightly: full mobile UI on real-device simulators; chaos suite; performance benchmarks; the cross-version merge against every baseline (also on every merge to master).
 - Per release: manual a11y; manual cross-platform pairing flow.
 
 ## Coverage and what we don't measure
