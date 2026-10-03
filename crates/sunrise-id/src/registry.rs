@@ -56,8 +56,20 @@
 //! # Wire stability
 //!
 //! The prefix, the tag, every op variant name, its `inner_kind` and every
-//! field's wire name are wire or storage contracts. Rename none of them; a
-//! name that leaves the registry stays reserved ([ADR-0044] §2).
+//! field's wire name are wire or storage contracts. Rename none of them.
+//! [ADR-0044] §2 says a name that leaves the registry stays reserved forever,
+//! but nothing records or enforces that yet. No name has left, so the grammar
+//! has no reserved-name slot and no test checks for reuse. The first change
+//! that removes a name adds both.
+//!
+//! # Not declared yet
+//!
+//! [ADR-0044] §2 also has the registry declare each field's **default**: the
+//! value a field-level create that omits the field reads as (§4). Nothing
+//! reads such a default until per-field ops land (#319). Today every op
+//! carries the full record, and serde's defaults on the domain types fill a
+//! missing field. So [`FieldSpec`] has no default yet. #319 adds it, and the
+//! schema fingerprint (#323) then hashes it with the rest of the field.
 //!
 //! [ADR-0044]: ../../../docs/11-adr/0044-per-field-ops.md
 //! [`EntityKind`]: crate::EntityKind
@@ -592,6 +604,9 @@ pub struct Storage {
 }
 
 /// One field of a record.
+///
+/// It has no default yet. See the [module docs](crate::registry) §Not declared
+/// yet.
 #[derive(Debug, Clone, Copy)]
 pub struct FieldSpec {
     /// The CBOR map key, which is the field's identity ([ADR-0044] §2).
