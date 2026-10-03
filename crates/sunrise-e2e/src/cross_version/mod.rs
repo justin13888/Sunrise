@@ -5,7 +5,7 @@
 //! build of `sunrise-core` into both replicas, so none of them can see a
 //! violation of it. This one runs two:
 //!
-//! - **A** is the *baseline*: `sunrise-core` as a release tag shipped it,
+//! - **A** is the *baseline*: `sunrise-core` as a pinned commit had it,
 //!   running in a separate process ([`baseline`]) because two builds of one
 //!   crate do not link into one binary. In the control run A is `HEAD`.
 //! - **B** is the account's first device, created by A's build and then
@@ -18,8 +18,9 @@
 //! side in either order, and settles. At the end A is closed, reopened by
 //! `HEAD`, and both are compared with the reference [`model`] computes.
 //!
-//! - *No break:* the baseline never refuses an op as corruption, never logs an
-//!   error, never fails a command, and is still live at the end.
+//! - *No break:* `HEAD` opens the vaults the baseline wrote, and the baseline
+//!   never refuses an op as corruption, never logs an error, never fails a
+//!   command, and is still live at the end.
 //! - *No loss:* after the upgrade, every field holds what its last writer set,
 //!   unless a concurrent write to that same field won.
 //!
@@ -275,7 +276,7 @@ pub enum Mode {
 /// Everything a run found.
 #[derive(Debug)]
 pub struct Report {
-    /// The baseline tag, or `None` for the control run.
+    /// The baseline's full commit id, or `None` for the control run.
     pub baseline: Option<String>,
     /// Every violation, classified.
     pub violations: Vec<Classified>,
@@ -350,7 +351,7 @@ pub async fn run(mode: &Mode, steps: &[Step]) -> Report {
 
     let Pair {
         a,
-        baseline_tag,
+        baseline_ref,
         b,
         device_a,
         root,
@@ -358,11 +359,11 @@ pub async fn run(mode: &Mode, steps: &[Step]) -> Report {
         Ok(pair) => pair,
         // `HEAD` would not open the vault the baseline wrote: nothing past
         // this point can run, and this is the whole report.
-        Err((baseline_tag, refusal)) => {
+        Err((baseline_ref, refusal)) => {
             relay.abort();
-            let violations = Model::default().classify(baseline_tag.as_deref(), vec![refusal]);
+            let violations = Model::default().classify(baseline_ref.as_deref(), vec![refusal]);
             return Report {
-                baseline: baseline_tag,
+                baseline: baseline_ref,
                 violations,
             };
         }
@@ -372,7 +373,7 @@ pub async fn run(mode: &Mode, steps: &[Step]) -> Report {
 
     let mut run = Run {
         a,
-        a_is_baseline: baseline_tag.is_some(),
+        a_is_baseline: baseline_ref.is_some(),
         root,
         b: HeadReplica(b),
         devices: [device_a, device_b, c.device_id()],
@@ -408,9 +409,9 @@ pub async fn run(mode: &Mode, steps: &[Step]) -> Report {
     c.shutdown().await;
     relay.abort();
 
-    let violations = model.classify(baseline_tag.as_deref(), violations);
+    let violations = model.classify(baseline_ref.as_deref(), violations);
     Report {
-        baseline: baseline_tag,
+        baseline: baseline_ref,
         violations,
     }
 }
@@ -418,7 +419,7 @@ pub async fn run(mode: &Mode, steps: &[Step]) -> Report {
 /// The two replicas the property compares, and what reopening them needs.
 struct Pair {
     a: Box<dyn Replica>,
-    baseline_tag: Option<String>,
+    baseline_ref: Option<String>,
     b: Arc<Core>,
     device_a: [u8; 16],
     /// The vault root both were created under.
@@ -464,7 +465,7 @@ async fn open_pair(
             Ok(Pair {
                 device_a: a.device_id(),
                 a: Box::new(HeadReplica(a)),
-                baseline_tag: None,
+                baseline_ref: None,
                 b,
                 root: ROOT,
             })
@@ -493,7 +494,7 @@ async fn open_pair(
             );
             Ok(Pair {
                 a: Box::new(driver),
-                baseline_tag: Some(tag),
+                baseline_ref: Some(tag),
                 b,
                 device_a: init.device_a,
                 root: init.root,

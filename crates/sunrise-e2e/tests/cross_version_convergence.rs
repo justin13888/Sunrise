@@ -4,8 +4,8 @@
 //!
 //! Two runs of one property over generated scenarios:
 //!
-//! - **baseline against `HEAD`** — replica A is `sunrise-core` as a release tag
-//!   shipped it, in the driver process `SUNRISE_BASELINE_DRIVER` names. Ignored
+//! - **baseline against `HEAD`** — replica A is `sunrise-core` as a pinned
+//!   commit had it, in the driver process `SUNRISE_BASELINE_DRIVER` names. Ignored
 //!   by a plain `cargo test`, because the driver is built from another tree;
 //!   the `Cross-version merge` CI job builds it and runs this with
 //!   `--ignored`. Without the variable the ignored tests fail rather than pass
@@ -59,7 +59,8 @@ fn baseline_mode() -> Mode {
     let path = std::env::var_os(DRIVER_ENV).unwrap_or_else(|| {
         panic!(
             "{DRIVER_ENV} is not set. Build the driver with \
-             `crates/sunrise-e2e/baseline-driver/build-baseline.sh <tag>` and point \
+             `crates/sunrise-e2e/baseline-driver/build-baseline.sh <ref>` (the refs are \
+             the `cross-version` job's matrix in .github/workflows/ci.yml) and point \
              {DRIVER_ENV} at the path it prints."
         )
     });
@@ -270,16 +271,16 @@ fn head_known_gaps_still_reproduce() {
 #[ignore = "needs SUNRISE_BASELINE_DRIVER; the Cross-version merge CI job runs it"]
 fn baseline_known_gaps_still_reproduce() {
     let mode = baseline_mode();
-    // Ask the driver which tag it is, through a run that does nothing.
+    // Ask the driver which commit it is, through a run that does nothing.
     let probe = execute(&mode, &[]);
-    let tag = probe
+    let baseline = probe
         .baseline
         .clone()
-        .expect("a baseline run reports its tag");
+        .expect("a baseline run reports its commit");
     assert!(
         probe.unexplained().is_empty(),
         "an empty scenario broke the invariant:\n{}",
         describe(&probe)
     );
-    assert_gaps_reproduce(&mode, Some(&tag));
+    assert_gaps_reproduce(&mode, Some(&baseline));
 }
