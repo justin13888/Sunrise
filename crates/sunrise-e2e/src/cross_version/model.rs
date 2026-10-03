@@ -142,8 +142,13 @@ pub enum Violation {
         who: Who,
         /// The task the op was about.
         task: EntityRef,
-        /// What it carried.
+        /// What it set.
         write: FutureWrite,
+        /// Newer values it carried from earlier newer writes to the task.
+        /// Each op is a whole task as `HEAD` held it, so it carries every
+        /// unknown value `HEAD` kept, and any of them can be what the replica
+        /// could not read.
+        carried: Vec<FutureWrite>,
         /// Whether the refusal is the one the sync driver counts as corruption.
         corruption: bool,
         /// The refusal.
@@ -222,11 +227,22 @@ struct Write {
 
 /// A newer op the baseline did not keep: refused, or accepted with its value
 /// replaced.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct Unkept {
     task: EntityRef,
     write: FutureWrite,
+    /// The issue that accounts for it: see [`cause`].
+    cause: Option<u32>,
     at: u64,
+}
+
+/// The issue that accounts for a baseline not keeping a newer op that set
+/// `write` and carried `carried`: the write's own, when the baseline cannot
+/// read what it sets, else the first carried value the baseline cannot read.
+fn cause(write: FutureWrite, carried: &[FutureWrite]) -> Option<u32> {
+    write
+        .baseline_issue()
+        .or_else(|| carried.iter().find_map(|c| c.baseline_issue()))
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -290,9 +306,25 @@ impl Model {
 
     /// Record the baseline not keeping a newer op on `task`: refusing it, or
     /// accepting it and holding something other than what it set.
-    pub fn unkept(&mut self, task: EntityRef, write: FutureWrite) {
+    pub fn unkept(&mut self, task: EntityRef, write: FutureWrite, carried: &[FutureWrite]) {
         let at = self.tick();
-        self.unkept.push(Unkept { task, write, at });
+        self.unkept.push(Unkept {
+            task,
+            write,
+            cause: cause(write, carried),
+            at,
+        });
+    }
+
+    /// The newer values a newer op on `task` carries now: every one B has
+    /// accepted on it that the baseline cannot read.
+    #[must_use]
+    pub fn carried(&self, task: EntityRef) -> Vec<FutureWrite> {
+        self.taints
+            .iter()
+            .filter(|t| t.task == task)
+            .map(|t| t.write)
+            .collect()
     }
 
     /// Record B accepting a newer op whose value the baseline cannot read, so
@@ -382,9 +414,10 @@ impl Model {
             Violation::Refused {
                 who: Who::A,
                 write,
+                carried,
                 corruption: true,
                 ..
-            } if cross => write.baseline_issue(),
+            } if cross => cause(*write, carried),
             // The baseline's sync driver dropping a `HEAD` write that carries a
             // newer value `HEAD` kept: the same unknown value, one hop later.
             Violation::LoggedCorruption { who: Who::A, .. } if cross => {
@@ -411,7 +444,7 @@ impl Model {
         // nothing, or a fallback in its place.
         if who == Who::AUpgraded {
             if let Some(u) = unkept.iter().find(|u| u.write.field() == Some(field)) {
-                return u.write.baseline_issue();
+                return u.cause;
             }
         }
         // The baseline wrote the task after failing to keep a newer op on it,

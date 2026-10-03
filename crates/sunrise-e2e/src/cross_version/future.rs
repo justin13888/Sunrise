@@ -1,8 +1,9 @@
 //! A writer from a build newer than any in the run.
 //!
 //! The property needs ops carrying kinds, fields and enum values that only a
-//! newer build has. `HEAD` has very few of those relative to the baseline
-//! today, and has none relative to itself, so the harness supplies them: it
+//! newer build has. `HEAD` has none of those relative to the ADR-0042 floor
+//! (both are at `DOC_SCHEMA_V` 6), and none relative to itself, so the harness
+//! supplies them: it
 //! takes a real device of the account (paired by `HEAD`, holding a real cert
 //! and the Stream's key), and seals ops that device's build could not have
 //! written, the way the next build will write them. Each is built from a

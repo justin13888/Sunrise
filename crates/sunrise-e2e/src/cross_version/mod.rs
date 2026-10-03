@@ -728,6 +728,7 @@ impl Run {
     /// then holds, and an op it did not keep is recorded the same as one it
     /// refused.
     async fn deliver(&mut self, d: &Delivery) {
+        let carried = self.model.carried(d.task);
         match self.side(d.to).apply_remote(&d.envelope).await {
             Applied::Accepted => {
                 if d.to == Side::B && self.a_is_baseline {
@@ -738,19 +739,20 @@ impl Run {
                         let held = self.a.task(d.task).await.as_ref().map(project);
                         let kept = held.and_then(|p| p.get(&field).cloned().flatten());
                         if kept != d.value {
-                            self.model.unkept(d.task, d.write);
+                            self.model.unkept(d.task, d.write, &carried);
                         }
                     }
                 }
             }
             Applied::Refused { corruption, error } => {
                 if d.to == Side::A && self.a_is_baseline {
-                    self.model.unkept(d.task, d.write);
+                    self.model.unkept(d.task, d.write, &carried);
                 }
                 self.violations.push(Violation::Refused {
                     who: Self::who(d.to),
                     task: d.task,
                     write: d.write,
+                    carried,
                     corruption,
                     error,
                 });
