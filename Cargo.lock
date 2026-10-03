@@ -3207,12 +3207,14 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "ciborium",
+ "hex",
  "jiff",
  "parking_lot",
  "proptest",
  "rand 0.8.6",
  "rand_chacha 0.3.1",
  "rand_core 0.6.4",
+ "serde_json",
  "sunrise-cbor",
  "sunrise-core",
  "sunrise-core-bindings",
@@ -3229,6 +3231,8 @@ dependencies = [
  "sunrise-wire-protocol",
  "tempfile",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
