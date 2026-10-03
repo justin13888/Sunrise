@@ -36,8 +36,7 @@
 //!     merge: Lww | AppendOnly | Control | Unsynced,
 //!     owner: Meta | Parent | Unowned | Field("stream_id"),
 //!     features: ["kind.entity", ...],         // feature ids scoped here (#324)
-//!     ops: [
-//!         /// docs
+//!     ops: [                                  // each may carry doc attributes
 //!         KindCreate(Payload) = "kind.create", Create, id;
 //!     ],                                      // variant(payload) = inner_kind, class, target field
 //!     records: [
