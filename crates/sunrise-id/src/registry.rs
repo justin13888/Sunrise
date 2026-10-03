@@ -1,6 +1,6 @@
 //! The entity registry: the one declaration of what an entity is.
 //!
-//! Every entity kind is declared once, in [`for_each_entity!`], with its id
+//! Every entity kind is declared once, in [`crate::for_each_entity!`], with its id
 //! prefix, its op-log tag, how it merges, which stream owns its ops, the
 //! feature ids scoped to it, the op variants that carry it and the records
 //! those ops write: each record's storage projection and every field's wire
