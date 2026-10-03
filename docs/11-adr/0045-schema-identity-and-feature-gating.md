@@ -205,7 +205,7 @@ schema version the payload was written against, and field 12 already reveals
 that.
 
 **Consequence for a committed fixture.** Once field 13 is assigned,
-`FUTURE_SMALL_FIELD` (`crates/sunrise-crypto/tests/forward_compat.rs:23`) stops
+`FUTURE_SMALL_FIELD` (`crates/sunrise-crypto/tests/forward_compat.rs#FUTURE_SMALL_FIELD`) stops
 naming an unknown field. The `forward-compat/v1-reads-v2.cbor` fixture is
 regenerated with an unassigned single-byte id (23) in its place, in the same
 change that assigns 13.

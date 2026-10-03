@@ -80,15 +80,17 @@ whether this build can safely write to this vault is a feature id.
 ## 2. Current version constants
 
 ```
-WIRE_PROTO_V      = 1
-ENVELOPE_FORMAT_V = 3
-DOC_SCHEMA_V      = 6
-DOC_SCHEMA_FLOOR  = 1
-CRYPTO_SUITE_V    = 5
+WIRE_PROTO_V          = 1
+ENVELOPE_FORMAT_V     = 3
+ENVELOPE_FORMAT_FLOOR = 3
+DOC_SCHEMA_V          = 6
+DOC_SCHEMA_FLOOR      = 1
+CRYPTO_SUITE_V        = 5
 ```
 
-`ENVELOPE_FORMAT_FLOOR` does not exist yet. ADR-0045 §5 introduces it at `3`,
-equal to `ENVELOPE_FORMAT_V` ([#329](https://github.com/justin13888/Sunrise/issues/329)).
+`ENVELOPE_FORMAT_FLOOR` is `3`, equal to `ENVELOPE_FORMAT_V` (ADR-0045 §5,
+[#329](https://github.com/justin13888/Sunrise/issues/329)). The two stay equal
+until the transition in §2.1 completes.
 
 Wire frames, op envelopes, recovery blobs and storage rows all carry their
 respective version constants.
@@ -100,7 +102,7 @@ respective version constants.
 | Constant | Accept when | Otherwise | Why |
 |---|---|---|---|
 | `WIRE_PROTO_V`, `CRYPTO_SUITE_V` | The peers' supported lists intersect | Hard refusal at session start | The reader does not know the layout or the primitives, so there is nothing to salvage. |
-| `ENVELOPE_FORMAT_V` | The magic-prefix version (the writer's floor) is ≤ the reader's `ENVELOPE_FORMAT_V`, **and** field 1 (`v`, the writer's `ENVELOPE_FORMAT_V`) is ≥ the prefix version: `prefix.version ≤ reader.ENVELOPE_FORMAT_V and v ≥ prefix.version` (ADR-0045 §5). Unknown fields are preserved. | Refuse the envelope: `PROTOCOL_BAD_MAGIC` | The reader can locate the payload whenever it implements the writer's floor. *Today:* both the prefix and field 1 must equal `3` exactly (`crates/sunrise-crypto/src/op_envelope.rs#decode_envelope`, `crates/sunrise-cbor/src/envelope_header.rs#decode_envelope_header`). |
+| `ENVELOPE_FORMAT_V` | The magic-prefix version (the writer's floor) is within the reader's `ENVELOPE_FORMAT_FLOOR..=ENVELOPE_FORMAT_V`, **and** field 1 (`v`, the writer's `ENVELOPE_FORMAT_V`) is ≥ the prefix version: `reader.ENVELOPE_FORMAT_FLOOR ≤ prefix.version ≤ reader.ENVELOPE_FORMAT_V and v ≥ prefix.version` (ADR-0045 §5). Unknown fields are preserved. | A prefix outside the window: `PROTOCOL_BAD_MAGIC`. A field 1 below the prefix: `SYNC_OP_INVALID`. | The reader can locate the payload whenever it implements the writer's floor. One function states the rule, `crates/sunrise-cbor/src/envelope_header.rs#envelope_format_readable`, and both the client decoder (`crates/sunrise-crypto/src/op_envelope.rs#decode_envelope`) and the relay's header decoder (`crates/sunrise-cbor/src/envelope_header.rs#decode_envelope_header`) call it. |
 | `DOC_SCHEMA_V` | Whenever it is `>= DOC_SCHEMA_FLOOR` | Refuse the envelope (`DOC_SCHEMA_TOO_OLD`) | The reader can authenticate and decrypt the payload. Whatever it cannot understand inside is preserved, or the whole op is **parked** (§7). It is never dropped. |
 
 `ENVELOPE_FORMAT_V` versions the op-envelope container and is carried in
@@ -108,6 +110,44 @@ envelope field 1. `DOC_SCHEMA_V` versions the entity shapes and is carried in
 envelope field 12. The first envelope format used one number for both jobs.
 That meant adding a field to a Task changed the magic prefix, and made every
 already-signed envelope undecodable.
+
+### 2.1 Changing the envelope container
+
+A writer stamps its `ENVELOPE_FORMAT_V` in field 1 and its
+`ENVELOPE_FORMAT_FLOOR` in the magic prefix
+(`crates/sunrise-crypto/src/op_envelope.rs#seal_envelope`).
+
+- **An additive container change bumps `ENVELOPE_FORMAT_V` alone.** Additive
+  means a new field whose absence has a defined meaning. The AAD and the
+  signature input are defined by the fields they exclude, so a new field is
+  inside both without any change to either. A reader at the old version keeps
+  it in `OpEnvelope.unknown`, re-emits it in place, and its signature check
+  still passes.
+- **A change to the meaning of fields 1–12, to the AAD construction or to the
+  signature input MUST raise `ENVELOPE_FORMAT_FLOOR`.** The AAD construction is
+  the `Omit` set in `crates/sunrise-crypto/src/op_envelope.rs`, and the
+  signature input is `SIG_DOMAIN` over the map without field 11.
+  `the_container_meaning_is_pinned_to_its_floor` in the same file pins all
+  three to the floor they were frozen at: fields 1–12 by their exact encoding
+  and decoding, the `Omit` sets field by field, and `SIG_DOMAIN` by value.
+  Changing any of them without moving the floor fails that test. Moving the
+  floor fails it too, until the new container is pinned.
+- **A floor raise SHOULD also change `SIG_DOMAIN`.** The prefix is outside the
+  signature. Anyone on the path can lower it, and only a signature input that
+  differs between the two containers makes a reader below the new floor refuse
+  such an envelope instead of misreading it.
+- **Fields 13–15 need no container bump.** Field 13 is the schema fingerprint
+  (ADR-0045 §3), and 14–15 are reserved for the commit tree (§7.1). Every
+  build in the field already preserves and signs unknown envelope fields.
+
+**Transition.** Builds before the floor compare the prefix and field 1 with
+their own container for equality. So writers MUST keep emitting `v = 3` and
+prefix `3` until `core.envelope_floor` is in `vault_requires` (§7.6) and the
+relay has agreed server capability bit 9, `SRV_ENVELOPE_FLOOR` (§5).
+`writers_still_emit_the_container_every_build_reads` in
+`crates/sunrise-crypto/src/op_envelope.rs` asserts that
+`ENVELOPE_FORMAT_V == ENVELOPE_FORMAT_FLOOR`, so a bump fails until the
+transition is lifted on purpose.
 
 `DOC_SCHEMA_FLOOR` is the lowest schema this build can still interpret. It
 moves only when a shape stops being readable, never merely because a newer one
@@ -176,7 +216,7 @@ magic prefix (`crates/sunrise-cbor/src/magic.rs#MagicKind`):
 | Kind | Hex | Structure | Version in the prefix | Current value |
 |---|---|---|---|---|
 | 1 | `0x01` | Wire frame | `WIRE_PROTO_V` | 1 |
-| 2 | `0x02` | Op envelope | The writer's `ENVELOPE_FORMAT_FLOOR`, i.e. the oldest container a reader may implement (ADR-0045 §5). *Today* this is `ENVELOPE_FORMAT_V`, the same value. It is **not** `DOC_SCHEMA_V`, which is in field 12. | 3 |
+| 2 | `0x02` | Op envelope | The writer's `ENVELOPE_FORMAT_FLOOR`, i.e. the oldest container a reader may implement (ADR-0045 §5). It equals `ENVELOPE_FORMAT_V` until the transition in §2.1 completes. It is **not** `DOC_SCHEMA_V`, which is in field 12. | 3 |
 | 3 | `0x03` | Recovery blob | recovery format version | 1 |
 | 4 | `0x04` | Snapshot blob | snapshot format version (reserved; nothing writes one, see [04-storage/compaction.md](../04-storage/compaction.md)) | 1 |
 | 5 | `0x05` | Vault meta record | vault meta version | 1 |
@@ -282,7 +322,7 @@ Server bits:
 | 6 | *(reserved)* | Was `SRV_BILLING_STRIPE`, "server enforces Stripe-backed quotas". ADR-0027 took quotas out of scope, so the **name is retired but the position is not**. A peer that ever set bit 6 asserted the Stripe meaning, and reissuing the bit would make that honest claim read as a new one. Nothing above it is renumbered. |
 | 7 | `SRV_DIAGNOSTIC_UPLOAD` | Server accepts opt-in diagnostic bundles. |
 | 8 | `SRV_TOKEN_REFRESH` | Server accepts `0x12 RefreshToken` mid-session and answers `0x13 RefreshTokenAck`. |
-| 9 | `SRV_ENVELOPE_FLOOR` | *Allocated by ADR-0045 §5, not yet built.* The relay's header decoder applies the envelope floor rule (§2) rather than exact match. |
+| 9 | `SRV_ENVELOPE_FLOOR` | The relay's header decoder applies the envelope floor rule (§2) rather than exact match, so it routes an envelope from a newer container at a floor it implements (ADR-0045 §5). |
 
 Client bits:
 
@@ -333,6 +373,15 @@ does not set it is refused.
 > happens by reconnecting, which every server understands. Adding the bit and
 > the `0x13` frame is a **minor** change under §6: a new capability bit, and a
 > frame sent only when negotiated. So `WIRE_PROTO_V` stays at 1.
+
+> **Why bit 9 is negotiated.** A relay with the exact-match header decoder
+> cannot route an envelope from a newer container: it cannot read the
+> envelope's per-device head, so it skips it when it computes heads and floors.
+> Bit 9 lets a client tell the two relays apart before it writes a container
+> only the newer one routes. The relay sets it in its offered set
+> (`crates/sunrise-server/src/api/sync/credential.rs`), and it is agreed by AND
+> like bit 8. No client offers it yet. Under the transition in §2.1, no writer
+> emits a newer container yet either.
 
 Unknown bits set by the peer MUST be ignored, for forward compatibility, and
 MUST NOT be echoed back in `HelloAck.capabilities`.
@@ -586,7 +635,7 @@ related to versioning:
 
 | Code | When |
 |---|---|
-| `PROTOCOL_BAD_MAGIC` | A magic prefix mismatch on parse. For an op envelope, that means a prefix version above this reader's `ENVELOPE_FORMAT_V` (§2). |
+| `PROTOCOL_BAD_MAGIC` | A magic prefix mismatch on parse. For an op envelope, that means a prefix version outside this reader's `ENVELOPE_FORMAT_FLOOR..=ENVELOPE_FORMAT_V` (§2). |
 | `SYNC_PROTOCOL_VERSION_MISMATCH` | The wire-proto intersection is empty. It is spelled with the `SYNC_` prefix in `crates/sunrise-error/src/codes.rs`; there is no `PROTOCOL_VERSION_MISMATCH`. |
 | `CRYPTO_SUITE_MISMATCH` | The crypto-suite intersection is empty. |
 | `DOC_SCHEMA_TOO_OLD` | The server's `doc_schema_floor` exceeds the client's `doc_schema_max`, or an envelope's `doc_schema_v` is below this build's floor. |
@@ -668,7 +717,7 @@ The crypto spec describes byte-exact test vectors. This spec adds:
 
 - `tests/fixtures/hello/v1.cbor` and `tests/fixtures/hello/ack_v1.cbor` — canonical `Hello` and `HelloAck` byte fixtures.
 - `tests/fixtures/version-mismatch/*.cbor` — every negotiation error path has a fixture, and the test decodes the FIXTURE (not a freshly built value) and asserts the error it produces: `wire-mismatch`, `crypto-mismatch`, `doc-schema-too-old`, `capability-missing`.
-- `tests/fixtures/forward-compat/v1-reads-v2.cbor` — a synthetic envelope at `DOC_SCHEMA_V + 1` carrying two envelope fields this build does not know (ids 13 and 40, the second above 23 so its CBOR key needs two bytes). The round trip preserves them byte-for-byte. When [ADR-0045](../11-adr/0045-schema-identity-and-feature-gating.md) assigns field 13, the small id moves to 23, an unassigned single-byte key, in the same change.
+- `tests/fixtures/forward-compat/v1-reads-v2.cbor` — a synthetic envelope at `DOC_SCHEMA_V + 1` carrying two envelope fields this build does not know (ids 23 and 40: 23 is the largest single-byte CBOR key, and 40 needs two bytes). The round trip preserves them byte-for-byte. The small id was 13 until [ADR-0045](../11-adr/0045-schema-identity-and-feature-gating.md) assigned field 13 and reserved 14–15. `crates/sunrise-crypto/tests/forward_compat.rs` also seals an envelope at `ENVELOPE_FORMAT_V + 1` with a field this build does not know, and asserts that it decodes, verifies, opens, re-encodes byte-identically and is routed by the relay's header decoder (ADR-0045 §5).
 
   CBOR, not the JSON this section originally named: the artefact under test is a signed, canonically encoded envelope, and JSON cannot represent one without a re-encoding step that would be the thing actually being tested.
 
