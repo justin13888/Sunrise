@@ -272,6 +272,17 @@ mod tests {
         assert_eq!(res.json(), serde_json::json!({"status": "ok"}));
     }
 
+    /// `api.md` promises a `400` for a `deep` that is not a `u8`, rather than
+    /// reading it as either probe.
+    #[tokio::test]
+    async fn a_deep_that_is_not_a_number_is_refused() {
+        let client = Client::new(ServerConfig::default());
+        for path in ["/api/v1/health?deep=yes", "/api/v1/health?deep=256"] {
+            let res = client.send(Method::GET, path, None).await;
+            res.assert_status(StatusCode::BAD_REQUEST);
+        }
+    }
+
     #[tokio::test]
     async fn deep_answers_503_when_the_blob_root_cannot_be_written() {
         let dir = tempfile::tempdir().unwrap();
