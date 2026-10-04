@@ -22,7 +22,32 @@ pub const WIRE_PROTO_V: u16 = 1;
 /// (field 12); `3` changed field 5 from a bare wall-clock millisecond count to
 /// a hybrid logical clock `[physical_ms, logical]`. Neither number ever
 /// shipped: v1 opens at `3`. See ADR-0015 and ADR-0016.
+///
+/// A writer stamps this in envelope field 1, and stamps
+/// [`ENVELOPE_FORMAT_FLOOR`] in the magic prefix (ADR-0045 §5). A reader takes
+/// any container whose floor it implements, so an *additive* change — a new
+/// field whose absence has a defined meaning — bumps this constant alone.
+///
+/// Every build before the floor compares both numbers for equality, so this
+/// MUST stay equal to [`ENVELOPE_FORMAT_FLOOR`] until `core.envelope_floor` is
+/// in `vault_requires` and the relay agrees server capability bit 9
+/// (`SrvEnvelopeFloor`). A test in `sunrise-crypto` pins that.
 pub const ENVELOPE_FORMAT_V: u16 = 3;
+
+/// Lowest envelope **container format** that still reads this build's
+/// envelopes correctly, and the lowest one this build reads (ADR-0045 §5).
+///
+/// It rides in the envelope's magic prefix. A reader accepts an envelope when
+/// `ENVELOPE_FORMAT_FLOOR <= prefix.version <= ENVELOPE_FORMAT_V` and field 1
+/// is at least `prefix.version`; the rule is
+/// [`crate::envelope_header::envelope_format_readable`], which the client
+/// decoder and the relay's header decoder both call.
+///
+/// The floor MUST be raised by any container change that alters the meaning of
+/// fields 1–12, the AAD construction (the `Omit` set), or the signature input
+/// (`SIG_DOMAIN`). `sunrise-crypto` pins all three to the floor they were
+/// frozen at, so changing one without moving the floor fails the build.
+pub const ENVELOPE_FORMAT_FLOOR: u16 = 3;
 
 /// Document schema version constant (per-entity field shapes).
 ///

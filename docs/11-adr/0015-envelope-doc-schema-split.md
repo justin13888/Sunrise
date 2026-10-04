@@ -53,6 +53,16 @@ The two things being conflated are not the same kind of thing:
 magic prefix and in envelope field 1. A mismatch is a hard reject at the prefix,
 before any CBOR is parsed.
 
+> **Amended by ADR-0045 §5
+> ([#329](https://github.com/justin13888/Sunrise/issues/329)).** The prefix now
+> carries the writer's `ENVELOPE_FORMAT_FLOOR`, and field 1 still carries its
+> `ENVELOPE_FORMAT_V`. A reader accepts a container whose floor it implements
+> and whose field 1 is at least that floor, rather than requiring equality, and
+> keeps the fields it does not know. Only a floor outside the reader's
+> `ENVELOPE_FORMAT_FLOOR..=ENVELOPE_FORMAT_V` is a hard reject at the prefix.
+> The rule and the transition that keeps both numbers at `3` for now are in
+> [protocol-versioning.md](../10-cross-cutting/protocol-versioning.md) §2.1.
+
 `DOC_SCHEMA_V` (currently `2`) versions the payload and rides in a new envelope
 **field 12**. A decoder accepts any value `>= DOC_SCHEMA_FLOOR` and refuses
 below it with a typed `DocSchemaTooOld`, distinct from `BadMagic`.
@@ -110,6 +120,10 @@ signature is a field an attacker can rewrite.
   real exercise of this: it took `DOC_SCHEMA_V` to 2 and left the floor at 1.
 * **`ENVELOPE_FORMAT_V` is the only number a reader may refuse on layout
   grounds.** Moving it is a coordinated release, exactly as `WIRE_PROTO_V` is.
+  *Amended by ADR-0045 §5:* the floor is now that number. An additive
+  container change moves `ENVELOPE_FORMAT_V` alone and strands no reader; a
+  change to the meaning of fields 1–12, the AAD or the signature input raises
+  `ENVELOPE_FORMAT_FLOOR`, and that is the coordinated release.
 * **The exclusion rule is load-bearing.** Anyone adding envelope field 13 must
   not reintroduce an upper bound in `encode_cbor`; the `Omit` enum exists to
   make that hard to do by accident.

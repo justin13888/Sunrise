@@ -4,7 +4,7 @@
 //!
 //! ```cddl
 //! OpEnvelope = {
-//!     1: uint,            ; v             (= ENVELOPE_FORMAT_V, currently 3)
+//!     1: uint,            ; v             (writer's ENVELOPE_FORMAT_V, currently 3)
 //!     2: bstr .size 16,   ; stream_id     (0x00..00 = vault-meta; otherwise a Stream)
 //!     3: bstr .size 16,   ; device_id     (signing device)
 //!     4: uint,            ; seq           (per-(stream_id, device_id) monotonic; starts at 1)
@@ -40,7 +40,11 @@
 //!
 //! The 5-byte magic prefix from `sunrise-cbor::magic` precedes the canonical
 //! CBOR on the wire / on disk; readers MUST verify it before decoding. It
-//! carries `ENVELOPE_FORMAT_V`.
+//! carries the writer's `ENVELOPE_FORMAT_FLOOR`, and field 1 the writer's
+//! `ENVELOPE_FORMAT_V` (ADR-0045 §5). A reader accepts a container whose floor
+//! it implements and whose field 1 is at least that floor
+//! (`sunrise_cbor::envelope_format_readable`), and keeps every field it does
+//! not know in [`OpEnvelope::unknown`].
 //!
 //! AAD (when `aead_alg = 1`) = canonical CBOR of the same map with fields 10
 //! and 11 removed — i.e. `{1..9, 12}`.
@@ -53,9 +57,12 @@ use crate::keys::{verify_ed25519, DeviceSigningKeyPair, StreamKey};
 use crate::suite::{aead_alg_id, sig_alg_id, AeadAlgId, SigAlgId};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use sunrise_cbor::envelope_header::{envelope_floor_readable, envelope_format_readable};
 use sunrise_cbor::hlc::Hlc;
 use sunrise_cbor::magic::{decode_prefix, write_prefix, MagicKind, MAGIC_LEN};
-use sunrise_cbor::version::{DOC_SCHEMA_FLOOR, DOC_SCHEMA_V, ENVELOPE_FORMAT_V};
+use sunrise_cbor::version::{
+    DOC_SCHEMA_FLOOR, DOC_SCHEMA_V, ENVELOPE_FORMAT_FLOOR, ENVELOPE_FORMAT_V,
+};
 use sunrise_error::ErrorCode;
 use thiserror::Error;
 
@@ -121,7 +128,8 @@ impl OpEnvelopeError {
 /// 64-byte Ed25519 signature.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpEnvelope {
-    /// Envelope **container format** version — `ENVELOPE_FORMAT_V`.
+    /// Envelope **container format** version: the writer's
+    /// `ENVELOPE_FORMAT_V`, which may be newer than this build's.
     pub v: u32,
     /// 16 bytes; `0x00..00` denotes the vault-meta log.
     pub stream_id: [u8; 16],
@@ -351,7 +359,9 @@ pub fn seal_envelope(
     let cbor = encode_cbor(&env, Omit::Nothing)?;
     let mut out = Vec::with_capacity(MAGIC_LEN + cbor.len());
     let mut prefix = [0u8; MAGIC_LEN];
-    write_prefix(&mut prefix, MagicKind::OpEnvelope, ENVELOPE_FORMAT_V);
+    // The prefix names the writer's floor, not its container (ADR-0045 §5):
+    // the oldest container that still reads these bytes correctly.
+    write_prefix(&mut prefix, MagicKind::OpEnvelope, ENVELOPE_FORMAT_FLOOR);
     out.extend_from_slice(&prefix);
     out.extend_from_slice(&cbor);
     Ok(out)
@@ -366,11 +376,15 @@ pub fn decode_envelope(bytes: &[u8]) -> Result<OpEnvelope, OpEnvelopeError> {
         return Err(OpEnvelopeError::BadMagic);
     }
     let prefix = decode_prefix(&bytes[..MAGIC_LEN]).map_err(|_| OpEnvelopeError::BadMagic)?;
-    // The prefix carries the CONTAINER FORMAT version. A mismatch is the one
-    // thing a decoder cannot work around — it does not know the field layout,
-    // so it cannot even find the payload. The document schema is field 12 and
-    // is checked further down against the floor, not for equality.
-    if prefix.kind != MagicKind::OpEnvelope || prefix.version != ENVELOPE_FORMAT_V {
+    // The prefix carries the writer's CONTAINER FLOOR (ADR-0045 §5). A floor
+    // this build does not implement is the one thing a decoder cannot work
+    // around — it does not know the field layout, so it cannot even find the
+    // payload. A newer container at a floor this build implements keeps fields
+    // 1–12 where they were, and its new fields land in `unknown` below. The
+    // relay's header decoder applies the same rule through the same function.
+    // The document schema is field 12 and is checked further down against its
+    // own floor.
+    if prefix.kind != MagicKind::OpEnvelope || !envelope_floor_readable(prefix.version) {
         return Err(OpEnvelopeError::BadMagic);
     }
     let cbor_bytes = &bytes[MAGIC_LEN..];
@@ -466,7 +480,9 @@ pub fn decode_envelope(bytes: &[u8]) -> Result<OpEnvelope, OpEnvelopeError> {
         }
     }
 
-    if env.v != u32::from(ENVELOPE_FORMAT_V) {
+    // Field 1 is the writer's own container, which may be newer than this
+    // build's but never older than the floor the same writer stamped.
+    if !envelope_format_readable(prefix.version, u64::from(env.v)) {
         return Err(OpEnvelopeError::BadField("v"));
     }
     // Forward compatibility: a NEWER document schema is readable. Only an
@@ -914,6 +930,111 @@ mod tests {
             decode_envelope(&bytes),
             Err(OpEnvelopeError::BadMagic)
         ));
+    }
+
+    /// Field 1 is the writer's own container, so it cannot be older than the
+    /// floor the same writer stamped in the prefix (ADR-0045 §5).
+    #[test]
+    fn a_container_below_its_own_floor_is_refused() {
+        let signing = fixed_signing();
+        let mut env = decode_envelope(&envelope_at_doc_schema(1, &signing)).unwrap();
+        env.v = u32::from(ENVELOPE_FORMAT_FLOOR) - 1;
+        let bytes = seal_envelope(env, None, &signing).unwrap();
+        assert!(matches!(
+            decode_envelope(&bytes),
+            Err(OpEnvelopeError::BadField("v"))
+        ));
+    }
+
+    /// ADR-0045 §5: a change to the meaning of fields 1–12, to the AAD
+    /// construction or to the signature input MUST raise
+    /// [`ENVELOPE_FORMAT_FLOOR`]. Each of the three is pinned here to the
+    /// floor it was frozen at, so changing one fails this test until the
+    /// floor moves, and the floor moving is what tells this test to re-pin.
+    #[test]
+    fn the_container_meaning_is_pinned_to_its_floor() {
+        /// The floor everything below was frozen at.
+        const PINNED_FLOOR: u16 = 3;
+        assert_eq!(
+            ENVELOPE_FORMAT_FLOOR, PINNED_FLOOR,
+            "the floor moved: re-pin fields 1-12, the Omit sets and SIG_DOMAIN \
+             to the new container, then PINNED_FLOOR"
+        );
+
+        // The signature input's domain.
+        assert_eq!(SIG_DOMAIN, b"sunrise.op_envelope.v1");
+
+        // The AAD and signature inputs, by exclusion.
+        for id in 0..=u8::MAX {
+            assert!(!Omit::Nothing.omits(id), "full encoding omits {id}");
+            assert_eq!(Omit::Sig.omits(id), id == 11, "signature input, field {id}");
+            assert_eq!(
+                Omit::PayloadAndSig.omits(id),
+                id == 10 || id == 11,
+                "AAD, field {id}"
+            );
+        }
+
+        // Fields 1–12: their ids, their order and their encodings, from an
+        // envelope whose every field holds a distinct value.
+        let env = OpEnvelope {
+            v: 3,
+            stream_id: [0x02; 16],
+            device_id: [0x03; 16],
+            seq: 4,
+            hlc: Hlc {
+                physical_ms: 5,
+                logical: 55,
+            },
+            aead_alg: AeadAlgId::XChaCha20Poly1305,
+            sig_alg: SigAlgId::Ed25519,
+            epoch: 8,
+            nonce: [0x09; AEAD_NONCE_LEN],
+            payload: vec![0x0a; 3],
+            sig: [0x0b; 64],
+            doc_schema_v: 12,
+            unknown: BTreeMap::new(),
+        };
+        let cbor = encode_cbor(&env, Omit::Nothing).unwrap();
+        // One line per field: its id, then its encoded value.
+        let pinned = concat!(
+            "ac",                                                     // map(12)
+            "0103",                                                   // 1: v
+            "025002020202020202020202020202020202",                   // 2: stream_id
+            "035003030303030303030303030303030303",                   // 3: device_id
+            "0404",                                                   // 4: seq
+            "0582051837",                                             // 5: hlc [5, 55]
+            "0601",                                                   // 6: aead_alg
+            "0701",                                                   // 7: sig_alg
+            "0808",                                                   // 8: epoch
+            "095818090909090909090909090909090909090909090909090909", // 9: nonce
+            "0a430a0a0a",                                             // 10: payload
+            "0b5840",                                                 // 11: sig, 64 x 0x0b
+            "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+            "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+            "0c0c", // 12: doc_schema_v
+        );
+        assert_eq!(hex::encode(&cbor), pinned, "fields 1-12 changed encoding");
+
+        // ...and read back to the same meaning.
+        let mut framed = vec![0u8; MAGIC_LEN];
+        write_prefix(&mut framed, MagicKind::OpEnvelope, PINNED_FLOOR);
+        framed.extend_from_slice(&cbor);
+        assert_eq!(decode_envelope(&framed).unwrap(), env);
+    }
+
+    /// The transition rule of ADR-0045 §5. Every build before the floor
+    /// compares the prefix and field 1 with its own container for equality,
+    /// so a writer that stamps a newer field 1 strands all of them. That stays
+    /// forbidden until `core.envelope_floor` is in `vault_requires` and the
+    /// relay agrees `SrvEnvelopeFloor`, neither of which exists yet.
+    #[test]
+    fn writers_still_emit_the_container_every_build_reads() {
+        assert_eq!(ENVELOPE_FORMAT_V, ENVELOPE_FORMAT_FLOOR);
+        let signing = fixed_signing();
+        let bytes = envelope_at_doc_schema(1, &signing);
+        assert_eq!(&bytes[..MAGIC_LEN], b"SR\x02\x00\x03");
+        assert_eq!(decode_envelope(&bytes).unwrap().v, 3);
     }
 
     /// Field 12 rides inside the signature input. Rewriting it therefore
