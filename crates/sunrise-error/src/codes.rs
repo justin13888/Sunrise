@@ -117,6 +117,11 @@ pub enum ErrorCode {
     /// External provider returned 429.
     IntegrationRateLimited,
 
+    // Admission
+    /// The relay refused the request under its own rate-limit policy: a `429`
+    /// carrying `Retry-After`. Transient — wait at least that long and retry.
+    RateLimited,
+
     // Internal
     /// Catastrophic internal error (e.g., panic caught at FFI boundary).
     FatalInternal,
@@ -166,6 +171,7 @@ impl ErrorCode {
             Self::RelayStorageUnavailable => "RELAY_STORAGE_UNAVAILABLE",
             Self::IntegrationReauthRequired => "INTEGRATION_REAUTH_REQUIRED",
             Self::IntegrationRateLimited => "INTEGRATION_RATE_LIMITED",
+            Self::RateLimited => "RATE_LIMITED",
             Self::FatalInternal => "FATAL_INTERNAL",
         }
     }
@@ -215,7 +221,8 @@ impl ErrorCode {
             | Self::StorageVaultLocked
             | Self::SyncNetworkUnavailable
             | Self::RelayStorageUnavailable
-            | Self::IntegrationRateLimited => ErrorKind::Transient,
+            | Self::IntegrationRateLimited
+            | Self::RateLimited => ErrorKind::Transient,
         }
     }
 
@@ -230,12 +237,13 @@ impl ErrorCode {
                 | Self::SyncNetworkUnavailable
                 | Self::RelayStorageUnavailable
                 | Self::IntegrationRateLimited
+                | Self::RateLimited
         )
     }
 
     /// Iteration over every code variant — useful for completeness tests.
     #[must_use]
-    pub const fn all() -> [Self; 38] {
+    pub const fn all() -> [Self; 39] {
         [
             Self::InternalUnknownCode,
             Self::ValidationInvalidTitle,
@@ -274,6 +282,7 @@ impl ErrorCode {
             Self::RelayStorageUnavailable,
             Self::IntegrationReauthRequired,
             Self::IntegrationRateLimited,
+            Self::RateLimited,
             Self::FatalInternal,
         ]
     }
