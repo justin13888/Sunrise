@@ -227,15 +227,17 @@ side tables deterministic. A test asserts the rebuilt projection is
 byte-identical to the live one for a vault built by random command sequences.
 
 **Where it is exposed.** The rebuild is exposed over UniFFI. Account recovery
-from the relay (`crates/sunrise-cli/src/recover.rs#rebuild_vault`) is exposed
-next to it. The macOS app has a path to each. The rebuild is offered on a
+from the relay (`crates/sunrise-onboarding/src/recovery.rs#recover_account`) is
+exposed next to it. The macOS app has a path to each. The rebuild is offered on a
 rule-3 failure and on a migration failure. It runs automatically, in the same
 open, after any migration that changes materialization semantics. Adopting
 per-field ops is the first such migration.
 
 *Today:* the rebuild does not exist (§Materialized state rebuild below), and
-no table is classified yet. `rebuild_vault` is CLI-only, and it recovers an
-account from the relay into an empty vault. It is not a local rebuild. All of
+no table is classified yet. Account recovery is exposed over UniFFI as
+`SunriseCore::recover_account` and reached from the CLI and the Apple
+onboarding. It recovers an account from the relay into an empty vault. It is
+not a local rebuild. All of
 this rule is [#441](https://github.com/justin13888/Sunrise/issues/441).
 
 ### 5. Additive and destructive changes

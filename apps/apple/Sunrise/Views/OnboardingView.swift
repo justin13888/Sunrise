@@ -3,11 +3,13 @@ import SwiftUI
 /// First run: there is no vault and no key, so nothing can be lost by making
 /// one.
 ///
-/// Two branches, not one. "Create my vault" is right for a first Mac and wrong
-/// for a second: someone who already has a vault and takes it would end up
-/// with two unrelated encrypted stores and no way to merge them. Pairing is
+/// Three branches, not one. "Create my vault" is right for a first Mac and
+/// wrong for a second: someone who already has a vault and takes it would end
+/// up with two unrelated encrypted stores and no way to merge them. Pairing is
 /// how the existing vault reaches this machine, and it has to be offered here,
-/// where the choice is actually being made.
+/// where the choice is actually being made. The recovery code is the way back
+/// for someone with no device left to pair with, which is
+/// `docs/03-crypto/recovery.md` §Recovery flow step 1 (#349).
 struct OnboardingView: View {
     let create: () async -> Void
     /// The session this screen is a phase of. Passed in by ``RootView``, which
@@ -74,6 +76,14 @@ struct OnboardingView: View {
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 380)
+                Button("Restore from recovery code") { session?.beginRestore() }
+                    .disabled(isWorking || session == nil)
+                    .accessibilityIdentifier("onboarding.restore")
+                Text("No other device left? Your twenty-four words bring the account back.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 380)
             }
 
             // `docs/08-features/keyboard.md` §Discoverability. Last on the

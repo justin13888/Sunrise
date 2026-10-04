@@ -217,7 +217,7 @@ async fn attachment_bytes_travel_over_a_relay_that_requires_a_device_binding() {
     let mut captured: Option<Arc<Store>> = None;
     let (addr, relay) = spawn_relay_with(
         ServerConfig {
-            require_device_sig: true,
+            require_device_sig: Some(true),
             ..ServerConfig::default()
         },
         |state| {

@@ -61,6 +61,10 @@ struct LockedView: View {
                 if reason == .keyMissingForExistingVault {
                     Button("Pair with a device…") { pairing = makePairing() }
                         .accessibilityIdentifier("locked.pair")
+                    // For the user with no device left to pair with (#349).
+                    Button("Restore from recovery code…") { session?.beginRestore() }
+                        .disabled(session == nil)
+                        .accessibilityIdentifier("locked.restore")
                 }
             }
             .controlSize(.large)
@@ -70,7 +74,9 @@ struct LockedView: View {
                     """
                     Pairing brings the key back from a device that still has it. \
                     The data already on this \(Platform.deviceName) stays where it is — the key is \
-                    the only thing that was missing.
+                    the only thing that was missing. With no device left, the recovery code \
+                    restores the account from the relay; the unreadable vault is moved aside, \
+                    not deleted.
                     """
                 )
                 .font(.caption)

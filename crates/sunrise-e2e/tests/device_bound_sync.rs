@@ -6,11 +6,12 @@
 //! halves of #159: the CLI registered a 16-byte device *id* where a 32-byte
 //! Ed25519 public key belongs, so `POST /api/v1/devices` answered `400`; and no
 //! client signed anything, so every signed route answered `401`. Neither showed
-//! up, because `ServerConfig`'s default leaves the flag off and the self-host
-//! `NullVerifier` maps every caller to one account, so a local relay never
-//! asks.
+//! up, because a directly built `ServerConfig` then left the flag off and the
+//! self-host `NullVerifier` maps every caller to one account, so a local relay
+//! never asked.
 //!
-//! So this relay asks. It runs a real verifier — `ServerConfig::validate`
+//! So this relay asks, and by default: it names an issuer and leaves the flag
+//! unset, which resolves on (#363). It runs a real verifier — `ServerConfig::validate`
 //! refuses the flag alongside the single-tenant verifier, on the grounds that a
 //! device signature binds nothing when every caller is one account — and every
 //! request these cores make carries `X-Sunrise-Device`,
@@ -67,18 +68,30 @@ fn subject() -> Subject {
 /// Both halves are load-bearing. `require_device_sig` alone over the self-host
 /// verifier is the configuration `ServerConfig::validate` refuses, and running
 /// it anyway would test a relay no deployment can be.
+///
+/// The flag is **left unset** (issue #363): a multi-tenant relay's default
+/// config is what demands the binding, so every test in this file — the
+/// refusal and the convergence alike — runs against the default an operator
+/// gets by naming an issuer, not against an override.
 async fn spawn_bound_relay() -> (SocketAddr, tokio::task::JoinHandle<()>, Arc<Store>) {
+    let config = ServerConfig {
+        oidc_issuer: Some(ISSUER.to_owned()),
+        oidc_client_id: Some("sunrise".to_owned()),
+        ..ServerConfig::default()
+    };
+    assert_eq!(
+        config.require_device_sig, None,
+        "the default, not an override"
+    );
+    assert!(config.device_sig_required());
+    config
+        .validate(false)
+        .expect("a deployable multi-tenant config");
     let mut captured: Option<Arc<Store>> = None;
-    let (addr, handle) = spawn_relay_with(
-        ServerConfig {
-            require_device_sig: true,
-            ..ServerConfig::default()
-        },
-        |state| {
-            captured = Some(state.store.clone());
-            state.with_verifier(Arc::new(StaticVerifier::default().with(BEARER, subject())))
-        },
-    )
+    let (addr, handle) = spawn_relay_with(config, |state| {
+        captured = Some(state.store.clone());
+        state.with_verifier(Arc::new(StaticVerifier::default().with(BEARER, subject())))
+    })
     .await;
     (
         addr,

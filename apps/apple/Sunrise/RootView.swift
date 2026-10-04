@@ -77,6 +77,15 @@ struct RootView: View {
         )) { model in
             RecoveryCodeView(model: model) { session.endRecoveryCeremony() }
         }
+        // The recovery-code restore, over whatever the window is showing, for
+        // the same reason: a restore that succeeds opens the vault, which
+        // replaces the screen it started from, and its aftercare must stay.
+        .sheet(item: Binding(
+            get: { session.restoration.model },
+            set: { if $0 == nil { session.endRestore() } }
+        )) { model in
+            RestoreFromCodeView(model: model, bridge: session.bridge) { session.endRestore() }
+        }
         // Every `sunrise://` link the OS hands this process arrives here.
         // Attached to the window's root rather than to a scene that may not
         // exist: a link that arrives while Sunrise is closed opens this window
