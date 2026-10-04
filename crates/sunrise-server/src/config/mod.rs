@@ -17,6 +17,6 @@ pub use file::{
     StorageTable, ENV_CONFIG, IMPLICIT_CONFIG_PATHS,
 };
 pub use limits::{parse_cidr, LimitsConfig};
-pub use model::{ApnsConfig, ApnsEnvironment, ConfigError, PushConfig, ServerConfig};
+pub use model::{ApnsConfig, ApnsEnvironment, ConfigError, PushConfig, Retention, ServerConfig};
 
 pub(crate) use model::binds_loopback;

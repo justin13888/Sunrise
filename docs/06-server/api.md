@@ -69,8 +69,8 @@ client cannot disagree about it — and reached through `api/signed.rs`, whose
 | GET | `/api/v1/accounts/me` | — | `AccountInfo` | implemented |
 | PUT | `/api/v1/accounts/me/recovery_blob` | `{ recovery_blob }` | 204 | **NOT IMPLEMENTED** |
 | GET | `/api/v1/accounts/me/recovery_blob` | — | `{ recovery_blob }` (opaque ciphertext; useless without the offline recovery code) | implemented, behind an OIDC step-up |
-| POST | `/api/v1/accounts/me/delete/initiate` | — | 202; issues a single-use confirmation token (32 bytes Crockford base32, 52 chars, TTL 15 minutes) which the OIDC issuer relays to the user's verified email | **NOT IMPLEMENTED** |
-| DELETE | `/api/v1/accounts/me` | `{ confirm_phrase }` | 202 (deletion within 30 days) | **NOT IMPLEMENTED** |
+| POST | `/api/v1/accounts/me/delete/initiate` | — | `202 { confirm_phrase, expires_at_ms }`: a single-use confirmation phrase (32 bytes Crockford base32, 52 chars, TTL 15 minutes) | implemented, behind an OIDC step-up |
+| DELETE | `/api/v1/accounts/me` | `{ confirm_phrase }` | `202 { requested_at_ms, erase_after_ms }`; erased by the first maintenance pass after `[storage] account_delete_grace_days` (default 30) | implemented, behind an OIDC step-up |
 
 Both request and response types live in `sunrise-onboarding` (`account.rs`) and
 are shared with the client:
@@ -122,6 +122,43 @@ Two things gate it.
 
 The `recovery_blob` is stored opaquely. The server does not validate its internal format or version. The 10 MiB cap and the "signed by an active device" precondition below describe the unbuilt `PUT` route: on the live `POST /accounts` path the blob rides the bootstrap exemption, so it is bounded only by `[server] max_body_bytes` and needs no device signature. Recovery blobs follow the uniform 5-byte magic prefix from [`../10-cross-cutting/protocol-versioning.md`](../10-cross-cutting/protocol-versioning.md) §3 — the server stores opaque bytes and does not introspect.
 
+#### Account deletion
+
+Two calls, both bearer + device signature and both behind the same OIDC step-up
+as the recovery blob (`auth.md` §Recovery): deletion is the one act more final
+than reading the blob, and a stolen session is exactly an ordinary bearer.
+
+1. `POST /accounts/me/delete/initiate` mints a phrase, holds its BLAKE3 hash with
+   a 15-minute expiry, and **returns the phrase to the caller**. Initiating
+   again replaces it. Earlier revisions had the OIDC issuer relay the phrase to
+   the user's verified email. No issuer offers that, and
+   [`non-goals.md`](../00-product/non-goals.md) forbids this relay sending email
+   itself. The email leg was never what proved who was asking. The step-up
+   proves that, and it is the same resolution #56 made for the recovery blob's
+   OTP. The phrase only makes the deletion a deliberate second call, so one
+   retried request or client bug cannot delete an account.
+2. `DELETE /accounts/me { confirm_phrase }` consumes the phrase
+   (case-insensitive, single use) and marks the account. A phrase that is
+   wrong, expired or already used gets `403 ACCOUNT_DELETE_PHRASE_INVALID`, and
+   a wrong one leaves the live phrase usable. A repeated confirmation reports
+   the first one's time and does not move the erasure.
+
+From the mark on, the account may open no sync session, publish no op, and
+init, upload or finalize no blob: each answers
+`403 ACCOUNT_PENDING_DELETION`. That holds for a session opened before the mark
+too. Reads and the account routes stay open. Nothing undoes the mark.
+
+The maintenance pass erases a marked account once
+`[storage] account_delete_grace_days` (default 30) have passed. In one
+transaction it deletes the account row, which cascades to its devices, push
+tokens, declared cursors, deletion phrase and blob tombstones. It also deletes
+the account's relay frames, batches and eviction watermarks, which are keyed by
+`account_h` rather than by a foreign key. After that commit it removes both blob
+trees, `pending/` and `committed/`, and drops the account's channels from the
+in-memory ring. An operator can erase at once with
+`sunrise-server admin account delete <id> --immediately`
+([`self-hosting.md`](./self-hosting.md) §Admin CLI).
+
 #### Terms acceptance
 
 `terms_at_ms` records when the account's holder accepted the operator's terms.
@@ -156,15 +193,11 @@ and so does `sunrise recover` (`sunrise_relay_client::register_device`).
 | 404 | `RECOVERY_BLOB_NOT_FOUND` | The account has no recovery blob. Only reachable *after* the step-up, so it is not an oracle for which accounts have one. | No. |
 | 409 | `RECOVERY_BLOB_EXISTS` | `POST /accounts` offered a recovery blob differing from the stored one. | No — the stored blob stands; rotation needs the unbuilt `PUT`. |
 | 403 | `ACCOUNT_DELETE_PHRASE_INVALID` | `confirm_phrase` token consumed, expired, or never issued. | After re-running `/initiate`. |
+| 403 | `ACCOUNT_PENDING_DELETION` | The account's deletion is confirmed: `POST /sync/session`, `POST /sync/ops` and every blob upload step are refused. | No. |
 | 413 | `VALIDATION_PAYLOAD_TOO_LARGE` | `recovery_blob` body > 10 MiB. Body: `{ "code":"VALIDATION_PAYLOAD_TOO_LARGE", "max_bytes": 10485760 }`. | No (shrink). |
 
-`ACCOUNT_DELETE_PHRASE_INVALID` and `VALIDATION_PAYLOAD_TOO_LARGE` are **not
-implemented**: neither constant exists in `error.rs`'s `codes` module, and the
-routes that would emit them do not exist. The codes `codes` actually defines are
-`AUTH_TOKEN_INVALID`, `AUTH_TOKEN_EXPIRED`, `AUTH_SIGNUP_DISABLED`,
-`AUTH_DEVICE_SIG_INVALID`, `AUTH_DEVICE_NOT_OWNER`, `DEVICE_NOT_FOUND`,
-`VALIDATION_INVALID`, `BLOB_HASH_MISMATCH`, `BLOB_CHUNK_MISSING`,
-`BLOB_NOT_FOUND`, `RELAY_STORAGE_UNAVAILABLE` and `FATAL_INTERNAL`. An
+`VALIDATION_PAYLOAD_TOO_LARGE` is **not implemented**: no constant exists in
+`error.rs`'s `codes` module, and the route that would emit it does not exist. An
 oversized body is rejected by kynos's own `middleware::limits::BodySize`, mounted
 at `[server] max_body_bytes` (default 2 MiB), which answers `413` — and, unlike
 the `tower-http` layer it replaces, contributes that response to every operation
@@ -327,6 +360,7 @@ it is the **content address** of bytes the server has not seen yet.
 | PUT | `/api/v1/blobs/<upload_id>/<i>` | raw ciphertext chunk | 204 |
 | POST | `/api/v1/blobs/finalize` | `{ upload_id, content_hash, chunk_hashes }` | `{ blob_id, size_bytes, chunk_count }` |
 | GET | `/api/v1/blobs/<blob_id>` | — | the concatenated ciphertext, `application/octet-stream` |
+| DELETE | `/api/v1/blobs/<blob_id>` | `{ stream_id, device_id, seq }` | `202 { collect_after_ms }`; a tombstone, collected later (below) |
 
 Every route is authenticated and device-bound like the rest of the REST API —
 `api/blobs.rs` takes a signed extractor on all four — `Signed` for the two JSON bodies, `SignedBinary` for the raw chunk `PUT`, `SignedParts` for the `GET` — so the bearer, the binding and the body are verified before a handler sees the value. `init`
@@ -388,10 +422,28 @@ disagreement as two omit rules. Splitting one two-phase commit across two HTTP
 clients to use generated code for half of it would buy nothing and cost a
 second place for the bearer, the base URL and the device binding to live.
 
-**Not yet implemented:** `DELETE /api/v1/blobs/<blob_id>`. Blob deletion is not
-an immediate erase — [`../02-domain/attachments.md`](../02-domain/attachments.md)
-§Deletion makes it a tombstone plus a device-cursor quorum and a 30-day grace
-period — so it lands with the GC slice rather than as a bare unlink.
+**Deletion is a tombstone, not an unlink.**
+`DELETE /api/v1/blobs/<blob_id> { stream_id, device_id, seq }` answers
+`202 { collect_after_ms }`, or the fetch's `404` for a blob this account has not
+committed. The body names the op that detached the blob by its cleartext
+routing head: the stream it was published in, the publishing device, and its
+`seq`. These are the fields the relay already reads off every op. The ciphertext
+stays readable. The maintenance pass reclaims it once both conditions in
+[`../02-domain/attachments.md`](../02-domain/attachments.md) §Deletion hold:
+
+- `[storage] gc_grace_days` (default 30) have passed since the tombstone.
+- Every active device of the account has acknowledged the op. A device
+  acknowledges by declaring, on `POST /sync/subscribe`, a cursor for that
+  stream and publishing device at or past `seq`.
+
+The relay cannot read the `device_op_cursor` op the domain doc describes, so the
+subscribe cursors stand in for it. They are the same statement ("I have applied
+this device's ops up to here"), made in cleartext. A device is active when it is
+unrevoked and has declared a cursor in the last 30 days. A signed subscribe
+records its cursors; an unsigned one has no device to record them against. The
+device that sent the `DELETE` is excused: it wrote the op. Tombstoning again
+keeps the first tombstone and its clock. Finalizing the same ciphertext again
+lifts the tombstone, because the attachment is back.
 
 #### Blob errors
 
@@ -401,7 +453,8 @@ period — so it lands with the GC slice rather than as a bare unlink.
 | 400 | `BLOB_HASH_MISMATCH` | A chunk's ciphertext BLAKE3, or the concatenation's, disagrees with the supplied hash. | No (re-upload). |
 | 401 | `AUTH_TOKEN_INVALID` | Missing or unverifiable bearer. | After OIDC refresh. |
 | 409 | `BLOB_CHUNK_MISSING` | `finalize` names a chunk that was never uploaded. | After uploading it. |
-| 404 | `BLOB_NOT_FOUND` | No committed blob under that id **for this account**. | No. |
+| 404 | `BLOB_NOT_FOUND` | No committed blob under that id **for this account**, on a fetch or a `DELETE`. | No. |
+| 403 | `ACCOUNT_PENDING_DELETION` | `init`, a chunk `PUT` or `finalize` for an account whose deletion is confirmed. | No. |
 | 413 | `VALIDATION_PAYLOAD_TOO_LARGE` | Body over `max_body_bytes`. | No (shrink). |
 
 ### Sharing — NOT IMPLEMENTED
@@ -544,8 +597,8 @@ refills continuously.
 | `probe` | `GET /api/v1/health`, `GET /metrics` (loopback bind only) | none | 120 / min (`probe_per_min`) |
 | `meta` | `GET /api/v1/meta` | none | 60 / min (`meta_per_min`) |
 | `bootstrap` | `POST /api/v1/accounts`, `POST /api/v1/devices` | bearer | 10 / min (`bootstrap_per_min`) |
-| `account` | `GET /api/v1/accounts/me`, `GET /api/v1/accounts/me/recovery_blob`, `GET /api/v1/devices`, `DELETE /api/v1/devices/{device_id}`, `DELETE /api/v1/devices/by-vault-id/{vault_device_id}`, `POST /api/v1/devices/push-tokens` | bearer+sig | 60 / min (`account_per_min`) |
-| `blob` | `POST /api/v1/blobs/init`, `PUT /api/v1/blobs/{upload_id}/{chunk_idx}`, `POST /api/v1/blobs/finalize`, `GET /api/v1/blobs/{blob_id}` | bearer+sig | 600 / min (`blob_per_min`) |
+| `account` | `GET /api/v1/accounts/me`, `GET /api/v1/accounts/me/recovery_blob`, `POST /api/v1/accounts/me/delete/initiate`, `DELETE /api/v1/accounts/me`, `GET /api/v1/devices`, `DELETE /api/v1/devices/{device_id}`, `DELETE /api/v1/devices/by-vault-id/{vault_device_id}`, `POST /api/v1/devices/push-tokens` | bearer+sig | 60 / min (`account_per_min`) |
+| `blob` | `POST /api/v1/blobs/init`, `PUT /api/v1/blobs/{upload_id}/{chunk_idx}`, `POST /api/v1/blobs/finalize`, `GET /api/v1/blobs/{blob_id}`, `DELETE /api/v1/blobs/{blob_id}` | bearer+sig | 600 / min (`blob_per_min`) |
 | `sync` | `POST /api/v1/sync/session`, `POST /api/v1/sync/session/refresh`, `POST /api/v1/sync/subscribe`, `POST /api/v1/sync/ops`, `GET /api/v1/sync/events` | bearer+sig (+session) | 600 / min (`sync_per_min`) |
 
 **Failed authentication.** Every `401` an address earns on a `bootstrap`,
@@ -630,7 +683,8 @@ that have not been built.
 |---|---|---|---|
 | `/api/v1/accounts` (POST), `/api/v1/accounts/me` (GET) | yes | yes | **yes — built** |
 | `/api/v1/accounts/me/recovery_blob` (GET) | yes | yes | **yes — built, behind an OIDC step-up** |
-| `/api/v1/accounts/me/recovery_blob` (PUT), `/api/v1/accounts/me/delete/*` | yes | yes | **no route** |
+| `/api/v1/accounts/me/delete/initiate` (POST), `/api/v1/accounts/me` (DELETE) | yes | yes | **yes — built, behind an OIDC step-up** |
+| `/api/v1/accounts/me/recovery_blob` (PUT) | yes | yes | **no route** |
 | `/api/v1/identities` (discovery) | yes | yes | **no route** |
 | `/api/v1/devices`, `/api/v1/devices/<id>` | yes | yes | **yes — built** |
 | `/api/v1/devices/push-tokens` | yes | optional (operator's APNs/FCM creds) | **route built; no delivery path** |

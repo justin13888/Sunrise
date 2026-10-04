@@ -358,6 +358,19 @@ impl RelayHub {
         ch.tx.send(frame).unwrap_or(0)
     }
 
+    /// Drop every channel of one account namespace, retained frames and live
+    /// senders together, returning how many went.
+    ///
+    /// Account erasure calls it so the in-memory ring does not outlive the
+    /// durable log it mirrors. A live receiver on a dropped channel sees its
+    /// sender close, which ends that stream.
+    pub fn forget_account(&self, account: [u8; 16]) -> usize {
+        let mut inner = self.inner.lock();
+        let before = inner.channels.len();
+        inner.channels.retain(|(a, _), _| *a != account);
+        before - inner.channels.len()
+    }
+
     /// Number of active channels (used by /metrics, tests).
     #[must_use]
     pub fn active_channels(&self) -> usize {

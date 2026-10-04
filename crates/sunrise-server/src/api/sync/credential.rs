@@ -103,6 +103,10 @@ pub async fn session(
         .limiter
         .charge(&state, "/api/v1/sync/session", Budget::Sessions, &caller, 1)
         .await?;
+    crate::api::account_deletion::refuse_if_pending_deletion(
+        &state,
+        &caller.principal.account.account_id,
+    )?;
     // Hung off the busiest path rather than a timer task whose only job is to
     // take a lock occasionally.
     state.sessions.collect(now_ms);

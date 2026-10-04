@@ -178,7 +178,7 @@ therefore the root, which makes a divergent root deniable.
 
 `Ack.server_first_seen_ms` stays on the wire
 (`crates/sunrise-wire-protocol/src/payloads.rs:93`, stamped at
-`api/sync/publish.rs:111,223`) as an advisory clock-skew hint. It MUST NOT influence merge
+`api/sync/publish.rs:111,226`) as an advisory clock-skew hint. It MUST NOT influence merge
 order, fold order or acceptance.
 
 **7. The relay evaluates no role, no grant, no revocation and no expiry.** Every
@@ -308,7 +308,7 @@ is that dedup by key sharing does not exist at any scope.
 **`Attachment.blob_id` is symmetric, not server-assigned.** Both sides derive it
 as the first 16 bytes of BLAKE3 over the concatenated ciphertext chunks; the
 relay re-derives from disk rather than trusting the claim
-(`crates/sunrise-server/src/api/blobs.rs:239-264,433-442`). This reconciles
+(`crates/sunrise-server/src/api/blobs.rs:239-265,448-457`). This reconciles
 `crates/sunrise-domain/src/attachment.rs:42-44` ("assigned by the creating
 device") with the relay's content addressing, which had been read as two
 competing identities and specified as two.

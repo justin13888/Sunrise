@@ -62,6 +62,12 @@ data_dir = "/var/lib/sunrise"             # expands to <dir>/sunrise.db and <dir
                                           # unset = ephemeral in-memory (tests only)
 busy_timeout_ms = 5000                    # default 5000; how long SQLite waits on another
                                           # process's lock before failing; 0 fails at once
+gc_grace_days = 30                        # default 30; a tombstoned blob is kept at least this
+                                          # long, and until every active device acknowledged it
+account_delete_grace_days = 30            # default 30; from a confirmed account deletion to
+                                          # its erasure
+pending_upload_ttl_hours = 24             # default 24; an upload untouched this long is swept
+maintenance_interval_secs = 3600          # default 3600; how often the maintenance pass runs
 
 [limits]                                  # api.md §Rate limits; every key defaults
 enabled              = true               # false turns every limit off (load tests only)
@@ -117,6 +123,7 @@ The server exits 78 rather than starting, when:
 | A `[limits]` value is `0` (the error names the key) | Refuses everything that limit covers; `enabled = false` is how limits are turned off |
 | A `trusted_proxies` entry is not an address or CIDR network | Hostnames are not resolved; the socket reports an address |
 | `busy_timeout_ms` above 2147483647 | SQLite holds the timeout in a 32-bit signed integer of milliseconds (about 24 days) |
+| `pending_upload_ttl_hours = 0` or `maintenance_interval_secs = 0` | The first would sweep uploads still in flight; the second would run the maintenance pass in a busy loop. The two grace periods may be `0`. |
 | `sunrise.db` is at a schema version newer than this binary's | A newer release migrated it; writing to it could corrupt what that release relies on (see "Upgrade") |
 | `[push.apns] key_path` is readable by group or others, missing, or not a P-256 `.p8` key | It signs pushes for the whole app; a key that cannot sign would fail every push instead of the start |
 | `[push.apns] key_id` or `team_id` is not 10 uppercase letters and digits, or `topic` is empty | APNs would refuse every provider token or push |
@@ -207,8 +214,9 @@ the parser will reject them rather than accept them silently:
 `[tls]` (terminate TLS at a reverse proxy for now), `[push]` providers other
 than `[push.apns]`, `[quotas]`,
 `[observability]`, `[storage] mode` / `sqlite_pool_size` / `postgres_url` /
-`s3_*`, `[server] public_url`, `[auth] oidc_client_secret` / `admin_emails`,
-and the `sunrise-server doctor` subcommand.
+`s3_*`, `[server] public_url`, and `[auth] oidc_client_secret` /
+`admin_emails`. The `doctor` those drafts described is
+`sunrise-server admin doctor` (see "Admin CLI").
 
 ## Stopping, health and readiness
 
@@ -264,7 +272,8 @@ not seen by the probe: put the path in `$SUNRISE_CONFIG`, or mount the file at
 | Surface | Purpose | Built |
 |---|---|---|
 | `/api/v1/health` (every listener) | Liveness, and readiness with `?deep=1` | yes — see "Stopping, health and readiness" |
-| `/api/v1/admin/*` (loopback only by default) | Stats, manual blob GC, user actions | **no — nothing under `/api/v1/admin/` is routed** |
+| `sunrise-server admin <cmd>` (a shell on the host) | Doctor, stats, manual GC, account and device actions, backup | yes — see "Admin CLI" |
+| `/api/v1/admin/*` | The same over HTTP | **no — nothing under `/api/v1/admin/` is routed**; the CLI is the admin surface |
 | Prometheus `/metrics` | Aggregate metrics (no per-account labels with PII) | yes, at the router root — **mounted only on a loopback bind** |
 | Logs (stderr) | Structured NDJSON; never contains content; never contains push tokens | yes (`sunrise_log::init_stderr`) |
 
@@ -282,8 +291,53 @@ proxy").
 Logs go to **stderr**, not stdout: `main.rs` installs `sunrise_log::init_stderr()`
 as its first statement, tuned by `SUNRISE_LOG` and `SUNRISE_LOG_FORMAT`.
 
+## Admin CLI
+
+```sh
+sunrise-server admin [-c <path>] [--json] <command>
+```
+
+| Command | Does |
+|---|---|
+| `doctor` | The checks in "Testing the install" below; exits 1 if any fails |
+| `stats` | Accounts (and how many are pending deletion), devices, push tokens, relay frames and bytes, tombstones, blob files and bytes, pending uploads |
+| `gc --dry-run` / `gc --now` | Report, or run, one maintenance pass: erase deleted accounts past their grace period, collect tombstoned blobs, sweep abandoned uploads |
+| `account list` / `account show <id>` | Account ids, creation and deletion times, device and tombstone counts |
+| `account delete <id>` | Mark the account for deletion, as `DELETE /api/v1/accounts/me` does |
+| `account delete <id> --immediately` | Erase it now: rows, relay log and blob trees |
+| `device revoke <device_id>` | Revoke a device row, as `DELETE /api/v1/devices/<id>` does |
+| `backup <dest_dir>` | Write `<dest_dir>/sunrise.db` with `VACUUM INTO` (one consistent instant, even while the relay runs) and copy `blobs/` beside it |
+
+`--json` prints one JSON document; without it the same fields print as indented
+`key: value` lines. Output names account and device ids and never an email or an
+OIDC subject. Exit status: 0 done, 1 the command failed, 2 a usage error, 78 a
+config that does not resolve or names no `[storage] data_dir`.
+
+**It works on the data dir directly, not through the server.** It resolves the
+config as the server does (`-c`, `$SUNRISE_CONFIG`, then the implicit paths)
+and opens `sunrise.db` itself. No admin listener exists to expose, authenticate
+or forget about, and the surface is reachable only by someone with a shell on
+the host and read access to the data dir. It is safe beside a running relay:
+the database is in WAL mode, every write is one short transaction, and each
+process waits out the other's lock for `busy_timeout_ms`. The one thing a CLI
+erasure cannot reach is the running server's memory. That is the retained ring
+of the erased account's channels and its open streams. No client can address
+either again, and both go at the server's next restart.
+
+Run the `admin` of the release the server runs. Opening the store migrates it,
+exactly as starting the server does, so a newer binary's `admin` upgrades the
+schema under an older running server. The older server then refuses that file
+at its next start (see "Upgrade").
+
+The serving binary runs the same maintenance pass itself at startup and every
+`maintenance_interval_secs`, so `gc --now` is for when an operator wants it
+sooner.
+
 ## Backup
 
+- Online: `sunrise-server admin backup <dest_dir>` while the relay runs. The
+  database copy is one consistent instant; the blob copy takes only whole
+  files, since chunks are renamed into place and temporaries are skipped.
 - Single-binary: stop, `tar czf` the data dir, start. Or use a snapshot-aware
   filesystem (ZFS, Btrfs). The op log lives inside `sunrise.db`, so that one
   file plus `blobs/` is the entire server state. The database runs in WAL mode,
@@ -322,24 +376,28 @@ as its first statement, tuned by `SUNRISE_LOG` and `SUNRISE_LOG_FORMAT`.
 - Zero-downtime upgrade for scaled deployments via standard rolling restart.
   (No scaled deployment exists.)
 
-## Testing the install — NOT IMPLEMENTED
+## Testing the install
 
-There is no `doctor` subcommand. `main.rs` parses config, validates it, builds
-the router and serves; it dispatches on no subcommand at all, and `doctor` is
-already listed under "Not yet wired" above. Several checks below could not exist
-as written regardless — there is no Postgres to ask about `fsync`. A
-configured APNs key is checked at startup (it must sign), but nothing probes
-the gateway before the first push.
+`sunrise-server admin doctor` runs the checks that apply to a single-binary
+SQLite relay, reports each as `ok`, `fail` or `skipped` with a reason, and exits
+1 if any failed:
 
-The intended subcommand:
+| Check | What it does |
+|---|---|
+| `config` | Validates the config against every refusal in "Refusals" above |
+| `database` | `PRAGMA quick_check` on `sunrise.db` (opening it also refuses a newer schema) |
+| `storage` | Writes 10 MiB under the data dir, fsyncs, reads it back byte-for-byte, and deletes it |
+| `blob_root` | The blob root is writable |
+| `push` | `[push.apns]` is configured, and its key loaded and signs; `skipped` without `[push]` |
+| `protocol` | The wire, document-schema and crypto-suite versions this binary speaks |
+| `free_space` | Always `skipped`: the free-space ratio needs `statvfs`, which this binary cannot call without unsafe code. Read it with `df`. |
+| `tls` | Always `skipped`: the relay serves plain HTTP behind the reverse proxy |
 
-- Verifies TLS works.
-- Verifies storage is writable: writes a 10 MiB test file under `[storage] data_dir`, fsyncs, reads back, asserts byte-identical, and deletes. Reports the free-space ratio: warns at < 10%, errors at < 1%.
-- Verifies Postgres `fsync = on` (production requirement).
-- Verifies push providers are configured (if enabled).
-- Reports protocol versions supported.
-- Round-trips a synthetic op end-to-end against a built-in test client.
-- `sunrise doctor --check-logs` verifies that audit/log retention is being enforced as configured.
+Two checks earlier drafts listed are not here. Postgres `fsync = on` has no
+Postgres to ask. A synthetic op round-trip needs a client that seals
+envelopes, and the server deliberately has no `sunrise-crypto` dependency. Log
+retention is the log collector's, since the relay writes to stderr and keeps
+nothing.
 
 ## What self-hosters give up vs managed cloud
 

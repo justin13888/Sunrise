@@ -78,6 +78,13 @@ See [`logging.md`](./logging.md) for the record schema and grammar, and
 | `srv.push.lookup_failed` | error | The dispatcher could not read an account's push targets, so that wake is lost; `provider`, `account_h`, `cause`. The ops are not: the devices catch up on their next stream. |
 | `srv.push.token_unregistered` | info | The provider said a token will never deliver again (APNs `410`, `400 BadDeviceToken`, or a token that cannot be one); `provider`, `device_h`, `reason` (the provider's own word), and `result`: `deleted`, or `kept` when the device had already registered a different token. Never the token. |
 | `srv.push.delivery_failed` | warn | A wake-up push was not delivered; `provider`, `device_h`, `result` (`rejected`, `rate_limited`, `failed`, `timeout`), `retryable`, `attempt` (how many were made), `cause`. Never the token. A rising rate with `result = "rejected"` is usually a wrong `topic` or `environment`. |
+| `srv.account.delete_initiated` | info | `POST /api/v1/accounts/me/delete/initiate` issued a confirmation phrase; `account_h`, `expires_at_ms`. Never the phrase. |
+| `srv.account.delete_requested` | info | `DELETE /api/v1/accounts/me` consumed a phrase and marked the account; `account_h`, and `delay_ms` until the earliest erasure. From here the account opens no session, publishes no op and uploads nothing. |
+| `srv.account.delete_completed` | info | The maintenance pass, or `admin account delete --immediately`, erased the account's rows, relay log and blob trees; `account_h`. |
+| `srv.blob.tombstoned` | info | `DELETE /api/v1/blobs/{blob_id}` tombstoned a blob; `account_h`, `blob_h`. The ciphertext stays readable until it is collected. |
+| `srv.blob.gc_deleted` | info | The maintenance pass reclaimed a tombstoned blob whose grace period had passed and whose quorum held; `account_h`, `blob_h`. |
+| `srv.blob.upload_swept` | info | The maintenance pass removed an upload untouched past `[storage] pending_upload_ttl_hours`. No `account_h`: the pass reads the directory, which is keyed by a hash it cannot reverse. |
+| `srv.maintenance.failed` | warn | One maintenance item, or the whole pass, failed and is retried on the next; `reason` (`account_erase`, `blob_collect`, `upload_sweep`, `orphan_sweep`, `pass`) and `cause`. |
 
 ### `db` — `sunrise-storage`
 

@@ -243,8 +243,11 @@ local blob store. It is device-local: nothing about it syncs.
 
 `Command::DetachFile` performs the logical delete and is all of this that
 belongs in the core. The GC below needs the device-cursor quorum and the grace
-period, both of which are the relay's; the relay's blob `DELETE` route is
-correspondingly not implemented yet ([#359](https://github.com/justin13888/Sunrise/issues/359)).
+period, both of which are the relay's. The relay implements it:
+`DELETE /api/v1/blobs/<blob_id>` tombstones the blob, naming the detaching op by
+its stream, device and `seq`, and the relay's maintenance pass collects it
+([`../06-server/api.md`](../06-server/api.md) §Blobs). No client calls the
+route yet.
 
 Logical delete sets `deleted=true`. The encrypted blob — and its thumbnail blob —
 is **garbage-collected** when:
@@ -262,3 +265,12 @@ all_active_devices.every(d => d.cursor[stream_id] >= tombstone_op.seq)
 `active_device` = a device that has emitted a cursor op in the last 30 days. A device silent for > 30 days is considered abandoned and excluded from the quorum; re-pairing or re-syncing produces a fresh cursor that takes effect immediately.
 
 The server runs the GC; only the **blobs** are GC'd, never the metadata, since metadata reveals nothing without the wrapped key.
+
+**What the relay can read of this.** A `device_op_cursor` op is sealed, so the
+relay cannot read it. The quorum is computed from the cursors each device
+declares in cleartext on `POST /sync/subscribe` instead: per stream and
+originating device, the highest `seq` it has applied. That is the same
+statement. For the relay, a device is active when it is unrevoked and has
+declared a cursor within 30 days. The device that sent the `DELETE` is excused,
+because it wrote the tombstone op. The grace period is `[storage] gc_grace_days`,
+default 30.

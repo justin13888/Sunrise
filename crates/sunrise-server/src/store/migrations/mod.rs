@@ -70,6 +70,11 @@ pub(super) const MIGRATIONS: &[Migration] = &[
         name: "devices_vault_device_id",
         apply: devices_vault_device_id,
     },
+    Migration {
+        id: 3,
+        name: "account_and_blob_deletion",
+        apply: account_and_blob_deletion,
+    },
 ];
 
 /// The version this binary migrates to, and the newest it will open.
@@ -111,6 +116,12 @@ fn devices_vault_device_id(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         "CREATE INDEX IF NOT EXISTS devices_by_vault_id ON devices(account_id, vault_device_id);",
     )
+}
+
+/// 0003: the state account deletion and blob garbage collection keep, which
+/// `store::lifecycle` declares beside the statements over it.
+fn account_and_blob_deletion(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(super::lifecycle::SCHEMA)
 }
 
 /// The database's `user_version`.

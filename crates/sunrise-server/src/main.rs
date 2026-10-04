@@ -35,6 +35,7 @@ async fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = match args.split_first() {
         Some((cmd, rest)) if cmd == "healthcheck" => healthcheck(rest).await,
+        Some((cmd, rest)) if cmd == "admin" => admin(rest),
         _ => run(args).await,
     };
     match result {
@@ -71,6 +72,61 @@ async fn healthcheck(args: &[String]) -> Result<(), u8> {
             eprintln!("healthcheck: {e}");
             EX_FAILURE
         })
+}
+
+/// `sunrise-server admin [-c <path>] [--json] <command>`: the operator CLI,
+/// on the data dir directly. `sunrise_server::admin::cli` documents the
+/// commands and why there is no admin socket.
+///
+/// Its output is the command's answer, for a person or a script, so it goes to
+/// stdout as text or JSON rather than through the NDJSON logger.
+fn admin(args: &[String]) -> Result<(), u8> {
+    let code = sunrise_server::admin::cli::run(
+        args,
+        &mut std::io::stdout().lock(),
+        &mut std::io::stderr().lock(),
+    );
+    if code == 0 {
+        Ok(())
+    } else {
+        Err(code)
+    }
+}
+
+/// Run the maintenance pass every `[storage] maintenance_interval_secs`, the
+/// first one at startup.
+///
+/// On a blocking thread, because every step is database or filesystem I/O, and
+/// one pass at a time, because the next tick waits for this one to finish.
+fn spawn_maintenance(state: ServerState) {
+    let every = std::time::Duration::from_secs(state.config.maintenance_interval_secs);
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(every);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            ticker.tick().await;
+            let state = state.clone();
+            let pass = tokio::task::spawn_blocking(move || {
+                sunrise_server::admin::maintenance::run(&state, state.clock.now_ms(), false)
+            })
+            .await;
+            match pass {
+                Ok(Ok(_)) => {}
+                Ok(Err(e)) => tracing::warn!(
+                    ev = "srv.maintenance.failed",
+                    reason = "pass",
+                    cause = %e,
+                    "maintenance pass failed; retrying at the next interval"
+                ),
+                Err(e) => tracing::warn!(
+                    ev = "srv.maintenance.failed",
+                    reason = "pass",
+                    cause = %e,
+                    "maintenance pass did not complete; retrying at the next interval"
+                ),
+            }
+        }
+    });
 }
 
 /// Resolves on the first `SIGTERM` or `SIGINT`, then forces on the second.
@@ -215,6 +271,7 @@ async fn run(args: Vec<String>) -> Result<(), u8> {
         );
     }
 
+    spawn_maintenance(state.clone());
     serve_until_signalled(state, &bind).await
 }
 

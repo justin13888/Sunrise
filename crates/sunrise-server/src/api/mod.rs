@@ -27,6 +27,7 @@
 
 use crate::state::ServerState;
 
+pub mod account_deletion;
 pub mod accounts;
 pub mod auth;
 pub mod blobs;
@@ -101,7 +102,9 @@ pub fn router(config: &crate::ServerConfig, metrics: &crate::Metrics) -> ApiRout
         .mount(kynos::routes![
             accounts::create,
             accounts::me,
-            accounts::recovery_blob
+            accounts::recovery_blob,
+            account_deletion::initiate,
+            account_deletion::delete
         ])
         .mount(kynos::routes![
             devices::list,
@@ -114,7 +117,8 @@ pub fn router(config: &crate::ServerConfig, metrics: &crate::Metrics) -> ApiRout
             blobs::init,
             blobs::finalize,
             blobs::put_chunk,
-            blobs::fetch
+            blobs::fetch,
+            blobs::delete
         ])
         .mount(kynos::routes![
             sync::session,
