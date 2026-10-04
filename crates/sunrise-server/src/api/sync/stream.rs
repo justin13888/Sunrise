@@ -219,6 +219,9 @@ fn spawn_stream(
 
     tokio::spawn(async move {
         let _slot = slot;
+        // The device is online for exactly as long as this task runs, so the
+        // push dispatcher does not wake a device already receiving the ops.
+        let _present = state.push.hold(session.device_id.as_deref());
         let mut receivers = Vec::new();
 
         // Live receiver FIRST, then the durable read. A frame published between

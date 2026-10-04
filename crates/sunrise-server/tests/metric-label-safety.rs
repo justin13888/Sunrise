@@ -291,8 +291,15 @@ async fn metric_labels_are_allowlisted_and_bounded() {
                 }
                 "status" => value.len() == 3 && value.bytes().all(|b| b.is_ascii_digit()),
                 "provider" => ["apns", "fcm", "web"].contains(&value.as_str()),
-                "result" => ["ok", "failed", "rejected", "rate_limited", "timeout"]
-                    .contains(&value.as_str()),
+                "result" => [
+                    "ok",
+                    "failed",
+                    "rejected",
+                    "rate_limited",
+                    "timeout",
+                    "dropped",
+                ]
+                .contains(&value.as_str()),
                 "direction" => ["upload", "download"].contains(&value.as_str()),
                 "scope" => ["ip", "account", "device"].contains(&value.as_str()),
                 "state" => ["active", "revoked"].contains(&value.as_str()),

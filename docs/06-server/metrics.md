@@ -56,7 +56,7 @@ they diverge.
 | `status` | HTTP status code actually returned, as three digits | ~15 |
 | `kind` | frame or op-batch kind | the wire enum |
 | `provider` | `apns`, `fcm`, `web` | 3 |
-| `result` | `ok`, `failed`, `rejected`, `rate_limited`, `timeout` | 5 |
+| `result` | `ok`, `failed`, `rejected`, `rate_limited`, `timeout`, `dropped` | 6 |
 | `reason` | The typed error code (`crates/sunrise-error/codes.toml`), or the closed enum the metric's own row names where every failure shares one code | the code registry, or the row's enum |
 | `scope` | `ip`, `account`, `device` | 3 |
 | `direction` | `upload`, `download` | 2 |
@@ -158,8 +158,8 @@ in the description, so it is driven without anyone adding it to the test.
 | Metric | Type | Labels | Status | Meaning |
 |---|---|---|---|---|
 | `sunrise_push_register_total` | counter | — | current | |
-| `sunrise_push_dispatch_total` | counter | `provider`, `result` | current (no traffic until [#362](https://github.com/justin13888/Sunrise/issues/362)) | One per push intent a provider handled. Emitted today only by the self-host `LoggingProvider`, which nothing constructs, so the series appears once #362 wires delivery. |
-| `sunrise_push_dispatch_duration_seconds` | histogram (latency buckets) | `provider` | target ([#362](https://github.com/justin13888/Sunrise/issues/362)) | Time for the provider round trip. |
+| `sunrise_push_dispatch_total` | counter | `provider`, `result` | current | One per wake-up push, by how it ended: `ok` delivered; `rejected` refused by the provider, including a dead token, which is deleted; `rate_limited` throttled by the provider past every retry, or not sent because the device was at its ten-a-minute cap; `failed` a server or transport error past every retry; `timeout` no answer past every retry; `dropped` the dispatch queue was full, so the wake was discarded before any device was looked up. Coalesced ops are not counted. No series exists until `[push]` configures a provider. |
+| `sunrise_push_dispatch_duration_seconds` | histogram (latency buckets) | `provider` | current | Time for one provider round trip, observed per attempt, retries included. |
 
 ### Storage
 
@@ -179,7 +179,7 @@ counters. Each is kept, gained a label, folded, or deleted:
 | `sunrise_device_sig_rejected_total` | Kept, gains `reason`. |
 | `sunrise_sync_negotiate_refused_total` | Kept, gains `reason`. |
 | `sunrise_devices_list_total` | Folded into `sunrise_http_requests_total{endpoint="/api/v1/devices",method="GET"}`, which counts the same requests and their outcome. |
-| `sunrise_push_apns_total`, `sunrise_push_fcm_total`, `sunrise_push_web_total` | Deleted. They were reachable only through `LoggingProvider`, which nothing constructs; `sunrise_push_dispatch_total{provider,result}` supersedes them. |
+| `sunrise_push_apns_total`, `sunrise_push_fcm_total`, `sunrise_push_web_total` | Deleted. They were reachable only through `LoggingProvider`, which nothing constructed and which [#362](https://github.com/justin13888/Sunrise/issues/362) removed; `sunrise_push_dispatch_total{provider,result}` supersedes them. |
 | Every other name | Kept unchanged, as an unlabelled counter. |
 
 ## Bucket sets

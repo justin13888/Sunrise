@@ -79,7 +79,24 @@ blob_download_bytes_per_min = 268435456   # per device (256 MiB)
 open_uploads         = 16                 # per account, between init and finalize
 sessions_per_5min    = 10                 # per device
 streams              = 4                  # event streams per device at once
+
+[push.apns]                               # optional; absent = no wake-up pushes
+key_path    = "/etc/sunrise/AuthKey_ABC123DEFG.p8"   # the .p8 key Apple issued; mode 0600
+key_id      = "ABC123DEFG"                # the key's 10-character Key ID (JWT `kid`)
+team_id     = "DEF123GHIJ"                # 10-character Apple Developer Team ID (JWT `iss`)
+topic       = "dev.sunrise.app"           # the app's bundle id, sent as `apns-topic`
+environment = "production"                # "sandbox" for development builds' tokens
 ```
+
+`[push.apns]` turns on content-less wake-ups for iOS devices that have no event
+stream open (see [`push-notifications.md`](./push-notifications.md)). Written at
+all, it is written whole: every key is required, `environment` has no default
+because a development build's tokens only work against the sandbox gateway,
+and `[push.fcm]` or any other provider table is rejected as unknown. The key
+file must be readable by its owner alone — `chmod 600` (or `400`) and owned by
+the user the relay runs as. Leave it out of backups of the data dir; it is
+config, and a leaked copy signs pushes for the app. Without `[push]`, the
+server logs `srv.push.disabled` once at startup and sends nothing.
 
 Setting **both** `oidc_issuer` and `oidc_client_id` is what installs the JWKS
 verifier. With either missing the server stays single-tenant, where every
@@ -101,6 +118,8 @@ The server exits 78 rather than starting, when:
 | A `trusted_proxies` entry is not an address or CIDR network | Hostnames are not resolved; the socket reports an address |
 | `busy_timeout_ms` above 2147483647 | SQLite holds the timeout in a 32-bit signed integer of milliseconds (about 24 days) |
 | `sunrise.db` is at a schema version newer than this binary's | A newer release migrated it; writing to it could corrupt what that release relies on (see "Upgrade") |
+| `[push.apns] key_path` is readable by group or others, missing, or not a P-256 `.p8` key | It signs pushes for the whole app; a key that cannot sign would fail every push instead of the start |
+| `[push.apns] key_id` or `team_id` is not 10 uppercase letters and digits, or `topic` is empty | APNs would refuse every provider token or push |
 
 Unknown keys and unknown tables are **rejected**, not ignored. Writing a
 `[tls]` block and having it silently dropped would serve plaintext while the
@@ -185,7 +204,8 @@ To scrape metrics, run the scraper on the relay's host against
 
 These appear in earlier drafts of this document and are **not implemented**;
 the parser will reject them rather than accept them silently:
-`[tls]` (terminate TLS at a reverse proxy for now), `[push]`, `[quotas]`,
+`[tls]` (terminate TLS at a reverse proxy for now), `[push]` providers other
+than `[push.apns]`, `[quotas]`,
 `[observability]`, `[storage] mode` / `sqlite_pool_size` / `postgres_url` /
 `s3_*`, `[server] public_url`, `[auth] oidc_client_secret` / `admin_emails`,
 and the `sunrise-server doctor` subcommand.
@@ -307,8 +327,9 @@ as its first statement, tuned by `SUNRISE_LOG` and `SUNRISE_LOG_FORMAT`.
 There is no `doctor` subcommand. `main.rs` parses config, validates it, builds
 the router and serves; it dispatches on no subcommand at all, and `doctor` is
 already listed under "Not yet wired" above. Several checks below could not exist
-as written regardless — there is no Postgres to ask about `fsync`, and no push
-provider to probe.
+as written regardless — there is no Postgres to ask about `fsync`. A
+configured APNs key is checked at startup (it must sign), but nothing probes
+the gateway before the first push.
 
 The intended subcommand:
 
@@ -324,7 +345,7 @@ The intended subcommand:
 
 | Feature | Managed | Self-host |
 |---|---|---|
-| Push reliability | High (Sunrise-operated APNs/FCM) | Operator-managed; optional. **No push delivery is implemented in either deployment** — see [`push-notifications.md`](./push-notifications.md). |
+| Push reliability | High (Sunrise-operated APNs/FCM) | Operator-managed; optional. APNs only, with the operator's own `.p8` key, so it wakes only an app build whose bundle id is the configured `topic`; FCM and Web Push are not built — see [`push-notifications.md`](./push-notifications.md). |
 | Cross-server sharing | n/a (same-server only) | n/a |
 | Capacity scaling | Auto | Operator-driven |
 | Backups | Sunrise-managed | Operator-managed |
