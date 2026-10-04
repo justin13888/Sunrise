@@ -568,51 +568,17 @@ impl ServerConfig {
         std::time::Duration::from_millis(self.sqlite_busy_timeout_ms)
     }
 
-    /// The database key `[storage]` names, or `None` with encryption off.
+    /// The database key `[storage]` names, or `None` with encryption off;
+    /// [`DbKey::for_storage`] holds the rules.
     ///
     /// # Errors
-    /// `encrypt` without a `key_file`, or a `key_file` without `encrypt` —
-    /// the second because an operator who wrote a key file believes the
-    /// database is encrypted, and it would not be. A key file inside the data
-    /// dir, and each refusal [`DbKey::from_file`] makes.
+    /// Each refusal [`DbKey::for_storage`] makes.
     pub fn sqlite_key(&self) -> Result<Option<DbKey>, StoreError> {
-        let key_file =
-            match (self.sqlite_encrypt, &self.sqlite_key_file) {
-                (false, None) => return Ok(None),
-                (false, Some(_)) => {
-                    return Err(StoreError::KeyConfig(
-                        "[storage] key_file is set but encrypt is not: set encrypt = true to \
-                     encrypt the database, or remove key_file",
-                    ))
-                }
-                (true, None) => return Err(StoreError::KeyConfig(
-                    "[storage] encrypt = true needs key_file: a file of 64 hex digits, mode 0600, \
-                     outside the data dir (openssl rand -hex 32)",
-                )),
-                (true, Some(p)) => p,
-            };
-        let data_dir = self.sqlite_path.as_deref().and_then(Path::parent);
-        // A bare `sunrise.db` has the empty path as its parent, which every
-        // path "starts with"; the data dir is then the working directory.
-        let data_dir = data_dir.map(|d| {
-            if d.as_os_str().is_empty() {
-                Path::new(".")
-            } else {
-                d
-            }
-        });
-        if let Some(data_dir) = data_dir {
-            // Canonical where the path exists, so `..` and a symlinked data dir
-            // cannot hide the key inside it.
-            let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_owned());
-            if canon(key_file).starts_with(canon(data_dir)) {
-                return Err(StoreError::KeyInDataDir {
-                    key_file: key_file.clone(),
-                    data_dir: data_dir.to_owned(),
-                });
-            }
-        }
-        DbKey::from_file(key_file).map(Some)
+        DbKey::for_storage(
+            self.sqlite_encrypt,
+            self.sqlite_key_file.as_deref(),
+            self.sqlite_path.as_deref().and_then(Path::parent),
+        )
     }
 }
 

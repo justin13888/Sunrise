@@ -478,3 +478,48 @@ fn rekey_is_refused_while_the_relay_has_the_file_open_and_for_a_plaintext_one() 
         Err(StoreError::NotEncrypted)
     ));
 }
+
+/// `encrypt` and `key_file` must agree, and the key must live outside the
+/// data dir, so a copy of the data dir is never also a copy of its key.
+#[test]
+fn the_storage_table_names_a_key_only_with_encrypt_on_and_outside_the_data_dir() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    std::fs::create_dir(&data).unwrap();
+    let write_key = |path: &Path| {
+        std::fs::write(path, "cd".repeat(32)).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+    };
+    let outside = dir.path().join("db.key");
+    write_key(&outside);
+    let inside = data.join("db.key");
+    write_key(&inside);
+
+    assert_eq!(DbKey::for_storage(false, None, Some(&data)).unwrap(), None);
+    assert_eq!(
+        DbKey::for_storage(true, Some(&outside), Some(&data)).unwrap(),
+        Some(DbKey::from_bytes([0xcd; 32]))
+    );
+    assert!(matches!(
+        DbKey::for_storage(true, None, Some(&data)),
+        Err(StoreError::KeyConfig(_))
+    ));
+    assert!(matches!(
+        DbKey::for_storage(false, Some(&outside), Some(&data)),
+        Err(StoreError::KeyConfig(_))
+    ));
+    assert!(matches!(
+        DbKey::for_storage(true, Some(&inside), Some(&data)),
+        Err(StoreError::KeyInDataDir { .. })
+    ));
+    // Through `..`, which only the canonical comparison sees through.
+    let dotted = data.join("..").join("data").join("db.key");
+    assert!(matches!(
+        DbKey::for_storage(true, Some(&dotted), Some(&data)),
+        Err(StoreError::KeyInDataDir { .. })
+    ));
+}

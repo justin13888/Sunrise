@@ -578,6 +578,29 @@ mod file_tests {
         assert_eq!(one.retention().gc_grace_ms, 24 * 60 * 60 * 1000);
     }
 
+    /// Encryption is off unless the file turns it on, and both keys reach the
+    /// model.
+    #[test]
+    fn encrypt_and_key_file_overlay_and_default_off() {
+        let defaults = FileConfig::parse("", "t.toml")
+            .unwrap()
+            .apply(ServerConfig::default());
+        assert!(!defaults.sqlite_encrypt);
+        assert_eq!(defaults.sqlite_key_file, None);
+
+        let cfg = FileConfig::parse(
+            "[storage]\nencrypt = true\nkey_file = \"/etc/sunrise/db.key\"",
+            "t.toml",
+        )
+        .unwrap()
+        .apply(ServerConfig::default());
+        assert!(cfg.sqlite_encrypt);
+        assert_eq!(
+            cfg.sqlite_key_file.as_deref(),
+            Some(std::path::Path::new("/etc/sunrise/db.key"))
+        );
+    }
+
     #[test]
     fn busy_timeout_ms_overlays_when_set() {
         let cfg = FileConfig::parse("[storage]\nbusy_timeout_ms = 250", "t.toml")

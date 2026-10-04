@@ -13,7 +13,10 @@
 //! - [`file_state`]: telling a plaintext SQLite file from one that is not;
 //! - [`apply_key`] and [`check_readable`]: keying a connection, and turning
 //!   SQLCipher's "file is not a database" into a typed refusal;
-//! - [`encrypt_in_place`]: the one-way migration of a plaintext database.
+//! - [`encrypt_in_place`]: the one-way migration of a plaintext database;
+//! - [`Store::backup_to`](super::Store::backup_to) and
+//!   [`Store::rekey`](super::Store::rekey): the online copy, under the same
+//!   key, and the rotation to a new one.
 
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
@@ -105,6 +108,59 @@ impl DbKey {
             bad("not 64 hex digits; generate one with `openssl rand -hex 32`".to_owned())
         })?;
         Ok(Self(key))
+    }
+
+    /// The key `[storage] encrypt` and `[storage] key_file` name, for a
+    /// database in `data_dir`, or `None` with encryption off.
+    ///
+    /// # Errors
+    /// `encrypt` without a `key_file`, or a `key_file` without `encrypt` —
+    /// the second because an operator who wrote a key file believes the
+    /// database is encrypted, and it would not be. A key file inside the data
+    /// dir, because every copy of the data dir would then carry the key that
+    /// opens it. And each refusal [`DbKey::from_file`] makes.
+    pub fn for_storage(
+        encrypt: bool,
+        key_file: Option<&Path>,
+        data_dir: Option<&Path>,
+    ) -> Result<Option<Self>, StoreError> {
+        let key_file = match (encrypt, key_file) {
+            (false, None) => return Ok(None),
+            (false, Some(_)) => {
+                return Err(StoreError::KeyConfig(
+                    "[storage] key_file is set but encrypt is not: set encrypt = true to \
+                     encrypt the database, or remove key_file",
+                ))
+            }
+            (true, None) => {
+                return Err(StoreError::KeyConfig(
+                    "[storage] encrypt = true needs key_file: a file of 64 hex digits, mode \
+                     0600, outside the data dir (openssl rand -hex 32)",
+                ))
+            }
+            (true, Some(p)) => p,
+        };
+        // A bare `sunrise.db` has the empty path as its parent, which every
+        // path "starts with"; its data dir is the working directory.
+        let data_dir = data_dir.map(|d| {
+            if d.as_os_str().is_empty() {
+                Path::new(".")
+            } else {
+                d
+            }
+        });
+        if let Some(data_dir) = data_dir {
+            // Canonical where the path exists, so `..` and a symlinked data
+            // dir cannot hide the key inside it.
+            let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_owned());
+            if canon(key_file).starts_with(canon(data_dir)) {
+                return Err(StoreError::KeyInDataDir {
+                    key_file: key_file.to_owned(),
+                    data_dir: data_dir.to_owned(),
+                });
+            }
+        }
+        Self::from_file(key_file).map(Some)
     }
 
     /// The value `PRAGMA key` and `ATTACH … KEY` take: SQLCipher's raw-key
@@ -302,6 +358,82 @@ fn leave_wal(conn: &Connection, path: &Path) -> Result<(), StoreError> {
         Err(e) => Err(e.into()),
     }
 }
+
+impl super::Store {
+    /// Whether the file is SQLCipher-encrypted.
+    #[must_use]
+    pub const fn is_encrypted(&self) -> bool {
+        self.key.is_some()
+    }
+
+    /// Copy the database to a new file at `dest`, under the same key, while
+    /// the relay keeps writing.
+    ///
+    /// SQLite's online backup API, run as **one step over every page**. That
+    /// step reads from a single snapshot, so the copy is one committed instant
+    /// of the database. In WAL mode a reader never blocks a writer, so the
+    /// relay's appends proceed through the whole copy; what they cost is WAL
+    /// growth, because a checkpoint cannot move past a snapshot still being
+    /// read. Copying a page range per step instead would release the snapshot
+    /// between steps, and the backup API restarts from the first page
+    /// whenever another process writes the source in between — under a steady
+    /// append load it would never finish.
+    ///
+    /// # Errors
+    /// [`StoreError::Io`] if `dest` exists, and SQLite's failure otherwise. A
+    /// failed copy may leave a partial file at `dest`.
+    pub fn backup_to(&self, dest: &Path) -> Result<(), StoreError> {
+        if dest.exists() {
+            return Err(StoreError::Io {
+                path: dest.to_owned(),
+                cause: "already exists".to_owned(),
+            });
+        }
+        let mut out = Connection::open(dest)?;
+        if let Some(k) = &self.key {
+            apply_key(&out, k)?;
+        }
+        let conn = self.conn.lock();
+        let backup = rusqlite::backup::Backup::new(&conn, &mut out)?;
+        // A lock another process holds for an instant — a checkpoint, the
+        // relay's write lock — is waited out, a bounded number of times.
+        for _ in 0..BACKUP_BUSY_RETRIES {
+            match backup.step(-1)? {
+                rusqlite::backup::StepResult::Done => return Ok(()),
+                // `More` cannot follow a step over every page, and is retried
+                // like a lock if it ever does; `StepResult` is non-exhaustive.
+                _ => std::thread::sleep(BACKUP_BUSY_PAUSE),
+            }
+        }
+        Err(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
+            Some("the database stayed locked through every backup attempt".to_owned()),
+        )
+        .into())
+    }
+
+    /// Re-encrypt the whole file under `new`, which takes effect for every
+    /// later open. The relay must be stopped.
+    ///
+    /// # Errors
+    /// [`StoreError::NotEncrypted`] for a plaintext database,
+    /// [`StoreError::InUse`] while another process has it open, and SQLite's
+    /// failure otherwise, in which case the old key still opens it.
+    pub fn rekey(&self, new: &DbKey) -> Result<(), StoreError> {
+        let (Some(path), Some(_)) = (&self.path, &self.key) else {
+            return Err(StoreError::NotEncrypted);
+        };
+        rekey(&self.conn.lock(), path, new)
+    }
+}
+
+/// How many times [`Store::backup_to`] retries a step another process's lock
+/// refused.
+const BACKUP_BUSY_RETRIES: u32 = 100;
+
+/// How long [`Store::backup_to`] waits before that retry: with
+/// [`BACKUP_BUSY_RETRIES`], five seconds in all, the default busy timeout.
+const BACKUP_BUSY_PAUSE: Duration = Duration::from_millis(50);
 
 fn remove_if_present(path: &Path) -> Result<(), StoreError> {
     match std::fs::remove_file(path) {
