@@ -189,15 +189,6 @@ impl ApnsEnvironment {
             Self::Production => "https://api.push.apple.com",
         }
     }
-
-    /// The name the config file spells it with.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Sandbox => "sandbox",
-            Self::Production => "production",
-        }
-    }
 }
 
 /// Whether `s` is an Apple 10-character identifier (Key ID, Team ID).
