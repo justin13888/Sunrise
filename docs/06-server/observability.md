@@ -44,7 +44,7 @@ The 39 `ev` names the server emits, complete:
      NOT the commit that last changed the set. Now that the gate runs, it is
      provenance rather than the reader's assurance: diff that ref against HEAD
      over the grepped path to see what a human last looked at.
-     Last extracted: 68830b5 -->
+     Last extracted: 5a61ca6 -->
 
 ```
 srv.start                        srv.req.start
@@ -142,7 +142,7 @@ extracted from the source and checked by a gate, so the catalogue's
      NOT the commit that last changed the set. Now that the gate runs, it is
      provenance rather than the reader's assurance: diff that ref against HEAD
      over the grepped path to see what a human last looked at.
-     Last extracted: 68830b5 -->
+     Last extracted: 5a61ca6 -->
 
 ```
 sunrise_account_create_total
