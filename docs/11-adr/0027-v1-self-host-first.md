@@ -139,7 +139,7 @@ enforces are fixed operator constants, not per-account accounting:
 
 | Limit | Value | Source |
 |---|---|---|
-| Request body | 2 MiB (`[server] max_body_bytes`) | `crates/sunrise-server/src/config/model.rs:104-105,110-112` |
+| Request body | 2 MiB (`[server] max_body_bytes`) | `crates/sunrise-server/src/config/model.rs:109-110,115-117` |
 | Blob chunk | 1 MiB ciphertext | `crates/sunrise-server/src/api/blobs.rs:53` |
 | Blob chunk count | 4096 | `api/blobs.rs:57` |
 | Blob size | 100 MB | `api/blobs.rs:61` |
