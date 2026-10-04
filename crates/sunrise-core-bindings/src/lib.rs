@@ -214,6 +214,20 @@ pub enum BindingError {
     /// never let fall through to the next screen.
     #[error("pairing: {0}")]
     Pairing(String),
+    /// The vault requires `feature`, this build does not have it, and the
+    /// command would have edited what it covers (ADR-0045 §8,
+    /// `DOC_FEATURE_MISSING`).
+    ///
+    /// Its own variant because it is not a failure of the vault or of the
+    /// request: nothing was written, reads and sync carry on, and the answer
+    /// is "Update Sunrise to edit". A client that disables edit actions from
+    /// [`SunriseCore::edit_gate`] should never see it; one that races a sync
+    /// can.
+    #[error("this vault uses `{feature}`, which this version of Sunrise does not have")]
+    FeatureMissing {
+        /// The feature id.
+        feature: String,
+    },
 }
 
 impl From<sunrise_integrations::IntegrationError> for BindingError {
@@ -253,7 +267,12 @@ impl From<sunrise_auth::LoginError> for BindingError {
 
 impl From<CoreError> for BindingError {
     fn from(e: CoreError) -> Self {
-        Self::Core(e.to_string())
+        match e {
+            CoreError::Engine(sunrise_core::EngineError::FeatureMissing { feature }) => {
+                Self::FeatureMissing { feature }
+            }
+            other => Self::Core(other.to_string()),
+        }
     }
 }
 
