@@ -295,4 +295,43 @@ struct RelayPairingModelTests {
             "the relay session is dropped, so the other side stops waiting"
         )
     }
+
+    /// "Copy and paste instead" is offered on a relay pairing, running or
+    /// stopped, and never after a mismatch or once the pairing is manual.
+    @Test
+    func copyAndPasteInsteadIsOfferedOnlyOnARelayPairingThatDidNotMismatch() async throws {
+        let relay = Relay()
+        let session = FakeSession(role: .newDevice)
+        let model = newDevice(relay, transport: transport(relay, session: session))
+        #expect(model.offersManualFallback, "idle on the relay")
+
+        await model.begin()
+        #expect(model.phase == .comparing(sas: "123456"))
+        #expect(model.offersManualFallback, "comparing on the relay")
+
+        model.phase = .failed("stopped")
+        #expect(model.offersManualFallback, "a relay pairing that stopped can still go manual")
+
+        model.phase = .mismatch
+        #expect(!model.offersManualFallback, "a mismatch is the check working, not the transport failing")
+
+        let manual = PairingModel(intent: .addThisMac)
+        #expect(manual.transport == .manual)
+        #expect(!manual.offersManualFallback, "already copy and paste")
+    }
+
+    /// The fallback notice is about how a pairing is running, so every
+    /// outcome hides it and every running phase keeps it.
+    @Test
+    func onlyDoneMismatchAndFailedAreOutcomes() {
+        let handOff = PairingModel.HandOff(
+            leg: .code, title: "", instruction: "", text: "", drawsCode: false
+        )
+        let prompt = PairingModel.Prompt(leg: .code, title: "", instruction: "")
+        let outcomes: [PairingModel.Phase] = [.done("paired"), .mismatch, .failed("stopped")]
+        let running: [PairingModel.Phase] = [.idle, .handOff(handOff), .awaiting(prompt)]
+            + [.comparing(sas: "123456"), .working("sealing")]
+        for phase in outcomes { #expect(phase.isOutcome, "\(phase)") }
+        for phase in running { #expect(!phase.isOutcome, "\(phase)") }
+    }
 }

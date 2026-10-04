@@ -328,6 +328,16 @@ extension PairingModel {
         case .idle, .done, .mismatch, .failed: nil
         }
     }
+
+    /// Whether the footer offers "Copy and paste instead".
+    ///
+    /// The user's own way off the relay: the one exit when this device
+    /// reaches it and the other does not, or when a relay pairing stopped.
+    /// Not after a mismatch, which is the check working rather than the
+    /// transport failing.
+    var offersManualFallback: Bool {
+        transport == .relay && phase != .mismatch
+    }
 }
 
 extension PairingModel.Phase {

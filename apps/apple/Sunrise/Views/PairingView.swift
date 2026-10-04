@@ -91,11 +91,7 @@ struct PairingView: View {
                     dismiss()
                 }
                 .accessibilityIdentifier("pairing.cancel")
-                // The user's own way off the relay: the one exit when this
-                // device reaches it and the other does not, or when a relay
-                // pairing stopped. Not after a mismatch, which is the check
-                // working rather than the transport failing.
-                if model.transport == .relay, model.phase != .mismatch {
+                if model.offersManualFallback {
                     Button("Copy and paste instead") { model.useManualInstead() }
                         .accessibilityIdentifier("pairing.useManual")
                 }
