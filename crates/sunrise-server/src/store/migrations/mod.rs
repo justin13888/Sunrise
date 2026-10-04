@@ -176,19 +176,28 @@ pub(super) fn migrate_to(conn: &mut Connection, target: u32) -> Result<i64, Stor
 }
 
 /// What a database's schema *is*, for comparing two of them: one line per
-/// column, foreign key and index, sorted.
+/// column, foreign key, `CHECK` constraint, `AUTOINCREMENT` key and index,
+/// sorted.
 ///
-/// Not `sqlite_master.sql`, which is the text each object was created with:
-/// `ALTER TABLE ... ADD COLUMN` appends to that text, so a database that got a
-/// column by migration and one that got it in its `CREATE TABLE` describe the
-/// same table in different words. Column *order* differs between those two as
-/// well, and nothing in this crate reads a column by position, so it is left
-/// out of the comparison.
+/// Not `sqlite_master.sql` as a whole, which is the text each object was
+/// created with: `ALTER TABLE ... ADD COLUMN` appends to that text, so a
+/// database that got a column by migration and one that got it in its
+/// `CREATE TABLE` describe the same table in different words. Column *order*
+/// differs between those two as well, and nothing in this crate reads a column
+/// by position, so it is left out of the comparison.
+///
+/// What no pragma reports is read out of that text instead, piece by piece:
+/// each `CHECK (...)` clause, whether `AUTOINCREMENT` appears, and a partial
+/// index's `WHERE` clause, each with whitespace and comments removed so that a
+/// frozen copy laid out differently from the constant still compares equal.
+/// The indexes a `UNIQUE` or `PRIMARY KEY` constraint makes
+/// (`sqlite_autoindex_*`) are compared by what they cover and how, not by
+/// their numbered names.
 #[cfg(test)]
 pub(super) fn schema_of(conn: &Connection) -> Vec<String> {
-    let objects: Vec<(String, String, Option<String>)> = conn
+    let objects: Vec<(String, String, String)> = conn
         .prepare(
-            "SELECT type, name, tbl_name FROM sqlite_master
+            "SELECT type, name, IFNULL(sql, '') FROM sqlite_master
              WHERE name NOT LIKE 'sqlite_%' ORDER BY name",
         )
         .unwrap()
@@ -205,36 +214,212 @@ pub(super) fn schema_of(conn: &Connection) -> Vec<String> {
             .unwrap()
     };
     let mut out = Vec::new();
-    for (kind, name, table) in objects {
-        if kind == "table" {
-            for c in rows(
-                "SELECT name || ' ' || type || ' notnull=' || \"notnull\" || ' default=' || \
-                 IFNULL(dflt_value, '-') || ' pk=' || pk FROM pragma_table_info(?1)",
-                &name,
-            ) {
-                out.push(format!("table {name} column {c}"));
+    for (kind, name, sql) in objects {
+        match kind.as_str() {
+            "table" => {
+                for c in rows(
+                    "SELECT name || ' ' || type || ' notnull=' || \"notnull\" || ' default=' || \
+                     IFNULL(dflt_value, '-') || ' pk=' || pk FROM pragma_table_info(?1)",
+                    &name,
+                ) {
+                    out.push(format!("table {name} column {c}"));
+                }
+                for f in rows(
+                    "SELECT \"from\" || ' -> ' || \"table\" || '(' || \"to\" || ') on_update=' || \
+                     on_update || ' on_delete=' || on_delete FROM pragma_foreign_key_list(?1)",
+                    &name,
+                ) {
+                    out.push(format!("table {name} fk {f}"));
+                }
+                let (checks, autoincrement) = table_constraints(&sql);
+                for c in checks {
+                    out.push(format!("table {name} check {c}"));
+                }
+                if autoincrement {
+                    out.push(format!("table {name} autoincrement"));
+                }
+                for (index, unique, origin, partial) in conn
+                    .prepare("SELECT name, \"unique\", origin, partial FROM pragma_index_list(?1)")
+                    .unwrap()
+                    .query_map([&name], |r| {
+                        Ok((
+                            r.get::<_, String>(0)?,
+                            r.get::<_, i64>(1)?,
+                            r.get::<_, String>(2)?,
+                            r.get::<_, i64>(3)?,
+                        ))
+                    })
+                    .unwrap()
+                    .collect::<Result<Vec<_>, _>>()
+                    .unwrap()
+                {
+                    let columns = rows(
+                        "SELECT IFNULL(name, '<expr>') || CASE \"desc\" WHEN 1 THEN ' DESC' \
+                         ELSE '' END || ' COLLATE ' || coll FROM pragma_index_xinfo(?1) \
+                         WHERE key = 1 ORDER BY seqno",
+                        &index,
+                    );
+                    // A constraint's index is named for its position among the
+                    // table's constraints, which is not part of what it means.
+                    let label = if origin == "c" { index.as_str() } else { "-" };
+                    let clause = if partial == 1 {
+                        let sql: String = conn
+                            .query_row(
+                                "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?1",
+                                [&index],
+                                |r| r.get(0),
+                            )
+                            .unwrap();
+                        format!(" where {}", partial_clause(&sql))
+                    } else {
+                        String::new()
+                    };
+                    out.push(format!(
+                        "table {name} index {label} origin={origin} unique={unique} ({}){clause}",
+                        columns.join(", ")
+                    ));
+                }
             }
-            for f in rows(
-                "SELECT \"from\" || ' -> ' || \"table\" || '(' || \"to\" || ') on_delete=' || \
-                 on_delete FROM pragma_foreign_key_list(?1)",
-                &name,
-            ) {
-                out.push(format!("table {name} fk {f}"));
-            }
-        } else {
-            let columns = rows(
-                "SELECT name FROM pragma_index_info(?1) ORDER BY seqno",
-                &name,
-            );
-            out.push(format!(
-                "{kind} {name} on {} ({})",
-                table.unwrap_or_default(),
-                columns.join(", ")
-            ));
+            // Indexes are listed under their table above.
+            "index" => {}
+            _ => out.push(format!("{kind} {name} {}", squeeze(&sql))),
         }
     }
     out.sort();
     out
+}
+
+/// `sql` with comments and whitespace outside string literals removed, so two
+/// spellings of one definition that differ only in layout compare equal.
+#[cfg(test)]
+fn squeeze(sql: &str) -> String {
+    strip(sql, false)
+}
+
+/// `sql` with comments removed, and each run of whitespace outside string
+/// literals either collapsed to one space (`keep_space`) or removed.
+#[cfg(test)]
+fn strip(sql: &str, keep_space: bool) -> String {
+    let mut out = String::new();
+    let mut chars = sql.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\'' | '"' | '`' => {
+                out.push(c);
+                for d in chars.by_ref() {
+                    out.push(d);
+                    if d == c {
+                        break;
+                    }
+                }
+            }
+            '-' if chars.peek() == Some(&'-') => {
+                for d in chars.by_ref() {
+                    if d == '\n' {
+                        break;
+                    }
+                }
+            }
+            '/' if chars.peek() == Some(&'*') => {
+                chars.next();
+                let mut prev = ' ';
+                for d in chars.by_ref() {
+                    if prev == '*' && d == '/' {
+                        break;
+                    }
+                    prev = d;
+                }
+            }
+            c if c.is_whitespace() => {
+                if keep_space && !out.ends_with(' ') {
+                    out.push(' ');
+                }
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// Every `CHECK (...)` clause in a `CREATE TABLE` statement, squeezed, and
+/// whether the statement declares an `AUTOINCREMENT` key.
+///
+/// Read with comments stripped, so a keyword inside a comment does not count.
+/// String literals and quoted identifiers are stepped over, so one that spells
+/// either keyword does not count either.
+#[cfg(test)]
+fn table_constraints(sql: &str) -> (Vec<String>, bool) {
+    let text = strip(sql, true);
+    let upper = text.to_ascii_uppercase();
+    let bytes = text.as_bytes();
+    let word = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    let keyword_at = |i: usize, kw: &str| {
+        upper[i..].starts_with(kw)
+            && (i == 0 || !word(bytes[i - 1]))
+            && bytes.get(i + kw.len()).is_none_or(|&b| !word(b))
+    };
+    let mut checks = Vec::new();
+    let mut autoincrement = false;
+    let mut i = 0;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if matches!(c, b'\'' | b'"' | b'`') {
+            i += 1;
+            while i < bytes.len() && bytes[i] != c {
+                i += 1;
+            }
+            i += 1;
+            continue;
+        }
+        if keyword_at(i, "AUTOINCREMENT") {
+            autoincrement = true;
+        }
+        if keyword_at(i, "CHECK") {
+            let mut start = i + "CHECK".len();
+            while bytes.get(start) == Some(&b' ') {
+                start += 1;
+            }
+            let mut depth = 0usize;
+            let mut j = start;
+            while j < bytes.len() {
+                match bytes[j] {
+                    b'(' => depth += 1,
+                    b')' => {
+                        depth = depth.saturating_sub(1);
+                        if depth == 0 {
+                            break;
+                        }
+                    }
+                    q @ (b'\'' | b'"' | b'`') => {
+                        j += 1;
+                        while j < bytes.len() && bytes[j] != q {
+                            j += 1;
+                        }
+                    }
+                    _ => {}
+                }
+                j += 1;
+            }
+            let end = (j + 1).min(text.len());
+            checks.push(squeeze(&text[start..end]));
+            i = end;
+            continue;
+        }
+        i += 1;
+    }
+    (checks, autoincrement)
+}
+
+/// The `WHERE` clause of a partial `CREATE INDEX` statement, squeezed.
+#[cfg(test)]
+fn partial_clause(sql: &str) -> String {
+    let text = squeeze(sql);
+    // The index's own column list closes before its `WHERE`, so the clause is
+    // everything after the first `)WHERE`.
+    let upper = text.to_ascii_uppercase();
+    upper
+        .find(")WHERE")
+        .map_or(text.clone(), |at| text[at + ")WHERE".len()..].to_owned())
 }
 
 #[cfg(test)]
@@ -513,6 +698,67 @@ mod tests {
                 assert_every_row_kept(&s);
             }
         }
+    }
+
+    /// **The comparison sees every constraint an edit to a frozen `SCHEMA` can
+    /// add**, so the convergence test above stands in for a checksum: a
+    /// `CHECK`, a `UNIQUE` constraint, `AUTOINCREMENT`, a unique index and a
+    /// partial index each change [`schema_of`], and a change of layout alone
+    /// does not.
+    #[test]
+    fn the_schema_comparison_sees_constraints_and_ignores_layout() {
+        let of = |ddl: &str| {
+            let conn = Connection::open_in_memory().unwrap();
+            conn.execute_batch(ddl).unwrap();
+            schema_of(&conn)
+        };
+        let base = of("CREATE TABLE t (id INTEGER PRIMARY KEY, a TEXT, b TEXT);
+             CREATE INDEX t_a ON t(a);");
+
+        assert_eq!(
+            of("CREATE TABLE t (
+                    id INTEGER PRIMARY KEY, -- the key; CHECK (no) AUTOINCREMENT
+                    a  TEXT,
+                    b  TEXT
+                );
+                CREATE INDEX t_a ON t ( a );"),
+            base,
+            "layout and comments are not schema"
+        );
+        for (what, ddl) in [
+            (
+                "a CHECK",
+                "CREATE TABLE t (id INTEGER PRIMARY KEY, a TEXT CHECK (a <> ''), b TEXT);
+                 CREATE INDEX t_a ON t(a);",
+            ),
+            (
+                "a UNIQUE constraint",
+                "CREATE TABLE t (id INTEGER PRIMARY KEY, a TEXT, b TEXT, UNIQUE (a, b));
+                 CREATE INDEX t_a ON t(a);",
+            ),
+            (
+                "AUTOINCREMENT",
+                "CREATE TABLE t (id INTEGER PRIMARY KEY AUTOINCREMENT, a TEXT, b TEXT);
+                 CREATE INDEX t_a ON t(a);",
+            ),
+            (
+                "a unique index",
+                "CREATE TABLE t (id INTEGER PRIMARY KEY, a TEXT, b TEXT);
+                 CREATE UNIQUE INDEX t_a ON t(a);",
+            ),
+            (
+                "a partial index",
+                "CREATE TABLE t (id INTEGER PRIMARY KEY, a TEXT, b TEXT);
+                 CREATE INDEX t_a ON t(a) WHERE a IS NOT NULL;",
+            ),
+        ] {
+            assert_ne!(of(ddl), base, "{what} went unnoticed");
+        }
+        assert_ne!(
+            of("CREATE TABLE t (id INTEGER PRIMARY KEY, a TEXT CHECK (a <> 'x'), b TEXT);"),
+            of("CREATE TABLE t (id INTEGER PRIMARY KEY, a TEXT CHECK (a <> 'y'), b TEXT);"),
+            "a CHECK's expression is compared, not only its presence"
+        );
     }
 
     /// **A database from a newer release is refused, and not one byte of it
