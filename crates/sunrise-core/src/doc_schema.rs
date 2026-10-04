@@ -320,6 +320,17 @@ mod tests {
         );
     }
 
+    /// The `derive_key` context is frozen beside the registry: a build that
+    /// hashed the same schema under another context would register a
+    /// different fingerprint for the same shapes.
+    #[test]
+    fn the_fingerprint_domain_is_the_frozen_one() {
+        assert_eq!(
+            DOC_SCHEMA_FP_DOMAIN,
+            sunrise_crypto_test_vectors::protocol::DOC_SCHEMA_FP_DOMAIN
+        );
+    }
+
     /// Versions only ever increase, so the registry is in version order with
     /// no repeats, and the build's own version is its newest entry.
     #[test]
