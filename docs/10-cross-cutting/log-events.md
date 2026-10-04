@@ -74,6 +74,10 @@ See [`logging.md`](./logging.md) for the record schema and grammar, and
 | `srv.relay.append_failed` | error | The durable op log rejected a write, so the batch is not acked; `stream_h`, `err_code`, `cause`. The client keeps the op and retries — the one failure that must never be answered with an `Ack`. |
 | `srv.relay.replay_failed` | error | The durable op log could not be read, so the session ends without a `CaughtUp`; `stream_h`, `err_code`, `cause`. Never followed by a completeness claim the server cannot back. |
 | `srv.relay.cursor_gap` | warn | A subscriber's cursor for a device is below what the ring still holds, so the ops between are gone; `stream_h`, `device_h`, `cursor`, `evicted_through`. Recoverable but never retryable — re-subscribing cannot reproduce them. |
+| `srv.push.disabled` | info | Startup, once: no `[push]` provider is configured, so no wake-up push will be sent and devices without an open stream sync on their own schedule. Answers "why do phones never wake". |
+| `srv.push.lookup_failed` | error | The dispatcher could not read an account's push targets, so that wake is lost; `provider`, `account_h`, `cause`. The ops are not: the devices catch up on their next stream. |
+| `srv.push.token_unregistered` | info | The provider said a token will never deliver again (APNs `410`, `400 BadDeviceToken`, or a token that cannot be one); `provider`, `device_h`, `reason` (the provider's own word), and `result`: `deleted`, or `kept` when the device had already registered a different token. Never the token. |
+| `srv.push.delivery_failed` | warn | A wake-up push was not delivered; `provider`, `device_h`, `result` (`rejected`, `rate_limited`, `failed`, `timeout`), `retryable`, `attempt` (how many were made), `cause`. Never the token. A rising rate with `result = "rejected"` is usually a wrong `topic` or `environment`. |
 
 ### `db` — `sunrise-storage`
 
@@ -227,7 +231,7 @@ away from being a plaintext handle.
 | `sync.snapshot.applied` | debug | Snapshot applied. |
 | `sync.transport.fallback` | warn | Reserved for a future fallback transport; unused today. There is one transport — an SSE stream downstream and typed POSTs upstream ([ADR-0023](../11-adr/0023-sse-sync-transport.md), which supersedes ADR-0005 and the WebSocket-plus-long-poll pair it specified) — and nothing falls back off it. |
 
-### `srv` (auth outcome and push)
+### `srv` (auth outcome)
 
 Held names, none of them emitted. `srv.auth.ok` and `srv.auth.rejected` sat in
 the Implemented table while nothing in
@@ -240,15 +244,16 @@ question — but not as a claim about running code.
 reserved**: ADR-0027 takes per-account quotas out of scope, and the codes they
 would have carried are gone from the registry with their ids burned.
 
-The push events are unimplemented because the feature is: the only provider is
-`LoggingProvider`, which increments a metric.
+The two push names this table used to hold, `srv.push.send.ok` and
+`srv.push.send.failed`, are gone: delivery is built, and its events are the
+`srv.push.*` rows under Implemented. A delivered push logs nothing —
+`sunrise_push_dispatch_total{result="ok"}` counts it — so there is no
+successor to `send.ok`.
 
 | Event | Level | Meaning |
 |---|---|---|
 | `srv.auth.ok` | debug | Bearer accepted and account resolved; `account_h`, `tier`. Never the token. |
 | `srv.auth.rejected` | warn | Bearer rejected or account not resolved; `err_code`, `status`. Never the token. |
-| `srv.push.send.ok` | info | Push delivered; `provider`, `n_devices`. |
-| `srv.push.send.failed` | warn | Push delivery failed. |
 
 ### `ui` (interaction)
 

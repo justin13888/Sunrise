@@ -4,21 +4,22 @@ status: accepted
 
 # Push Notifications
 
-> **Implementation status: nothing in this document is built except token
-> storage.** `crates/sunrise-server/src/push.rs` declares a `PushProvider`
-> trait, a `PushIntent`, a `PushRegistration` and one implementation,
-> `LoggingProvider`, whose `send` increments a counter and returns `Ok(())`.
-> `LoggingProvider` is never constructed outside its own unit test, and it is
-> not held by `ServerState`. **The relay never builds a `PushIntent` at all** —
-> the only `PushIntent { .. }` literal in the workspace is in that test — so no
-> code path leads from an arriving op to a wake-up. No APNs, FCM or Web Push
-> client is in the dependency tree (`apns2`, `fcm` and `web-push` appear in no
-> `Cargo.toml`). What *is* live: `POST /api/v1/devices/push-tokens` stores a
-> token, and revoking a device deletes its tokens.
+> **Implementation status: the APNs path is built; FCM, Web Push, the
+> `alert` tier, the `sunrise` payload block and `push_key.bin` are not.**
+> With `[push.apns]` configured
+> ([`self-hosting.md`](./self-hosting.md) §Config), every op batch
+> `POST /sync/ops` stores fresh wakes the account's other devices that hold an
+> APNs token and have no event stream open, with the content-less `silent`
+> push described under [APNs](#apns), coalesced and capped as
+> [Coalescing](#coalescing-implemented) says. The code is `crates/sunrise-server/src/push/`:
+> `dispatch.rs` (presence, the queue, coalescing, the cap, retries) and
+> `apns.rs` (the provider). Without `[push]` nothing is sent, and the server
+> logs `srv.push.disabled` once at startup.
 >
-> Everything below — fanout, priority tiers, coalescing, payload formats,
-> `push_key.bin` — is a design target. Read it as a specification, not as a
-> description.
+> No client registers a token yet: `POST /api/v1/devices/push-tokens` is
+> live and nothing in `apps/apple` calls it
+> ([#367](https://github.com/justin13888/Sunrise/issues/367)). Sections below
+> say per section what is built.
 
 Push is **only** a wake-up signal. The server never sends content in pushes; the client wakes, connects, syncs, and decides whether and what to display.
 
@@ -72,22 +73,36 @@ this file from backups; a backup leak then does not leak push tokens. There is
 no key rotation — key loss invalidates all stored push tokens, and clients
 re-register on next sync.
 
-## Push fanout flow (not implemented)
+## Push fanout flow (implemented for APNs)
 
-No step below runs. `ops` in `crates/sunrise-server/src/api/sync/publish.rs` appends an
-arriving batch to the durable relay log and publishes it to whatever event
-streams are open; an offline receiver is simply not delivered to, and nothing
-consults `push_tokens`. It catches up by cursor replay on its next
-`GET /sync/events`, which is what makes this a latency gap rather than a
-correctness one.
-
-1. Op arrives at server for receiving device R.
-2. R is offline (no open event stream).
-3. Server enqueues a wake-up push to R's registered tokens.
-4. Push provider delivers; OS wakes the app briefly.
+1. Op arrives at server for receiving device R. `ops` in
+   `crates/sunrise-server/src/api/sync/publish.rs` appends it, publishes it to
+   open streams, and — for a batch stored fresh, never a re-sent duplicate —
+   queues a wake naming the account, the stream and the sending device. The
+   queue holds 1024 wakes; a full queue drops the wake and counts
+   `sunrise_push_dispatch_total{result="dropped"}`. The append is never
+   slowed or failed by push: queueing is a non-blocking send, with no store
+   read and no lock the append path holds.
+2. R is offline (no open event stream). A device counts as online while a
+   `GET /sync/events` it opened is being served, whichever stream it is
+   subscribed to. The sending device is never woken.
+3. Server enqueues a wake-up push to R's registered tokens. One worker task
+   looks up the account's active (unrevoked) devices holding a token for the
+   provider's platform, applies [Coalescing](#coalescing-implemented), and hands each
+   surviving push to its own delivery task, at most 16 at once.
+4. Push provider delivers; OS wakes the app briefly. Each attempt has 10 s.
+   A `429`, a `5xx`, a timeout or a transport failure is retried up to three
+   attempts in all, waiting 1 s then 2 s. APNs `410` or `400 BadDeviceToken`
+   deletes the token row — only while it still holds the token that was sent,
+   so a re-registration in the meantime survives. Any other refusal is logged
+   and not retried.
 5. App establishes a session, drains the stream, may emit a *local* notification if the new state warrants one.
 
-## Priority tiers (not implemented)
+An offline device that is never woken — no token, push not configured, a
+dropped wake — still catches up by cursor replay on its next
+`GET /sync/events`, so a lost push is latency, never a lost op.
+
+## Priority tiers (only `silent` is sent)
 
 There are exactly **two** tiers:
 
@@ -98,11 +113,17 @@ There are exactly **two** tiers:
 
 Any low-priority re-sync a previous draft split into a third tier is now folded into `silent`. There is no third tier.
 
-## Coalescing (not implemented)
+Every push the relay sends today is a `silent` sync wake. No `alert` push has a
+sender: mentions and reminder hand-offs are not built.
 
-To avoid push storms, the server coalesces per `(device_id, stream_id, push_kind)` tuple, where `push_kind ∈ {sync, reminder, mention}`. The coalescing window is **30 s**: multiple ops in the same window collapse to one push, and the payload reflects the latest event. Time-zone-agnostic — based purely on `(device, stream, kind)` tuples, never on wall-clock windows. A per-device rate cap (e.g. 10 pushes/minute) prevents pathological storms.
+## Coalescing (implemented)
 
-## Push payload format (not implemented)
+To avoid push storms, the server coalesces per `(device_id, stream_id, push_kind)` tuple, where `push_kind ∈ {sync, reminder, mention}`; only `sync` has a sender. The coalescing window is **30 s**, opened by a push: the first op for a tuple sends at once, the ops after it inside the window send nothing, and if any arrived, one trailing push goes when the window closes — the device may have synced and slept before they landed. A device that has opened a stream by then is not pushed. Time-zone-agnostic — based purely on `(device, stream, kind)` tuples, never on wall-clock windows. A per-device cap of **10 pushes in any 60 s**, across every stream, prevents pathological storms; a push over it is not sent and is counted as `sunrise_push_dispatch_total{result="rate_limited"}`.
+
+## Push payload format (APNs implemented)
+
+What APNs is sent is the `aps` dictionary below and nothing else: the
+`sunrise` block, and every FCM and Web Push format, are design targets.
 
 Note that `account_id_salt` below does not exist: there is no salt column on
 `accounts`, and the server's live hashing (`logging::account_h` / `id_h`) is a
@@ -119,7 +140,23 @@ stream_h = BLAKE3(stream_id || account_id_salt, 4)   # lowercase hex, 8 chars
 
 ### APNs
 
-Sent with `apns-priority: 10` for `alert`, `apns-priority: 5` for `silent`. Payload:
+What is sent, byte for byte (`push::APNS_PAYLOAD`), as
+`POST /3/device/<token>` over HTTP/2 to `api.push.apple.com` or
+`api.sandbox.push.apple.com` with `apns-push-type: background`,
+`apns-priority: 5` and `apns-topic` set to the configured bundle id:
+
+```json
+{"aps":{"content-available":1}}
+```
+
+No stream id, count, timestamp or text. Authentication is a provider token: an
+ES256 JWT whose header carries `kid` (the key id) and whose claims are `iss`
+(the team id) and `iat`, signed with the `.p8` key, reused for 40 minutes and
+re-signed early when APNs answers `ExpiredProviderToken` or
+`InvalidProviderToken`.
+
+The design target, not sent: `apns-priority: 10` for `alert`,
+`apns-priority: 5` for `silent`, and this payload:
 
 ```json
 {
@@ -190,7 +227,8 @@ Tie-break by lex `device_id`.
 
 ## Self-host without push
 
-Self-hosted servers can omit push entirely. Without push, mobile devices fall back to:
+Self-hosted servers can omit push entirely — no `[push]` table, which is the
+default. Without push, mobile devices fall back to:
 
 - Periodic background pulls when the OS allows (heavily limited on iOS).
 - A foreground sync on app open.
