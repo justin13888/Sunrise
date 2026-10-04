@@ -78,6 +78,7 @@ Of the six goals: **Confidentiality**, **Integrity** and **Authenticity** are de
 | [`sharing-with-others.md`](./sharing-with-others.md) | HPKE share envelopes, egress scrubbing |
 | [`encrypted-search.md`](./encrypted-search.md) | Client-side FTS only; rationale |
 | [`audit-and-tamper-evidence.md`](./audit-and-tamper-evidence.md) | Per-Stream Merkle root, checkpoints, rollback detection |
+| [`audit-scope.md`](./audit-scope.md) | Scope of the external cryptographic review, and its findings |
 
 ## What lives where
 
