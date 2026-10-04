@@ -29,7 +29,8 @@ emits it.
    `crates/sunrise-server/tests/metric-label-safety.rs` holds the rest (see §Enforcement).
 4. **Exposure.** `/metrics` stays loopback-only (`srv.start.metrics_withheld` otherwise). An
    operator who wants remote scraping puts an authenticated scraper on the host. The reverse-proxy
-   configurations shipped by [#355](https://github.com/justin13888/Sunrise/issues/355) MUST NOT route `/metrics`.
+   configurations shipped in [`deploy/`](../../deploy/) MUST NOT route `/metrics`: each answers it
+   with its own `404`, and the `Deploy test` CI job asserts that from outside.
 5. **Cost.** Recording a metric on a hot path MUST NOT take a lock. The registry
    (`crates/sunrise-server/src/metrics.rs#Metrics`) is a fixed table of `OnceLock` slots probed from
    a hash of the name and labels: a series is written once, on first touch, and every later

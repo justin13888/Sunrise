@@ -1,0 +1,80 @@
+# Sunrise relay behind Caddy.
+#
+# docs/06-server/self-hosting.md §Reverse proxy walks through this file. It is
+# the configuration `deploy/test/run.py` boots in CI, unchanged, so what it
+# claims below is asserted rather than hoped:
+#
+#   * TLS terminates here; the relay speaks plain HTTP on loopback behind it.
+#   * The client address reaches the relay in X-Forwarded-For. Caddy replaces
+#     whatever the client sent there with the address it saw, and this file
+#     strips a client's `Forwarded`, so a forged header never arrives. The
+#     relay believes the header only because `[server] trusted_proxies` lists
+#     this proxy's address (127.0.0.1).
+#   * A body over `[server] max_body_bytes` (2 MiB by default, which also
+#     covers the relay's 1 MiB blob chunk) is refused here with the 413 the
+#     relay would send, before a byte of it is forwarded.
+#   * The sync event stream is flushed event by event, never buffered.
+#   * No timeout cuts a quiet event stream: the relay sends a keep-alive
+#     comment every 15 s and nothing here times out a response in progress.
+#   * /metrics is never served to the public listener.
+#
+# Environment (Caddy substitutes `{$NAME}` when it reads this file):
+#
+#   SUNRISE_DOMAIN    the relay's public host name, e.g. relay.example.com
+#   SUNRISE_TLS       the email address to register with the ACME CA, or
+#                     `internal` for a certificate from Caddy's own local CA
+#                     (a test, or a private network whose clients trust it)
+#   SUNRISE_UPSTREAM  where sunrise-server listens; default 127.0.0.1:8443,
+#                     the server's own default bind
+#
+# If you change `[server] max_body_bytes`, change the two 2 MiB figures below
+# to match: a proxy limit above the relay's only moves the 413 to the relay,
+# and one below it refuses bodies the relay would accept.
+
+{
+	servers {
+		timeouts {
+			# A client gets 10 s to send its request headers and 60 s for a
+			# body. No write timeout: an event stream's response is written
+			# for as long as the stream lives.
+			read_header 10s
+			read_body 60s
+			# An idle keep-alive connection is closed after five minutes. An
+			# open event stream is not idle — it carries a comment every 15 s.
+			idle 5m
+		}
+	}
+}
+
+{$SUNRISE_DOMAIN} {
+	tls {$SUNRISE_TLS}
+
+	# The relay mounts /metrics only on a loopback bind, which is exactly the
+	# bind it has behind this proxy. Answer it here so it is never forwarded.
+	respond /metrics* 404
+
+	# A declared length over the limit is refused before anything is read.
+	@oversize expression {http.request.header.Content-Length} != "" && int({http.request.header.Content-Length}) > 2097152
+	respond @oversize 413
+
+	# A body with no declared length is cut off when it passes the limit.
+	request_body {
+		max_size 2MiB
+	}
+
+	reverse_proxy {$SUNRISE_UPSTREAM:127.0.0.1:8443} {
+		# Caddy rewrites X-Forwarded-For but passes RFC 7239's `Forwarded`
+		# through untouched, and the relay prefers `Forwarded` when both are
+		# present. Left in, a client could name its own address.
+		header_up -Forwarded
+
+		# Write each event to the client the moment the relay sends it.
+		flush_interval -1
+
+		# Readiness, not liveness: a draining relay answers 503 here and stops
+		# receiving new requests before it stops listening.
+		health_uri /api/v1/health?deep=1
+		health_interval 30s
+		health_timeout 10s
+	}
+}
