@@ -67,4 +67,86 @@ struct EditGateModelTests {
         #expect(model.isReadOnly)
         #expect(model.allows(.task))
     }
+
+    /// `refresh` crosses the seam into `SunriseCore::edit_gate()` over a real
+    /// vault and replaces what the model held. The model starts locked, so the
+    /// only way it ends open is the core's answer: a fresh vault requires no
+    /// feature.
+    @Test
+    func refreshReplacesTheGateWithTheCoresAnswer() async throws {
+        let vault = try await TestVault()
+        let model = EditGateModel(gate: gate(locksAll: true))
+        #expect(!model.allows(.task))
+
+        await model.refresh(from: vault.bridge)
+
+        #expect(!model.isReadOnly)
+        for entity in EditedEntity.allCases {
+            #expect(model.allows(entity))
+        }
+        await vault.bridge.shutdown()
+    }
+
+    /// `follow` reads the gate as it starts, keeps re-reading on the change
+    /// feed, and returns once the vault closes rather than outliving it.
+    @Test
+    func followReadsTheGateAndEndsWhenTheVaultCloses() async throws {
+        let vault = try await TestVault()
+        let model = EditGateModel(gate: gate(lockedTags: ["task"]))
+        let ended = Flag()
+
+        let following = Task {
+            await model.follow(vault.bridge)
+            ended.raise()
+        }
+        defer { following.cancel() }
+
+        try await until { !model.isReadOnly }
+        #expect(model.allows(.task))
+
+        // A write announces a change batch; the re-read it triggers must
+        // leave the open answer in place.
+        _ = try await vault.bridge.submit(.createTask(draft: draft("Still editable")))
+        #expect(model.allows(.task))
+
+        await vault.bridge.shutdown()
+        try await until { ended.isRaised }
+    }
+
+    /// Poll until `condition` holds, or fail rather than hang.
+    private func until(
+        _ condition: @MainActor () -> Bool,
+        timeout: Duration = .seconds(3)
+    ) async throws {
+        let deadline = ContinuousClock.now.advanced(by: timeout)
+        while ContinuousClock.now < deadline {
+            if condition() { return }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        Issue.record("condition never became true within \(timeout)")
+    }
+
+    private func draft(_ title: String) -> TaskDraftIn {
+        TaskDraftIn(
+            title: title,
+            body: nil,
+            streamId: nil,
+            contexts: [],
+            priority: nil,
+            energy: nil,
+            estimatedDurationS: nil,
+            scheduledAt: nil,
+            dueAt: nil,
+            schedulingConstraints: [],
+            assignee: nil,
+            reminderLeadS: nil
+        )
+    }
+}
+
+/// Set once from the task running `follow`, read from the test.
+@MainActor
+private final class Flag {
+    private(set) var isRaised = false
+    func raise() { isRaised = true }
 }
