@@ -291,6 +291,11 @@ pub async fn put_chunk(
         .put_chunk(&upload, path.chunk_idx, &bytes)
         .map_err(|_| ApiError::internal())?;
     state.metrics.incr("sunrise_blob_chunk_total");
+    state.metrics.add_with(
+        "sunrise_blob_bytes_total",
+        &[("direction", "upload")],
+        bytes.len() as u64,
+    );
     Ok(NoContent)
 }
 
@@ -418,7 +423,12 @@ pub async fn fetch(
         return Err(not_found());
     }
     state.metrics.incr("sunrise_blob_fetch_total");
-    Ok(BinaryStream::new(chunk_stream(store, blob, chunk_count)))
+    Ok(BinaryStream::new(chunk_stream(
+        store,
+        blob,
+        chunk_count,
+        state.metrics.clone(),
+    )))
 }
 
 /// The stream [`fetch`] returns: one chunk per poll, read on demand.
@@ -430,16 +440,33 @@ type ChunkStream = futures_util::stream::BoxStream<'static, Result<bytes::Bytes,
 /// with an error rather than silently short-reading: the success status is
 /// already committed by then, so truncating quietly would hand the client a
 /// blob that fails its own content hash with nothing to say why.
-fn chunk_stream(store: BlobStore, blob: [u8; 16], chunk_count: u32) -> ChunkStream {
+///
+/// Each chunk is counted in `sunrise_blob_bytes_total{direction="download"}`
+/// as it is read, so a fetch abandoned part-way counts what was read for it
+/// rather than the whole blob.
+fn chunk_stream(
+    store: BlobStore,
+    blob: [u8; 16],
+    chunk_count: u32,
+    metrics: crate::Metrics,
+) -> ChunkStream {
     use futures_util::StreamExt as _;
     futures_util::stream::unfold(0u32, move |idx| {
         let store = store.clone();
+        let metrics = metrics.clone();
         async move {
             if idx >= chunk_count {
                 return None;
             }
             let item = match store.get_chunk(&blob, idx) {
-                Ok(Some(bytes)) => Ok(bytes::Bytes::from(bytes)),
+                Ok(Some(bytes)) => {
+                    metrics.add_with(
+                        "sunrise_blob_bytes_total",
+                        &[("direction", "download")],
+                        bytes.len() as u64,
+                    );
+                    Ok(bytes::Bytes::from(bytes))
+                }
                 Ok(None) => Err(std::io::Error::new(
                     std::io::ErrorKind::NotFound,
                     format!("chunk {idx} vanished mid-read"),
@@ -754,6 +781,15 @@ mod tests {
             .await;
         fetched.assert_status(StatusCode::OK);
         assert_eq!(fetched.bytes, whole, "the streamed body must reassemble");
+
+        // Both directions counted the ciphertext they moved, and nothing else.
+        let bytes = |direction| {
+            client
+                .metrics
+                .get_with("sunrise_blob_bytes_total", &[("direction", direction)])
+        };
+        assert_eq!(bytes("upload"), whole.len() as u64);
+        assert_eq!(bytes("download"), whole.len() as u64);
     }
 
     /// The client's hashes are a claim; finalize is the check.

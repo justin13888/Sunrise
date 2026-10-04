@@ -202,6 +202,7 @@ pub async fn ops(
             if overlaps_stored(&batch, &stored_heads) {
                 state.metrics.incr("sunrise_relay_batch_overlap_total");
             }
+            count_received(&state.metrics, batch.ops.len());
             first_seen_ms
         }
         // No publish: a second fan-out would hand every live subscriber an op
@@ -308,6 +309,23 @@ fn frame_heads(batch: &OpBatchPayload) -> Vec<FrameHead> {
         .collect();
     out.sort_by_key(|h| h.device_id);
     out
+}
+
+/// `sunrise_sync_ops_received_total` and `sunrise_sync_batch_ops`, for a batch
+/// that was stored.
+///
+/// Fresh batches only: a duplicate is the same ops acked a second time, and
+/// counting it would make this rate track reconnect churn rather than the work
+/// clients authored. `sunrise_relay_batch_duplicate_total` counts that.
+fn count_received(metrics: &crate::Metrics, n_ops: usize) {
+    metrics.add("sunrise_sync_ops_received_total", n_ops as u64);
+    #[allow(clippy::cast_precision_loss)]
+    metrics.observe(
+        "sunrise_sync_batch_ops",
+        &[],
+        crate::metrics::COUNT_BUCKETS,
+        n_ops as f64,
+    );
 }
 
 #[cfg(test)]

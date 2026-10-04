@@ -584,10 +584,6 @@ ALLOWED: dict[tuple[str, str], str] = {
     ): "the sentence is that this module was deleted with the WebSocket; it names what is gone",
     (
         "docs/06-server/observability.md",
-        "crates/sunrise-server/tests/metric-label-safety.rs",
-    ): "the page says in bold that this specified CI test does not exist",
-    (
-        "docs/06-server/observability.md",
         "tests/span-redaction.rs",
     ): "same paragraph shape: the specified tracing test was never written",
     (
