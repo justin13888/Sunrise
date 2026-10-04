@@ -76,6 +76,10 @@ See [`logging.md`](./logging.md) for the record schema and grammar, and
 | `db.migrate.ok` | info | Schema at `to_v`. |
 | `db.migrate.failed` | error | A migration statement failed; `from_v`, `to_v`, `err_code`, `cause`. The one storage failure that leaves a user unable to open a vault at all. |
 | `db.migrate.refused` | error | The vault predates the `BASELINE_STORAGE_V = 13` baseline (ADR-0018) and cannot be upgraded; `from_v`, `to_v`, `err_code`. Terminal: the remedy is a fresh vault. |
+| `db.backup.ok` | info | The vault was copied to `<vault>.pre-v<from_v>.bak` before a migration; `from_v`. |
+| `db.backup.failed` | error | The pre-migration copy could not be written, so nothing was migrated; `from_v`, `err_code`, `cause`. The vault stays at `from_v`. |
+| `db.backup.remove_failed` | warn | A pre-migration copy could not be deleted after the vault proved usable at its new version; `cause`. Costs disk only; the next open retries. |
+| `db.integrity.failed` | error | `PRAGMA quick_check`, or SQLCipher's page check after a page would not read, found the vault file damaged. On the check before a migration, the open is refused and nothing is migrated; `err_code`. |
 
 ### `sync` — `sunrise-core::sync_driver`, `sunrise-cli::livesync`
 

@@ -223,26 +223,27 @@ git status --short apps/apple/SunriseTests/PairingFixture.swift
 '''
 
 [tasks.storage-fixtures]
-description = "Rewrite the committed old-vault fixtures under crates/sunrise-storage/fixtures/"
+description = "Write the old-vault fixtures missing under crates/sunrise-storage/fixtures/"
 shell = "bash -c"
 # The generator is an `#[ignore]`d test rather than a binary, so that the
 # fixtures and the assertions about them are the same code reading the same
 # constants: a `main.rs` that drifted from the test would produce a file the
 # test then rejects, and the fix would be to edit the generator to agree with
 # itself. `--ignored` is what keeps `mise run rust-test` reading the committed
-# files instead of rewriting them, and `--exact` keeps this from picking up the
+# files instead of writing them, and `--exact` keeps this from picking up the
 # ordinary fixture tests beside it.
 #
-# Regenerate deliberately. A fixture rewritten at today's schema is no longer
-# old, and the migration chain it exists to exercise then runs over nothing —
-# the `the_committed_v13_fixture_is_a_sealed_vault_stamped_at_the_baseline`
-# test is the tripwire for exactly that.
+# It writes only a fixture that is missing — the one a newly appended
+# migration's gate asks for — and never rewrites a committed one. A fixture
+# rewritten at today's schema is no longer old, and the migration chain it
+# exists to exercise then runs over nothing. To rewrite one deliberately,
+# delete it first.
 run = """
 set -euo pipefail
 cargo test -p sunrise-storage --lib \
-  vault_fixtures::regenerate_the_committed_vault_fixtures -- --ignored --exact
+  vault_fixtures::write_the_missing_vault_fixtures -- --ignored --exact
 echo
-echo "rewritten: crates/sunrise-storage/fixtures/"
+echo "written: crates/sunrise-storage/fixtures/"
 git status --short crates/sunrise-storage/fixtures/
 """
 

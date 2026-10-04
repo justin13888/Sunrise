@@ -29,43 +29,64 @@
 //! `fixtures/README.md` so that a reader who finds the binary before the code
 //! learns it there too.
 //!
-//! # Regenerating
+//! # Writing a missing fixture
 //!
-//! `mise run storage-fixtures`, which runs `regenerate_the_committed_vault_fixtures`
+//! `mise run storage-fixtures`, which runs `write_the_missing_vault_fixtures`
 //! — an `#[ignore]`d test, so an ordinary `cargo test` reads the committed
-//! files and never rewrites them. Regenerate deliberately, and only for a
-//! reason: a fixture rewritten at today's schema stops being old, and the
-//! chain it is supposed to exercise then runs over nothing. There is no reason
-//! to regenerate the v13 file at all short of the baseline itself changing,
+//! files and never writes them. It writes only a fixture that is not already
+//! committed, and never rewrites one: a fixture rewritten at today's schema
+//! stops being old, and the chain it is supposed to exercise then runs over
+//! nothing. To rewrite one deliberately, delete it first. There is no reason
+//! to rewrite the v13 file at all short of the baseline itself changing,
 //! which ADR-0018 says happens once and has happened.
 //!
 //! # Which versions get a fixture
 //!
-//! Two: the oldest supported version, and every later version whose successor
-//! migrations move *data* that the older fixture cannot contain. Of 0014-0023,
-//! five move data rather than only schema — 0014 backfills
-//! `streams.sort_order`, 0017 drops `stream_keys`, carries `revoked_at_ms`
-//! into `device_revocations` and re-points the legacy Inbox, 0019 backfills
-//! `identity.minted_by_device_id` and blanks `id_d_priv_wrapped`, 0022
-//! backfills `identity.genesis_identity_id`, and 0023 backfills
-//! `identity.genesis_id_s_pub` — while 0015, 0016, 0018, 0020 and 0021 are
-//! pure `ALTER TABLE ADD COLUMN` / `CREATE TABLE` / `CREATE INDEX`.
+//! Every one: a fixture for each `STORAGE_V` from the baseline to the one
+//! before this build's (`docs/04-storage/migrations.md` §Migration rigor rule
+//! 1). `every_migration_has_a_fixture_at_the_version_before_it` is the gate: a
+//! migration appended without one fails it, and `mise run storage-fixtures`
+//! writes the one it asks for.
 //!
-//! The v13 fixture exercises the first two. It cannot exercise the last three,
-//! and for one reason: the `identity` table does not exist before 0017 and
-//! 0017 creates it empty, so 0019's, 0022's and 0023's `UPDATE`s all match no
-//! row on any vault that started at 13. That is the whole argument for the second
-//! fixture, and 17 rather than 18 because 0018 is schema-only and starting a
-//! version earlier costs nothing.
+//! Two kinds of seed fill them.
+//!
+//! - **Curated.** The v13 and v17 files were written first, by `seed_v13` and
+//!   `seed_v17`, each shaped around the migrations that move data the other
+//!   cannot contain: 0014's backfill and 0017's moves for 13, and 0019's,
+//!   0022's and 0023's `identity` backfills for 17, because 0017 creates
+//!   `identity` empty and so no vault that started at 13 has a row for them.
+//!   The tests named after those two files assert what each migration does to
+//!   those rows.
+//! - **Every table.** Every other version is filled by `seed_every_table`
+//!   from [`SEED`]: one or more rows in every table that exists at that
+//!   version, with a value in every column [`SEED`] names. A column the
+//!   version does not have yet is left out, so one list fills every version.
+//!   `the_seed_reaches_every_table_and_column_this_build_creates` keeps it
+//!   complete, so a table a later migration adds is filled in every fixture
+//!   written after it.
+//!
+//! Over all of them, `every_fixture_keeps_every_row_through_every_later_migration`
+//! reads every row of every table before the open and checks each one is still
+//! there afterwards, column for column. The only differences it allows are the
+//! migrations' deliberate ones, listed in [`DELIBERATE_CHANGES`], each with
+//! the migration that makes it.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use std::collections::BTreeMap;
+
+use rusqlite::types::Value;
 use rusqlite::Connection;
 use sunrise_cbor::version::STORAGE_V;
 use sunrise_crypto::keys::VaultRootKey;
 
 use crate::db::Db;
+use crate::migrations::{BASELINE_STORAGE_V, MIGRATIONS};
+
+mod seed;
+
+use seed::{columns, seed_every_table, SEED};
 
 /// The vault root every committed fixture is keyed with.
 ///
@@ -77,6 +98,18 @@ const V13_FIXTURE: &str = "vault_storage_v13.db";
 
 /// A vault written when `STORAGE_V` was 17, the key hierarchy (ADR-0024).
 const V17_FIXTURE: &str = "vault_storage_v17.db";
+
+/// The committed fixture written at `storage_v`.
+fn fixture_name(storage_v: u32) -> String {
+    format!("vault_storage_v{storage_v}.db")
+}
+
+/// Every version a fixture must exist for: the baseline, through the one
+/// before this build's. The current version needs none, because nothing
+/// migrates from it yet.
+fn fixture_versions() -> std::ops::Range<u32> {
+    BASELINE_STORAGE_V..u32::from(STORAGE_V)
+}
 
 /// A `streams` row's `(name, extra, description, default_context)`: the name
 /// 0013 wrote and the three columns 0015 and 0016 add beside it.
@@ -466,15 +499,286 @@ fn write_fixture(name: &str, storage_v: u32, seed: fn(&Connection)) {
     }
 }
 
-/// Rewrite every committed fixture from the seeds above.
+/// Whether the fixture at `storage_v` has a curated seed of its own rather
+/// than [`SEED`].
+const fn is_curated(storage_v: u32) -> bool {
+    matches!(storage_v, 13 | 17)
+}
+
+/// The seed a fixture at `storage_v` is filled with.
+fn seed_for(storage_v: u32) -> fn(&Connection) {
+    match storage_v {
+        13 => seed_v13,
+        17 => seed_v17,
+        _ => seed_every_table,
+    }
+}
+
+/// Write every fixture [`fixture_versions`] asks for that is not committed
+/// yet, and leave every committed one alone.
 ///
 /// `#[ignore]`d: an ordinary `cargo test` must read the committed files, not
-/// replace them. Run it through `mise run storage-fixtures`.
+/// write them. Run it through `mise run storage-fixtures`. To rewrite a
+/// fixture on purpose, delete it first; see this module's header for why that
+/// is rare.
 #[test]
-#[ignore = "rewrites the committed fixtures; run it through `mise run storage-fixtures`"]
-fn regenerate_the_committed_vault_fixtures() {
-    write_fixture(V13_FIXTURE, 13, seed_v13);
-    write_fixture(V17_FIXTURE, 17, seed_v17);
+#[ignore = "writes the committed fixtures; run it through `mise run storage-fixtures`"]
+fn write_the_missing_vault_fixtures() {
+    for v in fixture_versions() {
+        let name = fixture_name(v);
+        if fixture_dir().join(&name).exists() {
+            continue;
+        }
+        write_fixture(&name, v, seed_for(v));
+    }
+}
+
+// --- every fixture, every later migration ----------------------------------
+
+/// A difference a migration makes on purpose, which the survival check below
+/// therefore allows on a fixture older than that migration.
+struct DeliberateChange {
+    /// The migration that makes it.
+    migration: u32,
+    table: &'static str,
+    /// The column it rewrites, or `None` when it drops the table's rows.
+    column: Option<&'static str>,
+}
+
+/// Every deliberate difference in the chain. Each one is asserted value by
+/// value by a test named after the fixture that reaches it; this list only
+/// keeps the general check from calling it a loss.
+const DELIBERATE_CHANGES: &[DeliberateChange] = &[
+    // Pre-hierarchy keys were derived from the vault root, and
+    // `Keychain::open` re-derives them. Pinned by
+    // `a_v13_vaults_derived_stream_keys_are_dropped_and_the_local_identity_is_not`.
+    DeliberateChange {
+        migration: 17,
+        table: "stream_keys",
+        column: None,
+    },
+    // Carried into `device_revocations`, then cleared. Pinned by
+    // `a_v13_vaults_revoked_device_becomes_a_device_revocations_row`.
+    DeliberateChange {
+        migration: 17,
+        table: "devices",
+        column: Some("revoked_at_ms"),
+    },
+    // The legacy Inbox moves off the vault-meta stream id. Pinned by
+    // `a_v13_vault_keeps_its_tasks_and_0017_repoints_the_legacy_inbox`.
+    DeliberateChange {
+        migration: 17,
+        table: "tasks",
+        column: Some("stream_id"),
+    },
+    // Blanked on a vault that did not mint the identity. Pinned, both ways,
+    // by `db.rs`'s
+    // `migration_0019_clears_a_paired_devices_identity_key_and_keeps_the_creators`
+    // and here by `a_v17_creator_vault_keeps_the_only_copy_of_its_identity_key`.
+    DeliberateChange {
+        migration: 19,
+        table: "identity",
+        column: Some("id_d_priv_wrapped"),
+    },
+];
+
+/// Every row of every table, as `table -> (columns, rows)`.
+///
+/// FTS5's shadow tables are left out: they are `search_idx`'s storage, which
+/// is read through `search_idx` itself, and `schema_meta` is the stamp the
+/// migration is supposed to change.
+type Snapshot = BTreeMap<String, (Vec<String>, Vec<Vec<Value>>)>;
+
+fn snapshot(conn: &Connection) -> Snapshot {
+    let tables: Vec<String> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT name FROM sqlite_master WHERE type = 'table'
+                 AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'search_idx_%'
+                 AND name <> 'schema_meta' ORDER BY name",
+            )
+            .expect("prepare");
+        let rows = stmt
+            .query_map([], |r| r.get(0))
+            .expect("list tables")
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .expect("read tables");
+        rows
+    };
+    tables
+        .into_iter()
+        .map(|table| {
+            let cols = columns(conn, &table).expect("a listed table has columns");
+            let rows = select(conn, &table, &cols);
+            (table, (cols, rows))
+        })
+        .collect()
+}
+
+fn select(conn: &Connection, table: &str, cols: &[String]) -> Vec<Vec<Value>> {
+    let mut stmt = conn
+        .prepare(&format!("SELECT {} FROM {table}", cols.join(", ")))
+        .unwrap_or_else(|e| panic!("select from `{table}`: {e}"));
+    let rows = stmt
+        .query_map([], |r| {
+            (0..cols.len())
+                .map(|i| r.get::<_, Value>(i))
+                .collect::<rusqlite::Result<Vec<_>>>()
+        })
+        .expect("query")
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .expect("read rows");
+    rows
+}
+
+/// Everything `before` held is still in the migrated vault: every table,
+/// every column, and every row with every value it had, except where a
+/// [`DELIBERATE_CHANGES`] entry newer than `from_v` says otherwise. Rows and
+/// columns the migrations *add* are not differences.
+fn assert_nothing_lost(name: &str, from_v: u32, before: &Snapshot, after: &Connection) {
+    let changes: Vec<&DeliberateChange> = DELIBERATE_CHANGES
+        .iter()
+        .filter(|c| c.migration > from_v)
+        .collect();
+    for (table, (cols, rows)) in before {
+        if changes
+            .iter()
+            .any(|c| c.table == table && c.column.is_none())
+        {
+            continue;
+        }
+        let present = columns(after, table)
+            .unwrap_or_else(|| panic!("{name}: table `{table}` is gone after migrating"));
+        let kept: Vec<usize> = (0..cols.len())
+            .filter(|&i| {
+                !changes
+                    .iter()
+                    .any(|c| c.table == table && c.column == Some(cols[i].as_str()))
+            })
+            .collect();
+        let kept_cols: Vec<String> = kept.iter().map(|&i| cols[i].clone()).collect();
+        for col in &kept_cols {
+            assert!(
+                present.contains(col),
+                "{name}: column `{table}.{col}` is gone after migrating"
+            );
+        }
+        let mut remaining = select(after, table, &kept_cols);
+        for row in rows {
+            let projected: Vec<Value> = kept.iter().map(|&i| row[i].clone()).collect();
+            let at = remaining
+                .iter()
+                .position(|r| *r == projected)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{name}: a `{table}` row did not survive migrating from v{from_v}:\n  \
+                         columns {kept_cols:?}\n  before  {projected:?}\n  after   {remaining:?}"
+                    )
+                });
+            remaining.swap_remove(at);
+        }
+    }
+}
+
+/// The gate. A migration appended without a fixture at the version before it
+/// fails here, and `mise run storage-fixtures` writes the one it asks for.
+#[test]
+fn every_migration_has_a_fixture_at_the_version_before_it() {
+    for m in MIGRATIONS.iter().filter(|m| m.id > BASELINE_STORAGE_V) {
+        let name = fixture_name(m.id - 1);
+        assert!(
+            fixture_dir().join(&name).exists(),
+            "migration {:04} ({}) has no fixture at the version before it: \
+             `{name}` is missing. Run `mise run storage-fixtures`, which writes \
+             it from `seed::SEED`, and commit it.",
+            m.id,
+            m.name
+        );
+    }
+}
+
+/// Every committed fixture is encrypted and stamped at the version its name
+/// says. One regenerated at the current version would pass every other test
+/// here while exercising no migration.
+#[test]
+fn every_committed_fixture_is_sealed_and_stamped_at_its_version() {
+    for v in fixture_versions() {
+        let name = fixture_name(v);
+        let bytes =
+            fs::read(fixture_dir().join(&name)).unwrap_or_else(|e| panic!("read `{name}`: {e}"));
+        assert!(
+            !bytes.starts_with(b"SQLite format 3\0"),
+            "`{name}` must be encrypted, or it is not a vault"
+        );
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(&name);
+        fs::copy(fixture_dir().join(&name), &path).expect("copy");
+        let raw = Db::open_unmigrated(&path, &fixture_key()).expect("key the fixture");
+        assert_eq!(stamped_storage_v(&raw), v, "`{name}` is stamped wrong");
+    }
+}
+
+/// Every fixture, opened with the ordinary `Db::open`, which runs every
+/// migration after its version, keeps every row it held.
+///
+/// A fixture filled from [`SEED`] must also hold a row in every table its
+/// version has, or the check would be passing over empty tables.
+#[test]
+fn every_fixture_keeps_every_row_through_every_later_migration() {
+    for v in fixture_versions() {
+        let name = fixture_name(v);
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(&name);
+        fs::copy(fixture_dir().join(&name), &path).expect("copy");
+        let before = {
+            let raw = Db::open_unmigrated(&path, &fixture_key()).expect("key the fixture");
+            snapshot(raw.conn())
+        };
+        if !is_curated(v) {
+            for (table, (_, rows)) in &before {
+                assert!(!rows.is_empty(), "`{name}` holds no `{table}` row");
+            }
+        }
+
+        let db = Db::open(&path, &fixture_key())
+            .unwrap_or_else(|e| panic!("the migration chain must open `{name}`: {e}"));
+        assert_eq!(stamped_storage_v(&db), u32::from(STORAGE_V), "`{name}`");
+        assert_nothing_lost(&name, v, &before, db.conn());
+    }
+}
+
+/// [`SEED`] fills every table this build creates, and names no column that
+/// does not exist — a misspelt one would otherwise be left out of every
+/// fixture without a word.
+#[test]
+fn the_seed_reaches_every_table_and_column_this_build_creates() {
+    let db = Db::open_memory(&fixture_key()).expect("a current vault");
+    let current = snapshot(db.conn());
+    for table in current.keys() {
+        assert!(
+            SEED.iter().any(|row| row.table == table),
+            "`{table}` exists at STORAGE_V {STORAGE_V} and `seed::SEED` fills no \
+             row of it, so no fixture written from now on would carry one"
+        );
+    }
+    for row in SEED {
+        let (cols, _) = current.get(row.table).unwrap_or_else(|| {
+            panic!(
+                "`seed::SEED` names `{}`, which no migration creates",
+                row.table
+            )
+        });
+        for (column, _) in row.values {
+            assert!(
+                cols.iter().any(|c| c == column),
+                "`seed::SEED` names `{}.{column}`, which no migration creates",
+                row.table
+            );
+        }
+    }
+    // And it inserts cleanly into the current schema, so the next fixture it
+    // writes will not fail halfway.
+    seed_every_table(db.conn());
 }
 
 // --- what the chain must preserve, from 13 --------------------------------
