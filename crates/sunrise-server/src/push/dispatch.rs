@@ -347,21 +347,39 @@ impl Dispatcher {
         let Some(rx) = inner.rx.lock().take() else {
             return;
         };
-        let worker = Worker {
+        runtime.spawn(self.worker(state, inner).run(rx));
+    }
+
+    /// The worker that drains this dispatcher's queue, over `state`'s store,
+    /// clock and registry.
+    fn worker(&self, state: &ServerState, inner: &Arc<Inner>) -> Worker {
+        Worker {
             inner: Arc::clone(inner),
             presence: self.presence.clone(),
             store: Arc::clone(&state.store),
             clock: Arc::clone(&state.clock),
             metrics: state.metrics.clone(),
             planner: Planner::new(&inner.tuning),
-        };
-        runtime.spawn(worker.run(rx));
+        }
+    }
+
+    /// A worker a test drives by hand, one wake at a time, against its own
+    /// clock. `None` when disabled.
+    #[cfg(test)]
+    pub(super) fn test_worker(&self, state: &ServerState) -> Option<Worker> {
+        self.inner.as_ref().map(|inner| self.worker(state, inner))
+    }
+
+    /// The presence this dispatcher reads.
+    #[cfg(test)]
+    pub(super) const fn presence(&self) -> &Presence {
+        &self.presence
     }
 }
 
 /// The single consumer of the wake queue.
 #[derive(Debug)]
-struct Worker {
+pub(super) struct Worker {
     inner: Arc<Inner>,
     presence: Presence,
     store: Arc<Store>,
@@ -388,12 +406,12 @@ impl Worker {
                 let Ok(slot) = Arc::clone(&slots).acquire_owned().await else {
                     return;
                 };
-                let delivery = Delivery {
-                    provider: Arc::clone(&self.inner.provider),
-                    store: Arc::clone(&self.store),
-                    metrics: self.metrics.clone(),
+                let delivery = Delivery::new(
+                    Arc::clone(&self.inner.provider),
+                    Arc::clone(&self.store),
+                    self.metrics.clone(),
                     tuning,
-                };
+                );
                 tokio::spawn(async move {
                     delivery.deliver(&intent).await;
                     drop(slot);
@@ -403,7 +421,7 @@ impl Worker {
     }
 
     /// The pushes one wake earns.
-    fn plan_wake(&mut self, wake: &Wake) -> Vec<PushIntent> {
+    pub(super) fn plan_wake(&mut self, wake: &Wake) -> Vec<PushIntent> {
         let now_ms = self.clock.now_ms();
         let platform = self.inner.provider.platform();
         let targets = match self
@@ -444,7 +462,7 @@ impl Worker {
     }
 
     /// The trailing pushes owed by windows that just closed.
-    fn plan_due(&mut self) -> Vec<PushIntent> {
+    pub(super) fn plan_due(&mut self) -> Vec<PushIntent> {
         let now_ms = self.clock.now_ms();
         let platform = self.inner.provider.platform();
         let mut out = Vec::new();
@@ -495,7 +513,7 @@ impl Worker {
 
 /// One push's delivery, retries included.
 #[derive(Debug)]
-struct Delivery {
+pub(super) struct Delivery {
     provider: Arc<dyn PushProvider>,
     store: Arc<Store>,
     metrics: Metrics,
@@ -512,7 +530,21 @@ fn device_h(device_id: &str) -> String {
 }
 
 impl Delivery {
-    async fn deliver(&self, intent: &PushIntent) {
+    pub(super) const fn new(
+        provider: Arc<dyn PushProvider>,
+        store: Arc<Store>,
+        metrics: Metrics,
+        tuning: Tuning,
+    ) -> Self {
+        Self {
+            provider,
+            store,
+            metrics,
+            tuning,
+        }
+    }
+
+    pub(super) async fn deliver(&self, intent: &PushIntent) {
         let provider = self.provider.platform().metric_label();
         let attempts = self.tuning.attempts.max(1);
         let mut backoff = self.tuning.backoff;

@@ -179,7 +179,7 @@ impl ApnsProvider {
 
     /// The provider against `endpoint`, which may be `http://` when
     /// `plaintext` is set. Tests point it at a local HTTP/2 server.
-    fn build(
+    pub(super) fn build(
         der: &[u8],
         cfg: &ApnsConfig,
         endpoint: String,
