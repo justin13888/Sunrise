@@ -648,6 +648,122 @@ fn a_write_before_the_create_waits_for_it() {
     );
 }
 
+/// A tombstoned context is not shown on any task, and the task's set keeps it
+/// (ADR-0044 §5). A restore re-projects every task whose set still holds the
+/// context, so its membership shows again on both replicas.
+#[test]
+fn a_restored_context_shows_again_on_its_tasks() {
+    let mut p = pair();
+    let home = new_context(&p.ea, &mut p.dba, "home");
+    p.eb.apply_remote(
+        &mut p.dbb,
+        &env_for_kind(&p.dba, home.bytes(), "context.create"),
+    )
+    .unwrap();
+    let task = shared_task(
+        &mut p,
+        TaskDraft {
+            title: "t".into(),
+            contexts: vec![home],
+            ..Default::default()
+        },
+    );
+    set_clock(&p.ca, T0 + 1_000);
+    p.ea.apply(&mut p.dba, Command::DeleteContext(home))
+        .unwrap();
+    p.eb.apply_remote(
+        &mut p.dbb,
+        &env_for_kind(&p.dba, home.bytes(), "context.delete"),
+    )
+    .unwrap();
+    assert!(
+        task_at(&p.dbb, task).contexts.is_empty(),
+        "purged on delete"
+    );
+
+    // A later task write does not bring the tombstoned context back.
+    set_clock(&p.cb, T0 + 2_000);
+    let (b_edits, _) = emit_patch(
+        &p.eb,
+        &mut p.dbb,
+        &inbox(),
+        &patch(
+            task,
+            false,
+            vec![("priority", set(Value::Integer(2.into())))],
+        ),
+    );
+    p.ea.apply_remote(&mut p.dba, &b_edits).unwrap();
+    assert!(assert_converged(&p, task).contexts.is_empty());
+
+    set_clock(&p.ca, T0 + 3_000);
+    let (restore, _) = emit_patch(
+        &p.ea,
+        &mut p.dba,
+        &META_STREAM,
+        &patch(home, false, vec![("deleted", set(Value::Bool(false)))]),
+    );
+    p.eb.apply_remote(&mut p.dbb, &restore).unwrap();
+    let merged = assert_converged(&p, task);
+    assert_eq!(merged.contexts, BTreeSet::from([home]), "shown again");
+    assert_eq!(merged.priority, Some(2));
+}
+
+/// A `Patch` create that leaves out a required field with no default is
+/// kept and not projected (ADR-0044 §4, "nothing is dropped while it
+/// waits"), and the write that supplies the field projects it.
+#[test]
+fn an_entity_missing_a_required_field_waits_for_it() {
+    let mut p = pair();
+    let block = EntityRef::new(EntityKind::Block, [0x7a; 16]);
+    let at = |ms: u64| {
+        Value::serialized(&SunriseTime::Instant {
+            at: ms_to_ts(i64::try_from(ms).unwrap()),
+        })
+        .unwrap()
+    };
+    let (create, _) = emit_patch(
+        &p.ea,
+        &mut p.dba,
+        &inbox(),
+        &patch(
+            block,
+            true,
+            vec![
+                (
+                    "stream_id",
+                    set(Value::Text(inbox_stream_ref().to_string())),
+                ),
+                ("starts_at", set(at(T0))),
+            ],
+        ),
+    );
+    p.eb.apply_remote(&mut p.dbb, &create).unwrap();
+    assert!(read_block(p.dbb.conn(), block.bytes()).unwrap().is_none());
+
+    set_clock(&p.ca, T0 + 1_000);
+    let (ends, _) = emit_patch(
+        &p.ea,
+        &mut p.dba,
+        &inbox(),
+        &patch(block, false, vec![("ends_at", set(at(T0 + 3_600_000)))]),
+    );
+    p.eb.apply_remote(&mut p.dbb, &ends).unwrap();
+    let a = read_block(p.dba.conn(), block.bytes())
+        .unwrap()
+        .expect("projected");
+    let b = read_block(p.dbb.conn(), block.bytes())
+        .unwrap()
+        .expect("projected");
+    assert_eq!(a, b);
+    assert_eq!(
+        b.ends_at,
+        SunriseTime::Instant {
+            at: ms_to_ts(i64::try_from(T0 + 3_600_000).unwrap())
+        }
+    );
+}
+
 // ---- what a patch may not do ----
 
 /// A field-op kind this build does not know cannot be merged correctly, so

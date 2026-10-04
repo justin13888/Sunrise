@@ -343,6 +343,28 @@ fn sync_from_row(
     Ok(Some(m))
 }
 
+/// Fold each task's row into its field state, before a context is purged
+/// from the tasks' membership rows.
+///
+/// A task with no field state yet, or with a local write the merge has not
+/// folded, is seeded from its row (see [`sync_from_row`]). Once a tombstoned
+/// context has been purged from `task_contexts`, the row no longer says the
+/// task's set holds it, and a seed taken then would lose the add a restore
+/// needs. So the row is folded while it still does.
+pub(super) fn seed_tasks_before_purge(
+    tx: &Transaction<'_>,
+    tasks: &[[u8; 16]],
+) -> rusqlite::Result<()> {
+    let spec = sunrise_id::EntityKind::Task.spec();
+    for id in tasks {
+        let task = EntityRef::new(sunrise_id::EntityKind::Task, *id);
+        if let Some(meta) = sync_from_row(tx, spec, task).map_err(to_sql)? {
+            write_meta(tx, id, spec.tag, &meta)?;
+        }
+    }
+    Ok(())
+}
+
 /// Re-project one entity from its state, folding nothing new.
 fn refresh(tx: &Transaction<'_>, target: EntityRef) -> Result<(), EngineError> {
     let spec = target.kind().spec();
