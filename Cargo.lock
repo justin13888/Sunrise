@@ -3313,9 +3313,13 @@ dependencies = [
  "rand_chacha 0.3.1",
  "rand_core 0.6.4",
  "serde",
+ "sunrise-core",
  "sunrise-crypto",
  "sunrise-error",
+ "sunrise-sync",
+ "tempfile",
  "thiserror 1.0.69",
+ "tokio",
 ]
 
 [[package]]
@@ -3351,6 +3355,7 @@ dependencies = [
  "spargen",
  "sunrise-error",
  "sunrise-http-sig",
+ "sunrise-id",
  "sunrise-onboarding",
  "thiserror 1.0.69",
  "tokio",

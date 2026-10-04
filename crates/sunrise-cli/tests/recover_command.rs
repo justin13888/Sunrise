@@ -168,7 +168,7 @@ async fn sunrise_recover_rebuilds_the_account_from_the_words_alone() {
     std::env::remove_var("SUNRISE_VAULT_ROOT");
 
     let mut lines: Vec<String> = Vec::new();
-    let done = recover::rebuild_vault(
+    let done = recover::rejoin_account(
         recovered_dir.path(),
         identity,
         &base_url,
