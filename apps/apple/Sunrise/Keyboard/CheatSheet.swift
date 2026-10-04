@@ -39,7 +39,7 @@ enum CheatSheet {
         // one — which is how a reader learns to distrust the sheet.
         var table = Keymap.application
         if context.hasList { table += Keymap.list }
-        var built = grouped(table)
+        var built = grouped(table.filter(\.action.isOffered))
         if context.vimMode, context.hasList {
             built.append(vimSection)
         }

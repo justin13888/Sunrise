@@ -353,6 +353,9 @@ struct VaultWindow: View {
             search.clear()
             selection = .search
             pane = .search
+        // From the palette; the menu items reach these as deep links.
+        case .morningSummary: selection = .morning
+        case .endOfDay: selection = .evening
         default: return false
         }
         return true
@@ -370,6 +373,7 @@ struct VaultWindow: View {
         case .undo: Task { await undo.undo() }
         case .redo: Task { await undo.redo() }
         case .printView, .exportPDF: PrintCommand.run(action, document: printable)
+        case .importCalendar: Task { await surfaces.importIcal() }
         default: return false
         }
         return true
