@@ -178,6 +178,15 @@ pub async fn restore_identity(
     Ok(sunrise_onboarding::restore_identity(&relay, code, &mut |_| {}).await?)
 }
 
+/// What [`rejoin_account`]'s two callbacks share while the flow runs.
+#[derive(Default)]
+struct Rejoining {
+    /// Why the relay's id for this device was not recorded, if it was not.
+    unrecorded: Option<String>,
+    /// Lines the sync starter produced that are not printed yet.
+    lines: Vec<String>,
+}
+
 /// Steps 6 and 8: mint the vault root, then build the vault from the restored
 /// identity, register it, and replay the log, through
 /// [`sunrise_onboarding::rejoin_account`].
@@ -194,7 +203,10 @@ pub async fn restore_identity(
 ///
 /// The relay's id for this device is recorded as soon as the relay mints it,
 /// before the replay, so a replay that does not finish leaves a vault that
-/// `sunrise sync --once` can resume.
+/// `sunrise sync --once` can resume. An id that could not be recorded stops
+/// the command before sync starts, since there would be nothing to resume.
+/// What starting sync says ("sync driver started", or why it did not) is
+/// printed, as every command prints it.
 ///
 /// # Errors
 /// [`RecoverError::Vault`] for the root, and [`RecoverError::Restore`] for a
@@ -215,9 +227,22 @@ pub async fn rejoin_account(
     let mut cfg = CoreConfig::production(vault_dir.to_path_buf(), app.to_owned());
     cfg.sync = Some(sunrise_core::SyncConfig::new(base_url.to_owned()));
 
+    // Shared by the two callbacks: the progress callback records whether the
+    // relay's id was saved, and the sync starter reads that and leaves the
+    // lines `apply_plan` says for the progress callback to print in order.
+    let shared = std::sync::Mutex::new(Rejoining::default());
+    let shared_ref = &shared;
     let plan_url = base_url.to_owned();
     let plan_bearer = bearer.to_owned();
     let start_sync = move |core: &Arc<Core>, relay_device_id: &str| {
+        let mut state = shared_ref
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // An id that was not recorded would leave a vault `sunrise sync
+        // --once` cannot resume, so the replay is not worth waiting for.
+        if let Some(detail) = &state.unrecorded {
+            return Err(detail.clone());
+        }
         let plan = livesync::SyncPlan {
             sync: Some(
                 sunrise_core::SyncConfig::new(plan_url.clone())
@@ -225,14 +250,24 @@ pub async fn rejoin_account(
             ),
             device_id: Some(relay_device_id.to_owned()),
         };
-        // The lines are what `apply_plan` says for every command; the
-        // `tracing` events beside them carry the outcome. A driver that did not
-        // start shows up as a replay that never catches up, which is reported.
-        let _ = livesync::apply_plan(core, &plan);
+        // "sync driver started", or why it did not: what every command prints
+        // after `apply_plan`. A driver that did not start also shows up as a
+        // replay that never catches up, which is reported.
+        state.lines.extend(livesync::apply_plan(core, &plan));
         Ok(())
     };
+    let drain = |announce: &mut (dyn FnMut(&str) + Send)| {
+        let lines = std::mem::take(
+            &mut shared_ref
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .lines,
+        );
+        for line in &lines {
+            announce(line);
+        }
+    };
 
-    let mut unrecorded: Option<String> = None;
     let outcome = sunrise_onboarding::rejoin_account(
         &relay,
         cfg,
@@ -245,25 +280,36 @@ pub async fn rejoin_account(
         },
         &start_sync,
         CATCH_UP_MS,
-        &mut |step| match step {
-            RecoveryProgress::DeviceRegistered { relay_device_id } => {
-                announce("vault rebuilt from the recovery code");
-                match livesync::save_relay_device_id(vault_dir, &relay_device_id) {
-                    Ok(()) => announce(&format!("re-keyed as device {relay_device_id}")),
-                    Err(e) => {
-                        unrecorded = Some(format!(
-                            "registered as {relay_device_id} but could not record it: {e}"
-                        ));
+        &mut |step| {
+            drain(&mut *announce);
+            match step {
+                RecoveryProgress::DeviceRegistered { relay_device_id } => {
+                    announce("vault rebuilt from the recovery code");
+                    match livesync::save_relay_device_id(vault_dir, &relay_device_id) {
+                        Ok(()) => announce(&format!("re-keyed as device {relay_device_id}")),
+                        Err(e) => {
+                            shared_ref
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .unrecorded = Some(format!(
+                                "registered as {relay_device_id} but could not record it: {e}"
+                            ));
+                        }
                     }
                 }
+                RecoveryProgress::Replaying { applied } => {
+                    announce(&format!("replaying history: {applied} changes applied"));
+                }
+                _ => {}
             }
-            RecoveryProgress::Replaying { applied } => {
-                announce(&format!("replaying history: {applied} changes applied"));
-            }
-            _ => {}
         },
     )
     .await;
+    drain(&mut *announce);
+    let unrecorded = shared
+        .into_inner()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .unrecorded;
     if let Some(detail) = unrecorded {
         return Err(RecoverError::Relay(detail));
     }
