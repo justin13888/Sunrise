@@ -63,8 +63,8 @@ use sunrise_crypto::{
 };
 use sunrise_storage::{Db, DbError};
 
-use super::chain::{frontier, held_op_hash, root_at, settle_below_floor};
-use super::compaction::{compactable_kinds, floor_of, raise_floor, Floor};
+use super::chain::{fold_chain, frontier, held_op_hash, root_at, settle_below_floor};
+use super::compaction::{compactable_kinds, floor_of, floor_seq, raise_floor, Floor};
 use super::ids::hex_short;
 use super::merge::{dump_stream_state, fold_rows, join_stream_state};
 use super::oplog::upsert_sync_cursor;
@@ -507,10 +507,15 @@ impl Engine {
     /// Applying a record twice, or one older than what this replica holds, is
     /// harmless: the join is idempotent and a floor never falls.
     ///
+    /// A device's cert travels in the vault-meta stream, so a device that
+    /// holds none of them applies that stream's snapshot first.
+    ///
     /// # Errors
     /// [`EngineError::Invalid`] for a record that is malformed, forged, from a
     /// revoked writer, or of a history that disagrees with this replica's;
-    /// storage failures.
+    /// [`EngineError::UnknownDevice`] when a carried op's writer has no cert
+    /// here yet, in which case no floor rose and the record can be applied
+    /// again; an error a carried op met on the receive path; storage failures.
     pub fn apply_snapshot(
         &self,
         db: &mut Db,
@@ -575,6 +580,10 @@ impl Engine {
                     adds = true;
                     continue;
                 }
+                if root_at(tx, &rec.stream_id, &e.device, e.floor.seq)?.is_none() {
+                    // A prefix from before migration 0034, not folded yet.
+                    fold_chain(tx, &rec.stream_id, &e.device, held, now_ms)?;
+                }
                 if root_at(tx, &rec.stream_id, &e.device, e.floor.seq)?
                     .is_some_and(|r| r != e.floor.root)
                 {
@@ -608,9 +617,10 @@ impl Engine {
             }
             if next.is_empty() || next.len() == pending.len() {
                 if !next.is_empty() {
-                    return Err(invalid(
-                        "a retained op names a device this account never had",
-                    ));
+                    // Its writer's cert is in another stream, the vault-meta
+                    // stream's, whose snapshot or ops have not arrived. No
+                    // floor rose; apply this record again once they have.
+                    return Err(EngineError::UnknownDevice);
                 }
                 break;
             }
@@ -631,7 +641,10 @@ impl Engine {
                     |r| r.get(0),
                 )
                 .optional()?;
-            if held.is_none() {
+            // A position this replica's own floor already covers was folded
+            // here, and the receive path dropped it as the duplicate it is.
+            let covered = env.seq <= floor_seq(db.conn(), &env.stream_id, &env.device_id)?;
+            if held.is_none() && !covered {
                 missing += 1;
             }
         }

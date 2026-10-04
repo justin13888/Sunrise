@@ -196,7 +196,10 @@ A record that fails 1 to 4 or 6 is refused. With no key at `epoch` the outcome
 is `NoKey`, and with every entry already reached it is `Covered`; neither
 writes anything. Otherwise the retained envelopes go through the ordinary
 receive path, each verified on its own. If one is still waiting for a key, the
-outcome is `Pending` and no floor rises. Then `doc_state` is **joined** into
+outcome is `Pending` and no floor rises. If one's writer has no cert here yet,
+the apply fails with `UnknownDevice` and no floor rises either: certs travel in
+the vault-meta stream, so a device that holds none applies that stream's
+snapshot first. Then `doc_state` is **joined** into
 the local merge state, every entity it names is re-projected, and each frontier
 device's floor rises to its entry.
 
