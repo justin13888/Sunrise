@@ -690,6 +690,29 @@ fn a_snapshot_carries_parked_ops_to_the_device_it_bootstraps() {
         3,
         "the prefix runs through the parked op"
     );
+    // The parked op named its predecessor, which C never held; the floor
+    // covers it, so nothing is left wanted.
+    assert_eq!(ec.chain_integrity(&dbc).unwrap(), ChainIntegrity::default());
+}
+
+/// A record sealed under a key this replica does not hold is reported, not
+/// refused, and writes nothing: it can be applied once the key arrives.
+#[test]
+fn a_snapshot_under_a_key_not_held_waits_for_it() {
+    let c = clock();
+    let ea = engine_random_keys(ROOT, [1; 32], Arc::clone(&c));
+    let ec = engine_random_keys(ROOT, [3; 32], Arc::clone(&c));
+    let mut dba = db_root(ROOT);
+    let mut dbc = db_root(ROOT);
+    trust(&ec, &mut dbc, &ea);
+    new_task(&ea, &mut dba, "one");
+    let record = ea.write_stream_snapshot(&mut dba, &INBOX).unwrap().unwrap();
+    assert_eq!(
+        ec.apply_snapshot(&mut dbc, &record).unwrap().0,
+        SnapshotApplied::NoKey
+    );
+    assert!(projection(&dbc).is_empty());
+    assert_eq!(ec.stream_snapshot(&dbc, &INBOX).unwrap(), None);
 }
 
 /// A snapshot holding nothing this replica lacks is reported and ignored,
