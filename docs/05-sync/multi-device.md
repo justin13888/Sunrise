@@ -67,8 +67,10 @@ are stopped **at the relay, conditionally**: `Command::RevokeDevice` queues a
 durable intent that the sync driver drains to
 `DELETE /api/v1/devices/by-vault-id/{id}`
 ([#80](https://github.com/justin13888/Sunrise/issues/80), closed), and the relay
-enforces it only against a device-bound request — with `[auth]
-require_device_sig` at its default `false` there is no write bound at all
+enforces it only against a device-bound request — which a relay with an OIDC
+issuer demands by default, while with `[auth] require_device_sig` off (the
+single-tenant self-host verifier, or an explicit `false` beside an issuer)
+there is no write bound at all
 ([`key-rotation.md`](../03-crypto/key-rotation.md) §Implementation status has
 the three conditions). Peers
 refuse two of its **control** ops, `device_revoke` and a read-bounded sender's
