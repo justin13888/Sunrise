@@ -8,6 +8,8 @@
 //! relay channel namespace is fixed at establishment and nowhere else.
 
 use crate::api::error::ApiError;
+use crate::api::ratelimit::policy::Budget;
+use crate::api::ratelimit::Throttled;
 use crate::api::signed::Signed;
 use crate::state::ServerState;
 use crate::sync_session::Session;
@@ -92,8 +94,19 @@ pub async fn session(
         caller,
         value: body,
     }: Signed<SessionRequest>,
-) -> Result<Created<Json<SessionResponse>>, ApiError> {
+) -> Result<Created<Json<SessionResponse>>, Throttled> {
     let now_ms = state.clock.now_ms();
+    // Before any work: a client re-establishing in a tight loop is the case
+    // this budget exists for, and negotiating for it first would be the work
+    // it is meant to spare.
+    state
+        .limiter
+        .charge(&state, "/api/v1/sync/session", Budget::Sessions, &caller, 1)
+        .await?;
+    crate::api::account_deletion::refuse_if_pending_deletion(
+        &state,
+        &caller.principal.account.account_id,
+    )?;
     // Hung off the busiest path rather than a timer task whose only job is to
     // take a lock occasionally.
     state.sessions.collect(now_ms);

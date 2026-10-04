@@ -80,18 +80,22 @@ use thiserror::Error;
 
 mod attachment;
 mod block;
+mod chain;
+mod compaction;
 mod context;
 mod features;
 mod focus;
 mod identity;
 mod ids;
 mod lww;
+mod merge;
 mod notify;
 mod oplog;
 mod query;
 mod review;
 mod revocation;
 mod routine;
+mod snapshot;
 mod stream;
 mod sync;
 mod task;
@@ -103,9 +107,12 @@ mod tests;
 // resolving across this split. `META_STREAM` stays defined below; `hex_short`
 // moved to `ids` and is re-exported here at its old name.
 pub(crate) use self::attachment::read_attachment;
+pub use self::chain::ChainIntegrity;
+pub use self::compaction::{CompactionPolicy, CompactionReport};
 pub(crate) use self::ids::hex_short;
 use self::lww::LwwStamp;
 pub(crate) use self::revocation::{adopt_sponsor_read_bounds, read_bounds_for_pairing};
+pub use self::snapshot::{SnapshotApplied, SNAPSHOT_FORMAT_V};
 
 /// Vault-meta op-log stream id: 16 zero bytes.
 ///
@@ -181,7 +188,7 @@ const FOCUS_PLAN_SCAN_CAP: u32 = 512;
 /// envelope still enters `ops`, and the op counts toward the contiguous prefix
 /// exactly like an applied one. Whether the cursor then moves past it is a
 /// question about the seqs *below* it and never about the refusal — see
-/// `crates/sunrise-core/src/engine/oplog.rs:929#upsert_sync_cursor`. Once it
+/// `crates/sunrise-core/src/engine/oplog.rs#upsert_sync_cursor`. Once it
 /// does, the relay will not re-send the op and nothing re-offers the key. Ops
 /// sealed under that `(stream, epoch)` therefore stay unreadable on this
 /// replica until the device is re-paired, which is what hands it every Stream
@@ -491,6 +498,13 @@ impl Engine {
     /// Storage failures reading the log.
     pub fn prime_hlc(&self, db: &Db) -> Result<(), EngineError> {
         let conn = db.conn();
+        // A compaction floor keeps the stamp of the op at its seq, which
+        // bounds every op it covers (ADR-0059). Compaction keeps each tip's
+        // row, but a floor a snapshot set may cover ops this replica never
+        // held, so the clock is primed from both.
+        if let Some(floor) = compaction::max_floor_hlc(conn)? {
+            self.hlc.prime(floor);
+        }
         let max_ms: Option<i64> = conn.query_row("SELECT MAX(ts_ms) FROM ops", [], |r| r.get(0))?;
         let Some(physical_ms) = max_ms.and_then(|v| u64::try_from(v).ok()) else {
             return Ok(());

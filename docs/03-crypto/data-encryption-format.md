@@ -41,11 +41,16 @@ OpEnvelope = {
     11: bstr .size 64,  ; sig           (Ed25519; see signature rules)
     12: uint,           ; doc_schema_v  (DOC_SCHEMA_V of the inner Op; >= the reader's floor)
     ? 13: bstr .size 8, ; schema_fp     (first 8 bytes of doc_schema_v's registered fingerprint)
+    ? 14: bstr .size 32,; prev_hash     (op_hash of this device's op at (stream_id, seq - 1))
+    ? 15: [+ head],     ; heads         (other devices' tips the writer saw since it last listed them)
     * uint => any       ; later fields, preserved verbatim
 }
+head = [bstr .size 16, uint, bstr .size 32]   ; [device_id, seq, op_hash]
 ```
 
 Field `13` ties field 12's number to the schema it names. Every writer at `DOC_SCHEMA_V` 7 or later emits it, and envelopes below 7 have none. The AAD and the signature cover it like every field they do not exclude. Its rules are in [`../10-cross-cutting/protocol-versioning.md`](../10-cross-cutting/protocol-versioning.md) §7.1 and [ADR-0045](../11-adr/0045-schema-identity-and-feature-gating.md) §3.
+
+Fields `14` and `15` chain each device's ops and name what its writer had seen ([ADR-0043](../11-adr/0043-commit-tree.md) §1–§2). `op_hash` is BLAKE3 over the envelope's full canonical encoding, field 11 included and the magic prefix excluded. Both fields are optional: an envelope without them is a *legacy link* that asserts nothing about its predecessor, which is what every op written before them is, and what `seq = 1` is. Field 15 is sorted by device id, names a device at most once, holds at most 256 entries, and is omitted rather than empty. Both are additive under ADR-0045 §5, so the container does not move, and the AAD and the signature cover them by the exclusion rule. How a receiver checks them is [`audit-and-tamper-evidence.md`](./audit-and-tamper-evidence.md).
 
 ### Two versions, two rules
 
@@ -208,7 +213,7 @@ Payload schema by kind is defined in the domain specs (`02-domain/*.md`) for `cr
 
 ### The six families that are implemented
 
-[ADR-0024](../11-adr/0024-key-hierarchy.md) added `key_envelope`, `device_revoke` and `device_cert` at `DOC_SCHEMA_V = 5`; [ADR-0037](../11-adr/0037-identity-transition.md) added `identity_transition` at `DOC_SCHEMA_V = 6`; [ADR-0045](../11-adr/0045-schema-identity-and-feature-gating.md) §7 added `vault_requires` and `device_features`, which carry the vault's feature state rather than keys, at `DOC_SCHEMA_V = 8`. `share_grant`, `share_revoke`, `snapshot` and `checkpoint` remain unimplemented; a new op family is a breaking change to the op vocabulary — a build that does not know a family refuses the op rather than applying it wrongly — while `ENVELOPE_FORMAT_V` stays put, because the container is unchanged.
+[ADR-0024](../11-adr/0024-key-hierarchy.md) added `key_envelope`, `device_revoke` and `device_cert` at `DOC_SCHEMA_V = 5`; [ADR-0037](../11-adr/0037-identity-transition.md) added `identity_transition` at `DOC_SCHEMA_V = 6`. `Patch`, an entity family rather than a control one, followed at `DOC_SCHEMA_V = 8` ([ADR-0044](../11-adr/0044-per-field-ops.md)), and the `StreamDigest` control family, a replica's frontier and digest in one stream, at `DOC_SCHEMA_V = 9` ([ADR-0043](../11-adr/0043-commit-tree.md)); it takes the place `checkpoint` was sketched for. [ADR-0045](../11-adr/0045-schema-identity-and-feature-gating.md) §7 added `vault_requires` and `device_features`, which carry the vault's feature state rather than keys, at `DOC_SCHEMA_V = 10`. `share_grant`, `share_revoke` and `snapshot` remain unimplemented; a new op family is a breaking change to the op vocabulary — a build that does not know a family refuses the op rather than applying it wrongly — while `ENVELOPE_FORMAT_V` stays put, because the container is unchanged.
 
 The six are **not** the `OpKind`-tagged shape sketched above. The inner op is a Rust enum encoded externally tagged, so what is on the wire is a one-entry map from the variant name to its payload — the same shape the 21 domain variants already have. This is the encoder's shape, and it is normative:
 

@@ -1,4 +1,4 @@
--- 0033: record which features a vault's data depends on, and which features
+-- 0036: record which features a vault's data depends on, and which features
 -- each device supports (issue #324, ADR-0045 §7–§8).
 --
 -- Why

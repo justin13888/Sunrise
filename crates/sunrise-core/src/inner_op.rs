@@ -20,20 +20,32 @@
 //! contend with one another and re-delivery is a no-op. See ADR-0013 and
 //! [`crate::engine`]'s `materialize_focus_remote`.
 //!
-//! Six families are **control** ops rather than entities: `KeyEnvelope`,
+//! Seven families are **control** ops rather than entities: `KeyEnvelope`,
 //! `DeviceRevoke`, `DeviceCertPublish` and `IdentityTransition` carry key
-//! material and trust, and `VaultRequires` and `DeviceFeatures` carry the
-//! vault's feature state. None has a row or a last-writer-wins stamp, and all
-//! are classed `OpEffect::Control` so the compiler keeps them out of the
-//! entity materializer. See [`crate::control_op`], ADR-0024, ADR-0032 and
-//! ADR-0045 §7.
+//! material and trust, `StreamDigest` carries a replica's frontier in one
+//! stream (ADR-0043 §5), and `VaultRequires` and `DeviceFeatures` carry the
+//! vault's feature state (ADR-0045 §7). None has a row or a last-writer-wins
+//! stamp, and all are classed `OpEffect::Control` so the compiler keeps them
+//! out of the entity materializer. See [`crate::control_op`], ADR-0024 and
+//! ADR-0032.
 //!
-//! The core uses *full-state* ops: `TaskCreate`/`TaskUpdate` carry the entire `Task`,
-//! not a field-level delta. This is the accepted current approximation of the CRDT
-//! model in `docs/05-sync/conflict-resolution.md`: entity-level last-writer-wins
-//! rather than per-field merge. `*Delete` ops are full-state too: each carries
-//! its entity with `deleted` set, never a bare id — see `InnerOp::TaskDelete`
-//! and ADR-0014 for why a tombstone marker does not converge.
+//! Two shapes write entity state (ADR-0044):
+//!
+//! - **Full-state** ops, `TaskCreate`/`TaskUpdate`/`TaskDelete` and their
+//!   siblings, carry the entire entity. Every one already in a log or on a
+//!   relay stays readable forever. The merge reads one as a write to every
+//!   field it carries, at its own stamp (ADR-0044 §7), so a history made only
+//!   of them projects exactly as entity-level last-writer-wins did. A delete
+//!   carries its entity with `deleted` set, never a bare id: see
+//!   `InnerOp::TaskDelete` and ADR-0014.
+//! - `InnerOp::Patch` carries only the fields its command wrote, each as a
+//!   self-describing field op, and every field merges by its own CRDT type.
+//!   See `PatchPayload` and [`crate::engine`]'s `merge` module.
+//!
+//! This build applies both and emits only the first. ADR-0044 §9 forbids a
+//! build from emitting its first `Patch` into a vault until the vault's
+//! `vault_requires` lists `core.field_ops`, and this build's feature registry
+//! (`crate::feature`) does not register that feature yet.
 
 use crate::control_op::{
     DeviceFeaturesPayload, DeviceRevokePayload, IdentityTransitionPayload, KeyEnvelopePayload,
@@ -42,7 +54,7 @@ use crate::control_op::{
 use serde::{Deserialize, Serialize};
 use sunrise_domain::{
     Attachment, Block, Context, FocusEnd, FocusStart, Interruption, ReviewSnapshot, Routine,
-    Stream, Task,
+    Stream, Task, Unknowns,
 };
 use sunrise_id::{EntityKind, EntityRef};
 use thiserror::Error;
@@ -125,6 +137,18 @@ macro_rules! define_inner_op {
             /// *every* `InnerOp` — including the task ops, which are the ones that
             /// actually occur in bulk — to the size of the largest rotation.
             IdentityTransition(Box<IdentityTransitionPayload>),
+            /// Write some fields of one entity, each merged by its own CRDT
+            /// type (ADR-0044 §1). It carries only the fields its command
+            /// wrote. See [`PatchPayload`].
+            ///
+            /// Boxed for the reason `RoutineCreate` is: the field map is
+            /// unbounded, and the task ops are the ones that occur in bulk.
+            Patch(Box<PatchPayload>),
+            /// A replica's frontier in the stream this op is routed in, and
+            /// its digest (ADR-0043 §5). A **control** op: a receiver compares
+            /// each device's chain root with its own and records what
+            /// disagrees or what it is missing. See [`StreamDigestPayload`].
+            StreamDigest(StreamDigestPayload),
             /// Add feature ids to the vault's grow-only required set (ADR-0045
             /// §7). Control op, on the vault-meta stream.
             VaultRequires(VaultRequiresPayload),
@@ -142,6 +166,15 @@ macro_rules! define_inner_op {
                     Self::DeviceRevoke(_) => "device.revoke",
                     Self::DeviceCertPublish(_) => "device.cert",
                     Self::IdentityTransition(_) => "identity.transition",
+                    // One kind per entity, so the op log's `inner_kind` still
+                    // names the family that wrote a row: `task.patch`.
+                    Self::Patch(p) => match p.target.kind() {
+                        $( EntityKind::$kind => concat!($tag, ".patch"), )*
+                        // `EntityKind` is `#[non_exhaustive]`; every kind it
+                        // has is listed above.
+                        _ => "patch",
+                    },
+                    Self::StreamDigest(_) => "stream.digest",
                     Self::VaultRequires(_) => "vault.requires",
                     Self::DeviceFeatures(_) => "device.features",
                 }
@@ -157,6 +190,8 @@ macro_rules! define_inner_op {
                     | Self::DeviceCertPublish(_)
                     | Self::DeviceFeatures(_) => "device",
                     Self::IdentityTransition(_) => "identity",
+                    Self::Patch(p) => p.target.kind().tag(),
+                    Self::StreamDigest(_) => "stream",
                     Self::VaultRequires(_) => "vault",
                 }
             }
@@ -178,6 +213,11 @@ macro_rules! define_inner_op {
                     Self::IdentityTransition(p) => {
                         EntityRef::new(EntityKind::Identity, p.to_identity_id)
                     }
+                    Self::Patch(p) => p.target,
+                    // The stream it describes is the envelope's, which the
+                    // payload does not repeat; as for a cert, a zero ref is the
+                    // least misleading answer.
+                    Self::StreamDigest(_) => EntityRef::new(EntityKind::Stream, [0u8; 16]),
                     // The vault-meta stream: the required set belongs to the
                     // vault, and that stream is the vault's own log.
                     Self::VaultRequires(_) => {
@@ -197,8 +237,10 @@ macro_rules! define_inner_op {
                     | Self::DeviceRevoke(_)
                     | Self::DeviceCertPublish(_)
                     | Self::IdentityTransition(_)
+                    | Self::StreamDigest(_)
                     | Self::VaultRequires(_)
                     | Self::DeviceFeatures(_) => OpEffect::Control,
+                    Self::Patch(p) => p.effect(),
                 }
             }
 
@@ -211,6 +253,8 @@ macro_rules! define_inner_op {
                     | Self::DeviceCertPublish(_)
                     | Self::DeviceFeatures(_) => EntityKind::Device,
                     Self::IdentityTransition(_) => EntityKind::Identity,
+                    Self::Patch(p) => p.target.kind(),
+                    Self::StreamDigest(_) => EntityKind::Stream,
                 }
             }
 
@@ -225,6 +269,7 @@ macro_rules! define_inner_op {
                         | Self::DeviceRevoke(_)
                         | Self::DeviceCertPublish(_)
                         | Self::IdentityTransition(_)
+                        | Self::StreamDigest(_)
                         | Self::VaultRequires(_)
                         | Self::DeviceFeatures(_)
                 )
@@ -253,6 +298,110 @@ pub(crate) enum OpEffect {
     /// the kind it is *about* (a Stream, a Device), not a row it writes.
     Control,
 }
+
+/// The payload of [`InnerOp::Patch`]: some fields of one entity (ADR-0044 §1).
+///
+/// ```cddl
+/// patch = {
+///   "ref":     entity-ref,          ; the entity; its kind comes from the id prefix
+///   ? "create": true,               ; this op creates the entity
+///   ? "origin": "generated",        ; written by generation; absent = user
+///   "fields":  { + field-name => field-op },
+///   unknown-fields
+/// }
+/// ```
+///
+/// The field ops are kept as CBOR here and read by the merge, which knows
+/// each field's CRDT type. A field op is one of `{"set": v}`,
+/// `{"add": [..], "remove": [[v, [op-ref, ..]], ..]}`, `{"inc": n}` and
+/// `{"map": {k: {"set": v}, ..}}`, so a build can merge a field it has never
+/// heard of (§8).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct PatchPayload {
+    /// The entity written.
+    #[serde(rename = "ref")]
+    pub(crate) target: EntityRef,
+    /// This op creates the entity (§4). Absent on the wire when false.
+    #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+    pub(crate) create: bool,
+    /// `"generated"` for a write the system made on the user's behalf;
+    /// absent for a user's own command (§3). Any other spelling reads as a
+    /// user write and is kept as it came.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) origin: Option<String>,
+    /// Field name to field op, as CBOR.
+    pub(crate) fields: Unknowns,
+    /// Top-level keys a newer build added, kept (ADR-0045 §Unknown maps).
+    #[serde(flatten)]
+    pub(crate) unknown: Unknowns,
+}
+
+impl PatchPayload {
+    /// The spelling of a generated write's `origin`.
+    pub(crate) const GENERATED: &'static str = "generated";
+
+    /// Whether this op was made by the system rather than by a user command.
+    pub(crate) fn is_generated(&self) -> bool {
+        self.origin.as_deref() == Some(Self::GENERATED)
+    }
+
+    /// The op's effect class: a create, a tombstone (`deleted` set to true),
+    /// or an update.
+    pub(crate) fn effect(&self) -> OpEffect {
+        if self.create {
+            return OpEffect::Create;
+        }
+        let deletes = self
+            .fields
+            .get("deleted")
+            .and_then(|op| op.get().as_map())
+            .is_some_and(|entries| {
+                entries.iter().any(|(k, v)| {
+                    k.as_text() == Some("set") && *v == ciborium::value::Value::Bool(true)
+                })
+            });
+        if deletes {
+            OpEffect::Delete
+        } else {
+            OpEffect::Update
+        }
+    }
+}
+
+/// The payload of [`InnerOp::StreamDigest`] (ADR-0043 §5).
+///
+/// ```cddl
+/// stream-digest = {
+///   "frontier": [* [bstr .size 16, uint, bstr .size 32]],  ; [device_id, n_d, root(d, n_d)]
+///   "digest":   bstr .size 32,
+///   unknown-fields
+/// }
+/// ```
+///
+/// The stream it describes is the one its envelope is routed and sealed in.
+/// The frontier lists each device whose contiguous prefix in that stream is
+/// non-empty on the writer's replica, sorted by device id. `digest` is
+/// `sunrise_crypto::stream_digest` over it, so a receiver can tell a damaged
+/// payload from a disagreeing one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct StreamDigestPayload {
+    /// `[device_id, n_d, root(d, n_d)]` per device, sorted by device id.
+    pub(crate) frontier: Vec<FrontierWire>,
+    /// The stream digest at that frontier.
+    #[serde(with = "serde_bytes")]
+    pub(crate) digest: [u8; 32],
+    /// Top-level keys a newer build added, kept (ADR-0045 §Unknown maps).
+    #[serde(flatten)]
+    pub(crate) unknown: Unknowns,
+}
+
+/// One frontier entry on the wire: `[device_id, n_d, root(d, n_d)]`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct FrontierWire(
+    #[serde(with = "serde_bytes")] pub(crate) [u8; 16],
+    pub(crate) u64,
+    #[serde(with = "serde_bytes")] pub(crate) [u8; 32],
+);
 
 /// Inner-op CBOR codec errors.
 #[derive(Debug, Error)]
@@ -441,6 +590,7 @@ mod tests {
             "AttachmentDelete",
             "FocusInterrupt",
             "KeyEnvelope",
+            "IdentityTransition",
         ] {
             assert!(kinds.contains(&name), "{name} is declared");
         }
@@ -448,9 +598,10 @@ mod tests {
         assert!(unknown_kind(&bytes).is_none(), "a known op is not unknown");
     }
 
-    /// `InnerOp` is the registry's ops, in registry order, then the six
-    /// control families — read out of the derive, so it is the list the
-    /// decoder actually accepts.
+    /// `InnerOp` is the registry's ops, in registry order, then the four
+    /// control families, then `Patch`, then `StreamDigest`, then the two
+    /// feature control families — read out of the derive, so it is the list
+    /// the decoder actually accepts.
     #[test]
     fn the_derive_declares_the_registry_ops_then_the_control_families() {
         let mut expected: Vec<&str> = sunrise_id::registry::ENTITIES
@@ -462,10 +613,66 @@ mod tests {
             "DeviceRevoke",
             "DeviceCertPublish",
             "IdentityTransition",
+            "Patch",
+            "StreamDigest",
             "VaultRequires",
             "DeviceFeatures",
         ]);
         assert_eq!(known_kinds(), expected.as_slice());
+    }
+
+    /// ADR-0043 §5's shape: a single-entry map keyed `StreamDigest`, holding
+    /// `frontier` as an array of `[device_id, n, root]` triples and `digest`
+    /// as a byte string, with an unknown key kept through a round trip.
+    #[test]
+    fn a_stream_digest_encodes_as_the_adr_shape_and_is_a_control_op() {
+        use ciborium::value::Value;
+        let mut unknown = Unknowns::new();
+        unknown.insert(
+            "x_later".into(),
+            sunrise_cbor::CborValue(Value::Integer(7.into())),
+        );
+        let op = InnerOp::StreamDigest(StreamDigestPayload {
+            frontier: vec![FrontierWire([1; 16], 3, [2; 32])],
+            digest: [9; 32],
+            unknown,
+        });
+        let bytes = encode_inner_op(&op).unwrap();
+        let value: Value = ciborium::de::from_reader(bytes.as_slice()).unwrap();
+        let Value::Map(outer) = value else {
+            panic!("not a map")
+        };
+        assert_eq!(outer[0].0, Value::Text("StreamDigest".into()));
+        let Value::Map(fields) = &outer[0].1 else {
+            panic!("payload not a map")
+        };
+        let get = |k: &str| {
+            fields
+                .iter()
+                .find(|(key, _)| *key == Value::Text(k.into()))
+                .map(|(_, v)| v)
+        };
+        assert_eq!(
+            get("frontier"),
+            Some(&Value::Array(vec![Value::Array(vec![
+                Value::Bytes(vec![1; 16]),
+                Value::Integer(3.into()),
+                Value::Bytes(vec![2; 32]),
+            ])]))
+        );
+        assert_eq!(get("digest"), Some(&Value::Bytes(vec![9; 32])));
+        assert_eq!(get("x_later"), Some(&Value::Integer(7.into())));
+
+        let back = decode_inner_op(&bytes).unwrap();
+        let (InnerOp::StreamDigest(a), InnerOp::StreamDigest(b)) = (&op, &back) else {
+            panic!("decoded to another variant");
+        };
+        assert_eq!(a, b);
+        assert_eq!(back.inner_kind(), "stream.digest");
+        assert_eq!(back.target_kind(), "stream");
+        assert_eq!(back.effect(), OpEffect::Control);
+        assert_eq!(back.entity_kind(), EntityKind::Stream);
+        assert!(back.is_control());
     }
 
     /// The op-log strings every stored op already carries. Generating the

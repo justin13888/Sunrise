@@ -77,7 +77,10 @@ pub use control_op::{
     KeyShare, Recipient, RevokeReason, RosterEntry, VaultRequiresPayload,
 };
 pub use core::{Core, CoreError};
-pub use engine::{Engine, EngineError};
+pub use engine::{
+    ChainIntegrity, CompactionPolicy, CompactionReport, Engine, EngineError, SnapshotApplied,
+    SNAPSHOT_FORMAT_V,
+};
 pub use events::{
     AttachmentFetch, AttachmentFetchOutcome, AttachmentFetchState, DomainEvent, SyncStatus,
 };

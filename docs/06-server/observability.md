@@ -12,8 +12,8 @@ Operate the server without violating the E2EE guarantee.
 > `api/observe.rs` and end-to-end in `crates/sunrise-server/tests/logging.rs` —
 > and an in-process counter registry
 > exposed at `/metrics` (`metrics.rs`). **Not built:** labelled metrics of any
-> kind, histograms, OTel tracing and sampling, the deep health check, alerting,
-> and the per-account audit log. Each section says which it is.
+> kind, histograms, OTel tracing and sampling, the deep health check's
+> disk-free-ratio probe, alerting, and the per-account audit log. Each section says which it is.
 
 ## What we log
 
@@ -31,7 +31,7 @@ connection counts, per-account op rates and slow-query logs have no
 implementation; error frequency is recoverable from the `err_code` field on
 rejection lines, not from a metric.
 
-The 28 `ev` names the server emits, complete:
+The 48 `ev` names the server emits, complete:
 
 <!-- Extracted from the tree; do not edit by hand. Re-run and reconcile:
      grep -rhoE 'ev = "srv\.[a-z0-9_.]+"' crates/sunrise-server/src | sort -u
@@ -44,7 +44,7 @@ The 28 `ev` names the server emits, complete:
      NOT the commit that last changed the set. Now that the gate runs, it is
      provenance rather than the reader's assurance: diff that ref against HEAD
      over the grepped path to see what a human last looked at.
-     Last extracted: 556ff2a -->
+     Last extracted: 83496a14 -->
 
 ```
 srv.start                        srv.req.start
@@ -52,16 +52,29 @@ srv.start.failed                 srv.req.end
 srv.start.refused                srv.store.failed
 srv.start.single_tenant          srv.auth.device_sig_rejected
 srv.start.metrics_withheld       srv.auth.step_up_required
+srv.start.device_sig_optional
 srv.stop                         srv.relay.fanout
-srv.stop.failed                  srv.relay.append_failed
-                                 srv.relay.replay_failed
+srv.stop.draining                srv.relay.append_failed
+srv.stop.failed                  srv.relay.replay_failed
+srv.health.unready               srv.ratelimit.rejected
+srv.store.encrypted
+srv.store.migrated
+srv.store.quick_check
+srv.store.wal_unavailable
 srv.sync.negotiate_refused       srv.relay.cursor_gap
 srv.sync.session_open            srv.relay.batch_duplicate
 srv.sync.subscribe               srv.sync.refresh_rejected
 srv.sync.stream_open             srv.sync.refresh_identity_mismatch
 srv.sync.stream_closed           srv.sync.refreshed
-srv.sync.token_expired           srv.sync.resume_conflict
+srv.sync.stream_drained          srv.sync.resume_conflict
+srv.sync.token_expired
 srv.sync.device_revoked
+srv.push.disabled                srv.push.lookup_failed
+srv.push.token_unregistered      srv.push.delivery_failed
+srv.account.delete_initiated     srv.blob.tombstoned
+srv.account.delete_requested     srv.blob.gc_deleted
+srv.account.delete_completed     srv.blob.upload_swept
+srv.maintenance.failed
 ```
 
 Four names earlier revisions of this file listed are **not emitted by anything**
@@ -135,14 +148,16 @@ extracted from the source and checked by a gate, so the catalogue's
      NOT the commit that last changed the set. Now that the gate runs, it is
      provenance rather than the reader's assurance: diff that ref against HEAD
      over the grepped path to see what a human last looked at.
-     Last extracted: 08ef4b1 -->
+     Last extracted: f3ed6cb8 -->
 
 ```
 sunrise_account_create_total
+sunrise_account_delete_total
 sunrise_blob_bytes_total                  {direction}
 sunrise_blob_chunk_total
 sunrise_blob_fetch_total
 sunrise_blob_finalize_total
+sunrise_blob_gc_deleted_total
 sunrise_blob_hash_mismatch_total
 sunrise_blob_init_total
 sunrise_build_info                        {version, commit}
@@ -153,8 +168,11 @@ sunrise_devices_revoke_total
 sunrise_http_request_duration_seconds     {endpoint, method}
 sunrise_http_requests_total               {endpoint, method, status}
 sunrise_metrics_series_dropped_total
-sunrise_push_dispatch_total               {provider, result} (LoggingProvider; never reached)
+sunrise_pairing_total                     {result}
+sunrise_push_dispatch_duration_seconds    {provider}
+sunrise_push_dispatch_total               {provider, result}
 sunrise_push_register_total
+sunrise_ratelimit_rejected_total          {endpoint, scope}
 sunrise_recovery_blob_fetch_total
 sunrise_recovery_step_up_refused_total
 sunrise_relay_append_failed_total
@@ -172,7 +190,7 @@ sunrise_sync_sessions_active
 sunrise_sync_stream_total
 ```
 
-32 metric names, and four that earlier revisions of this file listed and the
+37 metric names, and four that earlier revisions of this file listed and the
 tree does not define: `sunrise_sync_token_expired_total`,
 `sunrise_sync_token_refresh_rejected_total`, `sunrise_sync_token_refreshed_total`,
 `sunrise_sync_unauthenticated_total`. The token-lifecycle counters collapsed into
@@ -370,11 +388,21 @@ and unbuilt.
 ## Health
 
 - `GET /api/v1/health` returns 200 + `{"status":"ok"}`, unconditionally: the
-  handler reads no state, so it is liveness only.
-- A deeper readiness check at `/api/v1/health?deep=1` verifies DB, object store,
-  and disk free ratio. **Not implemented** — the query parameter is ignored, so
-  wiring `?deep=1` as a readiness probe today yields an unconditional 200. See
-  [`api.md`](./api.md) for the contract it will have.
+  handler reads no state, so it is liveness only. It stays 200 while the server
+  drains, because a draining process is alive.
+- `GET /api/v1/health?deep=1` is the readiness probe. It answers 200 only when
+  the server is not draining, the store answers `SELECT 1` within 2 s, and the
+  blob root takes a probe write within 5 s; otherwise 503 with `failed` naming
+  the checks. A failed dependency check logs `srv.health.unready`; a drain does
+  not, since it is expected. The disk-free-ratio check `api.md` lists is not
+  built. See [`api.md`](./api.md) §Health / meta for the body.
+- On `SIGTERM` or `SIGINT` the server logs `srv.stop.draining`, flips readiness
+  to 503, ends every open SSE stream with a retryable `closed` event, and gives
+  in-flight requests `[server] shutdown_grace_secs` (default 25) to finish
+  before logging `srv.stop`. A second signal stops it at once.
+- `sunrise-server healthcheck` probes the configured listener's liveness route
+  from inside the container, so the image's `HEALTHCHECK` needs no `curl`; see
+  [`self-hosting.md`](./self-hosting.md).
 
 ## Alerts (managed) — NOT IMPLEMENTED
 

@@ -7,16 +7,96 @@
   "paths": {
     "/api/v1/health": {
       "get": {
-        "summary": "Liveness probe.",
-        "description": "Unauthenticated on purpose: a load balancer has no token, and this answers\n\"is the process up\", not \"is the database reachable\". `docs/06-server/api.md`\nspecifies a `?deep=1` variant that has never existed and is still not here.",
+        "summary": "Liveness probe, and readiness probe with `?deep=1`.",
+        "description": "Unauthenticated on purpose: a load balancer has no token.\n\nWithout `deep` it reads no state and always answers `200 {\"status\":\"ok\"}`:\nit answers \"is the process up\", and a liveness probe that failed on a full\ndisk would restart a process that restarting cannot fix.\n\nWith `?deep=1` it answers `200` only when the server is not draining, the\nstore answers within 2 s, and the blob root is writable within 5 s, and\notherwise `503` naming the failed checks.",
         "operationId": "health",
+        "parameters": [
+          {
+            "name": "deep",
+            "in": "query",
+            "description": "`1` runs the readiness checks; absent or `0` is liveness only.",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "maximum": 255.0,
+              "minimum": 0.0,
+              "format": "uint8"
+            }
+          }
+        ],
         "responses": {
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
           "200": {
-            "description": "OK",
+            "description": "alive, and on ?deep=1 every readiness check passed",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "a readiness check failed; `failed` names which",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests",
+            "headers": {
+              "Retry-After": {
+                "description": "Whole seconds to wait before retrying; at least 1. A retry sooner is refused again.",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/rate-limited"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -58,6 +138,37 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/MetaResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests",
+            "headers": {
+              "Retry-After": {
+                "description": "Whole seconds to wait before retrying; at least 1. A retry sooner is refused again.",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/rate-limited"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -375,6 +486,37 @@
               }
             }
           },
+          "429": {
+            "description": "Too many requests",
+            "headers": {
+              "Retry-After": {
+                "description": "Whole seconds to wait before retrying; at least 1. A retry sooner is refused again.",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/rate-limited"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
           "413": {
             "description": "the request body exceeds the configured limit",
             "content": {
@@ -669,6 +811,374 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/AccountInfo"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests",
+            "headers": {
+              "Retry-After": {
+                "description": "Whole seconds to wait before retrying; at least 1. A retry sooner is refused again.",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/rate-limited"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "the request body exceeds the configured limit",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "AccountToken": []
+          }
+        ]
+      },
+      "delete": {
+        "summary": "Confirm the calling account's deletion.",
+        "operationId": "deleteAccount",
+        "parameters": [
+          {
+            "name": "X-Sunrise-Device",
+            "in": "header",
+            "description": "Which of the account's devices signed this request.\n\nRenamed explicitly: the derive falls back to the field identifier\nverbatim, so without this the extractor would read a header literally\nnamed `x_sunrise_device` and describe that name to clients -- wrong on\nthe wire and wrong in the document, and passing every test that only\never talks to itself.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "X-Sunrise-Device-Sig",
+            "in": "header",
+            "description": "The detached Ed25519 signature, base64url no-pad.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Date",
+            "in": "header",
+            "description": "Inside the signature, so it cannot be adjusted in flight.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AccountDeleteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "401": {
+            "description": "Unauthorized; Unauthenticated",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "The challenge the client must answer, per RFC 9110 section 11.6.1.",
+                "required": true,
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Bearer"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Problem"
+                        },
+                        {
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "about:blank"
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Problem"
+                        },
+                        {
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "https://sunrise.app/problems/unauthenticated"
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden; Sign-up disabled",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/validation"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Unsupported Media Type",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable Entity",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/not-found"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/conflict"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Temporarily unavailable",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/unavailable"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/internal"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "the request was accepted, and the processing it asked for has not completed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountDeleteResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests",
+            "headers": {
+              "Retry-After": {
+                "description": "Whole seconds to wait before retrying; at least 1. A retry sooner is refused again.",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/rate-limited"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -972,6 +1482,366 @@
               }
             }
           },
+          "429": {
+            "description": "Too many requests",
+            "headers": {
+              "Retry-After": {
+                "description": "Whole seconds to wait before retrying; at least 1. A retry sooner is refused again.",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/rate-limited"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "the request body exceeds the configured limit",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "AccountToken": []
+          }
+        ]
+      }
+    },
+    "/api/v1/accounts/me/delete/initiate": {
+      "post": {
+        "summary": "Mint a deletion phrase for the calling account.",
+        "operationId": "initiateAccountDeletion",
+        "parameters": [
+          {
+            "name": "X-Sunrise-Device",
+            "in": "header",
+            "description": "Which of the account's devices signed this request.\n\nRenamed explicitly: the derive falls back to the field identifier\nverbatim, so without this the extractor would read a header literally\nnamed `x_sunrise_device` and describe that name to clients -- wrong on\nthe wire and wrong in the document, and passing every test that only\never talks to itself.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "X-Sunrise-Device-Sig",
+            "in": "header",
+            "description": "The detached Ed25519 signature, base64url no-pad.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Date",
+            "in": "header",
+            "description": "Inside the signature, so it cannot be adjusted in flight.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "401": {
+            "description": "Unauthorized; Unauthenticated",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "The challenge the client must answer, per RFC 9110 section 11.6.1.",
+                "required": true,
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Bearer"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Problem"
+                        },
+                        {
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "about:blank"
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Problem"
+                        },
+                        {
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "https://sunrise.app/problems/unauthenticated"
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden; Sign-up disabled",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/validation"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Unsupported Media Type",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable Entity",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/not-found"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/conflict"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Temporarily unavailable",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/unavailable"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/internal"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "the request was accepted, and the processing it asked for has not completed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeleteInitiateResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests",
+            "headers": {
+              "Retry-After": {
+                "description": "Whole seconds to wait before retrying; at least 1. A retry sooner is refused again.",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/rate-limited"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
           "413": {
             "description": "the request body exceeds the configured limit",
             "content": {
@@ -1269,6 +2139,37 @@
                     "$ref": "#/components/schemas/DeviceMeta"
                   },
                   "type": "array"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests",
+            "headers": {
+              "Retry-After": {
+                "description": "Whole seconds to wait before retrying; at least 1. A retry sooner is refused again.",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/rate-limited"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -1585,6 +2486,37 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/DeviceRegisterResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests",
+            "headers": {
+              "Retry-After": {
+                "description": "Whole seconds to wait before retrying; at least 1. A retry sooner is refused again.",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/rate-limited"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -1909,6 +2841,37 @@
           "204": {
             "description": "the request succeeded and there is no content to send"
           },
+          "429": {
+            "description": "Too many requests",
+            "headers": {
+              "Retry-After": {
+                "description": "Whole seconds to wait before retrying; at least 1. A retry sooner is refused again.",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/rate-limited"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
           "413": {
             "description": "the request body exceeds the configured limit",
             "content": {
@@ -2229,6 +3192,37 @@
           "204": {
             "description": "the request succeeded and there is no content to send"
           },
+          "429": {
+            "description": "Too many requests",
+            "headers": {
+              "Retry-After": {
+                "description": "Whole seconds to wait before retrying; at least 1. A retry sooner is refused again.",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/rate-limited"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
           "413": {
             "description": "the request body exceeds the configured limit",
             "content": {
@@ -2529,6 +3523,37 @@
           },
           "204": {
             "description": "the request succeeded and there is no content to send"
+          },
+          "429": {
+            "description": "Too many requests",
+            "headers": {
+              "Retry-After": {
+                "description": "Whole seconds to wait before retrying; at least 1. A retry sooner is refused again.",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/rate-limited"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
           },
           "413": {
             "description": "the request body exceeds the configured limit",
@@ -2838,6 +3863,37 @@
               }
             }
           },
+          "429": {
+            "description": "Too many requests",
+            "headers": {
+              "Retry-After": {
+                "description": "Whole seconds to wait before retrying; at least 1. A retry sooner is refused again.",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/rate-limited"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
           "413": {
             "description": "the request body exceeds the configured limit",
             "content": {
@@ -3143,6 +4199,37 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/FinalizeResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests",
+            "headers": {
+              "Retry-After": {
+                "description": "Whole seconds to wait before retrying; at least 1. A retry sooner is refused again.",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/rate-limited"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -3487,6 +4574,37 @@
           "204": {
             "description": "the request succeeded and there is no content to send"
           },
+          "429": {
+            "description": "Too many requests",
+            "headers": {
+              "Retry-After": {
+                "description": "Whole seconds to wait before retrying; at least 1. A retry sooner is refused again.",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/rate-limited"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
           "413": {
             "description": "the request body exceeds the configured limit",
             "content": {
@@ -3813,6 +4931,404 @@
               }
             }
           },
+          "429": {
+            "description": "Too many requests",
+            "headers": {
+              "Retry-After": {
+                "description": "Whole seconds to wait before retrying; at least 1. A retry sooner is refused again.",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/rate-limited"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "the request body exceeds the configured limit",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "AccountToken": []
+          }
+        ]
+      },
+      "delete": {
+        "summary": "Tombstone a committed blob.",
+        "description": "The ciphertext stays readable until it is collected: a device that has not\nyet applied the detach may still fetch it, which is the case the quorum in\n`docs/02-domain/attachments.md` §Deletion exists for. Tombstoning a blob\nalready tombstoned keeps the first tombstone and its clock.",
+        "operationId": "deleteBlob",
+        "parameters": [
+          {
+            "name": "blob_id",
+            "in": "path",
+            "description": "The blob being read.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^blb_[0-9a-f]{32}$"
+            }
+          },
+          {
+            "name": "X-Sunrise-Device",
+            "in": "header",
+            "description": "Which of the account's devices signed this request.\n\nRenamed explicitly: the derive falls back to the field identifier\nverbatim, so without this the extractor would read a header literally\nnamed `x_sunrise_device` and describe that name to clients -- wrong on\nthe wire and wrong in the document, and passing every test that only\never talks to itself.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "X-Sunrise-Device-Sig",
+            "in": "header",
+            "description": "The detached Ed25519 signature, base64url no-pad.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Date",
+            "in": "header",
+            "description": "Inside the signature, so it cannot be adjusted in flight.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BlobDeleteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "400": {
+            "description": "Bad Request; Invalid request",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Problem"
+                        },
+                        {
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "about:blank"
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Problem"
+                        },
+                        {
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "https://sunrise.app/problems/validation"
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized; Unauthenticated",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "The challenge the client must answer, per RFC 9110 section 11.6.1.",
+                "required": true,
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Bearer"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Problem"
+                        },
+                        {
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "about:blank"
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Problem"
+                        },
+                        {
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "https://sunrise.app/problems/unauthenticated"
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden; Sign-up disabled",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Unsupported Media Type",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable Entity",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/not-found"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/conflict"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Temporarily unavailable",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/unavailable"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/internal"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "the request was accepted, and the processing it asked for has not completed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BlobDeleteResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests",
+            "headers": {
+              "Retry-After": {
+                "description": "Whole seconds to wait before retrying; at least 1. A retry sooner is refused again.",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/rate-limited"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
           "413": {
             "description": "the request body exceeds the configured limit",
             "content": {
@@ -4127,6 +5643,37 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/SessionResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests",
+            "headers": {
+              "Retry-After": {
+                "description": "Whole seconds to wait before retrying; at least 1. A retry sooner is refused again.",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/rate-limited"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -4463,6 +6010,37 @@
           },
           "204": {
             "description": "the request succeeded and there is no content to send"
+          },
+          "429": {
+            "description": "Too many requests",
+            "headers": {
+              "Retry-After": {
+                "description": "Whole seconds to wait before retrying; at least 1. A retry sooner is refused again.",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/rate-limited"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
           },
           "413": {
             "description": "the request body exceeds the configured limit",
@@ -4804,6 +6382,37 @@
               }
             }
           },
+          "429": {
+            "description": "Too many requests",
+            "headers": {
+              "Retry-After": {
+                "description": "Whole seconds to wait before retrying; at least 1. A retry sooner is refused again.",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/rate-limited"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
           "413": {
             "description": "the request body exceeds the configured limit",
             "content": {
@@ -5140,6 +6749,37 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/RefreshResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests",
+            "headers": {
+              "Retry-After": {
+                "description": "Whole seconds to wait before retrying; at least 1. A retry sooner is refused again.",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/rate-limited"
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -5503,6 +7143,1049 @@
               }
             }
           },
+          "429": {
+            "description": "Too many requests",
+            "headers": {
+              "Retry-After": {
+                "description": "Whole seconds to wait before retrying; at least 1. A retry sooner is refused again.",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/rate-limited"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "the request body exceeds the configured limit",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "AccountToken": []
+          }
+        ]
+      }
+    },
+    "/api/v1/pairing/send": {
+      "post": {
+        "summary": "Buffer one message for the other side.",
+        "description": "The new device's first message opens the session and counts as a pair\nattempt. The existing device can only join a session that is open.",
+        "operationId": "sendPairingMessage",
+        "parameters": [
+          {
+            "name": "X-Sunrise-Device",
+            "in": "header",
+            "description": "Which of the account's devices signed this request.\n\nRenamed explicitly: the derive falls back to the field identifier\nverbatim, so without this the extractor would read a header literally\nnamed `x_sunrise_device` and describe that name to clients -- wrong on\nthe wire and wrong in the document, and passing every test that only\never talks to itself.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "X-Sunrise-Device-Sig",
+            "in": "header",
+            "description": "The detached Ed25519 signature, base64url no-pad.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Date",
+            "in": "header",
+            "description": "Inside the signature, so it cannot be adjusted in flight.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PairSendRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "401": {
+            "description": "Unauthorized; Unauthenticated",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "The challenge the client must answer, per RFC 9110 section 11.6.1.",
+                "required": true,
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Bearer"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Problem"
+                        },
+                        {
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "about:blank"
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Problem"
+                        },
+                        {
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "https://sunrise.app/problems/unauthenticated"
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden; Sign-up disabled",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/validation"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Unsupported Media Type",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable Entity",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/not-found"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/conflict"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Temporarily unavailable",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/unavailable"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/internal"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PairSendResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests",
+            "headers": {
+              "Retry-After": {
+                "description": "Whole seconds to wait before retrying; at least 1. A retry sooner is refused again.",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/rate-limited"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "the request body exceeds the configured limit",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "AccountToken": []
+          }
+        ]
+      }
+    },
+    "/api/v1/pairing/receive": {
+      "post": {
+        "summary": "Collect what the other side has sent since `after`.",
+        "operationId": "receivePairingMessages",
+        "parameters": [
+          {
+            "name": "X-Sunrise-Device",
+            "in": "header",
+            "description": "Which of the account's devices signed this request.\n\nRenamed explicitly: the derive falls back to the field identifier\nverbatim, so without this the extractor would read a header literally\nnamed `x_sunrise_device` and describe that name to clients -- wrong on\nthe wire and wrong in the document, and passing every test that only\never talks to itself.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "X-Sunrise-Device-Sig",
+            "in": "header",
+            "description": "The detached Ed25519 signature, base64url no-pad.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Date",
+            "in": "header",
+            "description": "Inside the signature, so it cannot be adjusted in flight.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PairReceiveRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "401": {
+            "description": "Unauthorized; Unauthenticated",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "The challenge the client must answer, per RFC 9110 section 11.6.1.",
+                "required": true,
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Bearer"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Problem"
+                        },
+                        {
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "about:blank"
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Problem"
+                        },
+                        {
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "https://sunrise.app/problems/unauthenticated"
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden; Sign-up disabled",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/validation"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Unsupported Media Type",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable Entity",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/not-found"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/conflict"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Temporarily unavailable",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/unavailable"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/internal"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PairReceiveResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests",
+            "headers": {
+              "Retry-After": {
+                "description": "Whole seconds to wait before retrying; at least 1. A retry sooner is refused again.",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/rate-limited"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "the request body exceeds the configured limit",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "AccountToken": []
+          }
+        ]
+      }
+    },
+    "/api/v1/pairing/abort": {
+      "post": {
+        "summary": "Drop the session: the spec's `pair_abort`, for a \"Don't match\" tap or a cancelled screen.",
+        "description": "Always `204`, whether or not there was a session to drop: an abort that\nanswered differently for a live session would be the oracle the other two\nroutes are careful not to be.",
+        "operationId": "abortPairing",
+        "parameters": [
+          {
+            "name": "X-Sunrise-Device",
+            "in": "header",
+            "description": "Which of the account's devices signed this request.\n\nRenamed explicitly: the derive falls back to the field identifier\nverbatim, so without this the extractor would read a header literally\nnamed `x_sunrise_device` and describe that name to clients -- wrong on\nthe wire and wrong in the document, and passing every test that only\never talks to itself.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "X-Sunrise-Device-Sig",
+            "in": "header",
+            "description": "The detached Ed25519 signature, base64url no-pad.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "Date",
+            "in": "header",
+            "description": "Inside the signature, so it cannot be adjusted in flight.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PairAbortRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "401": {
+            "description": "Unauthorized; Unauthenticated",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "The challenge the client must answer, per RFC 9110 section 11.6.1.",
+                "required": true,
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Bearer"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Problem"
+                        },
+                        {
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "about:blank"
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Problem"
+                        },
+                        {
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "const": "https://sunrise.app/problems/unauthenticated"
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden; Sign-up disabled",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/validation"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Unsupported Media Type",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable Entity",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/not-found"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/conflict"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Temporarily unavailable",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/unavailable"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/internal"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "204": {
+            "description": "the request succeeded and there is no content to send"
+          },
+          "429": {
+            "description": "Too many requests",
+            "headers": {
+              "Retry-After": {
+                "description": "Whole seconds to wait before retrying; at least 1. A retry sooner is refused again.",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/rate-limited"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
           "413": {
             "description": "the request body exceeds the configured limit",
             "content": {
@@ -5724,6 +8407,37 @@
               }
             }
           },
+          "429": {
+            "description": "Too many requests",
+            "headers": {
+              "Retry-After": {
+                "description": "Whole seconds to wait before retrying; at least 1. A retry sooner is refused again.",
+                "required": true,
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "https://sunrise.app/problems/rate-limited"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
           "413": {
             "description": "the request body exceeds the configured limit",
             "content": {
@@ -5752,19 +8466,6 @@
   },
   "components": {
     "schemas": {
-      "HealthResponse": {
-        "properties": {
-          "status": {
-            "type": "string",
-            "description": "`\"ok\"` while the server is healthy."
-          }
-        },
-        "type": "object",
-        "required": [
-          "status"
-        ],
-        "description": "Health response.\n\n`Deserialize` is here for the generated client, not for the server: spargen\nreads this shape out of the document and the client decodes into it."
-      },
       "Problem": {
         "properties": {
           "type": {
@@ -5794,6 +8495,60 @@
         ],
         "title": "Problem Details",
         "description": "An RFC 9457 problem detail."
+      },
+      "ReadinessChecks": {
+        "properties": {
+          "accepting": {
+            "type": "boolean",
+            "description": "The server is not draining. `false` from the moment shutdown begins."
+          },
+          "store": {
+            "type": "boolean",
+            "description": "The store answered `SELECT 1` within 2 s."
+          },
+          "blob_root": {
+            "type": "boolean",
+            "description": "The blob root took a probe write and its removal within 5 s."
+          }
+        },
+        "type": "object",
+        "required": [
+          "accepting",
+          "store",
+          "blob_root"
+        ],
+        "description": "What `?deep=1` checked, one member per check, `true` where it passed."
+      },
+      "HealthResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "`\"ok\"` while the server is healthy, `\"unavailable\"` when a readiness\ncheck failed."
+          },
+          "checks": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReadinessChecks"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Each readiness check's outcome. Present only on `?deep=1`."
+          },
+          "failed": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "description": "The names of the checks that failed, in `checks`' order. Empty, and\nomitted, when every check passed."
+          }
+        },
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "description": "Health response.\n\n`Deserialize` is here for the generated client, not for the server: spargen\nreads this shape out of the document and the client decodes into it."
       },
       "MetaResponse": {
         "properties": {
@@ -5961,6 +8716,62 @@
           "recovery_blob"
         ],
         "description": "`GET /api/v1/accounts/me/recovery_blob` response body.\n\nOne field, deliberately: the blob is the whole answer, and the salt and\nnonce the client needs to open it are inside it — `magic(5) || salt(16) ||\nnonce(24) || ct`, per `docs/03-crypto/recovery.md`. Reporting them\nseparately would be the server describing a format it does not parse."
+      },
+      "DeleteInitiateResponse": {
+        "properties": {
+          "confirm_phrase": {
+            "type": "string",
+            "pattern": "^[0-9A-HJKMNP-TV-Z]{52}$",
+            "description": "The single-use phrase `DELETE /api/v1/accounts/me` must carry: 52\nCrockford base-32 characters. Initiating again replaces it."
+          },
+          "expires_at_ms": {
+            "type": "integer",
+            "minimum": 0.0,
+            "format": "uint64",
+            "description": "When the phrase stops being accepted, ms since the epoch."
+          }
+        },
+        "type": "object",
+        "required": [
+          "confirm_phrase",
+          "expires_at_ms"
+        ],
+        "description": "`POST /api/v1/accounts/me/delete/initiate` response body."
+      },
+      "AccountDeleteRequest": {
+        "properties": {
+          "confirm_phrase": {
+            "type": "string",
+            "description": "The phrase `initiate` returned. Case-insensitive."
+          }
+        },
+        "type": "object",
+        "required": [
+          "confirm_phrase"
+        ],
+        "description": "`DELETE /api/v1/accounts/me` request body."
+      },
+      "AccountDeleteResponse": {
+        "properties": {
+          "requested_at_ms": {
+            "type": "integer",
+            "minimum": 0.0,
+            "format": "uint64",
+            "description": "When the deletion was first confirmed, ms since the epoch. A repeated\nconfirmation reports the first one: it does not move the erasure."
+          },
+          "erase_after_ms": {
+            "type": "integer",
+            "minimum": 0.0,
+            "format": "uint64",
+            "description": "The earliest the account's data is erased, ms since the epoch; the\nfirst maintenance pass after it does so."
+          }
+        },
+        "type": "object",
+        "required": [
+          "requested_at_ms",
+          "erase_after_ms"
+        ],
+        "description": "`DELETE /api/v1/accounts/me` response body."
       },
       "DeviceMeta": {
         "properties": {
@@ -6230,6 +9041,48 @@
           "chunk_count"
         ],
         "description": "`POST /api/v1/blobs/finalize` response body."
+      },
+      "BlobDeleteRequest": {
+        "properties": {
+          "stream_id": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{32}$",
+            "description": "The stream the detaching op was published in, 32 lowercase hex."
+          },
+          "device_id": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{32}$",
+            "description": "The device that published it — the op's routing `device_id`, as\nsubscribe cursors spell it: 32 lowercase hex."
+          },
+          "seq": {
+            "type": "integer",
+            "minimum": 0.0,
+            "format": "uint64",
+            "description": "The op's `seq` from that device."
+          }
+        },
+        "type": "object",
+        "required": [
+          "stream_id",
+          "device_id",
+          "seq"
+        ],
+        "description": "`DELETE /api/v1/blobs/{blob_id}` request body: the op that detached the\nblob, named by the cleartext routing head the relay already reads off\nevery op."
+      },
+      "BlobDeleteResponse": {
+        "properties": {
+          "collect_after_ms": {
+            "type": "integer",
+            "minimum": 0.0,
+            "format": "uint64",
+            "description": "The earliest the ciphertext may be reclaimed, ms since the epoch. It\nis reclaimed on the first maintenance pass after this at which every\nactive device has acknowledged the op."
+          }
+        },
+        "type": "object",
+        "required": [
+          "collect_after_ms"
+        ],
+        "description": "`DELETE /api/v1/blobs/{blob_id}` response body."
       },
       "SessionRequest": {
         "properties": {
@@ -6597,6 +9450,138 @@
         "discriminator": {
           "propertyName": "kind"
         }
+      },
+      "PairRole": {
+        "type": "string",
+        "enum": [
+          "new_device",
+          "existing_device"
+        ],
+        "description": "Which side of a pairing sent a message."
+      },
+      "PairSendRequest": {
+        "properties": {
+          "pair_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{22}$",
+            "description": "The QR's `pair_id`: 16 bytes, base64url without padding."
+          },
+          "role": {
+            "$ref": "#/components/schemas/PairRole",
+            "description": "The side sending."
+          },
+          "index": {
+            "type": "integer",
+            "maximum": 4294967295.0,
+            "minimum": 0.0,
+            "format": "uint32",
+            "description": "How many messages this role sent before this one: 0, 1 or 2.\n\nWhat makes a retry safe. A send whose answer was lost is resent with\nthe same index and the same message, and is acknowledged without being\nbuffered twice — a duplicate would otherwise reach the other side as the\nprotocol's next message and fail its decryption."
+          },
+          "message": {
+            "type": "string",
+            "description": "One Noise message, base64url without padding; at most 64 KiB decoded."
+          }
+        },
+        "type": "object",
+        "required": [
+          "pair_id",
+          "role",
+          "index",
+          "message"
+        ],
+        "description": "`POST /api/v1/pairing/send` request body."
+      },
+      "PairSendResponse": {
+        "properties": {
+          "sent": {
+            "type": "integer",
+            "maximum": 4294967295.0,
+            "minimum": 0.0,
+            "format": "uint32",
+            "description": "How many messages this role has now sent in the session, this one\nincluded."
+          },
+          "expires_at_ms": {
+            "type": "integer",
+            "minimum": 0.0,
+            "format": "uint64",
+            "description": "When the session is dropped whatever happens, ms since the epoch."
+          }
+        },
+        "type": "object",
+        "required": [
+          "sent",
+          "expires_at_ms"
+        ],
+        "description": "`POST /api/v1/pairing/send` response body."
+      },
+      "PairReceiveRequest": {
+        "properties": {
+          "pair_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{22}$",
+            "description": "The QR's `pair_id`."
+          },
+          "role": {
+            "$ref": "#/components/schemas/PairRole",
+            "description": "The side receiving. It is handed what the other side sent."
+          },
+          "after": {
+            "type": "integer",
+            "maximum": 4294967295.0,
+            "minimum": 0.0,
+            "format": "uint32",
+            "description": "How many of the other side's messages the caller already holds."
+          }
+        },
+        "type": "object",
+        "required": [
+          "pair_id",
+          "role",
+          "after"
+        ],
+        "description": "`POST /api/v1/pairing/receive` request body."
+      },
+      "PairReceiveResponse": {
+        "properties": {
+          "messages": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "description": "The other side's messages from `after` on, oldest first, base64url.\nEmpty when nothing new has arrived."
+          },
+          "expires_at_ms": {
+            "type": "integer",
+            "minimum": 0.0,
+            "format": "uint64",
+            "description": "When the session is dropped whatever happens, ms since the epoch."
+          }
+        },
+        "type": "object",
+        "required": [
+          "messages",
+          "expires_at_ms"
+        ],
+        "description": "`POST /api/v1/pairing/receive` response body."
+      },
+      "PairAbortRequest": {
+        "properties": {
+          "pair_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{22}$",
+            "description": "The QR's `pair_id`."
+          },
+          "role": {
+            "$ref": "#/components/schemas/PairRole",
+            "description": "The side giving up."
+          }
+        },
+        "type": "object",
+        "required": [
+          "pair_id",
+          "role"
+        ],
+        "description": "`POST /api/v1/pairing/abort` request body."
       }
     },
     "securitySchemes": {

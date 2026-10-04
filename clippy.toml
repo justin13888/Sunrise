@@ -33,6 +33,15 @@ disallowed-types = [
     # No entries in v1 — types like `std::sync::Mutex` are still permitted.
 ]
 
+# Constant-time comparison is NOT enforced here, and cannot be. A variable-time
+# `==` over a MAC, tag, key or digest is the rule that wants a deny, but
+# `disallowed-methods` matches method calls and paths, and `tag == expected`
+# is neither: the operator is never resolved to a call clippy checks, so no
+# entry here could reject it, and banning `PartialEq::eq` outright would reject
+# every comparison in the workspace. The rule lives in
+# `.github/scripts/constant-time-gate.sh` (ADR-0061), a grep with a justified
+# allowlist, run by the `constant-time` CI job.
+
 
 # Cognitive limits — keep submit/query handlers small.
 cognitive-complexity-threshold = 25

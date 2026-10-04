@@ -78,8 +78,7 @@ struct SunriseApp: App {
                 GoMenuItems(surfaces: surfaces)
             }
             CommandGroup(after: .help) {
-                Divider()
-                CommandMenuItem(surfaces: surfaces, action: .cheatSheet)
+                HelpMenuItems(surfaces: surfaces)
             }
         }
 

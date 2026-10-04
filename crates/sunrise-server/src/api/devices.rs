@@ -384,14 +384,13 @@ pub async fn push_tokens(
             )
         })?;
 
-    let platform = match body.platform {
-        crate::push::PushPlatform::Apns => "apns",
-        crate::push::PushPlatform::Fcm => "fcm",
-        crate::push::PushPlatform::WebPush => "webpush",
-    };
-    state
-        .store
-        .upsert_push_token(&body.device_id, platform, &body.token, state.clock.now_ms())?;
+    // The same spelling the dispatcher looks tokens up by.
+    state.store.upsert_push_token(
+        &body.device_id,
+        body.platform.store_tag(),
+        &body.token,
+        state.clock.now_ms(),
+    )?;
     state.metrics.incr("sunrise_push_register_total");
     Ok(NoContent)
 }
@@ -1018,7 +1017,9 @@ mod tests {
 
     /// The gap, pinned rather than left to be discovered.
     ///
-    /// `require_device_sig` defaults to false. With no `X-Sunrise-Device-Sig`,
+    /// This relay has no issuer, so `require_device_sig` resolves off — the
+    /// state a self-host relay, or an operator's explicit
+    /// `require_device_sig = false`, leaves it in. With no `X-Sunrise-Device-Sig`,
     /// `verify_bytes` returns `Ok(None)`: no device is resolved, so no
     /// revocation check runs at all. A revoked device that simply stops signing
     /// keeps working, and nothing in the relay notices.

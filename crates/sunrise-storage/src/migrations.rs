@@ -134,8 +134,23 @@ pub const MIGRATIONS: &[Migration] = &[
     },
     Migration {
         id: 33,
+        name: "field_merge_state",
+        sql: include_str!("../migrations/0033_field_merge_state.sql"),
+    },
+    Migration {
+        id: 34,
+        name: "op_chain",
+        sql: include_str!("../migrations/0034_op_chain.sql"),
+    },
+    Migration {
+        id: 35,
+        name: "op_log_compaction",
+        sql: include_str!("../migrations/0035_op_log_compaction.sql"),
+    },
+    Migration {
+        id: 36,
         name: "vault_features",
-        sql: include_str!("../migrations/0033_vault_features.sql"),
+        sql: include_str!("../migrations/0036_vault_features.sql"),
     },
 ];
 

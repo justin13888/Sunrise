@@ -40,7 +40,7 @@ Prefixes (`tsk_`, `str_`, `ctx_`, `rtn_`, `blk_`, `not_`, `att_`, `prs_`, `dev_`
 ## Stability
 
 - IDs are immutable for the lifetime of the entity.
-- Deletion is logical; the ID is retained as a tombstone for op-log convergence (see [`../04-storage/compaction.md`](../04-storage/compaction.md) for when tombstones are pruned).
+- Deletion is logical; the ID is retained as a tombstone for op-log convergence. Compaction never prunes one: a deleted entity's `deleted` register stays in the merge state when the ops that wrote it are folded (see [`../04-storage/compaction.md`](../04-storage/compaction.md)).
 
 ## EntityRef
 

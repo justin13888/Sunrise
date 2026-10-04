@@ -82,7 +82,12 @@ struct KeymapTests {
             (press("p", [.command, .shift]), .commandPalette),
             (press("s", [.command, .shift]), .newStream),
             (press("z", [.command]), .undo),
-            (press("z", [.command, .shift]), .redo)
+            (press("z", [.command, .shift]), .redo),
+            (press("i", [.command, .shift]), .importCalendar),
+            (press("p", [.command]), .printView),
+            (press("m", [.command, .option]), .morningSummary),
+            (press("e", [.command, .option]), .endOfDay),
+            (press("/", [.command]), .cheatSheet)
         ]
         for (chord, action) in expected {
             #expect(

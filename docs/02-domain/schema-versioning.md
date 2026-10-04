@@ -143,7 +143,7 @@ mise run fix
   to one of them does not move the fingerprint. Field defaults wait for
   [#319](https://github.com/justin13888/Sunrise/issues/319). Feature ids are
   covered: each registered feature, with its scope, op kinds, fields,
-  field-op kinds and arrival version, is hashed from `DOC_SCHEMA_V` 8
+  field-op kinds and arrival version, is hashed from `DOC_SCHEMA_V` 10
   ([#324](https://github.com/justin13888/Sunrise/issues/324)).
 
 ## How fields merge

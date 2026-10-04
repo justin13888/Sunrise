@@ -7,6 +7,8 @@
 //! [`frame_floors`] is the measurement ADR-0033's revisit trigger asks for.
 
 use crate::api::error::ApiError;
+use crate::api::ratelimit::policy::Budget;
+use crate::api::ratelimit::Throttled;
 use crate::api::signed::Signed;
 use crate::relay::{FrameHead, RelayFrame};
 use crate::relay_log::Appended;
@@ -22,6 +24,9 @@ use sunrise_wire_protocol::{encode_frame, FrameFlags, MsgKind, OpBatchPayload};
 
 use super::credential::{resolve, SessionHeader};
 use super::cursors::parse_id;
+
+/// The route's description path, as the rate-limit metric labels it.
+const OPS: &str = "/api/v1/sync/ops";
 
 /// `POST /api/v1/sync/ops` request body — one `OpBatch`.
 #[derive(Debug, Clone, Serialize, Deserialize, kynos::Schema)]
@@ -110,10 +115,18 @@ pub async fn ops(
         caller,
         value: body,
     }: Signed<OpsRequest>,
-) -> Result<Json<OpsResponse>, ApiError> {
+) -> Result<Json<OpsResponse>, Throttled> {
     let now_ms = state.clock.now_ms();
     let (_, session) = resolve(&state, &header, &caller, now_ms)?;
+    // A session opened before the deletion was confirmed must not keep
+    // writing into a log the erasure is about to remove.
+    crate::api::account_deletion::refuse_if_pending_deletion(&state, &session.account_id)?;
     let stream_id = parse_id(&body.stream_id, "stream_id")?;
+    // Per op, before anything is stored: a refused batch stays in the outbox.
+    let (limiter, n_ops) = (&state.limiter, body.ops.len() as u64);
+    limiter
+        .charge(&state, OPS, Budget::Ops, &caller, n_ops)
+        .await?;
 
     let ops = body
         .ops
@@ -195,6 +208,7 @@ pub async fn ops(
                     heads,
                 },
             );
+            wake_offline_peers(&state, &session, stream_id);
             // Fresh by the whole-batch key, and yet carrying ops this channel
             // already holds: the re-partitioned re-send ADR-0033 accepted and
             // could not see. Counted, never refused — the batch is stored and
@@ -325,6 +339,27 @@ fn count_received(metrics: &crate::Metrics, n_ops: usize) {
         &[],
         crate::metrics::COUNT_BUCKETS,
         n_ops as f64,
+    );
+}
+
+/// Tell the push dispatcher a fresh batch landed, so the account's devices
+/// with no stream open learn of it by a wake-up.
+///
+/// A queue push and nothing more: the token lookup and the send happen on the
+/// dispatcher's own task, so the append is neither slowed nor failed by them.
+fn wake_offline_peers(
+    state: &ServerState,
+    session: &crate::sync_session::Session,
+    stream_id: [u8; 16],
+) {
+    state.push.notify(
+        state,
+        crate::push::Wake {
+            account_id: session.account_id.clone(),
+            stream_id,
+            origin: session.device_id.clone(),
+            kind: crate::push::PushKind::Sync,
+        },
     );
 }
 

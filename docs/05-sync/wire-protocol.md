@@ -291,7 +291,7 @@ consequential:
 ### Server timestamp annotation
 
 When the server first sees a batch it stamps `server_first_seen_ms =
-relay_clock` (`crates/sunrise-server/src/api/sync/publish.rs:111,223`). This is **not** part
+relay_clock` (`crates/sunrise-server/src/api/sync/publish.rs:111,226`). This is **not** part
 of the signed envelope, and it rides on the `Ack` — **once per batch**, not once
 per op.
 
@@ -380,14 +380,20 @@ session's deadline and the device's active row. It emits `closed` with
 `AUTH_TOKEN_EXPIRED` or `AUTH_DEVICE_REVOKED` rather than outliving either.
 `RELAY_STORAGE_UNAVAILABLE` is the third close reason — a durable-log read that
 failed — and it is deliberately **not** followed by `caught_up`, because a
-client would record a completeness it has no basis for. A session whose
+client would record a completeness it has no basis for. The fourth is
+`SYNC_NETWORK_UNAVAILABLE` with reason `relay is shutting down`: a relay that
+received `SIGTERM` ends every open stream with it so its drain is not held open
+by responses that never finish (`docs/06-server/self-hosting.md`). It reuses a
+catalogued retryable code rather than minting one, because a client reads a
+close code it does not know as terminal. A session whose
 credential is about to lapse renews it with `POST /sync/session/refresh`, which
 must name the same principal and the same device; the open stream keeps running.
 
-The reference client (`crates/sunrise-core/src/sync_driver.rs`) tells the three
+The reference client (`crates/sunrise-core/src/sync_driver.rs`) tells the
 close reasons apart by the code's `retryable` flag in the error catalogue, which
-keeps the `RefreshToken` section's distinction: `AUTH_TOKEN_EXPIRED` and
-`RELAY_STORAGE_UNAVAILABLE` reconnect on the backoff schedule, and
+keeps the `RefreshToken` section's distinction: `AUTH_TOKEN_EXPIRED`,
+`RELAY_STORAGE_UNAVAILABLE` and `SYNC_NETWORK_UNAVAILABLE` reconnect on the
+backoff schedule, and
 `AUTH_DEVICE_REVOKED`, `AUTH_TOKEN_INVALID` or a code it cannot read moves it to
 `SyncState::Stopped`, where it makes no further attempt until the credential is
 replaced or the app restarts. A refused

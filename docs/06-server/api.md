@@ -40,9 +40,16 @@ The mode is `header_sig_v2` ([ADR-0022](../11-adr/0022-device-signature-canonica
 and its byte layout is specified in [`auth.md`](./auth.md) §Device binding
 rather than left to an implementation. Two live qualifications:
 
-- The binding is **optional by default**. `[auth] require_device_sig` defaults
-  to `false`, so a request with no `X-Sunrise-Device` is accepted with no
-  device resolved. A binding that *is* present is always verified in full,
+- The binding is **required by default on a relay with an OIDC issuer**:
+  `[auth] require_device_sig`, left unset, is on wherever an issuer is
+  configured, and a request with no complete binding is refused with
+  `401 AUTH_DEVICE_SIG_INVALID` before any device lookup. It is off on the
+  single-tenant self-host verifier, which has no devices to tell apart and
+  refuses the flag outright; there, and on a multi-tenant relay whose
+  operator sets `require_device_sig = false` (which logs
+  `srv.start.device_sig_optional`), a request with no `X-Sunrise-Device` is
+  accepted with no device resolved. `GET /meta` publishes the policy in force
+  as `device_binding_required`. A binding that *is* present is always verified in full,
   whatever the flag says — a signature that fails verification is never an
   ignored header. `POST /accounts` and `POST /devices` take a bootstrap
   exemption: a device cannot sign before it exists.
@@ -69,8 +76,8 @@ client cannot disagree about it — and reached through `api/signed.rs`, whose
 | GET | `/api/v1/accounts/me` | — | `AccountInfo` | implemented |
 | PUT | `/api/v1/accounts/me/recovery_blob` | `{ recovery_blob }` | 204 | **NOT IMPLEMENTED** |
 | GET | `/api/v1/accounts/me/recovery_blob` | — | `{ recovery_blob }` (opaque ciphertext; useless without the offline recovery code) | implemented, behind an OIDC step-up |
-| POST | `/api/v1/accounts/me/delete/initiate` | — | 202; issues a single-use confirmation token (32 bytes Crockford base32, 52 chars, TTL 15 minutes) which the OIDC issuer relays to the user's verified email | **NOT IMPLEMENTED** |
-| DELETE | `/api/v1/accounts/me` | `{ confirm_phrase }` | 202 (deletion within 30 days) | **NOT IMPLEMENTED** |
+| POST | `/api/v1/accounts/me/delete/initiate` | — | `202 { confirm_phrase, expires_at_ms }`: a single-use confirmation phrase (32 bytes Crockford base32, 52 chars, TTL 15 minutes) | implemented, behind an OIDC step-up |
+| DELETE | `/api/v1/accounts/me` | `{ confirm_phrase }` | `202 { requested_at_ms, erase_after_ms }`; erased by the first maintenance pass after `[storage] account_delete_grace_days` (default 30) | implemented, behind an OIDC step-up |
 
 Both request and response types live in `sunrise-onboarding` (`account.rs`) and
 are shared with the client:
@@ -122,6 +129,43 @@ Two things gate it.
 
 The `recovery_blob` is stored opaquely. The server does not validate its internal format or version. The 10 MiB cap and the "signed by an active device" precondition below describe the unbuilt `PUT` route: on the live `POST /accounts` path the blob rides the bootstrap exemption, so it is bounded only by `[server] max_body_bytes` and needs no device signature. Recovery blobs follow the uniform 5-byte magic prefix from [`../10-cross-cutting/protocol-versioning.md`](../10-cross-cutting/protocol-versioning.md) §3 — the server stores opaque bytes and does not introspect.
 
+#### Account deletion
+
+Two calls, both bearer + device signature and both behind the same OIDC step-up
+as the recovery blob (`auth.md` §Recovery): deletion is the one act more final
+than reading the blob, and a stolen session is exactly an ordinary bearer.
+
+1. `POST /accounts/me/delete/initiate` mints a phrase, holds its BLAKE3 hash with
+   a 15-minute expiry, and **returns the phrase to the caller**. Initiating
+   again replaces it. Earlier revisions had the OIDC issuer relay the phrase to
+   the user's verified email. No issuer offers that, and
+   [`non-goals.md`](../00-product/non-goals.md) forbids this relay sending email
+   itself. The email leg was never what proved who was asking. The step-up
+   proves that, and it is the same resolution #56 made for the recovery blob's
+   OTP. The phrase only makes the deletion a deliberate second call, so one
+   retried request or client bug cannot delete an account.
+2. `DELETE /accounts/me { confirm_phrase }` consumes the phrase
+   (case-insensitive, single use) and marks the account. A phrase that is
+   wrong, expired or already used gets `403 ACCOUNT_DELETE_PHRASE_INVALID`, and
+   a wrong one leaves the live phrase usable. A repeated confirmation reports
+   the first one's time and does not move the erasure.
+
+From the mark on, the account may open no sync session, publish no op, and
+init, upload or finalize no blob: each answers
+`403 ACCOUNT_PENDING_DELETION`. That holds for a session opened before the mark
+too. Reads and the account routes stay open. Nothing undoes the mark.
+
+The maintenance pass erases a marked account once
+`[storage] account_delete_grace_days` (default 30) have passed. In one
+transaction it deletes the account row, which cascades to its devices, push
+tokens, declared cursors, deletion phrase and blob tombstones. It also deletes
+the account's relay frames, batches and eviction watermarks, which are keyed by
+`account_h` rather than by a foreign key. After that commit it removes both blob
+trees, `pending/` and `committed/`, and drops the account's channels from the
+in-memory ring. An operator can erase at once with
+`sunrise-server admin account delete <id> --immediately`
+([`self-hosting.md`](./self-hosting.md) §Admin CLI).
+
 #### Terms acceptance
 
 `terms_at_ms` records when the account's holder accepted the operator's terms.
@@ -156,15 +200,11 @@ and so does `sunrise recover` (`sunrise_relay_client::register_device`).
 | 404 | `RECOVERY_BLOB_NOT_FOUND` | The account has no recovery blob. Only reachable *after* the step-up, so it is not an oracle for which accounts have one. | No. |
 | 409 | `RECOVERY_BLOB_EXISTS` | `POST /accounts` offered a recovery blob differing from the stored one. | No — the stored blob stands; rotation needs the unbuilt `PUT`. |
 | 403 | `ACCOUNT_DELETE_PHRASE_INVALID` | `confirm_phrase` token consumed, expired, or never issued. | After re-running `/initiate`. |
+| 403 | `ACCOUNT_PENDING_DELETION` | The account's deletion is confirmed: `POST /sync/session`, `POST /sync/ops` and every blob upload step are refused. | No. |
 | 413 | `VALIDATION_PAYLOAD_TOO_LARGE` | `recovery_blob` body > 10 MiB. Body: `{ "code":"VALIDATION_PAYLOAD_TOO_LARGE", "max_bytes": 10485760 }`. | No (shrink). |
 
-`ACCOUNT_DELETE_PHRASE_INVALID` and `VALIDATION_PAYLOAD_TOO_LARGE` are **not
-implemented**: neither constant exists in `error.rs`'s `codes` module, and the
-routes that would emit them do not exist. The codes `codes` actually defines are
-`AUTH_TOKEN_INVALID`, `AUTH_TOKEN_EXPIRED`, `AUTH_SIGNUP_DISABLED`,
-`AUTH_DEVICE_SIG_INVALID`, `AUTH_DEVICE_NOT_OWNER`, `DEVICE_NOT_FOUND`,
-`VALIDATION_INVALID`, `BLOB_HASH_MISMATCH`, `BLOB_CHUNK_MISSING`,
-`BLOB_NOT_FOUND`, `RELAY_STORAGE_UNAVAILABLE` and `FATAL_INTERNAL`. An
+`VALIDATION_PAYLOAD_TOO_LARGE` is **not implemented**: no constant exists in
+`error.rs`'s `codes` module, and the route that would emit it does not exist. An
 oversized body is rejected by kynos's own `middleware::limits::BodySize`, mounted
 at `[server] max_body_bytes` (default 2 MiB), which answers `413` — and, unlike
 the `tower-http` layer it replaces, contributes that response to every operation
@@ -327,6 +367,7 @@ it is the **content address** of bytes the server has not seen yet.
 | PUT | `/api/v1/blobs/<upload_id>/<i>` | raw ciphertext chunk | 204 |
 | POST | `/api/v1/blobs/finalize` | `{ upload_id, content_hash, chunk_hashes }` | `{ blob_id, size_bytes, chunk_count }` |
 | GET | `/api/v1/blobs/<blob_id>` | — | the concatenated ciphertext, `application/octet-stream` |
+| DELETE | `/api/v1/blobs/<blob_id>` | `{ stream_id, device_id, seq }` | `202 { collect_after_ms }`; a tombstone, collected later (below) |
 
 Every route is authenticated and device-bound like the rest of the REST API —
 `api/blobs.rs` takes a signed extractor on all four — `Signed` for the two JSON bodies, `SignedBinary` for the raw chunk `PUT`, `SignedParts` for the `GET` — so the bearer, the binding and the body are verified before a handler sees the value. `init`
@@ -388,10 +429,28 @@ disagreement as two omit rules. Splitting one two-phase commit across two HTTP
 clients to use generated code for half of it would buy nothing and cost a
 second place for the bearer, the base URL and the device binding to live.
 
-**Not yet implemented:** `DELETE /api/v1/blobs/<blob_id>`. Blob deletion is not
-an immediate erase — [`../02-domain/attachments.md`](../02-domain/attachments.md)
-§Deletion makes it a tombstone plus a device-cursor quorum and a 30-day grace
-period — so it lands with the GC slice rather than as a bare unlink.
+**Deletion is a tombstone, not an unlink.**
+`DELETE /api/v1/blobs/<blob_id> { stream_id, device_id, seq }` answers
+`202 { collect_after_ms }`, or the fetch's `404` for a blob this account has not
+committed. The body names the op that detached the blob by its cleartext
+routing head: the stream it was published in, the publishing device, and its
+`seq`. These are the fields the relay already reads off every op. The ciphertext
+stays readable. The maintenance pass reclaims it once both conditions in
+[`../02-domain/attachments.md`](../02-domain/attachments.md) §Deletion hold:
+
+- `[storage] gc_grace_days` (default 30) have passed since the tombstone.
+- Every active device of the account has acknowledged the op. A device
+  acknowledges by declaring, on `POST /sync/subscribe`, a cursor for that
+  stream and publishing device at or past `seq`.
+
+The relay cannot read the `device_op_cursor` op the domain doc describes, so the
+subscribe cursors stand in for it. They are the same statement ("I have applied
+this device's ops up to here"), made in cleartext. A device is active when it is
+unrevoked and has declared a cursor in the last 30 days. A signed subscribe
+records its cursors; an unsigned one has no device to record them against. The
+device that sent the `DELETE` is excused: it wrote the op. Tombstoning again
+keeps the first tombstone and its clock. Finalizing the same ciphertext again
+lifts the tombstone, because the attachment is back.
 
 #### Blob errors
 
@@ -401,7 +460,8 @@ period — so it lands with the GC slice rather than as a bare unlink.
 | 400 | `BLOB_HASH_MISMATCH` | A chunk's ciphertext BLAKE3, or the concatenation's, disagrees with the supplied hash. | No (re-upload). |
 | 401 | `AUTH_TOKEN_INVALID` | Missing or unverifiable bearer. | After OIDC refresh. |
 | 409 | `BLOB_CHUNK_MISSING` | `finalize` names a chunk that was never uploaded. | After uploading it. |
-| 404 | `BLOB_NOT_FOUND` | No committed blob under that id **for this account**. | No. |
+| 404 | `BLOB_NOT_FOUND` | No committed blob under that id **for this account**, on a fetch or a `DELETE`. | No. |
+| 403 | `ACCOUNT_PENDING_DELETION` | `init`, a chunk `PUT` or `finalize` for an account whose deletion is confirmed. | No. |
 | 413 | `VALIDATION_PAYLOAD_TOO_LARGE` | Body over `max_body_bytes`. | No (shrink). |
 
 ### Sharing — NOT IMPLEMENTED
@@ -425,13 +485,52 @@ lands.
 
 The `share_envelope` is opaque to the server.
 
+### Pairing rendezvous
+
+Where two devices meet to run the pairing handshake
+([`../03-crypto/pairing-and-onboarding.md`](../03-crypto/pairing-and-onboarding.md)
+§Relay framing for Noise), so nobody copies the six messages between screens.
+Served by `crates/sunrise-server/src/api/pairing.rs`. Bearer only: the device
+being added holds no device key yet, so these take the bootstrap exemption, and
+a binding that is supplied is still verified.
+
+| Method | Path | Body | Returns |
+|---|---|---|---|
+| POST | `/api/v1/pairing/send` | `{ pair_id, role, index, message }` | `200 { sent, expires_at_ms }` |
+| POST | `/api/v1/pairing/receive` | `{ pair_id, role, after }` | `200 { messages, expires_at_ms }`: the other role's messages from index `after` on |
+| POST | `/api/v1/pairing/abort` | `{ pair_id, role }` | `204`, whether or not a session was dropped |
+
+`pair_id` is the QR's, 16 bytes base64url; `role` is `new_device` or
+`existing_device`; `message` is one Noise message, base64url, 1 to 64 KiB
+decoded. The relay never reads it.
+
+- **Only the new device opens a session**, with its first message, and the
+  session is bound to that bearer's account. That message is one pair attempt
+  against the limits in §Rate limits.
+- **Three messages per role**, which is what the protocol sends. A fourth drops
+  the session.
+- **`index` is the count of this role's earlier messages**, so a retry after a
+  lost answer is acknowledged rather than buffered twice. An index that names a
+  slot holding a different message, or skips past the next free slot, drops the
+  session.
+- **At most 4096 live sessions per relay.** Past that, opening one is `429`
+  until the oldest expires.
+- **300 s from the opening message**, then the session is dropped whatever its
+  state. Sessions live in memory and do not survive a restart.
+- A session that is not live **for the caller's account** — never opened,
+  expired, aborted, overflowed, or another account's — is `404
+  RELAY_PAIR_SESSION_GONE`. The answer is the same in every case, so the route
+  is not an oracle for live pair ids. Start again from a new code.
+
+Clients poll `receive`; there is no stream.
+
 ### Health / meta
 
 | Method | Path | Body | Returns | Status |
 |---|---|---|---|---|
 | GET | `/api/v1/meta` | — | `MetaResponse` (below) | implemented |
 | GET | `/api/v1/health` | — | `200 {"status":"ok"}` | implemented |
-| GET | `/api/v1/health?deep=1` | — | 200 if every backing dependency is healthy; 503 otherwise | **NOT IMPLEMENTED** |
+| GET | `/api/v1/health?deep=1` | — | `200` if every readiness check passes; `503` naming the failed ones | implemented (no disk-free check) |
 
 `MetaResponse` (`api/meta.rs`) is:
 
@@ -447,19 +546,37 @@ named, and there is no `server_version`, `max_op_size` or `max_blob_size` field.
 `/meta` is deliberately unauthenticated: a client must be able to read the
 issuer before it has a token.
 
-`GET /api/v1/health` takes no parameters and always answers `200
-{"status":"ok"}` — the handler consults nothing, so it is a liveness probe and
-not a readiness one. The deep check below is specified and unbuilt; a `?deep=1`
-query is ignored, which means an operator wiring it as a readiness probe today
-gets an unconditional `200`.
+`GET /api/v1/health` without `deep` (or with `deep=0`) always answers `200
+{"status":"ok"}` — the handler consults nothing, so it is a liveness probe. It
+stays `200` while the server drains: a draining process is alive.
 
-The deep readiness check would return `200 {"ok":true,"checks":{...}}` only if all of:
+Readiness is the same route with `?deep=1`, not a separate `/api/v1/ready`.
+The query was already specified here, so a probe configuration written against
+it needs no change, and one route keeps the two probes from drifting apart.
+`deep` is the only query parameter on the surface; the route is unsigned, so
+the signed operations' canonical target (`api/signed.rs`) is untouched. A
+`deep` that is not an integer from 0 to 255 is a `400`.
 
-1. `SELECT 1` from primary DB within 2 s.
-2. Object store HEAD on `_health/probe` within 5 s.
-3. Local disk free ratio > 5%.
+`?deep=1` answers `200` only if all of these pass, and `503` otherwise:
 
-Otherwise it returns `503` with a body listing the failed checks.
+| Check | Passes when |
+|---|---|
+| `accepting` | the server is not draining; it fails from the moment `SIGTERM` arrives |
+| `store` | `SELECT 1` against the relay database returns within 2 s |
+| `blob_root` | a probe file is written and removed under the blob root within 5 s |
+
+Both answers carry the outcomes, and a `503` names the failures in `failed`:
+
+```json
+{"status":"ok","checks":{"accepting":true,"store":true,"blob_root":true}}
+{"status":"unavailable","checks":{"accepting":false,"store":true,"blob_root":true},"failed":["accepting"]}
+```
+
+Two checks an earlier draft listed are not here. An object store `HEAD` on
+`_health/probe` has nothing to probe: self-host blobs are files, and
+`blob_root` is that store's check. A local disk free ratio above 5% is not
+built, because reading it needs a `statvfs` the crate's `forbid(unsafe_code)`
+leaves no safe dependency for yet.
 
 `oidc_issuer` and `oidc_client_id` let an unauthenticated client bootstrap the OIDC flow without static configuration. Both are `null` in single-tenant self-host mode, where no issuer is configured.
 
@@ -479,6 +596,8 @@ The envelope `ApiError` actually renders carries two members and no
 }
 ```
 
+A `429` is always `RATE_LIMITED` with a `Retry-After` header; see §Rate limits.
+
 Codes are **stable** (clients map them to translated strings). New codes can be added; clients see unknown codes as a generic error. Messages never quote a token, a key, or a subject: a JWKS transport failure and a forged signature both render as the same opaque `401`, and a SQLite error renders as `500 FATAL_INTERNAL` with the message `"internal error"`.
 
 ### Quota responses — REMOVED
@@ -492,25 +611,111 @@ plan, and the `429`/`202` pair this section used to specify — a hard cap over
 [`billing.md`](./billing.md) as the shape a future quota surface would take,
 not as anything a client can receive.
 
-## Rate limits — NOT IMPLEMENTED
+## Rate limits
 
-There is no rate-limiting middleware anywhere in `crates/sunrise-server`. The
-only middleware `api/mod.rs` mounts is kynos's `Cors` and `BodySize`, plus the
-`RequestLog` observer in `api/observe.rs`; nothing counts requests per IP, per
-account, or per token. An unauthenticated caller can hit
-`/api/v1/meta`, `/api/v1/health` and `/metrics` at whatever rate the socket
-allows, and the OIDC verifier's JWKS cache is the only thing bounding work on
-`401`s.
+Every route is limited. `crates/sunrise-server/src/api/ratelimit/` enforces
+this table; every number is a `[limits]` key in `sunrise.toml`
+([`self-hosting.md`](./self-hosting.md) §Config), and the defaults below are
+what a relay with no `[limits]` table runs.
 
-The target, when it is built:
+### The refusal
 
-Per-IP: 60 RPM unauthenticated, 600 RPM authenticated.
+A limited request gets **`429 Too Many Requests`**, a problem document with
+`type` `https://sunrise.app/problems/rate-limited` and code **`RATE_LIMITED`**
+(registry id 800, transient, retryable), and a **`Retry-After`** header in whole
+seconds, never less than 1. Waiting exactly that long is admitted; retrying
+sooner is refused again. The `429` and its header are in the description of
+every operation, because the limiter covers every operation.
 
-Per-account limiting is **not built** — it presupposes per-account accounting
-that does not exist ([ADR-0027](../11-adr/0027-v1-self-host-first.md) clause 2).
-The design of record for it is
-[`../05-sync/backpressure-and-quotas.md`](../05-sync/backpressure-and-quotas.md),
-which is `proposed`.
+Every refusal increments `sunrise_ratelimit_rejected_total{endpoint,scope}`
+([`metrics.md`](./metrics.md)); the first refusal of a run on one key logs
+`srv.ratelimit.rejected` ([`log-events.md`](../10-cross-cutting/log-events.md)).
+
+### Per client address, before anything else
+
+Charged by the admission interceptor, the outermost layer of the router, so a
+flood is refused before a body is read or a bearer verified. One bucket per
+route group per client address; a bucket holds one minute's allowance and
+refills continuously.
+
+| Group | Routes | Auth | Default per address |
+|---|---|---|---|
+| `probe` | `GET /api/v1/health`, `GET /metrics` (loopback bind only) | none | 120 / min (`probe_per_min`) |
+| `meta` | `GET /api/v1/meta` | none | 60 / min (`meta_per_min`) |
+| `bootstrap` | `POST /api/v1/accounts`, `POST /api/v1/devices` | bearer | 10 / min (`bootstrap_per_min`) |
+| `account` | `GET /api/v1/accounts/me`, `GET /api/v1/accounts/me/recovery_blob`, `POST /api/v1/accounts/me/delete/initiate`, `DELETE /api/v1/accounts/me`, `GET /api/v1/devices`, `DELETE /api/v1/devices/{device_id}`, `DELETE /api/v1/devices/by-vault-id/{vault_device_id}`, `POST /api/v1/devices/push-tokens` | bearer+sig | 60 / min (`account_per_min`) |
+| `blob` | `POST /api/v1/blobs/init`, `PUT /api/v1/blobs/{upload_id}/{chunk_idx}`, `POST /api/v1/blobs/finalize`, `GET /api/v1/blobs/{blob_id}`, `DELETE /api/v1/blobs/{blob_id}` | bearer+sig | 600 / min (`blob_per_min`) |
+| `sync` | `POST /api/v1/sync/session`, `POST /api/v1/sync/session/refresh`, `POST /api/v1/sync/subscribe`, `POST /api/v1/sync/ops`, `GET /api/v1/sync/events`; the pairing rendezvous's `POST /api/v1/pairing/send`, `POST /api/v1/pairing/receive`, `POST /api/v1/pairing/abort` | bearer+sig (+session); pairing bearer only | 600 / min (`sync_per_min`) |
+
+**Failed authentication.** Every `401` an address earns on a `bootstrap`,
+`account`, `blob` or `sync` route is counted, 20 per five minutes
+(`failed_auth_per_5min`). Past that, the address's requests to those routes are
+refused with `429` *before* the bearer verifier runs, a valid bearer included,
+until the budget refills. `probe` and `meta` verify nothing and are exempt.
+
+The test `every_operation_in_the_description_has_a_group` reads the generated
+OpenAPI description and fails for any operation this table does not name, so a
+route added later is a red build until it is given a row. At run time an
+unlisted route is held to `bootstrap`, the tightest authenticated group.
+
+**Which address.** The socket peer, unless it is listed in `[server]
+trusted_proxies`; then the right-most address in `Forwarded` (or, in its
+absence, `X-Forwarded-For`) that is not itself a listed proxy. With the list
+empty — the default — forwarding headers are ignored, because a client can
+write them. IPv6 clients are counted by `/64`, since one subscriber routinely
+holds a whole `/64`; an IPv4-mapped address counts as its IPv4 address.
+
+### Per device and per account, after authentication
+
+Charged by the handlers, because the device is known only once its signature
+has verified and the cost is a property of the request. A caller that signs with
+no device — the single-tenant self-host verifier — is charged by its account,
+and its refusals are labelled `scope="account"`.
+
+| Budget | Route | Cost | Default |
+|---|---|---|---|
+| Op uploads | `POST /api/v1/sync/ops` | ops in the batch | 50 / s per device, bursting to 500 (`ops_per_sec`; the 10 s window [`backpressure-and-quotas.md`](../05-sync/backpressure-and-quotas.md) proposed) |
+| Blob upload | `PUT /api/v1/blobs/{upload_id}/{chunk_idx}` | chunk bytes | 64 MiB / min per device (`blob_upload_bytes_per_min`) |
+| Blob download | `GET /api/v1/blobs/{blob_id}` | the blob's whole size, charged before the first byte | 256 MiB / min per device (`blob_download_bytes_per_min`) |
+| Open uploads | `POST /api/v1/blobs/init` | one per upload, until `finalize` or an hour untouched | 16 at once per account (`open_uploads`) |
+| Session creation | `POST /api/v1/sync/session` | one | 10 per 5 min per device (`sessions_per_5min`) |
+| Event streams | `GET /api/v1/sync/events` | one, held until the stream ends | 4 at once per device (`streams`) |
+| Pair attempts | `POST /api/v1/pairing/send`, the message that opens a session | one | 10 per rolling hour and 30 per rolling day per account, and 60 per rolling hour per client address (`sunrise_pairing::AttemptLimit`; not configurable). Off with `[limits] enabled = false` |
+
+A request whose cost exceeds a whole bucket — a 1,000-op batch, a 100 MB blob
+— is admitted from a full bucket and leaves the key in debt, so the next
+request waits for the debt to refill. Refusing it would refuse it forever,
+since a client cannot shrink a batch it already built.
+
+An upload that is never finalized stops counting an hour after its last chunk,
+so a client that crashed mid-upload cannot lock its account out of
+attachments. An event stream releases its slot the moment its client
+disconnects.
+
+### What this does not cover
+
+- **State is per process.** Every counter lives in the relay's memory, behind
+  the `LimiterStore` trait so a shared store can replace it; several relays
+  behind one balancer each enforce the table separately. See
+  [#364](https://github.com/justin13888/Sunrise/issues/364).
+- **No quota.** These are rates, not allowances: nothing counts storage, total
+  ops or devices against a plan. That is
+  [`backpressure-and-quotas.md`](../05-sync/backpressure-and-quotas.md), still
+  `proposed`, and [ADR-0027](../11-adr/0027-v1-self-host-first.md) defers it.
+- **A flood from more than 65,536 addresses at once** fills the in-memory table;
+  idle buckets are evicted first, and an address the table still cannot hold is
+  admitted untracked rather than refused, so a distributed flood cannot lock
+  out clients the relay has not seen yet. The reverse proxy is the place to cap
+  connection counts below that.
+- **CORS preflights are not limited.** With `allowed_origins` set, kynos
+  answers `OPTIONS` on each covered path with an operation it synthesizes, and
+  it gives that operation no interceptors, so the admission interceptor never
+  runs on a preflight. A preflight reads no body, verifies nothing and touches
+  no state, but an address can send as many as it likes; the reverse proxy is
+  the place to cap them. No `HEAD` operation is generated either, so a `HEAD`
+  is answered `405` by the router's method fallback, also outside the limiter.
+- **The rate-limit response headers** (`RateLimit`, `RateLimit-Policy`) are not
+  sent; `Retry-After` is the contract.
 
 ## Why so few endpoints?
 
@@ -525,12 +730,14 @@ that have not been built.
 |---|---|---|---|
 | `/api/v1/accounts` (POST), `/api/v1/accounts/me` (GET) | yes | yes | **yes — built** |
 | `/api/v1/accounts/me/recovery_blob` (GET) | yes | yes | **yes — built, behind an OIDC step-up** |
-| `/api/v1/accounts/me/recovery_blob` (PUT), `/api/v1/accounts/me/delete/*` | yes | yes | **no route** |
+| `/api/v1/accounts/me/delete/initiate` (POST), `/api/v1/accounts/me` (DELETE) | yes | yes | **yes — built, behind an OIDC step-up** |
+| `/api/v1/accounts/me/recovery_blob` (PUT) | yes | yes | **no route** |
 | `/api/v1/identities` (discovery) | yes | yes | **no route** |
 | `/api/v1/devices`, `/api/v1/devices/<id>` | yes | yes | **yes — built** |
 | `/api/v1/devices/push-tokens` | yes | optional (operator's APNs/FCM creds) | **route built; no delivery path** |
 | `/api/v1/blobs/*` | yes (S3-backed) | yes (S3-backed) | **yes — local-disk-backed** |
 | `/api/v1/shares/*` | yes | yes | **no route** |
+| `/api/v1/pairing/*` | yes | yes | **yes — built, in memory** |
 | `/api/v1/meta`, `/api/v1/health` | yes | yes | **yes — built** |
 | `/metrics` (router root, not under `/api/v1`) | yes | yes | **yes — built, unauthenticated** |
 

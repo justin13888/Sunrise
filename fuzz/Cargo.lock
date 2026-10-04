@@ -1572,6 +1572,7 @@ dependencies = [
  "futures-executor",
  "jiff",
  "libfuzzer-sys",
+ "sunrise-cbor",
  "sunrise-crypto",
  "sunrise-crypto-test-vectors",
  "sunrise-domain",
@@ -1676,12 +1677,14 @@ dependencies = [
  "sunrise-http-sig",
  "sunrise-id",
  "sunrise-log",
+ "sunrise-pairing",
  "sunrise-storage",
  "sunrise-wire-protocol",
  "thiserror 1.0.69",
  "tokio",
  "toml",
  "tracing",
+ "zeroize",
 ]
 
 [[package]]

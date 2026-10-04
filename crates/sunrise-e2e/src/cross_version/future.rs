@@ -173,6 +173,8 @@ impl FutureWriter {
             sig: [0u8; 64],
             doc_schema_v: u32::from(DOC_SCHEMA_V),
             schema_fp: doc_schema_fp_prefix(u32::from(DOC_SCHEMA_V)),
+            prev_hash: None,
+            heads: Vec::new(),
             unknown: BTreeMap::new(),
         };
         seal_envelope(

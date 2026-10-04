@@ -89,24 +89,24 @@ the code rather than from the issue:
   apply path reaches is the **bound**, twice, and both reads are on the
   **key-distribution** side: the anti-join is `emit_key_envelopes`'s
   `NOT EXISTS` against `device_read_bounds`
-  (`crates/sunrise-core/src/engine/oplog.rs:309-311#emit_key_envelopes`), which
+  (`crates/sunrise-core/src/engine/oplog.rs:315-317#emit_key_envelopes`), which
   is SQL and calls nothing, and the caller is the early return in
   `backfill_key_envelopes`
-  (`crates/sunrise-core/src/engine/oplog.rs:418#backfill_key_envelopes`), which
+  (`crates/sunrise-core/src/engine/oplog.rs:424#backfill_key_envelopes`), which
   tested `is_revoked` until 0028 gave the bound its own table.
   The apply path does reach that early return, and inside a single
   transaction: `apply_remote_all` opens one
-  (`crates/sunrise-core/src/engine/sync.rs:349#apply_remote_all`), routes a
+  (`crates/sunrise-core/src/engine/sync.rs:358#apply_remote_all`), routes a
   control op into `apply_control_op`
-  (`crates/sunrise-core/src/engine/sync.rs:394#apply_remote_all`), and a
+  (`crates/sunrise-core/src/engine/sync.rs:403#apply_remote_all`), and a
   published device cert carries it on into `backfill_key_envelopes`
-  (`crates/sunrise-core/src/engine/sync.rs:1278#apply_control_op`). What no
+  (`crates/sunrise-core/src/engine/sync.rs:1312#apply_control_op`). What no
   read of either table decides is whether an op **applies**; it decides which
   device is sealed key material, and that is this whole decision in one
   sentence. An earlier draft of this bullet said nothing in the apply path
   consulted the register at all, which the call chain above falsifies.
 - `apply_remote_all` says so at step b
-  (`crates/sunrise-core/src/engine/sync.rs:282-283#apply_remote_all`): *"A
+  (`crates/sunrise-core/src/engine/sync.rs:291-292#apply_remote_all`): *"A
   revoked device's row is found here like any other, and its op is applied like
   any other."*
 - `upsert_sync_cursor`'s doc
@@ -176,7 +176,7 @@ Revocation today is a **register plus a read bound**:
   transaction, when the fold finds the revocation effective
   (`crates/sunrise-core/src/engine/revocation.rs:317-324#revoke_device`), and
   `sync_driver::drain_relay_revocations` retries it on every session
-  (`crates/sunrise-core/src/sync_driver.rs:1672#drain_relay_revocations`). The
+  (`crates/sunrise-core/src/sync_driver.rs:1702#drain_relay_revocations`). The
   bound is real and **conditional**: the relay enforces only against a
   device-signed request, and `require_device_sig` defaults to false, so in the
   default deployment it is not in force
@@ -189,7 +189,7 @@ Revocation today is a **register plus a read bound**:
   one naming its own sender is refused at ingest
   (`crates/sunrise-core/src/engine/revocation.rs:1349#apply_device_revoke`), and
   a read-bounded sender's third-party `key_envelope` recipient claim is not
-  recorded (`crates/sunrise-core/src/engine/sync.rs:955#apply_control_op`). That
+  recorded (`crates/sunrise-core/src/engine/sync.rs:989#apply_control_op`). That
   is [ADR-0041](./0041-peer-side-revocation-is-a-fold.md), and it reaches no
   entity write.
 

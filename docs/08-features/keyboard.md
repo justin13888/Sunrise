@@ -8,8 +8,8 @@ Sunrise must be operable end-to-end with the keyboard alone on every platform th
 
 ## Rules
 
-These three rules are normative for every client with a keyboard. [#348](https://github.com/justin13888/Sunrise/issues/348)
-brings the Apple clients into line with them.
+These three rules are normative for every client with a keyboard. The Apple
+clients follow them since [#348](https://github.com/justin13888/Sunrise/issues/348).
 
 ### 1. Hints everywhere
 
@@ -29,28 +29,39 @@ for the action:
 | Settings rows that trigger an action | The binding beside the row's button |
 | Notification action rows in Settings | The binding, where the action has one ([`notifications.md`](./notifications.md)) |
 
-One helper renders a hint from the keymap, in the platform's notation (`⌘⇧N` on
-macOS, `Ctrl+Shift+N` elsewhere). No surface formats a chord by hand.
+One helper renders a hint from the keymap, in the platform's notation (`⇧⌘N` on
+Apple platforms, modifiers in the order a Mac menu prints them, ⌃⌥⇧⌘;
+`Ctrl+Shift+N` elsewhere). No surface formats a chord by hand. On Apple that is
+`Keymap.shortcutLabel(for:)`, placed by `Keymap.help` (a tooltip),
+`Keymap.menuTitle` (a context-menu row) and `Keymap.pressHint` (an empty state).
+
+The rule binds a desktop-class client: the Mac, and an iPad. A phone shows no
+empty-state hint, because it almost never has a key to press it with.
 
 Hints are text as well as glyphs: every hint has an accessibility label that
 reads the chord in words ("Command Shift N").
 
 ### 2. One keymap source
 
-Each client has exactly **one** table of bindings (`Keymap` on Apple:
-`apps/apple/Sunrise/Keyboard/Keymap.swift:250`'s `shortcutLabel` is the hint
-renderer). Every binding, every hint and every palette entry is derived from
-it. No view binds a key with a literal chord, and every bound action is an
-action in that table, so the palette and cheat sheet can list it. A test in each
-client enforces both halves: no literal chord outside the table, and every
-action with a chord appears in the palette, the cheat sheet and at least one
-menu.
+Each client has exactly **one** table of bindings (`Keymap` on Apple, in
+`apps/apple/Sunrise/Keyboard/Keymap.swift`). Every binding, every hint and every
+palette entry is derived from it. No view binds a key with a literal chord, and
+every bound action is an action in that table, so the palette and cheat sheet
+can list it. A test in each client enforces both halves: no literal chord
+outside the table, and every action with a chord appears in the palette, the
+cheat sheet and at least one menu.
 
-Today the Apple clients break this in five places: Quick Capture's global
-chord and Undo repeat chords the table already holds as literals, and Morning
-Summary (⌥⌘M), End of Day (⌥⌘E) and Import Calendar (⇧⌘I) are bound in
-`apps/apple/macOS/AppCommands.swift` with no action in the table at all. No
-toolbar tooltip names a key.
+On Apple the two halves are `NoLiteralChordTests` and `KeymapReachTests`
+(`apps/apple/SunriseTests/KeyHintTests.swift`). A `.keyboardShortcut(` may name
+an action (`for:`), one of `Keymap`'s control chords, or a role
+(`.defaultAction`, `.cancelAction`), whose key the platform picks. The control
+chords are the three that belong to a control rather than to the app, so none
+is an action and none is in the palette: ⌘Q on the menu bar panel's Quit
+button, Return on the capture bar's Add button, and the note editor's marks
+below. Which menu carries each action is data too, `CommandMenus`, which the
+Mac's menu bar and the iPad's key commands both draw from. The row keys are
+bare letters and so cannot be menu equivalents; their menu is the row's
+context menu, which prints them.
 
 ### 3. Desktop parity
 
@@ -127,7 +138,6 @@ They join the table above, with their hints, when their features land.
 | Triage: Already done at… | `Shift+X` | same | [`planning-views.md`](./planning-views.md) |
 | Triage: Drop | `Backspace` | same | [`planning-views.md`](./planning-views.md) |
 | Triage: Keep | `Shift+K` | same | [`planning-views.md`](./planning-views.md) |
-| Morning summary, End-of-day plan, Import calendar | as in the table above, moved into the keymap | same | Rule 2 |
 
 Four entries need their exact behaviour stated, because the obvious reading is
 wrong:
@@ -229,8 +239,9 @@ focused) the browser keeps the binding.
 
 ## Discoverability
 
-- `?` in any view opens a contextual cheat sheet — on macOS. It is inert on
-  iOS today; see [Mobile keyboards](#mobile-keyboards).
+- `?` in any view opens a contextual cheat sheet — on macOS, and on an iPad
+  with an attached keyboard, where `?` works in a list and ⌘/ everywhere. It is
+  inert on an iPhone; see [Mobile keyboards](#mobile-keyboards).
 - Every surface shows the binding of every action it offers, per
   [Rule 1](#1-hints-everywhere).
 - New users see an opt-in "show keyboard tips" coachmark, whose tips name keys.
@@ -243,18 +254,20 @@ focused) the browser keeps the binding.
 
 ## Mobile keyboards
 
-- **An iPad with an attached keyboard runs the list keymap and the vim subset,
-  and nothing above them.** `onKeyChord` is applied in exactly one place in
-  `apps/apple` — the shared `TaskListView` — so every row-scoped binding in the
-  macOS column above works unchanged on iOS, and every `⌘` binding does not:
-  those are delivered by the Mac's `Commands` scene, which lives in `macOS/`
-  and the iOS target never compiles. Concretely, `⌘N` on iOS is the toolbar
-  **Capture** button rather than a chord; the command palette (`⌘⇧P`) and the
-  cheat sheet are handed inert closures in the tab shell, so `?` in a list does
-  nothing there. An iPad that draws a system menu bar gets only the system's
-  own items, for the same reason. This falls short of [Rule 3](#3-desktop-parity),
-  which holds a tablet with a hardware keyboard to the desktop set; [#348](https://github.com/justin13888/Sunrise/issues/348)
-  closes it with `UIKeyCommand`-backed commands. Android has no client yet.
+- **An iPad with an attached keyboard runs the desktop set**, as
+  [Rule 3](#3-desktop-parity) requires. The row-scoped bindings and the vim
+  subset come from `onKeyChord` on the shared `TaskListView`. The `⌘` bindings
+  come from `KeyCommandMenus` (`apps/apple/Sunrise/Keyboard/KeyboardCommands.swift`),
+  attached to the iOS scene: SwiftUI turns each into a `UIKeyCommand`, listed in
+  the ⌘-hold overlay and the iPadOS menu bar, and each hands its action to the
+  tab shell exactly as a Mac menu item hands it to the window. The command
+  palette (`⇧⌘P`) and the cheat sheet (`⌘/`, or `?` in a list) open as sheets.
+  Undo and Redo replace the system's own Edit items rather than sit beside
+  them, as `⌘Z` acts on the vault on the Mac. Print and Export as PDF are the
+  Mac's alone and are not offered. **An iPhone keeps the palette and the cheat
+  sheet inert** and shows no empty-state hints: a phone is exempt from Rule 3,
+  and teaching ⌘ chords on a device that almost never has a keyboard is noise.
+  Android has no client yet.
 - **A software keyboard is told what the field holds.** Capture takes a `text`
   input mode with autocorrect off and no autocapitalisation, so that `#`, `@`,
   `^`, `!` and `~` are typed as-is and predictive text cannot rewrite a token
@@ -289,8 +302,8 @@ focused) the browser keeps the binding.
   Escape and a phone can do neither visibly.
 - The per-class target and the audit are in
   [`../07-clients/parity-matrix.md`](../07-clients/parity-matrix.md), which
-  grades iOS *Keyboard navigation* `met *(list keymap)*`: the list keymap on an
-  attached keyboard, and nothing above it until [#348](https://github.com/justin13888/Sunrise/issues/348).
+  grades iOS *Keyboard navigation* `met`: the desktop set on an iPad with an
+  attached keyboard, and the list keymap on an iPhone.
 
 ## Conflict policy
 

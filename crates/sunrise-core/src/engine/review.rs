@@ -561,6 +561,12 @@ fn op_payload(inner: InnerOp) -> OpPayload {
         | InnerOp::IdentityTransition(_)
         | InnerOp::VaultRequires(_)
         | InnerOp::DeviceFeatures(_)
+        // A digest says what a replica holds, not what anyone did.
+        | InnerOp::StreamDigest(_)
+        // A field-level write carries no whole task to diff against, and this
+        // build never emits one (ADR-0044 §9). The timeline reads it once
+        // commands emit it.
+        | InnerOp::Patch(_)
         | InnerOp::ReviewSnapshotCreate(_) => OpPayload::Ignored,
     }
 }

@@ -108,12 +108,26 @@ pub const ENVELOPE_FORMAT_FLOOR: u16 = 3;
 /// schema's fingerprint differs from this version's entry, so a shape cannot
 /// change without the bump.
 ///
-/// `8` adds the two feature control families, `VaultRequires` and
+/// `8` adds the `Patch` op family (ADR-0044, issue #319): some fields of one
+/// entity, each written as a self-describing field op and merged by the
+/// field's own CRDT type. Every v7 shape is unchanged, so the floor does not
+/// move. A v7 build parks a `Patch` and replays it after an upgrade. This
+/// build applies one and never emits one: ADR-0044 §9 gates the first `Patch`
+/// on the vault's `vault_requires`, which does not exist yet (#324).
+///
+/// `9` adds the `StreamDigest` control family (ADR-0043, issue #325): a
+/// replica's frontier in one stream and its digest, which a receiver compares
+/// with its own chain roots. Every v8 shape is unchanged, so the floor does
+/// not move. A v8 build parks a `StreamDigest` and replays it after an
+/// upgrade. Envelope fields 14 and 15 land with it, but they are container
+/// fields, not document schema, and move nothing here.
+///
+/// `10` adds the two feature control families, `VaultRequires` and
 /// `DeviceFeatures`, and the feature registry to the canonical schema
-/// (issue #324, ADR-0045 §7). A v7 build parks an op of either family, and
-/// replays it once a v8 build opens the vault. Every v1..v7 payload shape is
+/// (issue #324, ADR-0045 §7). A v9 build parks an op of either family, and
+/// replays it once a v10 build opens the vault. Every v1..v9 payload shape is
 /// unchanged, so the floor still does not move.
-pub const DOC_SCHEMA_V: u16 = 8;
+pub const DOC_SCHEMA_V: u16 = 10;
 
 /// The first [`DOC_SCHEMA_V`] that has a fingerprint (ADR-0045 §3, `N_fp`).
 ///
@@ -149,7 +163,15 @@ pub const DOC_SCHEMA_FINGERPRINTS: &[(u16, [u8; 32])] = &[
     ),
     (
         8,
-        hex32("3c6a3f7b32d51792f3fdaa880360786cba2c3985e814e1c0f84c8955611ce715"),
+        hex32("69a555bc13a1b05143608bf16370bb6fcdb0268e514efdbc30df070049dbf58d"),
+    ),
+    (
+        9,
+        hex32("875fc9a8b8d426ff9c52dd6fa5ce2da8685903353fc58f98446c4825c2d7de01"),
+    ),
+    (
+        10,
+        hex32("e9a6d82f484ef86b75291f8d58f28e1a04bc6ee5f877de89da5afe0af03ff12c"),
     ),
 ];
 
@@ -389,9 +411,31 @@ pub const CRYPTO_SUITE_V: u16 = 5;
 /// the text form; the blob holds any string. Schema-only: rows written before
 /// it read their text, which only ever held known values.
 ///
-/// `33` is migration `0033_vault_features.sql`, the folds of the two feature
+/// `33` is migration `0033_field_merge_state.sql`, which adds the per-field
+/// merge state of ADR-0044 (issue #319): one register per field, the per-key
+/// registers of a map field, an add-wins observed-remove set per set field,
+/// and the deltas of a counter. The entity rows become its read projection.
+/// Schema-only: an entity the vault already held is seeded from its row the
+/// first time an op touches it.
+///
+/// `34` is migration `0034_op_chain.sql`, which adds the per-device op chains
+/// of ADR-0043 (issue #325): each op's `op_hash` and running chain root on
+/// `ops`, what the writer has listed in envelope field 15, the ops a later op
+/// named that this replica does not hold, the peer frontier entries it could
+/// not check yet, fork evidence, and digest disagreements. Schema-only: the
+/// hashes and roots of rows already held are computed from their envelopes
+/// the first time each device's prefix is folded.
+///
+/// `35` is migration `0035_op_log_compaction.sql`, which adds client op-log
+/// compaction (issue #330, ADR-0059): a per-`(stream, device)` floor below
+/// which ops are covered by the merge state and the floor's chain root, the
+/// last frontier each peer published in its stream digest, and the latest
+/// snapshot record per stream. Schema-only: a vault without a floor reads its
+/// prefix from seq 1, exactly as before.
+///
+/// `36` is migration `0036_vault_features.sql`, the folds of the two feature
 /// control ops (issue #324, ADR-0045 §7–§8): the vault's grow-only set of
 /// required feature ids, and each device's latest list of supported ones.
 /// Schema-only: both start empty, which is what a vault no feature-aware build
 /// has written to means.
-pub const STORAGE_V: u16 = 33;
+pub const STORAGE_V: u16 = 36;

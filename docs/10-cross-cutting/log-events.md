@@ -41,21 +41,30 @@ See [`logging.md`](./logging.md) for the record schema and grammar, and
 |---|---|---|
 | `srv.start` | info | Listener bound. Carries `bind`, `mode` (`single_tenant`/`multi_tenant`), `app_v`, and the `wire_v`/`doc_v`/`crypto_v` protocol versions — the one place per process those versions appear. |
 | `srv.start.single_tenant` | warn | Self-host mode: every connection maps to one account. Loopback only. |
+| `srv.start.device_sig_optional` | warn | An OIDC issuer is configured and `[auth] require_device_sig = false` overrides the default: a request with no device binding is accepted on its bearer alone, so a revoked device that stops signing keeps writing. Emitted when the server state is built. |
 | `srv.start.metrics_withheld` | warn | `/metrics` was not mounted because the listener is not loopback; `bind`. The operation is absent from the OpenAPI description too, so the document does not advertise a surface this deployment refuses to serve. The operator surfaces are loopback-only per [`../06-server/overview.md`](../06-server/overview.md), so a public bind serves `404` there. Answers "why does my scrape 404". |
 | `srv.start.refused` | error | Config could not be resolved, read, parsed, or validated; the process is exiting 78 (`EX_CONFIG`) rather than serving. |
 | `srv.start.failed` | error | The listener could not bind; `bind`, `cause`. Distinct from `srv.start.refused`: the config was fine and the address was not available. |
-| `srv.stop` | info | The server returned; listener closed. |
-| `srv.stop.failed` | error | The server returned an error; `cause`. |
+| `srv.stop.draining` | info | `SIGTERM` or `SIGINT` arrived: readiness now answers `503`, open SSE streams are being closed, and in-flight requests have `delay_ms` to finish (`[server] shutdown_grace_secs`). `n_streams` is how many streams were open. |
+| `srv.stop` | info | The drain ended and the server returned. `result` is `drained` (every request finished), `timed_out` (the deadline cut the rest) or `failed` (the listener failed during the drain), and `srv.stop.failed` follows either of the last two; `n_streams` is how many streams were still counted; `status` is `store_flushed` or `store_flush_failed` for the closing WAL checkpoint, with `cause` on the second. A failed checkpoint loses nothing: every acknowledged frame is already in the WAL. |
+| `srv.stop.failed` | error | The server returned an error; `cause`. A drain that outlasts `[server] shutdown_grace_secs` is one. |
+| `srv.health.unready` | warn | `GET /api/v1/health?deep=1` answered `503` because a dependency check failed; `cause` lists the failed checks (`store`, `blob_root`). Not emitted for a drain, which is expected and probed every few seconds. |
 | `srv.req.start` | debug | HTTP request received. The span carries `method` and a templated `endpoint`. |
 | `srv.req.end` | debug (warn on 5xx) | Request served; `status`, `lat_ms`, `result`. The level split is what makes a default `info` deployment show failures and nothing else. |
+| `srv.ratelimit.rejected` | info | A request was refused with `429 RATE_LIMITED` under the policy in [`../06-server/api.md`](../06-server/api.md) §Rate limits. `endpoint`, `reason` (the bucket that ran out: a route group — `probe`, `meta`, `bootstrap`, `account`, `blob`, `sync` — or `failed_auth`, `ops`, `blob_up`, `blob_down`, `sessions`, `streams`, `open_uploads`) and `delay_ms`, the `Retry-After` it sent. A per-address refusal carries `client_net`, the client's `/24` or `/48` resolved through `[server] trusted_proxies`; a per-device or per-account one carries `account_h`. Emitted once per run of refusals on a key, not per request, so a flood is one line; `sunrise_ratelimit_rejected_total` has the volume. |
 | `srv.auth.device_sig_rejected` | warn | A `header_sig_v2` binding was present, resolved to an active device of the account, and did not check out; `err_code` (`AUTH_DEVICE_SIG_INVALID`) and `cause`, which names which way (stale `Date`, unparseable key, bad signature). The *client* is told only `401`: the distinction is useful here and to nobody probing which devices exist. |
 | `srv.auth.step_up_required` | warn | `GET /api/v1/accounts/me/recovery_blob` was refused because the bearer's authentication is not fresh or strong enough; `account_h` and `reason` (`auth_time_missing`, `auth_time_stale`, `acr_missing`, `acr_rejected`, `amr_rejected`). The client is told only `403 AUTH_STEP_UP_REQUIRED`: which requirement failed is what an operator needs to tell "my IdP omits `auth_time`" from "my `acr` list names a value it never emits", and those look identical from outside. |
 | `srv.store.failed` | error | A storage call failed and the request became a `500`. Carries `cause` because the operator needs it; the response never does, since a SQLite message can name columns and constraints. |
+| `srv.store.encrypted` | warn | A plaintext relay database was encrypted in place on the first open under `[storage] key_file`; the plaintext original is left beside it as `sunrise.db.pre-encryption`, for the operator to delete once the relay runs on the encrypted file. See [`../06-server/self-hosting.md`](../06-server/self-hosting.md) §Encryption at rest. |
+| `srv.store.migrated` | info | One relay schema migration was applied at startup; `from_v`, `to_v`, and the migration's number and name in the message. A start that applies nothing logs nothing. See [`../06-server/self-hosting.md`](../06-server/self-hosting.md) §Upgrade. |
+| `srv.store.quick_check` | info (warn unless `ok`) | The startup `PRAGMA quick_check`; `result` is `ok`, `problems` (with the first ten in `cause`), `unfinished` (stopped at its 10 s budget) or `failed` (with `cause`). The relay starts regardless: whether to restore a backup is the operator's call. |
+| `srv.store.wal_unavailable` | warn | The relay database could not be put in WAL mode; `mode` is the journal it kept, and `synchronous` is `FULL` instead of `NORMAL`. Expect it on filesystems without shared memory, such as some network mounts. |
 | `srv.sync.session_open` | info | A sync session was established; `account_h`. Replaces `srv.ws.connect`: ADR-0023 split the socket's one negotiation into `POST /sync/session`, so establishing a session and opening a stream are now separate events. |
 | `srv.sync.negotiate_refused` | warn | `POST /sync/session` could not agree a wire version, crypto suite or required capability; `err_code`, `cause`. `err_code` is the refusal's own code — `SYNC_PROTOCOL_VERSION_MISMATCH`, `CRYPTO_SUITE_MISMATCH`, `DOC_SCHEMA_TOO_OLD` or `CAPABILITY_REQUIRED_MISSING` — and the client receives the same one in the `400`, unlike the socket it replaces, where a closed connection left an operator as the only party who could diagnose it. |
 | `srv.sync.resume_conflict` | warn | `GET /sync/events` presented a non-zero `Last-Event-ID` on the first stream after a `Subscribe`; the request is refused with `SYNC_RESUME_CONFLICT` and no stream opens. `account_h`, `n_streams`. The id says what the client received and the cursors say what it applied, so serving either one would drop the other's claim. Reaching this means a client is not clearing its resume point on `Subscribe`. |
 | `srv.sync.stream_open` | info | `GET /sync/events` opened; `account_h`, `resumed` (whether a `Last-Event-ID` was presented). `resumed` is only readable as a ratio: a step change in cold opens after a deploy is clients *losing* their resume point, which `sunrise_sync_stream_total` counts and cannot distinguish. Emitted before the stream is handed back, so it is present even for a session whose first frame never arrives. |
 | `srv.sync.stream_closed` | info | The event stream ended, whether by the client leaving or by the server closing it. `account_h`. |
+| `srv.sync.stream_drained` | info | The server began draining, so the stream was closed with `SYNC_NETWORK_UNAVAILABLE` — retryable, so the client reconnects with backoff. `account_h`. One per stream open when shutdown began; `srv.stop.draining` carries the total. |
 | `srv.sync.subscribe` | debug | The session's stream set was replaced; `n_streams`. |
 | `srv.sync.device_revoked` | warn | The session's device is no longer an active row on its account; the stream is closed with `AUTH_DEVICE_REVOKED`. `account_h`. Distinct from `srv.sync.token_expired` on purpose: that one means "renew and reconnect", this one means "access was withdrawn, ask the user". |
 | `srv.sync.token_expired` | warn | The session's bearer passed its `exp`; the stream is closed with `AUTH_TOKEN_EXPIRED`. `account_h`. Answers "why did a working client drop hourly". |
@@ -67,6 +76,17 @@ See [`logging.md`](./logging.md) for the record schema and grammar, and
 | `srv.relay.append_failed` | error | The durable op log rejected a write, so the batch is not acked; `stream_h`, `err_code`, `cause`. The client keeps the op and retries — the one failure that must never be answered with an `Ack`. |
 | `srv.relay.replay_failed` | error | The durable op log could not be read, so the session ends without a `CaughtUp`; `stream_h`, `err_code`, `cause`. Never followed by a completeness claim the server cannot back. |
 | `srv.relay.cursor_gap` | warn | A subscriber's cursor for a device is below what the ring still holds, so the ops between are gone; `stream_h`, `device_h`, `cursor`, `evicted_through`. Recoverable but never retryable — re-subscribing cannot reproduce them. |
+| `srv.push.disabled` | info | Startup, once: no `[push]` provider is configured, so no wake-up push will be sent and devices without an open stream sync on their own schedule. Answers "why do phones never wake". |
+| `srv.push.lookup_failed` | error | The dispatcher could not read an account's push targets, so that wake is lost; `provider`, `account_h`, `cause`. The ops are not: the devices catch up on their next stream. |
+| `srv.push.token_unregistered` | info | The provider said a token will never deliver again (APNs `410`, `400 BadDeviceToken`, or a token that cannot be one); `provider`, `device_h`, `reason` (the provider's own word), and `result`: `deleted`, or `kept` when the device had already registered a different token. Never the token. |
+| `srv.push.delivery_failed` | warn | A wake-up push was not delivered; `provider`, `device_h`, `result` (`rejected`, `rate_limited`, `failed`, `timeout`), `retryable`, `attempt` (how many were made), `cause`. Never the token. A rising rate with `result = "rejected"` is usually a wrong `topic` or `environment`. |
+| `srv.account.delete_initiated` | info | `POST /api/v1/accounts/me/delete/initiate` issued a confirmation phrase; `account_h`, `expires_at_ms`. Never the phrase. |
+| `srv.account.delete_requested` | info | `DELETE /api/v1/accounts/me` consumed a phrase and marked the account; `account_h`, and `delay_ms` until the earliest erasure. From here the account opens no session, publishes no op and uploads nothing. |
+| `srv.account.delete_completed` | info | The maintenance pass, or `admin account delete --immediately`, erased the account's rows, relay log and blob trees; `account_h`. |
+| `srv.blob.tombstoned` | info | `DELETE /api/v1/blobs/{blob_id}` tombstoned a blob; `account_h`, `blob_h`. The ciphertext stays readable until it is collected. |
+| `srv.blob.gc_deleted` | info | The maintenance pass reclaimed a tombstoned blob whose grace period had passed and whose quorum held; `account_h`, `blob_h`. |
+| `srv.blob.upload_swept` | info | The maintenance pass removed an upload untouched past `[storage] pending_upload_ttl_hours`. No `account_h`: the pass reads the directory, which is keyed by a hash it cannot reverse. |
+| `srv.maintenance.failed` | warn | One maintenance item, or the whole pass, failed and is retried on the next; `reason` (`account_erase`, `blob_collect`, `upload_sweep`, `orphan_sweep`, `pass`) and `cause`. |
 
 ### `db` — `sunrise-storage`
 
@@ -112,7 +132,7 @@ See [`logging.md`](./logging.md) for the record schema and grammar, and
 | `sync.backoff` | debug | Waiting before reconnect; `attempt`, `delay_ms`. A reconnect storm is visible as a run of these. |
 | `sync.op.retransmit` | debug | An op batch went unacked and was sent again; `batch_id`, `attempt`, `n_ops`. A run of these on one `batch_id` is a link that stays up but is not carrying our ops. |
 | `sync.gap` | warn | The relay reported ops it can no longer supply; the session latches `Degraded` and stops claiming to be up to date. `cause` carries the relay's diagnostic. Unlike every other sync warning this one is not retryable — re-subscribing cannot produce the ops. |
-| `sync.loss_evidence` | debug | The session saw evidence the link is dropping data and pulled its resync forward; `cause` is `retransmit`, `undecodable_frame`, or `corrupt_op`. Nothing acks an inbound frame, so this is the only trace inbound loss leaves. |
+| `sync.loss_evidence` | debug | The session saw evidence the link is dropping data and pulled its resync forward; `cause` is `retransmit`, `undecodable_frame`, `corrupt_op`, or `known_missing` (an applied op or a peer's stream digest named an op this vault does not hold, [ADR-0043](../11-adr/0043-commit-tree.md)). Nothing acks an inbound frame, so this is the only trace inbound loss leaves. |
 
 ### `ui` — `sunrise-cli`
 
@@ -167,9 +187,21 @@ them until code uses them.
 | `core.identity.adopt_failed` | warn | A share opened but the adoption could not be written; `head_h`, `cause`. Storage-shaped, and it leaves the device signing under the previous identity — recoverable, because the fold runs again on the next open. |
 | `core.identity.rotation_unavailable` | warn | A revocation cut every future Stream key but could **not** rotate the account identity, because this device holds no `ID_S_priv`; `subject_h`. Every device admitted by pairing is in that state since [#105](https://github.com/justin13888/Sunrise/issues/105), and for most revocations it costs nothing: a revoked device that was itself paired cannot certify itself back in either way, which is what rotation used to be for. The one case it matters is revoking the device the account was **created** on — that device does hold the key — and the remedy is to run the revocation from there. |
 | `core.feature.id_rejected` | warn | A `vault_requires` op named a feature id that is not `[a-z][a-z0-9_]*(\.[a-z0-9_]+)+`; that id was skipped and the op's other ids still count ([#324](https://github.com/justin13888/Sunrise/issues/324), ADR-0045 §7). The id itself is not logged: it is payload text a member chose. Only a buggy or hostile writer produces one. |
+| `core.merge.unprojectable` | debug | An entity's merged field state does not yet decode as the entity, so its row was not written; `kind` (the registry tag). It happens when a `Patch` created the entity without a required field that has no default, and the write that supplies it has not arrived ([ADR-0044](../11-adr/0044-per-field-ops.md) §4). Nothing is dropped: the state is kept and the row is written once it decodes. Never the decode error, which can quote the plaintext value. |
 | `core.op.deferred_evicted` | warn | The parked-op buffer hit its cap and the oldest rows were dropped; `n_dropped`, `stream_h`. Ordinary traffic never reaches it: a legitimate park is released by the very next absorbed key. |
 | `core.op.parked` | info | A verified op of a kind this build does not know was kept in `ops` and `parked_ops` rather than refused; `reason` (`unknown_kind`), `stream_h`. **Not damage and not loss evidence**: it is a newer device's op family, it counts toward the sync cursor, and the next open by a build with a different `DOC_SCHEMA_V` replays it ([#320](https://github.com/justin13888/Sunrise/issues/320), ADR-0045 §4). A steady stream of these means a device in the account is ahead of this one. |
 | `core.op.parked_replay_refused` | warn | A parked op still did not apply when a newer build replayed it at open; `stream_h`, `sender_h`, `seq`, `cause` (`remote_op_invalid`, `unknown_device` or `other`, never the message, which can quote the plaintext payload). The op stays parked, its `parked_ops.reason` becomes `replay_refused` (its kind is no longer unknown), and it is not retried until the build changes again. |
+| `core.chain.fork` | warn | Two ops signed by one device claim one position in a stream, and both are kept ([ADR-0043](../11-adr/0043-commit-tree.md) §4); `kind` (`seq`: a second envelope at a held seq, `link`: the next op names a different predecessor, `head`: an op lists a different tip), `stream_h`, `subject_h` (the device that signed both), `seq`. The op this replica holds stays the applied one, the other envelope is kept verbatim in `fork_evidence`, and sync carries on. A restored device that reused its seqs looks exactly like a stolen key here. |
+| `core.chain.divergence` | warn | A peer's digest says it holds different ops for a device than this replica does, at or below a seq both have reached; `stream_h`, `subject_h` (the device whose chain differs), `sender_h` (the peer), `seq`. Recorded in `chain_divergence` and cleared when a later digest agrees. What a relay serving two views of history looks like. |
+| `core.chain.missing` | debug | This replica learned of an op it does not hold; `reason` (`prev`: the next op named it, `head`: another device's op listed it, `digest`: a peer's frontier is longer), `stream_h`, `subject_h`, `seq`. The sync driver re-subscribes on it. Debug because it is what any op arriving out of order produces; a count that never drains is the signal. |
+| `core.chain.digest_publish_failed` | warn | A storage failure stopped the sync driver's anti-entropy tick from publishing the stream digests that were due; `cause`. Nothing is lost: the next tick computes them again. |
+| `core.compaction.done` | info | A compaction run folded something ([ADR-0059](../11-adr/0059-client-op-log-compaction.md)); `n_devices` (the `(stream, device)` floors that rose), `n_ops` (the op rows deleted). A run that folds nothing logs nothing. |
+| `core.compaction.floor` | debug | One device's prefix in one stream was folded below its acknowledged floor; `stream_h`, `subject_h` (the device), `seq` (the new floor), `n_ops` (the rows deleted under it). |
+| `core.compaction.failed` | warn | A storage failure stopped the sync driver's daily compaction; `cause`. Nothing is lost: the ops stay where they were and the next day's tick tries again. |
+| `core.snapshot.written` | info | This replica wrote a snapshot record of a stream at its own frontier, as the stream's compactor or on request; `stream_h`, `sender_h` (this device). |
+| `core.snapshot.skipped` | debug | No snapshot was written for a stream; `reason` (`gap`: an op is held above its device's contiguous prefix, so no frontier states this replica), `stream_h`. The next run tries again. |
+| `core.snapshot.applied` | info | A snapshot record was verified, its state joined in, and the stream's floors raised to its frontier; `stream_h`, `sender_h` (the device that wrote it), `n_retained` (the ops it carried whose effect is not in the merge state). |
+| `core.chain.digest_invalid` | warn | A `StreamDigest` whose digest is not the digest of its own frontier, or whose frontier is unsorted, was applied and not compared; `stream_h`, `sender_h`. Its envelope verified, so this is a writer bug, not transit damage. |
 | `core.op.parked_replay_failed` | warn | A storage failure stopped a parked op's replay at open; `reason` (`read`, `apply` or `restamp`), `stream_h`, `sender_h`, `seq` (empty and zero for `read`), `cause` (`storage`, `sqlite`, `oplog` or `other`, never the message). **Not fatal**: the vault opens, the op keeps its old stamp, and the next open retries it. The same op failing on every open means a fault in the vault's storage, not in the op. |
 | `core.storage.extra_kept_opaque` | warn | A write of an entity that carries no unknown fields found the row's `extra` column holding bytes this build cannot parse, and kept them rather than writing an empty map over them; `kind` (`stream`, `context`, `task`, `routine`, `block` or `attachment`), `n_bytes`. A read of such a row sees no unknown fields and is not failed; this event is the write that would otherwise have deleted them ([#322](https://github.com/justin13888/Sunrise/issues/322), ADR-0045 §6). A write whose entity does carry unknown fields replaces the bytes. Repeated for one row, it means the row holds data only a different build can read. |
 
@@ -220,7 +252,7 @@ away from being a plaintext handle.
 | `sync.snapshot.applied` | debug | Snapshot applied. |
 | `sync.transport.fallback` | warn | Reserved for a future fallback transport; unused today. There is one transport — an SSE stream downstream and typed POSTs upstream ([ADR-0023](../11-adr/0023-sse-sync-transport.md), which supersedes ADR-0005 and the WebSocket-plus-long-poll pair it specified) — and nothing falls back off it. |
 
-### `srv` (auth outcome and push)
+### `srv` (auth outcome)
 
 Held names, none of them emitted. `srv.auth.ok` and `srv.auth.rejected` sat in
 the Implemented table while nothing in
@@ -233,15 +265,16 @@ question — but not as a claim about running code.
 reserved**: ADR-0027 takes per-account quotas out of scope, and the codes they
 would have carried are gone from the registry with their ids burned.
 
-The push events are unimplemented because the feature is: the only provider is
-`LoggingProvider`, which increments a metric.
+The two push names this table used to hold, `srv.push.send.ok` and
+`srv.push.send.failed`, are gone: delivery is built, and its events are the
+`srv.push.*` rows under Implemented. A delivered push logs nothing —
+`sunrise_push_dispatch_total{result="ok"}` counts it — so there is no
+successor to `send.ok`.
 
 | Event | Level | Meaning |
 |---|---|---|
 | `srv.auth.ok` | debug | Bearer accepted and account resolved; `account_h`, `tier`. Never the token. |
 | `srv.auth.rejected` | warn | Bearer rejected or account not resolved; `err_code`, `status`. Never the token. |
-| `srv.push.send.ok` | info | Push delivered; `provider`, `n_devices`. |
-| `srv.push.send.failed` | warn | Push delivery failed. |
 
 ### `ui` (interaction)
 

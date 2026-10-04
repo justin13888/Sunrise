@@ -85,7 +85,7 @@ whether this build can safely write to this vault is a feature id.
 WIRE_PROTO_V          = 1
 ENVELOPE_FORMAT_V     = 3
 ENVELOPE_FORMAT_FLOOR = 3
-DOC_SCHEMA_V          = 8
+DOC_SCHEMA_V          = 10
 DOC_SCHEMA_FLOOR      = 1
 DOC_SCHEMA_FP_FIRST   = 7
 CRYPTO_SUITE_V        = 5
@@ -154,7 +154,7 @@ transition is lifted on purpose.
 
 `DOC_SCHEMA_FLOOR` is the lowest schema this build can still interpret. It
 moves only when a shape stops being readable, never merely because a newer one
-exists. It is `1` while `DOC_SCHEMA_V` is `8`, because a schema-1 payload
+exists. It is `1` while `DOC_SCHEMA_V` is `10`, because a schema-1 payload
 really does still decode: its bare-instant time fields read as
 `SunriseTime::Instant`. Every op ever written stays in logs and on relays and
 is the source of truth for a rebuild. So the floor MUST NOT be raised above any
@@ -175,7 +175,17 @@ older build existed.
 From now on:
 
 - **A new op kind or field-op kind** carries a feature id. Older builds park it
-  (§7).
+  (§7). `DOC_SCHEMA_V` 8 is the first under this rule: it added `Patch`
+  ([ADR-0044](../11-adr/0044-per-field-ops.md)), which a v7 build parks. Its
+  feature id, `core.field_ops`, is not yet in this build's feature registry,
+  and until it is no build emits a `Patch`. `DOC_SCHEMA_V` 9 added
+  `StreamDigest` ([ADR-0043](../11-adr/0043-commit-tree.md)), which a v8 build
+  parks. It is emitted without a feature gate, because a build that parks one
+  loses no data: a digest changes no entity, and the parked op only delays
+  that replica's comparison until it upgrades. `DOC_SCHEMA_V` 10 added
+  `VaultRequires` and `DeviceFeatures`
+  ([#324](https://github.com/justin13888/Sunrise/issues/324), ADR-0045 §7),
+  which a v9 build parks and replays once it upgrades.
 - **Changing an existing variant's shape** is a new variant alongside the old
   one. The old one stays readable forever.
 
@@ -221,7 +231,7 @@ magic prefix (`crates/sunrise-cbor/src/magic.rs#MagicKind`):
 | 1 | `0x01` | Wire frame | `WIRE_PROTO_V` | 1 |
 | 2 | `0x02` | Op envelope | The writer's `ENVELOPE_FORMAT_FLOOR`, i.e. the oldest container a reader may implement (ADR-0045 §5). It equals `ENVELOPE_FORMAT_V` until the transition in §2.1 completes. It is **not** `DOC_SCHEMA_V`, which is in field 12. | 3 |
 | 3 | `0x03` | Recovery blob | recovery format version | 1 |
-| 4 | `0x04` | Snapshot blob | snapshot format version (reserved; nothing writes one, see [04-storage/compaction.md](../04-storage/compaction.md)) | 1 |
+| 4 | `0x04` | Snapshot record | snapshot format version (`SNAPSHOT_FORMAT_V`; see [04-storage/compaction.md](../04-storage/compaction.md) §Snapshot record) | 1 |
 | 5 | `0x05` | Vault meta record | vault meta version | 1 |
 | 6 | `0x06` | Diagnostic bundle | bundle version | 1 |
 | 7 | `0x07` | Pairing payload (QR contents, base64url JSON inside) | pairing version | 1 |
@@ -610,9 +620,9 @@ A feature MUST NOT be added to `vault_requires` while a non-revoked device has
 not advertised it, unless the user confirms
 ([ADR-0045](../11-adr/0045-schema-identity-and-feature-gating.md) §7–§8).
 
-Both control ops exist from `DOC_SCHEMA_V` 8
+Both control ops exist from `DOC_SCHEMA_V` 10
 ([#324](https://github.com/justin13888/Sunrise/issues/324)). Their folds are
-`vault_required_features` and `device_features` (migration 0033), the gate runs
+`vault_required_features` and `device_features` (migration 0036), the gate runs
 where every local op is sealed (`crates/sunrise-core/src/engine/features.rs`),
 and the registry is `crates/sunrise-core/src/feature.rs#FEATURES`. The registry
 is empty: no shipped feature needs gating yet.

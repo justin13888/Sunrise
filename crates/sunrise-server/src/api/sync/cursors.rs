@@ -89,6 +89,25 @@ pub async fn subscribe(
         });
     }
     let _ = session;
+    // The cursors are also this device's acknowledgement of what it has
+    // applied, which is what a blob tombstone's quorum is computed from
+    // (`docs/02-domain/attachments.md` §Deletion). A caller that signed with no
+    // device has nothing to attribute them to, and counts toward no quorum.
+    if let Some(device) = &caller.device {
+        let declared: Vec<crate::store::DeclaredCursor> = streams
+            .iter()
+            .flat_map(|s| {
+                s.cursors.iter().map(|c| crate::store::DeclaredCursor {
+                    stream_id: s.stream_id,
+                    origin_device: c.device_id,
+                    applied_seq: c.last_applied_seq,
+                })
+            })
+            .collect();
+        state
+            .store
+            .record_cursors(&device.device_id, &declared, now_ms)?;
+    }
     tracing::debug!(
         ev = "srv.sync.subscribe",
         n_streams = streams.len() as u64,

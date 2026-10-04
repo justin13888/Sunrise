@@ -142,10 +142,10 @@ and the grid's drop target (`CalendarView.swift:280`, into `accept(items:at:)`
 at `:371`) are shared, unguarded and compiled into `SunriseiOS` — this cell
 fails on reach, not on code. `TaskRowView` renders only inside `TaskListView`
 (`:172`) and `DailyBriefBody` (`DailyBriefView.swift:82`); the grid renders on
-iOS only at `VaultTabs.swift:79`, its own tab, and `:287`, a pushed destination
+iOS only at `VaultTabs.swift:79`, its own tab, and `:283`, a pushed destination
 that replaces the list on the same stack. The tab is not the boundary and it
-would be wrong to say it is: `pushed(destination:)` (`VaultTabs.swift:268`) is
-attached to the Today and the Browse stacks alike (`:164`, `:175`), so the grid
+would be wrong to say it is: `pushed(destination:)` (`VaultTabs.swift:264`) is
+attached to the Today and the Browse stacks alike (`:160`, `:171`), so the grid
 can be pushed onto the very stack a task list is on — it just arrives *instead
 of* the list, not beside it. Three things the tree establishes: no iOS screen
 shows a task row and the grid together, no `Tab` carries a `dropDestination`,

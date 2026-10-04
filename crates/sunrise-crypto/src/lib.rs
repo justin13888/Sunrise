@@ -81,10 +81,14 @@ pub use keys::{
     DeviceDhKeyPair, DeviceSigningKeyPair, IdentityDhKeyPair, IdentitySigningKeyPair, RecoveryKey,
     StreamKey, VaultRootKey,
 };
-pub use merkle::{stream_root_init, stream_root_step};
+pub use merkle::{
+    chain_root_init, chain_root_step, stream_digest, stream_root_init, stream_root_step,
+    FrontierEntry,
+};
 pub use op_envelope::{
-    decode_envelope, encode_envelope, open_envelope_unverified, seal_envelope, sign_envelope,
-    verify_envelope, OpEnvelope, OpEnvelopeError,
+    decode_envelope, encode_chained_envelope, encode_envelope, op_hash, open_envelope_unverified,
+    seal_envelope, sign_envelope, verify_envelope, ChainHead, ChainLinks, OpEnvelope,
+    OpEnvelopeError, MAX_CHAIN_HEADS,
 };
 pub use recovery::{
     seal_recovery_blob, unseal_recovery_blob, RecoveryError, RECOVERY_NONCE_LEN, RECOVERY_SALT_LEN,

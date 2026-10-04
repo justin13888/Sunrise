@@ -101,19 +101,15 @@ struct VaultTabs: View {
         .tabViewStyle(.sidebarAdaptable)
     }
 
-    /// The row sheets — edit, schedule, defer, move — reusing the Mac's
-    /// modifier so a sheet cannot behave differently on the two platforms.
-    ///
-    /// The palette and the cheat sheet are handed inert values: both are
-    /// keyboard surfaces, and the screens they reach are all in the tab bar or
-    /// one tap into More.
+    /// The row sheets, the palette and the cheat sheet — the Mac's modifier, so
+    /// none of them can behave differently on the two platforms.
     private var rowSheets: KeyboardSurfaces {
         KeyboardSurfaces(
             sheets: sheets,
             palette: palette,
             preferences: keys,
             list: activeList,
-            hasList: tab == .today || tab == .browse || tab == .search,
+            hasList: showsRows,
             showingCheatSheet: $showingCheatSheet,
             creatingStream: $creatingStream,
             perform: perform,
@@ -348,32 +344,53 @@ struct VaultTabs: View {
 }
 
 // The rest of the shell: how it routes, what its toolbars offer, and the
-// long-lived work it starts.
-//
-// An extension rather than more of the struct, and for a reason worth
-// stating: `VaultTabs` is one screen's worth of state and about a dozen
-// screens' worth of wiring, and the wiring is what grows. Splitting it here
-// keeps the type's own body — its state, its `body`, its tab roots — short
-// enough to read in one pass, which is what `type_body_length` is asking
-// for.
+// long-lived work it starts. An extension so the type's own body — its state,
+// its `body`, its tab roots — stays short enough to read in one pass, which is
+// what `type_body_length` asks for: the wiring is what grows.
 extension VaultTabs {
     private var escapes: ListEscapes {
         ListEscapes(
             showFocus: { tab = .focus },
-            openSearch: { tab = .search },
-            // No command palette on iOS: it is a keyboard surface, and a phone
-            // has no keyboard to summon it from. The screens it reaches are
-            // all in the tab bar or one tap into More.
-            openPalette: {},
-            openCheatSheet: {}
+            openSearch: { perform(.searchInView) },
+            openPalette: { perform(.commandPalette) },
+            openCheatSheet: { perform(.cheatSheet) }
         )
     }
 
+    private var showsRows: Bool { tab == .today || tab == .browse || tab == .search }
+
+    /// Run an action from a key command, the palette, a list key or a link.
     private func perform(_ action: AppAction) {
+        if navigate(action) || present(action) { return }
+        _ = ListCommand.perform(action, list: activeList, selection: rows, sheets: sheets, escapes: escapes)
+    }
+
+    private func navigate(_ action: AppAction) -> Bool {
         switch action {
-        case .today: show(.list(.todayAll))
-        case .inbox: show(.list(.inbox))
-        case .searchInView, .searchGlobal: tab = .search
+        case .today, .inbox: // and the keyboard to the rows, as the Mac does, so `?` and `X` answer
+            show(.list(action == .today ? .todayAll : .inbox))
+            pane = .rows
+        case .morningSummary: show(.morning)
+        case .endOfDay: show(.evening)
+        // ⌘F keeps the query, ⌘K starts afresh; both land in the field, as the Mac does.
+        case .searchInView, .searchGlobal:
+            if action == .searchGlobal { models.search.clear() }
+            tab = .search
+            pane = .search
+        case .importCalendar: importingIcal = true
+        default: return false
+        }
+        return true
+    }
+
+    /// A phone leaves the palette and cheat sheet inert (``KeyboardClass``) but claims them, or they loop via ``escapes``.
+    private func present(_ action: AppAction) -> Bool {
+        let keyboard = KeyboardClass.isDesktopClass
+        switch action {
+        case .commandPalette where keyboard: palette.present(hasSelection: !rows.isEmpty && showsRows)
+        case .cheatSheet where keyboard: showingCheatSheet = true
+        case .commandPalette, .cheatSheet: break
+        case .newStream: creatingStream = true
         case .quickCapture: openCapture()
         // The global one always means the sheet: it arrives from outside the
         // app — a widget, the Control Center control, a `sunrise://capture`
@@ -381,15 +398,9 @@ extension VaultTabs {
         case .quickCaptureGlobal: surfaces.openQuickCapture()
         case .undo: Task { await models.undo.undo() }
         case .redo: Task { await models.undo.redo() }
-        default:
-            _ = ListCommand.perform(
-                action,
-                list: activeList,
-                selection: rows,
-                sheets: sheets,
-                escapes: escapes
-            )
+        default: return false
         }
+        return true
     }
 
     private var activeList: TaskListModel {
@@ -431,19 +442,12 @@ extension VaultTabs {
         exportingIcal = IcalDocument(text: text, filename: window.suggestedFilename)
     }
 
-    /// Capture, into whichever surface this screen already has.
-    ///
-    /// The same rule the Mac applies for ⌘N, and for the same reason. A list
-    /// that accepts capture already shows the inline bar at its top, so the
-    /// honest thing is to put the keyboard in *that* field rather than slide a
-    /// sheet over a field the user can already see. Where there is no bar —
-    /// the calendar, focus, search, a context list — the sheet is the fallback
-    /// rather than a shortcut that quietly does nothing.
-    ///
-    /// Presenting the sheet unconditionally was worse than untidy: the sheet's
-    /// field and the inline bar's carry the same accessibility identifier, so
-    /// two of them on screen at once is genuinely ambiguous — to a UI test,
-    /// and to VoiceOver.
+    /// Capture, into whichever surface this screen already has — the Mac's ⌘N
+    /// rule. A list that accepts capture already shows the inline bar, so the
+    /// keyboard goes into *that* field; where there is no bar (calendar, focus,
+    /// search, a context list) the sheet is the fallback. Never both: the two
+    /// fields share an accessibility identifier, so two on screen at once is
+    /// ambiguous to a UI test and to VoiceOver.
     private func openCapture() {
         if listAcceptsCapture {
             pane = .capture

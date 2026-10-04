@@ -882,9 +882,13 @@ impl Engine {
     /// ledger stays symmetric however many rounds are played. Filtering the
     /// discounting rows by one more level of the gate is beaten by one more
     /// attacker op, and the limit of that is the fixpoint ADR-0041
-    /// §Alternatives (f) declines. What would settle it is an authority the
-    /// ledger does not hold, and
-    /// [#394](https://github.com/justin13888/Sunrise/issues/394) carries it.
+    /// §Alternatives (f) declines. What settles it is an authority the ledger
+    /// does not hold: ADR-0058
+    /// (`docs/11-adr/0058-the-account-identity-is-the-membership-authority.md`)
+    /// makes a revocation signed by the identity in force one the walk never
+    /// gates and the discount never removes. Until
+    /// [#454](https://github.com/justin13888/Sunrise/issues/454) builds it,
+    /// every row here is an ordinary one and this residual stands.
     ///
     /// # Why `sender` is the row's author, and where that is enforced
     ///

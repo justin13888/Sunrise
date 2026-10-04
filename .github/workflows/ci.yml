@@ -1290,6 +1290,38 @@ jobs:
             crates/sunrise-relay-client/src \
             crates/*/src/telemetry crates/*/src/logging crates/*/src/observability
 
+  constant-time:
+    name: Constant-time comparison gate
+    runs-on: ubuntu-latest
+    # Checkout plus one grep over four source trees, like the two gates above.
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - name: Reject a variable-time comparison over a secret-named value
+        # ADR-0061. `subtle::ConstantTimeEq` is how sunrise-crypto,
+        # sunrise-pairing, sunrise-http-sig and sunrise-server::auth compare a
+        # MAC, tag, key or digest, and until this nothing enforced it: clippy
+        # cannot see the `==` operator, so `clippy.toml` has no entry that
+        # could. Every hit is either rewritten to `ct_eq` or entered in
+        # `.github/scripts/constant-time-allowlist.tsv` with its reason; an
+        # entry whose line has gone fails the gate too.
+        run: .github/scripts/constant-time-gate.sh
+
+  constant-time-gate-contract:
+    name: Constant-time gate contract
+    runs-on: ubuntu-latest
+    # One Python script over source trees it synthesises in a temp directory,
+    # plus one run over this checkout. No toolchain. Seconds.
+    timeout-minutes: 5
+    # No `if:`, like the other gate contracts. It plants the `==` over a
+    # `[u8; 32]` tag in sunrise-crypto that #365 names and asserts exit 1, and
+    # pins the allowlist's refusals: a stale entry, an entry with no reason, a
+    # missing file, and an empty one.
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - name: Exit-code contract
+        run: python3 .github/scripts/test_constant_time_gate.py
+
   kynos-waiver:
     name: Kynos waiver gate
     runs-on: ubuntu-latest
@@ -1378,6 +1410,38 @@ jobs:
           cargo run -q -p sunrise-server --bin openapi -- schemas/generated/openapi.v1.json
           git diff --exit-code -- schemas/generated/openapi.v1.json \
             || { echo "::error::openapi: the description is stale; run \`mise run openapi\` and commit the result."; exit 1; }
+
+  deploy-test:
+    name: Deploy test (Caddy, nginx)
+    runs-on: ubuntu-latest
+    # One debug build of `sunrise-server` on the shared warm cache (the
+    # `openapi-current` job's figures: under a minute warm, ~4m cold), three
+    # image pulls, then two passes of the checks at about 40 s each — the
+    # event-stream check holds a stream open for 20 s on purpose.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+        with:
+          # A reader of the `rust` gate's entry, for the reason
+          # `openapi-current` gives: this job builds one package, and an entry
+          # shaped by it would be a poor inheritance for the workspace build.
+          shared-key: rust
+          save-if: false
+      - name: Build the relay
+        run: cargo build -q -p sunrise-server --bin sunrise-server
+      - name: Boot the relay behind each shipped proxy configuration and check it
+        # `deploy/caddy/Caddyfile` and `deploy/nginx/sunrise.conf.template`
+        # each claim what they enforce: per-client limits keyed on the real
+        # client address and immune to a forged forwarding header, an
+        # unbuffered event stream that outlives the keep-alive, an oversize
+        # body refused at the proxy with the relay's own 413, and no public
+        # `/metrics`. This boots each one unchanged in its official image and
+        # asserts every claim from client containers with their own addresses.
+        run: python3 deploy/test/run.py --server target/debug/sunrise-server
 
   tokens-current:
     name: Design token gate
@@ -1899,28 +1963,19 @@ jobs:
     # laptop from a warm registry. Sixty is double the sum on that machine and
     # wants replacing with a real figure the first time a nightly completes.
     timeout-minutes: 60
-    # Nightly and on demand, never on a pull request — the same gate the
-    # `mutants` job carries, for two reasons rather than one:
+    # Nightly and on demand — the same gate the `mutants` job carries. Half an
+    # hour a target and nine targets is four and a half hours of runner time,
+    # which is a nightly's shape, not a pull request's. A pull request that
+    # touches a decoder gets the short, path-filtered `fuzz-pr` job below
+    # instead (ADR-0061).
     #
-    # 1. Cost. Half an hour a target and six targets is three hours of runner
-    #    time, and every one of those hours is spent re-deriving what the
-    #    committed corpus in `fuzz/seeds/` already covers unless the run is
-    #    long enough to explore past it. That is a nightly's shape, not a pull
-    #    request's.
-    # 2. Toolchain. `cargo-fuzz` needs a nightly rustc for
-    #    `-Zsanitizer=address`, and this repository pins 1.91.1 in four places
-    #    with the `rust` job asserting they agree. Putting a nightly on the
-    #    critical path of every pull request would mean a pull request can go
-    #    red because a nightly rustc regressed, which is not a fact about the
-    #    change under review.
-    #
-    # `docs/10-cross-cutting/testing.md` §Continuous fuzz targets records that
-    # the short per-commit budget the original specification asked for is
-    # deliberately not wired, and why.
+    # This job keeps the floating `nightly` while `fuzz-pr` pins one. That is
+    # deliberate: a nightly rustc regression reds this job, where nobody's
+    # change is under review, before anyone moves the pin `fuzz-pr` reads.
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     strategy:
       # Not fail-fast: a finding in one parser must not hide whether the other
-      # five ran clean. Each target is an independent search.
+      # eight ran clean. Each target is an independent search.
       fail-fast: false
       matrix:
         target:
@@ -1930,6 +1985,9 @@ jobs:
           - ical
           - oauth_state
           - recovery_blob
+          - identity_transition
+          - device_cert
+          - key_envelope
     env:
       # This workflow sets `RUSTFLAGS: -D warnings` globally. `cargo-fuzz`
       # composes its own `RUSTFLAGS` (the sanitizer and `sancov` passes) on top
@@ -1996,5 +2054,132 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
           name: fuzz-artifacts-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}
+          if-no-files-found: ignore
+
+  # The pull-request half of fuzzing (ADR-0061): two minutes a target, only
+  # for the targets a pull request's changed paths reach. Two jobs, because a
+  # matrix cannot be computed inside the job it expands: `fuzz-pr-plan` reads
+  # the diff and names the targets, and `fuzz-pr` runs one leg per name, or no
+  # legs at all.
+  fuzz-pr-plan:
+    name: Fuzz plan (pull request)
+    runs-on: ubuntu-latest
+    # A depth-2 checkout and one `git diff`. Seconds.
+    timeout-minutes: 5
+    if: github.event_name == 'pull_request'
+    outputs:
+      targets: ${{ steps.plan.outputs.targets }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          # A pull_request run checks out GitHub's merge commit, whose first
+          # parent is the base it would merge into. Depth 2 reaches that parent,
+          # so `HEAD^1..HEAD` is exactly what merging the pull request changes,
+          # whatever the base has done since the branch was cut.
+          fetch-depth: 2
+      - name: Name the targets the changed paths reach
+        id: plan
+        # The path list is #365's; each maps to the targets that drive that
+        # code through its public API. `sunrise-http-sig` triggers the plan and
+        # maps to nothing: no harness drives it yet, and testing.md says so.
+        # A name is only ever emitted from the fixed list `all`, so a file name
+        # in the diff never reaches a shell command in the job below.
+        run: |
+          set -euo pipefail
+          all="op_envelope wire_frame rrule ical oauth_state recovery_blob identity_transition device_cert key_envelope"
+          crypto="op_envelope recovery_blob identity_transition device_cert key_envelope"
+          picked=""
+          while IFS= read -r path; do
+            case "$path" in
+              crates/sunrise-crypto/*)          picked="$picked $crypto" ;;
+              crates/sunrise-wire-protocol/*)   picked="$picked wire_frame" ;;
+              crates/sunrise-server/src/auth/*) picked="$picked oauth_state" ;;
+              fuzz/Cargo.toml|fuzz/Cargo.lock)  picked="$picked $all" ;;
+              fuzz/fuzz_targets/*.rs)           t="${path#fuzz/fuzz_targets/}"; picked="$picked ${t%.rs}" ;;
+              fuzz/seeds/*/*)                   t="${path#fuzz/seeds/}"; picked="$picked ${t%%/*}" ;;
+            esac
+          done < <(git diff --name-only HEAD^1 HEAD)
+          selected=""
+          for t in $all; do
+            case " $picked " in *" $t "*) selected="$selected $t" ;; esac
+          done
+          # Unquoted on purpose: `selected` holds only names from `all`.
+          # shellcheck disable=SC2086
+          json=$(printf '%s\n' $selected | jq -Rsc 'split("\n") | map(select(length > 0))')
+          echo "Targets: $json"
+          echo "targets=$json" >> "$GITHUB_OUTPUT"
+
+  fuzz-pr:
+    name: Fuzz pull request (${{ matrix.target }})
+    needs: fuzz-pr-plan
+    if: needs.fuzz-pr-plan.outputs.targets != '[]'
+    runs-on: ubuntu-latest
+    # Derived, not measured: a cold `cargo install cargo-fuzz` (about two
+    # minutes), a cold Address Sanitizer build of `fuzz/` and its dependency
+    # graph (about four on an M-series laptop, so allow ten here), and the
+    # 120-second budget. Thirty is more than double that; replace it with a
+    # real figure once one run has completed. No rust-cache: this job runs
+    # only on pull requests, and this file writes caches only from `master`.
+    timeout-minutes: 30
+    strategy:
+      # Not fail-fast, for the nightly job's reason: one target's finding must
+      # not hide whether the others ran clean.
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.fuzz-pr-plan.outputs.targets) }}
+    env:
+      # As in the nightly job: `cargo-fuzz` composes its own flags.
+      RUSTFLAGS: ""
+      # The pinned nightly. A floating `nightly` would let a rustc regression
+      # red a pull request that changed nothing about it. Moving the pin is a
+      # one-line edit here; the nightly `fuzz` job, on the floating toolchain,
+      # is what shows whether the next date builds. `RUSTUP_TOOLCHAIN`
+      # overrides `rust-toolchain.toml`'s 1.91.1 for every step.
+      RUSTUP_TOOLCHAIN: nightly-2026-10-01
+      TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      # The next three steps can fail for reasons that are facts about the
+      # toolchain rather than about the change: a nightly that no longer
+      # installs, a `cargo-fuzz` that no longer builds on it, a sanitizer build
+      # that broke upstream. Each continues on error, and the step after them
+      # turns any such failure into a warning annotation rather than a red
+      # check. A harness that genuinely does not compile is still caught: the
+      # `rust` job lints `fuzz/` with clippy on the pinned stable.
+      - name: Install the pinned nightly
+        id: toolchain
+        continue-on-error: true
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component rust-src
+      - name: Install cargo-fuzz
+        id: cargo-fuzz
+        if: steps.toolchain.outcome == 'success'
+        continue-on-error: true
+        run: cargo install cargo-fuzz --locked
+      - name: Build ${{ matrix.target }}
+        id: build
+        if: steps.cargo-fuzz.outcome == 'success'
+        continue-on-error: true
+        run: cargo fuzz build --fuzz-dir fuzz "$TARGET"
+      - name: Record why the target did not run
+        if: steps.build.outcome != 'success'
+        run: |
+          echo "::warning title=Fuzz pull request ($TARGET) did not run::The pinned toolchain $RUSTUP_TOOLCHAIN could not install, install cargo-fuzz, or build this target (toolchain: ${{ steps.toolchain.outcome }}, cargo-fuzz: ${{ steps.cargo-fuzz.outcome }}, build: ${{ steps.build.outcome }}). That is a toolchain fact, not a finding, so this check is not red. Move RUSTUP_TOOLCHAIN in the fuzz-pr job of ci.yml."
+      - name: Fuzz ${{ matrix.target }} for 120 seconds
+        # The committed seeds are the second, read-only corpus, as in the
+        # nightly job. A finding's reproducer is uploaded below, and it joins
+        # `fuzz/seeds/<target>/` in the commit that fixes it.
+        if: steps.build.outcome == 'success'
+        run: |
+          set -euo pipefail
+          mkdir -p "fuzz/corpus/$TARGET"
+          cargo fuzz run --fuzz-dir fuzz "$TARGET" \
+            "fuzz/corpus/$TARGET" "fuzz/seeds/$TARGET" \
+            -- -max_total_time=120
+      - name: Upload the input a finding left behind
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: fuzz-pr-artifacts-${{ matrix.target }}
           path: fuzz/artifacts/${{ matrix.target }}
           if-no-files-found: ignore

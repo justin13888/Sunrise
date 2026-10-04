@@ -197,6 +197,23 @@ pub const STREAM_ROOT_1: [u8; 32] =
 pub const STREAM_ROOT_2: [u8; 32] =
     hex("53d7f37110ab645251f591091da6320770cfc0b80700e05aa77128fa39ccd145");
 
+/// `chain_root_init(&STREAM_ID, &DEVICE_ID)`: `root(d, 0)` of ADR-0043 §5.
+pub const CHAIN_ROOT_0: [u8; 32] =
+    hex("2f74c491fd2b47c8edb6faed4567282d361a1903ab1fafdc7ad8cb345458b4e3");
+
+/// The `op_hash` folded into [`CHAIN_ROOT_1`].
+pub const CHAIN_OP_HASH_1: [u8; 32] = [0xa1; 32];
+
+/// `chain_root_step(&CHAIN_ROOT_0, &CHAIN_OP_HASH_1)`.
+pub const CHAIN_ROOT_1: [u8; 32] =
+    hex("286b441062aece8199c33e871ab826ea2ec30901741652f5247b96c5eb82c563");
+
+/// `stream_digest(&STREAM_ID, &[(DEVICE_ID, 1, CHAIN_ROOT_1), ([0x01; 16],
+/// 0, chain_root_init(&STREAM_ID, &[0x01; 16]))])`: two devices, given out of
+/// device-id order, one of them with an empty prefix.
+pub const STREAM_DIGEST_2: [u8; 32] =
+    hex("d601145b8cc63fff7280cef816cf20da70b2e94cdce0aedf88ef922cb7016631");
+
 /// Ed25519 signing-key seed used by the envelope vectors. Ed25519 signing is
 /// deterministic, so a fixed seed pins the signature bytes exactly.
 pub const DEVICE_SIGNING_SECRET: [u8; 32] = [0x11; 32];
@@ -244,7 +261,15 @@ pub const ENVELOPE_INNER: &[u8] = b"inner-op-canonical-cbor";
 /// container change, because every build already preserves an unknown
 /// field 13.
 ///
-/// The 7 → 8 re-freeze (ADR-0045 §7, issue #324, the `VaultRequires` and
+/// The 7 → 8 re-freeze (ADR-0044, the `Patch` op family) moved the 64-byte
+/// signature, the field-12 byte and the 8-byte fingerprint prefix in field
+/// 13, and nothing else: no field was added this time.
+///
+/// The 8 → 9 re-freeze (ADR-0043, the `StreamDigest` op family) moved the
+/// same three regions and nothing else. `encode_envelope` writes no chain
+/// fields, so fields 14 and 15 are absent here, as on any legacy link.
+///
+/// The 9 → 10 re-freeze (ADR-0045 §7, issue #324, the `VaultRequires` and
 /// `DeviceFeatures` op families) moved the signature at `[119..182]`, the
 /// field-12 byte at `[184]` and the fingerprint prefix at `[187..194]`, and
 /// nothing else: the map header and every byte before the signature are
@@ -267,10 +292,10 @@ pub mod signed_only_envelope {
         "5352020003ad010302502222222222222222222222222222222203503333",
         "3333333333333333333333333333040705821b0000018bcfe56800000600",
         "070108000958180000000000000000000000000000000000000000000000",
-        "000a57696e6e65722d6f702d63616e6f6e6963616c2d63626f720b5840c5",
-        "9f3ea22a7c004e676e98318a1d22aaba7fcd269a235abde1e873d9c5315c",
-        "bd797ee29fb385d5635b0df5baf62f288f9c31148baff43eeba7de76319a",
-        "46650b0c080d483c6a3f7b32d51792",
+        "000a57696e6e65722d6f702d63616e6f6e6963616c2d63626f720b584041",
+        "4f04533142f7fe4644f49a17d0d3fc57c0137a7a21319c25f0b081a0eb56",
+        "0d23f2b2d077cd2de4b3c81096a522b02e6bdb302654c78379e0ece22d07",
+        "6131010c0a0d48e9a6d82f484ef86b",
     ));
 }
 
@@ -295,9 +320,15 @@ pub mod signed_only_envelope {
 /// map header at `[5]`, and appended field 13 at `[202..211]`, exactly as the
 /// signed-only vector did. The ciphertext at `[94..117]` is again untouched.
 ///
-/// The 7 → 8 re-freeze (ADR-0045 §7) moved the tag, the signature, the
-/// field-12 byte and the fingerprint prefix, and the ciphertext at
+/// The 7 → 8 re-freeze (ADR-0044) moved the AEAD tag, the signature, the
+/// field-12 byte and the fingerprint prefix in field 13. The ciphertext at
 /// `[94..117]` is again untouched.
+///
+/// The 8 → 9 re-freeze (ADR-0043) moved the same four regions. The
+/// ciphertext at `[94..117]` is again untouched.
+///
+/// The 9 → 10 re-freeze (ADR-0045 §7) moved the same four regions. The
+/// ciphertext at `[94..117]` is again untouched.
 ///
 /// `encode_envelope(ENVELOPE_INNER, STREAM_ID, DEVICE_ID, seq = 9,
 /// hlc = [1_700_000_000_001, 0], AeadAlgId::XChaCha20Poly1305, epoch = 3,
@@ -318,11 +349,11 @@ pub mod sealed_envelope {
         "5352020003ad010302502222222222222222222222222222222203503333",
         "3333333333333333333333333333040905821b0000018bcfe56801000601",
         "070108030958185555555555555555555555555555555555555555555555",
-        "550a58276416c4bb3e46b71d10c45af51e2462649e7331f6d5bbb8d90a5d",
-        "34a7a158167e618beb4cb77dc90b584056b7f95dd4f68850828a7a90747e",
-        "eaef06159733292c8ce3566e677592666e2c2ee17a05b766497b5d22b316",
-        "b2617b9c546a9e244741cc09f95137d8401f62090c080d483c6a3f7b32d5",
-        "1792",
+        "550a58276416c4bb3e46b71d10c45af51e2462649e7331f6d5bbb864d34d",
+        "f89e916d7a948d0dc2bf6a6b950b584027ad91c9ee374e7b6dc1ff9ee7c4",
+        "72b958d32e39a375e87b73579df16364e87733870b1063ad5a42b6e7ce06",
+        "b9fe906e95b1aa82e530b6e0d4a994f925a044060c0a0d48e9a6d82f484e",
+        "f86b",
     ));
 }
 

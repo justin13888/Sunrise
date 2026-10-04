@@ -29,7 +29,8 @@ emits it.
    `crates/sunrise-server/tests/metric-label-safety.rs` holds the rest (see §Enforcement).
 4. **Exposure.** `/metrics` stays loopback-only (`srv.start.metrics_withheld` otherwise). An
    operator who wants remote scraping puts an authenticated scraper on the host. The reverse-proxy
-   configurations shipped by [#355](https://github.com/justin13888/Sunrise/issues/355) MUST NOT route `/metrics`.
+   configurations shipped in [`deploy/`](../../deploy/) MUST NOT route `/metrics`: each answers it
+   with its own `404`, and the `Deploy test` CI job asserts that from outside.
 5. **Cost.** Recording a metric on a hot path MUST NOT take a lock. The registry
    (`crates/sunrise-server/src/metrics.rs#Metrics`) is a fixed table of `OnceLock` slots probed from
    a hash of the name and labels: a series is written once, on first touch, and every later
@@ -55,7 +56,7 @@ they diverge.
 | `status` | HTTP status code actually returned, as three digits | ~15 |
 | `kind` | frame or op-batch kind | the wire enum |
 | `provider` | `apns`, `fcm`, `web` | 3 |
-| `result` | `ok`, `failed`, `rejected`, `rate_limited`, `timeout` | 5 |
+| `result` | `ok`, `failed`, `rejected`, `rate_limited`, `timeout`, `dropped`; and on `sunrise_pairing_total`, `opened`, `relayed`, `gone`, `aborted`, `expired` | 11 |
 | `reason` | The typed error code (`crates/sunrise-error/codes.toml`), or the closed enum the metric's own row names where every failure shares one code | the code registry, or the row's enum |
 | `scope` | `ip`, `account`, `device` | 3 |
 | `direction` | `upload`, `download` | 2 |
@@ -96,7 +97,7 @@ in the description, so it is driven without anyone adding it to the test.
 | `sunrise_http_requests_total` | counter | `endpoint`, `method`, `status` | current | Every request that produced a response head, recorded by `api::observe::HttpMetrics`. |
 | `sunrise_http_request_duration_seconds` | histogram (latency buckets) | `endpoint`, `method` | current | Time to the response head. For a buffered response that is the whole request; for the SSE `events` endpoint it is time to the first byte, because the stream is long-lived by design. |
 | `sunrise_http_in_flight_requests` | gauge | — | target ([#435](https://github.com/justin13888/Sunrise/issues/435)) | Requests currently being handled. Not built from the observer: a client that leaves mid-handler reaches no observer hook, so an increment there has no guaranteed decrement (Rule 2). |
-| `sunrise_ratelimit_rejected_total` | counter | `endpoint`, `scope` | target ([#355](https://github.com/justin13888/Sunrise/issues/355)) | Requests refused with 429 by the policy #355 defines. |
+| `sunrise_ratelimit_rejected_total` | counter | `endpoint`, `scope` | current | Requests refused with `429 RATE_LIMITED` under [`api.md`](./api.md) §Rate limits, by the matched route's template and by what the refusal counted against: `ip` for a route group or the failed-auth budget, `device` or `account` for a per-device or per-account budget (`account` also where a caller signed with no device). Recorded by `api::ratelimit`. |
 
 ### Authentication
 
@@ -115,7 +116,7 @@ in the description, so it is driven without anyone adding it to the test.
 | `sunrise_accounts` | gauge | — | target ([#435](https://github.com/justin13888/Sunrise/issues/435)) | Account rows. |
 | `sunrise_devices` | gauge | `state` | target ([#435](https://github.com/justin13888/Sunrise/issues/435)) | Device rows by state. |
 | `sunrise_account_create_total` | counter | — | current | |
-| `sunrise_account_delete_total` | counter | — | target ([#359](https://github.com/justin13888/Sunrise/issues/359)) | Account deletion. |
+| `sunrise_account_delete_total` | counter | — | current | Accounts erased, by the maintenance pass once their grace period has run or by `admin account delete --immediately`. A confirmed request that has not been erased yet is not counted; `admin stats` reports those as `accounts_pending_deletion`. |
 | `sunrise_devices_register_total` | counter | — | current | |
 | `sunrise_devices_revoke_total` | counter | — | current | |
 
@@ -150,15 +151,21 @@ in the description, so it is driven without anyone adding it to the test.
 | `sunrise_blob_bytes_total` | counter | `direction` | current | Ciphertext bytes moved: `upload` as each chunk is stored, `download` as each chunk is read for a fetch, so an abandoned fetch counts what was read for it. |
 | `sunrise_blob_storage_bytes` | gauge | — | target ([#435](https://github.com/justin13888/Sunrise/issues/435)) | Ciphertext bytes at rest. |
 | `sunrise_blob_upload_duration_seconds` | histogram (transfer buckets) | — | target ([#435](https://github.com/justin13888/Sunrise/issues/435)) | From init to finalize. |
-| `sunrise_blob_gc_deleted_total` | counter | — | target ([#359](https://github.com/justin13888/Sunrise/issues/359)) | Blobs reclaimed by GC. |
+| `sunrise_blob_gc_deleted_total` | counter | — | current | Tombstoned blobs reclaimed by the maintenance pass, once `[storage] gc_grace_days` had passed and every active device had acknowledged the tombstone. Blobs removed with an erased account are not counted here. |
 
 ### Push
 
 | Metric | Type | Labels | Status | Meaning |
 |---|---|---|---|---|
 | `sunrise_push_register_total` | counter | — | current | |
-| `sunrise_push_dispatch_total` | counter | `provider`, `result` | current (no traffic until [#362](https://github.com/justin13888/Sunrise/issues/362)) | One per push intent a provider handled. Emitted today only by the self-host `LoggingProvider`, which nothing constructs, so the series appears once #362 wires delivery. |
-| `sunrise_push_dispatch_duration_seconds` | histogram (latency buckets) | `provider` | target ([#362](https://github.com/justin13888/Sunrise/issues/362)) | Time for the provider round trip. |
+| `sunrise_push_dispatch_total` | counter | `provider`, `result` | current | One per wake-up push, by how it ended: `ok` delivered; `rejected` refused by the provider, including a dead token, which is deleted; `rate_limited` throttled by the provider past every retry, or not sent because the device was at its ten-a-minute cap; `failed` a server or transport error past every retry; `timeout` no answer past every retry; `dropped` the dispatch queue was full, so the wake was discarded before any device was looked up. Coalesced ops are not counted. No series exists until `[push]` configures a provider. |
+| `sunrise_push_dispatch_duration_seconds` | histogram (latency buckets) | `provider` | current | Time for one provider round trip, observed per attempt, retries included. |
+
+### Pairing
+
+| Metric | Type | Labels | Status | Meaning |
+|---|---|---|---|---|
+| `sunrise_pairing_total` | counter | `result` | current | The pairing rendezvous (`api/pairing.rs`), one per outcome: `opened` a new device's first message opened a session, which is one pair attempt; `relayed` any later message was buffered; `gone` a send or receive named no live session of the caller's account, including a fourth message from one role, which drops the session; `rate_limited` opening a session was over a pair-attempt limit or the session table was full; `aborted` an abort dropped a live session; `expired` a session reached its 300 s lifetime and was swept. |
 
 ### Storage
 
@@ -178,7 +185,7 @@ counters. Each is kept, gained a label, folded, or deleted:
 | `sunrise_device_sig_rejected_total` | Kept, gains `reason`. |
 | `sunrise_sync_negotiate_refused_total` | Kept, gains `reason`. |
 | `sunrise_devices_list_total` | Folded into `sunrise_http_requests_total{endpoint="/api/v1/devices",method="GET"}`, which counts the same requests and their outcome. |
-| `sunrise_push_apns_total`, `sunrise_push_fcm_total`, `sunrise_push_web_total` | Deleted. They were reachable only through `LoggingProvider`, which nothing constructs; `sunrise_push_dispatch_total{provider,result}` supersedes them. |
+| `sunrise_push_apns_total`, `sunrise_push_fcm_total`, `sunrise_push_web_total` | Deleted. They were reachable only through `LoggingProvider`, which nothing constructed and which [#362](https://github.com/justin13888/Sunrise/issues/362) removed; `sunrise_push_dispatch_total{provider,result}` supersedes them. |
 | Every other name | Kept unchanged, as an unlabelled counter. |
 
 ## Bucket sets

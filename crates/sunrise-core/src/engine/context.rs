@@ -338,6 +338,11 @@ pub(super) fn purge_context_from_tasks(
         let rows = stmt.query_map(params![&ctx[..]], |r| r.get::<_, Vec<u8>>(0))?;
         rows.collect::<rusqlite::Result<Vec<_>>>()?
     };
+    // The membership rows are what an unseeded task's field state is seeded
+    // from. Fold them in while they still name the context, so a restore of
+    // it can show it again (ADR-0044 §5).
+    let tasks: Vec<[u8; 16]> = task_ids.iter().map(|raw| super::ids::blob16(raw)).collect();
+    super::merge::seed_tasks_before_purge(tx, &tasks)?;
     tx.execute(
         "DELETE FROM task_contexts WHERE context_id = ?",
         params![&ctx[..]],

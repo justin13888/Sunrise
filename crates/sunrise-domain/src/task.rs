@@ -65,9 +65,11 @@ impl TaskState {
 
 /// Persisted Task.
 ///
-/// CRDT mapping (per spec): scalars → LWW-register; `contexts`, `blocks`,
-/// `blocked_by` → OR-Sets; `deferred_count` → PN-counter; `body` → CRDT
-/// RichText. `blocks_others` is **derived**, not persisted.
+/// How each field merges (ADR-0044, declared in `sunrise_id::for_each_entity!`):
+/// scalars, optionals, `body` and `scheduling_constraints` are LWW registers;
+/// `contexts` and `blocked_by` are add-wins OR-sets; `deferred_count` is a
+/// PN-counter. `blocks` is derived from the bound blocks' `tasks` on read and
+/// is not merged, and neither is `blocks_others`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Task {
     /// Unique id (typed reference).
@@ -118,7 +120,8 @@ pub struct Task {
     /// PN-counter; system-incremented on defer.
     #[serde(default)]
     pub deferred_count: i64,
-    /// Block ids scheduling this task (OR-Set).
+    /// Block ids scheduling this task: derived on read from every live block
+    /// whose `tasks` names it, and not merged (ADR-0044 §3).
     #[serde(default)]
     pub blocks: BTreeSet<EntityRef>,
     /// Tasks this task depends on (OR-Set).

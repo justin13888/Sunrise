@@ -43,15 +43,26 @@ subscription impossible rather than merely discouraged.
 
 ### What the relay database actually holds (implemented)
 
-`Store::open` runs `PRAGMA foreign_keys = ON` and the schema, and **nothing
-else**. In particular it issues no `PRAGMA key`, so **the relay database is not
-SQLCipher-encrypted** — `rusqlite` is built with the workspace's
-`bundled-sqlcipher` feature, but only the *client* vault applies a key
-(`sunrise_storage::db` derives it as
-`BLAKE3.derive_key("sunrise.sqlcipher_key.v1", vault_root)`). On the relay the
-file is a plain SQLite database, readable by anyone who can read the data dir.
+`Store::open` applies the database key when one is configured, sets the
+connection pragmas described under
+[Schema versions and pragmas](#schema-versions-and-pragmas-implemented), runs a
+bounded `PRAGMA quick_check`, and migrates the schema, and **nothing else**.
 
-What that file exposes, stated plainly rather than left to inference:
+**Encryption at rest is the operator's choice, off by default.** With
+`[storage] encrypt = true` and a `key_file`, the whole file is
+SQLCipher-encrypted under that 32-byte raw key, header included
+([ADR-0060](../11-adr/0060-relay-database-encryption-at-rest.md),
+`crates/sunrise-server/src/store/cipher.rs`). The key comes from a file the
+operator holds outside the data dir, never from anything inside it, unlike the
+*client* vault, whose key `sunrise_storage::db` derives as
+`BLAKE3.derive_key("sunrise.sqlcipher_key.v1", vault_root)`. Without it, the
+file is a plain SQLite database, readable by anyone who can read the data dir.
+Either way the running relay reads every column below: encryption protects the
+file and its backups, not the data from the process that serves it.
+
+What the database holds, stated plainly rather than left to inference. The
+**Form** column is the value as the relay stores it; with encryption on, all of
+it is under the database key at rest:
 
 | Stored | Form | Notes |
 |---|---|---|
@@ -65,6 +76,9 @@ What that file exposes, stated plainly rather than left to inference:
 | `relay_frames.account_h` | BLAKE3-truncated | first 16 bytes of `BLAKE3(account_id)`, derived server-side from the verified token — never from the client |
 | `relay_frames.stream_id` | **raw 16-byte id** | as the subscriber named it |
 | `relay_frame_heads.device_id` | **raw 16-byte id** | read from the envelope's cleartext routing header |
+| `account_delete_tokens.token_h` | BLAKE3 | of a pending deletion phrase; the phrase itself is never stored |
+| `blob_tombstones` | **raw ids** | blob key, stream id, publishing device and `seq` of the detaching op, as `DELETE /blobs/{blob_id}` named them |
+| `device_cursors` | **raw ids** | per device, stream and originating device, the `seq` it declared applied on `POST /sync/subscribe` |
 
 So the channel namespace is hashed and the routing ids inside it are not. The
 `id_h` truncation in `logging/mod.rs` is applied to **log output**, not to
@@ -75,6 +89,60 @@ cleartext routing header via `sunrise_cbor::decode_envelope_header` and nothing
 more. It cannot do more — `sunrise-server` has **no `sunrise-crypto`
 dependency**, and `EnvelopeHeader` has no payload field, so the
 non-responsibility is enforced by the dependency graph.
+
+### Schema versions and pragmas (implemented)
+
+The schema is a numbered, append-only list of migrations in
+`crates/sunrise-server/src/store/migrations/mod.rs`, and the database records
+how far along it is in `PRAGMA user_version`. On open, `Store::open`:
+
+1. with a key configured, encrypts a plaintext file in place, once, keeping
+   the original as `sunrise.db.pre-encryption` (ADR-0060 §4); then applies the
+   key before any other statement, and refuses a file it does not open
+   (`WrongKey`), or an encrypted file with no key configured (`KeyRequired`),
+   both exit 78;
+2. sets `busy_timeout` (`[storage] busy_timeout_ms`, default 5 s), so even the
+   next read waits out another process's lock rather than failing on it;
+3. reads `user_version` and refuses a database above the binary's newest
+   migration, or below zero, with `StoreError::SchemaTooNew`. Nothing has
+   written to the file at this point, and nothing does: the binary exits 78;
+4. sets `journal_mode = WAL`, then `synchronous = NORMAL` if WAL took, or
+   `FULL` if it did not (a filesystem without shared memory keeps its rollback
+   journal and logs `srv.store.wal_unavailable`), then `foreign_keys = ON`;
+5. runs `PRAGMA quick_check` under a 10 s watchdog and logs
+   `srv.store.quick_check`, starting regardless of the result;
+6. applies every migration above the database's version, each in its own
+   `BEGIN IMMEDIATE` transaction that also writes the new `user_version`, so a
+   crash leaves the old schema at the old version or the new schema at the new
+   one, and two processes opening one file cannot both apply a step.
+
+| Migration | What it does |
+|---|---|
+| 0001 `baseline` | The `accounts`, `devices`, `push_tokens` and `relay_*` tables, as every pre-versioning release created them. Still `CREATE … IF NOT EXISTS`, so a database those releases wrote, which is at version 0, adopts it without change. |
+| 0002 `devices_vault_device_id` | Adds `devices.vault_device_id` where a database predates it, then the `devices_by_vault_id` index. |
+| 0003 `account_and_blob_deletion` | Adds `accounts.delete_requested_at_ms` and the tables deletion keeps: `account_delete_tokens`, `blob_tombstones`, and `device_cursors` (the cursors each device declared on subscribe, which a tombstone's quorum reads). Each cascades from its account or device row. |
+
+A shipped migration is never edited: migration 0001 executes the tenants'
+`SCHEMA` constants, so those are frozen with it, and a test builds a database
+from a literal copy of the pre-versioning DDL, migrates it, and requires the
+same schema a fresh database gets. A schema change is a new entry with the next
+number. The list is `(id, name, step)` over one integer of state, which is what
+a Postgres backend would record in a one-row table to share the numbering.
+
+**The `synchronous = NORMAL` trade-off.** Under WAL, `NORMAL` syncs at
+checkpoints rather than at every commit. A crash of the server process loses
+nothing, and no crash can corrupt the database, but a power cut or a kernel
+crash can roll back the transactions committed just before it. For the relay
+that means a frame acknowledged in that window can be gone after a power cut,
+when its sender has already dropped it from its outbox. Rollback-journal mode
+uses `FULL` instead, because `NORMAL` there can corrupt the file on power loss.
+`wal_autocheckpoint` stays at SQLite's default of 1000 pages (about 4 MiB); the
+relay's writes are small frames, so the WAL never grows large enough to slow
+reads.
+
+All requests still share one connection behind a mutex. With WAL on, moving
+reads onto a pool of read-only connections is possible, and is deferred until
+the request-latency metrics show the shared connection is the bottleneck.
 
 ### Durable relay op log (implemented)
 
@@ -113,8 +181,11 @@ server only claims ops are gone when they actually are.
 1. Client `OpBatch` arrives as one `POST /api/v1/sync/ops`, and the handler rebuilds the wire frame from it.
 2. Server reads each op's cleartext routing header for `(device_id, seq)`. It
    verifies **no signature** — it holds no key that could — and enforces
-   **no rate limit and no quota**; neither exists. Frame size is bounded by the
-   wire protocol's frame cap, not by a per-account budget.
+   **no quota**. Before that, the handler charges the batch's op count to the
+   device's op budget and refuses `429 RATE_LIMITED` past it
+   ([`api.md`](./api.md) §Rate limits), which bounds how fast a device writes,
+   not how much. Frame size is bounded by the wire protocol's frame cap, not by
+   a per-account budget.
 3. Server appends the verbatim frame to `relay_frames` in the same transaction
    that enforces the channel's retention bounds and raises `evicted_through`
    watermarks. There is no object store and therefore no 2PC: the append and
@@ -147,7 +218,8 @@ What `api/blobs.rs` does:
         a chunk that was never uploaded → 409 BLOB_CHUNK_MISSING;
      b. hash the concatenation and compare to content_hash → 400 on mismatch;
      c. write the chunks under the content address, then the manifest LAST;
-     d. best-effort delete of the pending area.
+     d. lift any tombstone on that content address, and best-effort delete
+        of the upload's pending directory.
      → 200 { blob_id = "blb_" + first 16 bytes of content_hash hex,
              size_bytes, chunk_count }
 ```
@@ -160,8 +232,10 @@ a cross-tenant read primitive.
 
 Writing the manifest last is what makes a crash safe: `fetch` reads the manifest
 first, so a half-committed blob is invisible rather than short. There is no
-`pending` status row and no cron job; an abandoned upload leaves a pending
-directory that costs disk and never correctness.
+`pending` status row. An abandoned upload leaves a pending directory that costs
+disk and never correctness, and the maintenance pass (below) removes it once
+nothing in it has been touched for `[storage] pending_upload_ttl_hours`
+(default 24).
 
 ### Concurrent same-`blob_id` (implemented)
 
@@ -186,7 +260,10 @@ step 3b before any commit.
 ## Durability
 
 - SQLite durability on commit, for the frame and its retention eviction
-  together — one transaction, one file.
+  together — one transaction, one file. The database runs in WAL mode with
+  `synchronous = NORMAL`, so a commit survives a crash of the server process
+  but the last few may not survive a power cut; see
+  [Schema versions and pragmas](#schema-versions-and-pragmas-implemented).
 - Blob chunks are written to a `.bin.tmp`, `sync_all`'d, then renamed into
   place, and the manifest is written last (unsynced), so an interrupted
   finalize leaves an invisible partial rather than a short read.
@@ -198,23 +275,40 @@ step 3b before any commit.
 
 All retention numbers are unified to **30 days** (or shorter):
 
-- Op envelopes: the relay keeps a frame for at most **30 days** from arrival, or less when the channel's count bound evicts it first. This is the current relay retention, set in code by `DEFAULT_MAX_AGE_MS` (`crates/sunrise-server/src/relay_log.rs:123`) and applied on every append; it does not wait on compaction, which is proposed and not built ([`../04-storage/compaction.md`](../04-storage/compaction.md)).
-- Op metadata rows: retained at least **30 days** regardless of compaction state, providing a recovery window if compaction logic produces a defective snapshot.
-- Blob GC grace: `gc_grace_days = 30` (configurable). Tombstoned blobs are deleted from the object store on day 31. This is independent of post-compaction retention.
-- Pending-blob outbox rows: 24 h (described above).
+- Op envelopes: the relay keeps a frame for at most **30 days** from arrival, or less when the channel's count bound evicts it first. This is the current relay retention, set in code by `DEFAULT_MAX_AGE_MS` (`crates/sunrise-server/src/relay_log.rs:123`) and applied on every append; it does not wait on compaction, which is a client-side fold the relay takes no part in ([`../04-storage/compaction.md`](../04-storage/compaction.md) §Server side).
+- Op metadata rows: retained at least **30 days**, as above. The relay holds no snapshot: a client keeps its stream's latest snapshot record locally, and no transport carries one between devices yet ([#462](https://github.com/justin13888/Sunrise/issues/462)).
+- Blob GC grace: `[storage] gc_grace_days`, default 30. A tombstoned blob is reclaimed by the first maintenance pass after its grace period at which every active device has acknowledged the tombstone. This is independent of post-compaction retention.
+- Abandoned uploads: `[storage] pending_upload_ttl_hours`, default 24, measured from the newest file in the upload.
+- Deleted accounts: `[storage] account_delete_grace_days`, default 30, from the confirmed deletion to the erasure.
 - Cursors: retained for the life of the device.
 - Audit (managed): **30 days** (see [`observability.md`](./observability.md)). Self-host default: also 30 days, configurable.
 
-Retention **enforcement** is implemented for the relay op log only: `relay_log.rs`
-applies both bounds on every append. Blob GC, compaction retention, op-metadata
-retention and audit retention have no implementation — no GC job, no cron, and
-no `gc_grace_days` setting the parser will accept.
+Retention **enforcement** is implemented for the relay op log, the blob store and
+deleted accounts. `relay_log.rs` applies the log's two bounds on every append.
+The rest is the **maintenance pass**
+(`crates/sunrise-server/src/admin/maintenance.rs`). The serving binary runs it
+at startup and then every `[storage] maintenance_interval_secs` (default 3600),
+and `sunrise-server admin gc --now` runs it on demand. In order, it:
 
-There is no Postgres, so there is no `fsync = on` to check, and the
-`sunrise-server doctor` subcommand that would check it does not exist (see
-[`self-hosting.md`](./self-hosting.md) §"Not yet wired"). SQLite's own default
-`synchronous` setting governs relay durability; the server sets no `PRAGMA
-synchronous` of its own.
+1. Erases accounts whose deletion was confirmed more than
+   `account_delete_grace_days` ago (see [`api.md`](./api.md) §Account deletion).
+2. Collects tombstoned blobs whose grace period has passed and whose quorum
+   holds. It removes the manifest first, so a reader stops seeing the blob
+   before any chunk goes.
+3. Sweeps abandoned uploads.
+4. Under a blob root the operator configured, sweeps per-account directories
+   whose account no longer exists and which have been untouched for the upload
+   TTL. A crash between an erasure's commit and its file deletion leaves those.
+
+An item that fails is logged as `srv.maintenance.failed` and retried on the next
+pass. The rest of the pass continues. Compaction retention, op-metadata retention
+and audit retention have no implementation.
+
+There is no Postgres, so there is no `fsync = on` to check;
+`sunrise-server admin doctor` checks what applies instead (see
+[`self-hosting.md`](./self-hosting.md) §Testing the install). Relay durability is
+governed by the `synchronous = NORMAL` the server sets under WAL, described
+under [Schema versions and pragmas](#schema-versions-and-pragmas-implemented).
 
 ## Blob storage
 
@@ -224,7 +318,7 @@ synchronous` of its own.
 | Upload chunks | **As built:** `PUT` to the relay, 1..=1 MiB per chunk, at most 4096 chunks, 100 MB per blob. |
 | Finalize | Client posts `chunk_hashes` — one `BLAKE3(ciphertext_chunk)` per entry, lowercase hex, **64 characters** (32 bytes), plus a `content_hash` over the concatenation. The server re-reads every stored chunk and re-hashes it; a mismatch on any chunk or on the concatenation is `400 BLOB_HASH_MISMATCH`, and a chunk that never arrived is `409 BLOB_CHUNK_MISSING` (see [`api.md`](./api.md)). No ETag shortcut is taken — the check is always a real re-hash. There is no `plaintext_hash` server-side; that's a client-only concept. |
 | Download | **As built:** `GET /api/v1/blobs/<blob_id>` reassembles the chunks and returns `application/octet-stream` from the relay. Presigned GET URLs and their 24-hour expiry are the unbuilt managed shape. |
-| Delete | **Not implemented.** No `DELETE` route, no tombstone, and no GC job. See [`api.md`](./api.md) §Blobs. |
+| Delete | **As built:** `DELETE /api/v1/blobs/<blob_id>` writes a tombstone naming the op that detached the blob. The ciphertext stays readable until the maintenance pass collects it, after `gc_grace_days` and once every active device has acknowledged that op through its subscribe cursors. See [`api.md`](./api.md) §Blobs. |
 
 Persisted blob payloads carry the uniform 5-byte magic prefix from [`../10-cross-cutting/protocol-versioning.md`](../10-cross-cutting/protocol-versioning.md) §3, but the server stores opaque bytes and does not introspect.
 
@@ -257,7 +351,11 @@ account under a BLAKE3 of the account id:
 ```
 <data_dir>/
 ├── sunrise.db                        # SQLite: accounts, devices, push_tokens,
-│                                     #   relay_frames, relay_frame_heads, relay_evicted
+│                                     #   relay_frames, relay_frame_heads, relay_evicted,
+│                                     #   account_delete_tokens, blob_tombstones, device_cursors
+├── sunrise.db-wal, sunrise.db-shm    # WAL and its index, present while the server runs
+├── sunrise.db.pre-encryption         # only after [storage] encrypt was turned on: the
+│                                     #   plaintext original, until the operator deletes it
 └── blobs/
     ├── pending/<acct_h>/<upload_id>/
     │   └── blobs/<xx>/<upload_hex>/<i>.bin
@@ -269,6 +367,9 @@ account under a BLAKE3 of the account id:
 `<acct_h>` is `BLAKE3(account_id)[..16]` in hex; `<upload_hex>` and `<blob_hex>`
 are the 32-hex bodies of `up_…` and `blb_…`. The inner `blobs/` segment is
 `BlobStore`'s own root, which is why it appears under an already-blob-rooted
-path. Backup is `tar` of the data dir
-while paused (or with a snapshot mechanism); because the op log lives in the
-database, that single file is the whole relay state.
+path. Backup is `sunrise-server admin backup` while the relay runs, or `tar`
+of the data dir while it is stopped (or a snapshot mechanism); because the op
+log lives in the database, that single file and `blobs/` are the whole relay
+state. [`self-hosting.md`](./self-hosting.md) §Backup has the procedure and
+§Restore the way back. Blob chunks are client-sealed ciphertext and are not
+encrypted again at rest; with `[storage] encrypt = true`, `sunrise.db` is.

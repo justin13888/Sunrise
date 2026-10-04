@@ -148,11 +148,11 @@ use sunrise_crypto::identity_transition::{
 };
 use sunrise_crypto::op_envelope::open_envelope;
 use sunrise_crypto::{
-    decode_envelope, encode_envelope, hpke_open, hpke_open_identity, hpke_seal,
+    decode_envelope, encode_chained_envelope, hpke_open, hpke_open_identity, hpke_seal,
     identity_carry_info, identity_id_from_pub, identity_share_info, key_envelope_info,
-    sign_identity_transition, unwrap_stream_key, verify_envelope, AeadAlgId, DeviceCert,
-    DeviceCertInner, DeviceDhKeyPair, DeviceSigningKeyPair, HpkeError, IdentityDhKeyPair,
-    IdentitySigningKeyPair, OpEnvelopeError, StreamKey, VaultRootKey,
+    sign_identity_transition, unwrap_stream_key, verify_envelope, AeadAlgId, ChainLinks,
+    DeviceCert, DeviceCertInner, DeviceDhKeyPair, DeviceSigningKeyPair, HpkeError,
+    IdentityDhKeyPair, IdentitySigningKeyPair, OpEnvelopeError, StreamKey, VaultRootKey,
 };
 use sunrise_domain::INBOX_STREAM_BYTES;
 use sunrise_pairing::{PairingGrant, PairingOffer, PairingPayload, PairingRequest};
@@ -2360,9 +2360,40 @@ impl Keychain {
         epoch: u32,
         stream_key: &StreamKey,
     ) -> Result<Vec<u8>, OpEnvelopeError> {
+        self.seal_chained_op_at(
+            stream_id,
+            seq,
+            hlc,
+            inner,
+            rng,
+            epoch,
+            stream_key,
+            ChainLinks::default(),
+        )
+    }
+
+    /// [`Self::seal_op_at`], stamping the chain fields `chain` carries
+    /// (envelope fields 14 and 15, ADR-0043). The engine's op-log writer is
+    /// the caller that fills them; an empty `chain` is a legacy link.
+    ///
+    /// # Errors
+    /// AEAD / CBOR failures from the envelope codec, and a field 15 out of
+    /// shape.
+    #[allow(clippy::too_many_arguments)]
+    pub fn seal_chained_op_at(
+        &self,
+        stream_id: [u8; 16],
+        seq: u64,
+        hlc: sunrise_cbor::hlc::Hlc,
+        inner: &[u8],
+        rng: &dyn Rng,
+        epoch: u32,
+        stream_key: &StreamKey,
+        chain: ChainLinks,
+    ) -> Result<Vec<u8>, OpEnvelopeError> {
         let mut nonce = [0u8; AEAD_NONCE_LEN];
         rng.fill_bytes(&mut nonce);
-        encode_envelope(
+        encode_chained_envelope(
             inner,
             stream_id,
             self.device_id,
@@ -2371,6 +2402,7 @@ impl Keychain {
             AeadAlgId::XChaCha20Poly1305,
             epoch,
             nonce,
+            chain,
             Some(stream_key),
             &self.signing,
         )
@@ -4329,7 +4361,7 @@ mod tests {
 
         // An op sealed under exactly the key the old derivation produced.
         let derived = legacy_derived_stream_key(&root, &sid, LEGACY_EPOCH);
-        let legacy_env = encode_envelope(
+        let legacy_env = sunrise_crypto::encode_envelope(
             b"a pre-0017 op",
             sid,
             device_id,

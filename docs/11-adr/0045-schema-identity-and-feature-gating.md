@@ -455,8 +455,9 @@ first feature that is adds it.
   [ADR-0042](./0042-v0-forever.md) withdrew any pre-release licence to break
   compatibility, so none of them may rely on one.
 - **Two new control op families** (`VaultRequires` and `DeviceFeatures`) and
-  one new error code (`DOC_FEATURE_MISSING`) arrive at `DOC_SCHEMA_V` 8, the
-  bump after field 13's. A v7 build parks either family and replays it after
+  one new error code (`DOC_FEATURE_MISSING`) arrive at `DOC_SCHEMA_V` 10,
+  after `Patch` (8) and `StreamDigest` (9). A v9 build parks either family and
+  replays it after
   an upgrade.
 - [`../02-domain/schema-versioning.md`](../02-domain/schema-versioning.md) and
   [`../10-cross-cutting/protocol-versioning.md`](../10-cross-cutting/protocol-versioning.md)

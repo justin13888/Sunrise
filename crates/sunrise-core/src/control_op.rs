@@ -29,7 +29,7 @@
 //!   no revocation can undo that — only a new identity can.
 //!
 //!
-//! Two more families arrive at `DOC_SCHEMA_V = 8`, and they carry the
+//! Two more families arrive at `DOC_SCHEMA_V = 10`, and they carry the
 //! vault's feature state rather than keys (ADR-0045 §7):
 //!
 //! - [`VaultRequiresPayload`] names feature ids the vault's data now depends

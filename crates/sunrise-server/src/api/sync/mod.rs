@@ -53,4 +53,4 @@ pub use credential::{
 };
 pub use cursors::{subscribe, DeviceCursor, StreamSubscription, SubscribeRequest};
 pub use publish::{ops, OpsRequest, OpsResponse};
-pub use stream::{events, EventStream, SyncEvent};
+pub use stream::{events, EventStream, SyncEvent, KEEP_ALIVE_SECS};

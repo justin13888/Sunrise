@@ -10,6 +10,12 @@ takes is a withdrawal by a revocation's own author. Item 4 and §Alternatives
 (i) now say so. The fold, the gate, the discount and the read bound are
 unchanged.
 
+**Amended by:** [ADR-0058](./0058-the-account-identity-is-the-membership-authority.md)
+— item 4's residual against two expelled devices one attacker holds is settled
+by an authority the ledger did not carry: a revocation signed by the identity
+in force, which the fold never gates and never discounts. Every row without
+that signature is folded as this record says.
+
 **Amends** [ADR-0034](./0034-revocation-bounds-reads-not-writes.md) §Decision
 corollary 3, which reserved peer-side enforcement for after the relay bound and
 required that it not reintroduce order dependence. This is that enforcement,
@@ -461,7 +467,8 @@ device, and a rule that bounds neither is the register that 0028 split the
 bound from. Closing it needs information the ledger does not carry: a
 replicated bound op, which waits on the same unknown-op-kind parking as
 ADR-0056 §7, or an authority for membership such as
-[#394](https://github.com/justin13888/Sunrise/issues/394)'s.
+[ADR-0058](./0058-the-account-identity-is-the-membership-authority.md)'s, which
+converges the bound only for the devices it revokes.
 [#411](https://github.com/justin13888/Sunrise/issues/411) carries it.
 
 ## What a user sees when an op is refused
@@ -641,10 +648,15 @@ there are five visible consequences:
      lockout for two attackers: once X1 and X2 both name O, O discounts
      neither of them out of anybody's set.
 
-   What would settle it is an authority for membership that the ledger does
-   not hold. ADR-0056 §"What would force revisiting this" item 4 names the
-   candidate, and [#394](https://github.com/justin13888/Sunrise/issues/394)
-   carries it.
+   What settles it is an authority for membership that the ledger does not
+   hold.
+   [ADR-0058](./0058-the-account-identity-is-the-membership-authority.md)
+   takes it: a revocation signed by the `ID_S_priv` of the identity in force
+   is never gated and seats a revoker the discount never removes, so neither
+   expelled device can discount it. Until
+   [#454](https://github.com/justin13888/Sunrise/issues/454) builds it, and
+   in an account with no reachable holder of that key afterwards, the
+   residual above stands.
 
 5. **An unwound device shows as current and still receives nothing.** The keys
    are *not* given back, and that is the one place this design deliberately
@@ -818,8 +830,9 @@ nobody discounts; no un-revoke is needed for it
 ([ADR-0056](./0056-a-revocation-is-withdrawn-only-by-its-author.md) §3). That
 holds against one expelled device. Against two that one attacker holds, it
 does not: the second device's gated row discounts that current device, and
-§"What a user sees" item 4 states it with its test and
-[#394](https://github.com/justin13888/Sunrise/issues/394). Taken.
+§"What a user sees" item 4 states it with its test, and
+[ADR-0058](./0058-the-account-identity-is-the-membership-authority.md) is the
+authority that settles it. Taken.
 
 ## Consequences
 

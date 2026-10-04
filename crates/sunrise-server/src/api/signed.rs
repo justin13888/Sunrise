@@ -49,10 +49,10 @@
 //! URI the way axum's `Router::nest` did — which is what forced the axum server to reach for
 //! `OriginalUri` — so what arrives here is what was sent.
 //!
-//! **No operation on this surface takes a query parameter.** Adding one means
-//! extending the canonical target on both sides; today `path_and_query` and the
-//! path agree, and a query appearing without the client half changing would
-//! break verification loudly rather than silently.
+//! **No signed operation takes a query parameter.** Adding one means extending the canonical
+//! target on both sides; today `path_and_query` and the path agree, and a query appearing
+//! without the client half changing would break verification loudly rather than silently. The
+//! one query on the surface, `GET /api/v1/health?deep=1`, is unsigned and never reaches these.
 
 use crate::api::auth::{AccountToken, Principal};
 use crate::api::error::ApiError;
@@ -166,7 +166,7 @@ pub fn verify_bytes(
 ) -> Result<Option<Device>, ApiError> {
     let (Some(device_id), Some(signature)) = (sig.device.as_deref(), sig.signature.as_deref())
     else {
-        if state.config.require_device_sig {
+        if state.config.device_sig_required() {
             // The one pre-lookup case that names the signature, and it covers a
             // *partial* binding too: the `let else` above wants both headers,
             // so one without the other lands here. Nothing about the *account*
@@ -687,7 +687,7 @@ mod tests {
     #[tokio::test]
     async fn an_absent_binding_where_one_is_required_names_the_signature() {
         let client = Client::new(ServerConfig {
-            require_device_sig: true,
+            require_device_sig: Some(true),
             ..ServerConfig::default()
         });
 
@@ -702,7 +702,7 @@ mod tests {
     #[tokio::test]
     async fn a_half_present_binding_is_the_same_pre_lookup_refusal() {
         let client = Client::new(ServerConfig {
-            require_device_sig: true,
+            require_device_sig: Some(true),
             ..ServerConfig::default()
         });
         let (device_id, _) = paired(&client, 23).await;

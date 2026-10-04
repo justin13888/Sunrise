@@ -65,11 +65,13 @@
 //! # Not declared yet
 //!
 //! [ADR-0044] §2 also has the registry declare each field's **default**: the
-//! value a field-level create that omits the field reads as (§4). Nothing
-//! reads such a default until per-field ops land (#319). Today every op
-//! carries the full record, and serde's defaults on the domain types fill a
-//! missing field. So [`FieldSpec`] has no default yet. #319 adds it, and the
-//! schema fingerprint (#323) then hashes it with the rest of the field.
+//! value a field-level create that omits the field reads as (§4). The merge
+//! (`sunrise-core`'s `engine::merge`) reads serde's defaults on the domain
+//! types, and keeps its own small table for the required fields that have
+//! none (`Task.title`, `state`, `stream_id`, `Context.name`). So
+//! [`FieldSpec`] has no default yet. Moving that table here is a document
+//! schema change: the fingerprint (#323) then hashes each default with the
+//! rest of its field.
 //!
 //! [ADR-0044]: ../../../docs/11-adr/0044-per-field-ops.md
 //! [`EntityKind`]: crate::EntityKind
@@ -475,8 +477,9 @@ macro_rules! for_each_entity {
 /// How an entity's ops merge into its materialized state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Merge {
-    /// Full-state ops, one stamp per row, last writer wins (ADR-0014; per
-    /// field once ADR-0044 lands).
+    /// Every field merges by its own CRDT type (ADR-0044): a full-state op is
+    /// a write to every field it carries, and a `Patch` writes the fields it
+    /// names.
     Lww,
     /// Each op writes one immutable record under its own key and never
     /// contends with another (ADR-0013).

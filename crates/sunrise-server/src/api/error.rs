@@ -63,6 +63,14 @@ pub mod codes {
     pub const SYNC_RESUME_CONFLICT: &str = "SYNC_RESUME_CONFLICT";
     /// The relay could not read or write its durable op log.
     pub const RELAY_STORAGE_UNAVAILABLE: &str = "RELAY_STORAGE_UNAVAILABLE";
+    /// No live pairing session under that `pair_id` for this account: it was
+    /// never opened, expired, was aborted, overflowed its per-role buffer, or
+    /// belongs to another account. Not retryable; the pairing starts again
+    /// from a new code.
+    ///
+    /// Mirrors [`sunrise_error::ErrorCode::RelayPairSessionGone`] (registry id
+    /// 602).
+    pub const RELAY_PAIR_SESSION_GONE: &str = "RELAY_PAIR_SESSION_GONE";
     /// `POST /accounts` offered a recovery blob for an account that already
     /// holds a different one. The column is write-once; re-sending the same
     /// bytes still succeeds.
@@ -75,6 +83,21 @@ pub mod codes {
     /// operator's `acr_values`) and retries; refreshing the token does not
     /// help, because a refresh does not move `auth_time`.
     pub const AUTH_STEP_UP_REQUIRED: &str = "AUTH_STEP_UP_REQUIRED";
+    /// `DELETE /accounts/me` presented a `confirm_phrase` that was consumed,
+    /// expired, or never issued. The client re-runs
+    /// `POST /accounts/me/delete/initiate`.
+    pub const ACCOUNT_DELETE_PHRASE_INVALID: &str = "ACCOUNT_DELETE_PHRASE_INVALID";
+    /// The account is pending deletion, so it may open no sync session,
+    /// publish no op and start or finish no upload. Not retryable: nothing
+    /// undoes a confirmed deletion.
+    pub const ACCOUNT_PENDING_DELETION: &str = "ACCOUNT_PENDING_DELETION";
+    /// The request was refused under the rate-limit policy
+    /// (`docs/06-server/api.md` §Rate limits). Always a `429` with a
+    /// `Retry-After` header, built only by
+    /// [`crate::api::ratelimit::RateLimited`].
+    ///
+    /// Mirrors [`sunrise_error::ErrorCode::RateLimited`] (registry id 800).
+    pub const RATE_LIMITED: &str = "RATE_LIMITED";
 
     /// Server-side failure.
     pub const FATAL_INTERNAL: &str = "FATAL_INTERNAL";
@@ -378,7 +401,21 @@ impl From<crate::store::StoreError> for ApiError {
                 codes::DEVICE_NOT_FOUND,
                 "no such record on this account".to_owned(),
             ),
-            crate::store::StoreError::Sqlite(_) => {
+            // Everything else is raised only by `Store::open` and the
+            // operator's `admin` commands, before or outside any route, so a
+            // request reaching one would be a defect.
+            crate::store::StoreError::Sqlite(_)
+            | crate::store::StoreError::SchemaTooNew { .. }
+            | crate::store::StoreError::BusyTimeoutTooLong { .. }
+            | crate::store::StoreError::KeyFile { .. }
+            | crate::store::StoreError::KeyPermissions { .. }
+            | crate::store::StoreError::KeyInDataDir { .. }
+            | crate::store::StoreError::KeyConfig(_)
+            | crate::store::StoreError::KeyRequired { .. }
+            | crate::store::StoreError::WrongKey { .. }
+            | crate::store::StoreError::InUse { .. }
+            | crate::store::StoreError::NotEncrypted
+            | crate::store::StoreError::Io { .. } => {
                 tracing::error!(
                     ev = "srv.store.failed",
                     err_kind = "internal",

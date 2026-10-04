@@ -24,8 +24,10 @@ final class KeyboardTips {
     static let enabledKey = "keyboard.tips"
 
     /// The one sentence a tip is. Short on purpose: a coachmark that has to be
-    /// read twice has already failed.
-    static let hint = "Press ? for the keyboard shortcuts, or ⌘⇧P for the command palette."
+    /// read twice has already failed. The keys are the keymap's, not typed out
+    /// here, so the tip cannot teach a chord the app does not answer.
+    static let hint = "Press ? for the keyboard shortcuts, or "
+        + "\(Keymap.shortcutLabel(for: .commandPalette)) for the command palette."
 
     private let defaults: UserDefaults
 
@@ -40,20 +42,20 @@ final class KeyboardTips {
 /// On the onboarding screen rather than over the vault, because that is the one
 /// moment the app has someone's attention and nothing of theirs to lose. The
 /// two shortcuts named are the two that work before anything exists: `?` needs
-/// no data, and ⌘⇧N is the reason the app is worth leaving running.
+/// no data, and ⇧⌘N is the reason the app is worth leaving running.
 struct KeyboardTipsCoachmark: View {
     @Bindable var tips: KeyboardTips
+
+    /// Built from the keymap, like ``KeyboardTips/hint``.
+    static let text = "Press ? in any view for the shortcuts, and "
+        + "\(Keymap.shortcutLabel(for: .quickCaptureGlobal)) to capture a "
+        + "thought from whatever app you are in."
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Label("Sunrise is keyboard-first", systemImage: "keyboard")
                 .font(.callout.weight(.medium))
-            Text(
-                """
-                Press ? in any view for the shortcuts, and ⌘⇧N to capture a \
-                thought from whatever app you are in.
-                """
-            )
+            Text(Self.text)
             .font(.caption)
             .foregroundStyle(.secondary)
             Toggle("Show keyboard tips as I go", isOn: $tips.isEnabled)

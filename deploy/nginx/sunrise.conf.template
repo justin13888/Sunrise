@@ -1,0 +1,112 @@
+# Sunrise relay behind nginx.
+#
+# docs/06-server/self-hosting.md §Reverse proxy walks through this file. It is
+# the configuration `deploy/test/run.py` boots in CI, unchanged, so what it
+# claims below is asserted rather than hoped:
+#
+#   * TLS terminates here; the relay speaks plain HTTP on loopback behind it.
+#   * The client address reaches the relay in X-Forwarded-For, appended to
+#     whatever the client sent. The relay reads the chain from the right and
+#     stops at the first address that is not a trusted proxy, so a forged
+#     entry to the left of the real one is never believed; a client's
+#     `Forwarded` header is dropped outright. It believes this
+#     proxy's entry only because `[server] trusted_proxies` lists this
+#     proxy's address (127.0.0.1).
+#   * A body over `[server] max_body_bytes` (2 MiB by default, which also
+#     covers the relay's 1 MiB blob chunk) is refused here with the 413 the
+#     relay would send.
+#   * The sync event stream is passed through unbuffered.
+#   * No timeout cuts a quiet event stream: the relay sends a keep-alive
+#     comment every 15 s, and the stream's read timeout is an hour.
+#   * /metrics is never served to the public listener.
+#
+# A template for the official nginx image, which renders
+# /etc/nginx/templates/*.template into /etc/nginx/conf.d/ with the
+# environment below substituted (and nothing else: nginx's own `$host`-style
+# variables are left alone). Outside that image, replace the three `${...}`
+# names by hand and drop the file into your `http {}` block's include path.
+#
+#   SUNRISE_DOMAIN    the relay's public host name, e.g. relay.example.com
+#   SUNRISE_UPSTREAM  where sunrise-server listens, e.g. 127.0.0.1:8443 (the
+#                     server's own default bind)
+#   SUNRISE_TLS_DIR   the directory holding fullchain.pem and privkey.pem,
+#                     e.g. /etc/letsencrypt/live/relay.example.com
+#
+# If you change `[server] max_body_bytes`, change `client_max_body_size` to
+# match: a proxy limit above the relay's only moves the 413 to the relay, and
+# one below it refuses bodies the relay would accept.
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name ${SUNRISE_DOMAIN};
+
+    # Plain HTTP carries nothing but the redirect: a bearer sent over it would
+    # already be exposed, so nothing is proxied from here.
+    location / {
+        return 308 https://$host$request_uri;
+    }
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
+    server_name ${SUNRISE_DOMAIN};
+
+    ssl_certificate     ${SUNRISE_TLS_DIR}/fullchain.pem;
+    ssl_certificate_key ${SUNRISE_TLS_DIR}/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+
+    # The relay's [server] max_body_bytes. A declared length over it is
+    # refused before the body is read.
+    client_max_body_size 2m;
+    client_header_timeout 10s;
+    client_body_timeout 60s;
+    keepalive_timeout 300s;
+
+    # The relay mounts /metrics only on a loopback bind, which is exactly the
+    # bind it has behind this proxy. Answer it here so it is never forwarded.
+    location = /metrics {
+        return 404;
+    }
+    location ^~ /metrics/ {
+        return 404;
+    }
+
+    # The sync event stream: unbuffered, and allowed to stay quiet between
+    # keep-alive comments far longer than their 15 s interval.
+    location = /api/v1/sync/events {
+        proxy_pass http://${SUNRISE_UPSTREAM};
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Forwarded "";
+
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 1h;
+        proxy_send_timeout 1h;
+    }
+
+    location / {
+        proxy_pass http://${SUNRISE_UPSTREAM};
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        # nginx passes a client's RFC 7239 `Forwarded` through untouched, and
+        # the relay prefers it to X-Forwarded-For when both are present. An
+        # empty value drops it, so a client cannot name its own address.
+        proxy_set_header Forwarded "";
+
+        # A blob fetch streams up to 100 MB; let it reach the client as it is
+        # read rather than spooling it to disk first.
+        proxy_buffering off;
+        proxy_read_timeout 60s;
+        proxy_send_timeout 60s;
+    }
+}
