@@ -213,7 +213,7 @@ extension PairingModel {
         do {
             session = try relay.accept(text, relay.relayURL, relay.bearer)
         } catch {
-            fail(with: error)
+            phase = .failed(PairingModel.relayCodeFailed(error))
             syncSeamState()
             return
         }
@@ -277,6 +277,17 @@ extension PairingModel {
         notice = nil
     }
 
+    /// The sheet went away without Cancel: an iOS swipe, or the window that
+    /// held it closing.
+    ///
+    /// The same as Cancel unless the pairing finished. Without it a relay wait
+    /// outlives the screen by up to `WAIT_CAP`, and the other device can reach
+    /// the digits against a screen nobody can see.
+    func dismissed() {
+        if case .done = phase { return }
+        cancel()
+    }
+
     // MARK: - Internals
 
     private func runHandshake(_ session: any RelayPairingProtocol, attempt mine: Int) async {
@@ -288,7 +299,16 @@ extension PairingModel {
         } catch {
             guard mine == attempt else { return }
             relaySession = nil
-            fail(with: error)
+            // On the device that scanned, a handshake that fails before the
+            // digits is most often a code the other device drew for copy and
+            // paste: it reads exactly like a relay code, so the relay answers
+            // that no such pairing exists, and the seam's "start again from a
+            // new code" would only send the user round the same rescan.
+            if intent == .addAnotherDevice {
+                phase = .failed(PairingModel.relayCodeFailed(error))
+            } else {
+                fail(with: error)
+            }
         }
         syncSeamState()
     }

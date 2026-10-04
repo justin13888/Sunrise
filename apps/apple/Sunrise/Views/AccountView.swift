@@ -110,7 +110,7 @@ struct AccountView: View {
         .formStyle(.grouped)
         .macSheetFrame(width: 520)
         .padding(.vertical, 8)
-        .sheet(item: $pairing) { model in
+        .sheet(item: $pairing.endingThePairingOnDismiss) { model in
             PairingView(model: model) { pairing = nil }
         }
         .alert("Add a vault", isPresented: $addingVault) {

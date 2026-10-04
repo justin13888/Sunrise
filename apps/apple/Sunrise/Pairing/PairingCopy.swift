@@ -68,15 +68,33 @@ extension PairingModel {
     static var noRelayConfigured: String {
         """
         This \(Platform.deviceName) has no relay set up, so this pairing runs by \
-        copy and paste. Add your relay under Settings › Sync to pair by scanning \
-        a code instead.
+        copy and paste. The other device should choose “Copy and paste instead” \
+        too. Add your relay under Settings › Sync to pair by scanning a code \
+        instead.
         """
     }
 
     static var notSignedIn: String {
         """
         Pairing over your relay needs this \(Platform.deviceName) signed in to \
-        your account, so this pairing runs by copy and paste.
+        your account, so this pairing runs by copy and paste. The other device \
+        should choose “Copy and paste instead” too.
+        """
+    }
+
+    /// Why the device with the vault could not join the pairing a code names,
+    /// and the way out.
+    ///
+    /// A code drawn for copy and paste reads exactly like a relay code, so
+    /// scanning one over the relay reaches a pairing that never existed, and
+    /// the seam's own words for that ("start again from a new code") would
+    /// send the user round the same rescan.
+    static func relayCodeFailed(_ error: any Error) -> String {
+        """
+        \(error.localizedDescription)
+
+        If the other device says its pairing runs by copy and paste, choose \
+        “Copy and paste instead” here and scan its code again.
         """
     }
 

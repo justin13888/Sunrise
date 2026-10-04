@@ -93,7 +93,7 @@ struct OnboardingView: View {
         }
         .padding(40)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .sheet(item: $pairing) { model in
+        .sheet(item: $pairing.endingThePairingOnDismiss) { model in
             PairingView(model: model) { pairing = nil }
         }
     }

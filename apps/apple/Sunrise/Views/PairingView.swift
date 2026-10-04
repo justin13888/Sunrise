@@ -447,6 +447,27 @@ private struct CopyableBlock: View {
     }
 }
 
+extension Binding where Value == PairingModel? {
+    /// The binding a pairing sheet presents from, which ends the pairing
+    /// however the sheet goes away.
+    ///
+    /// SwiftUI clears the binding itself on an iOS swipe-down, so this setter
+    /// is the one place every dismissal passes through — Cancel and Done
+    /// included, for which ``PairingModel/dismissed()`` is a no-op or a repeat.
+    var endingThePairingOnDismiss: Binding<PairingModel?> {
+        Binding(
+            get: { wrappedValue },
+            set: { next in
+                // SwiftUI writes a presentation binding on the main thread.
+                MainActor.assumeIsolated {
+                    if next == nil { wrappedValue?.dismissed() }
+                }
+                wrappedValue = next
+            }
+        )
+    }
+}
+
 #Preview("SAS") {
     PairingView(model: PairingModel(intent: .addThisMac), dismiss: {})
 }
