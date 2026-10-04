@@ -33,6 +33,8 @@ pub mod policy;
 pub mod store;
 
 #[cfg(test)]
+mod budget_tests;
+#[cfg(test)]
 mod tests;
 
 use crate::api::error::{codes, ApiError};
@@ -232,6 +234,12 @@ impl Limiter {
     pub fn close_upload(&self, caller: &Caller, upload: [u8; 16]) {
         self.uploads
             .close(&caller.principal.account.account_id, upload);
+    }
+
+    /// Event-stream slots held across every device.
+    #[cfg(test)]
+    pub(crate) fn streams_held_total(&self) -> u32 {
+        self.streams.held_total()
     }
 }
 

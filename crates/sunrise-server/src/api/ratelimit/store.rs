@@ -135,6 +135,12 @@ impl Gate {
     pub fn held(&self, key: &str) -> u32 {
         self.held.lock().get(key).copied().unwrap_or(0)
     }
+
+    /// How many units every key holds together.
+    #[cfg(test)]
+    pub(crate) fn held_total(&self) -> u32 {
+        self.held.lock().values().sum()
+    }
 }
 
 impl Drop for Permit {

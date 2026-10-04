@@ -8,6 +8,8 @@
 //! [`STREAM_BUFFER`] are the two bounds a long-lived stream is held to.
 
 use crate::api::error::{codes, ApiError};
+use crate::api::ratelimit::store::Permit;
+use crate::api::ratelimit::Throttled;
 use crate::api::signed::SignedParts;
 use crate::relay::{CursorGap, RelayFrame};
 use crate::state::ServerState;
@@ -128,9 +130,14 @@ pub async fn events(
     Headers(header): Headers<SessionHeader>,
     LastEventId(resume): LastEventId,
     SignedParts(caller): SignedParts,
-) -> Result<Sse<EventStream>, ApiError> {
+) -> Result<Sse<EventStream>, Throttled> {
     let now_ms = state.clock.now_ms();
     let (id, session) = resolve(&state, &header, &caller, now_ms)?;
+    // Held by the stream's task and released when it ends, which includes
+    // the client going away: `live_loop` watches for that.
+    let slot = state
+        .limiter
+        .open_stream(&state, "/api/v1/sync/events", &caller)?;
     // A zero is not a resume point: `relay_replay_after` already reads 0 as
     // "first connection", so it carries no claim to conflict with.
     let after = resume
@@ -153,7 +160,8 @@ pub async fn events(
             codes::SYNC_RESUME_CONFLICT,
             "Last-Event-ID and a fresh Subscribe are two different positions; \
              reopen without the id to replay from the cursors",
-        ));
+        )
+        .into());
     }
     // The set is served from here on, so the ids this stream mints are a
     // statement about it and the next reconnect may resume on one.
@@ -177,7 +185,7 @@ pub async fn events(
     );
 
     Ok(
-        Sse::new(spawn_stream(state, id, session, after)).keep_alive(
+        Sse::new(spawn_stream(state, id, session, after, slot)).keep_alive(
             KeepAlive::new()
                 .interval(std::time::Duration::from_secs(KEEP_ALIVE_SECS))
                 .comment("sunrise"),
@@ -195,17 +203,22 @@ pub type EventStream =
 /// because what has to happen here is a `select!` over several sources — the
 /// per-stream live receivers, the token deadline, the revocation re-check — and
 /// that is the shape the socket loop already had. Dropping the returned stream
-/// drops the receiver, whose sender then fails, which ends the task.
+/// drops the receiver, which `live_loop` notices at once, which ends the task.
+///
+/// `slot` is the device's stream permit, moved into the task so it is held
+/// exactly as long as the task runs.
 fn spawn_stream(
     state: ServerState,
     id: String,
     session: Session,
     after: Option<u64>,
+    slot: Option<Permit>,
 ) -> EventStream {
     use futures_util::StreamExt as _;
     let (tx, rx) = tokio::sync::mpsc::channel::<Event<SyncEvent>>(STREAM_BUFFER);
 
     tokio::spawn(async move {
+        let _slot = slot;
         let mut receivers = Vec::new();
 
         // Live receiver FIRST, then the durable read. A frame published between
@@ -334,6 +347,11 @@ async fn live_loop(
                 let _ = tx.send(closed(ErrorCode::SyncNetworkUnavailable, DRAINING)).await;
                 break;
             }
+
+            // The client went away. Without this arm a quiet stream would
+            // only notice on its next frame, holding the device's stream
+            // slot (and a relay subscription) for a connection nobody reads.
+            () = tx.closed() => break,
 
             Some((sid, frame)) = next => {
                 // The session's own batches are not echoed back to it: it

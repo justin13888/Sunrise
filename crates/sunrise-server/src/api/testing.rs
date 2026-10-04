@@ -121,6 +121,12 @@ impl Client {
         (Self::from_state(state), dir)
     }
 
+    /// Send `request` and hand back the response unread, for a test that has
+    /// to hold a live event stream open while it does something else.
+    pub(crate) async fn call(&self, request: Request) -> kynos::http::Response {
+        self.service.call(request).await
+    }
+
     /// The server's own notion of now, in milliseconds.
     pub(crate) fn clock_now_ms(&self) -> u64 {
         self.clock.now_ms()
