@@ -927,8 +927,9 @@ pub(super) fn ops_run_end(
 /// is also how `CursorEntry.last_applied_seq` is read on the wire.
 ///
 /// That meaning is what bounds every "the cursor advances" above. The run
-/// starts at seq 1, or just above a compaction floor (see below), because this
-/// function asks for it there —
+/// starts at seq 1, or just above a compaction floor (see below), or just above
+/// the cursor already stored, which only ever rises, because this function
+/// asks for it there —
 /// `crates/sunrise-core/src/engine/oplog.rs#upsert_sync_cursor` is where the
 /// start is computed;
 /// `crates/sunrise-core/src/engine/oplog.rs:692#ops_run_end` is parameterised
@@ -960,7 +961,21 @@ pub(super) fn upsert_sync_cursor(
     device_id: &[u8; 16],
     now_ms: u64,
 ) -> rusqlite::Result<()> {
-    let start = floor_seq(tx, stream_id, device_id)?.saturating_add(1);
+    // The run resumes where the stored cursor ends rather than at the floor:
+    // the cursor only ever rises (the `MAX` below), so a run that started
+    // lower could only end at or below it. Starting at seq 1 every time made
+    // each insert walk the device's whole prefix, quadratic in the log.
+    let held: Option<i64> = tx
+        .query_row(
+            "SELECT last_applied_seq FROM sync_cursors WHERE stream_id = ?1 AND device_id = ?2",
+            params![&stream_id[..], &device_id[..]],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let held = held.and_then(|n| u64::try_from(n).ok()).unwrap_or(0);
+    let start = floor_seq(tx, stream_id, device_id)?
+        .max(held)
+        .saturating_add(1);
     let prefix = ops_run_end(tx, stream_id, device_id, i64::try_from(start).unwrap_or(1))?;
     tx.execute(
         "INSERT INTO sync_cursors (stream_id, device_id, last_applied_seq)
