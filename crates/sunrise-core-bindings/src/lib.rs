@@ -63,6 +63,7 @@ pub mod ical;
 pub mod notes;
 pub mod pairing;
 pub mod query;
+pub mod recovery;
 pub mod types;
 pub mod vocab;
 
@@ -79,6 +80,7 @@ pub use notes::{
 };
 pub use pairing::{DevicePairing, PairingRole, PairingStep};
 pub use query::{CoreQuery, CoreQueryResult};
+pub use recovery::{check_recovery_code, is_recovery_word, RecoveryListener, RecoveryStep};
 pub use vocab::RelativeDay;
 
 uniffi::setup_scaffolding!();
@@ -214,6 +216,37 @@ pub enum BindingError {
     /// never let fall through to the next screen.
     #[error("pairing: {0}")]
     Pairing(String),
+    /// A recovery code that is mistyped, or is not this account's.
+    ///
+    /// Raised before anything is written. The client puts the user back in
+    /// the 24-word field. The message names a bad word's position and never
+    /// the word.
+    #[error("recovery code: {0}")]
+    RecoveryCode(String),
+    /// The relay will release the recovery blob only to a fresh sign-in, and
+    /// the bearer did not carry one.
+    ///
+    /// Raised before anything is written. The client signs the user in again
+    /// with [`SunriseLogin::begin_step_up`] and retries; the code was not the
+    /// problem.
+    #[error("recovery: {0}")]
+    StepUpRequired(String),
+    /// The recovery could not start: no relay, no account identity, no blob,
+    /// or a relay that would not answer.
+    ///
+    /// Raised before anything is written, so the vault directory is still
+    /// empty and the root the client handed in was never used.
+    #[error("recovery: {0}")]
+    RecoveryRefused(String),
+    /// The recovery wrote the vault and did not finish: the relay would not
+    /// register the device, or the history did not finish replaying.
+    ///
+    /// The directory now holds a vault under the restored account, opened
+    /// under the root the client handed in. The client keeps that root, or the
+    /// vault is unreadable. A replay that did not finish resumes the next time
+    /// the vault syncs.
+    #[error("recovery: {0}")]
+    RecoveryIncomplete(String),
 }
 
 impl From<sunrise_integrations::IntegrationError> for BindingError {
@@ -323,13 +356,7 @@ impl SunriseCore {
         app_version: String,
         paired_bundle: Option<Vec<u8>>,
     ) -> Result<Arc<Self>, BindingError> {
-        let root: [u8; 32] =
-            vault_root
-                .as_slice()
-                .try_into()
-                .map_err(|_| BindingError::BadVaultRoot {
-                    len: u32::try_from(vault_root.len()).unwrap_or(u32::MAX),
-                })?;
+        let root = vault_root_bytes(&vault_root)?;
         let paired = match paired_bundle {
             Some(bytes) => Some(Box::new(
                 sunrise_pairing::decode_pairing_payload(&bytes)
@@ -346,13 +373,114 @@ impl SunriseCore {
             },
         )
         .await?;
-        Ok(Arc::new(Self {
-            inner: Arc::new(core),
-            // Inside an async exported method, so a runtime is definitely
-            // installed. This is the only place that is guaranteed.
-            rt: Handle::current(),
-            undo_stacks: Mutex::new(client::UndoStacks::default()),
-        }))
+        Ok(Self::wrap(core))
+    }
+
+    /// Restore an account from its recovery code into the empty vault
+    /// directory `vault_dir`, and return the vault open.
+    ///
+    /// `docs/03-crypto/recovery.md` §Recovery flow steps 3 to 8, by the same
+    /// implementation `sunrise recover` runs (`sunrise_onboarding::
+    /// recover_account`): fetch the account's identity key and its sealed
+    /// blob, open the blob with `code`, create the vault from the restored
+    /// identity under `vault_root`, register this device with the relay as
+    /// `nickname`, and wait up to `catch_up_ms` for the history to replay.
+    /// It returns only once the replay has caught up. A vault that opens empty
+    /// is not a recovery.
+    ///
+    /// `step_up_bearer` must carry a fresh sign-in, which
+    /// [`SunriseLogin::begin_step_up`] produces. The blob route refuses any
+    /// other, as [`BindingError::StepUpRequired`].
+    ///
+    /// `vault_root` is the caller's, for the reason [`Self::open`]'s is: it
+    /// comes from the platform keychain, and this seam does not derive it. It
+    /// is new, because a root is never in a recovery blob. Store it once this
+    /// returns, or once it fails with [`BindingError::RecoveryIncomplete`],
+    /// which is the one failure that has written the vault. Every other
+    /// failure leaves the directory as it found it.
+    ///
+    /// `listener` hears each [`recovery::RecoveryStep`]. The
+    /// [`recovery::RecoveryStep::DeviceRegistered`] step carries the relay
+    /// device id the caller must record before starting sync.
+    ///
+    /// The returned vault is not syncing. Start it with [`Self::start_sync`]
+    /// as on any launch.
+    ///
+    /// # Errors
+    ///
+    /// [`BindingError::BadVaultRoot`], [`BindingError::RecoveryCode`],
+    /// [`BindingError::StepUpRequired`], [`BindingError::RecoveryRefused`]
+    /// (also for a directory that already holds a vault), and
+    /// [`BindingError::RecoveryIncomplete`].
+    #[uniffi::constructor(default(catch_up_ms = 60000))]
+    #[allow(clippy::too_many_arguments)]
+    pub async fn recover_account(
+        vault_dir: String,
+        vault_root: Vec<u8>,
+        app_version: String,
+        relay_url: String,
+        step_up_bearer: String,
+        code: String,
+        nickname: String,
+        listener: Arc<dyn recovery::RecoveryListener>,
+        catch_up_ms: u64,
+    ) -> Result<Arc<Self>, BindingError> {
+        let root = vault_root_bytes(&vault_root)?;
+        let dir = PathBuf::from(vault_dir);
+        // The identity a vault belongs to is fixed when it is created, so a
+        // recovery into a directory that already holds one would either be
+        // refused by the keychain or keep the old identity.
+        if std::fs::read_dir(&dir).is_ok_and(|mut entries| entries.next().is_some()) {
+            return Err(BindingError::RecoveryRefused(format!(
+                "{} already holds a vault; a recovery creates one and cannot merge into another",
+                dir.display()
+            )));
+        }
+        let relay = sunrise_relay_client::RelayRecovery::new(&relay_url, &step_up_bearer)
+            .map_err(|e| BindingError::RecoveryRefused(e.to_string()))?;
+
+        let mut cfg = CoreConfig::production(dir.clone(), app_version.clone());
+        cfg.sync = Some(sunrise_core::SyncConfig::new(relay_url.clone()));
+        let bearer = step_up_bearer.clone();
+        let url = relay_url.clone();
+        let start_sync = move |core: &Arc<Core>, relay_device_id: &str| {
+            core.sync_credential().set(Some(bearer.clone()));
+            let signer = core.device_signer(relay_device_id);
+            core.start_sync(ws_factory(&url, Some(signer)))
+                .map_err(|e| e.to_string())
+        };
+
+        let mut code = code;
+        let outcome = sunrise_onboarding::recover_account(
+            &relay,
+            &code,
+            cfg,
+            VaultRootKey::from_bytes(root),
+            sunrise_onboarding::DeviceLabel {
+                nickname,
+                platform: platform_tag(),
+                app_version: Some(env!("CARGO_PKG_VERSION").to_owned()),
+            },
+            &start_sync,
+            catch_up_ms,
+            &mut recovery::forward(listener),
+        )
+        .await;
+        code.zeroize();
+        outcome?;
+
+        // The flow shut its core down, so the vault lock is free: open it
+        // again the way every later launch will, which is also the proof that
+        // the root opens what the recovery wrote.
+        let core = Core::open(
+            CoreConfig::production(dir, app_version),
+            Unlock::DevicePaired {
+                root: VaultRootKey::from_bytes(root),
+                paired: None,
+            },
+        )
+        .await?;
+        Ok(Self::wrap(core))
     }
 
     /// Submit one mutating command.
@@ -1116,6 +1244,19 @@ impl SunriseCore {
 }
 
 impl SunriseCore {
+    /// Hold an opened core.
+    ///
+    /// Only ever called from an async constructor, so a runtime is
+    /// definitely installed and [`Handle::current`] cannot panic. That is the
+    /// only place it is guaranteed.
+    fn wrap(core: Core) -> Arc<Self> {
+        Arc::new(Self {
+            inner: Arc::new(core),
+            rt: Handle::current(),
+            undo_stacks: Mutex::new(client::UndoStacks::default()),
+        })
+    }
+
     /// Submit a recorded batch, stopping at the first failure.
     ///
     /// Not exported: an undo step is a list of commands the seam built, never
@@ -1147,14 +1288,30 @@ impl SunriseCore {
             // stream. A device that omits it cannot be revoked at all.
             vault_device_id: Some(sunrise_id::crockford::encode_bytes(&self.inner.device_id())),
             nickname,
-            platform: if cfg!(target_os = "ios") {
-                "ios".to_owned()
-            } else {
-                "macos".to_owned()
-            },
+            platform: platform_tag(),
             app_version: Some(env!("CARGO_PKG_VERSION").to_owned()),
         }
     }
+}
+
+/// This build's platform tag, as `POST /api/v1/devices` names them. One
+/// source for every registration path, so a founding, a paired and a
+/// recovered device cannot describe their platform differently.
+fn platform_tag() -> String {
+    if cfg!(target_os = "ios") {
+        "ios".to_owned()
+    } else {
+        "macos".to_owned()
+    }
+}
+
+/// A vault root as it crossed the seam, checked for its width.
+fn vault_root_bytes(vault_root: &[u8]) -> Result<[u8; 32], BindingError> {
+    vault_root
+        .try_into()
+        .map_err(|_| BindingError::BadVaultRoot {
+            len: u32::try_from(vault_root.len()).unwrap_or(u32::MAX),
+        })
 }
 
 /// Build the transport factory the sync driver dials with, once per connection
@@ -1398,6 +1555,31 @@ impl SunriseLogin {
     pub async fn begin(&self, device_id: String) -> Result<String, BindingError> {
         let metadata = self.client.discover().await?;
         let session = self.client.begin_login(&metadata, &device_id).await?;
+        let url = session.authorize_url().to_string();
+        if let Ok(mut g) = self.session.lock() {
+            *g = Some(session);
+        }
+        Ok(url)
+    }
+
+    /// Start a login that makes the user authenticate again now, whatever
+    /// session the browser holds, and return the URL to open.
+    ///
+    /// The OIDC step-up the recovery blob route requires
+    /// (`max_age=0` and `prompt=login`): it refuses a token whose `auth_time`
+    /// is older than a few minutes, and an ordinary [`Self::begin`] against a
+    /// browser with a live session returns exactly that. Finish it with
+    /// [`Self::complete`] and hand the access token to
+    /// [`SunriseCore::recover_account`].
+    ///
+    /// `device_id` is empty for a recovery: the device it would name does not
+    /// exist until the blob has been opened.
+    pub async fn begin_step_up(&self, device_id: String) -> Result<String, BindingError> {
+        let metadata = self.client.discover().await?;
+        let session = self
+            .client
+            .begin_step_up_login(&metadata, &device_id)
+            .await?;
         let url = session.authorize_url().to_string();
         if let Ok(mut g) = self.session.lock() {
             *g = Some(session);
