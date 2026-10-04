@@ -70,6 +70,11 @@ pub(super) const MIGRATIONS: &[Migration] = &[
         name: "devices_vault_device_id",
         apply: devices_vault_device_id,
     },
+    Migration {
+        id: 3,
+        name: "account_and_blob_deletion",
+        apply: account_and_blob_deletion,
+    },
 ];
 
 /// The version this binary migrates to, and the newest it will open.
@@ -110,6 +115,62 @@ fn devices_vault_device_id(conn: &Connection) -> rusqlite::Result<()> {
     }
     conn.execute_batch(
         "CREATE INDEX IF NOT EXISTS devices_by_vault_id ON devices(account_id, vault_device_id);",
+    )
+}
+
+/// 0003: the state account deletion and blob garbage collection keep.
+///
+/// - `accounts.delete_requested_at_ms`: set by `DELETE /api/v1/accounts/me`.
+///   A non-NULL value refuses new sync sessions, op publishes and uploads at
+///   once, and the maintenance pass erases the account once
+///   `[storage] account_delete_grace_days` have passed since it.
+/// - `account_delete_tokens`: the one live confirmation token per account
+///   `POST /accounts/me/delete/initiate` minted, held as a BLAKE3 hash so a
+///   copy of the database cannot confirm a deletion.
+/// - `blob_tombstones`: `DELETE /api/v1/blobs/{blob_id}`'s record, naming the
+///   op whose application every active device must acknowledge before the
+///   blob's ciphertext is reclaimed (`docs/02-domain/attachments.md`
+///   §Deletion).
+/// - `device_cursors`: the per-stream, per-origin cursors each device last
+///   declared on `POST /sync/subscribe` — the acknowledgement that quorum is
+///   computed from, since the relay can read nothing inside an op.
+///
+/// Every new table cascades from the account or device row it hangs off, so
+/// erasing an account row erases all of it.
+fn account_and_blob_deletion(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "ALTER TABLE accounts ADD COLUMN delete_requested_at_ms INTEGER;
+         CREATE INDEX IF NOT EXISTS accounts_pending_deletion
+             ON accounts(delete_requested_at_ms)
+             WHERE delete_requested_at_ms IS NOT NULL;
+         CREATE TABLE IF NOT EXISTS account_delete_tokens (
+             account_id    TEXT PRIMARY KEY
+                           REFERENCES accounts(account_id) ON DELETE CASCADE,
+             token_h       BLOB NOT NULL,
+             expires_at_ms INTEGER NOT NULL
+         );
+         CREATE TABLE IF NOT EXISTS blob_tombstones (
+             account_id       TEXT NOT NULL
+                              REFERENCES accounts(account_id) ON DELETE CASCADE,
+             blob_key         BLOB NOT NULL,
+             stream_id        BLOB NOT NULL,
+             origin_device    BLOB NOT NULL,
+             seq              INTEGER NOT NULL,
+             deleted_by       TEXT,
+             tombstoned_at_ms INTEGER NOT NULL,
+             PRIMARY KEY (account_id, blob_key)
+         );
+         CREATE INDEX IF NOT EXISTS blob_tombstones_by_age
+             ON blob_tombstones(tombstoned_at_ms);
+         CREATE TABLE IF NOT EXISTS device_cursors (
+             device_id      TEXT NOT NULL
+                            REFERENCES devices(device_id) ON DELETE CASCADE,
+             stream_id      BLOB NOT NULL,
+             origin_device  BLOB NOT NULL,
+             applied_seq    INTEGER NOT NULL,
+             reported_at_ms INTEGER NOT NULL,
+             PRIMARY KEY (device_id, stream_id, origin_device)
+         );",
     )
 }
 

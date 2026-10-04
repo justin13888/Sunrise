@@ -39,6 +39,7 @@
 
 mod accounts;
 mod devices;
+mod lifecycle;
 mod migrations;
 mod pragmas;
 
@@ -56,6 +57,7 @@ use crate::auth::Subject;
 
 pub use accounts::Account;
 pub use devices::{Device, NewDevice};
+pub use lifecycle::{AccountSummary, DeclaredCursor, NewTombstone, StoreStats};
 pub use pragmas::DEFAULT_BUSY_TIMEOUT;
 
 /// Why a store operation failed.
@@ -498,6 +500,13 @@ mod tests {
                 // migration 0002 — after its column, which is what puts the
                 // column this index names on an upgraded database
                 "devices_by_vault_id",
+                // migration 0003 — the deletion state, after the tables its
+                // foreign keys name
+                "accounts_pending_deletion",
+                "account_delete_tokens",
+                "blob_tombstones",
+                "blob_tombstones_by_age",
+                "device_cursors",
             ],
             "the DDL `open` composes, in the order it ran"
         );
