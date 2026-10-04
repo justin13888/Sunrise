@@ -194,10 +194,11 @@ impl Db {
     /// [`DbError::Sqlite`]: that is a file this key cannot read, not a damaged
     /// one, and the caller must not be told to rebuild it.
     ///
-    /// `encrypted_file` adds SQLCipher's per-page HMAC check, which only a
-    /// keyed file has pages for: an in-memory database answers it with
-    /// "database file is undefined".
+    /// `encrypted_file` says the connection is a keyed file, which is what
+    /// SQLCipher's per-page HMAC check needs: an in-memory database answers
+    /// it with "database file is undefined".
     fn quick_check(conn: &Connection, encrypted_file: bool) -> Result<(), DbError> {
+        use rusqlite::ErrorCode::{DatabaseCorrupt, NotADatabase};
         let rows = |pragma: &str| -> rusqlite::Result<Vec<String>> {
             let mut stmt = conn.prepare(pragma)?;
             let rows = stmt
@@ -205,27 +206,27 @@ impl Db {
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             Ok(rows)
         };
-        // SQLCipher's page check first. A page whose HMAC no longer verifies
-        // is one SQLite cannot read at all, and `quick_check` meets it as a
-        // bare `SQLITE_ERROR` indistinguishable from any other. This pragma
-        // reads every page itself and reports each bad one as a row, and an
-        // empty answer means every page verified.
-        if encrypted_file {
-            let damaged_pages = rows("PRAGMA cipher_integrity_check")?;
-            if !damaged_pages.is_empty() {
-                return Err(Self::integrity_failed(&damaged_pages));
-            }
-        }
         let lines = match rows("PRAGMA quick_check") {
             Ok(lines) => lines,
-            // A page SQLite cannot even parse — under SQLCipher, one whose
-            // HMAC no longer verifies — is reported as an error rather than as
-            // a row. It is the same finding. `SQLITE_NOTADB` is not: that is
-            // also what a wrong key produces, so it stays a `Sqlite` error.
-            Err(rusqlite::Error::SqliteFailure(e, msg))
-                if e.code == rusqlite::ErrorCode::DatabaseCorrupt =>
-            {
+            // A page SQLite cannot parse is reported as an error rather than
+            // as a row. It is the same finding.
+            Err(rusqlite::Error::SqliteFailure(e, msg)) if e.code == DatabaseCorrupt => {
                 vec![msg.unwrap_or_else(|| e.to_string())]
+            }
+            // Under SQLCipher a page whose HMAC no longer verifies surfaces as
+            // a bare `SQLITE_ERROR`, indistinguishable from any other. Only
+            // then is the page check run, which reads every page and reports
+            // each bad one as a row: running it on every open would read the
+            // whole file a second time. `SQLITE_NOTADB` is excluded because a
+            // wrong key produces it too, and that is not damage.
+            Err(rusqlite::Error::SqliteFailure(e, msg))
+                if encrypted_file && e.code != NotADatabase =>
+            {
+                let damaged_pages = rows("PRAGMA cipher_integrity_check")?;
+                if damaged_pages.is_empty() {
+                    return Err(rusqlite::Error::SqliteFailure(e, msg).into());
+                }
+                damaged_pages
             }
             Err(e) => return Err(e.into()),
         };

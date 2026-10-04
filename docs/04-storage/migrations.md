@@ -188,13 +188,13 @@ Nothing in the apps offers the restore yet
 - A failed check MUST NOT start a migration. Migrating a damaged file turns a
   recoverable page into an unrecoverable schema.
 
-*Today:* built, with one addition. Before `quick_check`, an open of a file
-runs SQLCipher's `PRAGMA cipher_integrity_check`, which verifies every page's
-HMAC. A page that fails it is one SQLite cannot read at all, and `quick_check`
-would meet it as a bare `SQLITE_ERROR`. Either check failing returns
-`DbError::IntegrityCheckFailed`, and an error `quick_check` raises as
-`SQLITE_CORRUPT` is reported the same way. A wrong key stays a plain
-`DbError::Sqlite`, because it is not damage. Both errors map to
+*Today:* built, with one addition. A page whose SQLCipher HMAC no longer
+verifies is one SQLite cannot read at all, and `quick_check` meets it as a
+bare `SQLITE_ERROR`. When that happens on a file, the open runs SQLCipher's
+`PRAGMA cipher_integrity_check`, which reads every page and names each bad
+one. A `quick_check` finding, an `SQLITE_CORRUPT` error, or a page the HMAC
+check names all return `DbError::IntegrityCheckFailed`. A wrong key
+(`SQLITE_NOTADB`) stays a plain `DbError::Sqlite`, because it is not damage. Both errors map to
 `ErrorCode::FatalInternal` on the wire, and no app offers the rebuild or the
 restore yet ([#441](https://github.com/justin13888/Sunrise/issues/441)).
 
