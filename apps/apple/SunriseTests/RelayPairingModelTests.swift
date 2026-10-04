@@ -20,11 +20,23 @@ struct RelayPairingModelTests {
         private let payload: String?
         private let pairingRole: PairingRole
         private let digits: String
+        /// What `handshake` throws, when it is to fail.
+        private let handshakeFails: (any Error)?
+        /// What `join` and `sponsor` throw, when the last messages are to fail.
+        private let finishFails: (any Error)?
 
-        init(role: PairingRole, payload: String? = "SUNRISE-PAIR-FAKE", digits: String = "123456") {
+        init(
+            role: PairingRole,
+            payload: String? = "SUNRISE-PAIR-FAKE",
+            digits: String = "123456",
+            handshakeFails: (any Error)? = nil,
+            finishFails: (any Error)? = nil
+        ) {
             pairingRole = role
             self.payload = payload
             self.digits = digits
+            self.handshakeFails = handshakeFails
+            self.finishFails = finishFails
         }
 
         var calls: [String] {
@@ -42,10 +54,12 @@ struct RelayPairingModelTests {
         func cancel() async { record("cancel") }
         func handshake() async throws -> String {
             record("handshake")
+            if let handshakeFails { throw handshakeFails }
             return digits
         }
         func join(nickname: String, platform: String, seedS: Data, seedD: Data) async throws -> PairedBundle {
             record("join")
+            if let finishFails { throw finishFails }
             #expect(seedS.count == 32 && seedD.count == 32, "both seeds are 32 bytes from the CSPRNG")
             #expect(seedS != seedD, "and they are two draws, not one")
             return PairedBundle(vaultRoot: Data(repeating: 7, count: 32), payloadBytes: Data([1, 2, 3]))
@@ -53,7 +67,12 @@ struct RelayPairingModelTests {
         func qrPayload() -> String? { payload }
         func reject() async { record("reject") }
         func role() -> PairingRole { pairingRole }
-        func sponsor(core: SunriseCore) async throws { record("sponsor") }
+        func sponsor(core: SunriseCore) async throws { try await sponsorAnywhere() }
+        /// `sponsor`, for a model whose closure has no core to hand it.
+        func sponsorAnywhere() async throws {
+            record("sponsor")
+            if let finishFails { throw finishFails }
+        }
     }
 
     /// What the transport was asked to do, across the model's whole life.
