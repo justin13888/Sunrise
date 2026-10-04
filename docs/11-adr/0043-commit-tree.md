@@ -1,13 +1,12 @@
 # 0043 — Ops form per-device hash chains with causal heads, and replicas compare a per-stream digest
 
-**Status:** proposed
+**Status:** accepted
 
-This is a design of record that has not been built. It is ranked in phase P1
-of [`../roadmap.md`](../roadmap.md) and tracked by [#325](https://github.com/justin13888/Sunrise/issues/325). Under
-[ADR-0042](./0042-v0-forever.md) §4, a `proposed` record is binding on nothing
-yet: its field numbers and formulas are reservations, not contracts. The open
-questions at the end MUST be answered, by amending this record, before it is
-moved to `accepted`.
+Built by [#325](https://github.com/justin13888/Sunrise/issues/325). It was
+ranked in phase P1 of [`../roadmap.md`](../roadmap.md). The open questions it
+was proposed with are answered in §Resolved questions, and §4 and §5 are
+amended where the answers changed them. Fields 14 and 15, the three
+`derive_key` contexts and the `StreamDigest` shape are now contracts.
 
 **Relates to:**
 
@@ -18,11 +17,13 @@ moved to `accepted`.
   reserves envelope field 13. This record reserves 14 and 15 under ADR-0045
   §5's additive-field rule.
 
-**Would amend**
+**Amends**
 [`../03-crypto/audit-and-tamper-evidence.md`](../03-crypto/audit-and-tamper-evidence.md)
-§Per-Stream Merkle root and §Fork detection.
+§Per-Stream Merkle root, §Fork detection and §Identity and replay invariants.
 
 ## Context
+
+This section describes the tree before #325.
 
 The owner's invariant is:
 
@@ -58,7 +59,7 @@ holds the same op set as another.
   can be caused by an attacker holding a device key, or by a device restored
   from an old backup.
 
-## Decision (proposed)
+## Decision
 
 ### 1. Each op commits to its device's previous op: `prev_hash`, envelope field 14
 
@@ -87,19 +88,33 @@ an op in the system, not two.
 - **A writer MUST fill `prev_hash` from its own op log**, never from memory
   alone. A device that cannot find its own op at `seq - 1` has lost local
   history. It MUST NOT emit a chained op until it has recovered that op from
-  the relay or a peer (open question 6).
+  the relay or a peer: it writes a legacy link instead, which asserts nothing,
+  rather than a guess, which would assert something false. It does not stop
+  writing, which would be the "break" the invariant forbids.
+- **`op_hash` is computed from a re-encoding**, not from the bytes a peer
+  sent, and excludes the 5-byte magic prefix. Two replicas holding one
+  envelope therefore agree on its hash whatever encoding reached them
+  (`crates/sunrise-crypto/src/op_envelope.rs#op_hash`).
 
 ### 2. Each op names what its writer had seen: `heads`, envelope field 15
 
 ```cddl
-? 15: [* head],        ; heads
+? 15: [+ head],        ; heads; absent when there is none
 head = [ bstr .size 16, uint, bstr .size 32 ]   ; [device_id, seq, op_hash]
 ```
 
 `heads` lists, for each **other** device whose applied prefix in this stream
-advanced since the writer's previous op in this stream, the tip of that
-prefix: the device id, the seq and the `op_hash`. The list is sorted by
-`device_id`, and a device appears at most once.
+advanced since the writer last listed it, the tip of that prefix: the device
+id, the seq and the `op_hash`. The list is sorted by `device_id`, a device
+appears at most once, and it holds at most 256 entries
+(`MAX_CHAIN_HEADS`). An empty array is malformed: the writer omits the field
+instead, so a set has exactly one encoding. Writer and reader refuse a list
+out of that shape alike.
+
+- **Above the cap, a device is deferred, not dropped.** The writer lists the
+  256 lowest device ids and marks only those listed (`chain_heads_sent`), so
+  the next op lists the rest. Truncating would have weakened the causal claim
+  silently.
 
 - **It is a delta, not a full vector clock.** The writer's own `prev_hash`
   chain carries everything it listed before. So the full causal context of an
@@ -109,8 +124,10 @@ prefix: the device id, the seq and the `op_hash`. The list is sorted by
   op reachable through any `head` on that chain. Two ops are concurrent exactly
   when neither is in the other's causal past.
 - **A `head` a receiver does not hold is a *known* missing op.** The receiver
-  knows the device, the seq and the hash it should find. It MUST request that
-  op (§5). It MUST NOT wait for it before applying the op that named it.
+  knows the device, the seq and the hash it should find, and records them
+  (`chain_expected`). It MUST request that op, which it does by re-subscribing
+  from its cursor (§5). It MUST NOT wait for it before applying the op that
+  named it.
   ADR-0044's merge does not need causal delivery, and delaying application
   would make one lost op block every op after it.
 
@@ -128,29 +145,44 @@ When an op at `(stream, device, seq = n)` is applied, one of four cases holds:
 No case refuses the op. [ADR-0034](./0034-revocation-bounds-reads-not-writes.md)
 established that no replica refuses an op, and ADR-0044 makes every apply
 order-independent. So a link failure is **evidence to surface, not a reason to
-diverge**.
+diverge**. The same holds for an op whose writer is not the device at `n - 1`
+but another device's `head` naming a position this replica holds: a match is
+nothing, a mismatch is fork evidence, and an unheld position is an
+expectation. An op that later arrives where an expectation waits is checked
+against it. Parked ops (ADR-0045 §4) are checked like applied ones, because
+they are in the log and count toward the prefix.
 
 ### 4. Two ops at one position is equivocation, and both are kept
 
-**Fork evidence** is two distinct envelopes, both correctly signed by the same
-device, that claim the same `(stream_id, seq)` or the same `prev_hash`. The two
-envelopes are the proof. Anyone can re-verify them, and neither can be forged
-without the device's key.
+**Fork evidence** is two distinct claims, both correctly signed by the same
+device, about the same `(stream_id, device_id, seq)`: two envelopes at that
+seq, or an envelope whose field 14 or 15 names a different op there than the
+one this replica holds. The signed envelopes are the proof. Anyone can
+re-verify them, and neither can be forged without the device's key.
 
-- **Both ops are retained.** The second one cannot go into `ops` under the
-  existing `UNIQUE (stream_id, device_id, seq)`, so it goes into a
-  `fork_evidence` table with both envelopes. The merge treats both as applied:
-  every field op in both folds in under its own stamp, per ADR-0044. That is
-  deterministic, because both replicas eventually hold both ops.
-- **It is surfaced, not fatal.** The user sees an integrity warning that names
-  the device, and is offered revocation. The rule in
+- **Both ops are retained; the first is the one applied.** The second
+  envelope at a seq cannot go into `ops` under the existing
+  `UNIQUE (stream_id, device_id, seq)`, so it goes into `fork_evidence`
+  verbatim, beside the hash of the op `ops` holds. An op that names the other
+  branch, at a position this replica does not hold, is an ordinary op and is
+  applied. The second envelope at one seq is **not** materialized. Applying it
+  would be deterministic only once every replica holds it, and nothing yet
+  carries it to them (open question 4, resolved below), so a replica that
+  applied its half alone would diverge from its peers by construction. Not
+  applying it keeps today's behaviour: the relay serves one order, and a relay
+  that serves two is what §5 detects. No data is lost: the envelope is kept,
+  so a later change that carries evidence to peers can fold both halves in.
+- **It is surfaced, not fatal.** It is a `core.chain.fork` warning, a row
+  counted by `Engine::chain_integrity`, and the evidence an integrity
+  indicator shows. The rule in
   [`../03-crypto/audit-and-tamper-evidence.md`](../03-crypto/audit-and-tamper-evidence.md)
-  §Identity and replay invariants, which stops sync on a mismatched repeat of
-  `(stream_id, device_id, seq)`, would be amended to this. Stopping sync is
-  exactly the "break" the invariant forbids.
-- **Evidence propagates.** A replica that holds fork evidence sends the second
-  envelope to its peers through the relay (open question 4). Otherwise each
-  replica would keep only the half it happened to receive first.
+  §Identity and replay invariants that stopped sync on a mismatched repeat of
+  `(stream_id, device_id, seq)` is amended to this. Stopping sync is exactly
+  the "break" the invariant forbids.
+- **Evidence does not propagate yet.** A peer learns of a fork from the
+  digest (§5): two replicas holding different halves disagree on that
+  device's root, and each records a `chain_divergence` that names the device
+  and the seq at or below which they differ.
 
 ### 5. Replicas exchange a per-stream state digest
 
@@ -177,44 +209,64 @@ digest(stream, F) = BLAKE3::derive_key("sunrise.stream_digest.v1",
   the replica holds, so it needs no `prev_hash`. Field 14 makes the writer
   *attest* the order. The digest makes replicas *agree* on it.
 - **The frontier is the cursor.** `n_d` is `sync_cursors.last_applied_seq`, the
-  contiguous prefix this replica already tracks. Computing a digest costs
-  nothing extra.
-- **Exchange.** Each device periodically publishes a signed `StreamDigest`
-  control op in the stream it describes, sealed under that stream's key:
+  contiguous prefix this replica already tracks. The root moves where the
+  cursor does (`crates/sunrise-core/src/engine/oplog.rs#upsert_sync_cursor`),
+  one step per op, and is stored on the op (`ops.chain_root`), so a root at
+  any seq inside the prefix is one read. A device with an empty prefix is
+  left out of the frontier.
+- **Exchange.** Each device publishes a signed `StreamDigest` control op
+  (`DOC_SCHEMA_V` 9) in the stream it describes, sealed under that stream's
+  key:
 
   ```cddl
   stream-digest = {
-    "frontier": [+ [bstr .size 16, uint, bstr .size 32]],   ; [device_id, n_d, root(d, n_d)]
+    "frontier": [* [bstr .size 16, uint, bstr .size 32]],   ; [device_id, n_d, root(d, n_d)]
     "digest":   bstr .size 32,
-    ? "projection": bstr .size 32,     ; optional; see open question 2
     unknown-fields
   }
   ```
 
-  The cadence would take over the "every 256 ops or 24 h" checkpoint rule in
-  `audit-and-tamper-evidence.md`.
+  The frontier is the writer's before the digest op itself. The cadence takes
+  over the "every 256 ops or 24 h" checkpoint rule in
+  `audit-and-tamper-evidence.md`: a digest is due in a stream where this
+  device has none yet and holds an op, where 256 ops have entered the log
+  since its last one, or where a day has passed since its last one and any op
+  has entered (`Engine::publish_due_stream_digests`, which the sync driver
+  calls on its anti-entropy timer). A device publishes only in a stream it
+  holds a key for; it never mints one for a digest. A payload whose `digest`
+  is not the digest of its own frontier, or whose frontier is not sorted by
+  device id, is damaged and read for nothing.
 - **Reconciliation compares per-device entries, not the whole digest.** For
   each `(d, n, root)` in a peer's frontier:
   - If this replica holds `d` through `n` and its own `root(d, n)` differs, the
     two hold different ops for `d` at or below `n`. That is a fork, or
-    corruption, and the replica bisects by requesting `op_hash` at chosen
-    seqs.
+    corruption, and it is recorded as a `chain_divergence` naming the stream,
+    `d`, the peer and `n`. An agreement at or above a recorded divergence
+    clears it, because roots chain. Locating the first differing seq needs a
+    request the peer answers, which needs a peer channel (question 5); it is
+    not built.
   - If this replica holds fewer than `n` ops for `d`, it is missing exactly
-    `(its n_d, n]` for `d`. It re-subscribes from its cursor. If the relay no
-    longer has those ops, it asks peers (open question 5).
+    `(its n_d, n]` for `d`. It keeps the claim (`chain_claims`, the highest per
+    peer), checks it when its prefix reaches `n`, and re-subscribes from its
+    cursor, which asks the relay for exactly the ops past it. If the relay no
+    longer has those ops, the claim stays, and says so.
   - If this replica holds more, the peer is behind, and nothing is wrong.
 
   Divergence and omission are therefore **detected**, not assumed away, and
-  detection does not rely on the relay's view.
+  detection does not rely on the relay's view. A known missing op, from a
+  digest or from field 14 or 15, is loss evidence to the sync driver, which
+  re-subscribes at once instead of waiting for its timer.
 
 ### 6. How this relates to what exists
 
 - **Cursors and relay resync stay.** They remain the fast path. The digest is
   the check that the fast path worked, and the key to recovering when it did
   not.
-- **`merkle.rs` stays test-only.** The digest in §5 replaces the per-stream
-  Merkle root as the design of record for detecting omission and reordering.
-  Whether `merkle.rs` is deleted or re-pointed is open question 7.
+- **The global-order fold in `merkle.rs` stays test-only.** The digest in §5
+  replaces the per-stream Merkle root as the design of record for detecting
+  omission and reordering. The chain root and the digest live beside it in
+  `merkle.rs`, frozen by their own vectors. The old fold stays pinned until
+  compaction decides the snapshot's commitment format (question 7).
 - **The Merkle fold order** (`(hlc, device_id, seq)`, clause 6 of
   [ADR-0027](./0027-v1-self-host-first.md)) is not needed by the digest, which
   folds each device separately. It remains the canonical *apply* order for
@@ -244,17 +296,62 @@ differ, and each difference is deliberate:
 
 ## Alternatives considered
 
-| Option | Why not (so far) |
+| Option | Why not |
 |---|---|
 | **Keep the global-order Merkle fold** in `merkle.rs` | It is not incremental under late arrival, which is the normal case. It also cannot say *which* device's ops differ. |
 | **Full vector clock in every op** | O(devices) on every op, when the chain already implies all but the delta. |
-| **Only a local running fold (§5), no `prev_hash`** | This is the cheapest option, and it detects divergence between replicas. What it cannot do is let the *writer* attest its own order. So a single replica cannot tell "the relay reordered" from "the writer did", and a snapshot cannot cite a writer-signed frontier. Kept as open question 1, because it may be enough. |
+| **Only a local running fold (§5), no `prev_hash`** | This is the cheapest option, and it detects divergence between replicas. What it cannot do is let the *writer* attest its own order. So a single replica cannot tell "the relay reordered" from "the writer did", and a snapshot cannot cite a writer-signed frontier. See question 1. |
+| **Materialize both halves of a fork** | Deterministic only once every replica holds both, and nothing carries the second half to peers yet. See §4 and question 4. |
+| **Publish digests outside the op log** | There is no channel between replicas other than the relay's op stream, and an op is signed, sealed and replayable like every other. |
 | **Refuse or park an op on a broken link** | That makes one lost op block every later op. It also re-introduces delivery-order dependence, which ADR-0034 forbids. |
 | **Stop sync on fork**, as the audit doc says today | That is the "break" the invariant forbids, and it lets a single stolen key take a whole vault offline. |
 
-## Open questions
+## Resolved questions
 
-These MUST be resolved before this record becomes `accepted`:
+Each answer below is what #325 built. The questions as they were proposed
+follow, under the same numbers.
+
+1. **`prev_hash` is kept, and it is the previous op's hash.** A single
+   replica can tell a writer's order from a relay's only through it, and a
+   snapshot (#330) needs a writer-signed frontier to cite. The chain-root
+   variant would make every op attest the whole history, but a receiver could
+   check it only against a root it had folded itself, which is the digest's
+   job already.
+2. **The digest is over the op set only.** A projection digest needs the
+   canonical projection encoding #326 and #327 are building; it can join the
+   payload later as an unknown-tolerant key, without a new kind.
+3. **`heads` is capped at 256 entries, and above the cap a device is deferred
+   to the next op, never dropped (§2). It stays in the cleartext header.**
+   Moving it into the ciphertext would make the inner op carry an envelope
+   concern; the relay learns nothing from it it did not learn by serving the
+   ops it names.
+4. **Evidence does not travel as its own op yet, and the second half of a
+   fork is retained but not applied (§4).** The digest already tells peers
+   that two replicas hold different ops for a device. A carrier op, and
+   folding both halves in once every replica holds both, are follow-up work.
+5. **No peer-served backfill.** A missing op is requested from the relay by
+   re-subscribing. When the relay no longer has it, the claim or expectation
+   stays recorded, so the loss is visible rather than silent. A peer channel
+   is out of scope.
+6. **An honest fork is recorded like any other.** A restored device that
+   reuses its `(device_id, seq)` produces fork evidence and a divergence, both
+   naming it. Minting a new device id on restore is the remedy and belongs to
+   the restore flow, not to the chain; no epoch is added to the chain. The
+   evidence does not revoke anything, so ADR-0041's standing rules are
+   untouched.
+7. **The global-order fold stays, test-only and pinned**, until compaction
+   (#330) chooses the snapshot's commitment format. The chain root and the
+   digest are new functions beside it with their own frozen vectors.
+8. **Compaction is #330's to decide.** What this record fixes is what a
+   snapshot must carry for chains to continue above it: `root(d, n_d)` and
+   `op_hash(op(d, n_d))` for every `d` in its frontier, so the first op above
+   it can be checked against the second.
+9. **The frontier covers every device, revoked or not.** The digest is a
+   claim about which ops a replica holds, not about which it trusts, and a
+   revocation removes no op. Keeping revocation out of it is what keeps it a
+   pure function of the op set while ADR-0041's fold can unwind a revocation.
+
+## The questions as proposed
 
 1. **Is `prev_hash` worth its 35 bytes per op?** The local fold in §5 detects
    divergence without it. Writer attestation matters for single-replica
@@ -301,15 +398,20 @@ These MUST be resolved before this record becomes `accepted`:
    so, how does that stay a pure function of the op set, given that ADR-0041's
    fold can unwind a revocation?
 
-## Consequences (if accepted)
+## Consequences
 
 - **Two envelope fields**, 14 and 15. They are additive under ADR-0045 §5, so
   there is no container bump and no refusal by older readers, which preserve
   them and still verify their signatures.
-- **Two new control ops**, `StreamDigest` and possibly a fork-evidence carrier.
-  One new table (`fork_evidence`), and chain-root columns on `sync_cursors`.
+- **One new control op**, `StreamDigest`, at `DOC_SCHEMA_V` 9. A v8 build
+  parks it and replays it after an upgrade.
+- **Migration 0034** (`STORAGE_V` 34): `op_hash` and `chain_root` columns on
+  `ops`, and the tables `chain_heads_sent`, `chain_expected`, `chain_claims`,
+  `fork_evidence` and `chain_divergence`. The hashes and roots of rows a vault
+  already holds are computed from their envelopes on the first fold.
 - **The integrity indicator in `audit-and-tamper-evidence.md` gets something
-  to show**: the frontier agreed with each peer, and any fork evidence held.
+  to show**: `Engine::chain_integrity` counts fork evidence, divergences and
+  known missing ops. No client renders it yet.
 - **[#326](https://github.com/justin13888/Sunrise/issues/326)'s harness gains an oracle.** Two replicas with equal digests at
   equal frontiers hold the same op set, and a differing projection digest at
   the same frontier is a merge bug by definition.

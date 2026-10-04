@@ -18952,3 +18952,6 @@ fn a_finished_session_completes_a_task_in_an_unknown_state() {
 
 /// Per-field merge (ADR-0044): `Patch` ops and their convergence.
 mod field_merge;
+
+/// Per-device op chains, fork evidence and the stream digest (ADR-0043).
+mod op_chain;
