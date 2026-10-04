@@ -318,7 +318,9 @@ mod tests {
     }
 
     /// **Pending deletion refuses new work at once**: a sync session, an op
-    /// publish on a session opened before the confirmation, and an upload.
+    /// publish on a session opened before the confirmation, and every upload
+    /// step: a new init, and a chunk PUT and finalize on an upload begun
+    /// before it.
     /// The account's own routes stay open.
     #[tokio::test]
     async fn an_account_pending_deletion_is_refused_new_work() {
@@ -338,6 +340,33 @@ mod tests {
             .await;
         open.assert_status(StatusCode::CREATED);
         let session = open.json()["session_id"].as_str().unwrap().to_owned();
+
+        // An upload begun before the mark, one of its two chunks stored.
+        let chunks: [&[u8]; 2] = [b"first", b"second"];
+        let res = client
+            .send(
+                Method::POST,
+                "/api/v1/blobs/init",
+                Some(&serde_json::json!({
+                    "stream_id": "str_test",
+                    "chunk_count": 2,
+                    "size_bytes": 11,
+                })),
+            )
+            .await;
+        res.assert_status(StatusCode::OK);
+        let upload_id = res.json()["upload_id"].as_str().unwrap().to_owned();
+        let chunk_paths = [0, 1].map(|idx| format!("/api/v1/blobs/{upload_id}/{idx}"));
+        let put_chunk = |idx: usize| {
+            client.send_bytes(
+                Method::PUT,
+                &chunk_paths[idx],
+                "application/octet-stream",
+                chunks[idx],
+                &[],
+            )
+        };
+        put_chunk(0).await.assert_status(StatusCode::NO_CONTENT);
 
         let phrase = initiate(&client).await;
         confirm(&client, &phrase)
@@ -378,6 +407,20 @@ mod tests {
             )
             .await;
         refused(&res, "blobs/init");
+        refused(&put_chunk(1).await, "blobs chunk PUT");
+        let hash = |bytes: &[u8]| hex::encode(blake3::hash(bytes).as_bytes());
+        let res = client
+            .send(
+                Method::POST,
+                "/api/v1/blobs/finalize",
+                Some(&serde_json::json!({
+                    "upload_id": upload_id,
+                    "content_hash": hash(&chunks.concat()),
+                    "chunk_hashes": chunks.iter().map(|c| hash(c)).collect::<Vec<_>>(),
+                })),
+            )
+            .await;
+        refused(&res, "blobs/finalize");
 
         client
             .send(Method::GET, "/api/v1/accounts/me", None)

@@ -192,10 +192,11 @@ async fn declare(h: &Harness, device: &(String, ed25519_dalek::SigningKey), appl
 }
 
 /// **The whole deletion, end to end.** An account with devices, a push
-/// token, relay frames and both a committed blob and an unfinished upload is
-/// deleted through the two routes; nothing changes inside the grace period;
-/// past it one pass leaves no row carrying the account's id or its hash, and
-/// neither blob directory.
+/// token, relay frames, a channel in the in-memory ring, and both a committed
+/// blob and an unfinished upload is deleted through the two routes; nothing
+/// changes inside the grace period; past it one pass leaves no row carrying
+/// the account's id or its hash, neither blob directory, and no ring channel,
+/// while another account's channel stays.
 #[tokio::test]
 async fn a_deleted_account_is_erased_completely_after_the_grace_period() {
     let h = Harness::new();
@@ -219,6 +220,13 @@ async fn a_deleted_account_is_erased_completely_after_the_grace_period() {
             h.state.durable_caps,
         )
         .unwrap();
+    let own_channel = (account_h, [0x11; 16]);
+    let other_channel = ([0xEE; 16], [0x11; 16]);
+    for channel in [own_channel, other_channel] {
+        h.state
+            .relay
+            .publish(channel, crate::relay::RelayFrame::opaque(0, vec![1]));
+    }
     let blob = h.upload(b"attachment").await;
     h.start_upload(b"abandoned").await;
     assert!(h.area("pending").exists() && h.area("committed").exists());
@@ -241,12 +249,24 @@ async fn a_deleted_account_is_erased_completely_after_the_grace_period() {
     h.at(erase_after - 1);
     assert_eq!(h.pass().accounts_erased, 0, "inside the grace period");
     assert_eq!(h.fetch(&blob).await, StatusCode::OK);
+    assert_eq!(h.state.relay.retained_len(own_channel), 1);
 
     h.at(erase_after);
     let report = h.pass();
     assert_eq!(report.accounts_erased, 1);
     assert_eq!(report.failures, 0);
     assert_eq!(h.state.metrics.get("sunrise_account_delete_total"), 1);
+    assert_eq!(
+        h.state.relay.retained_len(own_channel),
+        0,
+        "the account's ring channel survived"
+    );
+    assert_eq!(h.state.relay.active_channels(), 1);
+    assert_eq!(
+        h.state.relay.retained_len(other_channel),
+        1,
+        "another account's channel went with it"
+    );
 
     let conn = h.state.store.conn.lock();
     let by_id = |table: &str, column: &str, value: &str| -> i64 {
@@ -398,6 +418,33 @@ async fn an_orphaned_account_directory_is_swept() {
     assert_eq!(report.orphans_swept, 1);
     assert!(!orphan.exists());
     assert!(h.area("committed").exists());
+}
+
+/// Under the default blob root, a temp directory other processes share, a
+/// stale orphan-shaped directory is left in place: the sweep only runs under
+/// a root the operator named. The state's root is redirected to a private
+/// directory so the pass cannot reach the real shared one, while the config
+/// still names none.
+#[tokio::test]
+async fn the_orphan_sweep_skips_the_default_shared_root() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut state = ServerState::with_clock(
+        ServerConfig::default(),
+        Arc::new(TestClock(AtomicU64::new(T0_MS))),
+    );
+    assert!(state.config.blob_root.is_none());
+    state.blob_root = Arc::new(dir.path().to_path_buf());
+    let orphan = dir.path().join("committed").join("ab".repeat(16));
+    std::fs::create_dir_all(orphan.join("manifests")).unwrap();
+    let newest = newest_ms(&orphan);
+
+    let report = maintenance::run(&state, newest + 25 * 60 * 60 * 1000, false).unwrap();
+    assert_eq!(report.orphans_swept, 0);
+    assert_eq!(report.failures, 0);
+    assert!(
+        orphan.exists(),
+        "an orphan under the default root was swept"
+    );
 }
 
 /// A signed subscribe records the device's cursors; an unsigned one has no
