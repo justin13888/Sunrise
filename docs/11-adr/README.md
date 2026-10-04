@@ -74,6 +74,7 @@ ADRs are numbered sequentially (`0001`, `0002`, …) and never renumbered.
 | 0054 | [User-visible strings are compiled from one TOML catalog into committed bindings, in a MessageFormat subset every client renders the same way](./0054-string-catalog-pipeline.md) | accepted (amends `i18n.md` §String catalog and §Plural-rule test coverage; follows 0029) |
 | 0055 | [The web client runs `sunrise-core` compiled to wasm, over plaintext SQLite in OPFS, one tab at a time](./0055-web-wasm-core.md) | accepted (supersedes 0012) |
 | 0056 | [A revocation is withdrawn only by the device that made it, and the withdrawal waits for unknown op kinds to be parked](./0056-a-revocation-is-withdrawn-only-by-its-author.md) | accepted (amends 0041 §"What a user sees" item 4; depends on 0045 §4 and §7; built by #383) |
+| 0057 | [Cross-version merges are tested by driving a pinned baseline build out of process](./0057-cross-version-merge-harness.md) | accepted (tests 0042 §2 and 0045; baselines start at the 0042 floor; built by #326) |
 
 ## When to write a new ADR
 

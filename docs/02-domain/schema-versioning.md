@@ -231,7 +231,9 @@ can be lost ([#319](https://github.com/justin13888/Sunrise/issues/319)).
 5. Bump `DOC_SCHEMA_V`, regenerate the canonical schema, and append the new
    fingerprint to the registry. Leave `DOC_SCHEMA_FLOOR` alone.
 6. Add a case to the cross-version harness ([#326](https://github.com/justin13888/Sunrise/issues/326)): an older build merges
-   ops that set the field, and the field survives.
+   ops that set the field, and the field survives. The case is a step that
+   sets the field on B (`HEAD`) and a `Field` in
+   `crates/sunrise-e2e/src/cross_version/model.rs` that reads it back.
 
 ## Adding an op kind or a field-op kind
 
@@ -289,12 +291,35 @@ gating. Nothing else is allowed.
 
 ## Compatibility testing
 
-- **Cross-version merge ([#326](https://github.com/justin13888/Sunrise/issues/326)).** Two different builds, a pinned older tag
-  and `HEAD`, run as replicas over an in-process relay under a property test.
-  - *No break:* the older build never errors, never classes an op as
-    corruption, and never stops syncing.
-  - *No loss:* after the older build upgrades and replays its parked ops, both
-    projections equal a `HEAD`-only run of the same op set.
+- **Cross-version merge ([#326](https://github.com/justin13888/Sunrise/issues/326), [ADR-0057](../11-adr/0057-cross-version-merge-harness.md)).**
+  Two different builds run as replicas over the in-process relay under a
+  property test: a pinned baseline commit, in its own process, and `HEAD`. The
+  baseline creates the account, and `HEAD` opens one of its vaults, which is
+  the upgrade. A newer-build writer adds what only a newer build writes: an
+  unknown field, an unknown enum value, an unknown nested `SunriseTime` kind
+  and an unknown op kind, handed to either side first.
+  - *No break:* `HEAD` opens the vault the baseline wrote, the baseline never
+    logs a warning or an error, neither replica refuses a newer op, logs an op
+    as corruption or fails a command, and A is still live at the end. Only a
+    baseline refusal as corruption, or a corruption it logs, can be an expected
+    failure; ADR-0057 §5 lists the rest.
+  - *No loss:* after the baseline replica is reopened by `HEAD` and has
+    replayed its parked ops, every field on both replicas holds what its last
+    writer set, unless a concurrent write to that same field won. The
+    reference is computed from the ops, because a second `HEAD` run cannot
+    reproduce which of two concurrent writes wins. The same property runs
+    `HEAD` against `HEAD` in the ordinary suite to keep that reference honest.
+  - The baselines are the builds the invariant binds: the
+    [ADR-0042](../11-adr/0042-v0-forever.md) floor, `d9566ade`, and anything
+    after it. `v0.1.0-rc.1` predates the withdrawn licence, and `HEAD` does
+    not open a vault it wrote (`CRYPTO_SUITE_V` 3 to 5).
+  - Known violations are expected failures that name their issue, listed in
+    `crates/sunrise-e2e/src/cross_version/gaps.rs`. Against the floor they are
+    #319, #320, #321, #322 and #324. A fix at `HEAD` does not clear an entry
+    scoped to an older baseline, because that build never changes; the entry
+    leaves when the matrix moves past it.
+  - How to run it: [`../10-cross-cutting/testing.md`](../10-cross-cutting/testing.md)
+    §Cross-version merge.
 - **Per-entity round trip.** Each entity is decoded and re-encoded with random
   unknown keys injected at every nesting level, and must produce identical
   bytes.

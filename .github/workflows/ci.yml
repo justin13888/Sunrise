@@ -551,6 +551,84 @@ jobs:
           CC_wasm32_unknown_unknown: clang
         run: cargo clippy -p sunrise-core-wasm --target wasm32-unknown-unknown -- -D warnings
 
+  # The invariant that merging a vault across client versions never breaks and
+  # never loses data (#326, ADR-0057). Replica A is `sunrise-core` as a pinned
+  # baseline commit had it, built by `build-baseline.sh` from an extracted copy
+  # of that commit; replica B is the vault the baseline created, opened by this
+  # checkout. `cross_version_convergence.rs` drives both through the relay and
+  # compares them with what a `HEAD`-only run would hold.
+  #
+  # The `HEAD`-against-`HEAD` control of the same property is not here: it
+  # needs no second build, so it runs in `Rust (ubuntu-latest)` on every pull
+  # request with the rest of the workspace suite. This job adds only the half
+  # that needs the baseline built.
+  #
+  # Off the pull-request path, like the macOS jobs and for the same reason:
+  # a second cold cargo build of a whole workspace is the most expensive thing
+  # a pull request could be asked to wait for, and it measures builds other
+  # than the one under review. It runs on every merge to master, nightly, and
+  # on `gh workflow run ci.yml --ref <branch>`. A change to what a baseline can
+  # read is caught on the merge that makes it.
+  #
+  # The matrix is every baseline the invariant binds. A build older than the
+  # ADR-0042 floor is outside it: `v0.1.0-rc.1` predates three CRYPTO_SUITE_V
+  # bumps that ADR-0042's withdrawn licence allowed, and `HEAD` does not open
+  # a vault it wrote at all. A release cut at or after the floor joins the
+  # matrix, with whatever change to the driver its API needs.
+  cross-version:
+    name: Cross-version merge (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    # Two cold cargo builds, one of them of a whole second workspace, plus the
+    # property. No CI observation yet; sized from the local cold builds with
+    # the margin the other Rust jobs carry.
+    timeout-minutes: 60
+    if: >-
+      github.event_name == 'schedule'
+      || github.event_name == 'workflow_dispatch'
+      || (github.event_name == 'push' && github.ref == 'refs/heads/master')
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: ADR-0042 floor
+            # The merge of #371. Keep in step with `FLOOR` in
+            # crates/sunrise-e2e/src/cross_version/gaps.rs, which scopes the
+            # expected failures to it.
+            ref: d9566ade714bf49714ea1b034625a5b6a1792984
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+        with:
+          shared-key: cross-version
+      - name: Fetch the baseline commit
+        # The checkout is shallow, and `git archive` needs the commit's tree.
+        run: git fetch --depth=1 origin "${{ matrix.ref }}"
+      - name: Build the baseline driver
+        run: |
+          set -euo pipefail
+          driver=$(crates/sunrise-e2e/baseline-driver/build-baseline.sh "${{ matrix.ref }}" | tail -n1)
+          echo "SUNRISE_BASELINE_DRIVER=$driver" >> "$GITHUB_ENV"
+      - name: Merge the baseline and HEAD under the property
+        env:
+          # Sixteen times the local default: every case boots a relay and
+          # three vaults, and the minutes are spent here rather than on a
+          # pull request.
+          SUNRISE_CROSS_VERSION_CASES: "64"
+        run: cargo test -p sunrise-e2e --test cross_version_convergence -- --ignored
+      - name: Keep the shrunken counterexample
+        # `FileFailurePersistence::Direct` writes it where the
+        # proptest-persistence gate expects it to be committed; this is how it
+        # leaves the runner.
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: cross-version-regressions-${{ strategy.job-index }}-${{ github.run_attempt }}
+          path: crates/sunrise-e2e/proptest-regressions/
+          if-no-files-found: ignore
+
   bun-lint:
     name: Bun lint & format
     runs-on: ubuntu-latest

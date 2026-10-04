@@ -14,6 +14,7 @@
 #![allow(clippy::missing_panics_doc)]
 
 pub mod chaos;
+pub mod cross_version;
 
 use std::net::SocketAddr;
 use std::path::Path;
@@ -362,17 +363,35 @@ async fn open_core_unlocked(
     factory: Option<TransportFactory>,
     unlock: Unlock,
 ) -> Arc<Core> {
+    try_open_core_unlocked(vault_dir, addr, clock, factory, unlock)
+        .await
+        .expect("open core")
+}
+
+/// [`open_core_unlocked`], handing back the open's refusal instead of
+/// panicking on it.
+///
+/// The cross-version harness needs the refusal itself: `HEAD` declining to
+/// open a vault an older build wrote is a finding about the invariant, not a
+/// broken fixture.
+pub(crate) async fn try_open_core_unlocked(
+    vault_dir: &Path,
+    addr: SocketAddr,
+    clock: Arc<dyn Clock>,
+    factory: Option<TransportFactory>,
+    unlock: Unlock,
+) -> Result<Arc<Core>, sunrise_core::CoreError> {
     let cfg = CoreConfig {
         sync: Some(
             SyncConfig::new(format!("http://{addr}")).with_resync_interval(HARNESS_RESYNC_INTERVAL),
         ),
         ..CoreConfig::with_clock(vault_dir.to_path_buf(), APP_ID, clock, Arc::new(SystemRng))
     };
-    let core = Arc::new(Core::open(cfg, unlock).await.expect("open core"));
+    let core = Arc::new(Core::open(cfg, unlock).await?);
     if let Some(factory) = factory {
         core.start_sync(factory).expect("start sync");
     }
-    core
+    Ok(core)
 }
 
 // ---------------------------------------------------------------------------
