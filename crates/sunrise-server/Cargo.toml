@@ -31,9 +31,12 @@ getrandom = { workspace = true }
 hex = { workspace = true }
 http-body-util = { workspace = true }
 hyper = { workspace = true }
-hyper-rustls = { workspace = true }
-# `client-legacy` is the pooled hyper 1.x client the JWKS fetcher drives.
-hyper-util = { workspace = true, features = ["client-legacy", "http1"] }
+# `http2` for APNs, which speaks nothing else. `h2` is already in the lock
+# through `reqwest`, so this adds no crate.
+hyper-rustls = { workspace = true, features = ["http2"] }
+# `client-legacy` is the pooled hyper 1.x client the JWKS fetcher and the APNs
+# provider drive.
+hyper-util = { workspace = true, features = ["client-legacy", "http1", "http2"] }
 jiff = { workspace = true }
 kynos = { workspace = true }
 jsonwebtoken = { workspace = true }

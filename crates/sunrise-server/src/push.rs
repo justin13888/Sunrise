@@ -1,20 +1,47 @@
-//! Push notification fanout interface (APNs / FCM / WebPush).
+//! Content-less wake-up pushes for devices with no open event stream.
 //!
-//! Self-host build: `LoggingProvider` records each intent as a successful
-//! `sunrise_push_dispatch_total{provider,result}` and delivers nothing.
-//! Production binds `apns2` / `fcm` / `web-push` clients.
-//! The trait is async so HTTP delivery doesn't block the relay loop.
+//! `docs/06-server/push-notifications.md` is the design. What runs:
+//!
+//! 1. `POST /sync/ops` appends a fresh batch and hands [`Dispatcher::notify`]
+//!    a [`Wake`]: the account, the stream, and the device that sent it. That
+//!    is one `try_send` into a bounded queue — no store read, no lock the
+//!    append path holds, no await. A full queue drops the wake and counts it.
+//! 2. One worker task drains the queue. For each wake it looks up the
+//!    account's active devices holding a token for the provider's platform,
+//!    skips the sender and every device with an event stream open
+//!    ([`Presence`]), and asks the [`Planner`] whether this
+//!    `(device, stream, kind)` already had a push inside the coalescing window
+//!    and whether the device is under its per-minute cap.
+//! 3. Each push that survives is delivered on its own task, at most
+//!    [`Tuning::in_flight`] at once, with retries on throttling and server
+//!    errors. A provider that says the token is dead gets the token deleted.
+//!
+//! The payload carries nothing: no stream id, no count, no text. The device
+//! wakes, opens a session, and syncs.
+//!
+//! The token is the one secret here, and it is written in no log record and
+//! no error message. [`PushTokenRegistration`]'s `Debug` redacts it for the
+//! same reason.
+//!
+//! [`apns`] is the one provider. [`dispatch`] is everything between an append
+//! and a provider call: presence, the queue, coalescing, the cap, retries.
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+
+pub mod apns;
+pub mod dispatch;
+
+pub use apns::{ApnsProvider, PushSetupError, APNS_PAYLOAD};
+pub use dispatch::{from_config, Dispatcher, Offer, Planner, Presence, Present, Tuning, Wake};
 
 /// Push platform tag.
 ///
 /// `kynos::Schema` so the typed surface can take this directly rather than a
 /// free string: the three platforms then appear in the OpenAPI document as an
 /// enum, and an unknown one is rejected by the parse rather than stored.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, kynos::Schema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, kynos::Schema)]
 #[serde(rename_all = "lowercase")]
 pub enum PushPlatform {
     /// Apple Push Notification service.
@@ -25,6 +52,28 @@ pub enum PushPlatform {
     WebPush,
 }
 
+impl PushPlatform {
+    /// The `push_tokens.platform` value a registration is stored under.
+    #[must_use]
+    pub const fn store_tag(self) -> &'static str {
+        match self {
+            Self::Apns => "apns",
+            Self::Fcm => "fcm",
+            Self::WebPush => "webpush",
+        }
+    }
+
+    /// The `provider` label value `docs/06-server/metrics.md` allows.
+    #[must_use]
+    pub const fn metric_label(self) -> &'static str {
+        match self {
+            Self::Apns => "apns",
+            Self::Fcm => "fcm",
+            Self::WebPush => "web",
+        }
+    }
+}
+
 /// One device's registration of a provider push token.
 ///
 /// Distinct from [`crate::api::devices::PushRegistration`], which is the
@@ -33,7 +82,7 @@ pub enum PushPlatform {
 /// deliver. The two carried the same name until the duplication became a
 /// reader's problem: `api::signed`'s module doc names `Signed<PushRegistration>`
 /// unqualified, and only one of the two can be meant.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PushTokenRegistration {
     /// Owning device id — Crockford base-32 of 16 bytes, as issued by
     /// `POST /api/v1/devices`. The `device_id_hex` alias is accepted so
@@ -46,107 +95,96 @@ pub struct PushTokenRegistration {
     pub token: String,
 }
 
-/// Push intent. The relay enqueues this when a peer device is offline.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Redacts the token: a `{:?}` anywhere a registration travels must not be
+/// how a token reaches a log (`docs/06-server/observability.md` §What we
+/// never log).
+impl std::fmt::Debug for PushTokenRegistration {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PushTokenRegistration")
+            .field("device_id", &self.device_id)
+            .field("platform", &self.platform)
+            .field("token", &"<redacted>")
+            .finish()
+    }
+}
+
+/// Why a device is being woken. The third element of the coalescing key.
+///
+/// Only `sync` is sent. `reminder` and `mention` are in the design and have no
+/// sender.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum PushKind {
+    /// A peer device published ops to a stream this device follows.
+    Sync,
+}
+
+/// One push to deliver: a token, and why.
+///
+/// There is no payload field. Every provider sends a fixed, content-less body,
+/// so nothing a caller puts here can reach a push provider.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PushIntent {
     /// Receiver registration.
     pub registration: PushTokenRegistration,
-    /// Wakeup payload (opaque today; clients re-fetch on wake).
-    pub payload: String,
+    /// Why it is being woken.
+    pub kind: PushKind,
 }
 
 /// Push delivery error.
-#[derive(Debug, Error)]
+///
+/// Classified by what the dispatcher should do next, which is the only thing
+/// it needs from a provider's status vocabulary. No variant's text may carry
+/// the token.
+#[derive(Debug, Clone, Error, PartialEq, Eq)]
 pub enum PushError {
-    /// Provider returned non-success.
+    /// The token will never be delivered to again: delete it.
+    #[error("token unregistered: {0}")]
+    Unregistered(String),
+    /// The provider refused this push and would refuse it again.
     #[error("push provider rejected: {0}")]
     Rejected(String),
-    /// Network or auth failure.
+    /// The provider is throttling. Retried.
+    #[error("push provider throttled: {0}")]
+    Throttled(String),
+    /// The provider, or the path to it, failed in a way a retry may clear.
     #[error("push transport: {0}")]
-    Transport(String),
+    Unavailable(String),
+    /// No answer inside [`Tuning::send_timeout`]. Retried.
+    #[error("push provider did not answer in time")]
+    Timeout,
+}
+
+impl PushError {
+    /// Whether another attempt could succeed.
+    #[must_use]
+    pub const fn retryable(&self) -> bool {
+        matches!(
+            self,
+            Self::Throttled(_) | Self::Unavailable(_) | Self::Timeout
+        )
+    }
+
+    /// The `result` label this outcome is counted under.
+    #[must_use]
+    pub const fn result(&self) -> &'static str {
+        match self {
+            Self::Unregistered(_) | Self::Rejected(_) => "rejected",
+            Self::Throttled(_) => "rate_limited",
+            Self::Unavailable(_) => "failed",
+            Self::Timeout => "timeout",
+        }
+    }
 }
 
 /// Push provider trait.
 #[async_trait]
 pub trait PushProvider: Send + Sync + std::fmt::Debug {
+    /// The platform whose tokens this provider delivers to.
+    fn platform(&self) -> PushPlatform;
+
     /// Send one push intent.
     async fn send(&self, intent: &PushIntent) -> Result<(), PushError>;
 }
 
-/// Self-host provider that counts each intent as dispatched and returns OK.
-#[derive(Debug, Clone)]
-pub struct LoggingProvider {
-    metrics: crate::Metrics,
-}
-
-impl LoggingProvider {
-    /// Construct.
-    #[must_use]
-    pub fn new(metrics: crate::Metrics) -> Self {
-        Self { metrics }
-    }
-}
-
-#[async_trait]
-impl PushProvider for LoggingProvider {
-    async fn send(&self, intent: &PushIntent) -> Result<(), PushError> {
-        let provider = match intent.registration.platform {
-            PushPlatform::Apns => "apns",
-            PushPlatform::Fcm => "fcm",
-            PushPlatform::WebPush => "web",
-        };
-        self.metrics.incr_with(
-            "sunrise_push_dispatch_total",
-            &[("provider", provider), ("result", "ok")],
-        );
-        Ok(())
-    }
-}
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The `device_id_hex` alias is a documented compatibility promise —
-    /// "accepted so clients written against the pre-persistence shape keep
-    /// parsing" — and nothing tested it, so deleting the attribute would have
-    /// broken exactly those clients silently.
-    #[test]
-    fn the_pre_persistence_device_id_spelling_still_parses() {
-        let legacy: PushTokenRegistration = serde_json::from_str(
-            r#"{"device_id_hex":"0000000000000000000000000Z","platform":"apns","token":"t"}"#,
-        )
-        .expect("the alias must keep parsing");
-        assert_eq!(legacy.device_id, "0000000000000000000000000Z");
-
-        // The current spelling reaches the same field, so the alias is an
-        // addition rather than a replacement.
-        let current: PushTokenRegistration = serde_json::from_str(
-            r#"{"device_id":"0000000000000000000000000Z","platform":"apns","token":"t"}"#,
-        )
-        .expect("the current spelling parses");
-        assert_eq!(current.device_id, legacy.device_id);
-    }
-
-    #[tokio::test]
-    async fn logging_provider_increments_counter() {
-        let m = crate::Metrics::new();
-        let p = LoggingProvider::new(m.clone());
-        let intent = PushIntent {
-            registration: PushTokenRegistration {
-                device_id: "0000000000000000000000000Z".into(),
-                platform: PushPlatform::Fcm,
-                token: "abc".into(),
-            },
-            payload: String::new(),
-        };
-        p.send(&intent).await.unwrap();
-        assert_eq!(
-            m.get_with(
-                "sunrise_push_dispatch_total",
-                &[("provider", "fcm"), ("result", "ok")]
-            ),
-            1
-        );
-    }
-}
+mod tests;

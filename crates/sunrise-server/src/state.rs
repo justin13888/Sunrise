@@ -83,6 +83,20 @@ pub struct ServerState {
     /// Rate-limit state: the per-address buckets the router's admission
     /// interceptor charges, and the per-device budgets the handlers charge.
     pub limiter: crate::api::ratelimit::Limiter,
+    /// Wake-up pushes: who is online, and the provider for who is not.
+    /// Disabled unless `[push]` configures a provider.
+    pub push: crate::push::Dispatcher,
+}
+
+/// Why [`ServerState::try_new`] could not build a state.
+#[derive(Debug, thiserror::Error)]
+pub enum StartError {
+    /// The account store did not open.
+    #[error(transparent)]
+    Store(#[from] StoreError),
+    /// The configured push provider could not be built.
+    #[error(transparent)]
+    Push(#[from] crate::push::PushSetupError),
 }
 
 impl ServerState {
@@ -90,7 +104,8 @@ impl ServerState {
     ///
     /// # Panics
     ///
-    /// If the store at [`ServerConfig::sqlite_path`] cannot be opened. Use
+    /// If the store at [`ServerConfig::sqlite_path`] cannot be opened, or the
+    /// `[push]` provider cannot be built. Use
     /// [`ServerState::try_new`] where that is a condition to report rather than
     /// a reason to abort; the binary entrypoint does. An in-memory store — the
     /// `sqlite_path: None` case every test takes — has nothing to fail on.
@@ -99,17 +114,22 @@ impl ServerState {
         Self::try_new(config).expect("open account store")
     }
 
-    /// Wrap a [`ServerConfig`], reporting store-open failure.
-    pub fn try_new(config: ServerConfig) -> Result<Self, StoreError> {
+    /// Wrap a [`ServerConfig`], reporting a store that will not open or a
+    /// push provider that cannot be built — an APNs key file group or others
+    /// can read, say.
+    pub fn try_new(config: ServerConfig) -> Result<Self, StartError> {
         let store = Store::open_with(config.sqlite_path.as_deref(), config.sqlite_busy_timeout())?;
-        Ok(Self::assemble(
-            config,
-            Arc::new(SystemClock),
-            Arc::new(store),
-        ))
+        let clock: Arc<dyn Clock> = Arc::new(SystemClock);
+        let push = crate::push::from_config(&config.push, Arc::clone(&clock))?;
+        Ok(Self::assemble(config, clock, Arc::new(store), push))
     }
 
-    fn assemble(config: ServerConfig, clock: Arc<dyn Clock>, store: Arc<Store>) -> Self {
+    fn assemble(
+        config: ServerConfig,
+        clock: Arc<dyn Clock>,
+        store: Arc<Store>,
+        push: crate::push::Dispatcher,
+    ) -> Self {
         let blob_root = config
             .blob_root
             .clone()
@@ -128,7 +148,24 @@ impl ServerState {
             sessions: crate::sync_session::SessionStore::new(),
             drain: crate::drain::Drain::new(),
             limiter: crate::api::ratelimit::Limiter::default(),
+            push,
         }
+    }
+
+    /// Deliver wake-ups through `provider`, with the documented bounds.
+    ///
+    /// For an embedding that brings its own provider, and for tests.
+    #[must_use]
+    pub fn with_push_provider(mut self, provider: Arc<dyn crate::push::PushProvider>) -> Self {
+        self.push = crate::push::Dispatcher::new(provider);
+        self
+    }
+
+    /// Replace the push dispatcher whole — tuned bounds, in tests.
+    #[must_use]
+    pub fn with_push(mut self, push: crate::push::Dispatcher) -> Self {
+        self.push = push;
+        self
     }
 
     /// Replace the durable log's retention bounds.
@@ -180,7 +217,9 @@ impl ServerState {
     pub fn with_clock(config: ServerConfig, clock: Arc<dyn Clock>) -> Self {
         let store = Store::open_with(config.sqlite_path.as_deref(), config.sqlite_busy_timeout())
             .expect("open account store");
-        Self::assemble(config, clock, Arc::new(store))
+        let push = crate::push::from_config(&config.push, Arc::clone(&clock))
+            .expect("build push provider");
+        Self::assemble(config, clock, Arc::new(store), push)
     }
 }
 
@@ -232,7 +271,7 @@ mod tests {
         assert!(
             matches!(
                 refused,
-                Err(StoreError::BusyTimeoutTooLong { ms, max: i32::MAX })
+                Err(StartError::Store(StoreError::BusyTimeoutTooLong { ms, max: i32::MAX }))
                     if ms == u128::from(max + 1)
             ),
             "{:?}",

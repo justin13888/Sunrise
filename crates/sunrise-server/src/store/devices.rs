@@ -339,6 +339,71 @@ impl Store {
         }
         Ok(out)
     }
+
+    /// Every active device of `account_id` holding a `platform` token, as
+    /// `(device_id, token)`, ordered by device id.
+    ///
+    /// The `revoked = 0` filter is in the SQL even though revocation deletes
+    /// the tokens in the same transaction: a revoked device must never be
+    /// woken, and that should not rest on one statement elsewhere.
+    pub fn push_targets(
+        &self,
+        account_id: &str,
+        platform: &str,
+    ) -> Result<Vec<(String, String)>, StoreError> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT d.device_id, p.token FROM devices d \
+             JOIN push_tokens p ON p.device_id = d.device_id \
+             WHERE d.account_id = ?1 AND d.revoked = 0 AND p.platform = ?2 \
+             ORDER BY d.device_id",
+        )?;
+        let rows = stmt.query_map(params![account_id, platform], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// The `platform` token of one active device, if it holds one.
+    pub fn push_target(
+        &self,
+        device_id: &str,
+        platform: &str,
+    ) -> Result<Option<String>, StoreError> {
+        let conn = self.conn.lock();
+        Ok(conn
+            .query_row(
+                "SELECT p.token FROM push_tokens p \
+                 JOIN devices d ON d.device_id = p.device_id \
+                 WHERE p.device_id = ?1 AND p.platform = ?2 AND d.revoked = 0",
+                params![device_id, platform],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
+    /// Delete a device's `platform` token, but only while it is still `token`.
+    ///
+    /// The provider said this token is dead. The device may have registered a
+    /// new one between the send and this call, and deleting by key alone would
+    /// throw the working replacement away. Returns whether a row went.
+    pub fn delete_push_token(
+        &self,
+        device_id: &str,
+        platform: &str,
+        token: &str,
+    ) -> Result<bool, StoreError> {
+        let conn = self.conn.lock();
+        let n = conn.execute(
+            "DELETE FROM push_tokens WHERE device_id = ?1 AND platform = ?2 AND token = ?3",
+            params![device_id, platform, token],
+        )?;
+        Ok(n > 0)
+    }
 }
 
 fn row_to_device(r: &rusqlite::Row<'_>) -> Result<Device, rusqlite::Error> {

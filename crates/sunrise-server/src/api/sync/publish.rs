@@ -205,6 +205,7 @@ pub async fn ops(
                     heads,
                 },
             );
+            wake_offline_peers(&state, &session, stream_id);
             // Fresh by the whole-batch key, and yet carrying ops this channel
             // already holds: the re-partitioned re-send ADR-0033 accepted and
             // could not see. Counted, never refused — the batch is stored and
@@ -236,6 +237,27 @@ pub async fn ops(
         stream_id: body.stream_id,
         server_first_seen_ms: first_seen_ms,
     }))
+}
+
+/// Tell the push dispatcher a fresh batch landed, so the account's devices
+/// with no stream open learn of it by a wake-up.
+///
+/// A queue push and nothing more: the token lookup and the send happen on the
+/// dispatcher's own task, so the append is neither slowed nor failed by them.
+fn wake_offline_peers(
+    state: &ServerState,
+    session: &crate::sync_session::Session,
+    stream_id: [u8; 16],
+) {
+    state.push.notify(
+        state,
+        crate::push::Wake {
+            account_id: session.account_id.clone(),
+            stream_id,
+            origin: session.device_id.clone(),
+            kind: crate::push::PushKind::Sync,
+        },
+    );
 }
 
 /// Whether this batch re-sends an op the channel already holds.

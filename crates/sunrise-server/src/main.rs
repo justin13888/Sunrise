@@ -206,6 +206,14 @@ async fn run(args: Vec<String>) -> Result<(), u8> {
             "every connection maps to one account; loopback only, configure an OIDC issuer for multi-user use"
         );
     }
+    // Once, here: an operator wondering why phones never wake reads it at the
+    // top of the log rather than inferring it from silence.
+    if state.push.provider().is_none() {
+        tracing::info!(
+            ev = "srv.push.disabled",
+            "no [push] provider is configured; devices without an open stream sync on their own schedule"
+        );
+    }
 
     serve_until_signalled(state, &bind).await
 }
