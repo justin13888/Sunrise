@@ -31,7 +31,7 @@ connection counts, per-account op rates and slow-query logs have no
 implementation; error frequency is recoverable from the `err_code` field on
 rejection lines, not from a metric.
 
-The 28 `ev` names the server emits, complete:
+The 31 `ev` names the server emits, complete:
 
 <!-- Extracted from the tree; do not edit by hand. Re-run and reconcile:
      grep -rhoE 'ev = "srv\.[a-z0-9_.]+"' crates/sunrise-server/src | sort -u
@@ -54,7 +54,9 @@ srv.start.single_tenant          srv.auth.device_sig_rejected
 srv.start.metrics_withheld       srv.auth.step_up_required
 srv.stop                         srv.relay.fanout
 srv.stop.failed                  srv.relay.append_failed
-                                 srv.relay.replay_failed
+srv.store.migrated               srv.relay.replay_failed
+srv.store.quick_check
+srv.store.wal_unavailable
 srv.sync.negotiate_refused       srv.relay.cursor_gap
 srv.sync.session_open            srv.relay.batch_duplicate
 srv.sync.subscribe               srv.sync.refresh_rejected

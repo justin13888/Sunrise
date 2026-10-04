@@ -96,7 +96,7 @@ impl ServerState {
 
     /// Wrap a [`ServerConfig`], reporting store-open failure.
     pub fn try_new(config: ServerConfig) -> Result<Self, StoreError> {
-        let store = Store::open(config.sqlite_path.as_deref())?;
+        let store = Store::open_with(config.sqlite_path.as_deref(), config.sqlite_busy_timeout())?;
         Ok(Self::assemble(
             config,
             Arc::new(SystemClock),
@@ -171,7 +171,71 @@ impl ServerState {
     /// As [`ServerState::new`].
     #[must_use]
     pub fn with_clock(config: ServerConfig, clock: Arc<dyn Clock>) -> Self {
-        let store = Store::open(config.sqlite_path.as_deref()).expect("open account store");
+        let store = Store::open_with(config.sqlite_path.as_deref(), config.sqlite_busy_timeout())
+            .expect("open account store");
         Self::assemble(config, clock, Arc::new(store))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The configured busy timeout is the one the connection runs with, on
+    /// both constructors. Dropping it from either would fall back to the
+    /// store's default and ignore the operator's setting in silence.
+    #[test]
+    fn the_configured_busy_timeout_reaches_the_connection() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = || ServerConfig {
+            sqlite_path: Some(dir.path().join("sunrise.db")),
+            sqlite_busy_timeout_ms: 777,
+            ..ServerConfig::default()
+        };
+        let busy = |state: &ServerState| -> i64 {
+            state
+                .store
+                .conn
+                .lock()
+                .query_row("PRAGMA busy_timeout", [], |r| r.get(0))
+                .unwrap()
+        };
+
+        assert_eq!(busy(&ServerState::try_new(config()).unwrap()), 777);
+        assert_eq!(
+            busy(&ServerState::with_clock(config(), Arc::new(SystemClock))),
+            777
+        );
+    }
+
+    /// A busy timeout SQLite cannot hold is refused by `try_new`, the path
+    /// `main` maps to exit 78, rather than panicking inside rusqlite; the
+    /// longest one SQLite can hold still opens.
+    #[test]
+    fn a_busy_timeout_sqlite_cannot_hold_is_refused_not_a_panic() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = |ms: u64| ServerConfig {
+            sqlite_path: Some(dir.path().join("sunrise.db")),
+            sqlite_busy_timeout_ms: ms,
+            ..ServerConfig::default()
+        };
+        let max = u64::from(i32::MAX.unsigned_abs());
+
+        let refused = ServerState::try_new(config(max + 1));
+        assert!(
+            matches!(
+                refused,
+                Err(StoreError::BusyTimeoutTooLong { ms, max: i32::MAX })
+                    if ms == u128::from(max + 1)
+            ),
+            "{:?}",
+            refused.err()
+        );
+        assert!(
+            !dir.path().join("sunrise.db").exists(),
+            "a refused timeout creates no database"
+        );
+        assert!(ServerState::try_new(config(u64::MAX)).is_err());
+        assert!(ServerState::try_new(config(max)).is_ok());
     }
 }
