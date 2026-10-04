@@ -13,8 +13,10 @@
 //! bench is informational (`bench/baseline.json`) rather than a merge gate.
 //!
 //! A single multi-threaded Tokio runtime is built for the whole bench; each
-//! iteration `block_on`s a fresh transport, so the measured cost is TCP connect
-//! plus one request/response.
+//! iteration is a fresh transport, so the measured cost is TCP connect plus
+//! one request/response. Only that is timed: iterations are paced by
+//! [`PACE`], outside the timed span, to keep the connection churn inside the
+//! client's ephemeral ports.
 
 #![allow(clippy::doc_markdown)]
 
@@ -94,13 +96,34 @@ async fn establish(addr: SocketAddr) {
     assert_eq!(header.msg_kind, MsgKind::HelloAck);
 }
 
+/// Untimed rest between establishments, so the bench stays inside the
+/// client's ephemeral ports.
+///
+/// Every establishment is a fresh TCP connection the client closes, and each
+/// closed connection holds its local port in `TIME_WAIT` for twice the
+/// segment lifetime: 30 s on macOS, 60 s on Linux, out of 16 384 and about
+/// 28 000 ports. Unpaced, the bench opens a few thousand connections a second,
+/// runs out of ports within seconds, and fails with `client error (Connect)`.
+/// 3 ms holds it near 300 a second, under both systems' limit. The rest is
+/// outside the timed span, so it does not change what is measured.
+const PACE: Duration = Duration::from_millis(3);
+
 fn bench_sync_session(c: &mut Criterion) {
     let rt = Runtime::new().expect("build tokio runtime");
     let addr = rt.block_on(boot_server());
 
     c.bench_function("sync_session", |b| {
-        b.iter(|| {
-            rt.block_on(establish(addr));
+        b.iter_custom(|iters| {
+            rt.block_on(async {
+                let mut timed = Duration::ZERO;
+                for _ in 0..iters {
+                    let started = tokio::time::Instant::now();
+                    establish(addr).await;
+                    timed += started.elapsed();
+                    tokio::time::sleep(PACE).await;
+                }
+                timed
+            })
         });
     });
 }
