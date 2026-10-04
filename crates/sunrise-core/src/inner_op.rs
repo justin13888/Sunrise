@@ -26,18 +26,29 @@
 //! classed `OpEffect::Control` so the compiler keeps them out of the entity
 //! materializer. See [`crate::control_op`], ADR-0024 and ADR-0032.
 //!
-//! The core uses *full-state* ops: `TaskCreate`/`TaskUpdate` carry the entire `Task`,
-//! not a field-level delta. This is the accepted current approximation of the CRDT
-//! model in `docs/05-sync/conflict-resolution.md`: entity-level last-writer-wins
-//! rather than per-field merge. `*Delete` ops are full-state too: each carries
-//! its entity with `deleted` set, never a bare id — see `InnerOp::TaskDelete`
-//! and ADR-0014 for why a tombstone marker does not converge.
+//! Two shapes write entity state (ADR-0044):
+//!
+//! - **Full-state** ops, `TaskCreate`/`TaskUpdate`/`TaskDelete` and their
+//!   siblings, carry the entire entity. Every one already in a log or on a
+//!   relay stays readable forever. The merge reads one as a write to every
+//!   field it carries, at its own stamp (ADR-0044 §7), so a history made only
+//!   of them projects exactly as entity-level last-writer-wins did. A delete
+//!   carries its entity with `deleted` set, never a bare id: see
+//!   `InnerOp::TaskDelete` and ADR-0014.
+//! - `InnerOp::Patch` carries only the fields its command wrote, each as a
+//!   self-describing field op, and every field merges by its own CRDT type.
+//!   See `PatchPayload` and [`crate::engine`]'s `merge` module.
+//!
+//! This build applies both and emits only the first. ADR-0044 §9 forbids a
+//! build from emitting its first `Patch` into a vault until the vault's
+//! `vault_requires` lists `core.field_ops`, and `vault_requires` does not exist
+//! yet (#324).
 
 use crate::control_op::{DeviceRevokePayload, IdentityTransitionPayload, KeyEnvelopePayload};
 use serde::{Deserialize, Serialize};
 use sunrise_domain::{
     Attachment, Block, Context, FocusEnd, FocusStart, Interruption, ReviewSnapshot, Routine,
-    Stream, Task,
+    Stream, Task, Unknowns,
 };
 use sunrise_id::{EntityKind, EntityRef};
 use thiserror::Error;
@@ -120,6 +131,13 @@ macro_rules! define_inner_op {
             /// *every* `InnerOp` — including the task ops, which are the ones that
             /// actually occur in bulk — to the size of the largest rotation.
             IdentityTransition(Box<IdentityTransitionPayload>),
+            /// Write some fields of one entity, each merged by its own CRDT
+            /// type (ADR-0044 §1). It carries only the fields its command
+            /// wrote. See [`PatchPayload`].
+            ///
+            /// Boxed for the reason `RoutineCreate` is: the field map is
+            /// unbounded, and the task ops are the ones that occur in bulk.
+            Patch(Box<PatchPayload>),
         }
 
         impl InnerOp {
@@ -131,6 +149,14 @@ macro_rules! define_inner_op {
                     Self::DeviceRevoke(_) => "device.revoke",
                     Self::DeviceCertPublish(_) => "device.cert",
                     Self::IdentityTransition(_) => "identity.transition",
+                    // One kind per entity, so the op log's `inner_kind` still
+                    // names the family that wrote a row: `task.patch`.
+                    Self::Patch(p) => match p.target.kind() {
+                        $( EntityKind::$kind => concat!($tag, ".patch"), )*
+                        // `EntityKind` is `#[non_exhaustive]`; every kind it
+                        // has is listed above.
+                        _ => "patch",
+                    },
                 }
             }
 
@@ -142,6 +168,7 @@ macro_rules! define_inner_op {
                     Self::KeyEnvelope(_) => "stream_key",
                     Self::DeviceRevoke(_) | Self::DeviceCertPublish(_) => "device",
                     Self::IdentityTransition(_) => "identity",
+                    Self::Patch(p) => p.target.kind().tag(),
                 }
             }
 
@@ -162,6 +189,7 @@ macro_rules! define_inner_op {
                     Self::IdentityTransition(p) => {
                         EntityRef::new(EntityKind::Identity, p.to_identity_id)
                     }
+                    Self::Patch(p) => p.target,
                 }
             }
 
@@ -173,6 +201,7 @@ macro_rules! define_inner_op {
                     | Self::DeviceRevoke(_)
                     | Self::DeviceCertPublish(_)
                     | Self::IdentityTransition(_) => OpEffect::Control,
+                    Self::Patch(p) => p.effect(),
                 }
             }
 
@@ -183,6 +212,7 @@ macro_rules! define_inner_op {
                     Self::KeyEnvelope(_) => EntityKind::Stream,
                     Self::DeviceRevoke(_) | Self::DeviceCertPublish(_) => EntityKind::Device,
                     Self::IdentityTransition(_) => EntityKind::Identity,
+                    Self::Patch(p) => p.target.kind(),
                 }
             }
 
@@ -222,6 +252,75 @@ pub(crate) enum OpEffect {
     /// entity op by its registry entry, and a control op's `entity_kind` names
     /// the kind it is *about* (a Stream, a Device), not a row it writes.
     Control,
+}
+
+/// The payload of [`InnerOp::Patch`]: some fields of one entity (ADR-0044 §1).
+///
+/// ```cddl
+/// patch = {
+///   "ref":     entity-ref,          ; the entity; its kind comes from the id prefix
+///   ? "create": true,               ; this op creates the entity
+///   ? "origin": "generated",        ; written by generation; absent = user
+///   "fields":  { + field-name => field-op },
+///   unknown-fields
+/// }
+/// ```
+///
+/// The field ops are kept as CBOR here and read by the merge, which knows
+/// each field's CRDT type. A field op is one of `{"set": v}`,
+/// `{"add": [..], "remove": [[v, [op-ref, ..]], ..]}`, `{"inc": n}` and
+/// `{"map": {k: {"set": v}, ..}}`, so a build can merge a field it has never
+/// heard of (§8).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct PatchPayload {
+    /// The entity written.
+    #[serde(rename = "ref")]
+    pub(crate) target: EntityRef,
+    /// This op creates the entity (§4). Absent on the wire when false.
+    #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+    pub(crate) create: bool,
+    /// `"generated"` for a write the system made on the user's behalf;
+    /// absent for a user's own command (§3). Any other spelling reads as a
+    /// user write and is kept as it came.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) origin: Option<String>,
+    /// Field name to field op, as CBOR.
+    pub(crate) fields: Unknowns,
+    /// Top-level keys a newer build added, kept (ADR-0045 §Unknown maps).
+    #[serde(flatten)]
+    pub(crate) unknown: Unknowns,
+}
+
+impl PatchPayload {
+    /// The spelling of a generated write's `origin`.
+    pub(crate) const GENERATED: &'static str = "generated";
+
+    /// Whether this op was made by the system rather than by a user command.
+    pub(crate) fn is_generated(&self) -> bool {
+        self.origin.as_deref() == Some(Self::GENERATED)
+    }
+
+    /// The op's effect class: a create, a tombstone (`deleted` set to true),
+    /// or an update.
+    pub(crate) fn effect(&self) -> OpEffect {
+        if self.create {
+            return OpEffect::Create;
+        }
+        let deletes = self
+            .fields
+            .get("deleted")
+            .and_then(|op| op.get().as_map())
+            .is_some_and(|entries| {
+                entries.iter().any(|(k, v)| {
+                    k.as_text() == Some("set") && *v == ciborium::value::Value::Bool(true)
+                })
+            });
+        if deletes {
+            OpEffect::Delete
+        } else {
+            OpEffect::Update
+        }
+    }
 }
 
 /// Inner-op CBOR codec errors.
@@ -405,12 +504,13 @@ mod tests {
     fn known_kinds_is_the_derives_variant_list() {
         let kinds = known_kinds();
         assert_eq!(kinds.first(), Some(&"TaskCreate"));
-        assert_eq!(kinds.last(), Some(&"IdentityTransition"));
+        assert_eq!(kinds.last(), Some(&"Patch"));
         for name in [
             "BlockCreate",
             "AttachmentDelete",
             "FocusInterrupt",
             "KeyEnvelope",
+            "IdentityTransition",
         ] {
             assert!(kinds.contains(&name), "{name} is declared");
         }
@@ -419,8 +519,8 @@ mod tests {
     }
 
     /// `InnerOp` is the registry's ops, in registry order, then the four
-    /// control families — read out of the derive, so it is the list the
-    /// decoder actually accepts.
+    /// control families, then `Patch` — read out of the derive, so it is the
+    /// list the decoder actually accepts.
     #[test]
     fn the_derive_declares_the_registry_ops_then_the_control_families() {
         let mut expected: Vec<&str> = sunrise_id::registry::ENTITIES
@@ -432,6 +532,7 @@ mod tests {
             "DeviceRevoke",
             "DeviceCertPublish",
             "IdentityTransition",
+            "Patch",
         ]);
         assert_eq!(known_kinds(), expected.as_slice());
     }

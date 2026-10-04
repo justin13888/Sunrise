@@ -107,7 +107,14 @@ pub const ENVELOPE_FORMAT_FLOOR: u16 = 3;
 /// change that bumps it. A test in `sunrise-core` fails while the generated
 /// schema's fingerprint differs from this version's entry, so a shape cannot
 /// change without the bump.
-pub const DOC_SCHEMA_V: u16 = 7;
+///
+/// `8` adds the `Patch` op family (ADR-0044, issue #319): some fields of one
+/// entity, each written as a self-describing field op and merged by the
+/// field's own CRDT type. Every v7 shape is unchanged, so the floor does not
+/// move. A v7 build parks a `Patch` and replays it after an upgrade. This
+/// build applies one and never emits one: ADR-0044 §9 gates the first `Patch`
+/// on the vault's `vault_requires`, which does not exist yet (#324).
+pub const DOC_SCHEMA_V: u16 = 8;
 
 /// The first [`DOC_SCHEMA_V`] that has a fingerprint (ADR-0045 §3, `N_fp`).
 ///
@@ -136,10 +143,16 @@ pub const DOC_SCHEMA_FP_PREFIX_LEN: usize = 8;
 /// that shipped it believes its version means; changing one makes two builds
 /// disagree while their version numbers say they agree, which is the failure
 /// the fingerprint exists to catch.
-pub const DOC_SCHEMA_FINGERPRINTS: &[(u16, [u8; 32])] = &[(
-    7,
-    hex32("fb893b62bb2f9bf7d9adf7ba95d5bee20498a63aa0e03c4f14a7a28a7d0d6fcb"),
-)];
+pub const DOC_SCHEMA_FINGERPRINTS: &[(u16, [u8; 32])] = &[
+    (
+        7,
+        hex32("fb893b62bb2f9bf7d9adf7ba95d5bee20498a63aa0e03c4f14a7a28a7d0d6fcb"),
+    ),
+    (
+        8,
+        hex32("69a555bc13a1b05143608bf16370bb6fcdb0268e514efdbc30df070049dbf58d"),
+    ),
+];
 
 /// The registered fingerprint of document schema `v`, or `None` for a version
 /// this build has no entry for: one before [`DOC_SCHEMA_FP_FIRST`], or one
@@ -376,4 +389,11 @@ pub const CRYPTO_SUITE_V: u16 = 5;
 /// now kept verbatim, and a raw value holding `;`, `,` or `=` cannot survive
 /// the text form; the blob holds any string. Schema-only: rows written before
 /// it read their text, which only ever held known values.
-pub const STORAGE_V: u16 = 32;
+///
+/// `33` is migration `0033_field_merge_state.sql`, which adds the per-field
+/// merge state of ADR-0044 (issue #319): one register per field, the per-key
+/// registers of a map field, an add-wins observed-remove set per set field,
+/// and the deltas of a counter. The entity rows become its read projection.
+/// Schema-only: an entity the vault already held is seeded from its row the
+/// first time an op touches it.
+pub const STORAGE_V: u16 = 33;

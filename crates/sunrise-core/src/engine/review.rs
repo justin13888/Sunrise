@@ -559,6 +559,10 @@ fn op_payload(inner: InnerOp) -> OpPayload {
         | InnerOp::DeviceRevoke(_)
         | InnerOp::DeviceCertPublish(_)
         | InnerOp::IdentityTransition(_)
+        // A field-level write carries no whole task to diff against, and this
+        // build never emits one (ADR-0044 §9). The timeline reads it once
+        // commands emit it.
+        | InnerOp::Patch(_)
         | InnerOp::ReviewSnapshotCreate(_) => OpPayload::Ignored,
     }
 }

@@ -286,7 +286,7 @@ impl Core {
     /// Apply a remote op envelope (the receive half of sync).
     ///
     /// Locks the vault, applies the op via [`Engine::apply_remote_all`]
-    /// (idempotent, entity-level LWW), and broadcasts every resulting
+    /// (idempotent, merged field by field), and broadcasts every resulting
     /// [`DomainEvent`] on `changes()`. Returns `Ok(None)` for an idempotent
     /// re-receive. The sync driver calls this for every inbound envelope.
     ///

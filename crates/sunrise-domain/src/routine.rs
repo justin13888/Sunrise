@@ -173,7 +173,9 @@ pub struct Routine {
     pub skipped_keys: Vec<String>,
     /// What to do when an occurrence is missed.
     pub catchup_policy: RoutineCatchupPolicy,
-    /// Streak counter (PN-counter; signed for safety).
+    /// Streak counter (signed for safety). Merged as a register today;
+    /// ADR-0044 §3 derives it from `streak_keys` and `skipped_keys` instead
+    /// (#331), because a reset is not a commutative counter operation.
     #[serde(default)]
     pub streak_counter: i64,
     /// Last successful completion (for streak grace).
