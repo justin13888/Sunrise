@@ -180,3 +180,50 @@ async fn a_drain_finishes_the_inflight_post_and_closes_the_stream() {
     // Nothing accepts any more.
     assert!(TcpStream::connect(addr).await.is_err());
 }
+
+/// `[server] shutdown_grace_secs` bounds the drain: a request whose body never
+/// arrives is cut at the deadline, and `serve_until` says so rather than
+/// waiting on it forever.
+#[tokio::test]
+async fn a_drain_that_outlasts_its_deadline_is_cut() {
+    let state = ServerState::new(ServerConfig {
+        shutdown_grace_secs: 1,
+        ..ServerConfig::default()
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    let server = tokio::spawn(crate::serve_until(state, listener, async {
+        let _ = stopped.await;
+    }));
+
+    let mut post = TcpStream::connect(addr).await.unwrap();
+    post.write_all(
+        format!(
+            "POST /api/v1/devices HTTP/1.1\r\nHost: {addr}\r\nAuthorization: {BEARER}\r\n\
+             Content-Type: application/json\r\nContent-Length: 64\r\n\
+             Expect: 100-continue\r\n\r\n"
+        )
+        .as_bytes(),
+    )
+    .await
+    .unwrap();
+    let mut answered = Vec::new();
+    assert!(read_until(&mut post, &mut answered, "100 Continue").await);
+
+    let _ = stop.send(());
+    let served = tokio::time::timeout(STEP, server)
+        .await
+        .expect("the deadline, not the stalled request, ends the drain")
+        .unwrap();
+    assert!(
+        matches!(
+            served,
+            Err(kynos::Error::Server(
+                kynos::server::error::ServerError::ShutdownTimeout { .. }
+            ))
+        ),
+        "{served:?}"
+    );
+    drop(post);
+}

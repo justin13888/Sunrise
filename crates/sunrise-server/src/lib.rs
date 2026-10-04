@@ -152,10 +152,12 @@ pub async fn serve_until(
         let flushed = checkpoint(&store);
         tracing::info!(
             ev = "srv.stop",
-            result = if served.is_ok() {
-                "drained"
-            } else {
-                "timed_out"
+            result = match &served {
+                Ok(()) => "drained",
+                Err(kynos::Error::Server(kynos::server::error::ServerError::ShutdownTimeout {
+                    ..
+                })) => "timed_out",
+                Err(_) => "failed",
             },
             n_streams = drain.open_streams() as u64,
             status = if flushed.is_ok() {
