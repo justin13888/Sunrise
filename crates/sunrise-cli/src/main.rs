@@ -2046,7 +2046,7 @@ async fn recover(rest: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     drop(code);
     announce("recovery code accepted; the account identity is restored");
 
-    let done = sunrise_cli::recover::rebuild_vault(
+    let done = sunrise_cli::recover::rejoin_account(
         &dir,
         identity,
         &url,

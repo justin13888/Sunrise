@@ -54,6 +54,43 @@ actor CoreBridge {
         return CoreBridge(core: core)
     }
 
+    /// Restore an account from its recovery code into the empty `directory`,
+    /// and return the vault open.
+    ///
+    /// The whole of `docs/03-crypto/recovery.md` §Recovery flow steps 3 to 8
+    /// happens on the Rust side, in the implementation `sunrise recover` runs;
+    /// this only carries the arguments over and the steps back. `bearer` must
+    /// carry a fresh sign-in (`SunriseLogin.beginStepUp`), and `vaultRoot` is
+    /// new: a root is never in a recovery blob. It returns only once the
+    /// account's history has replayed.
+    ///
+    /// The relay device id arrives in the `.deviceRegistered` step, not in the
+    /// return value, so a recovery that fails after registering still hands it
+    /// over.
+    static func recover(
+        directory: URL,
+        vaultRoot: Data,
+        appVersion: String,
+        recovery: RecoveryRequest,
+        onStep: @escaping @Sendable (RecoveryStep) -> Void
+    ) async throws -> CoreBridge {
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        let core = try await SunriseCore.recoverAccount(
+            vaultDir: directory.path(percentEncoded: false),
+            vaultRoot: vaultRoot,
+            appVersion: appVersion,
+            relayUrl: recovery.relayURL,
+            stepUpBearer: recovery.bearer,
+            code: recovery.code,
+            nickname: recovery.nickname,
+            listener: RecoveryStepForwarder(onStep: onStep)
+        )
+        return CoreBridge(core: core)
+    }
+
     private init(core: SunriseCore) {
         self.core = core
     }
