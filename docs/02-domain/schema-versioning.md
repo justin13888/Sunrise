@@ -298,9 +298,11 @@ gating. Nothing else is allowed.
   the upgrade. A newer-build writer adds what only a newer build writes: an
   unknown field, an unknown enum value, an unknown nested `SunriseTime` kind
   and an unknown op kind, handed to either side first.
-  - *No break:* `HEAD` opens the vault the baseline wrote, and the baseline
-    never refuses an op as corruption, never logs an error, never fails a
-    command and is still live at the end.
+  - *No break:* `HEAD` opens the vault the baseline wrote, the baseline never
+    logs a warning or an error, neither replica refuses a newer op, logs an op
+    as corruption or fails a command, and A is still live at the end. Only a
+    baseline refusal as corruption, or a corruption it logs, can be an expected
+    failure; ADR-0057 §5 lists the rest.
   - *No loss:* after the baseline replica is reopened by `HEAD` and has
     replayed its parked ops, every field on both replicas holds what its last
     writer set, unless a concurrent write to that same field won. The

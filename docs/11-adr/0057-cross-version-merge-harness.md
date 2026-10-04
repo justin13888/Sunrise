@@ -99,6 +99,27 @@ expects is reported and passes. Any other violation fails the property. Each
 entry also has a fixed scenario that must still produce it, so an entry fails
 the suite on the day its defect stops reproducing and has to be removed then.
 
+A violation is any of these, on either side unless it names one:
+
+- `HEAD` refuses to open a vault the baseline wrote, B at setup or A at the end.
+- A replica refuses a newer op handed to it, whether or not the refusal is the
+  one the sync driver counts as corruption. This holds for `HEAD` too: against
+  the newer writer of §3, `HEAD` is itself the older build.
+- A replica's sync driver logs an inbound op as corruption.
+- The baseline logs a `WARN` or an `ERROR`. `HEAD`'s log is read for
+  corruption only, because the property is about what the older build does.
+- A command the scenario issues fails.
+- A replica stops syncing: setup or a settle does not finish, or A is not
+  `Live` at the end.
+- A replica never materializes a task, or a field is lost (§4).
+
+The classifier can explain three of these: a refusal as corruption on the
+baseline, a corruption the baseline logs after a `HEAD` write carried a newer
+value it kept, and a lost field. Every other violation has no gap that can
+excuse it, so it always fails the property: a refusal the sync driver does not
+count as corruption, a refusal on `HEAD`, a logged warning or error, a failed
+command, a stopped replica, a refused upgrade.
+
 A fix at `HEAD` does not remove an entry scoped to an older baseline. A build
 that has shipped never changes. Its entry goes when the matrix moves past it.
 
