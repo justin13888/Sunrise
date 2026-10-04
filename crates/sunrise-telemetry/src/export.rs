@@ -237,6 +237,74 @@ mod tests {
             .expect("shuts down");
     }
 
+    /// The whole path: a span ends, the batch processor's own thread exports
+    /// it, the request is spawned onto this runtime, and a collector receives
+    /// one protobuf POST at the configured URL.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_finished_span_reaches_the_collector_as_otlp_protobuf() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let collector = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("binds");
+        let addr = collector.local_addr().expect("an address");
+        let received = tokio::spawn(async move {
+            let (mut socket, _) = collector.accept().await.expect("the exporter connects");
+            let mut seen = Vec::new();
+            let mut buf = [0u8; 4096];
+            // Headers, then as much body as Content-Length says.
+            loop {
+                let n = socket.read(&mut buf).await.expect("reads");
+                assert!(n > 0, "the exporter hung up early");
+                seen.extend_from_slice(&buf[..n]);
+                let text = String::from_utf8_lossy(&seen).to_ascii_lowercase();
+                if let Some(end) = text.find("\r\n\r\n") {
+                    let length = text
+                        .lines()
+                        .find_map(|l| l.strip_prefix("content-length:"))
+                        .and_then(|v| v.trim().parse::<usize>().ok())
+                        .unwrap_or(0);
+                    if seen.len() >= end + 4 + length {
+                        break;
+                    }
+                }
+            }
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n")
+                .await
+                .expect("answers");
+            String::from_utf8_lossy(&seen).into_owned()
+        });
+
+        let telemetry = otlp(
+            &ExportConfig {
+                endpoint: format!("http://{addr}/v1/traces"),
+                sample_ratio: 1.0,
+                ..config()
+            },
+            tokio::runtime::Handle::current(),
+        )
+        .expect("builds");
+        drop(telemetry.root_span("push.dispatch", [crate::Attr::provider("apns")]));
+        tokio::task::spawn_blocking(move || telemetry.shutdown())
+            .await
+            .expect("joins")
+            .expect("the flush succeeds");
+
+        let request = tokio::time::timeout(Duration::from_secs(10), received)
+            .await
+            .expect("the collector was reached")
+            .expect("the collector task ends");
+        let head = request.to_ascii_lowercase();
+        assert!(head.starts_with("post /v1/traces "), "{request}");
+        assert!(
+            head.contains("content-type: application/x-protobuf"),
+            "{request}"
+        );
+        assert!(request.contains("push.dispatch"), "the span is in the body");
+        assert!(request.contains("sunrise-relay"), "the service name is too");
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn a_collector_that_never_answers_times_out() {
         // Bound but never accepted from: the connection is made and then

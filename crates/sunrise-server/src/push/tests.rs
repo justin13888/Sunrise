@@ -424,6 +424,68 @@ async fn the_running_worker_sends_the_trailing_push_when_the_window_closes() {
     assert_eq!(next(&mut sent).await.registration.device_id, f.laptop);
 }
 
+/// A delivery is the root of its own trace, `push.dispatch` with the provider
+/// label, and each send is a `push.attempt` beneath it with its number and
+/// result. Neither carries the device, its token or the account.
+#[tokio::test]
+async fn a_delivery_is_traced_without_the_device_or_its_token() {
+    let (telemetry, exporter) = sunrise_telemetry::testing::recording(1.0);
+    let (tx, mut sent) = tokio::sync::mpsc::unbounded_channel();
+    let mut f = fixture_with(Arc::new(Channel(tx)), Tuning::default());
+    f.state = f.state.clone().with_telemetry(telemetry);
+    f.state.push.notify(&f.state, f.wake(STREAM_A));
+    let intent = next(&mut sent).await;
+
+    // The spans end when the delivery task finishes, just after the send.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let spans = loop {
+        let spans = exporter.get_finished_spans().expect("spans");
+        if spans.len() >= 2 || tokio::time::Instant::now() > deadline {
+            break spans;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    };
+    let root = spans
+        .iter()
+        .find(|s| s.name == "push.dispatch")
+        .unwrap_or_else(|| panic!("no push.dispatch: {spans:?}"));
+    let attempt = spans
+        .iter()
+        .find(|s| s.name == "push.attempt")
+        .unwrap_or_else(|| panic!("no push.attempt: {spans:?}"));
+    assert_eq!(attempt.parent_span_id, root.span_context.span_id());
+    let attrs = |s: &sunrise_telemetry::testing::SpanData| -> Vec<(String, String)> {
+        s.attributes
+            .iter()
+            .map(|kv| (kv.key.as_str().to_owned(), kv.value.to_string()))
+            .collect()
+    };
+    assert_eq!(attrs(root), [("provider".to_owned(), "apns".to_owned())]);
+    assert_eq!(
+        attrs(attempt),
+        [
+            ("attempt".to_owned(), "1".to_owned()),
+            ("result".to_owned(), "ok".to_owned())
+        ]
+    );
+    for span in &spans {
+        // Name, attributes, events and status rather than the whole span: the
+        // fixture's tokens are four hex digits, which a random trace id could
+        // contain by chance.
+        let text = format!(
+            "{} {:?} {:?} {:?}",
+            span.name, span.attributes, span.events, span.status
+        );
+        for secret in [
+            intent.registration.device_id.as_str(),
+            intent.registration.token.as_str(),
+            f.account_id.as_str(),
+        ] {
+            assert!(!text.contains(secret), "{secret:?} reached {text}");
+        }
+    }
+}
+
 // -- backpressure -----------------------------------------------------------
 
 /// A full queue drops the wake, counts it, and returns at once. On a
