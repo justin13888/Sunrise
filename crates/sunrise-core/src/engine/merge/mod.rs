@@ -81,9 +81,11 @@
 
 mod patch;
 mod project;
+mod snapshot;
 mod state;
 
 pub(super) use patch::{check_patch, PatchProblem};
+pub(super) use snapshot::{dump_stream_state, fold_rows, join_stream_state};
 
 use super::ids::blob16;
 use super::lww::LwwStamp;

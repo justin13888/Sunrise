@@ -54,6 +54,7 @@ use sunrise_crypto::{
     ChainLinks, FrontierEntry, OpEnvelope, MAX_CHAIN_HEADS,
 };
 
+use super::compaction::{floor_of, floor_seq, record_peer_frontier, Floor};
 use super::ids::hex_short;
 use super::{Engine, EngineError};
 use crate::inner_op::{encode_inner_op, FrontierWire, InnerOp, StreamDigestPayload};
@@ -131,7 +132,9 @@ pub(super) fn set_op_hash(
 
 /// The [`op_hash`] of the op this replica holds at `(stream, device, seq)`,
 /// or `None` if it holds none. A row from before migration 0034 has no stored
-/// hash; it is computed from the envelope and written back.
+/// hash; it is computed from the envelope and written back. The op at a
+/// compaction floor is held through the floor once its row is gone
+/// (ADR-0059).
 pub(super) fn held_op_hash(
     tx: &Transaction<'_>,
     stream_id: &[u8; 16],
@@ -147,7 +150,9 @@ pub(super) fn held_op_hash(
         )
         .optional()?;
     let Some(stored) = stored else {
-        return Ok(None);
+        return Ok(floor_of(tx, stream_id, device_id)?
+            .filter(|f| f.seq == seq)
+            .map(|f| f.op_hash));
     };
     if let Some(h) = stored.as_deref().and_then(to32) {
         return Ok(Some(h));
@@ -368,9 +373,12 @@ pub(super) fn check_links(
         params![&stream[..], &env.device_id[..], i64_of(env.seq)],
     )?;
 
-    // What this op says its predecessor was.
+    // What this op says its predecessor was. A position below a compaction
+    // floor is covered by the floor's root, not missing (ADR-0059), so it is
+    // never an expectation.
     if let (Some(prev), true) = (env.prev_hash, env.seq > 1) {
         match held_op_hash(tx, &stream, &env.device_id, env.seq - 1)? {
+            None if env.seq - 1 < floor_seq(tx, &stream, &env.device_id)? => {}
             Some(held) if held != prev => {
                 record_fork(
                     tx,
@@ -403,6 +411,7 @@ pub(super) fn check_links(
             continue;
         }
         match held_op_hash(tx, &stream, &head.device_id, head.seq)? {
+            None if head.seq < floor_seq(tx, &stream, &head.device_id)? => {}
             Some(held) if held != head.op_hash => {
                 record_fork(
                     tx,
@@ -457,8 +466,152 @@ pub(super) fn check_duplicate(
     }
 }
 
-/// `root(device, seq)` as stored, or `root(device, 0)` for `seq = 0`.
-fn root_at(
+/// A verified envelope arrived at a position a compaction floor covers and no
+/// row holds (ADR-0059). It is a duplicate of an op this replica folded, and
+/// it is not applied again. At the floor itself the hash of the op it
+/// replaced is known, so a different op there is kept as fork evidence, kind
+/// `seq`, as [`check_duplicate`] keeps one at a held position. Below the
+/// floor no single op's hash is known, and the floor's root is what a peer's
+/// digest is compared against instead. Returns whether the envelope is
+/// covered, in which case the caller writes nothing more.
+pub(super) fn check_covered(
+    tx: &Transaction<'_>,
+    env: &OpEnvelope,
+    envelope_bytes: &[u8],
+    now_ms: u64,
+) -> rusqlite::Result<bool> {
+    let Some(floor) = floor_of(tx, &env.stream_id, &env.device_id)? else {
+        return Ok(false);
+    };
+    if env.seq > floor.seq {
+        return Ok(false);
+    }
+    let held: Option<i64> = tx
+        .query_row(
+            "SELECT 1 FROM ops WHERE stream_id = ?1 AND device_id = ?2 AND seq = ?3",
+            params![&env.stream_id[..], &env.device_id[..], i64_of(env.seq)],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if held.is_some() {
+        // A row below the floor that compaction kept: the ordinary
+        // idempotence gate handles it.
+        return Ok(false);
+    }
+    if env.seq == floor.seq {
+        let hash = op_hash(env).map_err(|_| rusqlite::Error::ExecuteReturnedResults)?;
+        if hash != floor.op_hash {
+            record_fork(
+                tx,
+                &env.stream_id,
+                &env.device_id,
+                env.seq,
+                ForkKind::Seq,
+                &floor.op_hash,
+                &hash,
+                envelope_bytes,
+                now_ms,
+            )?;
+        }
+    }
+    Ok(true)
+}
+
+/// Settle what this replica expected, or was told by a peer, about the
+/// positions a floor that just rose covers (ADR-0059). Those positions are no
+/// longer missing, so their `chain_expected` and `chain_claims` rows go. At
+/// the floor itself the op's hash and root are known, so an expectation of a
+/// different hash there is fork evidence and a claim there is judged, exactly
+/// as they would have been had the op arrived. Below it nothing single is
+/// known, and the floor's root is what later digests are compared against.
+pub(super) fn settle_below_floor(
+    tx: &Transaction<'_>,
+    stream_id: &[u8; 16],
+    device_id: &[u8; 16],
+    floor: &Floor,
+    now_ms: u64,
+) -> rusqlite::Result<()> {
+    let at = i64_of(floor.seq);
+    let named: Vec<(Vec<u8>, Vec<u8>)> = {
+        let mut stmt = tx.prepare(
+            "SELECT op_hash, named_by FROM chain_expected
+             WHERE stream_id = ?1 AND device_id = ?2 AND seq = ?3",
+        )?;
+        let rows = stmt.query_map(params![&stream_id[..], &device_id[..], at], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })?;
+        rows.collect::<rusqlite::Result<_>>()?
+    };
+    for (expected, named_by) in named {
+        let Some(expected) = to32(&expected).filter(|h| *h != floor.op_hash) else {
+            continue;
+        };
+        let namer: Option<Vec<u8>> = tx
+            .query_row(
+                "SELECT envelope FROM ops WHERE op_id = ?1",
+                params![named_by],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let Some(namer) = namer else { continue };
+        let kind = match decode_envelope(&namer) {
+            Ok(n) if n.device_id == *device_id && n.seq == floor.seq.saturating_add(1) => {
+                ForkKind::Link
+            }
+            _ => ForkKind::Head,
+        };
+        record_fork(
+            tx,
+            stream_id,
+            device_id,
+            floor.seq,
+            kind,
+            &floor.op_hash,
+            &expected,
+            &namer,
+            now_ms,
+        )?;
+    }
+    tx.execute(
+        "DELETE FROM chain_expected WHERE stream_id = ?1 AND device_id = ?2 AND seq <= ?3",
+        params![&stream_id[..], &device_id[..], at],
+    )?;
+    let claims: Vec<(Vec<u8>, Vec<u8>)> = {
+        let mut stmt = tx.prepare(
+            "SELECT claimed_by, root FROM chain_claims
+             WHERE stream_id = ?1 AND device_id = ?2 AND seq = ?3",
+        )?;
+        let rows = stmt.query_map(params![&stream_id[..], &device_id[..], at], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })?;
+        rows.collect::<rusqlite::Result<_>>()?
+    };
+    tx.execute(
+        "DELETE FROM chain_claims WHERE stream_id = ?1 AND device_id = ?2 AND seq <= ?3",
+        params![&stream_id[..], &device_id[..], at],
+    )?;
+    for (peer, root) in claims {
+        let (Ok(peer), Some(root)) = (<[u8; 16]>::try_from(peer.as_slice()), to32(&root)) else {
+            continue;
+        };
+        judge(
+            tx,
+            stream_id,
+            device_id,
+            &peer,
+            floor.seq,
+            &root,
+            &floor.root,
+            now_ms,
+        )?;
+    }
+    Ok(())
+}
+
+/// `root(device, seq)` as stored, or `root(device, 0)` for `seq = 0`. At a
+/// compaction floor whose row is gone, or was never folded, the floor's root
+/// (ADR-0059).
+pub(super) fn root_at(
     tx: &Transaction<'_>,
     stream_id: &[u8; 16],
     device_id: &[u8; 16],
@@ -474,7 +627,12 @@ fn root_at(
             |r| r.get(0),
         )
         .optional()?;
-    Ok(v.flatten().as_deref().and_then(to32))
+    if let Some(root) = v.flatten().as_deref().and_then(to32) {
+        return Ok(Some(root));
+    }
+    Ok(floor_of(tx, stream_id, device_id)?
+        .filter(|f| f.seq == seq)
+        .map(|f| f.root))
 }
 
 /// Extend `ops.chain_root` over `(stream, device)`'s contiguous prefix up to
@@ -482,7 +640,9 @@ fn root_at(
 ///
 /// Roots are written in seq order from 1, so the highest stored root is where
 /// the fold resumes: one step per op in steady state, and the whole prefix the
-/// first time a device from before migration 0034 is folded.
+/// first time a device from before migration 0034 is folded. A compaction
+/// floor above every stored root is where it resumes instead, since the rows
+/// below it may be gone (ADR-0059).
 pub(super) fn fold_chain(
     tx: &Transaction<'_>,
     stream_id: &[u8; 16],
@@ -502,11 +662,21 @@ pub(super) fn fold_chain(
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .optional()?;
-    let (mut seq, mut root) =
-        match resume.and_then(|(s, r)| Some((u64::try_from(s).ok()?, to32(&r)?))) {
-            Some(found) => found,
-            None => (0, chain_root_init(stream_id, device_id)),
-        };
+    let stored = resume.and_then(|(s, r)| Some((u64::try_from(s).ok()?, to32(&r)?)));
+    let floor = floor_of(tx, stream_id, device_id)?
+        .filter(|f| f.seq <= prefix)
+        .map(|f| (f.seq, f.root));
+    let (mut seq, mut root) = match (stored, floor) {
+        (Some(s), Some(f)) => {
+            if f.0 > s.0 {
+                f
+            } else {
+                s
+            }
+        }
+        (Some(found), None) | (None, Some(found)) => found,
+        (None, None) => (0, chain_root_init(stream_id, device_id)),
+    };
     while seq < prefix {
         let Some(h) = held_op_hash(tx, stream_id, device_id, seq + 1)? else {
             break;
@@ -683,11 +853,16 @@ pub(super) fn digest_payload(
 /// - `d` is this device, or the peer itself: compared like any other, since a
 ///   peer can hold a different copy of this device's chain only through a
 ///   fork or a relay that served two of them.
+///
+/// A digest that checks out is also the peer's acknowledgement of every
+/// prefix it names, kept in `peer_frontiers` at `at_ms`, the digest op's own
+/// stamp, for compaction to read (ADR-0059).
 pub(super) fn reconcile(
     tx: &Transaction<'_>,
     stream_id: &[u8; 16],
     peer: &[u8; 16],
     payload: &StreamDigestPayload,
+    at_ms: u64,
     now_ms: u64,
 ) -> rusqlite::Result<()> {
     let entries: Vec<FrontierEntry> = payload
@@ -709,6 +884,8 @@ pub(super) fn reconcile(
         );
         return Ok(());
     }
+    let acks: Vec<([u8; 16], u64)> = entries.iter().map(|e| (e.device_id, e.seq)).collect();
+    record_peer_frontier(tx, stream_id, peer, &acks, at_ms)?;
     for e in entries {
         if e.seq == 0 {
             continue;
