@@ -103,7 +103,7 @@ struct OnboardingView: View {
     private func makePairing() -> PairingModel {
         .joining(
             relayURL: settings.relayURL.trimmed,
-            bearer: session?.account.accessToken,
+            account: session?.account,
             adopt: { [session] root, bundle in
                 await session?.adoptPairing(root: root, bundle: bundle)
             }

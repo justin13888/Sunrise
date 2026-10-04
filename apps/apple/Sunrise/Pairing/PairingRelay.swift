@@ -127,15 +127,19 @@ extension PairingModel {
 
     /// The device being added, as `OnboardingView` and `LockedView` open it.
     ///
-    /// `bearer` is the process's account, which outlives any vault: a device
-    /// that signed in before it had one pairs over the relay, and one that has
-    /// not pairs by copy and paste and is told why.
+    /// The bearer is the process's account, which outlives any vault: a device
+    /// whose earlier sign-in is still in its Keychain pairs over the relay, and
+    /// one with none pairs by copy and paste and is told why. Nothing on first
+    /// run has read the account yet — a vault window is what does — so this
+    /// takes the same first look (`restoreIfUnread`) before asking for it.
     static func joining(
         relayURL: String,
-        bearer: String?,
+        account: AccountModel?,
         adopt: @escaping (Data, Data) async -> Void
     ) -> PairingModel {
-        PairingModel(
+        account?.restoreIfUnread()
+        let bearer = account?.accessToken
+        return PairingModel(
             intent: .addThisMac,
             relayURL: relayURL,
             relay: .live(relayURL: relayURL, bearer: bearer),
