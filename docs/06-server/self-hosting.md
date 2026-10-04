@@ -43,6 +43,8 @@ changes one thing.
 listen           = "0.0.0.0:443"          # default "127.0.0.1:8443"
 allowed_origins  = ["https://app.example.com"]   # browser origins; must be scheme-qualified
 max_body_bytes   = 2097152                # default 2 MiB
+shutdown_grace_secs = 25                  # default 25; how long SIGTERM waits for
+                                          # in-flight requests; at least 1 (0 is refused)
 
 [auth]
 oidc_issuer        = "https://auth.example.com"  # must be https
@@ -91,11 +93,61 @@ the parser will reject them rather than accept them silently:
 `s3_*`, `[server] public_url`, `[auth] oidc_client_secret` / `admin_emails`,
 and the `sunrise-server doctor` subcommand.
 
+## Stopping, health and readiness
+
+**Stopping.** `SIGTERM` or `SIGINT` starts a drain, logged as
+`srv.stop.draining`:
+
+1. `GET /api/v1/health?deep=1` starts answering `503`, and in the same
+   instant the listener stops accepting and idle connections close. There is
+   no pause between the two, so a load balancer sees refused connections
+   rather than a `503`; only a probe already in flight when the signal lands
+   gets the `503`. A balancer that must stop routing before the listener goes
+   away needs the orchestrator to deregister the instance before it sends
+   `SIGTERM` (a Kubernetes `preStop` sleep, for one).
+2. Every open sync stream is sent a `closed` event with
+   `SYNC_NETWORK_UNAVAILABLE`, which clients treat as retryable: they
+   reconnect with backoff, to this relay once it is back or to another.
+3. Requests already in flight — an ops batch, a blob chunk — get
+   `[server] shutdown_grace_secs` (default 25) to finish.
+4. The WAL is checkpointed into `sunrise.db`, `srv.stop` is logged with
+   `result = "drained"`, and the process exits 0.
+
+Requests still running at the deadline are cut, the WAL is still
+checkpointed, `srv.stop` says `result = "timed_out"`, and the exit status is 1. A second signal during the
+drain abandons it at once, also with status 1. Give the supervisor a stop
+timeout longer than the grace period: Docker's default is 10 s
+(`docker run --stop-timeout 30`, or `stop_grace_period: 30s` in Compose);
+systemd's `TimeoutStopSec` and Kubernetes' `terminationGracePeriodSeconds`
+both default to 30 s, which 25 s fits inside.
+
+**Liveness and readiness.** Both are `GET /api/v1/health`, unauthenticated and
+mounted on every listener, loopback or not:
+
+| Probe | Answers `200` when | Use it for |
+|---|---|---|
+| `/api/v1/health` | the process is serving at all | liveness: restart when it fails |
+| `/api/v1/health?deep=1` | not draining, the store answers within 2 s, the blob root is writable within 5 s | readiness: route traffic only while it passes |
+
+A failing readiness check answers `503` with `failed` naming the checks; see
+[`api.md`](./api.md) §Health / meta. Do not wire `?deep=1` as a liveness
+probe: a restart does not cure a wedged disk, and a drain is meant to fail it.
+
+**Container health.** `sunrise-server healthcheck` probes the liveness route
+on the address `[server] listen` names (a wildcard address is probed on
+loopback) and exits 0 when it answers `200`, 1 otherwise; `--deep` probes
+readiness instead. The OCI image's `HEALTHCHECK` runs it, so `docker ps` shows
+`healthy` with no `curl` in the image. It resolves the config as the server
+does, so a config passed only with `--config` on the server's command line is
+not seen by the probe: put the path in `$SUNRISE_CONFIG`, or mount the file at
+`/etc/sunrise/sunrise.toml`.
+
 ## Operator surfaces
 
 | Surface | Purpose | Built |
 |---|---|---|
-| `/api/v1/admin/*` (loopback only by default) | Health, stats, manual blob GC, user actions | **no — nothing under `/api/v1/admin/` is routed** |
+| `/api/v1/health` (every listener) | Liveness, and readiness with `?deep=1` | yes — see "Stopping, health and readiness" |
+| `/api/v1/admin/*` (loopback only by default) | Stats, manual blob GC, user actions | **no — nothing under `/api/v1/admin/` is routed** |
 | Prometheus `/metrics` | Aggregate metrics (no per-account labels with PII) | yes, at the router root — **mounted only on a loopback bind** |
 | Logs (stderr) | Structured NDJSON; never contains content; never contains push tokens | yes (`sunrise_log::init_stderr`) |
 
@@ -118,7 +170,8 @@ as its first statement, tuned by `SUNRISE_LOG` and `SUNRISE_LOG_FORMAT`.
   file plus `blobs/` is the entire server state. The database runs in WAL mode,
   so while the server runs its recent writes are in `sunrise.db-wal` beside it:
   a copy of `sunrise.db` alone, taken from a running server, can be missing
-  them. A clean stop folds the WAL back into `sunrise.db`; a snapshot must take
+  them. A stop by `SIGTERM` checkpoints the WAL into `sunrise.db` once its
+  drain ends; a snapshot must take
   the whole directory at one instant, which ZFS and Btrfs snapshots do.
 - **The data dir is not encrypted.** Unlike the client vault, the relay database
   applies no SQLCipher key, and it holds account emails, device nicknames and

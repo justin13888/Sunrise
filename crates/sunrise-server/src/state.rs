@@ -78,6 +78,8 @@ pub struct ServerState {
     pub durable_caps: crate::relay_log::DurableCaps,
     /// Live sync sessions. Empty until `POST /sync/session` files one.
     pub sessions: crate::sync_session::SessionStore,
+    /// Set once shutdown begins; readiness and the SSE streams watch it.
+    pub drain: crate::drain::Drain,
 }
 
 impl ServerState {
@@ -121,6 +123,7 @@ impl ServerState {
             blob_root: Arc::new(blob_root),
             durable_caps: crate::relay_log::DurableCaps::default(),
             sessions: crate::sync_session::SessionStore::new(),
+            drain: crate::drain::Drain::new(),
         }
     }
 

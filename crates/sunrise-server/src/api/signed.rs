@@ -49,10 +49,10 @@
 //! URI the way axum's `Router::nest` did — which is what forced the axum server to reach for
 //! `OriginalUri` — so what arrives here is what was sent.
 //!
-//! **No operation on this surface takes a query parameter.** Adding one means
-//! extending the canonical target on both sides; today `path_and_query` and the
-//! path agree, and a query appearing without the client half changing would
-//! break verification loudly rather than silently.
+//! **No signed operation takes a query parameter.** Adding one means extending the canonical
+//! target on both sides; today `path_and_query` and the path agree, and a query appearing
+//! without the client half changing would break verification loudly rather than silently. The
+//! one query on the surface, `GET /api/v1/health?deep=1`, is unsigned and never reaches these.
 
 use crate::api::auth::{AccountToken, Principal};
 use crate::api::error::ApiError;
