@@ -139,7 +139,10 @@ pub async fn session(
             // rewording. `NegotiationError::as_error_code` has always computed
             // the distinction; this is the call that delivers it.
             let code = e.as_error_code();
-            state.metrics.incr("sunrise_sync_negotiate_refused_total");
+            state.metrics.incr_with(
+                "sunrise_sync_negotiate_refused_total",
+                &[("reason", code.as_str())],
+            );
             tracing::warn!(
                 ev = "srv.sync.negotiate_refused",
                 err_code = %code,

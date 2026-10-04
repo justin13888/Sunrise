@@ -117,10 +117,14 @@ exists** at any point.
 
 Naming convention: `sunrise_<area>_<measure>`.
 
-`metrics.rs` is an in-process `BTreeMap<String, AtomicU64>` rendered as
-Prometheus text at `/metrics`. It supports **counters only** — no gauges, no
-histograms — and every call site increments a bare, unlabelled name. The
-complete set the server emits today:
+[`metrics.md`](./metrics.md) is the catalogue: every metric's type, labels and
+their value sets, unit, bucket set, and whether it is **current** or
+**target**, together with the label allowlist and the gate that enforces it.
+This section holds no second copy of any of that. `metrics.rs` is a lock-free
+registry of labelled counters, gauges and histograms, rendered as Prometheus
+text at `/metrics`. What stays here is the list of names the tree defines,
+extracted from the source and checked by a gate, so the catalogue's
+**current** column has something mechanical to agree with:
 
 <!-- Extracted from the tree; do not edit by hand. Re-run and reconcile:
      grep -rhoE '"sunrise_[a-z0-9_]+"' crates/sunrise-server/src | sort -u
@@ -131,37 +135,44 @@ complete set the server emits today:
      NOT the commit that last changed the set. Now that the gate runs, it is
      provenance rather than the reader's assurance: diff that ref against HEAD
      over the grepped path to see what a human last looked at.
-     Last extracted: 556ff2a -->
+     Last extracted: 08ef4b1 -->
 
 ```
 sunrise_account_create_total
+sunrise_blob_bytes_total                  {direction}
 sunrise_blob_chunk_total
 sunrise_blob_fetch_total
 sunrise_blob_finalize_total
 sunrise_blob_hash_mismatch_total
 sunrise_blob_init_total
-sunrise_device_sig_rejected_total
-sunrise_devices_list_total
+sunrise_build_info                        {version, commit}
+sunrise_db_size_bytes
+sunrise_device_sig_rejected_total         {reason}
 sunrise_devices_register_total
 sunrise_devices_revoke_total
+sunrise_http_request_duration_seconds     {endpoint, method}
+sunrise_http_requests_total               {endpoint, method, status}
+sunrise_metrics_series_dropped_total
+sunrise_push_dispatch_total               {provider, result} (LoggingProvider; never reached)
 sunrise_push_register_total
 sunrise_recovery_blob_fetch_total
 sunrise_recovery_step_up_refused_total
-sunrise_push_apns_total          (LoggingProvider; never reached)
-sunrise_push_fcm_total           (LoggingProvider; never reached)
-sunrise_push_web_total           (LoggingProvider; never reached)
 sunrise_relay_append_failed_total
 sunrise_relay_batch_duplicate_total
 sunrise_relay_batch_overlap_total
 sunrise_relay_cursor_gap_total
-sunrise_sync_negotiate_refused_total
+sunrise_start_time_seconds
+sunrise_sync_batch_ops
+sunrise_sync_negotiate_refused_total      {reason}
+sunrise_sync_ops_received_total
 sunrise_sync_refresh_total
 sunrise_sync_resume_conflict_total
 sunrise_sync_session_total
+sunrise_sync_sessions_active
 sunrise_sync_stream_total
 ```
 
-25 metric names, and four that earlier revisions of this file listed and the
+32 metric names, and four that earlier revisions of this file listed and the
 tree does not define: `sunrise_sync_token_expired_total`,
 `sunrise_sync_token_refresh_rejected_total`, `sunrise_sync_token_refreshed_total`,
 `sunrise_sync_unauthenticated_total`. The token-lifecycle counters collapsed into
@@ -171,7 +182,7 @@ under `srv.sync.*` above, which is why the names look familiar.
 
 `sunrise_relay_batch_duplicate_total` is the counter for op-batch
 de-duplication, and it and its near-miss counterpart below get commentary the
-other twenty-one do not, because the key they are both about is not the obvious
+others do not, because the key they are both about is not the obvious
 one. `POST /api/v1/sync/ops` keys on the batch's
 **content**: `ops_h`, a domain-separated BLAKE3 hash over the ops, scoped to the channel —
 `PRIMARY KEY (account_h, stream_id, ops_h)` in `relay_batches`. When that
@@ -254,33 +265,21 @@ loopback** — a non-loopback bind withholds the route and logs
 §operator-surfaces. It was previously mounted unconditionally with no
 authentication and no bind check.
 
-The target set is [`metrics.md`](./metrics.md): every metric the relay is to expose, with its
-type, labels and bucket set, the alerts it feeds, and an extended label allowlist that supersedes
-the one below once the first labelled metric lands ([#356](https://github.com/justin13888/Sunrise/issues/356)).
+### Label allowlist
 
-### Label allowlist — NOT ENFORCED
+The allowlist, each label's closed value set, and the gate that enforces them
+are in [`metrics.md`](./metrics.md) §Label allowlist. In short: the registry
+refuses a label name off the list at the call, and
+`crates/sunrise-server/tests/metric-label-safety.rs` drives every route in the
+published description and fails on a label name off the list, a value outside
+its set, an id-shaped value, or a series count that grows with distinct ids. No
+label ever carries an account, device, stream, op, entity, blob or upload id,
+an email or its hash, an IP address, or a raw path.
 
-No metric carries a label today — `Metrics::add` takes a counter name and an
-increment and nothing else, with no label argument anywhere on the type, and
-`render` merely passes a `{…}` in a name through verbatim — so the allowlist
-is vacuously satisfied rather than checked. **The CI test named below does not
-exist**: there is no `crates/sunrise-server/tests/metric-label-safety.rs`. The
-allowlist is still the contract for the first metric that takes a label.
-
-Only the following label names may appear on any Prometheus metric:
-
-```
-endpoint     (path template, e.g. "/api/v1/streams/:id")
-method       (HTTP verb)
-status       (HTTP status code)
-kind         (frame kind, OpBatch | Subscribe | …)
-provider     (apns | fcm | web | google | …)
-result       (ok | failed | rate_limited | …)
-wire_proto   (1)
-crypto_suite (1)
-```
-
-Forbidden labels include `account_id`, `stream_id`, `device_id`, `email`, `email_hash`, `ip`, `path` (raw with id), `op_id`, `entity_id`. A CI test parsing the exposition output and asserting only allowlisted label names appear is the intended gate; it is **not written**.
+Note the one spelling difference from the logs above: a metric's `endpoint` is
+the description's own template, `/api/v1/devices/{device_id}`, where
+`srv.req.*` records `/api/v1/devices/:id`. Both are templates and neither is
+the request's path.
 
 ## Tracing
 

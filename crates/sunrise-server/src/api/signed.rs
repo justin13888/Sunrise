@@ -116,10 +116,7 @@ pub struct DeviceSig {
 /// diagnostic, not something to fail an otherwise valid request over — but it
 /// also means the failure is silent and never reaches a log.
 ///
-/// A verification that fails at the signature itself increments
-/// `sunrise_device_sig_rejected_total` and emits
-/// `srv.auth.device_sig_rejected`, so the metrics registry is mutated on that
-/// path too.
+/// A bad signature also counts in `sunrise_device_sig_rejected_total{reason}` and is logged.
 ///
 /// # Errors
 /// A `401` [`ApiError::Unauthenticated`] in every failing case; only the *code*
@@ -218,7 +215,10 @@ pub fn verify_bytes(
         state.clock.now_ms(),
     )
     .map_err(|e| {
-        state.metrics.incr("sunrise_device_sig_rejected_total");
+        state.metrics.incr_with(
+            "sunrise_device_sig_rejected_total",
+            &[("reason", e.reason())],
+        );
         tracing::warn!(
             ev = "srv.auth.device_sig_rejected",
             err_code = %sunrise_error::ErrorCode::AuthDeviceSigInvalid,

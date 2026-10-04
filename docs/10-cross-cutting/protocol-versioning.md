@@ -698,32 +698,15 @@ says. Correlating a later record with them is a join on the process, not a
 field read.
 
 **Server-side metrics as implemented.** `crates/sunrise-server/src/metrics.rs`
-is an in-process `BTreeMap<String, AtomicU64>` behind a mutex, rendered as
-Prometheus text at `/metrics`. It has one operation — increment a counter by
-name — and therefore **no labels, no histograms and no gauges**. Every series it
-emits is a bare counter name:
-
-<!-- Extracted from the tree; do not edit by hand. Re-run and reconcile:
-     grep -rhoE '"sunrise_[a-z0-9_]+"' crates/sunrise-server/src | sort -u
-     Last extracted: 7fa82b54 -->
-
-```
-sunrise_sync_{negotiate_refused,session,refresh,stream,resume_conflict}_total
-sunrise_relay_append_failed_total       sunrise_relay_cursor_gap_total
-sunrise_relay_batch_{duplicate,overlap}_total
-sunrise_device_sig_rejected_total       sunrise_account_create_total
-sunrise_devices_{list,register,revoke}_total
-sunrise_blob_{init,chunk,finalize,fetch}_total
-sunrise_blob_hash_mismatch_total
-sunrise_recovery_blob_fetch_total       sunrise_recovery_step_up_refused_total
-sunrise_push_register_total             sunrise_push_{apns,fcm,web}_total
-```
-
-Twenty-five names. The full list with its provenance lives in
-[`../06-server/observability.md`](../06-server/observability.md) §Metrics.
-
-The registry's `render` passes a name containing `{` through verbatim, so a
-labelled series is *expressible* as a string, but nothing constructs one.
+is a lock-free registry of labelled counters, gauges and histograms, rendered as
+Prometheus text at `/metrics`. Labels are restricted to an allowlist, which
+already names `wire_proto` and `crypto_suite`. The names the tree defines, with
+their provenance and a gate that keeps them current, are in
+[`../06-server/observability.md`](../06-server/observability.md) §Metrics; their
+types, labels and meanings are in
+[`../06-server/metrics.md`](../06-server/metrics.md). None of them carries a
+protocol or suite version today: `sunrise_sync_negotiate_refused_total{reason}`
+says *why* a session was refused, not which versions the refused client spoke.
 
 **Target state**, and what a deprecation decision actually needs:
 
@@ -734,7 +717,7 @@ sunrise_op_envelope_total{aead_alg, sig_alg}
 sunrise_storage_migration_total{from_v, to_v, result}
 ```
 
-None of these four exist. Until they do, no version deprecation under [§6](#6-wire-protocol-evolution-rules) can be justified by the "> 0.5% of daily active devices" or "< 0.1% of inbound ops" thresholds this document sets — the numerator is not measured. `metrics.rs`'s own header says production swaps in a real client (`prometheus`, `metrics`) without changing the exposition contract; that is where labelled series arrive.
+None of these four exist. Until they do, no version deprecation under [§6](#6-wire-protocol-evolution-rules) can be justified by the "> 0.5% of daily active devices" or "< 0.1% of inbound ops" thresholds this document sets — the numerator is not measured. The registry can carry them now; what is missing is the call sites, and for three of the four, allowlist entries: `bit`, `aead_alg`, `sig_alg`, `from_v` and `to_v` are not on [`metrics.md`](../06-server/metrics.md) §Label allowlist, and each must be added there with its bounded value set before a series may use it.
 
 ---
 

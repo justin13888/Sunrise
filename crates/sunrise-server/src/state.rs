@@ -27,6 +27,35 @@ impl Clock for SystemClock {
     }
 }
 
+/// The build's commit, when the build was given one.
+///
+/// Read from `SUNRISE_BUILD_COMMIT` at compile time. A build that does not set
+/// it reports `unknown`, which is honest and still one series.
+const BUILD_COMMIT: &str = match option_env!("SUNRISE_BUILD_COMMIT") {
+    Some(commit) => commit,
+    None => "unknown",
+};
+
+/// The process constants `docs/06-server/metrics.md` §Process and build lists:
+/// `sunrise_build_info` and `sunrise_start_time_seconds`.
+///
+/// Set once, here, because they are facts about the process rather than
+/// anything that moves; every other gauge is sampled at scrape time.
+fn process_metrics(metrics: &Metrics, now_ms: u64) {
+    metrics.set_gauge(
+        "sunrise_build_info",
+        &[
+            ("version", env!("CARGO_PKG_VERSION")),
+            ("commit", BUILD_COMMIT),
+        ],
+        1.0,
+    );
+    // Exact to the millisecond until 2^53 ms, some 285,000 years out.
+    #[allow(clippy::cast_precision_loss)]
+    let started = now_ms as f64 / 1000.0;
+    metrics.set_gauge("sunrise_start_time_seconds", &[], started);
+}
+
 /// The context `kynos` hands to every handler and observer on the built
 /// `Service<ServerState>`.
 #[derive(Debug, Clone)]
@@ -80,13 +109,15 @@ impl ServerState {
             .blob_root
             .clone()
             .unwrap_or_else(|| std::env::temp_dir().join("sunrise-self-host-blobs"));
+        let metrics = Metrics::new();
+        process_metrics(&metrics, clock.now_ms());
         Self {
             config: Arc::new(config),
             relay: RelayHub::new(),
             clock,
             token_verifier: Arc::new(NullVerifier),
             store,
-            metrics: Metrics::new(),
+            metrics,
             blob_root: Arc::new(blob_root),
             durable_caps: crate::relay_log::DurableCaps::default(),
             sessions: crate::sync_session::SessionStore::new(),
