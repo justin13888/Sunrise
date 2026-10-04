@@ -559,6 +559,8 @@ fn op_payload(inner: InnerOp) -> OpPayload {
         | InnerOp::DeviceRevoke(_)
         | InnerOp::DeviceCertPublish(_)
         | InnerOp::IdentityTransition(_)
+        | InnerOp::VaultRequires(_)
+        | InnerOp::DeviceFeatures(_)
         | InnerOp::ReviewSnapshotCreate(_) => OpPayload::Ignored,
     }
 }

@@ -1099,6 +1099,7 @@
             "variants": ["FR", "MO", "SA", "SU", "TH", "TU", "WE"]
         }
     ],
+    "features": [],
     "format": 1,
     "op_kinds": [
         "AttachmentCreate",
@@ -1110,6 +1111,7 @@
         "ContextDelete",
         "ContextUpdate",
         "DeviceCertPublish",
+        "DeviceFeatures",
         "DeviceRevoke",
         "FocusEnd",
         "FocusInterrupt",
@@ -1125,6 +1127,7 @@
         "StreamUpdate",
         "TaskCreate",
         "TaskDelete",
-        "TaskUpdate"
+        "TaskUpdate",
+        "VaultRequires"
     ]
 }

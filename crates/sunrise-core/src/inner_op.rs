@@ -20,11 +20,13 @@
 //! contend with one another and re-delivery is a no-op. See ADR-0013 and
 //! [`crate::engine`]'s `materialize_focus_remote`.
 //!
-//! Four families are **control** ops rather than entities: `KeyEnvelope`,
+//! Six families are **control** ops rather than entities: `KeyEnvelope`,
 //! `DeviceRevoke`, `DeviceCertPublish` and `IdentityTransition` carry key
-//! material and trust, have no row and no last-writer-wins stamp, and are
-//! classed `OpEffect::Control` so the compiler keeps them out of the entity
-//! materializer. See [`crate::control_op`], ADR-0024 and ADR-0032.
+//! material and trust, and `VaultRequires` and `DeviceFeatures` carry the
+//! vault's feature state. None has a row or a last-writer-wins stamp, and all
+//! are classed `OpEffect::Control` so the compiler keeps them out of the
+//! entity materializer. See [`crate::control_op`], ADR-0024, ADR-0032 and
+//! ADR-0045 §7.
 //!
 //! The core uses *full-state* ops: `TaskCreate`/`TaskUpdate` carry the entire `Task`,
 //! not a field-level delta. This is the accepted current approximation of the CRDT
@@ -33,7 +35,10 @@
 //! its entity with `deleted` set, never a bare id — see `InnerOp::TaskDelete`
 //! and ADR-0014 for why a tombstone marker does not converge.
 
-use crate::control_op::{DeviceRevokePayload, IdentityTransitionPayload, KeyEnvelopePayload};
+use crate::control_op::{
+    DeviceFeaturesPayload, DeviceRevokePayload, IdentityTransitionPayload, KeyEnvelopePayload,
+    VaultRequiresPayload,
+};
 use serde::{Deserialize, Serialize};
 use sunrise_domain::{
     Attachment, Block, Context, FocusEnd, FocusStart, Interruption, ReviewSnapshot, Routine,
@@ -46,9 +51,9 @@ use thiserror::Error;
 /// [`InnerOp`] and its routing.
 ///
 /// Every entity op variant, its payload, its `inner_kind`, its effect, its
-/// target field and its entity are read from the registry; only the four
-/// control families, which carry key material and trust rather than an
-/// entity, are written here. An entity op therefore cannot be added without
+/// target field and its entity are read from the registry; only the six
+/// control families, which carry key material, trust and feature state rather
+/// than an entity, are written here. An entity op therefore cannot be added without
 /// every routing table below learning it.
 ///
 /// The derived `inner_kind` and `target_kind` reach the op log only on the
@@ -120,6 +125,12 @@ macro_rules! define_inner_op {
             /// *every* `InnerOp` — including the task ops, which are the ones that
             /// actually occur in bulk — to the size of the largest rotation.
             IdentityTransition(Box<IdentityTransitionPayload>),
+            /// Add feature ids to the vault's grow-only required set (ADR-0045
+            /// §7). Control op, on the vault-meta stream.
+            VaultRequires(VaultRequiresPayload),
+            /// The sending device's supported feature ids, read as its latest
+            /// such op (ADR-0045 §7). Control op, on the vault-meta stream.
+            DeviceFeatures(DeviceFeaturesPayload),
         }
 
         impl InnerOp {
@@ -131,6 +142,8 @@ macro_rules! define_inner_op {
                     Self::DeviceRevoke(_) => "device.revoke",
                     Self::DeviceCertPublish(_) => "device.cert",
                     Self::IdentityTransition(_) => "identity.transition",
+                    Self::VaultRequires(_) => "vault.requires",
+                    Self::DeviceFeatures(_) => "device.features",
                 }
             }
 
@@ -140,8 +153,11 @@ macro_rules! define_inner_op {
                 match self {
                     $($( Self::$op(_) => $tag, )*)*
                     Self::KeyEnvelope(_) => "stream_key",
-                    Self::DeviceRevoke(_) | Self::DeviceCertPublish(_) => "device",
+                    Self::DeviceRevoke(_)
+                    | Self::DeviceCertPublish(_)
+                    | Self::DeviceFeatures(_) => "device",
                     Self::IdentityTransition(_) => "identity",
+                    Self::VaultRequires(_) => "vault",
                 }
             }
 
@@ -162,6 +178,14 @@ macro_rules! define_inner_op {
                     Self::IdentityTransition(p) => {
                         EntityRef::new(EntityKind::Identity, p.to_identity_id)
                     }
+                    // The vault-meta stream: the required set belongs to the
+                    // vault, and that stream is the vault's own log.
+                    Self::VaultRequires(_) => {
+                        EntityRef::new(EntityKind::Stream, crate::engine::META_STREAM)
+                    }
+                    // The sender, which the payload does not repeat; the
+                    // zero id for `DeviceCertPublish`'s reason.
+                    Self::DeviceFeatures(_) => EntityRef::new(EntityKind::Device, [0u8; 16]),
                 }
             }
 
@@ -172,7 +196,9 @@ macro_rules! define_inner_op {
                     Self::KeyEnvelope(_)
                     | Self::DeviceRevoke(_)
                     | Self::DeviceCertPublish(_)
-                    | Self::IdentityTransition(_) => OpEffect::Control,
+                    | Self::IdentityTransition(_)
+                    | Self::VaultRequires(_)
+                    | Self::DeviceFeatures(_) => OpEffect::Control,
                 }
             }
 
@@ -180,8 +206,10 @@ macro_rules! define_inner_op {
             pub(crate) fn entity_kind(&self) -> EntityKind {
                 match self {
                     $($( Self::$op(_) => EntityKind::$kind, )*)*
-                    Self::KeyEnvelope(_) => EntityKind::Stream,
-                    Self::DeviceRevoke(_) | Self::DeviceCertPublish(_) => EntityKind::Device,
+                    Self::KeyEnvelope(_) | Self::VaultRequires(_) => EntityKind::Stream,
+                    Self::DeviceRevoke(_)
+                    | Self::DeviceCertPublish(_)
+                    | Self::DeviceFeatures(_) => EntityKind::Device,
                     Self::IdentityTransition(_) => EntityKind::Identity,
                 }
             }
@@ -197,6 +225,8 @@ macro_rules! define_inner_op {
                         | Self::DeviceRevoke(_)
                         | Self::DeviceCertPublish(_)
                         | Self::IdentityTransition(_)
+                        | Self::VaultRequires(_)
+                        | Self::DeviceFeatures(_)
                 )
             }
         }
@@ -405,7 +435,7 @@ mod tests {
     fn known_kinds_is_the_derives_variant_list() {
         let kinds = known_kinds();
         assert_eq!(kinds.first(), Some(&"TaskCreate"));
-        assert_eq!(kinds.last(), Some(&"IdentityTransition"));
+        assert_eq!(kinds.last(), Some(&"DeviceFeatures"));
         for name in [
             "BlockCreate",
             "AttachmentDelete",
@@ -418,7 +448,7 @@ mod tests {
         assert!(unknown_kind(&bytes).is_none(), "a known op is not unknown");
     }
 
-    /// `InnerOp` is the registry's ops, in registry order, then the four
+    /// `InnerOp` is the registry's ops, in registry order, then the six
     /// control families — read out of the derive, so it is the list the
     /// decoder actually accepts.
     #[test]
@@ -432,6 +462,8 @@ mod tests {
             "DeviceRevoke",
             "DeviceCertPublish",
             "IdentityTransition",
+            "VaultRequires",
+            "DeviceFeatures",
         ]);
         assert_eq!(known_kinds(), expected.as_slice());
     }

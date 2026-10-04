@@ -107,6 +107,10 @@ impl Engine {
         epoch: u32,
         stream_key: &StreamKey,
     ) -> rusqlite::Result<()> {
+        // Every local op is sealed here, so this is the one place a feature
+        // gate cannot be routed around (ADR-0045 §8): an op on a scope a
+        // missing feature locks never reaches the log.
+        self.seal_guard(tx, inner_op, target_kind)?;
         let device_id = self.keychain.device_id();
         let ts_ms = hlc.physical_ms;
         let envelope = self
@@ -911,11 +915,11 @@ pub(super) fn ops_run_end(
 ///
 /// That meaning is what bounds every "the cursor advances" above. The run
 /// starts at seq 1 because this function asks for it there —
-/// `crates/sunrise-core/src/engine/oplog.rs:925#upsert_sync_cursor` is where
+/// `crates/sunrise-core/src/engine/oplog.rs:929#upsert_sync_cursor` is where
 /// the literal lives;
-/// `crates/sunrise-core/src/engine/oplog.rs:675#ops_run_end` is parameterised
+/// `crates/sunrise-core/src/engine/oplog.rs:679#ops_run_end` is parameterised
 /// on `start` at
-/// `crates/sunrise-core/src/engine/oplog.rs:679#ops_run_end` and hard-codes
+/// `crates/sunrise-core/src/engine/oplog.rs:683#ops_run_end` and hard-codes
 /// nothing. So an op delivered with a gap below it is in the log and outside
 /// the prefix: with the log holding `{2}` the `ELSE ?3 - 1` arm writes 0, and with
 /// it holding `{1, 3}` the run ends at 1. Refused or applied makes no

@@ -65,6 +65,7 @@
 
 use crate::commands::{Command, CommandResult};
 use crate::config::{Clock, HlcClock, Rng};
+use crate::feature::Feature;
 use crate::inner_op::InnerOpError;
 use crate::keychain::Keychain;
 use crate::queries::{Query, QueryResult};
@@ -80,6 +81,7 @@ use thiserror::Error;
 mod attachment;
 mod block;
 mod context;
+mod features;
 mod focus;
 mod identity;
 mod ids;
@@ -179,7 +181,7 @@ const FOCUS_PLAN_SCAN_CAP: u32 = 512;
 /// envelope still enters `ops`, and the op counts toward the contiguous prefix
 /// exactly like an applied one. Whether the cursor then moves past it is a
 /// question about the seqs *below* it and never about the refusal — see
-/// `crates/sunrise-core/src/engine/oplog.rs:925#upsert_sync_cursor`. Once it
+/// `crates/sunrise-core/src/engine/oplog.rs:929#upsert_sync_cursor`. Once it
 /// does, the relay will not re-send the op and nothing re-offers the key. Ops
 /// sealed under that `(stream, epoch)` therefore stay unreadable on this
 /// replica until the device is re-paired, which is what hands it every Stream
@@ -335,6 +337,31 @@ pub enum EngineError {
     /// switch on the refusal rather than parse it.
     #[error("the vault-meta stream is not an ordinary Stream")]
     ReservedStream,
+    /// The vault requires `feature`, this build does not have it, and the
+    /// command would write an entity the feature's scope covers
+    /// (ADR-0045 §8).
+    ///
+    /// The command wrote nothing. Reads and sync are unaffected; updating
+    /// Sunrise clears it. Maps to
+    /// [`sunrise_error::ErrorCode::DocFeatureMissing`] at the public API.
+    #[error("this vault uses `{feature}`, which this version of Sunrise does not have")]
+    FeatureMissing {
+        /// The feature id.
+        feature: String,
+    },
+    /// Enabling `feature` would leave these non-revoked devices unable to
+    /// write the data it covers, because none of them has said it supports
+    /// it (ADR-0045 §7). Nothing was emitted.
+    ///
+    /// The caller asks the user, naming the devices, and retries with
+    /// confirmation.
+    #[error("enabling `{feature}` needs {} other device(s) to update first", devices.len())]
+    FeatureUnsupportedByDevices {
+        /// The feature being enabled.
+        feature: String,
+        /// The devices that lack it, by id.
+        devices: Vec<[u8; 16]>,
+    },
 }
 
 /// One command-application pipeline.
@@ -358,6 +385,9 @@ pub struct Engine {
     hlc: Arc<dyn HlcClock>,
     rng: Arc<dyn Rng>,
     keychain: Arc<Keychain>,
+    /// The features this build supports: [`crate::feature::FEATURES`], or a
+    /// test's stand-in for an older or newer build.
+    features: &'static [Feature],
 }
 
 impl std::fmt::Debug for Engine {
@@ -383,7 +413,19 @@ impl Engine {
             hlc,
             rng,
             keychain,
+            features: crate::feature::FEATURES,
         }
+    }
+
+    /// This engine, as a build that supports exactly `features`.
+    ///
+    /// Tests use it to stand one vault up under an older build (fewer
+    /// features) and a newer one (more) without compiling two.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn with_features(mut self, features: &'static [Feature]) -> Self {
+        self.features = features;
+        self
     }
 
     /// Construct with the causal clock derived from `clock`.
@@ -500,7 +542,18 @@ impl Engine {
     }
 
     /// Apply a command end-to-end inside a single transaction.
+    ///
+    /// # Errors
+    /// [`EngineError::FeatureMissing`] when the vault requires a feature this
+    /// build lacks and the command would write an entity its scope covers.
+    /// The refusal is made where each op is sealed, so it covers every op a
+    /// command writes, and the transaction it aborts leaves nothing behind.
     pub fn apply(&self, db: &mut Db, cmd: Command) -> Result<CommandResult, EngineError> {
+        self.dispatch(db, cmd)
+            .map_err(EngineError::lift_seal_refusal)
+    }
+
+    fn dispatch(&self, db: &mut Db, cmd: Command) -> Result<CommandResult, EngineError> {
         match cmd {
             Command::CreateTask(d) => self.create_task(db, d),
             Command::UpdateTask { id, patch } => self.update_task(db, id, patch),

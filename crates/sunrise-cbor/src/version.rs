@@ -107,7 +107,13 @@ pub const ENVELOPE_FORMAT_FLOOR: u16 = 3;
 /// change that bumps it. A test in `sunrise-core` fails while the generated
 /// schema's fingerprint differs from this version's entry, so a shape cannot
 /// change without the bump.
-pub const DOC_SCHEMA_V: u16 = 7;
+///
+/// `8` adds the two feature control families, `VaultRequires` and
+/// `DeviceFeatures`, and the feature registry to the canonical schema
+/// (issue #324, ADR-0045 §7). A v7 build parks an op of either family, and
+/// replays it once a v8 build opens the vault. Every v1..v7 payload shape is
+/// unchanged, so the floor still does not move.
+pub const DOC_SCHEMA_V: u16 = 8;
 
 /// The first [`DOC_SCHEMA_V`] that has a fingerprint (ADR-0045 §3, `N_fp`).
 ///
@@ -136,10 +142,16 @@ pub const DOC_SCHEMA_FP_PREFIX_LEN: usize = 8;
 /// that shipped it believes its version means; changing one makes two builds
 /// disagree while their version numbers say they agree, which is the failure
 /// the fingerprint exists to catch.
-pub const DOC_SCHEMA_FINGERPRINTS: &[(u16, [u8; 32])] = &[(
-    7,
-    hex32("fb893b62bb2f9bf7d9adf7ba95d5bee20498a63aa0e03c4f14a7a28a7d0d6fcb"),
-)];
+pub const DOC_SCHEMA_FINGERPRINTS: &[(u16, [u8; 32])] = &[
+    (
+        7,
+        hex32("fb893b62bb2f9bf7d9adf7ba95d5bee20498a63aa0e03c4f14a7a28a7d0d6fcb"),
+    ),
+    (
+        8,
+        hex32("3c6a3f7b32d51792f3fdaa880360786cba2c3985e814e1c0f84c8955611ce715"),
+    ),
+];
 
 /// The registered fingerprint of document schema `v`, or `None` for a version
 /// this build has no entry for: one before [`DOC_SCHEMA_FP_FIRST`], or one
@@ -376,4 +388,10 @@ pub const CRYPTO_SUITE_V: u16 = 5;
 /// now kept verbatim, and a raw value holding `;`, `,` or `=` cannot survive
 /// the text form; the blob holds any string. Schema-only: rows written before
 /// it read their text, which only ever held known values.
-pub const STORAGE_V: u16 = 32;
+///
+/// `33` is migration `0033_vault_features.sql`, the folds of the two feature
+/// control ops (issue #324, ADR-0045 §7–§8): the vault's grow-only set of
+/// required feature ids, and each device's latest list of supported ones.
+/// Schema-only: both start empty, which is what a vault no feature-aware build
+/// has written to means.
+pub const STORAGE_V: u16 = 33;

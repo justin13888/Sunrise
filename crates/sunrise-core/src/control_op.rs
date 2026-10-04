@@ -28,6 +28,19 @@
 //!   a valid cert, so a revoked device can certify itself under a fresh id, and
 //!   no revocation can undo that — only a new identity can.
 //!
+//!
+//! Two more families arrive at `DOC_SCHEMA_V = 8`, and they carry the
+//! vault's feature state rather than keys (ADR-0045 §7):
+//!
+//! - [`VaultRequiresPayload`] names feature ids the vault's data now depends
+//!   on. The vault's required set is the union of every one applied, a
+//!   grow-only set, so concurrent enables converge. A build that lacks a
+//!   required feature keeps syncing and refuses local writes on the feature's
+//!   scope ([`crate::feature`]).
+//! - [`DeviceFeaturesPayload`] is a device saying which feature ids it
+//!   supports. It is read as the latest op per device, so a device that
+//!   upgrades replaces what it said before.
+//!
 //! These are **not** entities. They have no row, no LWW stamp and no
 //! materialization: `inner_op`'s `OpEffect::Control` variant exists so the
 //! compiler cannot route one into the entity materializer, where the `_ =>`
@@ -286,9 +299,90 @@ pub struct IdentityTransitionPayload {
     pub next_sig: [u8; 64],
 }
 
+/// The vault's data now depends on these features (ADR-0045 §7).
+///
+/// Sealed on the vault-meta stream like every control op. Applying one adds
+/// each well-formed id to the vault's required set, which only grows: no op
+/// removes a feature, so two devices that enable different features at once
+/// both end up requiring both. An id that is not well formed
+/// ([`crate::feature::is_feature_id`]) is skipped rather than failing the op,
+/// so one bad id cannot hide the good ones beside it.
+///
+/// It is emitted **before** the first op that uses the feature. Cross-stream
+/// delivery order is not guaranteed, so this is a signal and not a lock: a
+/// build that meets an op it cannot read parks it whether or not the signal
+/// has arrived.
+///
+/// Fields a later build adds are kept in `unknown` and written back
+/// unchanged, as every record on the wire does.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VaultRequiresPayload {
+    /// The feature ids, `[a-z][a-z0-9_]*(\.[a-z0-9_]+)+`.
+    pub features: Vec<String>,
+    /// Fields this build does not know, kept byte for byte.
+    #[serde(flatten)]
+    pub unknown: sunrise_domain::Unknowns,
+}
+
+/// The features the sending device supports (ADR-0045 §7).
+///
+/// There is no `device_id` field, for [`RosterEntry`]'s reason: the op is
+/// about the device that signed it, and the envelope already names that
+/// device under a signature. A copy beside it would be an unsigned second
+/// source of truth.
+///
+/// Read as the **latest op per device**, by HLC. A device emits one whenever
+/// what it supports changes, which in practice is the first open after an
+/// upgrade. A device that has never emitted one supports nothing, which is
+/// exactly what every build older than this family looks like, so a feature
+/// is never enabled over such a device without the user being told.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DeviceFeaturesPayload {
+    /// The feature ids this device's build supports.
+    pub features: Vec<String>,
+    /// Fields this build does not know, kept byte for byte.
+    #[serde(flatten)]
+    pub unknown: sunrise_domain::Unknowns,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `{ "features": [...], unknown-fields }`, as ADR-0045 §7's CDDL says,
+    /// and a field a later build adds survives the round trip.
+    #[test]
+    fn vault_requires_payload_keeps_a_field_it_does_not_know() {
+        use ciborium::value::Value;
+        let wire = Value::Map(vec![
+            (
+                Value::Text("features".into()),
+                Value::Array(vec![Value::Text("task.deadlines_v2".into())]),
+            ),
+            (Value::Text("later".into()), Value::Integer(9.into())),
+        ]);
+        let mut buf = Vec::new();
+        ciborium::ser::into_writer(&wire, &mut buf).unwrap();
+        let p: VaultRequiresPayload = ciborium::de::from_reader(buf.as_slice()).unwrap();
+        assert_eq!(p.features, vec!["task.deadlines_v2".to_owned()]);
+        assert_eq!(p.unknown.len(), 1);
+        let mut out = Vec::new();
+        ciborium::ser::into_writer(&p, &mut out).unwrap();
+        let back: Value = ciborium::de::from_reader(out.as_slice()).unwrap();
+        assert_eq!(back, wire);
+    }
+
+    #[test]
+    fn device_features_payload_round_trips() {
+        let p = DeviceFeaturesPayload {
+            features: vec!["core.field_ops".into(), "task.optional_stream".into()],
+            unknown: sunrise_domain::Unknowns::new(),
+        };
+        let mut buf = Vec::new();
+        ciborium::ser::into_writer(&p, &mut buf).unwrap();
+        let back: DeviceFeaturesPayload = ciborium::de::from_reader(buf.as_slice()).unwrap();
+        assert_eq!(back, p);
+    }
 
     #[test]
     fn revoke_reason_round_trips_through_its_stored_form() {

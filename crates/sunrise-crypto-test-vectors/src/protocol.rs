@@ -224,7 +224,13 @@ pub const DOC_SCHEMA_FP_DOMAIN: &str = "sunrise.doc_schema.fingerprint.v1";
 /// Both are **append-only**: a new `DOC_SCHEMA_V` appends its entry to both.
 /// An entry is what every build that shipped that version believes it means,
 /// so an edit here is never a test fix.
-pub const DOC_SCHEMA_REGISTRY: &[(u16, [u8; 32])] = &[(
-    7,
-    crate::hex("fb893b62bb2f9bf7d9adf7ba95d5bee20498a63aa0e03c4f14a7a28a7d0d6fcb"),
-)];
+pub const DOC_SCHEMA_REGISTRY: &[(u16, [u8; 32])] = &[
+    (
+        7,
+        crate::hex("fb893b62bb2f9bf7d9adf7ba95d5bee20498a63aa0e03c4f14a7a28a7d0d6fcb"),
+    ),
+    (
+        8,
+        crate::hex("3c6a3f7b32d51792f3fdaa880360786cba2c3985e814e1c0f84c8955611ce715"),
+    ),
+];

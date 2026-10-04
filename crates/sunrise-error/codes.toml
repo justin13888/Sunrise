@@ -269,6 +269,14 @@ retryable = false
 since = "v1"
 docs = "GET /sync/events presented a Last-Event-ID on the first stream after a Subscribe. The id names what the client received; the Subscribe's cursors name what it applied, and the two disagree exactly on the recovery path. Recovery is to drop the id and reopen, not to retry the same request."
 
+[[code]]
+id = 514
+name = "DOC_FEATURE_MISSING"
+kind = "permanent"
+retryable = false
+since = "v1"
+docs = "The vault requires a feature this build does not have, and the command would write an entity that feature's scope covers (ADR-0045 §8). Nothing was written; reads and sync continue. Recovery is to update the app, never to retry."
+
 # --- Relay ----------------------------------------------------------------
 
 [[code]]

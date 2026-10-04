@@ -437,7 +437,14 @@ impl Engine {
             OpEffect::Create => vec![DomainEvent::Created(target)],
             OpEffect::Update => vec![DomainEvent::Updated(target)],
             OpEffect::Delete => vec![DomainEvent::Deleted(target)],
-            // The control op itself changed nothing on screen. What it
+            // A newly applied `VaultRequires` can lock edits on this build, so
+            // a client has to re-read what it may edit (ADR-0045 §8). It is
+            // reported as its target, the vault-meta stream, which names no
+            // row a client shows.
+            OpEffect::Control if matches!(inner, InnerOp::VaultRequires(_)) => {
+                vec![DomainEvent::Updated(target)]
+            }
+            // Any other control op changed nothing on screen. What it
             // released might have.
             OpEffect::Control => Vec::new(),
         };
@@ -1072,6 +1079,16 @@ impl Engine {
                 })
             }
             InnerOp::DeviceRevoke(p) => self.apply_device_revoke(tx, p, sender, hlc, now_ms),
+            // The feature folds (ADR-0045 §7). Neither refuses: a malformed id
+            // is skipped and logged, and the rest of the op still counts.
+            InnerOp::VaultRequires(p) => {
+                self.apply_vault_requires(tx, p, now_ms)?;
+                Ok(Vec::new())
+            }
+            InnerOp::DeviceFeatures(p) => {
+                self.apply_device_features(tx, p, sender, hlc, now_ms)?;
+                Ok(Vec::new())
+            }
             InnerOp::DeviceCertPublish(cert_cbor) => {
                 // Verified in `self_authenticating_signer` before we ever got
                 // here for an unknown sender; re-verified here because a known

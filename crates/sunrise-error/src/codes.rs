@@ -102,6 +102,9 @@ pub enum ErrorCode {
     DocSchemaTooNew,
     /// Required capability bit missing during negotiation.
     CapabilityRequiredMissing,
+    /// The vault requires a feature this build lacks, and a local write
+    /// would touch that feature's scope (ADR-0045 §8).
+    DocFeatureMissing,
 
     // Relay
     /// Receiver's grant for this Stream was revoked.
@@ -162,6 +165,7 @@ impl ErrorCode {
             Self::DocSchemaTooOld => "DOC_SCHEMA_TOO_OLD",
             Self::DocSchemaTooNew => "DOC_SCHEMA_TOO_NEW",
             Self::CapabilityRequiredMissing => "CAPABILITY_REQUIRED_MISSING",
+            Self::DocFeatureMissing => "DOC_FEATURE_MISSING",
             Self::RelayGrantRevoked => "RELAY_GRANT_REVOKED",
             Self::RelayStorageUnavailable => "RELAY_STORAGE_UNAVAILABLE",
             Self::IntegrationReauthRequired => "INTEGRATION_REAUTH_REQUIRED",
@@ -209,6 +213,7 @@ impl ErrorCode {
             | Self::DocSchemaTooOld
             | Self::DocSchemaTooNew
             | Self::CapabilityRequiredMissing
+            | Self::DocFeatureMissing
             | Self::RelayGrantRevoked => ErrorKind::Permanent,
             // Transient
             Self::AuthTokenExpired
@@ -235,7 +240,7 @@ impl ErrorCode {
 
     /// Iteration over every code variant — useful for completeness tests.
     #[must_use]
-    pub const fn all() -> [Self; 38] {
+    pub const fn all() -> [Self; 39] {
         [
             Self::InternalUnknownCode,
             Self::ValidationInvalidTitle,
@@ -270,6 +275,7 @@ impl ErrorCode {
             Self::DocSchemaTooOld,
             Self::DocSchemaTooNew,
             Self::CapabilityRequiredMissing,
+            Self::DocFeatureMissing,
             Self::RelayGrantRevoked,
             Self::RelayStorageUnavailable,
             Self::IntegrationReauthRequired,

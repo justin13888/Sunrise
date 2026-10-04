@@ -209,14 +209,26 @@ impl Core {
         // rotation it did not itself emit.
         db.with_tx(|tx| engine.recompute_identity_head(tx))?;
         engine.publish_device_cert(&mut db)?;
+        // Tell the account what this build supports, once per change of
+        // build (ADR-0045 §7). After `publish_device_cert`, so a peer that
+        // learns this device from its cert can attribute the op.
+        engine.advertise_features(&mut db)?;
         // Generation timing (recurrence-engine.md): materialize routines on
         // every app launch, using the injected clock so this stays deterministic.
-        engine.apply(
+        //
+        // A vault that requires a feature this build lacks may lock the tasks
+        // it would write (ADR-0045 §8). That is the read-only state working,
+        // not a failed open: the vault opens, reads and syncs, and the routine
+        // occurrences are left to a build that can write them.
+        match engine.apply(
             &mut db,
             Command::MaterializeRoutines {
                 now_ms: cfg.clock.now_ms(),
             },
-        )?;
+        ) {
+            Ok(_) | Err(EngineError::FeatureMissing { .. }) => {}
+            Err(e) => return Err(e.into()),
+        }
         let initial_pending = sunrise_storage::Outbox::pending_count(&db).unwrap_or(0);
         let sync_shared = SyncShared::new(sync_tx.clone(), initial_pending);
         let sync_credential = cfg
@@ -347,6 +359,23 @@ impl Core {
             self.sync_shared.poke_submit();
         }
         Ok(events)
+    }
+
+    /// The features this vault requires that this build does not have, each
+    /// with what it locks (ADR-0045 §8). Empty is the ordinary case.
+    ///
+    /// A client shows "Update Sunrise to edit" while this is non-empty and
+    /// disables the edit actions on each feature's scope. A command on a
+    /// locked scope is refused with [`EngineError::FeatureMissing`] whether
+    /// or not the client asked first. Re-read it on any change event: the
+    /// `VaultRequires` op that locks a scope is reported as an update to the
+    /// vault-meta stream.
+    pub fn missing_features(&self) -> Result<Vec<crate::feature::MissingFeature>, CoreError> {
+        if *self.closed.lock() {
+            return Err(CoreError::Closed);
+        }
+        let db = self.db.lock();
+        Ok(self.engine.missing_features(&db)?)
     }
 
     /// Run a read query.

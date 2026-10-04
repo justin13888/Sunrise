@@ -213,9 +213,9 @@ pub const ENVELOPE_INNER: &[u8] = b"inner-op-canonical-cbor";
 
 /// `aead_alg = 0` control envelope: plaintext payload, signature only.
 ///
-/// Frozen at `ENVELOPE_FORMAT_V = 3` / `DOC_SCHEMA_V = 7`: field 1 is `3`,
-/// field 5 is the HLC array `[physical_ms, logical]`, field 12 is `7`, field
-/// 13 is the first 8 bytes of v7's registered schema fingerprint, and the
+/// Frozen at `ENVELOPE_FORMAT_V = 3` / `DOC_SCHEMA_V = 8`: field 1 is `3`,
+/// field 5 is the HLC array `[physical_ms, logical]`, field 12 is `8`, field
+/// 13 is the first 8 bytes of v8's registered schema fingerprint, and the
 /// magic prefix reads `5352 02 0003`.
 ///
 /// Field 12 carries the **document** schema, so the two envelope vectors are
@@ -244,6 +244,12 @@ pub const ENVELOPE_INNER: &[u8] = b"inner-op-canonical-cbor";
 /// container change, because every build already preserves an unknown
 /// field 13.
 ///
+/// The 7 → 8 re-freeze (ADR-0045 §7, issue #324, the `VaultRequires` and
+/// `DeviceFeatures` op families) moved the signature at `[119..182]`, the
+/// field-12 byte at `[184]` and the fingerprint prefix at `[187..194]`, and
+/// nothing else: the map header and every byte before the signature are
+/// unchanged.
+///
 /// `encode_envelope(ENVELOPE_INNER, STREAM_ID, DEVICE_ID, seq = 7,
 /// hlc = [1_700_000_000_000, 0], AeadAlgId::None, epoch = 0, nonce = [0; 24],
 /// stream_key = None, DEVICE_SIGNING_SECRET)`.
@@ -261,10 +267,10 @@ pub mod signed_only_envelope {
         "5352020003ad010302502222222222222222222222222222222203503333",
         "3333333333333333333333333333040705821b0000018bcfe56800000600",
         "070108000958180000000000000000000000000000000000000000000000",
-        "000a57696e6e65722d6f702d63616e6f6e6963616c2d63626f720b58400c",
-        "ee16bbad2f43913663e9afe9651820c9d5d8fe904d19a2d98636a03e32cb",
-        "a2ce16aa7b7257799a55dff88690bb67aa90c50eb3552e072a74d647b1fd",
-        "a5170e0c070d48fb893b62bb2f9bf7",
+        "000a57696e6e65722d6f702d63616e6f6e6963616c2d63626f720b5840c5",
+        "9f3ea22a7c004e676e98318a1d22aaba7fcd269a235abde1e873d9c5315c",
+        "bd797ee29fb385d5635b0df5baf62f288f9c31148baff43eeba7de76319a",
+        "46650b0c080d483c6a3f7b32d51792",
     ));
 }
 
@@ -289,6 +295,10 @@ pub mod signed_only_envelope {
 /// map header at `[5]`, and appended field 13 at `[202..211]`, exactly as the
 /// signed-only vector did. The ciphertext at `[94..117]` is again untouched.
 ///
+/// The 7 → 8 re-freeze (ADR-0045 §7) moved the tag, the signature, the
+/// field-12 byte and the fingerprint prefix, and the ciphertext at
+/// `[94..117]` is again untouched.
+///
 /// `encode_envelope(ENVELOPE_INNER, STREAM_ID, DEVICE_ID, seq = 9,
 /// hlc = [1_700_000_000_001, 0], AeadAlgId::XChaCha20Poly1305, epoch = 3,
 /// nonce = [0x55; 24], stream_key = STREAM_KEY, DEVICE_SIGNING_SECRET)`.
@@ -308,11 +318,11 @@ pub mod sealed_envelope {
         "5352020003ad010302502222222222222222222222222222222203503333",
         "3333333333333333333333333333040905821b0000018bcfe56801000601",
         "070108030958185555555555555555555555555555555555555555555555",
-        "550a58276416c4bb3e46b71d10c45af51e2462649e7331f6d5bbb89f925d",
-        "fb17033fff32a583e000170d7b0b5840a8bff9508b44cb5537a2f99ac473",
-        "dbddde7f97f6e110d074390b31cf2d824507b165ba54acf406bd6bd57cf1",
-        "cae5cd57c1ebcada1d1cb47302b9ec94edd14d030c070d48fb893b62bb2f",
-        "9bf7",
+        "550a58276416c4bb3e46b71d10c45af51e2462649e7331f6d5bbb8d90a5d",
+        "34a7a158167e618beb4cb77dc90b584056b7f95dd4f68850828a7a90747e",
+        "eaef06159733292c8ce3566e677592666e2c2ee17a05b766497b5d22b316",
+        "b2617b9c546a9e244741cc09f95137d8401f62090c080d483c6a3f7b32d5",
+        "1792",
     ));
 }
 
