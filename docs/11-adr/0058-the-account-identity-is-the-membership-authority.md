@@ -4,13 +4,16 @@
 
 **Answers** [#394](https://github.com/justin13888/Sunrise/issues/394).
 
+**Built by** [#454](https://github.com/justin13888/Sunrise/issues/454), which
+waits on §7. Nothing in the engine signs a revocation yet.
+
 **Amends** [ADR-0041](./0041-peer-side-revocation-is-a-fold.md) §"What a user
 sees" item 4, which says no ledger-only rule settles two expelled devices one
 attacker holds. That stays true. This record adds the one input the ledger did
 not carry, and leaves the gate, the discount and the walk unchanged for every
 row that does not carry it.
 
-**Answers** [ADR-0056](./0056-a-revocation-is-withdrawn-only-by-its-author.md)
+**Takes up** [ADR-0056](./0056-a-revocation-is-withdrawn-only-by-its-author.md)
 §"What would force revisiting this" item 4, which named this authority as the
 one candidate that could speak for revocations it did not make. §6 below
 re-argues ADR-0056 §3 against it.
@@ -331,9 +334,10 @@ declines.
   row puts its target in the register and bounds it, whatever order the ops
   arrived in. That is a subset of
   [#411](https://github.com/justin13888/Sunrise/issues/411), not a fix for it.
-- **The implementation is filed as its own issue**, linked from the pull request
-  that adds this record. It depends on #324, like
-  [#383](https://github.com/justin13888/Sunrise/issues/383). It covers the op,
+- **The implementation is
+  [#454](https://github.com/justin13888/Sunrise/issues/454).** It depends on
+  #324, like [#383](https://github.com/justin13888/Sunrise/issues/383). It
+  covers the op,
   the `core.revoke_authority` feature and its emission gate, the migration,
   the fold's verification and `IDENTITY` revoker, the refold on a moved head,
   the carry-forward in `rotate_identity`, the `DeviceRow` disclosure, and the
