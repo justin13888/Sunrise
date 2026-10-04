@@ -118,6 +118,14 @@ pub struct StorageTable {
     /// How long a SQLite statement waits on another connection's lock, in
     /// milliseconds. Maps to [`ServerConfig::sqlite_busy_timeout_ms`].
     pub busy_timeout_ms: Option<u64>,
+    /// [`ServerConfig::account_delete_grace_days`].
+    pub account_delete_grace_days: Option<u64>,
+    /// [`ServerConfig::gc_grace_days`].
+    pub gc_grace_days: Option<u64>,
+    /// [`ServerConfig::pending_upload_ttl_hours`].
+    pub pending_upload_ttl_hours: Option<u64>,
+    /// [`ServerConfig::maintenance_interval_secs`].
+    pub maintenance_interval_secs: Option<u64>,
 }
 
 /// A parsed `sunrise.toml`.
@@ -221,6 +229,18 @@ impl FileConfig {
         }
         if let Some(v) = self.storage.busy_timeout_ms {
             base.sqlite_busy_timeout_ms = v;
+        }
+        if let Some(v) = self.storage.account_delete_grace_days {
+            base.account_delete_grace_days = v;
+        }
+        if let Some(v) = self.storage.gc_grace_days {
+            base.gc_grace_days = v;
+        }
+        if let Some(v) = self.storage.pending_upload_ttl_hours {
+            base.pending_upload_ttl_hours = v;
+        }
+        if let Some(v) = self.storage.maintenance_interval_secs {
+            base.maintenance_interval_secs = v;
         }
         base
     }
@@ -508,6 +528,44 @@ mod file_tests {
             default_sqlite_busy_timeout_ms(),
             "an unset busy timeout keeps the default"
         );
+    }
+
+    /// The four maintenance keys overlay one by one, and an unset one keeps
+    /// its default; `gc_grace_days` is the name the storage doc has always
+    /// used, which the parser used to reject as unknown.
+    #[test]
+    fn the_maintenance_keys_overlay_when_set() {
+        let defaults = ServerConfig::default();
+        let cfg = FileConfig::parse(
+            "[storage]\ngc_grace_days = 7\naccount_delete_grace_days = 2\n\
+             pending_upload_ttl_hours = 6\nmaintenance_interval_secs = 60",
+            "t.toml",
+        )
+        .unwrap()
+        .apply(ServerConfig::default());
+        assert_eq!(
+            (
+                cfg.gc_grace_days,
+                cfg.account_delete_grace_days,
+                cfg.pending_upload_ttl_hours,
+                cfg.maintenance_interval_secs
+            ),
+            (7, 2, 6, 60)
+        );
+        assert_eq!(
+            (
+                defaults.gc_grace_days,
+                defaults.account_delete_grace_days,
+                defaults.pending_upload_ttl_hours,
+                defaults.maintenance_interval_secs
+            ),
+            (30, 30, 24, 3600)
+        );
+        let one = FileConfig::parse("[storage]\ngc_grace_days = 1", "t.toml")
+            .unwrap()
+            .apply(ServerConfig::default());
+        assert_eq!(one.account_delete_grace_days, 30);
+        assert_eq!(one.retention().gc_grace_ms, 24 * 60 * 60 * 1000);
     }
 
     #[test]

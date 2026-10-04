@@ -100,6 +100,23 @@ pub struct ServerConfig {
     pub sqlite_busy_timeout_ms: u64,
     /// Self-host blob root (None = `<sqlite_dir>/blobs`).
     pub blob_root: Option<PathBuf>,
+    /// Days between `DELETE /api/v1/accounts/me` and the maintenance pass
+    /// that erases the account. `[storage] account_delete_grace_days`.
+    #[serde(default = "default_thirty_days")]
+    pub account_delete_grace_days: u64,
+    /// Days a tombstoned blob is kept before it may be collected, quorum
+    /// permitting. `[storage] gc_grace_days`, the name
+    /// `docs/06-server/relay-and-blob-storage.md` §Retention gives it.
+    #[serde(default = "default_thirty_days")]
+    pub gc_grace_days: u64,
+    /// Hours an upload may sit untouched between `init` and `finalize` before
+    /// its pending chunks are swept. `[storage] pending_upload_ttl_hours`.
+    #[serde(default = "default_pending_upload_ttl_hours")]
+    pub pending_upload_ttl_hours: u64,
+    /// Seconds between maintenance passes — account erasure, blob GC and the
+    /// pending-upload sweep. `[storage] maintenance_interval_secs`.
+    #[serde(default = "default_maintenance_interval_secs")]
+    pub maintenance_interval_secs: u64,
     /// Exact-match CORS allowlist for browser clients. Empty = no browser
     /// origin is permitted, which is the correct default for a relay whose
     /// only client today is native.
@@ -216,6 +233,24 @@ pub(super) fn default_sqlite_busy_timeout_ms() -> u64 {
     u64::try_from(crate::store::DEFAULT_BUSY_TIMEOUT.as_millis()).unwrap_or(u64::MAX)
 }
 
+/// Thirty days: the one window every retention number in
+/// `docs/06-server/relay-and-blob-storage.md` §Retention is unified to.
+pub(super) const fn default_thirty_days() -> u64 {
+    30
+}
+
+/// A day: an upload abandoned that long is not coming back, and the client
+/// that resumes one later simply starts a new `init`.
+pub(super) const fn default_pending_upload_ttl_hours() -> u64 {
+    24
+}
+
+/// An hour: every deadline the pass enforces is measured in days, so a pass an
+/// hour late changes nothing a user can see.
+pub(super) const fn default_maintenance_interval_secs() -> u64 {
+    3600
+}
+
 const fn default_allow_signup() -> bool {
     true
 }
@@ -316,6 +351,13 @@ pub enum ConfigError {
     /// An empty `[push.apns] topic`.
     #[error("[push.apns] topic is empty; it must be the app's bundle id")]
     EmptyApnsTopic,
+    /// A `[storage]` maintenance setting of zero that would destroy live work
+    /// or spin.
+    #[error(
+        "[storage] {0} is zero: a pending-upload TTL of zero sweeps uploads still in flight, \
+         and a maintenance interval of zero runs the pass in a busy loop"
+    )]
+    ZeroMaintenance(&'static str),
 }
 
 impl ServerConfig {
@@ -374,6 +416,14 @@ impl ServerConfig {
         if let Some(key) = self.limits.first_zero() {
             return Err(ConfigError::ZeroLimit(key));
         }
+        // Both grace periods may be zero — collect as soon as the quorum
+        // holds, erase on the next pass — but these two may not.
+        if self.pending_upload_ttl_hours == 0 {
+            return Err(ConfigError::ZeroMaintenance("pending_upload_ttl_hours"));
+        }
+        if self.maintenance_interval_secs == 0 {
+            return Err(ConfigError::ZeroMaintenance("maintenance_interval_secs"));
+        }
         // The key file itself is checked where it is read, in
         // `crate::push::from_config`: this half is pure.
         if let Some(apns) = &self.push.apns {
@@ -403,6 +453,22 @@ impl ServerConfig {
             .collect()
     }
 
+    /// The maintenance pass's deadlines, in milliseconds.
+    #[must_use]
+    pub const fn retention(&self) -> Retention {
+        const DAY_MS: u64 = 24 * 60 * 60 * 1000;
+        Retention {
+            account_delete_grace_ms: self.account_delete_grace_days.saturating_mul(DAY_MS),
+            gc_grace_ms: self.gc_grace_days.saturating_mul(DAY_MS),
+            pending_upload_ttl_ms: self.pending_upload_ttl_hours.saturating_mul(60 * 60 * 1000),
+            // `attachments.md` §Deletion: a device silent for more than 30
+            // days is abandoned and leaves the quorum. Not configurable: it is
+            // the same window the relay log keeps ops for, so a device gone
+            // longer must re-pair whatever this says.
+            device_active_window_ms: 30 * DAY_MS,
+        }
+    }
+
     /// The step-up this deployment demands in front of the recovery blob.
     #[must_use]
     pub fn recovery_step_up(&self) -> crate::auth::step_up::StepUpPolicy {
@@ -413,6 +479,20 @@ impl ServerConfig {
             leeway_secs: self.token_leeway_secs,
         }
     }
+}
+
+/// The deadlines [`ServerConfig::retention`] derives, in one unit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Retention {
+    /// From a deletion request to the account's erasure.
+    pub account_delete_grace_ms: u64,
+    /// From a blob's tombstone to the earliest it may be collected.
+    pub gc_grace_ms: u64,
+    /// How long an upload may go untouched before its chunks are swept.
+    pub pending_upload_ttl_ms: u64,
+    /// How recently a device must have declared a cursor to count toward a
+    /// tombstone's quorum.
+    pub device_active_window_ms: u64,
 }
 
 /// Whether `bind` keeps the listener on the local host only.
@@ -446,6 +526,10 @@ impl Default for ServerConfig {
             sqlite_path: None,
             sqlite_busy_timeout_ms: default_sqlite_busy_timeout_ms(),
             blob_root: None,
+            account_delete_grace_days: default_thirty_days(),
+            gc_grace_days: default_thirty_days(),
+            pending_upload_ttl_hours: default_pending_upload_ttl_hours(),
+            maintenance_interval_secs: default_maintenance_interval_secs(),
             allowed_origins: Vec::new(),
             max_body_bytes: default_max_body_bytes(),
             shutdown_grace_secs: default_shutdown_grace_secs(),
@@ -607,6 +691,27 @@ mod tests {
         // reveals the value never worked.
         c.limits.enabled = false;
         assert!(c.validate(true).is_err());
+    }
+
+    /// A zero TTL would sweep uploads in flight and a zero interval would
+    /// spin; zero grace periods are allowed and mean "as soon as possible".
+    #[test]
+    fn zero_maintenance_settings_are_refused_but_zero_grace_is_not() {
+        let mut c = cfg("127.0.0.1:8443");
+        c.gc_grace_days = 0;
+        c.account_delete_grace_days = 0;
+        assert_eq!(c.validate(true), Ok(()));
+        c.pending_upload_ttl_hours = 0;
+        assert_eq!(
+            c.validate(true),
+            Err(ConfigError::ZeroMaintenance("pending_upload_ttl_hours"))
+        );
+        c.pending_upload_ttl_hours = 1;
+        c.maintenance_interval_secs = 0;
+        assert_eq!(
+            c.validate(true),
+            Err(ConfigError::ZeroMaintenance("maintenance_interval_secs"))
+        );
     }
 
     /// A proxy entry is an address or a network. A hostname would have to be
