@@ -90,7 +90,11 @@ async fn read_until(socket: &mut TcpStream, seen: &mut Vec<u8>, needle: &str) ->
 #[tokio::test]
 async fn a_drain_finishes_the_inflight_post_and_closes_the_stream() {
     let dir = tempfile::tempdir().unwrap();
+    // On disk, so the closing checkpoint has a write-ahead log to fold back.
+    let db = dir.path().join("sunrise.db");
+    let wal = dir.path().join("sunrise.db-wal");
     let state = ServerState::new(ServerConfig {
+        sqlite_path: Some(db.clone()),
         blob_root: Some(dir.path().join("blobs")),
         shutdown_grace_secs: 30,
         ..ServerConfig::default()
@@ -140,6 +144,13 @@ async fn a_drain_finishes_the_inflight_post_and_closes_the_stream() {
     let mut answered = Vec::new();
     assert!(read_until(&mut post, &mut answered, "100 Continue").await);
 
+    // The schema the store wrote on open is still in the WAL, so the empty
+    // log asserted below is the checkpoint's doing.
+    assert!(
+        std::fs::metadata(&wal).unwrap().len() > 0,
+        "the WAL must hold frames before the drain for the checkpoint to be tested"
+    );
+
     let _ = stop.send(());
 
     // The stream ends with the retryable close, then the body ends.
@@ -176,6 +187,16 @@ async fn a_drain_finishes_the_inflight_post_and_closes_the_stream() {
         .expect("serve_until must return once the drain completes")
         .unwrap();
     assert!(served.is_ok(), "{served:?}");
+
+    // The closing checkpoint folded every frame into the database file:
+    // `TRUNCATE` leaves the WAL at zero bytes, so the data directory an
+    // operator backs up is the one file.
+    assert_eq!(
+        std::fs::metadata(&wal).map_or(0, |m| m.len()),
+        0,
+        "the WAL still holds frames after the drain"
+    );
+    assert!(std::fs::metadata(&db).unwrap().len() > 0);
 
     // Nothing accepts any more.
     assert!(TcpStream::connect(addr).await.is_err());
