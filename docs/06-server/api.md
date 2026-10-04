@@ -497,6 +497,8 @@ The envelope `ApiError` actually renders carries two members and no
 }
 ```
 
+A `429` is always `RATE_LIMITED` with a `Retry-After` header; see §Rate limits.
+
 Codes are **stable** (clients map them to translated strings). New codes can be added; clients see unknown codes as a generic error. Messages never quote a token, a key, or a subject: a JWKS transport failure and a forged signature both render as the same opaque `401`, and a SQLite error renders as `500 FATAL_INTERNAL` with the message `"internal error"`.
 
 ### Quota responses — REMOVED
@@ -510,25 +512,103 @@ plan, and the `429`/`202` pair this section used to specify — a hard cap over
 [`billing.md`](./billing.md) as the shape a future quota surface would take,
 not as anything a client can receive.
 
-## Rate limits — NOT IMPLEMENTED
+## Rate limits
 
-There is no rate-limiting middleware anywhere in `crates/sunrise-server`. The
-only middleware `api/mod.rs` mounts is kynos's `Cors` and `BodySize`, plus the
-`RequestLog` observer in `api/observe.rs`; nothing counts requests per IP, per
-account, or per token. An unauthenticated caller can hit
-`/api/v1/meta`, `/api/v1/health` and `/metrics` at whatever rate the socket
-allows, and the OIDC verifier's JWKS cache is the only thing bounding work on
-`401`s.
+Every route is limited. `crates/sunrise-server/src/api/ratelimit/` enforces
+this table; every number is a `[limits]` key in `sunrise.toml`
+([`self-hosting.md`](./self-hosting.md) §Config), and the defaults below are
+what a relay with no `[limits]` table runs.
 
-The target, when it is built:
+### The refusal
 
-Per-IP: 60 RPM unauthenticated, 600 RPM authenticated.
+A limited request gets **`429 Too Many Requests`**, a problem document with
+`type` `https://sunrise.app/problems/rate-limited` and code **`RATE_LIMITED`**
+(registry id 800, transient, retryable), and a **`Retry-After`** header in whole
+seconds, never less than 1. Waiting exactly that long is admitted; retrying
+sooner is refused again. The `429` and its header are in the description of
+every operation, because the limiter covers every operation.
 
-Per-account limiting is **not built** — it presupposes per-account accounting
-that does not exist ([ADR-0027](../11-adr/0027-v1-self-host-first.md) clause 2).
-The design of record for it is
-[`../05-sync/backpressure-and-quotas.md`](../05-sync/backpressure-and-quotas.md),
-which is `proposed`.
+Every refusal increments `sunrise_ratelimit_rejected_total{endpoint,scope}`
+([`metrics.md`](./metrics.md)); the first refusal of a run on one key logs
+`srv.ratelimit.rejected` ([`log-events.md`](../10-cross-cutting/log-events.md)).
+
+### Per client address, before anything else
+
+Charged by the admission interceptor, the outermost layer of the router, so a
+flood is refused before a body is read or a bearer verified. One bucket per
+route group per client address; a bucket holds one minute's allowance and
+refills continuously.
+
+| Group | Routes | Auth | Default per address |
+|---|---|---|---|
+| `probe` | `GET /api/v1/health`, `GET /metrics` (loopback bind only) | none | 120 / min (`probe_per_min`) |
+| `meta` | `GET /api/v1/meta` | none | 60 / min (`meta_per_min`) |
+| `bootstrap` | `POST /api/v1/accounts`, `POST /api/v1/devices` | bearer | 10 / min (`bootstrap_per_min`) |
+| `account` | `GET /api/v1/accounts/me`, `GET /api/v1/accounts/me/recovery_blob`, `GET /api/v1/devices`, `DELETE /api/v1/devices/{device_id}`, `DELETE /api/v1/devices/by-vault-id/{vault_device_id}`, `POST /api/v1/devices/push-tokens` | bearer+sig | 60 / min (`account_per_min`) |
+| `blob` | `POST /api/v1/blobs/init`, `PUT /api/v1/blobs/{upload_id}/{chunk_idx}`, `POST /api/v1/blobs/finalize`, `GET /api/v1/blobs/{blob_id}` | bearer+sig | 600 / min (`blob_per_min`) |
+| `sync` | `POST /api/v1/sync/session`, `POST /api/v1/sync/session/refresh`, `POST /api/v1/sync/subscribe`, `POST /api/v1/sync/ops`, `GET /api/v1/sync/events` | bearer+sig (+session) | 600 / min (`sync_per_min`) |
+
+**Failed authentication.** Every `401` an address earns on a `bootstrap`,
+`account`, `blob` or `sync` route is counted, 20 per five minutes
+(`failed_auth_per_5min`). Past that, the address's requests to those routes are
+refused with `429` *before* the bearer verifier runs, a valid bearer included,
+until the budget refills. `probe` and `meta` verify nothing and are exempt.
+
+The test `every_operation_in_the_description_has_a_group` reads the generated
+OpenAPI description and fails for any operation this table does not name, so a
+route added later is a red build until it is given a row. At run time an
+unlisted route is held to `bootstrap`, the tightest authenticated group.
+
+**Which address.** The socket peer, unless it is listed in `[server]
+trusted_proxies`; then the right-most address in `Forwarded` (or, in its
+absence, `X-Forwarded-For`) that is not itself a listed proxy. With the list
+empty — the default — forwarding headers are ignored, because a client can
+write them. IPv6 clients are counted by `/64`, since one subscriber routinely
+holds a whole `/64`; an IPv4-mapped address counts as its IPv4 address.
+
+### Per device and per account, after authentication
+
+Charged by the handlers, because the device is known only once its signature
+has verified and the cost is a property of the request. A caller that signs with
+no device — the single-tenant self-host verifier — is charged by its account,
+and its refusals are labelled `scope="account"`.
+
+| Budget | Route | Cost | Default |
+|---|---|---|---|
+| Op uploads | `POST /api/v1/sync/ops` | ops in the batch | 50 / s per device, bursting to 500 (`ops_per_sec`; the 10 s window [`backpressure-and-quotas.md`](../05-sync/backpressure-and-quotas.md) proposed) |
+| Blob upload | `PUT /api/v1/blobs/{upload_id}/{chunk_idx}` | chunk bytes | 64 MiB / min per device (`blob_upload_bytes_per_min`) |
+| Blob download | `GET /api/v1/blobs/{blob_id}` | the blob's whole size, charged before the first byte | 256 MiB / min per device (`blob_download_bytes_per_min`) |
+| Open uploads | `POST /api/v1/blobs/init` | one per upload, until `finalize` or an hour untouched | 16 at once per account (`open_uploads`) |
+| Session creation | `POST /api/v1/sync/session` | one | 10 per 5 min per device (`sessions_per_5min`) |
+| Event streams | `GET /api/v1/sync/events` | one, held until the stream ends | 4 at once per device (`streams`) |
+
+A request whose cost exceeds a whole bucket — a 1,000-op batch, a 100 MB blob
+— is admitted from a full bucket and leaves the key in debt, so the next
+request waits for the debt to refill. Refusing it would refuse it forever,
+since a client cannot shrink a batch it already built.
+
+An upload that is never finalized stops counting an hour after its last chunk,
+so a client that crashed mid-upload cannot lock its account out of
+attachments. An event stream releases its slot the moment its client
+disconnects.
+
+### What this does not cover
+
+- **State is per process.** Every counter lives in the relay's memory, behind
+  the `LimiterStore` trait so a shared store can replace it; several relays
+  behind one balancer each enforce the table separately. See
+  [#364](https://github.com/justin13888/Sunrise/issues/364).
+- **No quota.** These are rates, not allowances: nothing counts storage, total
+  ops or devices against a plan. That is
+  [`backpressure-and-quotas.md`](../05-sync/backpressure-and-quotas.md), still
+  `proposed`, and [ADR-0027](../11-adr/0027-v1-self-host-first.md) defers it.
+- **A flood from more than 65,536 addresses at once** fills the in-memory table;
+  idle buckets are evicted first, and an address the table still cannot hold is
+  admitted untracked rather than refused, so a distributed flood cannot lock
+  out clients the relay has not seen yet. The reverse proxy is the place to cap
+  connection counts below that.
+- **The rate-limit response headers** (`RateLimit`, `RateLimit-Policy`) are not
+  sent; `Retry-After` is the contract.
 
 ## Why so few endpoints?
 

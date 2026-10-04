@@ -163,8 +163,11 @@ server only claims ops are gone when they actually are.
 1. Client `OpBatch` arrives as one `POST /api/v1/sync/ops`, and the handler rebuilds the wire frame from it.
 2. Server reads each op's cleartext routing header for `(device_id, seq)`. It
    verifies **no signature** — it holds no key that could — and enforces
-   **no rate limit and no quota**; neither exists. Frame size is bounded by the
-   wire protocol's frame cap, not by a per-account budget.
+   **no quota**. Before that, the handler charges the batch's op count to the
+   device's op budget and refuses `429 RATE_LIMITED` past it
+   ([`api.md`](./api.md) §Rate limits), which bounds how fast a device writes,
+   not how much. Frame size is bounded by the wire protocol's frame cap, not by
+   a per-account budget.
 3. Server appends the verbatim frame to `relay_frames` in the same transaction
    that enforces the channel's retention bounds and raises `evicted_through`
    watermarks. There is no object store and therefore no 2PC: the append and
