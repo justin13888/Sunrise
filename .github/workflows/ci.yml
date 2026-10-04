@@ -551,6 +551,34 @@ jobs:
           CC_wasm32_unknown_unknown: clang
         run: cargo clippy -p sunrise-core-wasm --target wasm32-unknown-unknown -- -D warnings
 
+  # Every committed old-vault fixture through every later migration (#327,
+  # docs/04-storage/migrations.md §Migration rigor rule 1). The tests are the
+  # `vault_fixtures` module in `sunrise-storage`, so `Rust (ubuntu-latest)`
+  # runs them too, inside a workspace suite whose failure names nothing. This
+  # job runs only them, so a migration that loses a row or arrives without its
+  # fixture fails a check that says so: the gate test
+  # `every_migration_has_a_fixture_at_the_version_before_it` names the missing
+  # file and the command that writes it.
+  #
+  # Not a required check. One crate and its dependencies, so it is small, and
+  # its own cache key keeps it from contending with the workspace entry.
+  storage-fixtures:
+    name: Storage migration fixtures
+    runs-on: ubuntu-latest
+    # No observation yet; a cold build of `sunrise-storage`'s graph (SQLCipher
+    # compiled from source) is about two minutes locally.
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+        with:
+          shared-key: storage-fixtures
+      - name: Run every fixture through every later migration
+        run: cargo test -p sunrise-storage --lib vault_fixtures
+
   # The invariant that merging a vault across client versions never breaks and
   # never loses data (#326, ADR-0057). Replica A is `sunrise-core` as a pinned
   # baseline commit had it, built by `build-baseline.sh` from an extracted copy
