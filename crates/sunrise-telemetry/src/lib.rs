@@ -48,6 +48,7 @@ pub use sampler::CappedSampler;
 /// An in-memory recorder for tests that read exported spans back.
 #[cfg(any(test, feature = "testing"))]
 pub mod testing {
+    pub use opentelemetry::trace::SpanId;
     pub use opentelemetry_sdk::trace::{InMemorySpanExporter, SpanData};
 
     use crate::{CappedSampler, Telemetry};
@@ -55,6 +56,10 @@ pub mod testing {
 
     /// Telemetry sampling `ratio` of traces through [`CappedSampler`], which
     /// exports each span to the returned recorder the moment it ends.
+    ///
+    /// The recorder is emptied when the last clone of the telemetry drops,
+    /// which shuts its provider down, so a test reads the spans while it still
+    /// holds one.
     #[must_use]
     pub fn recording(ratio: f64) -> (Telemetry, InMemorySpanExporter) {
         let exporter = InMemorySpanExporter::default();
