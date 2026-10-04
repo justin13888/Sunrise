@@ -607,6 +607,13 @@ disconnects.
   admitted untracked rather than refused, so a distributed flood cannot lock
   out clients the relay has not seen yet. The reverse proxy is the place to cap
   connection counts below that.
+- **CORS preflights are not limited.** With `allowed_origins` set, kynos
+  answers `OPTIONS` on each covered path with an operation it synthesizes, and
+  it gives that operation no interceptors, so the admission interceptor never
+  runs on a preflight. A preflight reads no body, verifies nothing and touches
+  no state, but an address can send as many as it likes; the reverse proxy is
+  the place to cap them. No `HEAD` operation is generated either, so a `HEAD`
+  is answered `405` by the router's method fallback, also outside the limiter.
 - **The rate-limit response headers** (`RateLimit`, `RateLimit-Policy`) are not
   sent; `Retry-After` is the contract.
 
