@@ -448,6 +448,8 @@ fn rekey_moves_the_database_to_the_new_key_and_the_old_one_stops_opening_it() {
             .query_row("PRAGMA journal_mode", [], |r| r.get(0))
             .unwrap();
         assert_eq!(journal, "wal", "back in WAL mode after the rotation");
+        // A backup the same store takes afterwards is under the new key too.
+        s.backup_to(&dir.path().join("after.db")).unwrap();
         dump_store(&s)
     };
     assert!(matches!(
@@ -455,6 +457,12 @@ fn rekey_moves_the_database_to_the_new_key_and_the_old_one_stops_opening_it() {
         Err(StoreError::WrongKey { .. })
     ));
     assert_eq!(dump_store(&open(&db, Some(&key(2))).unwrap()), before);
+    let after = dir.path().join("after.db");
+    assert!(matches!(
+        open(&after, Some(&key(1))),
+        Err(StoreError::WrongKey { .. })
+    ));
+    assert_eq!(dump_store(&open(&after, Some(&key(2))).unwrap()), before);
 }
 
 #[test]

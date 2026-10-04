@@ -24,7 +24,7 @@
 //!
 //! **At rest** the file is SQLCipher-encrypted when `[storage] encrypt = true`
 //! names a key file, and plain SQLite otherwise; ADR-0060 records why the
-//! whole file and not chosen columns, and why a key file. [`cipher`] holds the
+//! whole file and not chosen columns, and why a key file. `store/cipher.rs` holds the
 //! key, the file classification and the one-way plaintext migration that
 //! [`Store::open_keyed`] runs before anything else touches the file.
 //!
@@ -214,8 +214,9 @@ pub struct Store {
     /// The file, or `None` in memory.
     path: Option<PathBuf>,
     /// The key the file is encrypted under, kept so a backup is written under
-    /// the same one. `None` for a plaintext or in-memory database.
-    key: Option<DbKey>,
+    /// the same one, and replaced by [`Store::rekey`]. `None` for a plaintext
+    /// or in-memory database. Taken before `conn` wherever both are held.
+    key: Mutex<Option<DbKey>>,
 }
 
 impl std::fmt::Debug for Store {
@@ -314,7 +315,7 @@ impl Store {
         Ok(Self {
             conn: Mutex::new(conn),
             path: path.map(Path::to_owned),
-            key: key.cloned(),
+            key: Mutex::new(key.cloned()),
         })
     }
 }

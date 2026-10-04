@@ -166,7 +166,24 @@ impl DbKey {
     /// The value `PRAGMA key` and `ATTACH … KEY` take: SQLCipher's raw-key
     /// literal, quoted.
     fn literal(&self) -> Zeroizing<String> {
-        Zeroizing::new(format!("\"x'{}'\"", hex::encode(&self.0[..])))
+        use std::fmt::Write as _;
+        // Written into the zeroized buffer directly: `hex::encode` would
+        // leave an unwiped copy of the key behind.
+        let mut out = Zeroizing::new(String::with_capacity(4 + 64));
+        out.push_str("\"x'");
+        for b in self.0.iter() {
+            let _ = write!(out, "{b:02x}");
+        }
+        out.push_str("'\"");
+        out
+    }
+
+    /// `PRAGMA <pragma> = <literal>;`, in a zeroized buffer.
+    fn statement(&self, pragma: &str) -> Zeroizing<String> {
+        let mut out = Zeroizing::new(format!("PRAGMA {pragma} = "));
+        out.push_str(&self.literal());
+        out.push(';');
+        out
     }
 }
 
@@ -205,7 +222,7 @@ pub(super) fn file_state(path: &Path) -> Result<FileState, StoreError> {
 /// Key `conn`. SQLCipher requires this before any other statement touches
 /// the database.
 pub(super) fn apply_key(conn: &Connection, key: &DbKey) -> rusqlite::Result<()> {
-    conn.execute_batch(&format!("PRAGMA key = {};", key.literal().as_str()))
+    conn.execute_batch(&key.statement("key"))
 }
 
 /// Read page 1, which is the first moment SQLCipher tries the key.
@@ -236,7 +253,7 @@ pub(super) fn check_readable(
     }
 }
 
-/// Where [`encrypt_in_place`] keeps the plaintext original of the database at
+/// Where the one-way encryption keeps the plaintext original of the database at
 /// `db`: `<db>.pre-encryption`, beside it.
 #[must_use]
 pub fn pre_encryption_copy(db: &Path) -> PathBuf {
@@ -285,13 +302,9 @@ pub(super) fn encrypt_in_place(
         let staging_str = staging
             .to_str()
             .ok_or_else(|| rusqlite::Error::InvalidPath(staging.clone()))?;
-        conn.execute(
-            &format!(
-                "ATTACH DATABASE ?1 AS encrypted KEY {}",
-                key.literal().as_str()
-            ),
-            [staging_str],
-        )?;
+        let mut attach = Zeroizing::new("ATTACH DATABASE ?1 AS encrypted KEY ".to_owned());
+        attach.push_str(&key.literal());
+        conn.execute(&attach, [staging_str])?;
         conn.query_row("SELECT sqlcipher_export('encrypted')", [], |_| Ok(()))?;
         // `PRAGMA` takes no bound parameters; `version` is an integer this
         // function read and range-checked.
@@ -326,7 +339,7 @@ pub(super) fn encrypt_in_place(
 /// afterwards. The connection is put back in WAL mode after.
 pub(super) fn rekey(conn: &Connection, path: &Path, new: &DbKey) -> Result<(), StoreError> {
     leave_wal(conn, path)?;
-    let rekeyed = conn.execute_batch(&format!("PRAGMA rekey = {};", new.literal().as_str()));
+    let rekeyed = conn.execute_batch(&new.statement("rekey"));
     // Back to WAL whether or not the rekey took, so a failed rotation leaves
     // the store as it found it.
     let mode: rusqlite::Result<String> =
@@ -362,8 +375,8 @@ fn leave_wal(conn: &Connection, path: &Path) -> Result<(), StoreError> {
 impl super::Store {
     /// Whether the file is SQLCipher-encrypted.
     #[must_use]
-    pub const fn is_encrypted(&self) -> bool {
-        self.key.is_some()
+    pub fn is_encrypted(&self) -> bool {
+        self.key.lock().is_some()
     }
 
     /// Copy the database to a new file at `dest`, under the same key, while
@@ -390,7 +403,8 @@ impl super::Store {
             });
         }
         let mut out = Connection::open(dest)?;
-        if let Some(k) = &self.key {
+        let key = self.key.lock().clone();
+        if let Some(k) = &key {
             apply_key(&out, k)?;
         }
         let conn = self.conn.lock();
@@ -420,18 +434,24 @@ impl super::Store {
     /// [`StoreError::InUse`] while another process has it open, and SQLite's
     /// failure otherwise, in which case the old key still opens it.
     pub fn rekey(&self, new: &DbKey) -> Result<(), StoreError> {
-        let (Some(path), Some(_)) = (&self.path, &self.key) else {
+        let mut key = self.key.lock();
+        let (Some(path), Some(_)) = (&self.path, key.as_ref()) else {
             return Err(StoreError::NotEncrypted);
         };
-        rekey(&self.conn.lock(), path, new)
+        rekey(&self.conn.lock(), path, new)?;
+        // The connection is under the new key now, and so is any backup this
+        // store takes from here on.
+        *key = Some(new.clone());
+        Ok(())
     }
 }
 
-/// How many times [`Store::backup_to`] retries a step another process's lock
-/// refused.
+/// How many times [`Store::backup_to`](super::Store::backup_to) retries a step
+/// another process's lock refused.
 const BACKUP_BUSY_RETRIES: u32 = 100;
 
-/// How long [`Store::backup_to`] waits before that retry: with
+/// How long [`Store::backup_to`](super::Store::backup_to) waits before that
+/// retry: with
 /// [`BACKUP_BUSY_RETRIES`], five seconds in all, the default busy timeout.
 const BACKUP_BUSY_PAUSE: Duration = Duration::from_millis(50);
 
