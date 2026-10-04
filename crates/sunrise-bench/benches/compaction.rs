@@ -18,7 +18,9 @@
 //! counts) and default to `10000,100000`. Seeding 100k tasks takes about a
 //! minute.
 
-#![allow(clippy::doc_markdown)]
+// The size report is the point of this bench, and it goes to stderr beside
+// Criterion's own output.
+#![allow(clippy::doc_markdown, clippy::print_stderr)]
 
 use std::time::Duration;
 
