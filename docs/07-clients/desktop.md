@@ -376,9 +376,10 @@ Mac app buildable by a contributor with no Apple account, the same thing
 
 It is therefore on **Release only**: `apps/apple/macOS/Sunrise.entitlements`
 carries `keychain-access-groups` with the one group
-`$(AppIdentifierPrefix)dev.sunrise.Sunrise`, and `apps/apple/project.yml` sets
-`CODE_SIGN_ENTITLEMENTS` on the `Sunrise` target's Release configuration and
-nowhere else. Release is the configuration the team signs: `release.yml`
+`$(AppIdentifierPrefix)dev.sunrise.Sunrise`, and `apps/apple/project.yml`
+points the `Sunrise` target's Release configuration at it. Debug signs with
+`apps/apple/macOS/SunriseDebug.entitlements` instead, which carries only the
+widgets' App Group, and the Release file carries that group too. Release is the configuration the team signs: `release.yml`
 archives Release with the Developer ID identity. Its one team-less caller,
 the workflow's `unsigned_macos_dmg` dry run, archives
 `CODE_SIGNING_ALLOWED=NO`, which embeds no entitlements, so it is unaffected. A

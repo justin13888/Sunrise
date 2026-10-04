@@ -303,7 +303,26 @@ targets:
       # team-less Release build that signs ad-hoc is refused by Xcode itself
       # ("has entitlements that require signing with a development
       # certificate") rather than producing a bundle AMFI would kill.
+      #
+      # The App Group the widgets read through is granted on **both**
+      # configurations, so each configuration names its own committed file:
+      # `macOS/Sunrise.entitlements` carries the group and
+      # `keychain-access-groups`, `macOS/SunriseDebug.entitlements` the group
+      # alone. The group is not restricted in the team-prefixed form a
+      # Developer ID build carries: no profile is needed to be granted it, and
+      # an ad-hoc build that carries it still launches. The app itself is not
+      # sandboxed and can reach the container path without it; it is here so
+      # the group is *granted* to the app the same way it is granted to the
+      # sandboxed extension, rather than the two sides reaching the one
+      # directory by different rights.
+      #
+      # Not XcodeGen's `entitlements:` key, which the other three targets use:
+      # it writes its generated path into `CODE_SIGN_ENTITLEMENTS` for every
+      # configuration, over the top of these, and a Release built that way
+      # would lose `keychain-access-groups`.
       configs:
+        Debug:
+          CODE_SIGN_ENTITLEMENTS: macOS/SunriseDebug.entitlements
         Release:
           CODE_SIGN_ENTITLEMENTS: macOS/Sunrise.entitlements
     # `CFBundleURLTypes` is the one key with no `INFOPLIST_KEY_` build setting
@@ -381,22 +400,8 @@ targets:
         # — which is exactly what `release.yml` produces and nothing else can.
         SURequireSignedFeed: true
         SUVerifyUpdateBeforeExtraction: true
-    # The App Group, and nothing else. Generated and gitignored like the
-    # Info.plist above, so this file stays the source of truth.
-    #
-    # Not a restricted entitlement in the team-prefixed form a Developer ID
-    # build carries, which is why it can be committed where
-    # `keychain-access-groups` (see the note above) cannot: no profile is
-    # needed to be granted it, and an ad-hoc build that carries it still
-    # launches. The app itself is not sandboxed and can reach the container
-    # path without it; it is here so the group is *granted* to the app the
-    # same way it is granted to the sandboxed extension, rather than the
-    # two sides reaching the one directory by different rights.
-    entitlements:
-      path: Generated/Sunrise.entitlements
-      properties:
-        com.apple.security.application-groups:
-          - $(SUNRISE_APP_GROUP)
+    # No `entitlements:` here: the two committed files `settings.configs`
+    # names carry the App Group. See the note there.
     postCompileScripts:
       - name: SwiftLint
         basedOnDependencyAnalysis: false
