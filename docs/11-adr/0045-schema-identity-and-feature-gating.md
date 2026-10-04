@@ -376,8 +376,9 @@ edit can still hold unknown values.
 - **Devices advertise what they support.** A second control op,
   `DeviceFeatures { "features": [+ feature-id] }`, is emitted by each device on
   the vault-meta stream whenever its supported set changes. It is read as the
-  latest op per device, by `(hlc, seq)`. A device that has never emitted one
-  supports nothing.
+  latest op per device, ordered by its HLC and then by the encoded feature
+  list, so a duplicate stamp resolves the same way on every replica. A device
+  that has never emitted one supports nothing.
 - **Enabling a feature.** A client MUST NOT add a feature to `vault_requires`
   while any non-revoked device lacks it in its latest `DeviceFeatures`, unless
   the user confirms. The confirmation names the devices, for example "Your
