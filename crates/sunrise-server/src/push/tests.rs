@@ -486,6 +486,53 @@ async fn a_delivery_is_traced_without_the_device_or_its_token() {
     }
 }
 
+/// A send that fails is a failed `push.attempt` carrying the failure's
+/// result; the retry that succeeds is an unfailed one carrying `ok`.
+#[tokio::test]
+async fn a_failed_attempt_is_marked_with_its_result() {
+    use sunrise_telemetry::testing::Status;
+    let (telemetry, exporter) = sunrise_telemetry::testing::recording(1.0);
+    let f = fixture();
+    let fake = Fake::scripted(vec![Err(PushError::Unavailable("503".into())), Ok(())]);
+    let root = telemetry.root_span("push.dispatch", []);
+    sunrise_telemetry::FutureExt::with_context(
+        delivery(&f, fake.clone()).deliver(&intent(&f.laptop, "bb02")),
+        root.context(),
+    )
+    .await;
+    drop(root);
+    assert_eq!(fake.sent(), 2);
+
+    let spans = exporter.get_finished_spans().expect("spans");
+    let mut attempts: Vec<_> = spans.iter().filter(|s| s.name == "push.attempt").collect();
+    attempts.sort_by_key(|s| s.start_time);
+    let marks: Vec<(Vec<(String, String)>, Status)> = attempts
+        .iter()
+        .map(|s| {
+            let attrs = s
+                .attributes
+                .iter()
+                .map(|kv| (kv.key.as_str().to_owned(), kv.value.to_string()))
+                .collect();
+            (attrs, s.status.clone())
+        })
+        .collect();
+    let pair = |k: &str, v: &str| (k.to_owned(), v.to_owned());
+    assert_eq!(
+        marks,
+        [
+            (
+                vec![pair("attempt", "1"), pair("result", "failed")],
+                Status::error("push not delivered")
+            ),
+            (
+                vec![pair("attempt", "2"), pair("result", "ok")],
+                Status::Unset
+            ),
+        ]
+    );
+}
+
 // -- backpressure -----------------------------------------------------------
 
 /// A full queue drops the wake, counts it, and returns at once. On a

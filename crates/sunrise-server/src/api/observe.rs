@@ -253,6 +253,10 @@ impl Observer<ServerState> for HttpMetrics {
 }
 
 #[cfg(test)]
+#[path = "observe_trace_tests.rs"]
+mod trace_tests;
+
+#[cfg(test)]
 mod tests {
     use super::templated;
     use crate::api::testing::Client;
