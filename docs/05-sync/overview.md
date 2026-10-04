@@ -61,7 +61,7 @@ restarts. `crates/sunrise-sync/src/state.rs` is the authority for the set.
 | Action | p50 | p95 |
 |---|---|---|
 | Local commit visible in UI | <16ms | <50ms |
-| Op visible on a peer device that is online (≤ 50 ms RTT to the relay) | <150ms | <300ms; **p99 <500ms** ([`performance-budgets.md`](../10-cross-cutting/performance-budgets.md) §Sync propagation) |
+| Op visible on a peer device that is online (≤ 50 ms RTT to the relay): from the authoring device's commit returning to the peer publishing the applied op on its change feed | <150ms | <300ms; **p99 <500ms**, the budget of record ([`performance-budgets.md`](../10-cross-cutting/performance-budgets.md) §Sync propagation), measured nightly by `crates/sunrise-e2e/tests/sync_latency.rs` |
 | Op visible on a peer over LTE | <2s | <8s |
 | Op visible on a phone awoken by push | <5s | <15s |
 

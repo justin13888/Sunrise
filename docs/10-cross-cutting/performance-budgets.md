@@ -125,24 +125,35 @@ crosses a snap boundary, at most once per frame, so it has a frame budget: **≤
 - **As specified:** any benchmark exceeding budget by >5% is a P1 and blocks
   merge via a required check, and a "Hard cap" violation on the user's path
   blocks release.
-- **As built:** the `bench-regression` job in `ci.yml` runs on `schedule` and
-  `workflow_dispatch` only — never on a pull request — carries
-  `continue-on-error: true`, and compares against `bench/baseline.json` with a
-  **60%** tolerance rather than 5%. It reports; it blocks nothing, and no
-  automated check enforces the hard caps in the table above.
+- **As built, the Criterion suite:** the `bench-regression` job in `ci.yml`
+  runs on `schedule` and `workflow_dispatch` only — never on a pull request —
+  on `ubuntu-latest` and on the pinned `macos-15` image, one leg per platform
+  key in `bench/baseline.json`. It carries `continue-on-error: true` and
+  compares with a **60%** tolerance rather than 5%. It reports; it blocks
+  nothing, and no automated check enforces the hard caps in the table above.
 - The job's own comment records why: measured on the shared runner, the same
-  binary against its own recorded baseline swings +270% (`ws_handshake`) and
-  −39% (`submit_create_task`) from scheduling noise and a short measurement
-  window alone. A gate that red-lights on noise is ignored within a week, and
-  then it protects nothing. The 5% figure assumes the dedicated hardware named
-  under "Calibration cadence" below, which the project does not have yet.
-- **A comparison that silently compares nothing:** `crates/sunrise-bench/src/bin/baseline.rs:180`
-  still lists the retired `ws_handshake` bench, and the bench that replaced it is
-  `crates/sunrise-bench/benches/sync_session.rs`. So the sync bench's result is never compared
-  against anything, and nothing reports that. Every `darwin-aarch64` value in `bench/baseline.json` is null. Both
-  are fixed by [#366](https://github.com/justin13888/Sunrise/issues/366).
-- Until it does, a budget regression is something a human notices in the
-  nightly report, not something that stops a merge or a release. Tracked in
+  binary against its own recorded baseline swings +270% (`ws_handshake`, since
+  renamed `sync_session`) and −39% (`submit_create_task`) from scheduling noise
+  and a short measurement window alone. A gate that red-lights on noise is
+  ignored within a week, and then it protects nothing. The 5% figure assumes
+  the dedicated hardware named under "Calibration cadence" below, which the
+  project does not have yet.
+- **What the comparison reads.** `crates/sunrise-bench/src/bin/baseline.rs`
+  keeps one row per directory Criterion writes, and a unit test holds that
+  table to every `bench_function` and `benchmark_group` name in
+  `crates/sunrise-bench/benches/*.rs`, in both directions. A row whose bench did
+  not run, or a directory no row names, is printed and fails `--check`; it is
+  never skipped in silence, which is how `sync_session` went uncompared after
+  it replaced `ws_handshake`.
+- **As built, the sync propagation budget:** the `Sync latency` job runs the
+  harness under [Sync propagation](#sync-propagation-commit-on-one-device--applied-on-another)
+  nightly and on demand, and it does gate: it fails when the p99 at any RTT the
+  budget covers reaches 500 ms. An absolute budget with the measured tail far
+  below it is not at the mercy of runner noise the way a 5% relative gate is.
+  It is still not a pull-request check — it takes minutes — so a regression
+  there turns the nightly run red rather than stopping a merge.
+- Otherwise a budget regression is something a human notices in the nightly
+  report, not something that stops a merge or a release. Tracked in
   [#33](https://github.com/justin13888/Sunrise/issues/33).
 
 ## Calibration cadence

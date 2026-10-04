@@ -138,16 +138,34 @@ The one place two builds of `sunrise-core` meet: `crates/sunrise-e2e/tests/cross
   below. 5% is the figure
   [`performance-budgets.md`](./performance-budgets.md#regression-policy)
   specifies, and it is what a dedicated-hardware gate would tighten to.
-- **One platform is measured.** The job runs on `ubuntu-latest`, so
-  `bench/baseline.json` holds numbers for `linux-x86_64` and `null` for every
-  `darwin-aarch64` metric. §6's representative-hardware list — a Mac mini, an
-  Android reference device, a Pixel emulator, a Linux runner — is specification;
-  the Linux runner is the part that exists. The file is edited by hand.
-- The job's own comment records why: measured on the shared runner, the same
-  binary against its own recorded baseline swings +270% (`ws_handshake`) and
-  −39% (`submit_create_task`) from scheduling noise alone. A gate that
-  red-lights on noise is ignored within a week, and then it protects nothing.
-  Promoting it needs dedicated hardware and full-length measurement runs.
+- **Two platforms run.** The job has a leg on `ubuntu-latest` and one on the
+  pinned `macos-15` image, one per platform key in `bench/baseline.json`. §6's
+  representative-hardware list — a Mac mini, an Android reference device, a
+  Pixel emulator, a Linux runner — is specification; the two hosted runners are
+  the part that exists. The file is edited by hand, from the values `baseline`
+  prints, in a commit that says where they were taken: the `_provenance` field
+  in the file records it per platform.
+- **A missing bench fails the comparison.** `baseline --check` exits non-zero,
+  naming the directory, when a bench in its table did not run or a directory it
+  has no row for appeared, and a unit test holds the table to
+  `crates/sunrise-bench/benches/*.rs`. The job is still `continue-on-error`, so
+  that failure is a red leg in the nightly report, not a blocked merge.
+- The job's own comment records why it stays informational: measured on the
+  shared runner, the same binary against its own recorded baseline swings
+  +270% (`ws_handshake`, now `sync_session`) and −39% (`submit_create_task`)
+  from scheduling noise alone. A gate that red-lights on noise is ignored
+  within a week, and then it protects nothing. Promoting it needs dedicated
+  hardware and full-length measurement runs, or a same-runner A/B of the base
+  and the head, which cancels the runner from the comparison.
+- **What does enforce a budget nightly** is the `Sync latency` job: the
+  end-to-end harness in `crates/sunrise-e2e/tests/sync_latency.rs`, run in
+  release, failing when the commit-to-apply p99 at an RTT the budget covers
+  reaches 500 ms
+  ([`performance-budgets.md`](./performance-budgets.md#sync-propagation-commit-on-one-device--applied-on-another)).
+  An absolute budget the measured tail sits far below is the kind of check a
+  shared runner can hold. A 40-op run of the same harness is an ordinary test
+  in every pull request's suite; it asserts that every op is measured, not a
+  latency bound.
 - Tracked in [#33](https://github.com/justin13888/Sunrise/issues/33).
 
 ### 7. Privacy / safety tests
