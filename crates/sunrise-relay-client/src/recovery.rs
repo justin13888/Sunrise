@@ -58,7 +58,7 @@ impl RecoveryRelay for RelayRecovery {
             .get_account(None)
             .await
             .map(|r| r.into_inner().identity_signing_pub)
-            .map_err(|e| refusal("could not read the account", &e, status_of(&e)))
+            .map_err(|e| refusal(Route::Account, &e, status_of(&e)))
     }
 
     async fn recovery_blob(&self) -> Result<String, RelayRefusal> {
@@ -66,7 +66,7 @@ impl RecoveryRelay for RelayRecovery {
             .get_recovery_blob(None)
             .await
             .map(|r| r.into_inner().recovery_blob)
-            .map_err(|e| refusal("could not fetch the recovery blob", &e, status_of(&e)))
+            .map_err(|e| refusal(Route::Blob, &e, status_of(&e)))
     }
 
     async fn register_device(&self, device: RecoveringDevice) -> Result<String, RelayRefusal> {
@@ -99,17 +99,39 @@ fn status_of<E>(e: &api::Error<E>) -> Option<u16> {
     }
 }
 
-/// Classify a failure by its status, keeping the client's own words.
+/// The route a failed call went to. A status means different things on each.
+#[derive(Debug, Clone, Copy)]
+enum Route {
+    /// `GET /accounts/me`.
+    Account,
+    /// `GET /accounts/me/recovery_blob`.
+    Blob,
+}
+
+/// Classify a failure by its route and status, keeping the client's own words.
 ///
 /// By status and not by message: the generated `Display` is the client's to
 /// change, and a recovery that stopped recognising a `403` would tell a user
 /// to retype a code that was never the problem.
-fn refusal(what: &str, e: &dyn std::fmt::Display, status: Option<u16>) -> RelayRefusal {
-    let detail = format!("{what}: {e}");
-    match status {
-        Some(403) => RelayRefusal::StepUpRequired(detail),
-        Some(404) => RelayRefusal::NoBlob(detail),
-        _ => RelayRefusal::Other(detail),
+///
+/// By route as well: only the blob route asks for a step-up. A `403` from
+/// `GET /accounts/me` means the relay knows no account for this sign-in and
+/// does not accept new ones (`sunrise-server` `resolve_bearer`), and a fresh
+/// sign-in to the same account would be refused the same way.
+fn refusal(route: Route, e: &dyn std::fmt::Display, status: Option<u16>) -> RelayRefusal {
+    match (route, status) {
+        (Route::Blob, Some(403)) => {
+            RelayRefusal::StepUpRequired(format!("could not fetch the recovery blob: {e}"))
+        }
+        (Route::Blob, Some(404)) => {
+            RelayRefusal::NoBlob(format!("could not fetch the recovery blob: {e}"))
+        }
+        (Route::Blob, _) => RelayRefusal::Other(format!("could not fetch the recovery blob: {e}")),
+        (Route::Account, Some(403)) => RelayRefusal::Other(format!(
+            "the relay has no account for this sign-in and does not accept new ones; \
+             sign in with the account the recovery code belongs to: {e}"
+        )),
+        (Route::Account, _) => RelayRefusal::Other(format!("could not read the account: {e}")),
     }
 }
 
@@ -120,19 +142,33 @@ mod tests {
     #[test]
     fn a_refusal_is_classified_by_its_status() {
         assert!(matches!(
-            refusal("blob", &"documented API error (403)", Some(403)),
+            refusal(Route::Blob, &"documented API error (403)", Some(403)),
             RelayRefusal::StepUpRequired(_)
         ));
         assert!(matches!(
-            refusal("blob", &"x", Some(404)),
+            refusal(Route::Blob, &"x", Some(404)),
             RelayRefusal::NoBlob(_)
         ));
         assert!(matches!(
-            refusal("blob", &"x", Some(500)),
+            refusal(Route::Blob, &"x", Some(500)),
             RelayRefusal::Other(_)
         ));
         assert!(matches!(
-            refusal("blob", &"transport failed", None),
+            refusal(Route::Blob, &"transport failed", None),
+            RelayRefusal::Other(_)
+        ));
+    }
+
+    /// A `403` from `GET /accounts/me` is the relay refusing an unknown
+    /// subject with sign-up disabled. Calling it a step-up would send the user
+    /// round a sign-in loop that can never succeed.
+    #[test]
+    fn only_the_blob_route_asks_for_a_step_up() {
+        let unknown = refusal(Route::Account, &"documented API error (403)", Some(403));
+        assert!(matches!(unknown, RelayRefusal::Other(_)), "{unknown:?}");
+        assert!(unknown.to_string().contains("no account"), "{unknown}");
+        assert!(matches!(
+            refusal(Route::Account, &"x", Some(404)),
             RelayRefusal::Other(_)
         ));
     }
