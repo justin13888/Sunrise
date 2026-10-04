@@ -96,21 +96,25 @@ struct UndoMenu: View {
         // Two buttons rather than a menu: `Cmd-Z` has to work without opening
         // anything, and the title is what says which step it means.
         Group {
-            Button(model.undoTitle, systemImage: "arrow.uturn.backward") {
+            // The tooltip names the key after the step: an icon-only button
+            // is where somebody hovering learns ⌘Z exists.
+            Button(model.undoTitle, systemImage: AppAction.undo.symbol) {
                 Task { await model.undo() }
             }
-            .keyboardShortcut("z", modifiers: .command)
+            .keyboardShortcut(for: .undo)
             .disabled(!model.canUndo)
             .labelStyle(.iconOnly)
-            .help(model.undoTitle)
+            .help(Keymap.help(model.undoTitle, for: .undo))
+            .accessibilityIdentifier("toolbar.undo")
 
-            Button(model.redoTitle, systemImage: "arrow.uturn.forward") {
+            Button(model.redoTitle, systemImage: AppAction.redo.symbol) {
                 Task { await model.redo() }
             }
-            .keyboardShortcut("z", modifiers: [.command, .shift])
+            .keyboardShortcut(for: .redo)
             .disabled(!model.canRedo)
             .labelStyle(.iconOnly)
-            .help(model.redoTitle)
+            .help(Keymap.help(model.redoTitle, for: .redo))
+            .accessibilityIdentifier("toolbar.redo")
         }
     }
 }

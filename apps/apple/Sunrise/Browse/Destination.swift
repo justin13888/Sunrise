@@ -70,6 +70,31 @@ enum TaskListKind: Equatable, Hashable, Identifiable {
         }
     }
 
+    /// The key for the one action that fills this view — `docs/08-features/keyboard.md`
+    /// Rule 1's empty-state row. Capture where a capture would land here;
+    /// on Search, the field, and then a fresh query. Empty for a list nothing
+    /// typed can fill: a context, or a filtered Today, refuses capture.
+    var emptyHint: String {
+        switch self {
+        case .today, .inbox, .stream:
+            acceptsCapture ? Keymap.pressHint(.quickCapture, to: "capture") : ""
+        case .context:
+            ""
+        case let .search(text) where text.trimmed.isEmpty:
+            Keymap.pressHint(.searchInView, to: "jump to the field")
+        case .search:
+            Keymap.pressHint(.searchGlobal, to: "start a new search")
+        }
+    }
+
+    /// What the empty view says: ``emptyMessage``, then ``emptyHint`` where
+    /// the device has a keyboard to press it on — a phone's empty Inbox
+    /// telling its owner to press ⌘N would be teaching a key they do not have.
+    func emptyDescription(hinted: Bool) -> String {
+        let hint = hinted ? emptyHint : ""
+        return hint.isEmpty ? emptyMessage : "\(emptyMessage) \(hint)"
+    }
+
     /// The read behind this list.
     ///
     /// `nowMs` is only consulted by Today, which is the only list whose

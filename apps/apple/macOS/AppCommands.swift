@@ -22,16 +22,24 @@ struct AppMenuItems: View {
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        Button("Quick Capture") { surfaces.openQuickCapture() }
-            .keyboardShortcut("n", modifiers: [.command, .shift])
-        Divider()
-        // The same two destinations a reminder opens into. A view reachable
-        // only from a notification would be a view nobody who declined
-        // notifications ever sees.
-        Button("Morning Summary") { show(.morningSummary) }
-            .keyboardShortcut("m", modifiers: [.command, .option])
-        Button("End of Day") { show(.endOfDayPlan) }
-            .keyboardShortcut("e", modifiers: [.command, .option])
+        ForEach(CommandMenus.app, id: \.self) { action in
+            // The briefs follow capture after a rule: they are the same two
+            // destinations a reminder opens into, and a view reachable only
+            // from a notification would be a view nobody who declined
+            // notifications ever sees.
+            if action == .morningSummary { Divider() }
+            Button(action.title) { run(action) }
+                .keyboardShortcut(for: action)
+        }
+    }
+
+    /// Capture needs no window; the two briefs are deep links, which open one.
+    private func run(_ action: AppAction) {
+        switch action {
+        case .morningSummary: show(.morningSummary)
+        case .endOfDay: show(.endOfDayPlan)
+        default: surfaces.openQuickCapture()
+        }
     }
 
     private func show(_ link: DeepLink) {
@@ -85,8 +93,9 @@ struct NewMenuItems: View {
     let surfaces: AppSurfaces
 
     var body: some View {
-        CommandMenuItem(surfaces: surfaces, action: .quickCapture)
-        CommandMenuItem(surfaces: surfaces, action: .newStream)
+        ForEach(CommandMenus.newItem, id: \.self) { action in
+            CommandMenuItem(surfaces: surfaces, action: action)
+        }
     }
 }
 
@@ -101,12 +110,14 @@ struct IcalMenuItems: View {
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        Button("Import Calendar…") {
-            openWindow(id: SunriseWindow.main.rawValue)
-            Task { await surfaces.importIcal() }
+        ForEach(CommandMenus.importExport, id: \.self) { action in
+            Button(action.title) {
+                openWindow(id: SunriseWindow.main.rawValue)
+                Task { await surfaces.importIcal() }
+            }
+            .keyboardShortcut(for: action)
+            .disabled(surfaces.ical == nil)
         }
-        .keyboardShortcut("i", modifiers: [.command, .shift])
-        .disabled(surfaces.ical == nil)
 
         Menu("Export Calendar") {
             ForEach(ExportWindow.menuOrder, id: \.self) { window in
@@ -142,8 +153,9 @@ struct PrintMenuItems: View {
     let surfaces: AppSurfaces
 
     var body: some View {
-        CommandMenuItem(surfaces: surfaces, action: .printView, unavailable: surfaces.printRefusal)
-        CommandMenuItem(surfaces: surfaces, action: .exportPDF, unavailable: surfaces.printRefusal)
+        ForEach(CommandMenus.printing, id: \.self) { action in
+            CommandMenuItem(surfaces: surfaces, action: action, unavailable: surfaces.printRefusal)
+        }
     }
 }
 
@@ -153,13 +165,24 @@ struct GoMenuItems: View {
     let surfaces: AppSurfaces
 
     var body: some View {
+        ForEach(CommandMenus.go, id: \.self) { action in
+            // A rule before each pair: the lists, the searches, the palette.
+            if action == .today || action == .searchInView || action == .commandPalette {
+                Divider()
+            }
+            CommandMenuItem(surfaces: surfaces, action: action)
+        }
+    }
+}
+
+/// Help → Keyboard Shortcuts.
+struct HelpMenuItems: View {
+    let surfaces: AppSurfaces
+
+    var body: some View {
         Divider()
-        CommandMenuItem(surfaces: surfaces, action: .today)
-        CommandMenuItem(surfaces: surfaces, action: .inbox)
-        Divider()
-        CommandMenuItem(surfaces: surfaces, action: .searchInView)
-        CommandMenuItem(surfaces: surfaces, action: .searchGlobal)
-        Divider()
-        CommandMenuItem(surfaces: surfaces, action: .commandPalette)
+        ForEach(CommandMenus.help, id: \.self) { action in
+            CommandMenuItem(surfaces: surfaces, action: action)
+        }
     }
 }

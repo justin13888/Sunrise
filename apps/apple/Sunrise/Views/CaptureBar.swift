@@ -46,7 +46,7 @@ struct CaptureBar: View {
                     .accessibilityIdentifier("capture.add")
                     .buttonStyle(.borderedProminent)
                     .disabled(!model.canCommit)
-                    .keyboardShortcut(.return, modifiers: [])
+                    .keyboardShortcut(Keymap.submitCapture)
             }
             .padding(10)
             .background(.quaternary.opacity(0.4), in: .rect(cornerRadius: 8))
