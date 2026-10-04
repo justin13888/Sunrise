@@ -351,7 +351,7 @@ extension VaultTabs {
     private var escapes: ListEscapes {
         ListEscapes(
             showFocus: { tab = .focus },
-            openSearch: { tab = .search },
+            openSearch: { perform(.searchInView) },
             openPalette: { perform(.commandPalette) },
             openCheatSheet: { perform(.cheatSheet) }
         )
@@ -372,7 +372,11 @@ extension VaultTabs {
             pane = .rows
         case .morningSummary: show(.morning)
         case .endOfDay: show(.evening)
-        case .searchInView, .searchGlobal: tab = .search
+        // ⌘F keeps the query, ⌘K starts afresh; both land in the field, as the Mac does.
+        case .searchInView, .searchGlobal:
+            if action == .searchGlobal { models.search.clear() }
+            tab = .search
+            pane = .search
         case .importCalendar: importingIcal = true
         default: return false
         }
