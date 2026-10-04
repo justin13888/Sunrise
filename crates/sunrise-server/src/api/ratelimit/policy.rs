@@ -72,8 +72,24 @@ impl RouteGroup {
 /// `None` for a route this table does not name. The interceptor then applies
 /// the strictest authenticated group rather than nothing, and the test below
 /// fails, so an unlisted route is a red build rather than an unlimited one.
+///
+/// `OPTIONS` (the CORS preflight kynos installs once `allowed_origins` is set)
+/// and `HEAD` take the group of the path's own operation. They are generated
+/// beside it rather than declared, so they never appear in the table, and a
+/// browser's preflight must not land in `bootstrap` and run out at ten a
+/// minute.
 #[must_use]
 pub fn route_group(method: &str, path: &str) -> Option<RouteGroup> {
+    if matches!(method, "OPTIONS" | "HEAD") {
+        return ["GET", "POST", "PUT", "DELETE"]
+            .into_iter()
+            .find_map(|declared| declared_group(declared, path));
+    }
+    declared_group(method, path)
+}
+
+/// The table itself, for the verbs the router declares.
+fn declared_group(method: &str, path: &str) -> Option<RouteGroup> {
     use RouteGroup::{Account, Blob, Bootstrap, Meta, Probe, Sync};
     Some(match (method, path) {
         ("GET", "/api/v1/health" | "/metrics") => Probe,
@@ -239,6 +255,20 @@ mod tests {
     #[test]
     fn the_scrape_is_a_probe() {
         assert_eq!(route_group("GET", "/metrics"), Some(RouteGroup::Probe));
+    }
+
+    /// A preflight is charged to the group of the route it precedes.
+    #[test]
+    fn a_preflight_shares_its_routes_group() {
+        assert_eq!(
+            route_group("OPTIONS", "/api/v1/sync/ops"),
+            Some(RouteGroup::Sync)
+        );
+        assert_eq!(
+            route_group("HEAD", "/api/v1/blobs/{blob_id}"),
+            Some(RouteGroup::Blob)
+        );
+        assert_eq!(route_group("OPTIONS", "/api/v1/nothing"), None);
     }
 
     #[test]
