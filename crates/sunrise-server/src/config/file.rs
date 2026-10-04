@@ -21,8 +21,8 @@ use super::ServerConfig;
 // overlays onto `ServerConfig::default`.
 #[cfg(test)]
 use super::model::{
-    default_jwks_ttl_secs, default_max_body_bytes, default_sqlite_busy_timeout_ms,
-    default_token_leeway_secs,
+    default_jwks_ttl_secs, default_max_body_bytes, default_shutdown_grace_secs,
+    default_sqlite_busy_timeout_ms, default_token_leeway_secs,
 };
 #[cfg(test)]
 use super::ConfigError;
@@ -54,7 +54,10 @@ pub enum LoadError {
         cause: String,
     },
     /// An argument was passed that the server does not understand.
-    #[error("unrecognized argument {arg:?}; usage: sunrise-server [-c|--config <path>]")]
+    #[error(
+        "unrecognized argument {arg:?}; usage: sunrise-server [healthcheck [--deep]] \
+         [-c|--config <path>]"
+    )]
     BadArgument {
         /// The offending argument.
         arg: String,
@@ -74,6 +77,9 @@ pub struct ServerTable {
     pub allowed_origins: Option<Vec<String>>,
     /// Largest accepted request body, in bytes.
     pub max_body_bytes: Option<usize>,
+    /// How long a shutdown waits for in-flight requests, in seconds. Maps to
+    /// [`ServerConfig::shutdown_grace_secs`].
+    pub shutdown_grace_secs: Option<u64>,
 }
 
 /// The `[auth]` table.
@@ -156,6 +162,9 @@ impl FileConfig {
         }
         if let Some(v) = self.server.max_body_bytes {
             base.max_body_bytes = v;
+        }
+        if let Some(v) = self.server.shutdown_grace_secs {
+            base.shutdown_grace_secs = v;
         }
         if let Some(v) = self.auth.oidc_issuer {
             base.oidc_issuer = Some(v);
@@ -339,6 +348,23 @@ mod file_tests {
             .apply(ServerConfig::default());
         assert_eq!(cfg.bind, ServerConfig::default().bind);
         assert!(cfg.validate(true).is_ok(), "and still safe");
+    }
+
+    /// The drain deadline is read from `[server]` and defaults to the 25 s that
+    /// leaves margin under a 30 s orchestrator termination window.
+    #[test]
+    fn shutdown_grace_secs_overlays_its_default() {
+        let unset = FileConfig::parse("", "t.toml")
+            .unwrap()
+            .apply(ServerConfig::default());
+        assert_eq!(unset.shutdown_grace_secs, default_shutdown_grace_secs());
+        assert_eq!(unset.shutdown_grace_secs, 25);
+
+        let set = FileConfig::parse("[server]\nshutdown_grace_secs = 7", "t.toml")
+            .unwrap()
+            .apply(ServerConfig::default());
+        assert_eq!(set.shutdown_grace_secs, 7);
+        assert_eq!(set.shutdown_grace(), std::time::Duration::from_secs(7));
     }
 
     /// **Both directions of the one key whose default is computed rather than

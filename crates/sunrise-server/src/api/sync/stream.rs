@@ -37,6 +37,15 @@ const KEEP_ALIVE_SECS: u64 = 15;
 /// being disconnected.
 const STREAM_BUFFER: usize = 256;
 
+/// The `reason` of the `closed` event a draining server ends a stream with.
+///
+/// The code beside it is `SYNC_NETWORK_UNAVAILABLE`, which the catalogue marks
+/// transient and retryable, so a client reconnects with backoff and reaches
+/// whichever relay is serving next. A code of its own would read better and
+/// would park every client released before it: a close code a build cannot
+/// read is not retryable there, by design (`sunrise-sync`'s `closed` arm).
+const DRAINING: &str = "relay is shutting down";
+
 /// One event on the sync stream.
 ///
 /// `itemSchema`-typed, which is what OpenAPI 3.2 adds and 3.1 has no way to
@@ -299,11 +308,28 @@ async fn live_loop(
     let recheck = std::time::Duration::from_millis(state.config.device_recheck_ms.max(1));
     let mut ticker = tokio::time::interval(recheck);
     ticker.tick().await;
+    // Counted for as long as this loop runs, so the shutdown log can say how
+    // many streams the drain ended.
+    let _open = state.drain.track_stream();
+    let draining = state.drain.wait();
+    tokio::pin!(draining);
 
     loop {
         let next = recv_first(&mut receivers);
         tokio::select! {
             biased;
+
+            // First, so a busy stream cannot hold the drain open: kynos waits
+            // for every response to finish, and this one never would.
+            () = &mut draining => {
+                tracing::info!(
+                    ev = "srv.sync.stream_drained",
+                    account_h = %crate::logging::account_h(&session.account_id),
+                    "server is draining; ending the stream with a retryable close"
+                );
+                let _ = tx.send(closed(ErrorCode::SyncNetworkUnavailable, DRAINING)).await;
+                break;
+            }
 
             Some((sid, frame)) = next => {
                 // The session's own batches are not echoed back to it: it

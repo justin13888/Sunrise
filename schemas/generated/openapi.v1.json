@@ -7,12 +7,61 @@
   "paths": {
     "/api/v1/health": {
       "get": {
-        "summary": "Liveness probe.",
-        "description": "Unauthenticated on purpose: a load balancer has no token, and this answers\n\"is the process up\", not \"is the database reachable\". `docs/06-server/api.md`\nspecifies a `?deep=1` variant that has never existed and is still not here.",
+        "summary": "Liveness probe, and readiness probe with `?deep=1`.",
+        "description": "Unauthenticated on purpose: a load balancer has no token.\n\nWithout `deep` it reads no state and always answers `200 {\"status\":\"ok\"}`:\nit answers \"is the process up\", and a liveness probe that failed on a full\ndisk would restart a process that restarting cannot fix.\n\nWith `?deep=1` it answers `200` only when the server is not draining, the\nstore answers within 2 s, and the blob root is writable within 5 s, and\notherwise `503` naming the failed checks.",
         "operationId": "health",
+        "parameters": [
+          {
+            "name": "deep",
+            "in": "query",
+            "description": "`1` runs the readiness checks; absent or `0` is liveness only.",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "maximum": 255.0,
+              "minimum": 0.0,
+              "format": "uint8"
+            }
+          }
+        ],
         "responses": {
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    },
+                    {
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "about:blank"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
           "200": {
-            "description": "OK",
+            "description": "alive, and on ?deep=1 every readiness check passed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "a readiness check failed; `failed` names which",
             "content": {
               "application/json": {
                 "schema": {
@@ -5752,19 +5801,6 @@
   },
   "components": {
     "schemas": {
-      "HealthResponse": {
-        "properties": {
-          "status": {
-            "type": "string",
-            "description": "`\"ok\"` while the server is healthy."
-          }
-        },
-        "type": "object",
-        "required": [
-          "status"
-        ],
-        "description": "Health response.\n\n`Deserialize` is here for the generated client, not for the server: spargen\nreads this shape out of the document and the client decodes into it."
-      },
       "Problem": {
         "properties": {
           "type": {
@@ -5794,6 +5830,60 @@
         ],
         "title": "Problem Details",
         "description": "An RFC 9457 problem detail."
+      },
+      "ReadinessChecks": {
+        "properties": {
+          "accepting": {
+            "type": "boolean",
+            "description": "The server is not draining. `false` from the moment shutdown begins."
+          },
+          "store": {
+            "type": "boolean",
+            "description": "The store answered `SELECT 1` within 2 s."
+          },
+          "blob_root": {
+            "type": "boolean",
+            "description": "The blob root took a probe write and its removal within 5 s."
+          }
+        },
+        "type": "object",
+        "required": [
+          "accepting",
+          "store",
+          "blob_root"
+        ],
+        "description": "What `?deep=1` checked, one member per check, `true` where it passed."
+      },
+      "HealthResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "`\"ok\"` while the server is healthy, `\"unavailable\"` when a readiness\ncheck failed."
+          },
+          "checks": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReadinessChecks"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Each readiness check's outcome. Present only on `?deep=1`."
+          },
+          "failed": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "description": "The names of the checks that failed, in `checks`' order. Empty, and\nomitted, when every check passed."
+          }
+        },
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "description": "Health response.\n\n`Deserialize` is here for the generated client, not for the server: spargen\nreads this shape out of the document and the client decodes into it."
       },
       "MetaResponse": {
         "properties": {

@@ -32,14 +32,88 @@ const EX_FAILURE: u8 = 1;
 /// tell a supervisor to restart into the same refusal forever.
 #[tokio::main]
 async fn main() -> ExitCode {
-    match run().await {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let result = match args.split_first() {
+        Some((cmd, rest)) if cmd == "healthcheck" => healthcheck(rest).await,
+        _ => run(args).await,
+    };
+    match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(code) => ExitCode::from(code),
     }
 }
 
+/// `sunrise-server healthcheck [--deep] [-c <path>]`: probe the configured
+/// listener and exit 0 if it answered `200`, 1 otherwise.
+///
+/// Resolves the config exactly as the server does — `-c`, then
+/// `$SUNRISE_CONFIG`, then the implicit paths — so it probes the address the
+/// server bound. 1 for every failure, a config refusal included, because
+/// Docker reads 0 as healthy, 1 as unhealthy, and reserves the rest.
+///
+/// The one line it writes goes to stderr as plain text rather than through the
+/// NDJSON logger: its reader is `docker inspect`'s health log, not an ingest
+/// pipeline, and a healthy probe says nothing.
+#[allow(clippy::print_stderr)]
+async fn healthcheck(args: &[String]) -> Result<(), u8> {
+    let deep = args.iter().any(|a| a == "--deep");
+    let rest: Vec<String> = args.iter().filter(|a| *a != "--deep").cloned().collect();
+    let cfg = match sunrise_server::config::load(&rest) {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            eprintln!("healthcheck: {e}");
+            return Err(EX_FAILURE);
+        }
+    };
+    sunrise_server::healthcheck::probe(&cfg.bind, deep)
+        .await
+        .map_err(|e| {
+            eprintln!("healthcheck: {e}");
+            EX_FAILURE
+        })
+}
+
+/// Resolves on the first `SIGTERM` or `SIGINT`, then forces on the second.
+///
+/// Installed before the listener binds, so a signal that arrives during
+/// startup is a shutdown rather than the default abrupt exit. The first signal
+/// drains; the second sends on `force`, which abandons the drain.
+fn shutdown_signals(
+    force: tokio::sync::oneshot::Sender<()>,
+) -> std::io::Result<impl std::future::Future<Output = ()> + Send + 'static> {
+    let (first_tx, first_rx) = tokio::sync::oneshot::channel::<()>();
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut interrupt = signal(SignalKind::interrupt())?;
+        let mut terminate = signal(SignalKind::terminate())?;
+        tokio::spawn(async move {
+            for tx in [first_tx, force] {
+                tokio::select! {
+                    _ = interrupt.recv() => {}
+                    _ = terminate.recv() => {}
+                }
+                let _ = tx.send(());
+            }
+        });
+    }
+    #[cfg(not(unix))]
+    tokio::spawn(async move {
+        for tx in [first_tx, force] {
+            let _ = tokio::signal::ctrl_c().await;
+            let _ = tx.send(());
+        }
+    });
+    Ok(async move {
+        // A listener task that died without sending is not a request to stop.
+        if first_rx.await.is_err() {
+            std::future::pending::<()>().await;
+        }
+    })
+}
+
 /// The real entrypoint. `Err(code)` has already been logged.
-async fn run() -> Result<(), u8> {
+async fn run(args: Vec<String>) -> Result<(), u8> {
     // First statement in the process: everything below this line can log, and
     // nothing above it needs to.
     // The one place in the workspace where `print_stderr` is the right call:
@@ -56,7 +130,6 @@ async fn run() -> Result<(), u8> {
     // fatal with EX_CONFIG (78) rather than a generic failure, because an
     // operator's supervisor distinguishes "misconfigured, do not restart me"
     // from "crashed, restart me".
-    let args: Vec<String> = std::env::args().skip(1).collect();
     let cfg = match sunrise_server::config::load(&args) {
         Ok(cfg) => cfg,
         Err(e) => {
@@ -134,17 +207,50 @@ async fn run() -> Result<(), u8> {
         );
     }
 
-    let listener = match tokio::net::TcpListener::bind(&bind).await {
+    serve_until_signalled(state, &bind).await
+}
+
+/// Bind `bind`, serve until `SIGTERM`/`SIGINT`, and drain.
+///
+/// `srv.stop` is logged by `serve_until` once the drain ends, with what it
+/// drained; only failures are reported here.
+async fn serve_until_signalled(state: ServerState, bind: &str) -> Result<(), u8> {
+    let (force_tx, mut force_rx) = tokio::sync::oneshot::channel::<()>();
+    let shutdown = match shutdown_signals(force_tx) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!(
+                ev = "srv.start.failed",
+                bind = %bind,
+                cause = %e,
+                "cannot install the shutdown signal handlers"
+            );
+            return Err(EX_FAILURE);
+        }
+    };
+    let listener = match tokio::net::TcpListener::bind(bind).await {
         Ok(l) => l,
         Err(e) => {
             tracing::error!(ev = "srv.start.failed", bind = %bind, cause = %e, "cannot bind");
             return Err(EX_FAILURE);
         }
     };
-    // A surface that cannot be described correctly fails here rather than at
-    // documentation time, which is what makes the document authoritative rather
-    // than aspirational — so this refusal is `EX_CONFIG`, not a crash.
-    if let Err(e) = sunrise_server::serve(state, listener).await {
+    let served = tokio::select! {
+        served = sunrise_server::serve_until(state, listener, shutdown) => served,
+        // A second signal: the operator wants it gone now. Dropping the server
+        // future aborts its accept loops, and returning ends the runtime and
+        // every connection with it.
+        Ok(()) = &mut force_rx => {
+            tracing::error!(
+                ev = "srv.stop.failed",
+                err_kind = "user",
+                cause = "a second shutdown signal abandoned the drain",
+                "server stopped"
+            );
+            return Err(EX_FAILURE);
+        }
+    };
+    if let Err(e) = served {
         tracing::error!(
             ev = "srv.stop.failed",
             err_kind = "permanent",
@@ -153,7 +259,5 @@ async fn run() -> Result<(), u8> {
         );
         return Err(EX_FAILURE);
     }
-
-    tracing::info!(ev = "srv.stop", "listener closed");
     Ok(())
 }

@@ -431,7 +431,7 @@ The `share_envelope` is opaque to the server.
 |---|---|---|---|---|
 | GET | `/api/v1/meta` | — | `MetaResponse` (below) | implemented |
 | GET | `/api/v1/health` | — | `200 {"status":"ok"}` | implemented |
-| GET | `/api/v1/health?deep=1` | — | 200 if every backing dependency is healthy; 503 otherwise | **NOT IMPLEMENTED** |
+| GET | `/api/v1/health?deep=1` | — | `200` if every readiness check passes; `503` naming the failed ones | implemented (no disk-free check) |
 
 `MetaResponse` (`api/meta.rs`) is:
 
@@ -447,19 +447,37 @@ named, and there is no `server_version`, `max_op_size` or `max_blob_size` field.
 `/meta` is deliberately unauthenticated: a client must be able to read the
 issuer before it has a token.
 
-`GET /api/v1/health` takes no parameters and always answers `200
-{"status":"ok"}` — the handler consults nothing, so it is a liveness probe and
-not a readiness one. The deep check below is specified and unbuilt; a `?deep=1`
-query is ignored, which means an operator wiring it as a readiness probe today
-gets an unconditional `200`.
+`GET /api/v1/health` without `deep` (or with `deep=0`) always answers `200
+{"status":"ok"}` — the handler consults nothing, so it is a liveness probe. It
+stays `200` while the server drains: a draining process is alive.
 
-The deep readiness check would return `200 {"ok":true,"checks":{...}}` only if all of:
+Readiness is the same route with `?deep=1`, not a separate `/api/v1/ready`.
+The query was already specified here, so a probe configuration written against
+it needs no change, and one route keeps the two probes from drifting apart.
+`deep` is the only query parameter on the surface; the route is unsigned, so
+the signed operations' canonical target (`api/signed.rs`) is untouched. A
+`deep` that is not an integer from 0 to 255 is a `400`.
 
-1. `SELECT 1` from primary DB within 2 s.
-2. Object store HEAD on `_health/probe` within 5 s.
-3. Local disk free ratio > 5%.
+`?deep=1` answers `200` only if all of these pass, and `503` otherwise:
 
-Otherwise it returns `503` with a body listing the failed checks.
+| Check | Passes when |
+|---|---|
+| `accepting` | the server is not draining; it fails from the moment `SIGTERM` arrives |
+| `store` | `SELECT 1` against the relay database returns within 2 s |
+| `blob_root` | a probe file is written and removed under the blob root within 5 s |
+
+Both answers carry the outcomes, and a `503` names the failures in `failed`:
+
+```json
+{"status":"ok","checks":{"accepting":true,"store":true,"blob_root":true}}
+{"status":"unavailable","checks":{"accepting":false,"store":true,"blob_root":true},"failed":["accepting"]}
+```
+
+Two checks an earlier draft listed are not here. An object store `HEAD` on
+`_health/probe` has nothing to probe: self-host blobs are files, and
+`blob_root` is that store's check. A local disk free ratio above 5% is not
+built, because reading it needs a `statvfs` the crate's `forbid(unsafe_code)`
+leaves no safe dependency for yet.
 
 `oidc_issuer` and `oidc_client_id` let an unauthenticated client bootstrap the OIDC flow without static configuration. Both are `null` in single-tenant self-host mode, where no issuer is configured.
 
