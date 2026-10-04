@@ -55,6 +55,8 @@ jwks_ttl_secs      = 300                  # cache TTL for a JWKS with no cache h
 [storage]
 data_dir = "/var/lib/sunrise"             # expands to <dir>/sunrise.db and <dir>/blobs
                                           # unset = ephemeral in-memory (tests only)
+busy_timeout_ms = 5000                    # default 5000; how long SQLite waits on another
+                                          # process's lock before failing; 0 fails at once
 ```
 
 Setting **both** `oidc_issuer` and `oidc_client_id` is what installs the JWKS
@@ -73,6 +75,7 @@ The server exits 78 rather than starting, when:
 | `require_device_sig` without an issuer | Device signatures are meaningless under the self-host verifier |
 | An origin is `*` or not scheme-qualified | Ambiguous CORS |
 | `max_body_bytes = 0` | Rejects every request |
+| `sunrise.db` is at a schema version newer than this binary's | A newer release migrated it; writing to it could corrupt what that release relies on (see "Upgrade") |
 
 Unknown keys and unknown tables are **rejected**, not ignored. Writing a
 `[tls]` block and having it silently dropped would serve plaintext while the
@@ -111,7 +114,11 @@ as its first statement, tuned by `SUNRISE_LOG` and `SUNRISE_LOG_FORMAT`.
 
 - Single-binary: stop, `tar czf` the data dir, start. Or use a snapshot-aware
   filesystem (ZFS, Btrfs). The op log lives inside `sunrise.db`, so that one
-  file plus `blobs/` is the entire server state.
+  file plus `blobs/` is the entire server state. The database runs in WAL mode,
+  so while the server runs its recent writes are in `sunrise.db-wal` beside it:
+  a copy of `sunrise.db` alone, taken from a running server, can be missing
+  them. A clean stop folds the WAL back into `sunrise.db`; a snapshot must take
+  the whole directory at one instant, which ZFS and Btrfs snapshots do.
 - **The data dir is not encrypted.** Unlike the client vault, the relay database
   applies no SQLCipher key, and it holds account emails, device nicknames and
   push tokens in plaintext — see
@@ -121,9 +128,24 @@ as its first statement, tuned by `SUNRISE_LOG` and `SUNRISE_LOG_FORMAT`.
 
 ## Upgrade
 
-- Stop, replace binary, start. There is no migration framework on the server:
-  `Store::open` executes one `CREATE TABLE IF NOT EXISTS` batch, so a schema
-  change that is not purely additive has no upgrade path yet.
+- Stop, back up (above), replace binary, start. The new binary migrates
+  `sunrise.db` forward on its first start, logging one `srv.store.migrated`
+  line per step applied.
+- The schema is versioned. `sunrise.db` records its version in SQLite's
+  `PRAGMA user_version`, and each release carries a numbered, append-only list
+  of migrations (`crates/sunrise-server/src/store/migrations/mod.rs`). Each one
+  runs in its own transaction together with its version stamp, so an upgrade
+  interrupted by a crash or a power cut resumes from the last completed step on
+  the next start. A database written before versioning existed is at version 0
+  and adopts the history unchanged: migration 0001 is the schema those releases
+  created, and creates nothing on a file that already has it.
+- **Downgrade is refused, not attempted.** A binary started against a database
+  a newer release migrated logs `srv.start.refused` naming both versions and
+  exits 78 without writing a byte to the file. Run the newer binary again, or
+  restore the backup taken before the upgrade.
+- On every start the server also runs SQLite's `PRAGMA quick_check`, stopped
+  after 10 s, and logs `srv.store.quick_check`. A result other than `ok` does
+  not stop the server; it is the signal to restore a backup.
 - Zero-downtime upgrade for scaled deployments via standard rolling restart.
   (No scaled deployment exists.)
 
