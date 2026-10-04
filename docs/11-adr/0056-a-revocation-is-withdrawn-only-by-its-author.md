@@ -140,9 +140,9 @@ Both hold while the attacker holds one expelled device. With two that the
 same revoker expelled, the second device's gated row discounts the current
 device that revoked the first, so no third device settles it
 ([ADR-0041](./0041-peer-side-revocation-is-a-fold.md) §"What a user sees"
-item 4, [#394](https://github.com/justin13888/Sunrise/issues/394)). A
-withdrawal does not settle it either, because the rows at issue are the
-attacker's own.
+item 4). A withdrawal does not settle it either, because the rows at issue are
+the attacker's own. A revocation signed by the account identity settles it
+([ADR-0058](./0058-the-account-identity-is-the-membership-authority.md)).
 
 A withdrawal adds the one reading the ledger could not express: the author
 itself saying "I did not mean it". So #248's "permanently" holds only in an
@@ -413,3 +413,6 @@ is to land the decision now and the schema with its only writer.
    identity-signed "reinstate" that the account's current identity holder
    issues. That is the one party that could legitimately speak for revocations
    it did not make, and §3's rejection of (b) would need re-arguing against it.
+   [ADR-0058](./0058-the-account-identity-is-the-membership-authority.md) §6
+   takes up that authority and re-argues it: the identity withdraws only its
+   own signed revocations, and (b) stays rejected.
