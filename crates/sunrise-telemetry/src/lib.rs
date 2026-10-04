@@ -48,7 +48,7 @@ pub use sampler::CappedSampler;
 /// An in-memory recorder for tests that read exported spans back.
 #[cfg(any(test, feature = "testing"))]
 pub mod testing {
-    pub use opentelemetry::trace::SpanId;
+    pub use opentelemetry::trace::{SpanId, Status};
     pub use opentelemetry_sdk::trace::{InMemorySpanExporter, SpanData};
 
     use crate::{CappedSampler, Telemetry};
@@ -73,6 +73,7 @@ pub mod testing {
 
 use std::borrow::Cow;
 use std::sync::Arc;
+use std::time::Duration;
 
 use opentelemetry::propagation::TextMapPropagator as _;
 use opentelemetry::trace::{
@@ -158,6 +159,23 @@ impl Telemetry {
                 .shutdown()
                 .map_err(|e| TelemetryError::Shutdown(e.to_string())),
             None => Ok(()),
+        }
+    }
+
+    /// Stop the exporter without waiting for its flush: whatever is still
+    /// queued is lost, and this returns at once whether or not the collector
+    /// answers.
+    ///
+    /// For an exit the operator asked to be immediate. It also marks the
+    /// provider shut down, which matters as much as the flush it skips: the
+    /// SDK flushes, for up to five seconds, when the last clone of a provider
+    /// that was never shut down drops, and on the way out of the process that
+    /// drop is the runtime's teardown releasing every task's state.
+    pub fn abandon(&self) {
+        if let Some(inner) = &self.inner {
+            // A zero bound is a timeout by construction, and an error here
+            // says only that the queue was dropped, which is the point.
+            let _ = inner.provider.shutdown_with_timeout(Duration::ZERO);
         }
     }
 
@@ -455,5 +473,41 @@ mod tests {
         assert_eq!(ids.span_id, span.span_context.span_id().to_string());
         assert_eq!(ids.trace_id.len(), 32);
         assert_eq!(ids.span_id.len(), 16);
+    }
+
+    /// A collector that never answers in time: each export holds the batch
+    /// thread for longer than any test should wait.
+    #[derive(Debug)]
+    struct Unanswering;
+
+    impl opentelemetry_sdk::trace::SpanExporter for Unanswering {
+        async fn export(&self, _batch: Vec<SpanData>) -> opentelemetry_sdk::error::OTelSdkResult {
+            std::thread::sleep(Duration::from_secs(3));
+            Ok(())
+        }
+    }
+
+    /// An abandoned exporter neither waits for its flush nor lets the last
+    /// clone's drop wait for one, however long the collector takes.
+    #[test]
+    fn abandoning_returns_at_once_and_disarms_the_flush_on_drop() {
+        let provider = SdkTracerProvider::builder()
+            .with_batch_exporter(Unanswering)
+            .build();
+        let telemetry = Telemetry::from_provider(provider);
+        let held = telemetry.clone();
+        drop(telemetry.root_span("push.dispatch", [Attr::provider("apns")]));
+
+        let (done, finished) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            telemetry.abandon();
+            drop(telemetry);
+            drop(held);
+            let _ = done.send(());
+        });
+        assert!(
+            finished.recv_timeout(Duration::from_secs(1)).is_ok(),
+            "abandon, or the drop after it, waited on the collector"
+        );
     }
 }

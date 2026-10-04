@@ -302,6 +302,8 @@ async fn run(args: Vec<String>) -> Result<(), u8> {
     // The spans of the drain itself are queued until here. The flush blocks
     // until the exporter answers or times out, so it runs off the runtime; a
     // failed flush is reported by the exporter's own log and loses only spans.
+    // After a drain a second signal abandoned there is nothing to flush:
+    // `serve_until_signalled` abandoned the exporter, and this returns at once.
     let _ = tokio::task::spawn_blocking(move || telemetry.shutdown()).await;
     served
 }
@@ -331,12 +333,17 @@ async fn serve_until_signalled(state: ServerState, bind: &str) -> Result<(), u8>
             return Err(EX_FAILURE);
         }
     };
+    let telemetry = state.telemetry.clone();
     let served = tokio::select! {
         served = sunrise_server::serve_until(state, listener, shutdown) => served,
         // A second signal: the operator wants it gone now. Dropping the server
         // future aborts its accept loops, and returning ends the runtime and
         // every connection with it.
         Ok(()) = &mut force_rx => {
+            // Nor does it wait on the collector: abandoned, the exporter drops
+            // its queue, the flush after the drain returns at once, and the
+            // runtime's teardown dropping the last clone flushes nothing.
+            telemetry.abandon();
             tracing::error!(
                 ev = "srv.stop.failed",
                 err_kind = "user",
