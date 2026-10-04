@@ -215,7 +215,7 @@ impl Store {
         caps: DurableCaps,
     ) -> Result<Appended, StoreError> {
         let (account_h, stream_id) = key;
-        let mut conn = self.conn.lock();
+        let mut conn = self.tx("store.relay_append");
         let tx = conn.transaction()?;
 
         // Inside the transaction, so the lookup and the insert cannot be
@@ -335,7 +335,7 @@ impl Store {
         cursors: &HashMap<[u8; 16], u64>,
     ) -> Result<Replay, StoreError> {
         let (account_h, stream_id) = key;
-        let conn = self.conn.lock();
+        let conn = self.tx("store.relay_replay_after");
 
         let mut stmt = conn.prepare(
             "SELECT f.id, f.bytes FROM relay_frames f
@@ -416,7 +416,7 @@ impl Store {
     /// [`StoreError::Sqlite`] if either read fails.
     pub fn relay_device_heads(&self, key: StreamKey) -> Result<HashMap<[u8; 16], u64>, StoreError> {
         let (account_h, stream_id) = key;
-        let conn = self.conn.lock();
+        let conn = self.tx("store.relay_device_heads");
         let mut out: HashMap<[u8; 16], u64> = HashMap::new();
 
         let mut stmt = conn.prepare(
@@ -455,7 +455,7 @@ impl Store {
     /// Number of retained frames for a channel (tests and diagnostics).
     pub fn relay_len(&self, key: StreamKey) -> Result<usize, StoreError> {
         let (account_h, stream_id) = key;
-        let conn = self.conn.lock();
+        let conn = self.tx("store.relay_len");
         let n: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM relay_frames WHERE account_h = ?1 AND stream_id = ?2",

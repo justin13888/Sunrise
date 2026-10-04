@@ -164,6 +164,25 @@ pub fn verify_bytes(
     path: &str,
     canonical_body: &[u8],
 ) -> Result<Option<Device>, ApiError> {
+    // `auth.verify_signature`, with the device lookup beneath it. Neither the
+    // signature nor the device id is span data.
+    let span = sunrise_telemetry::span("auth.verify_signature", []);
+    let _current = span.enter();
+    let verified = verify_binding(state, principal, sig, method, path, canonical_body);
+    if verified.is_err() {
+        span.fail("device signature refused");
+    }
+    verified
+}
+
+fn verify_binding(
+    state: &ServerState,
+    principal: &Principal,
+    sig: &DeviceSig,
+    method: &str,
+    path: &str,
+    canonical_body: &[u8],
+) -> Result<Option<Device>, ApiError> {
     let (Some(device_id), Some(signature)) = (sig.device.as_deref(), sig.signature.as_deref())
     else {
         if state.config.require_device_sig {

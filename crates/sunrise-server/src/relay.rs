@@ -350,12 +350,23 @@ impl RelayHub {
     /// the channel if needed, so late subscribers still see it) and
     /// broadcast it live. Returns the number of live receivers reached
     /// (best-effort — slow ones see `Lagged`).
+    ///
+    /// Traced as `relay.fanout`, whose one attribute is that count, as
+    /// `n_streams`: which streams, and whose, is not span data.
     pub fn publish(&self, key: StreamKey, frame: RelayFrame) -> usize {
-        let mut inner = self.inner.lock();
-        let caps = self.caps;
-        let ch = inner.channels.entry(key).or_insert_with(Channel::new);
-        ch.push_retained(&frame, caps);
-        ch.tx.send(frame).unwrap_or(0)
+        let span = sunrise_telemetry::span("relay.fanout", []);
+        let reached = {
+            let mut inner = self.inner.lock();
+            let caps = self.caps;
+            let ch = inner.channels.entry(key).or_insert_with(Channel::new);
+            ch.push_retained(&frame, caps);
+            ch.tx.send(frame).unwrap_or(0)
+        };
+        span.set(sunrise_telemetry::Attr::count(
+            sunrise_telemetry::Count::Streams,
+            reached as u64,
+        ));
+        reached
     }
 
     /// Drop every channel of one account namespace, retained frames and live

@@ -167,7 +167,7 @@ impl Store {
         token_h: &[u8; 32],
         expires_at_ms: u64,
     ) -> Result<(), StoreError> {
-        self.conn.lock().execute(
+        self.tx("store.put_delete_token").execute(
             "INSERT INTO account_delete_tokens (account_id, token_h, expires_at_ms)
              VALUES (?1, ?2, ?3)
              ON CONFLICT (account_id) DO UPDATE
@@ -188,7 +188,7 @@ impl Store {
         token_h: &[u8; 32],
         now_ms: u64,
     ) -> Result<bool, StoreError> {
-        let changed = self.conn.lock().execute(
+        let changed = self.tx("store.consume_delete_token").execute(
             "DELETE FROM account_delete_tokens
               WHERE account_id = ?1 AND token_h = ?2 AND expires_at_ms > ?3",
             params![account_id, &token_h[..], signed(now_ms)],
@@ -205,7 +205,7 @@ impl Store {
         account_id: &str,
         now_ms: u64,
     ) -> Result<u64, StoreError> {
-        let conn = self.conn.lock();
+        let conn = self.tx("store.request_account_deletion");
         conn.execute(
             "UPDATE accounts
                 SET delete_requested_at_ms = COALESCE(delete_requested_at_ms, ?2)
@@ -226,8 +226,7 @@ impl Store {
     /// When the account's deletion was requested, if it was.
     pub fn account_deletion_requested(&self, account_id: &str) -> Result<Option<u64>, StoreError> {
         Ok(self
-            .conn
-            .lock()
+            .tx("store.account_deletion_requested")
             .query_row(
                 "SELECT delete_requested_at_ms FROM accounts WHERE account_id = ?1",
                 params![account_id],
@@ -243,7 +242,7 @@ impl Store {
         &self,
         requested_by_ms: u64,
     ) -> Result<Vec<String>, StoreError> {
-        let conn = self.conn.lock();
+        let conn = self.tx("store.accounts_due_for_erasure");
         let mut stmt = conn.prepare(
             "SELECT account_id FROM accounts
               WHERE delete_requested_at_ms IS NOT NULL AND delete_requested_at_ms <= ?1
@@ -266,7 +265,7 @@ impl Store {
     /// leaves files with no account — which the next erasure pass, keyed on
     /// the same hash, can still find — rather than an account with no files.
     pub fn erase_account(&self, account_id: &str) -> Result<bool, StoreError> {
-        let mut conn = self.conn.lock();
+        let mut conn = self.tx("store.erase_account");
         let tx = conn.transaction()?;
         crate::relay_log::erase_account(&tx, crate::relay_log::account_key(account_id))?;
         let erased = tx.execute(
@@ -285,7 +284,7 @@ impl Store {
         t: &NewTombstone,
         now_ms: u64,
     ) -> Result<(), StoreError> {
-        self.conn.lock().execute(
+        self.tx("store.tombstone_blob").execute(
             "INSERT INTO blob_tombstones
                  (account_id, blob_key, stream_id, origin_device, seq, deleted_by, tombstoned_at_ms)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
@@ -305,7 +304,7 @@ impl Store {
 
     /// Forget a blob's tombstone: it was re-uploaded, or it has been collected.
     pub fn clear_tombstone(&self, account_id: &str, blob_key: &[u8; 16]) -> Result<(), StoreError> {
-        self.conn.lock().execute(
+        self.tx("store.clear_tombstone").execute(
             "DELETE FROM blob_tombstones WHERE account_id = ?1 AND blob_key = ?2",
             params![account_id, &blob_key[..]],
         )?;
@@ -324,7 +323,7 @@ impl Store {
         cursors: &[DeclaredCursor],
         now_ms: u64,
     ) -> Result<(), StoreError> {
-        let mut conn = self.conn.lock();
+        let mut conn = self.tx("store.record_cursors");
         let tx = conn.transaction()?;
         for c in cursors {
             tx.execute(
@@ -362,7 +361,7 @@ impl Store {
         tombstoned_by_ms: u64,
         active_since_ms: u64,
     ) -> Result<Vec<(String, [u8; 16])>, StoreError> {
-        let conn = self.conn.lock();
+        let conn = self.tx("store.collectable_blobs");
         let mut stmt = conn.prepare(
             "SELECT t.account_id, t.blob_key FROM blob_tombstones t
               WHERE t.tombstoned_at_ms <= ?1
@@ -395,7 +394,7 @@ impl Store {
 
     /// Every account, oldest first.
     pub fn account_summaries(&self) -> Result<Vec<AccountSummary>, StoreError> {
-        let conn = self.conn.lock();
+        let conn = self.tx("store.account_summaries");
         let mut stmt = conn.prepare(&format!("{SUMMARY} ORDER BY a.created_at_ms"))?;
         let rows = stmt
             .query_map([], row_to_summary)?
@@ -406,8 +405,7 @@ impl Store {
     /// One account.
     pub fn account_summary(&self, account_id: &str) -> Result<Option<AccountSummary>, StoreError> {
         Ok(self
-            .conn
-            .lock()
+            .tx("store.account_summary")
             .query_row(
                 &format!("{SUMMARY} WHERE a.account_id = ?1"),
                 params![account_id],
@@ -419,8 +417,7 @@ impl Store {
     /// The account a device row belongs to.
     pub fn device_owner(&self, device_id: &str) -> Result<Option<String>, StoreError> {
         Ok(self
-            .conn
-            .lock()
+            .tx("store.device_owner")
             .query_row(
                 "SELECT account_id FROM devices WHERE device_id = ?1",
                 params![device_id],
@@ -431,7 +428,7 @@ impl Store {
 
     /// Row counts across the database.
     pub fn stats(&self) -> Result<StoreStats, StoreError> {
-        let conn = self.conn.lock();
+        let conn = self.tx("store.stats");
         let mut s = conn.query_row(
             "SELECT
                 (SELECT COUNT(*) FROM accounts),

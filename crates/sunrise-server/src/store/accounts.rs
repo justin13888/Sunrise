@@ -92,7 +92,7 @@ impl Store {
         allow_signup: bool,
         now_ms: u64,
     ) -> Result<Account, StoreError> {
-        let conn = self.conn.lock();
+        let conn = self.tx("store.resolve_account");
         if let Some(mut account) = select_account_by_oidc(&conn, &subject.issuer, &subject.subject)?
         {
             // Keep the discovery email in step with the IdP, which owns it.
@@ -137,13 +137,13 @@ impl Store {
 
     /// Whether an account already exists for this subject.
     pub fn account_exists(&self, subject: &Subject) -> Result<bool, StoreError> {
-        let conn = self.conn.lock();
+        let conn = self.tx("store.account_exists");
         Ok(select_account_by_oidc(&conn, &subject.issuer, &subject.subject)?.is_some())
     }
 
     /// Fetch an account by its Sunrise id.
     pub fn account(&self, account_id: &str) -> Result<Option<Account>, StoreError> {
-        let conn = self.conn.lock();
+        let conn = self.tx("store.account");
         Ok(conn
             .query_row(
                 "SELECT account_id, oidc_iss, oidc_sub, email, identity_pub_s, identity_pub_d, \
@@ -195,7 +195,7 @@ impl Store {
         terms_at_ms: u64,
     ) -> Result<Account, StoreError> {
         {
-            let conn = self.conn.lock();
+            let conn = self.tx("store.set_identity");
             // The blob is write-once, and a second *different* one is a
             // conflict rather than a no-op: see `StoreError::RecoveryBlobExists`
             // for why silently coalescing it was worse than refusing.
@@ -235,7 +235,7 @@ impl Store {
     /// # Errors
     /// SQLite failures.
     pub fn recovery_blob(&self, account_id: &str) -> Result<Option<String>, StoreError> {
-        let conn = self.conn.lock();
+        let conn = self.tx("store.recovery_blob");
         Ok(select_recovery_blob(&conn, account_id)?)
     }
 }

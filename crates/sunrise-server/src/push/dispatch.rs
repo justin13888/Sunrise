@@ -359,6 +359,7 @@ impl Dispatcher {
             clock: Arc::clone(&state.clock),
             metrics: state.metrics.clone(),
             planner: Planner::new(&inner.tuning),
+            telemetry: state.telemetry.clone(),
         }
     }
 
@@ -385,6 +386,10 @@ pub(super) struct Worker {
     clock: Arc<dyn Clock>,
     metrics: Metrics,
     planner: Planner,
+    /// Each delivery is the root of a trace of its own: a push is coalesced
+    /// from wakes many requests raised and sent on this task's schedule, so no
+    /// one request is its parent.
+    telemetry: sunrise_telemetry::Telemetry,
 }
 
 impl Worker {
@@ -412,8 +417,18 @@ impl Worker {
                     self.metrics.clone(),
                     tuning,
                 );
+                // `push.dispatch`: the provider label and nothing else. The
+                // device, its token and the account are not span data.
+                let span = self.telemetry.root_span(
+                    "push.dispatch",
+                    [sunrise_telemetry::Attr::provider(
+                        self.inner.provider.platform().metric_label(),
+                    )],
+                );
+                let cx = span.context();
                 tokio::spawn(async move {
-                    delivery.deliver(&intent).await;
+                    let _span = span;
+                    sunrise_telemetry::FutureExt::with_context(delivery.deliver(&intent), cx).await;
                     drop(slot);
                 });
             }
@@ -555,6 +570,14 @@ impl Delivery {
         let mut backoff = self.tuning.backoff;
         for attempt in 1..=attempts {
             let started = tokio::time::Instant::now();
+            // One `push.attempt` per send, under the delivery's
+            // `push.dispatch`, carrying its number and the provider's result
+            // label. Ended before any backoff, so the wait shows as the gap
+            // between attempts.
+            let span = sunrise_telemetry::span(
+                "push.attempt",
+                [sunrise_telemetry::Attr::attempt(attempt)],
+            );
             let outcome =
                 match tokio::time::timeout(self.tuning.send_timeout, self.provider.send(intent))
                     .await
@@ -562,6 +585,14 @@ impl Delivery {
                     Ok(outcome) => outcome,
                     Err(_) => Err(PushError::Timeout),
                 };
+            match &outcome {
+                Ok(()) => span.set(sunrise_telemetry::Attr::result("ok")),
+                Err(e) => {
+                    span.set(sunrise_telemetry::Attr::result(e.result()));
+                    span.fail("push not delivered");
+                }
+            }
+            drop(span);
             self.metrics.observe(
                 "sunrise_push_dispatch_duration_seconds",
                 &[("provider", provider)],

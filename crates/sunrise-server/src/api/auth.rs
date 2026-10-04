@@ -124,6 +124,21 @@ impl Authenticator<AccountToken, ServerState> for ServerState {
 /// [`AuthRejection::Forbidden`] when sign-up is disabled, and `unauthenticated`
 /// for every credential failure.
 pub async fn resolve_bearer(state: &ServerState, bearer: &str) -> Result<Principal, AuthRejection> {
+    use sunrise_telemetry::FutureExt as _;
+
+    // `auth.verify_token`, with the account lookup beneath it. The bearer is
+    // never span data: the span carries its name and, on refusal, a status.
+    let span = sunrise_telemetry::span("auth.verify_token", []);
+    let resolved = verify_and_resolve(state, bearer)
+        .with_context(span.context())
+        .await;
+    if resolved.is_err() {
+        span.fail("bearer refused");
+    }
+    resolved
+}
+
+async fn verify_and_resolve(state: &ServerState, bearer: &str) -> Result<Principal, AuthRejection> {
     let verified = state
         .token_verifier
         .verify(bearer)
