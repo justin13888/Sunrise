@@ -84,6 +84,7 @@ mod focus;
 mod identity;
 mod ids;
 mod lww;
+mod merge;
 mod notify;
 mod oplog;
 mod query;

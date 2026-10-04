@@ -1116,6 +1116,7 @@
         "FocusStart",
         "IdentityTransition",
         "KeyEnvelope",
+        "Patch",
         "ReviewSnapshotCreate",
         "RoutineCreate",
         "RoutineDelete",

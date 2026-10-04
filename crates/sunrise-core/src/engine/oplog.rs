@@ -766,7 +766,7 @@ pub(super) fn ops_run_end(
 /// this still runs.
 ///
 /// Admission is settled at step b — by the `devices` lookup at
-/// `crates/sunrise-core/src/engine/sync.rs:264#apply_remote_all`, or, for the
+/// `crates/sunrise-core/src/engine/sync.rs:265#apply_remote_all`, or, for the
 /// `DeviceCertPublish` family that trace delivers, by
 /// [`Engine::self_authenticating_signer`] at
 /// `crates/sunrise-core/src/engine/sync.rs:270#apply_remote_all`, which checks
