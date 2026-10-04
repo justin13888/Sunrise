@@ -308,7 +308,7 @@ is that dedup by key sharing does not exist at any scope.
 **`Attachment.blob_id` is symmetric, not server-assigned.** Both sides derive it
 as the first 16 bytes of BLAKE3 over the concatenated ciphertext chunks; the
 relay re-derives from disk rather than trusting the claim
-(`crates/sunrise-server/src/api/blobs.rs:239-265,449-458`). This reconciles
+(`crates/sunrise-server/src/api/blobs.rs:239-265,448-457`). This reconciles
 `crates/sunrise-domain/src/attachment.rs:42-44` ("assigned by the creating
 device") with the relay's content addressing, which had been read as two
 competing identities and specified as two.

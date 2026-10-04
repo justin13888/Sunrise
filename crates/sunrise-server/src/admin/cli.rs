@@ -122,10 +122,16 @@ fn dispatch(state: &ServerState, words: &[&str]) -> Outcome {
             serde_json::to_value(summary).map_err(failure)
         }
         ["account", "delete", id] => {
-            let requested = state
-                .store
-                .request_account_deletion(id, now_ms)
-                .map_err(|_| (EX_FAILURE, format!("no account {id}")))?;
+            let requested =
+                state
+                    .store
+                    .request_account_deletion(id, now_ms)
+                    .map_err(|e| match e {
+                        crate::store::StoreError::NotFound => {
+                            (EX_FAILURE, format!("no account {id}"))
+                        }
+                        other => failure(other),
+                    })?;
             let grace = state.config.retention().account_delete_grace_ms;
             Ok(json!({
                 "account_id": id,
@@ -149,8 +155,12 @@ fn dispatch(state: &ServerState, words: &[&str]) -> Outcome {
             state
                 .store
                 .revoke_device(&owner, device_id, now_ms)
-                .map_err(|_| (EX_FAILURE, format!("device {device_id} is already revoked")))?;
-            state.metrics.incr("sunrise_devices_revoke_total");
+                .map_err(|e| match e {
+                    crate::store::StoreError::NotFound => {
+                        (EX_FAILURE, format!("device {device_id} is already revoked"))
+                    }
+                    other => failure(other),
+                })?;
             Ok(json!({ "device_id": device_id, "account_id": owner, "revoked_at_ms": now_ms }))
         }
         ["backup", dest] => backup(state, Path::new(dest)),

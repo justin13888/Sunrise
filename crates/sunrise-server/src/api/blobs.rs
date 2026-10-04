@@ -419,7 +419,6 @@ pub async fn finalize(
     // the maintenance pass sweeps whatever this leaves. The whole upload
     // directory rather than `delete_all`, which empties the chunk directory
     // and left the upload's own directory behind on every finalize.
-    drop(pending);
     let _ = std::fs::remove_dir_all(pending_dir(
         &account_root(&state, &caller, PENDING),
         &upload,

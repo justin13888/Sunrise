@@ -324,6 +324,11 @@ erasure cannot reach is the running server's memory. That is the retained ring
 of the erased account's channels and its open streams. No client can address
 either again, and both go at the server's next restart.
 
+Run the `admin` of the release the server runs. Opening the store migrates it,
+exactly as starting the server does, so a newer binary's `admin` upgrades the
+schema under an older running server. The older server then refuses that file
+at its next start (see "Upgrade").
+
 The serving binary runs the same maintenance pass itself at startup and every
 `maintenance_interval_secs`, so `gc --now` is for when an operator wants it
 sooner.
