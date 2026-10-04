@@ -447,3 +447,157 @@ fn a_build_advertises_its_features_once_per_change() {
     };
     assert_eq!(p.features, vec!["task.probe".to_owned()]);
 }
+
+/// Creating or editing a routine writes the routine op and then its
+/// occurrences in a second transaction. Under a task lock the command is
+/// refused before either, so no routine op is sealed and queued behind a
+/// `FeatureMissing`.
+#[test]
+fn a_routine_command_under_a_task_lock_writes_no_routine_op() {
+    let mut db = db();
+    let e = engine();
+    let other = engine_seeded(ROOT, [9u8; 32], clock());
+    let rid = e
+        .apply(
+            &mut db,
+            Command::CreateRoutine(routine_draft(
+                stream_ref(5),
+                "FREQ=DAILY",
+                NOW + 3_600_000,
+                RoutineCatchupPolicy::Skip,
+                Vec::new(),
+            )),
+        )
+        .unwrap()
+        .entity;
+    apply_requires(&e, &mut db, &other, &["task.probe"]);
+    let ops_before = op_count(&db);
+
+    assert!(matches!(
+        e.apply(
+            &mut db,
+            Command::CreateRoutine(routine_draft(
+                stream_ref(5),
+                "FREQ=DAILY",
+                NOW + 3_600_000,
+                RoutineCatchupPolicy::Skip,
+                Vec::new(),
+            )),
+        ),
+        Err(EngineError::FeatureMissing { ref feature }) if feature == "task.probe"
+    ));
+    assert!(matches!(
+        e.apply(
+            &mut db,
+            Command::UpdateRoutine {
+                id: rid,
+                patch: RoutinePatch {
+                    rrule: Some(RRule::parse("FREQ=WEEKLY").unwrap()),
+                    ..Default::default()
+                },
+            },
+        ),
+        Err(EngineError::FeatureMissing { ref feature }) if feature == "task.probe"
+    ));
+    assert_eq!(op_count(&db), ops_before, "neither command sealed an op");
+    let routines: i64 = db
+        .conn()
+        .query_row("SELECT COUNT(*) FROM routines", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(routines, 1, "the refused create left no routine row");
+}
+
+/// A stream digest is a control op whose target kind is `stream`, an LWW
+/// entity's tag. A structural lock refuses stream writes, and must still let
+/// the digest through, or a locked device would stall its peers' compaction.
+#[test]
+fn a_structural_lock_still_publishes_stream_digests() {
+    let ea = engine_seeded(ROOT, [1u8; 32], clock()).with_features(STRUCTURAL);
+    let eb = engine_seeded(ROOT, [2u8; 32], clock()).with_features(&[]);
+    let mut dbb = db_root(ROOT);
+    new_task(&eb, &mut dbb, "before the lock");
+    apply_requires(&eb, &mut dbb, &ea, &["core.probe"]);
+    assert!(matches!(
+        eb.apply(
+            &mut dbb,
+            Command::CreateTask(TaskDraft {
+                title: "t".into(),
+                ..Default::default()
+            }),
+        ),
+        Err(EngineError::FeatureMissing { .. })
+    ));
+    let written = eb
+        .publish_due_stream_digests(&mut dbb)
+        .expect("a digest is a control op and is never refused");
+    assert!(written >= 1, "the inbox holds an op, so a digest is due");
+    assert_eq!(envs_of_kind(&dbb, "stream.digest").len(), written);
+}
+
+/// A revoked device is not asked about: it will never upgrade, and waiting
+/// on it would make the confirmation permanent.
+#[test]
+fn a_revoked_device_does_not_stand_in_the_way_of_enabling_a_feature() {
+    let ea = engine_seeded(ROOT, [1u8; 32], clock()).with_features(NEWER);
+    let eb = engine_seeded(ROOT, [2u8; 32], clock());
+    let ec = engine_seeded(ROOT, [3u8; 32], clock());
+    let mut dba = db_root(ROOT);
+    trust(&ea, &mut dba, &eb);
+    trust(&ea, &mut dba, &ec);
+    let b_id = eb.keychain.device_id();
+    let c_id = ec.keychain.device_id();
+
+    let both = ea.require_features(&mut dba, &["task.probe"], false);
+    assert!(
+        matches!(
+            &both,
+            Err(EngineError::FeatureUnsupportedByDevices { devices, .. })
+                if devices.contains(&b_id) && devices.contains(&c_id)
+        ),
+        "got {both:?}"
+    );
+
+    revoke(&ea, &mut dba, &ec, b_id, T0);
+    let only_c = ea.require_features(&mut dba, &["task.probe"], false);
+    assert!(
+        matches!(
+            &only_c,
+            Err(EngineError::FeatureUnsupportedByDevices { devices, .. })
+                if devices == &vec![c_id]
+        ),
+        "the revoked device is not named; got {only_c:?}"
+    );
+
+    apply_device_features(&ea, &mut dba, c_id, Hlc::at(10), &["task.probe"]);
+    assert_eq!(
+        ea.require_features(&mut dba, &["task.probe"], false)
+            .unwrap(),
+        vec!["task.probe".to_owned()],
+        "the one non-revoked peer supports it"
+    );
+}
+
+/// Two `DeviceFeatures` ops from one device with the same HLC converge on
+/// the greater list text, whichever arrives first (Decision 8).
+#[test]
+fn equal_stamped_device_features_converge_on_the_greater_list() {
+    let ea = engine_seeded(ROOT, [1u8; 32], clock());
+    let b_id = engine_seeded(ROOT, [2u8; 32], clock()).keychain.device_id();
+    let stored = |db: &Db| -> String {
+        db.conn()
+            .query_row(
+                "SELECT features FROM device_features WHERE device_id = ?",
+                params![&b_id[..]],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    let mut one = db_root(ROOT);
+    let mut two = db_root(ROOT);
+    apply_device_features(&ea, &mut one, b_id, Hlc::at(10), &["task.a"]);
+    apply_device_features(&ea, &mut one, b_id, Hlc::at(10), &["task.b"]);
+    apply_device_features(&ea, &mut two, b_id, Hlc::at(10), &["task.b"]);
+    apply_device_features(&ea, &mut two, b_id, Hlc::at(10), &["task.a"]);
+    assert_eq!(stored(&one), "task.b");
+    assert_eq!(stored(&two), "task.b");
+}

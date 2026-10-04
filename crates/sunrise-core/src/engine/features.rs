@@ -19,9 +19,10 @@
 use super::{Engine, EngineError};
 use crate::control_op::{DeviceFeaturesPayload, VaultRequiresPayload};
 use crate::feature::{self, MissingFeature, SealRefusal};
-use crate::inner_op::InnerOp;
+use crate::inner_op::{decode_inner_op, InnerOp};
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use sunrise_cbor::hlc::Hlc;
+use sunrise_id::EntityKind;
 use sunrise_storage::{Db, DbError};
 
 impl EngineError {
@@ -149,9 +150,12 @@ impl Engine {
     /// feature the vault has not been told it requires.
     ///
     /// Called for every local op, entity and control alike, before it is
-    /// sealed. A control op's `target_kind` is never refused (see
-    /// [`feature::FeatureScope::locks`]), so revocation, rotation and pairing
-    /// go on working in a vault this build can only read.
+    /// sealed. A control op is never refused, so revocation, rotation,
+    /// pairing and stream digests go on working in a vault this build can
+    /// only read. Most control ops name a non-data `target_kind` (see
+    /// [`feature::FeatureScope::locks`]), but a `StreamDigest` names
+    /// `stream`, an LWW entity's tag, so the op itself is decoded and asked
+    /// whether it is a control op before a lock refuses it.
     ///
     /// # Errors
     /// A [`SealRefusal`] boxed in a `rusqlite` error, which aborts `tx`.
@@ -165,7 +169,10 @@ impl Engine {
         if !required.is_empty() {
             let missing = feature::missing(required.iter().map(String::as_str), self.features);
             if let Some(id) = feature::refusal(&missing, target_kind) {
-                return Err(refuse(SealRefusal::Missing(id.to_owned())));
+                let control = decode_inner_op(inner_op).is_ok_and(|op| op.is_control());
+                if !control {
+                    return Err(refuse(SealRefusal::Missing(id.to_owned())));
+                }
             }
         }
         if let Some(id) = feature::features_used(self.features, inner_op)
@@ -175,6 +182,41 @@ impl Engine {
             return Err(refuse(SealRefusal::NotRequired(id.to_owned())));
         }
         Ok(())
+    }
+
+    /// Refuse, before anything is written, a command whose separate
+    /// transactions would write any of `kinds` while a missing feature locks
+    /// one of them.
+    ///
+    /// The seal guard alone rolls back only the transaction it runs in. A
+    /// command that commits one op and then writes another kind in a second
+    /// transaction (a routine op, then its materialized tasks) would leave
+    /// the first op sealed and queued while reporting
+    /// [`EngineError::FeatureMissing`]. Checking every kind it will write up
+    /// front keeps "a refused command wrote nothing" true for it.
+    ///
+    /// # Errors
+    /// [`EngineError::FeatureMissing`] naming the first locking feature.
+    /// Storage failures reading the required set.
+    pub(super) fn ensure_unlocked(
+        &self,
+        conn: &Connection,
+        kinds: &[EntityKind],
+    ) -> Result<(), EngineError> {
+        let required = required_ids(conn)?;
+        if required.is_empty() {
+            return Ok(());
+        }
+        let missing = feature::missing(required.iter().map(String::as_str), self.features);
+        match kinds
+            .iter()
+            .find_map(|k| feature::refusal(&missing, k.tag()))
+        {
+            Some(id) => Err(EngineError::FeatureMissing {
+                feature: id.to_owned(),
+            }),
+            None => Ok(()),
+        }
     }
 
     /// Apply a received `VaultRequires`: add its well-formed ids to the
