@@ -206,7 +206,7 @@ impl Engine {
     /// vault already required them all and nothing was emitted.
     ///
     /// A feature's command path calls this **before** the first op that uses
-    /// the feature (ADR-0045 §7). [`Self::seal_guard`] refuses such an op
+    /// the feature (ADR-0045 §7). The seal guard refuses such an op
     /// until it has, so forgetting is a failing test rather than an older
     /// device overwriting data.
     ///
