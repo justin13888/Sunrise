@@ -35,6 +35,20 @@
 //! transient failure — the network, a `5xx`, a `429` — is retried inside the
 //! same bound rather than surfaced, because a pairing is a few seconds of a
 //! person's attention and a dropped packet should not cost them a rescan.
+//!
+//! One `429` is not transient: the answer to the message that opens the
+//! session. That is the relay refusing a new pairing — the account or the
+//! address is over its pair-attempt limit, or the relay holds as many
+//! sessions as it will — and its `Retry-After` is minutes, not a poll
+//! interval, so [`RelayPairing::offer`] returns it at once.
+//!
+//! # Where the bearer goes
+//!
+//! Only to the relay this device is configured for. The scanned QR names a
+//! relay too, but it is text anyone can print, so [`RelayPairing::accept`]
+//! takes the device's own relay and refuses a code that names another origin,
+//! and every relay URL must be `https://` — plain `http://` only to a loopback
+//! host, which is how the tests run a relay.
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
@@ -86,9 +100,11 @@ impl RelayPairing {
     /// # Errors
     ///
     /// [`BindingError::Pairing`] if the QR cannot be built, and
-    /// [`BindingError::Relay`] if the relay refuses the session — a pair
-    /// attempt over the hourly or daily limit among them — or cannot be
-    /// reached within [`WAIT_CAP`].
+    /// [`BindingError::Relay`] for a relay URL that is not `https://` (or
+    /// `http://` to a loopback host), if the relay refuses the session — at
+    /// once, with its `Retry-After` in the message, for a pair attempt over
+    /// the hourly or daily limit or a relay holding all the sessions it will —
+    /// or if it cannot be reached within [`WAIT_CAP`].
     #[uniffi::constructor]
     pub async fn offer(
         relay_url: String,
@@ -114,23 +130,41 @@ impl RelayPairing {
 
     /// Begin on the **existing** device, from the QR as scanned or pasted.
     ///
-    /// The text goes straight to the decoder that wrote it; the relay to use
-    /// and the session to join are read from it. Its `n_static_pub` is kept
-    /// and checked against the peer the handshake actually reaches, so a
-    /// tampered code is refused before any SAS is shown.
+    /// The text goes straight to the decoder that wrote it; the session to
+    /// join is read from it. Its `n_static_pub` is kept and checked against the
+    /// peer the handshake actually reaches, so a tampered code is refused
+    /// before any SAS is shown.
+    ///
+    /// `relay_url` is the relay this device is configured for, and `bearer`
+    /// this account's access token. The bearer goes to `relay_url` and nowhere
+    /// else: the code's own `relay_url` must name the same origin, so a code
+    /// printed to point elsewhere is refused before any request is made.
     ///
     /// # Errors
     ///
     /// [`BindingError::Pairing`] with the decoder's own message for a payload
-    /// that is not a pairing QR, and [`BindingError::Relay`] for a relay URL the
-    /// client cannot use.
+    /// that is not a pairing QR, and [`BindingError::Relay`] for a relay URL
+    /// that is not `https://` (or `http://` to a loopback host), or a code
+    /// whose relay is not this device's.
     #[uniffi::constructor]
-    pub fn accept(qr_payload: String, bearer: String) -> Result<Arc<Self>, BindingError> {
+    pub fn accept(
+        qr_payload: String,
+        relay_url: String,
+        bearer: String,
+    ) -> Result<Arc<Self>, BindingError> {
         let scanned = decode_qr_payload(qr_payload.trim())
             .map_err(|e| BindingError::Pairing(e.to_string()))?;
+        let own = relay_origin(&relay_url)?;
+        if relay_origin(&scanned.relay_url)? != own {
+            return Err(BindingError::Relay(format!(
+                "the code names the relay {}, not this device's relay {}; \
+                 pair only with a code shown by a device on the same relay",
+                scanned.relay_url, relay_url
+            )));
+        }
         let pairing = Arc::new(DevicePairing::accept(qr_payload.trim().to_owned())?);
         let rendezvous = Rendezvous::new(
-            &scanned.relay_url,
+            &relay_url,
             &bearer,
             scanned.pair_id,
             PairingRole::ExistingDevice,
@@ -317,6 +351,7 @@ impl Rendezvous {
         pair_id: String,
         role: PairingRole,
     ) -> Result<Self, BindingError> {
+        relay_origin(relay_url)?;
         let client = api::Client::new(relay_url.trim_end_matches('/'))
             .map_err(|e| BindingError::Relay(e.to_string()))?
             .with_credential(
@@ -342,11 +377,17 @@ impl Rendezvous {
     /// the relay accepted a message and its answer was lost, the resend is
     /// acknowledged rather than buffered twice, which would hand the other side
     /// a duplicate it reads as the protocol's next message.
+    ///
+    /// The new device's first message opens the session, and a `429` to it is
+    /// the relay refusing the pairing, not a busy moment: it ends the call at
+    /// once with the relay's `Retry-After`.
     async fn send(&self, message: String) -> Result<(), BindingError> {
+        let index = self.written.load(Ordering::SeqCst);
+        let opening = index == 0 && self.role == api::types::PairRole::NewDevice;
         let body = api::types::PairSendRequest {
             pair_id: self.pair_id.clone(),
             role: self.role.clone(),
-            index: i64::from(self.written.load(Ordering::SeqCst)),
+            index: i64::from(index),
             message,
         };
         let deadline = tokio::time::Instant::now() + WAIT_CAP;
@@ -357,7 +398,14 @@ impl Rendezvous {
                     self.written.fetch_add(1, Ordering::SeqCst);
                     return Ok(());
                 }
-                Err(e) => self.settle(classify(&e), deadline).await?,
+                Err(e) => {
+                    if opening {
+                        if let Some(refusal) = opening_refusal(&e) {
+                            return Err(refusal);
+                        }
+                    }
+                    self.settle(classify(&e), deadline).await?;
+                }
             }
         }
     }
@@ -438,6 +486,53 @@ fn timed_out() -> BindingError {
     BindingError::Pairing("the other device did not answer in time".into())
 }
 
+/// A relay URL this device may send its bearer to, as its origin: `https://`
+/// to any host, or `http://` to a loopback one.
+fn relay_origin(relay_url: &str) -> Result<url::Origin, BindingError> {
+    let parsed = url::Url::parse(relay_url.trim())
+        .map_err(|e| BindingError::Relay(format!("the relay URL {relay_url} is not a URL: {e}")))?;
+    let loopback = match parsed.host() {
+        Some(url::Host::Domain(name)) => name.eq_ignore_ascii_case("localhost"),
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        None => false,
+    };
+    match parsed.scheme() {
+        "https" if parsed.host().is_some() => Ok(parsed.origin()),
+        "http" if loopback => Ok(parsed.origin()),
+        _ => Err(BindingError::Relay(format!(
+            "the relay URL {relay_url} is not https://; a pairing sends this \
+             account's token only over TLS"
+        ))),
+    }
+}
+
+/// The relay refusing to open a session: a `429` to the opening message,
+/// carrying how long the relay asked the device to wait.
+fn opening_refusal<E>(e: &api::Error<E>) -> Option<BindingError> {
+    let (status, headers) = match e {
+        api::Error::Api(value) => (value.status(), value.headers()),
+        api::Error::UnexpectedStatus {
+            status, headers, ..
+        } => (*status, headers),
+        _ => return None,
+    };
+    if status.as_u16() != 429 {
+        return None;
+    }
+    let wait = headers
+        .get("retry-after")
+        .and_then(|v| v.to_str().ok())
+        .map_or_else(
+            || "later".to_owned(),
+            |secs| format!("in {} s (Retry-After)", secs.trim()),
+        );
+    Some(BindingError::Relay(format!(
+        "the relay refused a new pairing: too many pair attempts, or too many \
+         pairings in progress. Try again {wait}"
+    )))
+}
+
 fn classify<E: std::fmt::Display>(e: &api::Error<E>) -> Fault {
     if let api::Error::Api(value) = e {
         if value.status().as_u16() == 404 {
@@ -448,5 +543,54 @@ fn classify<E: std::fmt::Display>(e: &api::Error<E>) -> Fault {
         Fault::Transient(e.to_string())
     } else {
         Fault::Fatal(e.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::relay_origin;
+
+    #[test]
+    fn a_relay_url_must_be_https_unless_it_is_loopback() {
+        for ok in [
+            "https://relay.example",
+            "https://relay.example:8443/",
+            "http://127.0.0.1:3000",
+            "http://localhost:3000",
+            "http://[::1]:3000",
+        ] {
+            assert!(relay_origin(ok).is_ok(), "{ok} is usable");
+        }
+        for refused in [
+            "http://relay.example",
+            "http://10.0.0.1",
+            "wss://relay.example",
+            "ftp://relay.example",
+            "relay.example",
+            "",
+        ] {
+            assert!(relay_origin(refused).is_err(), "{refused} is refused");
+        }
+    }
+
+    #[test]
+    fn origins_compare_by_scheme_host_and_port_alone() {
+        let origin = |u: &str| relay_origin(u).expect("usable");
+        assert_eq!(
+            origin("https://Relay.Example/"),
+            origin("https://relay.example")
+        );
+        assert_eq!(
+            origin("https://relay.example:443"),
+            origin("https://relay.example")
+        );
+        assert_ne!(
+            origin("https://relay.example"),
+            origin("https://relay.example.attacker.test")
+        );
+        assert_ne!(
+            origin("https://relay.example"),
+            origin("https://relay.example:8443")
+        );
     }
 }

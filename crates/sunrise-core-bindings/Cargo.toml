@@ -50,6 +50,9 @@ sunrise-pairing = { workspace = true }
 # same caller `sunrise bootstrap` uses, rather than a second one written in
 # Swift against the same description.
 sunrise-relay-client = { workspace = true }
+# The pairing seam checks a relay URL's scheme and origin before it sends the
+# account bearer there.
+url = { workspace = true }
 zeroize = { workspace = true }
 sunrise-sync = { workspace = true, features = ["sse"] }
 

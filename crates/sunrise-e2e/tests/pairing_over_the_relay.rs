@@ -51,12 +51,12 @@ async fn two_devices_pair_over_a_live_relay_with_no_manual_transfer() {
     .expect("the existing device opens its vault");
     assert!(sponsor_core.can_sponsor_pairing());
 
-    let joiner = RelayPairing::offer(base_url, BEARER.into(), "alice@example.com".into())
+    let joiner = RelayPairing::offer(base_url.clone(), BEARER.into(), "alice@example.com".into())
         .await
         .expect("the new device opens a session");
     let scanned = joiner.qr_payload().expect("the new device shows a code");
-    let sponsor =
-        RelayPairing::accept(scanned, BEARER.into()).expect("the existing device reads the code");
+    let sponsor = RelayPairing::accept(scanned, base_url, BEARER.into())
+        .expect("the existing device reads the code");
 
     let (sas_new, sas_existing) = tokio::time::timeout(TIMEOUT, async {
         tokio::join!(joiner.handshake(), sponsor.handshake())
@@ -119,11 +119,11 @@ async fn a_tampered_static_key_in_the_code_is_refused_before_the_sas() {
     let (addr, relay) = spawn_relay().await;
     let base_url = format!("http://{addr}");
 
-    let joiner = RelayPairing::offer(base_url, BEARER.into(), "alice@example.com".into())
+    let joiner = RelayPairing::offer(base_url.clone(), BEARER.into(), "alice@example.com".into())
         .await
         .expect("the new device opens a session");
     let tampered = with_substituted_static(&joiner.qr_payload().expect("a code"));
-    let sponsor = RelayPairing::accept(tampered, BEARER.into())
+    let sponsor = RelayPairing::accept(tampered, base_url, BEARER.into())
         .expect("a well-formed code decodes; the substitution is only detectable in the handshake");
 
     let (_, refused) = tokio::time::timeout(TIMEOUT, async {
@@ -150,5 +150,78 @@ async fn a_tampered_static_key_in_the_code_is_refused_before_the_sas() {
         "the new device learns the session is over: {joined:?}"
     );
 
+    relay.abort();
+}
+
+/// A code that names a relay other than the existing device's own is refused
+/// before any request carries the bearer anywhere, and so is one that names a
+/// relay over plain `http://`.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_code_naming_another_relay_never_receives_the_bearer() {
+    let (addr, relay) = spawn_relay().await;
+    let base_url = format!("http://{addr}");
+
+    let joiner = RelayPairing::offer(base_url.clone(), BEARER.into(), "alice@example.com".into())
+        .await
+        .expect("the new device opens a session");
+    let code = joiner.qr_payload().expect("a code");
+
+    for (relay_url, why) in [
+        ("https://relay.attacker.test", "another origin"),
+        ("http://relay.attacker.test", "plain http"),
+    ] {
+        let mut v: serde_json::Value = serde_json::from_str(&code).expect("the QR is JSON");
+        v["relay_url"] = serde_json::Value::String(relay_url.into());
+        let redirected = serde_json::to_string(&v).expect("re-encode");
+        let accepted = RelayPairing::accept(redirected, base_url.clone(), BEARER.into());
+        assert!(
+            matches!(accepted, Err(BindingError::Relay(_))),
+            "a code naming {why} is refused: {accepted:?}"
+        );
+    }
+
+    let insecure = RelayPairing::accept(code, "http://relay.example".into(), BEARER.into());
+    assert!(
+        matches!(insecure, Err(BindingError::Relay(_))),
+        "a device configured for a non-loopback http:// relay sends no bearer: {insecure:?}"
+    );
+
+    joiner.cancel().await;
+    relay.abort();
+}
+
+/// Past the account's hourly pair-attempt limit, `offer` returns the relay's
+/// refusal at once rather than retrying it for the whole wait.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_offer_over_the_pair_attempt_limit_is_refused_at_once() {
+    let (addr, relay) = spawn_relay().await;
+    let base_url = format!("http://{addr}");
+
+    let mut open = Vec::new();
+    for _ in 0..sunrise_pairing::RATE_LIMIT_HOURLY {
+        open.push(
+            RelayPairing::offer(base_url.clone(), BEARER.into(), "alice@example.com".into())
+                .await
+                .expect("an offer inside the limit opens a session"),
+        );
+    }
+
+    let refused = tokio::time::timeout(
+        Duration::from_secs(10),
+        RelayPairing::offer(base_url, BEARER.into(), "alice@example.com".into()),
+    )
+    .await
+    .expect("a refused offer returns without waiting out the cap");
+    match refused {
+        Err(BindingError::Relay(why)) => assert!(
+            why.contains("Retry-After"),
+            "the refusal carries the relay's Retry-After: {why}"
+        ),
+        other => panic!("an offer over the limit must be refused, got {other:?}"),
+    }
+
+    for pairing in open {
+        pairing.cancel().await;
+    }
     relay.abort();
 }
