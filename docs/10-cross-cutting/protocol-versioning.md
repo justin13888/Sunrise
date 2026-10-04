@@ -85,7 +85,7 @@ whether this build can safely write to this vault is a feature id.
 WIRE_PROTO_V          = 1
 ENVELOPE_FORMAT_V     = 3
 ENVELOPE_FORMAT_FLOOR = 3
-DOC_SCHEMA_V          = 7
+DOC_SCHEMA_V          = 8
 DOC_SCHEMA_FLOOR      = 1
 DOC_SCHEMA_FP_FIRST   = 7
 CRYPTO_SUITE_V        = 5
@@ -154,7 +154,7 @@ transition is lifted on purpose.
 
 `DOC_SCHEMA_FLOOR` is the lowest schema this build can still interpret. It
 moves only when a shape stops being readable, never merely because a newer one
-exists. It is `1` while `DOC_SCHEMA_V` is `7`, because a schema-1 payload
+exists. It is `1` while `DOC_SCHEMA_V` is `8`, because a schema-1 payload
 really does still decode: its bare-instant time fields read as
 `SunriseTime::Instant`. Every op ever written stays in logs and on relays and
 is the source of truth for a rebuild. So the floor MUST NOT be raised above any
@@ -175,7 +175,11 @@ older build existed.
 From now on:
 
 - **A new op kind or field-op kind** carries a feature id. Older builds park it
-  (§7).
+  (§7). `DOC_SCHEMA_V` 8 is the first under this rule: it added `Patch`
+  ([ADR-0044](../11-adr/0044-per-field-ops.md)), which a v7 build parks. Its
+  feature id, `core.field_ops`, waits on `vault_requires`
+  ([#324](https://github.com/justin13888/Sunrise/issues/324)), and until then
+  no build emits a `Patch`.
 - **Changing an existing variant's shape** is a new variant alongside the old
   one. The old one stays readable forever.
 
