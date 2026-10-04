@@ -19,6 +19,9 @@ extension SessionModel {
         case notNow
         case relayNotConfigured
         case signInNotConfigured
+        /// The restore wrote nothing, and the unreadable vault it moved aside
+        /// could not be moved back. The associated path is where it is.
+        case originalNotPutBack(String)
 
         var errorDescription: String? {
             switch self {
@@ -33,6 +36,12 @@ extension SessionModel {
                 """
                 Add your sign-in provider in Settings first. The relay \
                 releases the recovery blob only after you sign in again.
+                """
+            case let .originalNotPutBack(path):
+                """
+                The restore did not complete, and your existing vault could \
+                not be moved back into place. Nothing was deleted: it is at \
+                \(path).
                 """
             }
         }
@@ -122,7 +131,9 @@ extension SessionModel {
                 try rootStore.store(root)
                 await open(with: root)
             } else {
-                Self.putBack(setAside, at: directory)
+                // A failed put-back is the louder error: it says where the
+                // original vault is.
+                try Self.putBack(setAside, at: directory)
             }
             throw error
         }
@@ -143,16 +154,28 @@ extension SessionModel {
     }
 
     /// Undo ``setAside(_:now:)`` after a restore that wrote nothing.
-    static func putBack(_ aside: URL?, at directory: URL) {
-        guard let aside else { return }
+    ///
+    /// Whatever is at `directory` now is the refused restore's own output:
+    /// ``setAside(_:now:)`` moved everything that was there before, and a
+    /// directory it left alone was empty. A vault that would not open can
+    /// leave files behind, and they are unreadable, because the root they
+    /// were written under was never stored. They are removed so the original
+    /// can move back.
+    /// With nothing set aside they are removed all the same, so the next
+    /// restore does not find the directory taken.
+    static func putBack(_ aside: URL?, at directory: URL) throws {
         let fileManager = FileManager.default
-        // The seam creates the directory before it refuses; an empty one is
-        // all that can be in the way.
-        let path = directory.path(percentEncoded: false)
-        if (try? fileManager.contentsOfDirectory(atPath: path))?.isEmpty == true {
-            try? fileManager.removeItem(at: directory)
+        let occupied = fileManager.fileExists(atPath: directory.path(percentEncoded: false))
+        guard let aside else {
+            if occupied { try fileManager.removeItem(at: directory) }
+            return
         }
-        try? fileManager.moveItem(at: aside, to: directory)
+        do {
+            if occupied { try fileManager.removeItem(at: directory) }
+            try fileManager.moveItem(at: aside, to: directory)
+        } catch {
+            throw RestoreSetupError.originalNotPutBack(aside.path(percentEncoded: false))
+        }
     }
 
     /// Sign in again, now, whatever session the browser holds, and return the

@@ -219,6 +219,94 @@ struct SessionRestoreTests {
         #expect(session.phase == .locked(.keyMissingForExistingVault))
     }
 
+    /// A vault that would not open can leave files behind, and the restore is
+    /// still refused. What it left is unreadable, because its root was never
+    /// stored, and it must not keep the original vault from moving back.
+    @Test
+    func aRefusedRestoreThatLeftFilesStillPutsTheUnreadableVaultBack() async throws {
+        let directory = scratchDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try Data("existing".utf8).write(to: directory.appending(path: "vault.db"))
+
+        let store = StubRootStore()
+        let session = SessionModel(
+            location: VaultLocation(directory: directory),
+            rootStore: store,
+            appVersion: "test"
+        )
+        await session.start()
+        #expect(session.phase == .locked(.keyMissingForExistingVault))
+
+        await #expect(throws: BindingError.self) {
+            try await session.restoreAccount(
+                self.request(),
+                onStep: { _ in },
+                recover: { dir, _, _, _, _ in
+                    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+                    try Data("half-open".utf8).write(to: dir.appending(path: "vault.db"))
+                    try Data("lock".utf8).write(to: dir.appending(path: "vault.lock"))
+                    throw BindingError.RecoveryRefused(message: "recovery: the vault would not open")
+                }
+            )
+        }
+
+        #expect(store.stored == nil)
+        let back = try Data(contentsOf: directory.appending(path: "vault.db"))
+        #expect(back == Data("existing".utf8), "the unreadable vault is where it was")
+        let leftover = directory.appending(path: "vault.lock").path(percentEncoded: false)
+        #expect(!FileManager.default.fileExists(atPath: leftover), "the refused restore's files are gone")
+        let siblings = try FileManager.default.contentsOfDirectory(
+            atPath: directory.deletingLastPathComponent().path(percentEncoded: false)
+        )
+        #expect(
+            !siblings.contains { $0.hasPrefix("\(directory.lastPathComponent).unreadable-") },
+            "nothing is stranded beside the vault"
+        )
+    }
+
+    /// A restore that wrote the vault and then did not finish (a replay that
+    /// timed out, a registration refused, a reopen that failed) still keeps
+    /// the root, records the relay id, and opens what it wrote. Discarding the
+    /// root here would leave the restored vault unreadable.
+    @Test
+    func anIncompleteRestoreKeepsTheRootAndOpensTheWrittenVault() async throws {
+        let directory = scratchDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = StubRootStore()
+        let relayIDs = InMemoryRelayDeviceIDStore()
+        let session = SessionModel(
+            location: VaultLocation(directory: directory),
+            rootStore: store,
+            appVersion: "test",
+            relayDeviceStore: relayIDs
+        )
+        await session.start()
+        #expect(session.phase == .firstRun)
+
+        await #expect(throws: BindingError.self) {
+            try await session.restoreAccount(
+                self.request(),
+                onStep: { _ in },
+                recover: { dir, root, version, _, onStep in
+                    // The seam writes the vault under the session's root,
+                    // registers, and closes it before reporting the failure.
+                    let bridge = try await CoreBridge.open(
+                        directory: dir, vaultRoot: root, appVersion: version
+                    )
+                    onStep(.deviceRegistered(relayDeviceId: "01RELAY"))
+                    await bridge.shutdown()
+                    throw BindingError.RecoveryIncomplete(message: "recovery: never caught up")
+                }
+            )
+        }
+
+        #expect(store.stored?.count == 32)
+        #expect(session.phase == .unlocked)
+        #expect(try relayIDs.load()?.id == "01RELAY")
+        await session.lock()
+    }
+
     /// A restore that worked stores the root it was handed, records the relay
     /// id the moment it is minted, and opens the vault.
     @Test
