@@ -12,7 +12,8 @@
 //! What "log size" counts: the rows in `ops` and the bytes of their sealed
 //! envelopes. The file's page count is printed beside them, and it does not
 //! fall, because SQLite returns deleted pages to its free list rather than to
-//! the filesystem; the free pages are what the next writes reuse.
+//! the filesystem (the vault's `auto_vacuum` pragma does not take effect,
+//! issue #461); the free pages are what the next writes reuse.
 //!
 //! Sizes come from `SUNRISE_BENCH_COMPACT_TASKS` (comma-separated task
 //! counts) and default to `10000,100000`. Seeding 100k tasks takes about a

@@ -75,10 +75,13 @@ fn merged_spec(kind: EntityKind) -> Option<&'static EntitySpec> {
     (spec.merge == Merge::Lww && spec.storage().is_some()).then_some(spec)
 }
 
-/// Fold each entity's row into its field state, where a local command wrote
-/// the row and the merge has not folded it yet (see `sync_from_row`).
+/// Fold each of `targets`' rows into its field state, where a local command
+/// wrote the row and the merge has not folded it yet.
+///
 /// `targets` are `(target_kind, target_id)` pairs as the op log stores them;
-/// one whose kind does not merge into a row is skipped.
+/// one whose kind does not merge into a row is skipped. The fold is the one
+/// the merge makes before any op touches an entity: see the merge module's
+/// docs on seeding and local full-state writes.
 pub(in crate::engine) fn fold_rows(
     tx: &Transaction<'_>,
     targets: &[(String, Vec<u8>)],

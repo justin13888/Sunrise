@@ -808,7 +808,7 @@ pub(super) fn ops_run_end(
 /// changed no row and released no parked op;
 /// `crates/sunrise-core/src/engine/oplog.rs:159#ops_insert_at` at the tail of
 /// this device's own emit, after the op-log insert and the outbox enqueue; and
-/// `crates/sunrise-core/src/engine/sync.rs:750#park_op`, after inserting the
+/// `crates/sunrise-core/src/engine/sync.rs:762#park_op`, after inserting the
 /// unapplied row of an op whose kind this build does not know. That last one
 /// is why a parked op counts toward the prefix: its row is in `ops` like any
 /// other, and this function reads nothing else (issue #320).
@@ -927,12 +927,13 @@ pub(super) fn ops_run_end(
 /// is also how `CursorEntry.last_applied_seq` is read on the wire.
 ///
 /// That meaning is what bounds every "the cursor advances" above. The run
-/// starts at seq 1 because this function asks for it there —
-/// `crates/sunrise-core/src/engine/oplog.rs:938#upsert_sync_cursor` is where
-/// the literal lives;
-/// `crates/sunrise-core/src/engine/oplog.rs:681#ops_run_end` is parameterised
+/// starts at seq 1, or just above a compaction floor (see below), because this
+/// function asks for it there —
+/// `crates/sunrise-core/src/engine/oplog.rs#upsert_sync_cursor` is where the
+/// start is computed;
+/// `crates/sunrise-core/src/engine/oplog.rs:692#ops_run_end` is parameterised
 /// on `start` at
-/// `crates/sunrise-core/src/engine/oplog.rs:685#ops_run_end` and hard-codes
+/// `crates/sunrise-core/src/engine/oplog.rs:696#ops_run_end` and hard-codes
 /// nothing. So an op delivered with a gap below it is in the log and outside
 /// the prefix: with the log holding `{2}` the `ELSE ?3 - 1` arm writes 0, and with
 /// it holding `{1, 3}` the run ends at 1. Refused or applied makes no

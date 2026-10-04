@@ -21,8 +21,9 @@
 //! # The global-order stream root
 //!
 //! No product path calls it. ADR-0043 replaced it as the design of record
-//! for detecting omission and reordering; it stays pinned by its frozen
-//! vectors until compaction (#330) decides the snapshot's commitment format.
+//! for detecting omission and reordering, and compaction (ADR-0059 §7) did
+//! not adopt it either: a snapshot commits to its frontier's per-device chain
+//! roots. It stays pinned by its frozen vectors.
 //!
 //! Per `docs/03-crypto/audit-and-tamper-evidence.md`:
 //!

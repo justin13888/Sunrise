@@ -371,6 +371,8 @@ impl Engine {
     ///
     /// Each stream is folded in its own transaction, so a failure leaves
     /// every stream before it compacted and every stream after it as it was.
+    /// The pages a fold frees go on SQLite's free list, which later writes
+    /// reuse; they are not returned to the filesystem.
     ///
     /// # Errors
     /// Storage failures.
