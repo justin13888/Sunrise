@@ -43,17 +43,26 @@ subscription impossible rather than merely discouraged.
 
 ### What the relay database actually holds (implemented)
 
-`Store::open` sets the connection pragmas described under
+`Store::open` applies the database key when one is configured, sets the
+connection pragmas described under
 [Schema versions and pragmas](#schema-versions-and-pragmas-implemented), runs a
-bounded `PRAGMA quick_check`, and migrates the schema, and **nothing else**. In
-particular it issues no `PRAGMA key`, so **the relay database is not
-SQLCipher-encrypted** — `rusqlite` is built with the workspace's
-`bundled-sqlcipher` feature, but only the *client* vault applies a key
-(`sunrise_storage::db` derives it as
-`BLAKE3.derive_key("sunrise.sqlcipher_key.v1", vault_root)`). On the relay the
-file is a plain SQLite database, readable by anyone who can read the data dir.
+bounded `PRAGMA quick_check`, and migrates the schema, and **nothing else**.
 
-What that file exposes, stated plainly rather than left to inference:
+**Encryption at rest is the operator's choice, off by default.** With
+`[storage] encrypt = true` and a `key_file`, the whole file is
+SQLCipher-encrypted under that 32-byte raw key, header included
+([ADR-0060](../11-adr/0060-relay-database-encryption-at-rest.md),
+`crates/sunrise-server/src/store/cipher.rs`). The key comes from a file the
+operator holds outside the data dir, never from anything inside it, unlike the
+*client* vault, whose key `sunrise_storage::db` derives as
+`BLAKE3.derive_key("sunrise.sqlcipher_key.v1", vault_root)`. Without it, the
+file is a plain SQLite database, readable by anyone who can read the data dir.
+Either way the running relay reads every column below: encryption protects the
+file and its backups, not the data from the process that serves it.
+
+What the database holds, stated plainly rather than left to inference. The
+**Form** column is the value as the relay stores it; with encryption on, all of
+it is under the database key at rest:
 
 | Stored | Form | Notes |
 |---|---|---|
@@ -87,17 +96,22 @@ The schema is a numbered, append-only list of migrations in
 `crates/sunrise-server/src/store/migrations/mod.rs`, and the database records
 how far along it is in `PRAGMA user_version`. On open, `Store::open`:
 
-1. sets `busy_timeout` (`[storage] busy_timeout_ms`, default 5 s), so even the
+1. with a key configured, encrypts a plaintext file in place, once, keeping
+   the original as `sunrise.db.pre-encryption` (ADR-0060 §4); then applies the
+   key before any other statement, and refuses a file it does not open
+   (`WrongKey`), or an encrypted file with no key configured (`KeyRequired`),
+   both exit 78;
+2. sets `busy_timeout` (`[storage] busy_timeout_ms`, default 5 s), so even the
    next read waits out another process's lock rather than failing on it;
-2. reads `user_version` and refuses a database above the binary's newest
+3. reads `user_version` and refuses a database above the binary's newest
    migration, or below zero, with `StoreError::SchemaTooNew`. Nothing has
    written to the file at this point, and nothing does: the binary exits 78;
-3. sets `journal_mode = WAL`, then `synchronous = NORMAL` if WAL took, or
+4. sets `journal_mode = WAL`, then `synchronous = NORMAL` if WAL took, or
    `FULL` if it did not (a filesystem without shared memory keeps its rollback
    journal and logs `srv.store.wal_unavailable`), then `foreign_keys = ON`;
-4. runs `PRAGMA quick_check` under a 10 s watchdog and logs
+5. runs `PRAGMA quick_check` under a 10 s watchdog and logs
    `srv.store.quick_check`, starting regardless of the result;
-5. applies every migration above the database's version, each in its own
+6. applies every migration above the database's version, each in its own
    `BEGIN IMMEDIATE` transaction that also writes the new `user_version`, so a
    crash leaves the old schema at the old version or the new schema at the new
    one, and two processes opening one file cannot both apply a step.
@@ -340,6 +354,8 @@ account under a BLAKE3 of the account id:
 │                                     #   relay_frames, relay_frame_heads, relay_evicted,
 │                                     #   account_delete_tokens, blob_tombstones, device_cursors
 ├── sunrise.db-wal, sunrise.db-shm    # WAL and its index, present while the server runs
+├── sunrise.db.pre-encryption         # only after [storage] encrypt was turned on: the
+│                                     #   plaintext original, until the operator deletes it
 └── blobs/
     ├── pending/<acct_h>/<upload_id>/
     │   └── blobs/<xx>/<upload_hex>/<i>.bin
@@ -351,6 +367,9 @@ account under a BLAKE3 of the account id:
 `<acct_h>` is `BLAKE3(account_id)[..16]` in hex; `<upload_hex>` and `<blob_hex>`
 are the 32-hex bodies of `up_…` and `blb_…`. The inner `blobs/` segment is
 `BlobStore`'s own root, which is why it appears under an already-blob-rooted
-path. Backup is `tar` of the data dir
-while paused (or with a snapshot mechanism); because the op log lives in the
-database, that single file is the whole relay state.
+path. Backup is `sunrise-server admin backup` while the relay runs, or `tar`
+of the data dir while it is stopped (or a snapshot mechanism); because the op
+log lives in the database, that single file and `blobs/` are the whole relay
+state. [`self-hosting.md`](./self-hosting.md) §Backup has the procedure and
+§Restore the way back. Blob chunks are client-sealed ciphertext and are not
+encrypted again at rest; with `[storage] encrypt = true`, `sunrise.db` is.

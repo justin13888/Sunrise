@@ -41,7 +41,11 @@ jiff = { workspace = true }
 kynos = { workspace = true }
 jsonwebtoken = { workspace = true }
 parking_lot = { workspace = true }
-rusqlite = { workspace = true }
+# `backup` is SQLite's online backup API, which `admin backup` copies a live
+# database through (ADR-0060). Here rather than at the workspace root, because
+# no other member backs a database up, and the root's features are the ones the
+# web core's wasm build of `rusqlite` also takes.
+rusqlite = { workspace = true, features = ["backup"] }
 # The server is a native binary: the multi-threaded runtime, sockets, the
 # shutdown signal, and file I/O. The workspace root carries only the features
 # every target builds (it is what keeps `sunrise-core` building for wasm).
@@ -64,6 +68,8 @@ sunrise-log = { workspace = true }
 sunrise-pairing = { workspace = true }
 sunrise-storage = { workspace = true }
 sunrise-wire-protocol = { workspace = true }
+# The relay database key is wiped when its holder drops (ADR-0060).
+zeroize = { workspace = true }
 
 [dev-dependencies]
 ciborium = { workspace = true }
