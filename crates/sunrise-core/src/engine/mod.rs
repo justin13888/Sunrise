@@ -79,6 +79,7 @@ use thiserror::Error;
 
 mod attachment;
 mod block;
+mod chain;
 mod context;
 mod focus;
 mod identity;
@@ -102,6 +103,7 @@ mod tests;
 // resolving across this split. `META_STREAM` stays defined below; `hex_short`
 // moved to `ids` and is re-exported here at its old name.
 pub(crate) use self::attachment::read_attachment;
+pub use self::chain::ChainIntegrity;
 pub(crate) use self::ids::hex_short;
 use self::lww::LwwStamp;
 pub(crate) use self::revocation::{adopt_sponsor_read_bounds, read_bounds_for_pairing};
@@ -180,7 +182,7 @@ const FOCUS_PLAN_SCAN_CAP: u32 = 512;
 /// envelope still enters `ops`, and the op counts toward the contiguous prefix
 /// exactly like an applied one. Whether the cursor then moves past it is a
 /// question about the seqs *below* it and never about the refusal — see
-/// `crates/sunrise-core/src/engine/oplog.rs:925#upsert_sync_cursor`. Once it
+/// `crates/sunrise-core/src/engine/oplog.rs:938#upsert_sync_cursor`. Once it
 /// does, the relay will not re-send the op and nothing re-offers the key. Ops
 /// sealed under that `(stream, epoch)` therefore stay unreadable on this
 /// replica until the device is re-paired, which is what hands it every Stream

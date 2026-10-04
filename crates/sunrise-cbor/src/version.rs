@@ -114,7 +114,14 @@ pub const ENVELOPE_FORMAT_FLOOR: u16 = 3;
 /// move. A v7 build parks a `Patch` and replays it after an upgrade. This
 /// build applies one and never emits one: ADR-0044 §9 gates the first `Patch`
 /// on the vault's `vault_requires`, which does not exist yet (#324).
-pub const DOC_SCHEMA_V: u16 = 8;
+///
+/// `9` adds the `StreamDigest` control family (ADR-0043, issue #325): a
+/// replica's frontier in one stream and its digest, which a receiver compares
+/// with its own chain roots. Every v8 shape is unchanged, so the floor does
+/// not move. A v8 build parks a `StreamDigest` and replays it after an
+/// upgrade. Envelope fields 14 and 15 land with it, but they are container
+/// fields, not document schema, and move nothing here.
+pub const DOC_SCHEMA_V: u16 = 9;
 
 /// The first [`DOC_SCHEMA_V`] that has a fingerprint (ADR-0045 §3, `N_fp`).
 ///
@@ -151,6 +158,10 @@ pub const DOC_SCHEMA_FINGERPRINTS: &[(u16, [u8; 32])] = &[
     (
         8,
         hex32("69a555bc13a1b05143608bf16370bb6fcdb0268e514efdbc30df070049dbf58d"),
+    ),
+    (
+        9,
+        hex32("875fc9a8b8d426ff9c52dd6fa5ce2da8685903353fc58f98446c4825c2d7de01"),
     ),
 ];
 
@@ -396,4 +407,12 @@ pub const CRYPTO_SUITE_V: u16 = 5;
 /// and the deltas of a counter. The entity rows become its read projection.
 /// Schema-only: an entity the vault already held is seeded from its row the
 /// first time an op touches it.
-pub const STORAGE_V: u16 = 33;
+///
+/// `34` is migration `0034_op_chain.sql`, which adds the per-device op chains
+/// of ADR-0043 (issue #325): each op's `op_hash` and running chain root on
+/// `ops`, what the writer has listed in envelope field 15, the ops a later op
+/// named that this replica does not hold, the peer frontier entries it could
+/// not check yet, fork evidence, and digest disagreements. Schema-only: the
+/// hashes and roots of rows already held are computed from their envelopes
+/// the first time each device's prefix is folded.
+pub const STORAGE_V: u16 = 34;

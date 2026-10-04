@@ -559,6 +559,8 @@ fn op_payload(inner: InnerOp) -> OpPayload {
         | InnerOp::DeviceRevoke(_)
         | InnerOp::DeviceCertPublish(_)
         | InnerOp::IdentityTransition(_)
+        // A digest says what a replica holds, not what anyone did.
+        | InnerOp::StreamDigest(_)
         // A field-level write carries no whole task to diff against, and this
         // build never emits one (ADR-0044 §9). The timeline reads it once
         // commands emit it.

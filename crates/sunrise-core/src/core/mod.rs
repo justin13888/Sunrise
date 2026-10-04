@@ -1045,6 +1045,52 @@ impl Core {
         })?;
         Ok(sunrise_storage::Outbox::pending_count(&db)?)
     }
+
+    /// What this vault holds about op chains (ADR-0043): fork evidence,
+    /// digest disagreements with peers, and ops it knows it is missing. The
+    /// input to an integrity indicator.
+    ///
+    /// # Errors
+    /// [`CoreError::Closed`] after close; storage failures.
+    pub fn chain_integrity(&self) -> Result<crate::ChainIntegrity, CoreError> {
+        if *self.closed.lock() {
+            return Err(CoreError::Closed);
+        }
+        let db = self.db.lock();
+        Ok(self.engine.chain_integrity(&db)?)
+    }
+
+    /// How many ops this vault knows it should hold and does not. The sync
+    /// driver re-subscribes when this grows. A read failure reads as no
+    /// change, which leaves the timer as the backstop it already is.
+    pub(crate) fn sync_chain_wanted(&self) -> u64 {
+        let db = self.db.lock();
+        self.engine.chain_integrity(&db).map_or(0, |c| c.wanted)
+    }
+
+    /// Publish every stream digest that is due, and wake the outbox drain if
+    /// any was written. Returns how many were. A failure is logged and
+    /// publishes nothing; the next resync tick tries again.
+    pub(crate) fn sync_publish_due_digests(&self) -> usize {
+        let written = {
+            let mut db = self.db.lock();
+            match self.engine.publish_due_stream_digests(&mut db) {
+                Ok(n) => n,
+                Err(e) => {
+                    tracing::warn!(
+                        ev = "core.chain.digest_publish_failed",
+                        cause = %e,
+                        "stream digests were not published; the next resync retries"
+                    );
+                    0
+                }
+            }
+        };
+        if written > 0 && self.sync_shared.is_active() {
+            self.sync_shared.poke_submit();
+        }
+        written
+    }
 }
 
 impl Drop for Core {

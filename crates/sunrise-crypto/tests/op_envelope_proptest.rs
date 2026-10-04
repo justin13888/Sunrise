@@ -44,8 +44,8 @@ use sunrise_cbor::{CborValue, MAGIC_LEN};
 use sunrise_crypto::keys::{DeviceSigningKeyPair, StreamKey};
 use sunrise_crypto::op_envelope::open_envelope;
 use sunrise_crypto::{
-    decode_envelope, seal_envelope, sign_envelope, verify_envelope, AeadAlgId, OpEnvelope,
-    OpEnvelopeError, SigAlgId, AEAD_NONCE_LEN, AEAD_TAG_LEN,
+    decode_envelope, seal_envelope, sign_envelope, verify_envelope, AeadAlgId, ChainHead,
+    OpEnvelope, OpEnvelopeError, SigAlgId, AEAD_NONCE_LEN, AEAD_TAG_LEN,
 };
 
 /// Which header field a case alters when it checks that the signature and the
@@ -69,6 +69,11 @@ enum Tamper {
     /// Rewrite field 13 where it is present, or add one where it is not: a
     /// relay must not be able to strip or forge the schema fingerprint.
     SchemaFp,
+    /// Rewrite field 14 where it is present, or add one where it is not: a
+    /// relay must not be able to strip or forge a chain link.
+    PrevHash,
+    /// Rewrite field 15's first head, or add one: the causal claim is signed.
+    Heads,
     Payload,
     /// Add a field from a newer container format. The sender signed over the
     /// unknowns it carried, so an inserted one must break the signature too.
@@ -89,6 +94,18 @@ impl Tamper {
             Self::SchemaFp => match &mut env.schema_fp {
                 Some(fp) => fp[0] ^= 1,
                 None => env.schema_fp = Some([0; 8]),
+            },
+            Self::PrevHash => match &mut env.prev_hash {
+                Some(h) => h[0] ^= 1,
+                None => env.prev_hash = Some([0; 32]),
+            },
+            Self::Heads => match env.heads.first_mut() {
+                Some(h) => h.op_hash[0] ^= 1,
+                None => env.heads.push(ChainHead {
+                    device_id: [0; 16],
+                    seq: 1,
+                    op_hash: [0; 32],
+                }),
             },
             Self::Payload => {
                 // A signed-only envelope with an empty inner op has no byte to
@@ -120,6 +137,8 @@ fn tamper_strategy() -> impl Strategy<Value = Tamper> {
         Just(Tamper::Nonce),
         Just(Tamper::DocSchemaV),
         Just(Tamper::SchemaFp),
+        Just(Tamper::PrevHash),
+        Just(Tamper::Heads),
         Just(Tamper::Payload),
         Just(Tamper::AddUnknown),
     ]
@@ -141,6 +160,11 @@ struct Case {
     /// Field 13, present or absent. The codec takes it as written whatever
     /// `doc_schema_v` says, so the two are drawn independently.
     schema_fp: Option<[u8; 8]>,
+    /// Fields 14 and 15, present or absent, drawn independently of `seq`:
+    /// the codec takes them as written, and whether a link holds is the
+    /// receiver's question.
+    prev_hash: Option<[u8; 32]>,
+    heads: Vec<ChainHead>,
     inner: Vec<u8>,
     stream_key_bytes: [u8; 32],
     signing_seed: u64,
@@ -173,6 +197,8 @@ impl Case {
             sig: [0u8; 64],
             doc_schema_v: self.doc_schema_v,
             schema_fp: self.schema_fp,
+            prev_hash: self.prev_hash,
+            heads: self.heads.clone(),
             unknown: self.unknown.clone(),
         }
     }
@@ -265,7 +291,7 @@ fn doc_schema_strategy() -> impl Strategy<Value = u32> {
 /// Id `0` is drawn deliberately and is the whole reason the canonical-order
 /// assertion has teeth: it is the only id that sorts *below* every known field
 /// and is not itself a known field, so it is the only draw under which
-/// `encode_cbor`'s sort changes the emitted byte order at all. Ids 1..=13 are
+/// `encode_cbor`'s sort changes the emitted byte order at all. Ids 1..=15 are
 /// excluded because they are the known fields — an entry there would be a
 /// duplicate map key, which is a malformed envelope rather than a
 /// forward-compatible one, and so outside this property's domain.
@@ -280,10 +306,25 @@ fn unknown_strategy() -> impl Strategy<Value = BTreeMap<u64, CborValue>> {
     ];
     let id = prop_oneof![
         2 => Just(0u64),
-        3 => 14u64..64,
+        3 => 16u64..64,
     ];
     proptest::collection::btree_map(id, value, 0..3)
         .prop_map(|m| m.into_iter().map(|(k, v)| (k, CborValue(v))).collect())
+}
+
+/// Field 15: a set of heads, which the codec emits sorted by device id. A
+/// `btree_map` keyed by device id is that set; empty is the absent field.
+fn heads_strategy() -> impl Strategy<Value = Vec<ChainHead>> {
+    proptest::collection::btree_map(any::<[u8; 16]>(), (seq_strategy(), any::<[u8; 32]>()), 0..4)
+        .prop_map(|m| {
+            m.into_iter()
+                .map(|(device_id, (seq, op_hash))| ChainHead {
+                    device_id,
+                    seq,
+                    op_hash,
+                })
+                .collect()
+        })
 }
 
 fn case_strategy() -> impl Strategy<Value = Case> {
@@ -303,6 +344,8 @@ fn case_strategy() -> impl Strategy<Value = Case> {
             unknown_strategy(),
             tamper_strategy(),
             proptest::option::of(any::<[u8; 8]>()),
+            proptest::option::of(any::<[u8; 32]>()),
+            heads_strategy(),
         ),
     )
         .prop_map(
@@ -316,7 +359,7 @@ fn case_strategy() -> impl Strategy<Value = Case> {
                 nonce,
                 doc_schema_v,
                 inner,
-                (stream_key_bytes, signing_seed, unknown, tamper, schema_fp),
+                (stream_key_bytes, signing_seed, unknown, tamper, schema_fp, prev_hash, heads),
             )| {
                 Case {
                     stream_id,
@@ -335,6 +378,8 @@ fn case_strategy() -> impl Strategy<Value = Case> {
                     nonce,
                     doc_schema_v,
                     schema_fp,
+                    prev_hash,
+                    heads,
                     inner,
                     stream_key_bytes,
                     signing_seed,
@@ -421,6 +466,8 @@ proptest! {
         prop_assert_eq!(env.nonce, case.nonce);
         prop_assert_eq!(env.doc_schema_v, case.doc_schema_v);
         prop_assert_eq!(env.schema_fp, case.schema_fp);
+        prop_assert_eq!(env.prev_hash, case.prev_hash);
+        prop_assert_eq!(&env.heads, &case.heads);
         prop_assert_eq!(&env.unknown, &plain.unknown);
 
         // The signature verifies, and the payload comes back exactly.

@@ -7948,7 +7948,7 @@ fn a_self_refused_revoke_still_advances_the_cursor() {
 /// cursor counts the op anyway.**
 ///
 /// This is the delivery half of the gate at
-/// `crates/sunrise-core/src/engine/sync.rs:955#apply_control_op`. The two
+/// `crates/sunrise-core/src/engine/sync.rs:982#apply_control_op`. The two
 /// units that reach that gate today —
 /// `a_revoked_devices_third_party_envelope_claim_is_not_recorded` and
 /// `an_unwound_devices_third_party_envelope_claim_is_not_recorded` — call
@@ -17860,8 +17860,8 @@ fn ops_run_end_is_scoped_per_device_on_a_shared_stream() {
 
     // And the cursor `upsert_sync_cursor` writes carries the same answer.
     let tx = db.conn_mut().transaction().unwrap();
-    upsert_sync_cursor(&tx, &RUN_S, &RUN_D1).unwrap();
-    upsert_sync_cursor(&tx, &RUN_S, &RUN_D2).unwrap();
+    upsert_sync_cursor(&tx, &RUN_S, &RUN_D1, 0).unwrap();
+    upsert_sync_cursor(&tx, &RUN_S, &RUN_D2, 0).unwrap();
     tx.commit().unwrap();
     assert_eq!(cursor_for(&db, &RUN_S, &RUN_D1), 3);
     assert_eq!(cursor_row(&db, &RUN_S, &RUN_D2), Some(0));
@@ -18952,3 +18952,6 @@ fn a_finished_session_completes_a_task_in_an_unknown_state() {
 
 /// Per-field merge (ADR-0044): `Patch` ops and their convergence.
 mod field_merge;
+
+/// Per-device op chains, fork evidence and the stream digest (ADR-0043).
+mod op_chain;

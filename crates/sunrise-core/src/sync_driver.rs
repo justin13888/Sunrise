@@ -53,8 +53,15 @@
 //! issue #19 that costs the relay only the frames actually missing, so it is
 //! cheap enough to run on a timer ([`SyncConfig::resync_interval`]) as a
 //! backstop, and immediately — rate-limited by [`MIN_RESYNC_GAP`] — whenever
-//! the session sees evidence of loss: a retransmit, an undecodable frame, or a
-//! remote op that fails its integrity checks.
+//! the session sees evidence of loss: a retransmit, an undecodable frame, a
+//! remote op that fails its integrity checks, or an applied op or peer digest
+//! that names an op this vault does not hold (ADR-0043).
+//!
+//! **Inbound: digests.** The same timer publishes this vault's stream digests
+//! when they are due (`Core::sync_publish_due_digests`). Resync asks the relay
+//! for what lies past each cursor, which is only as good as the relay's view;
+//! a peer's digest is how a replica learns it is missing ops the relay never
+//! sent, or holds different ones.
 //!
 //! The timer is the guarantee and the evidence is the latency optimisation.
 //! Evidence alone would miss the case where the *last* frame in each direction
@@ -494,6 +501,11 @@ enum LossEvidence {
     /// A remote op failed signature, AEAD, or CBOR checks. Distinct from an op
     /// from an untrusted device, which is a policy outcome, not corruption.
     CorruptOp,
+    /// An applied op told this replica of an op it does not hold: a later op's
+    /// field 14 or 15, or a peer's stream digest (ADR-0043). Unlike the three
+    /// above this one names what is missing, and it is the only evidence a
+    /// relay that withholds the last op of a sequence leaves.
+    KnownMissing,
 }
 
 impl LossEvidence {
@@ -502,6 +514,7 @@ impl LossEvidence {
             Self::Retransmit => "retransmit",
             Self::UndecodableFrame => "undecodable_frame",
             Self::CorruptOp => "corrupt_op",
+            Self::KnownMissing => "known_missing",
         }
     }
 }
@@ -1149,6 +1162,10 @@ async fn session(
     let mut batch_counter: u64 = 0;
     let mut pending_sends: Vec<Vec<u8>> = Vec::new();
     let mut deadlines = Deadlines::new(schedule.resync_interval, schedule.clock);
+    // Ops this vault knows it lacks (ADR-0043). The session's own first
+    // Subscribe already asks for everything past the cursors, so only growth
+    // from here on is new evidence.
+    let mut chain_wanted = core.sync_chain_wanted();
 
     // Initial outbox drain (fresh session: everything unacked is (re)sent —
     // idempotent apply on the peer tolerates replays).
@@ -1259,6 +1276,10 @@ async fn session(
                     return SessionEnd::Disconnected;
                 }
                 if deadlines.resync_due() {
+                    // The digests that are due ride the same tick (ADR-0043
+                    // §5): the cadence is a day or 256 ops, so checking it
+                    // every interval is what makes either bound hold.
+                    core.sync_publish_due_digests();
                     match encode_subscribe_all(core) {
                         Ok(frame) => pending_sends.push(frame),
                         Err(()) => return SessionEnd::Disconnected,
@@ -1293,6 +1314,15 @@ async fn session(
                 {
                     return end;
                 }
+                // A frame that told this vault of an op it does not hold is
+                // loss evidence that names the loss: re-subscribe now rather
+                // than at the next tick. It is how a withheld last op, which
+                // leaves no gap, gets asked for at all.
+                let wanted = core.sync_chain_wanted();
+                if wanted > chain_wanted {
+                    deadlines.note_loss(LossEvidence::KnownMissing);
+                }
+                chain_wanted = wanted;
                 // An inbound batch is the only way an attachment created on
                 // another device becomes known here, so it is the trigger the
                 // fetch half needs: without it a device that stays connected
