@@ -126,6 +126,10 @@ pub struct StorageTable {
     pub pending_upload_ttl_hours: Option<u64>,
     /// [`ServerConfig::maintenance_interval_secs`].
     pub maintenance_interval_secs: Option<u64>,
+    /// [`ServerConfig::sqlite_encrypt`].
+    pub encrypt: Option<bool>,
+    /// [`ServerConfig::sqlite_key_file`].
+    pub key_file: Option<PathBuf>,
 }
 
 /// A parsed `sunrise.toml`.
@@ -241,6 +245,12 @@ impl FileConfig {
         }
         if let Some(v) = self.storage.maintenance_interval_secs {
             base.maintenance_interval_secs = v;
+        }
+        if let Some(v) = self.storage.encrypt {
+            base.sqlite_encrypt = v;
+        }
+        if let Some(v) = self.storage.key_file {
+            base.sqlite_key_file = Some(v);
         }
         base
     }
@@ -566,6 +576,29 @@ mod file_tests {
             .apply(ServerConfig::default());
         assert_eq!(one.account_delete_grace_days, 30);
         assert_eq!(one.retention().gc_grace_ms, 24 * 60 * 60 * 1000);
+    }
+
+    /// Encryption is off unless the file turns it on, and both keys reach the
+    /// model.
+    #[test]
+    fn encrypt_and_key_file_overlay_and_default_off() {
+        let defaults = FileConfig::parse("", "t.toml")
+            .unwrap()
+            .apply(ServerConfig::default());
+        assert!(!defaults.sqlite_encrypt);
+        assert_eq!(defaults.sqlite_key_file, None);
+
+        let cfg = FileConfig::parse(
+            "[storage]\nencrypt = true\nkey_file = \"/etc/sunrise/db.key\"",
+            "t.toml",
+        )
+        .unwrap()
+        .apply(ServerConfig::default());
+        assert!(cfg.sqlite_encrypt);
+        assert_eq!(
+            cfg.sqlite_key_file.as_deref(),
+            Some(std::path::Path::new("/etc/sunrise/db.key"))
+        );
     }
 
     #[test]

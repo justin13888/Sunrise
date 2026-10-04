@@ -456,20 +456,6 @@ impl Store {
         (s.relay_frames, s.relay_bytes) = crate::relay_log::totals(&conn)?;
         Ok(s)
     }
-
-    /// Write a consistent copy of the whole database to `dest`, which must not
-    /// exist.
-    ///
-    /// `VACUUM INTO` reads under one transaction, so the copy is a single
-    /// instant even while the relay keeps writing, and the result is one
-    /// self-contained file with no `-wal` beside it.
-    pub fn snapshot_to(&self, dest: &std::path::Path) -> Result<(), StoreError> {
-        let dest = dest
-            .to_str()
-            .ok_or_else(|| rusqlite::Error::InvalidPath(dest.to_path_buf()))?;
-        self.conn.lock().execute("VACUUM INTO ?1", params![dest])?;
-        Ok(())
-    }
 }
 
 #[cfg(test)]

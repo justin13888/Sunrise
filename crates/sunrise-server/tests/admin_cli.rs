@@ -98,6 +98,7 @@ fn doctor_checks_the_install_and_passes_on_a_sound_one() {
     for want in [
         "config",
         "database",
+        "encryption",
         "storage",
         "blob_root",
         "push",

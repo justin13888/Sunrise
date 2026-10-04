@@ -5,7 +5,8 @@ status: accepted
 # Push Notifications
 
 > **Implementation status: the APNs path is built; FCM, Web Push, the
-> `alert` tier, the `sunrise` payload block and `push_key.bin` are not.**
+> `alert` tier and the `sunrise` payload block are not; `push_key.bin` never
+> will be (ADR-0060).**
 > With `[push.apns]` configured
 > ([`self-hosting.md`](./self-hosting.md) §Config), every op batch
 > `POST /sync/ops` stores fresh wakes the account's other devices that hold an
@@ -59,19 +60,22 @@ Tokens live in the `push_tokens` table keyed `(device_id, platform)`, upserted
 on re-registration, and deleted in the same transaction that revokes the device
 — a revoked device silently stops being wakeable.
 
-**Tokens are stored in plaintext.** `push_tokens.token` is a `TEXT` column
-written verbatim by `Store::upsert_push_token`; there is no encryption at rest.
-The ChaCha20-Poly1305 scheme below is **not implemented**: no `push_key.bin` is
-generated or read anywhere, and the relay's SQLite database is not SQLCipher-keyed
-(see [`relay-and-blob-storage.md`](./relay-and-blob-storage.md)). An operator's
-backup of the data dir therefore *does* carry push tokens today.
+**Tokens are stored as written, and protected at rest with the rest of the
+database.** `push_tokens.token` is a `TEXT` column written verbatim by
+`Store::upsert_push_token`; there is no per-token encryption. With
+`[storage] encrypt = true` the whole relay database is SQLCipher-encrypted
+under a key file the operator keeps outside the data dir, so a copy of the
+data dir or a backup of it carries the tokens only as ciphertext
+([`self-hosting.md`](./self-hosting.md) §Encryption at rest). With encryption
+off, they are plaintext in the file and in every backup of it.
 
-The target, unchanged: server-side push-token encryption using
-**ChaCha20-Poly1305 with a 32-byte key** generated at server initialization and
-written to `<data_dir>/push_key.bin` (mode 0600). Operators **MUST** exclude
-this file from backups; a backup leak then does not leak push tokens. There is
-no key rotation — key loss invalidates all stored push tokens, and clients
-re-register on next sync.
+The per-token ChaCha20-Poly1305 scheme this section used to specify, under a
+`push_key.bin` excluded from backups, is **superseded** by
+[ADR-0060](../11-adr/0060-relay-database-encryption-at-rest.md) and will not be
+built. It protected against the same thing, a backup leaked without its key,
+and the database key file now does that for every column at once. The relay
+must read a token in the clear to hand it to APNs, so no at-rest scheme hides
+tokens from the running server.
 
 ## Push fanout flow (implemented for APNs)
 

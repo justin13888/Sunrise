@@ -9,7 +9,10 @@
 //! account delete <account_id> [--immediately]
 //!                                 mark it for deletion, or erase it now
 //! device revoke <device_id>       revoke a device row
-//! backup <dest_dir>               a consistent copy of the database and blobs
+//! backup <dest_dir>               a consistent copy of the database and blobs,
+//!                                 taken while the relay runs
+//! rekey <new_key_file>            re-encrypt the database under a new key,
+//!                                 with the relay stopped
 //! ```
 //!
 //! Output is a JSON document with `--json` and indented `key: value` lines
@@ -35,7 +38,8 @@ const EX_FAILURE: u8 = 1;
 
 const USAGE: &str = "usage: sunrise-server admin [-c <path>] [--json] \
     <doctor | stats | gc (--dry-run|--now) | account list | account show <id> | \
-    account delete <id> [--immediately] | device revoke <device_id> | backup <dest_dir>>";
+    account delete <id> [--immediately] | device revoke <device_id> | backup <dest_dir> | \
+    rekey <new_key_file>>";
 
 /// How a command ended.
 type Outcome = Result<Value, (u8, String)>;
@@ -164,6 +168,7 @@ fn dispatch(state: &ServerState, words: &[&str]) -> Outcome {
             Ok(json!({ "device_id": device_id, "account_id": owner, "revoked_at_ms": now_ms }))
         }
         ["backup", dest] => backup(state, Path::new(dest)),
+        ["rekey", new_key_file] => rekey(state, Path::new(new_key_file)),
         _ => Err((EX_USAGE, "unrecognised command".to_owned())),
     }
 }
@@ -198,6 +203,9 @@ fn doctor(state: &ServerState) -> Value {
         Ok(r) => check("database", "fail", format!("quick_check: {r}")),
         Err(e) => check("database", "fail", e.to_string()),
     }
+
+    let (status, detail) = encryption(state);
+    check("encryption", status, detail);
 
     let data_dir = cfg
         .sqlite_path
@@ -268,6 +276,37 @@ fn doctor(state: &ServerState) -> Value {
     json!({ "ok": ok, "checks": checks })
 }
 
+/// The `doctor` encryption check.
+///
+/// Opening the store already refused a key that is missing, wrong, or readable
+/// by others, so reaching here with encryption on means the key opened it.
+/// What is left to find is the plaintext copy the migration kept.
+fn encryption(state: &ServerState) -> (&'static str, String) {
+    let kept = state
+        .config
+        .sqlite_path
+        .as_deref()
+        .map(crate::store::pre_encryption_copy);
+    match kept.filter(|k| k.exists()) {
+        Some(k) => (
+            "fail",
+            format!(
+                "{} is the plaintext database as it was before encryption: once the relay has \
+                 run on the encrypted one, delete it (and any backup that holds it)",
+                k.display()
+            ),
+        ),
+        None if state.store.is_encrypted() => (
+            "ok",
+            "the database is SQLCipher-encrypted under [storage] key_file".to_owned(),
+        ),
+        None => (
+            "skipped",
+            "[storage] encrypt is off: the database is plaintext at rest".to_owned(),
+        ),
+    }
+}
+
 /// Write `len` bytes under `dir`, fsync, read them back, compare, and remove.
 fn write_read_back(dir: &Path, len: usize) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
@@ -326,13 +365,31 @@ fn tree_size(root: &Path) -> (u64, u64) {
         })
 }
 
-/// `VACUUM INTO` for the database, then a copy of the blob tree.
+/// The database through SQLite's online backup API, then the blob tree with
+/// its manifests last.
 ///
-/// The database copy is one instant. The blob copy is not, and does not need
-/// to be: chunk files are written to a temporary name and renamed into place,
-/// so every file copied is whole, and a blob finalized during the copy is
-/// either in it completely or missing its manifest, which a restore reads as
-/// "never uploaded". Temporary files are skipped.
+/// The database copy is one committed instant, under the live database's own
+/// key, and the relay's writes proceed while it is taken
+/// ([`crate::store::Store::backup_to`]). The blob copy is not one instant, and
+/// is made consistent by order instead:
+///
+/// 1. The manifests present are listed first. A manifest is written only after
+///    every chunk of its blob, and a finalized blob's chunks never change, so
+///    each listed blob is complete at this moment.
+/// 2. Every other file is copied: chunks are renamed into place whole, and
+///    temporaries are skipped.
+/// 3. The listed manifests are copied last, each one only if it still exists.
+///    Every removal takes a manifest before its chunks — blob collection,
+///    account erasure, and the orphan sweep alike — so a blob removed during
+///    step 2 is left without one.
+///
+/// A blob with no manifest in the backup reads as never uploaded. The only
+/// such blobs are ones finalized after the database copy was taken, which no
+/// op in it can name; ones collected during it, whose tombstones are in it;
+/// and ones of an account erased during it, which the backup still holds and
+/// a restore brings back with those blobs missing. Blobs come after the
+/// database for that reason: a client finalizes a blob before it publishes
+/// the op naming it.
 fn backup(state: &ServerState, dest: &Path) -> Outcome {
     if dest.exists() {
         return Err((
@@ -342,15 +399,68 @@ fn backup(state: &ServerState, dest: &Path) -> Outcome {
     }
     std::fs::create_dir_all(dest).map_err(failure)?;
     let database = dest.join("sunrise.db");
-    state.store.snapshot_to(&database).map_err(failure)?;
-    let (files, bytes) = copy_tree(&state.blob_root, &dest.join("blobs")).map_err(failure)?;
+    state.store.backup_to(&database).map_err(failure)?;
+    let blobs = dest.join("blobs");
+    let manifests = manifests_under(&state.blob_root).map_err(failure)?;
+    let (mut files, mut bytes) = copy_tree(&state.blob_root, &blobs).map_err(failure)?;
+    for manifest in manifests {
+        let Ok(rel) = manifest.strip_prefix(state.blob_root.as_path()) else {
+            continue;
+        };
+        let target = blobs.join(rel);
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent).map_err(failure)?;
+        }
+        match std::fs::copy(&manifest, &target) {
+            Ok(n) => {
+                files += 1;
+                bytes += n;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(failure(e)),
+        }
+    }
     Ok(json!({
         "database": database.display().to_string(),
+        "encrypted": state.store.is_encrypted(),
         "blob_files": files,
         "blob_bytes": bytes,
     }))
 }
 
+/// Whether `dir` is a blob manifest directory: `committed/<acct_h>/manifests`.
+fn is_manifest_dir(dir: &Path) -> bool {
+    dir.file_name().is_some_and(|n| n == "manifests")
+}
+
+/// Every file in a manifest directory under `root`.
+fn manifests_under(root: &Path) -> std::io::Result<Vec<PathBuf>> {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::new();
+    for entry in entries {
+        let entry = entry?;
+        let path = entry.path();
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        if is_manifest_dir(&path) {
+            for m in std::fs::read_dir(&path)? {
+                let m = m?;
+                if m.file_type()?.is_file() && !m.file_name().to_string_lossy().ends_with(".tmp") {
+                    out.push(m.path());
+                }
+            }
+        } else {
+            out.extend(manifests_under(&path)?);
+        }
+    }
+    Ok(out)
+}
+
+/// Copy `from` to `to`, skipping temporaries and manifest directories, which
+/// [`backup`] copies last.
 fn copy_tree(from: &Path, to: &Path) -> std::io::Result<(u64, u64)> {
     std::fs::create_dir_all(to)?;
     let Ok(entries) = std::fs::read_dir(from) else {
@@ -362,15 +472,49 @@ fn copy_tree(from: &Path, to: &Path) -> std::io::Result<(u64, u64)> {
         let target: PathBuf = to.join(entry.file_name());
         let kind = entry.file_type()?;
         if kind.is_dir() {
+            if is_manifest_dir(&entry.path()) {
+                continue;
+            }
             let (f, b) = copy_tree(&entry.path(), &target)?;
             files += f;
             bytes += b;
         } else if kind.is_file() && !entry.file_name().to_string_lossy().ends_with(".tmp") {
-            bytes += std::fs::copy(entry.path(), &target)?;
-            files += 1;
+            // A file removed between the listing and the copy — a blob
+            // collected, an upload swept — is not part of the backup.
+            match std::fs::copy(entry.path(), &target) {
+                Ok(n) => {
+                    bytes += n;
+                    files += 1;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e),
+            }
         }
     }
     Ok((files, bytes))
+}
+
+/// `rekey <new_key_file>`: re-encrypt the database under the key in
+/// `new_key_file`, with the relay stopped.
+///
+/// The new key file is held to the same rules as `[storage] key_file` — owner
+/// only, outside the data dir — because it is about to become it. The command
+/// does not edit the config: the operator points `key_file` at the new file
+/// before the next start, and the old key no longer opens the database.
+fn rekey(state: &ServerState, new_key_file: &Path) -> Outcome {
+    let mut probe = (*state.config).clone();
+    probe.sqlite_encrypt = true;
+    probe.sqlite_key_file = Some(new_key_file.to_owned());
+    let new = probe
+        .sqlite_key()
+        .map_err(failure)?
+        .ok_or_else(|| (EX_FAILURE, "no key was read".to_owned()))?;
+    state.store.rekey(&new).map_err(failure)?;
+    Ok(json!({
+        "rekeyed": true,
+        "key_file": new_key_file.display().to_string(),
+        "next": "set [storage] key_file to this file before the relay starts again",
+    }))
 }
 
 /// Indented `key: value` lines; arrays of objects as one block per element.
