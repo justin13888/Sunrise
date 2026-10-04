@@ -1952,6 +1952,55 @@ mod tests {
         );
     }
 
+    /// A re-sent batch the relay already holds wakes nobody: only a fresh
+    /// append queues a wake. The window is zero, so a second wake would be a
+    /// second push at once rather than coalescing into the first.
+    #[tokio::test]
+    async fn a_resent_duplicate_batch_wakes_nobody() {
+        let (tx, mut woken) = tokio::sync::mpsc::unbounded_channel();
+        let client = Client::from_state(ServerState::new(ServerConfig::default()).with_push(
+            crate::push::Dispatcher::with_tuning(
+                Arc::new(Recorder(tx)),
+                crate::push::Tuning {
+                    window_ms: 0,
+                    ..crate::push::Tuning::default()
+                },
+            ),
+        ));
+        let pair = push_pair(&client).await;
+        for _ in 0..2 {
+            assert_eq!(
+                phone_publishes(&client, &pair, STREAM_BYTES, 1).await,
+                StatusCode::OK
+            );
+        }
+        assert_eq!(client.metrics.get("sunrise_relay_batch_duplicate_total"), 1);
+
+        let push = tokio::time::timeout(std::time::Duration::from_secs(5), woken.recv())
+            .await
+            .expect("the fresh batch wakes the laptop")
+            .unwrap();
+        assert_eq!(push.registration.device_id, pair.laptop.0);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(200), woken.recv())
+                .await
+                .is_err(),
+            "the duplicate is one push in total, not two"
+        );
+        // The control: a fresh batch on the same stream is pushed at once
+        // under this window, so the silence above is the duplicate's.
+        assert_eq!(
+            phone_publishes(&client, &pair, STREAM_BYTES, 2).await,
+            StatusCode::OK
+        );
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(5), woken.recv())
+                .await
+                .is_ok(),
+            "a fresh batch after it is pushed"
+        );
+    }
+
     /// A device reading its event stream is sent its ops there, not a push;
     /// once the stream ends it is wakeable again.
     #[tokio::test]
