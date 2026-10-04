@@ -15,6 +15,7 @@
 
 pub mod chaos;
 pub mod cross_version;
+pub mod latency;
 
 use std::net::SocketAddr;
 use std::path::Path;

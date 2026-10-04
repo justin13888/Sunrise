@@ -13,7 +13,14 @@
 //!   corrupting a payload byte survives framing but fails AEAD verification
 //!   downstream — both are acceptable "tampered frame" outcomes.
 //! - **delay** — with a configured range, the frame is held for a uniformly
-//!   random [`Duration`] before it is forwarded (`tokio::time::sleep`).
+//!   random [`Duration`] before it is forwarded. On send the call sleeps and
+//!   then forwards, so a sender is blocked for the delay as it would be
+//!   waiting on its request's leg. On receive the delay is a link's
+//!   propagation delay: frames keep arriving while earlier ones wait, each
+//!   starts its own delay on arrival, and they are released in arrival order.
+//!   Holding them one at a time instead would cap a link at one frame per
+//!   delay and turn any steady stream into a growing queue, which is a
+//!   throughput limit no real network has.
 //! - **partition** — a runtime switch on [`FaultHandle`]; while partitioned all
 //!   sends and receives return a transport error, modelling a cut link.
 //!
@@ -29,6 +36,7 @@
 //! [`sunrise_test_seed`], which is the workspace's single reader of that
 //! variable — the property tests draw from the same one.
 
+use std::collections::VecDeque;
 use std::fmt;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -71,6 +79,22 @@ impl ToxicConfig {
             drop_prob: 0.0,
             corrupt_prob: 0.0,
             delay: None,
+        }
+    }
+
+    /// A clean link whose round trip averages `rtt`: each direction delays
+    /// every frame by `rtt / 2`, jittered uniformly by ±20 % from the seeded
+    /// RNG. No drop, no corruption.
+    ///
+    /// The shape the sync-latency harness injects (#366). A frame from one
+    /// device to another crosses two such links one way each — author to
+    /// relay, relay to reader — so it spends `rtt` on the wire on average.
+    #[must_use]
+    pub fn round_trip(rtt: Duration) -> Self {
+        let one_way = rtt / 2;
+        Self {
+            delay: Some((one_way.mul_f64(0.8), one_way.mul_f64(1.2))),
+            ..Self::passthrough()
         }
     }
 }
@@ -173,9 +197,10 @@ pub struct Toxic<T: Transport> {
     faults: FaultHandle,
     delay: Option<(Duration, Duration)>,
     rng: ChaCha20Rng,
-    /// An inbound frame already taken off `inner`, waiting out its delay.
+    /// Inbound frames already taken off `inner`, each waiting out its delay,
+    /// oldest first. Due times never decrease along the queue.
     ///
-    /// It lives here rather than on `recv_frame`'s stack because the driver
+    /// They live here rather than on `recv_frame`'s stack because the driver
     /// polls `recv_frame` inside a `select!` and drops the future whenever
     /// another branch wins. A frame held across an `await` on the stack goes
     /// with it — a loss no test asked the injector for, and one that grows
@@ -184,7 +209,10 @@ pub struct Toxic<T: Transport> {
     /// `tokio::time::Instant` rather than `std::time::Instant`: this is a
     /// transport deadline, not a reading of the wall clock the workspace lint
     /// is protecting, and it is what `sleep_until` takes.
-    held: Option<(Vec<u8>, tokio::time::Instant)>,
+    held: VecDeque<(Vec<u8>, tokio::time::Instant)>,
+    /// `inner` reported the end of its stream. What is still in `held` is
+    /// delivered first.
+    inner_ended: bool,
 }
 
 impl<T: Transport> fmt::Debug for Toxic<T> {
@@ -219,7 +247,8 @@ impl<T: Transport> Toxic<T> {
             faults: faults.clone(),
             delay: config.delay,
             rng: ChaCha20Rng::seed_from_u64(seed),
-            held: None,
+            held: VecDeque::new(),
+            inner_ended: false,
         };
         (toxic, faults)
     }
@@ -243,7 +272,8 @@ impl<T: Transport> Toxic<T> {
             faults,
             delay,
             rng: ChaCha20Rng::seed_from_u64(seed),
-            held: None,
+            held: VecDeque::new(),
+            inner_ended: false,
         }
     }
 
@@ -307,33 +337,67 @@ impl<T: Transport> Transport for Toxic<T> {
     }
 
     async fn recv_frame(&mut self) -> Result<Option<Vec<u8>>, TransportError> {
+        /// Which of the two things being waited on happened first.
+        enum Next {
+            /// The oldest held frame's delay has run out.
+            Due,
+            /// The inner transport produced something.
+            Inbound(Result<Option<Vec<u8>>, TransportError>),
+        }
+
         loop {
             if self.faults.is_partitioned() {
                 return Err(TransportError::Unavailable("partitioned".into()));
             }
-            // Both awaits below are resumption points, not restart points: the
-            // frame and its due time are parked in `self.held` before either
-            // one, so a cancelled poll costs latency and never a frame.
-            if self.held.is_none() {
-                let Some(frame) = self.inner.recv_frame().await? else {
+            let next_due = self.held.front().map(|(_, due)| *due);
+            if self.inner_ended {
+                // Nothing more is coming: release what is in flight, in order,
+                // and only then report the end.
+                let Some(due) = next_due else {
                     return Ok(None);
                 };
-                // Drop: swallow this inbound frame and keep waiting.
-                if self.rng.gen_bool(self.faults.drop_prob()) {
-                    continue;
-                }
-                let frame = self.maybe_corrupt(frame);
-                let due = tokio::time::Instant::now() + self.sample_delay();
-                self.held = Some((frame, due));
+                tokio::time::sleep_until(due).await;
+                return Ok(self.held.pop_front().map(|(frame, _)| frame));
             }
-            let Some((_, due)) = self.held.as_ref() else {
-                unreachable!("held was just filled");
+            // Both futures are resumption points, not restart points: every
+            // frame taken off `inner` is parked in `self.held` with its due
+            // time before anything else is awaited, so a cancelled poll costs
+            // latency and never a frame. Reading `inner` while a frame waits
+            // is what makes the delay a link's propagation delay rather than a
+            // serial hold: a frame that arrives while another is in flight
+            // starts its own delay at once, as it would on a wire.
+            let due_sleep = async move {
+                match next_due {
+                    Some(due) => tokio::time::sleep_until(due).await,
+                    None => std::future::pending::<()>().await,
+                }
             };
-            tokio::time::sleep_until(*due).await;
-            let Some((frame, _)) = self.held.take() else {
-                unreachable!("held was just filled");
+            let next = tokio::select! {
+                biased;
+                () = due_sleep => Next::Due,
+                got = self.inner.recv_frame() => Next::Inbound(got),
             };
-            return Ok(Some(frame));
+            match next {
+                Next::Due => return Ok(self.held.pop_front().map(|(frame, _)| frame)),
+                Next::Inbound(got) => {
+                    let Some(frame) = got? else {
+                        self.inner_ended = true;
+                        continue;
+                    };
+                    // Drop: swallow this inbound frame and keep waiting.
+                    if self.rng.gen_bool(self.faults.drop_prob()) {
+                        continue;
+                    }
+                    let frame = self.maybe_corrupt(frame);
+                    // Never earlier than the frame ahead of it: a link with a
+                    // jittered delay still delivers in order, as TCP does.
+                    let mut due = tokio::time::Instant::now() + self.sample_delay();
+                    if let Some((_, ahead)) = self.held.back() {
+                        due = due.max(*ahead);
+                    }
+                    self.held.push_back((frame, due));
+                }
+            }
         }
     }
 
