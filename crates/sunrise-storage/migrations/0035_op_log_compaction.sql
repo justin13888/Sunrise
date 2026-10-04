@@ -30,8 +30,11 @@
 -- ------
 --
 -- `compaction_floor` holds one floor per `(stream_id, device_id)`: `seq`, the
--- `op_hash` of the op at `seq`, and `root`, the chain root `root(device, seq)`.
--- A floor never falls.
+-- `op_hash` of the op at `seq`, `root`, the chain root `root(device, seq)`, and
+-- `hlc_ms` / `hlc_logical`, the op's stamp. A device's stamps only rise, so
+-- that stamp bounds every op the floor covers, which is what lets
+-- `Engine::prime_hlc` restore the clock once the ops themselves are gone. A
+-- floor never falls.
 --
 -- `peer_frontiers` holds the last frontier each peer published in a stream, one
 -- row per `(stream, peer, device)`: the peer holds every op of `device` through
@@ -45,11 +48,13 @@
 -- sealed and signed record, magic kind 4, verbatim; `digest` is the stream
 -- digest of its frontier.
 CREATE TABLE compaction_floor (
-    stream_id  BLOB NOT NULL,
-    device_id  BLOB NOT NULL,
-    seq        INTEGER NOT NULL,
-    op_hash    BLOB NOT NULL,
-    root       BLOB NOT NULL,
+    stream_id    BLOB NOT NULL,
+    device_id    BLOB NOT NULL,
+    seq          INTEGER NOT NULL,
+    op_hash      BLOB NOT NULL,
+    root         BLOB NOT NULL,
+    hlc_ms       INTEGER NOT NULL,
+    hlc_logical  INTEGER NOT NULL,
     PRIMARY KEY (stream_id, device_id)
 );
 

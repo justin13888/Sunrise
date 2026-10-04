@@ -713,6 +713,8 @@ pub(super) const SEED: &[SeedRow] = &[
             ("seq", I(263)),
             ("op_hash", B(&[0x67; 32])),
             ("root", B(&[0x68; 32])),
+            ("hlc_ms", I(HLC_MS + 50)),
+            ("hlc_logical", I(267)),
         ],
     },
     SeedRow {
