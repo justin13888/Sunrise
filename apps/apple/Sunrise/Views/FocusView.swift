@@ -163,6 +163,7 @@ struct PlanRowView: View {
             Spacer(minLength: 0)
             Button("Start") { Task { await start() } }
                 .buttonStyle(.borderedProminent)
+                .disabledUnlessEditable(.focusSession)
                 .accessibilityLabel("Start a session on “\(row.task.title)”")
         }
         .padding(.vertical, 3)

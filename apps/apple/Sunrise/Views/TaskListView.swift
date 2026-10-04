@@ -197,9 +197,12 @@ struct TaskRows: View {
         .dropHighlight(isActive: model.acceptsReordering && targeted == task.id)
         .contextMenu { rowMenu(task) }
         .swipeActions(edge: .trailing) {
-            Button("Delete", role: .destructive) { Task { await model.delete(task) } }
-            Button("Tomorrow") { Task { await model.defer_(task, byDays: 1) } }
-                .tint(.orange)
+            Group {
+                Button("Delete", role: .destructive) { Task { await model.delete(task) } }
+                Button("Tomorrow") { Task { await model.defer_(task, byDays: 1) } }
+                    .tint(.orange)
+            }
+            .disabledUnlessEditable(.task)
         }
     }
 
@@ -207,29 +210,42 @@ struct TaskRows: View {
     /// shortcut is required to have — see
     /// `docs/10-cross-cutting/accessibility.md`. Each item prints its key, so
     /// the menu teaches the keymap rather than merely duplicating it.
+    ///
+    /// "Edit…" stays open while the vault locks tasks on this build: the editor
+    /// shows the task and disables its own writes. Every other item writes.
     @ViewBuilder
     private func rowMenu(_ task: TaskItem) -> some View {
-        if task.state == .done || task.state == .cancelled {
-            Button("Reopen") { Task { await model.reopen(task) } }
-        } else {
-            Button(labelled("Complete", .markDone)) { Task { await model.complete(task) } }
+        Group {
+            if task.state == .done || task.state == .cancelled {
+                Button("Reopen") { Task { await model.reopen(task) } }
+            } else {
+                Button(labelled("Complete", .markDone)) { Task { await model.complete(task) } }
+            }
         }
+        .disabledUnlessEditable(.task)
         Button(labelled("Edit…", .openDetail)) { sheets.editing = task }
         Divider()
-        Button(labelled("Defer to tomorrow", .deferTask)) {
-            Task { await model.defer_(task, byDays: 1) }
+        Group {
+            Button(labelled("Defer to tomorrow", .deferTask)) {
+                Task { await model.defer_(task, byDays: 1) }
+            }
+            Button("Defer a week") { Task { await model.defer_(task, byDays: 7) } }
+            Button(labelled("Schedule…", .schedule)) { sheets.scheduling = TaskBatch([task]) }
+            Button(labelled("Move to stream…", .moveToStream)) {
+                sheets.moving = TaskBatch([task])
+            }
         }
-        Button("Defer a week") { Task { await model.defer_(task, byDays: 7) } }
-        Button(labelled("Schedule…", .schedule)) { sheets.scheduling = TaskBatch([task]) }
-        Button(labelled("Move to stream…", .moveToStream)) { sheets.moving = TaskBatch([task]) }
+        .disabledUnlessEditable(.task)
         Button(labelled("Start focus session", .focusMode)) {
             Task {
                 await model.startFocus(task)
                 escapes.showFocus()
             }
         }
+        .disabledUnlessEditable(.focusSession)
         Divider()
         Button("Delete", role: .destructive) { Task { await model.delete(task) } }
+            .disabledUnlessEditable(.task)
     }
 
     /// A menu title with its key beside it.

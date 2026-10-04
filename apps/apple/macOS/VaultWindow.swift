@@ -65,6 +65,7 @@ struct VaultWindow: View {
         } detail: {
             VStack(spacing: 0) {
                 SyncWarningBanner(presentation: sync.presentation)
+                ReadOnlyBanner(model: models.editGate)
                 // The other half of the first-run coachmark. Dismissing turns
                 // the preference off rather than hiding one instance: someone
                 // who has read it once has read it.
@@ -227,6 +228,10 @@ struct VaultWindow: View {
             session.renewSessionWhileOpen()
         }
         .task { await sync.poll(from: bridge) }
+        // A newer device can make this vault require a feature this build
+        // lacks at any moment, by sync; the gate follows the change feed.
+        .task { await models.editGate.follow(bridge) }
+        .environment(\.editGate, models.editGate)
         // The schedule is only correct until the next write. A task created on
         // the phone and synced here has to reach this Mac's notification
         // centre without anybody opening a screen — so this follows the change

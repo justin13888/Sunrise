@@ -51,6 +51,7 @@ struct BlockDraftSheetView: View {
                     }
                 }
                 .disabled(endsAt <= startsAt)
+                .disabledUnlessEditable(.block)
                 .keyboardShortcut(.defaultAction)
                 .accessibilityIdentifier("block.add")
             }
@@ -171,6 +172,7 @@ struct BlockEditorView: View {
                         dismiss()
                     }
                 }
+                .disabledUnlessEditable(.block)
                 .accessibilityIdentifier("block.delete")
             }
             ToolbarItem(placement: .confirmationAction) {
@@ -181,6 +183,7 @@ struct BlockEditorView: View {
                     }
                 }
                 .disabled(endsAt <= startsAt)
+                .disabledUnlessEditable(.block)
                 .keyboardShortcut(.defaultAction)
                 .accessibilityIdentifier("block.save")
             }

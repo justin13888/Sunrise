@@ -86,6 +86,7 @@ struct DailyBriefBody: View {
         )
         .contextMenu {
             Button("Complete") { Task { await complete(task) } }
+                .disabledUnlessEditable(.task)
             Button("Edit…") { editing = task }
             Divider()
             // The spans are the domain's, not this file's — see `SnoozeSpan`

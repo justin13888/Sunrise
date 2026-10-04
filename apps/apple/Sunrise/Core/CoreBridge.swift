@@ -88,6 +88,10 @@ actor CoreBridge {
     /// What the Undo and Redo menu items should say right now.
     func undoState() -> UndoState { core.undoState() }
 
+    /// What this build may edit in this vault: whether to show "Update
+    /// Sunrise to edit", and which edit actions to disable (ADR-0045 §8).
+    func editGate() throws -> EditGate { try core.editGate() }
+
     /// Parse a capture line without writing anything. Debounce before calling:
     /// each one costs two vault reads to resolve `#stream` and `@context`.
     func previewCapture(_ text: String, timeZone: String) async throws -> CapturePreview {

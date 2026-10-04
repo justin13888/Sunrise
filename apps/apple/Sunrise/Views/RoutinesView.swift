@@ -42,6 +42,7 @@ struct RoutinesView: View {
         .toolbar {
             ToolbarItem {
                 Button("New routine", systemImage: "plus") { creating = true }
+                    .disabledUnlessEditable(.routine)
             }
             ToolbarItem {
                 Menu("More", systemImage: "ellipsis.circle") {
