@@ -416,7 +416,8 @@ impl SunriseCore {
     /// [`BindingError::BadVaultRoot`], [`BindingError::RecoveryCode`],
     /// [`BindingError::StepUpRequired`], [`BindingError::RecoveryRefused`]
     /// (also for a directory that already holds a vault), and
-    /// [`BindingError::RecoveryIncomplete`].
+    /// [`BindingError::RecoveryIncomplete`] (also for a restored vault that
+    /// does not reopen).
     #[uniffi::constructor(default(catch_up_ms = 60000))]
     #[allow(clippy::too_many_arguments)]
     pub async fn recover_account(
@@ -476,7 +477,9 @@ impl SunriseCore {
 
         // The flow shut its core down, so the vault lock is free: open it
         // again the way every later launch will, which is also the proof that
-        // the root opens what the recovery wrote.
+        // the root opens what the recovery wrote. The vault is written and
+        // the device registered by now, so a failure here is still one whose
+        // root the caller must keep.
         let core = Core::open(
             CoreConfig::production(dir, app_version),
             Unlock::DevicePaired {
@@ -484,7 +487,8 @@ impl SunriseCore {
                 paired: None,
             },
         )
-        .await?;
+        .await
+        .map_err(recovery::reopen_failed)?;
         Ok(Self::wrap(core))
     }
 

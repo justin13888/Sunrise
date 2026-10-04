@@ -122,9 +122,28 @@ impl From<RestoreError> for BindingError {
     }
 }
 
+/// The reopen after a recovery that succeeded did not open.
+///
+/// [`BindingError::RecoveryIncomplete`] and never a plain core error: the
+/// vault under the restored identity is on disk and the device is registered,
+/// so the caller keeps the root it handed in. Discarding it would leave the
+/// restored vault unreadable.
+pub(crate) fn reopen_failed(e: sunrise_core::CoreError) -> BindingError {
+    BindingError::RecoveryIncomplete(format!("the vault was restored but did not reopen: {e}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_reopen_that_failed_keeps_the_root() {
+        let crossed = reopen_failed(sunrise_core::CoreError::Closed);
+        assert!(
+            matches!(crossed, BindingError::RecoveryIncomplete(_)),
+            "{crossed:?}"
+        );
+    }
 
     #[test]
     fn each_error_crosses_as_what_the_client_does_next() {
