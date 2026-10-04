@@ -118,6 +118,9 @@ pub async fn ops(
 ) -> Result<Json<OpsResponse>, Throttled> {
     let now_ms = state.clock.now_ms();
     let (_, session) = resolve(&state, &header, &caller, now_ms)?;
+    // A session opened before the deletion was confirmed must not keep
+    // writing into a log the erasure is about to remove.
+    crate::api::account_deletion::refuse_if_pending_deletion(&state, &session.account_id)?;
     let stream_id = parse_id(&body.stream_id, "stream_id")?;
     // Per op, before anything is stored: a refused batch stays in the outbox.
     let (limiter, n_ops) = (&state.limiter, body.ops.len() as u64);

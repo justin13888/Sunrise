@@ -35,6 +35,7 @@
 //! construction rather than by a check someone can forget, and dedup still
 //! works where it should — across one account's devices.
 
+use crate::api::account_deletion::refuse_if_pending_deletion;
 use crate::api::error::{codes, ApiError};
 use crate::api::ratelimit::policy::Budget;
 use crate::api::ratelimit::Throttled;
@@ -254,6 +255,7 @@ pub async fn init(
     if body.stream_id.trim().is_empty() {
         return Err(ApiError::validation("stream_id required").into());
     }
+    refuse_if_pending_deletion(&state, &caller.principal.account.account_id)?;
 
     let mut raw = [0u8; 16];
     getrandom::getrandom(&mut raw).map_err(|_| ApiError::internal())?;
@@ -293,6 +295,7 @@ pub async fn put_chunk(
             ApiError::validation(format!("chunk must be 1..={MAX_CHUNK_BYTES} bytes")).into(),
         );
     }
+    refuse_if_pending_deletion(&state, &caller.principal.account.account_id)?;
     state
         .limiter
         .charge(
@@ -355,6 +358,7 @@ pub async fn finalize(
         .iter()
         .map(|h| parse_hash(&h.0, "chunk_hashes"))
         .collect::<Result<_, _>>()?;
+    refuse_if_pending_deletion(&state, &caller.principal.account.account_id)?;
 
     let pending = pending_store(&state, &caller, &upload)?;
     // Re-hash what is actually on disk. The client's hashes are a claim; this
@@ -406,8 +410,21 @@ pub async fn finalize(
     }
     let chunk_count = u32::try_from(chunks.len()).map_err(|_| ApiError::internal())?;
     write_manifest(&state, &caller, &blob, chunk_count, size_bytes)?;
-    // Best effort: a leftover pending area costs disk, never correctness.
-    let _ = pending.delete_all(&upload);
+    // The same ciphertext uploaded again is the attachment coming back — a
+    // detach undone, or the same file attached elsewhere — so any tombstone
+    // on its content address no longer describes it.
+    state
+        .store
+        .clear_tombstone(&caller.principal.account.account_id, &blob)?;
+    // Best effort: a leftover pending area costs disk, never correctness, and
+    // the maintenance pass sweeps whatever this leaves. The whole upload
+    // directory rather than `delete_all`, which empties the chunk directory
+    // and left the upload's own directory behind on every finalize.
+    drop(pending);
+    let _ = std::fs::remove_dir_all(pending_dir(
+        &account_root(&state, &caller, PENDING),
+        &upload,
+    ));
     state.limiter.close_upload(&caller, upload);
 
     state.metrics.incr("sunrise_blob_finalize_total");
@@ -460,6 +477,81 @@ pub async fn fetch(
         blob,
         chunk_count,
         state.metrics.clone(),
+    )))
+}
+
+/// `DELETE /api/v1/blobs/{blob_id}` request body: the op that detached the
+/// blob, named by the cleartext routing head the relay already reads off
+/// every op.
+#[derive(Debug, Clone, Serialize, Deserialize, kynos::Schema)]
+#[serde(deny_unknown_fields)]
+pub struct BlobDeleteRequest {
+    /// The stream the detaching op was published in, 32 lowercase hex.
+    #[schema(pattern = "^[0-9a-f]{32}$")]
+    pub stream_id: String,
+    /// The device that published it — the op's routing `device_id`, as
+    /// subscribe cursors spell it: 32 lowercase hex.
+    #[schema(pattern = "^[0-9a-f]{32}$")]
+    pub device_id: String,
+    /// The op's `seq` from that device.
+    pub seq: u64,
+}
+
+/// `DELETE /api/v1/blobs/{blob_id}` response body.
+#[derive(Debug, Clone, Serialize, Deserialize, kynos::Schema)]
+#[serde(deny_unknown_fields)]
+pub struct BlobDeleteResponse {
+    /// The earliest the ciphertext may be reclaimed, ms since the epoch. It
+    /// is reclaimed on the first maintenance pass after this at which every
+    /// active device has acknowledged the op.
+    pub collect_after_ms: u64,
+}
+
+/// Tombstone a committed blob.
+///
+/// The ciphertext stays readable until it is collected: a device that has not
+/// yet applied the detach may still fetch it, which is the case the quorum in
+/// `docs/02-domain/attachments.md` §Deletion exists for. Tombstoning a blob
+/// already tombstoned keeps the first tombstone and its clock.
+#[kynos::delete("/api/v1/blobs/{blob_id}", operation_id = "deleteBlob")]
+pub async fn delete(
+    Inject(state): Inject<ServerState>,
+    Path(path): Path<BlobIdPath>,
+    Signed {
+        caller,
+        value: body,
+    }: Signed<BlobDeleteRequest>,
+) -> Result<kynos::response::status::Accepted<Json<BlobDeleteResponse>>, ApiError> {
+    let blob = parse_blob_id(&path.blob_id.0)?;
+    let stream_id = parse_hex16(&body.stream_id, "stream_id")?;
+    let origin_device = parse_hex16(&body.device_id, "device_id")?;
+    // The same `404` as a fetch, for the same reason: no oracle for whether
+    // another account holds this ciphertext.
+    read_manifest(&state, &caller, &blob)?.ok_or_else(not_found)?;
+
+    let now_ms = state.clock.now_ms();
+    let account_id = &caller.principal.account.account_id;
+    state.store.tombstone_blob(
+        account_id,
+        &crate::store::NewTombstone {
+            blob_key: blob,
+            stream_id,
+            origin_device,
+            seq: body.seq,
+            deleted_by: caller.device.as_ref().map(|d| d.device_id.clone()),
+        },
+        now_ms,
+    )?;
+    tracing::info!(
+        ev = "srv.blob.tombstoned",
+        account_h = %crate::logging::account_h(account_id),
+        blob_h = %crate::logging::id_h(&blob),
+        "blob tombstoned; collected once its grace period and quorum hold"
+    );
+    Ok(kynos::response::status::Accepted::new(Json(
+        BlobDeleteResponse {
+            collect_after_ms: now_ms.saturating_add(state.config.retention().gc_grace_ms),
+        },
     )))
 }
 
@@ -520,11 +612,43 @@ fn chunk_stream(
 /// disk — the same reasoning as `logging::account_h`, at full width because
 /// this one has to be collision-free rather than merely correlatable.
 fn account_root(state: &ServerState, caller: &Caller, area: &str) -> PathBuf {
-    let digest = blake3::hash(caller.principal.account.account_id.as_bytes());
-    state
-        .blob_root
+    account_dir(&state.blob_root, area, &caller.principal.account.account_id)
+}
+
+/// The per-account directory under `blob_root/<area>`, where `area` is
+/// [`PENDING`] or [`COMMITTED`]: the first 16 bytes of `BLAKE3(account_id)`,
+/// hex — the same key the relay log files the account's frames under.
+pub(crate) fn account_dir(blob_root: &std::path::Path, area: &str, account_id: &str) -> PathBuf {
+    blob_root
         .join(area)
-        .join(hex::encode(&digest.as_bytes()[..16]))
+        .join(hex::encode(crate::relay_log::account_key(account_id)))
+}
+
+/// Where uploads wait between `init` and `finalize`.
+pub(crate) const PENDING: &str = "pending";
+
+/// Where finalized blobs live.
+pub(crate) const COMMITTED: &str = "committed";
+
+/// Remove one committed blob of `account_id`: its manifest first, so a reader
+/// stops seeing it before any chunk goes, then its chunks.
+///
+/// Absent pieces are not an error, so a pass interrupted half-way finishes on
+/// the next one.
+pub(crate) fn delete_committed(
+    blob_root: &std::path::Path,
+    account_id: &str,
+    blob: &[u8; 16],
+) -> std::io::Result<()> {
+    let root = account_dir(blob_root, COMMITTED, account_id);
+    match std::fs::remove_file(root.join("manifests").join(hex::encode(blob))) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+    }
+    BlobStore::new(&root)
+        .and_then(|s| s.delete_all(blob))
+        .map_err(|e| std::io::Error::other(e.to_string()))
 }
 
 fn pending_store(
@@ -532,7 +656,7 @@ fn pending_store(
     caller: &Caller,
     upload: &[u8; 16],
 ) -> Result<BlobStore, ApiError> {
-    let root = pending_dir(&account_root(state, caller, "pending"), upload);
+    let root = pending_dir(&account_root(state, caller, PENDING), upload);
     BlobStore::new(&root).map_err(|_| ApiError::internal())
 }
 
@@ -556,11 +680,11 @@ fn pending_dir(root: &std::path::Path, upload: &[u8; 16]) -> PathBuf {
 }
 
 fn committed_store(state: &ServerState, caller: &Caller) -> Result<BlobStore, ApiError> {
-    BlobStore::new(&account_root(state, caller, "committed")).map_err(|_| ApiError::internal())
+    BlobStore::new(&account_root(state, caller, COMMITTED)).map_err(|_| ApiError::internal())
 }
 
 fn manifest_path(state: &ServerState, caller: &Caller, blob: &[u8; 16]) -> PathBuf {
-    account_root(state, caller, "committed")
+    account_root(state, caller, COMMITTED)
         .join("manifests")
         .join(hex::encode(blob))
 }
