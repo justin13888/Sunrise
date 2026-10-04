@@ -25,10 +25,16 @@
 //!    the attack that moves every surviving device onto a key the attacker
 //!    holds.
 //! 2. **No forgery of the acceptance.** `verify_successor_signature` alone, the
-//!    check the apply path runs before it knows the predecessor, succeeds only
-//!    for the frozen body *and* the frozen `prev_sig`: `next_sig` covers both,
-//!    which is what stops a successor signature being lifted onto another
-//!    predecessor's transition.
+//!    check the apply path runs before it knows the predecessor, verifies
+//!    `next_sig` under the body's *own* `to_id_s_pub`. So it accepts any body
+//!    correctly signed by the successor key that body names, and the fuzzer may
+//!    name a key it holds; what the check guarantees is only that whoever
+//!    authored the payload held the named successor's key. The harness
+//!    therefore asserts it for bodies naming the frozen successor
+//!    (`SUCCESSOR_SIGNING_PUBLIC`), whose key signed nothing but the frozen
+//!    transition: there it succeeds only for the frozen body *and* the frozen
+//!    `prev_sig`, because `next_sig` covers both, which is what stops a
+//!    successor signature being lifted onto another predecessor's transition.
 //! 3. **The two checks agree.** Full verification implies the successor check;
 //!    a body the chain fold believes must be one the apply path recorded.
 //! 4. **The two signatures cannot stand in for each other.** The pair swapped
@@ -42,7 +48,9 @@ use sunrise_crypto::{
     verify_identity_transition, verify_successor_signature, IdentityTransitionBody,
     IdentityTransitionSigs,
 };
-use sunrise_crypto_test_vectors::identity_transition::{transition, IDENTITY_SIGNING_PUBLIC};
+use sunrise_crypto_test_vectors::identity_transition::{
+    transition, IDENTITY_SIGNING_PUBLIC, SUCCESSOR_SIGNING_PUBLIC,
+};
 
 const SIGS_LEN: usize = 128;
 
@@ -74,8 +82,9 @@ fuzz_target!(|data: &[u8]| {
             "a transition nobody signed verified under the frozen outgoing identity"
         );
     }
-    // 2.
-    if successor.is_ok() {
+    // 2. Only a body naming the frozen successor: under a key the input names
+    // itself, a correct `next_sig` is the input's own signature, not a forgery.
+    if successor.is_ok() && body.to_id_s_pub == SUCCESSOR_SIGNING_PUBLIC {
         assert!(
             is_frozen_body && prev_sig == transition::PREV_SIG && next_sig == transition::NEXT_SIG,
             "a successor signature verified over a body or prev_sig it does not cover"
