@@ -47,6 +47,15 @@
 -- replica generated as the stream's compactor, or applied. `record` is the
 -- sealed and signed record, magic kind 4, verbatim; `digest` is the stream
 -- digest of its frontier.
+--
+-- `ops_by_target` serves the lookup the merge makes when it folds an entity's
+-- row in as the op that wrote it (`project::logged_op`): by the entity and the
+-- op's device and seq, with no stream to lead the unique index with. One fold
+-- per op was a scan per op; compaction folds every entity under a floor at
+-- once, and without the index that was a scan per entity, quadratic in the
+-- log.
+CREATE INDEX ops_by_target ON ops (target_id, device_id, seq);
+
 CREATE TABLE compaction_floor (
     stream_id    BLOB NOT NULL,
     device_id    BLOB NOT NULL,
