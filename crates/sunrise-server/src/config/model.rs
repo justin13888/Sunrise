@@ -43,18 +43,24 @@ pub struct ServerConfig {
     #[serde(default = "default_allow_signup")]
     pub allow_signup: bool,
     /// Whether `X-Sunrise-Device` + `X-Sunrise-Device-Sig` are mandatory on
-    /// authenticated REST requests (`header_sig_v1`).
+    /// authenticated REST requests (`header_sig_v2`), as the operator set it.
     ///
-    /// Defaults to **on wherever an OIDC issuer is configured**, and off for
-    /// the single-tenant self-host verifier, which has no devices to tell apart
-    /// and for which [`ConfigError::DeviceSigWithoutOidc`] rejects the flag
-    /// anyway. Set it explicitly to override either way.
+    /// `None` — unset — means "decide from the deployment", and
+    /// [`ServerConfig::device_sig_required`] is the only place that decision
+    /// is made: **on wherever an OIDC issuer is configured**, off for the
+    /// single-tenant self-host verifier, which has no devices to tell apart and
+    /// for which [`ConfigError::DeviceSigWithoutOidc`] rejects the flag anyway.
+    /// It is an `Option` rather than a resolved `bool` so that the default
+    /// holds for every way a `ServerConfig` is built — the TOML overlay, a
+    /// struct literal, `Default`, serde — and so that an explicit `false`
+    /// beside an issuer stays distinguishable from silence, which is what
+    /// `srv.start.device_sig_optional` warns on.
     ///
     /// When a binding *is* present it is always verified, whatever this says —
     /// the flag governs whether absence is tolerated, never whether a bad
     /// signature is.
     #[serde(default)]
-    pub require_device_sig: bool,
+    pub require_device_sig: Option<bool>,
     /// How often a live `/sync` session re-checks that its device is still
     /// registered, in milliseconds.
     ///
@@ -406,7 +412,7 @@ impl ServerConfig {
                 return Err(ConfigError::InsecureIssuer(issuer.clone()));
             }
         }
-        if self.require_device_sig && single_tenant {
+        if self.device_sig_required() && single_tenant {
             return Err(ConfigError::DeviceSigWithoutOidc);
         }
         // A misconfiguration that boots and then refuses every recovery is
@@ -490,6 +496,30 @@ impl ServerConfig {
             leeway_secs: self.token_leeway_secs,
         }
     }
+
+    /// Whether an authenticated request must carry a complete device binding.
+    ///
+    /// The one place the default is derived: an explicit
+    /// [`ServerConfig::require_device_sig`] wins, and an unset one is on
+    /// exactly when an OIDC issuer is configured. A relay with a real issuer
+    /// can tell devices apart, so leaving the binding optional there would
+    /// mean a stolen bearer alone is enough — the property device binding
+    /// exists to remove. Single-tenant self-host cannot tell devices apart at
+    /// all, and [`ServerConfig::validate`] rejects the combination outright,
+    /// so it stays off there.
+    #[must_use]
+    pub fn device_sig_required(&self) -> bool {
+        self.require_device_sig
+            .unwrap_or(self.oidc_issuer.is_some())
+    }
+
+    /// Whether the operator turned the binding off on a relay that has an
+    /// issuer — the one override that weakens the default rather than
+    /// restating it, and so the one `srv.start.device_sig_optional` names.
+    #[must_use]
+    pub fn device_sig_explicitly_optional(&self) -> bool {
+        self.oidc_issuer.is_some() && self.require_device_sig == Some(false)
+    }
 }
 
 /// The deadlines [`ServerConfig::retention`] derives, in one unit.
@@ -527,7 +557,7 @@ impl Default for ServerConfig {
             oidc_issuer: None,
             oidc_client_id: None,
             allow_signup: default_allow_signup(),
-            require_device_sig: false,
+            require_device_sig: None,
             device_recheck_ms: default_device_recheck_ms(),
             token_leeway_secs: default_token_leeway_secs(),
             jwks_default_ttl_secs: default_jwks_ttl_secs(),
@@ -691,9 +721,70 @@ mod tests {
     #[test]
     fn device_signatures_are_meaningless_under_the_self_host_verifier() {
         let mut c = cfg("127.0.0.1:8443");
-        c.require_device_sig = true;
+        c.require_device_sig = Some(true);
         assert_eq!(c.validate(true), Err(ConfigError::DeviceSigWithoutOidc));
         assert!(c.validate(false).is_ok());
+    }
+
+    /// The default is derived from the deployment for every way a
+    /// `ServerConfig` is built, not only the TOML overlay: `Default`, a struct
+    /// literal, and serde all leave the field unset, and an unset field
+    /// resolves on with an issuer and off without one. `FileConfig::apply`'s
+    /// half is `an_unset_device_sig_flag_follows_whether_an_issuer_is_configured`.
+    #[test]
+    fn an_unset_device_sig_flag_is_required_exactly_where_an_issuer_is_configured() {
+        let single = ServerConfig::default();
+        assert_eq!(single.require_device_sig, None);
+        assert!(!single.device_sig_required());
+        assert!(single.validate(true).is_ok(), "self-host must still boot");
+
+        let literal = ServerConfig {
+            oidc_issuer: Some("https://idp.example".into()),
+            oidc_client_id: Some("sunrise".into()),
+            ..ServerConfig::default()
+        };
+        assert!(literal.device_sig_required());
+        assert!(literal.validate(false).is_ok());
+
+        let deserialized: ServerConfig = serde_json::from_value(serde_json::json!({
+            "bind": "127.0.0.1:8443",
+            "server_app_v": "0",
+            "oidc_issuer": "https://idp.example",
+            "oidc_client_id": "sunrise",
+            "sqlite_path": null,
+            "blob_root": null,
+        }))
+        .expect("every other field has a serde default");
+        assert_eq!(deserialized.require_device_sig, None);
+        assert!(deserialized.device_sig_required());
+    }
+
+    /// An explicit setting wins in both directions, and only the explicit
+    /// `false` beside an issuer counts as weakening the default.
+    #[test]
+    fn an_explicit_device_sig_flag_wins_and_only_turning_it_off_with_an_issuer_is_flagged() {
+        let mut c = cfg("127.0.0.1:8443");
+        c.oidc_issuer = Some("https://idp.example".into());
+        c.oidc_client_id = Some("sunrise".into());
+        assert!(
+            !c.device_sig_explicitly_optional(),
+            "silence is the default"
+        );
+
+        c.require_device_sig = Some(false);
+        assert!(!c.device_sig_required());
+        assert!(c.device_sig_explicitly_optional());
+
+        c.require_device_sig = Some(true);
+        assert!(c.device_sig_required());
+        assert!(!c.device_sig_explicitly_optional());
+
+        let mut single = cfg("127.0.0.1:8443");
+        single.require_device_sig = Some(false);
+        assert!(
+            !single.device_sig_explicitly_optional(),
+            "off is already the self-host state; restating it weakens nothing"
+        );
     }
 
     /// A fresh self-host binary has to be able to provision its own first

@@ -41,6 +41,7 @@ See [`logging.md`](./logging.md) for the record schema and grammar, and
 |---|---|---|
 | `srv.start` | info | Listener bound. Carries `bind`, `mode` (`single_tenant`/`multi_tenant`), `app_v`, and the `wire_v`/`doc_v`/`crypto_v` protocol versions — the one place per process those versions appear. |
 | `srv.start.single_tenant` | warn | Self-host mode: every connection maps to one account. Loopback only. |
+| `srv.start.device_sig_optional` | warn | An OIDC issuer is configured and `[auth] require_device_sig = false` overrides the default: a request with no device binding is accepted on its bearer alone, so a revoked device that stops signing keeps writing. Emitted when the server state is built. |
 | `srv.start.metrics_withheld` | warn | `/metrics` was not mounted because the listener is not loopback; `bind`. The operation is absent from the OpenAPI description too, so the document does not advertise a surface this deployment refuses to serve. The operator surfaces are loopback-only per [`../06-server/overview.md`](../06-server/overview.md), so a public bind serves `404` there. Answers "why does my scrape 404". |
 | `srv.start.refused` | error | Config could not be resolved, read, parsed, or validated; the process is exiting 78 (`EX_CONFIG`) rather than serving. |
 | `srv.start.failed` | error | The listener could not bind; `bind`, `cause`. Distinct from `srv.start.refused`: the config was fine and the address was not available. |
