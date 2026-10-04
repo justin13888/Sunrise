@@ -22,7 +22,8 @@ the gate names, and every subprocess runs with its cwd there and
 repository's own source or allowlist by accident. The one case that does read
 them says so.
 
-Run it directly: `python3 .github/scripts/test_constant_time_gate.py`.
+Run it with `mise run constant-time-gate-test`, or directly:
+`python3 .github/scripts/test_constant_time_gate.py`.
 """
 
 from __future__ import annotations
