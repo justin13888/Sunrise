@@ -19,7 +19,7 @@ what an `Ack` means.
 
 ### What the relay actually keys on
 
-`batch_ops_hash` (`crates/sunrise-server/src/api/sync/publish.rs:292#batch_ops_hash`) is a
+`batch_ops_hash` (`crates/sunrise-server/src/api/sync/publish.rs:293#batch_ops_hash`) is a
 domain-separated BLAKE3 over the op count and each op's length-prefixed bytes.
 `Store::relay_append` (`crates/sunrise-server/src/relay_log.rs:207#relay_append`) looks that
 hash up in `relay_batches` inside the append transaction and returns

@@ -128,6 +128,74 @@ pub struct ServerConfig {
     /// The `[limits]` table: every rate limit the relay enforces.
     #[serde(default)]
     pub limits: super::limits::LimitsConfig,
+    /// The `[push]` table: the wake-up providers. Empty — the default — sends
+    /// no push at all; see `docs/06-server/push-notifications.md`.
+    #[serde(default)]
+    pub push: PushConfig,
+}
+
+/// The `[push]` table.
+///
+/// One sub-table per provider. Only APNs exists; FCM and Web Push are designed
+/// behind the same [`crate::push::PushProvider`] trait and not built.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct PushConfig {
+    /// `[push.apns]`. `None` leaves iOS devices to wake on their own schedule.
+    pub apns: Option<ApnsConfig>,
+}
+
+/// `[push.apns]`: token-based (`.p8`) authentication against APNs.
+///
+/// Every key is required. A partly written table is a refusal rather than a
+/// provider that fails on its first send, which an operator would only notice
+/// as phones that stopped syncing in the background.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ApnsConfig {
+    /// The `.p8` signing key Apple issued. Must not be readable by group or
+    /// others; the server refuses to start otherwise.
+    pub key_path: PathBuf,
+    /// The key's 10-character Key ID, the JWT `kid`.
+    pub key_id: String,
+    /// The 10-character Apple Developer Team ID, the JWT `iss`.
+    pub team_id: String,
+    /// The app's bundle id, sent as `apns-topic`.
+    pub topic: String,
+    /// Which APNs gateway the tokens were issued against.
+    pub environment: ApnsEnvironment,
+}
+
+/// The APNs gateway a device token belongs to.
+///
+/// A development build's token is valid only on the sandbox gateway and a
+/// release build's only on production, so this is a property of the app build
+/// the relay serves rather than a preference.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ApnsEnvironment {
+    /// `api.sandbox.push.apple.com`.
+    Sandbox,
+    /// `api.push.apple.com`.
+    Production,
+}
+
+impl ApnsEnvironment {
+    /// The gateway's origin.
+    #[must_use]
+    pub const fn endpoint(self) -> &'static str {
+        match self {
+            Self::Sandbox => "https://api.sandbox.push.apple.com",
+            Self::Production => "https://api.push.apple.com",
+        }
+    }
+}
+
+/// Whether `s` is an Apple 10-character identifier (Key ID, Team ID).
+fn is_apple_id(s: &str) -> bool {
+    s.len() == 10
+        && s.bytes()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
 }
 
 /// 2 MiB: comfortably above the largest legitimate REST body (a device cert or
@@ -239,6 +307,15 @@ pub enum ConfigError {
          hostnames are not resolved, because a proxy's address is what the socket reports"
     )]
     BadTrustedProxy(String),
+    /// A `[push.apns]` key that cannot be what Apple issued.
+    #[error(
+        "[push.apns] {0} is not a 10-character Apple identifier (uppercase letters and digits), \
+         so every token minted with it would be refused by APNs"
+    )]
+    BadApnsId(&'static str),
+    /// An empty `[push.apns] topic`.
+    #[error("[push.apns] topic is empty; it must be the app's bundle id")]
+    EmptyApnsTopic,
 }
 
 impl ServerConfig {
@@ -296,6 +373,19 @@ impl ServerConfig {
         // be what reveals a value that never worked.
         if let Some(key) = self.limits.first_zero() {
             return Err(ConfigError::ZeroLimit(key));
+        }
+        // The key file itself is checked where it is read, in
+        // `crate::push::from_config`: this half is pure.
+        if let Some(apns) = &self.push.apns {
+            if !is_apple_id(&apns.key_id) {
+                return Err(ConfigError::BadApnsId("key_id"));
+            }
+            if !is_apple_id(&apns.team_id) {
+                return Err(ConfigError::BadApnsId("team_id"));
+            }
+            if apns.topic.trim().is_empty() {
+                return Err(ConfigError::EmptyApnsTopic);
+            }
         }
         Ok(())
     }
@@ -361,6 +451,7 @@ impl Default for ServerConfig {
             shutdown_grace_secs: default_shutdown_grace_secs(),
             trusted_proxies: Vec::new(),
             limits: super::limits::LimitsConfig::default(),
+            push: PushConfig::default(),
         }
     }
 }
@@ -551,6 +642,52 @@ mod tests {
         assert!(
             d.allowed_origins.is_empty(),
             "no browser origin may be permitted by default"
+        );
+        assert_eq!(d.push, PushConfig::default(), "no push provider by default");
+    }
+
+    /// An APNs table whose identifiers cannot be Apple's is refused by name:
+    /// every JWT minted from it would be rejected, and the operator would see
+    /// phones that stopped waking rather than this error.
+    #[test]
+    fn an_apns_table_with_malformed_identifiers_is_refused() {
+        let apns = ApnsConfig {
+            key_path: PathBuf::from("/etc/sunrise/AuthKey.p8"),
+            key_id: "ABC123DEFG".into(),
+            team_id: "DEF123GHIJ".into(),
+            topic: "dev.sunrise.app".into(),
+            environment: ApnsEnvironment::Production,
+        };
+        let mut c = cfg("127.0.0.1:8443");
+        c.push.apns = Some(apns.clone());
+        assert!(c.validate(true).is_ok());
+
+        c.push.apns = Some(ApnsConfig {
+            key_id: "abc123defg".into(),
+            ..apns.clone()
+        });
+        assert_eq!(c.validate(true), Err(ConfigError::BadApnsId("key_id")));
+        c.push.apns = Some(ApnsConfig {
+            team_id: "SHORT".into(),
+            ..apns.clone()
+        });
+        assert_eq!(c.validate(true), Err(ConfigError::BadApnsId("team_id")));
+        c.push.apns = Some(ApnsConfig {
+            topic: " ".into(),
+            ..apns
+        });
+        assert_eq!(c.validate(true), Err(ConfigError::EmptyApnsTopic));
+    }
+
+    #[test]
+    fn each_apns_environment_names_its_own_gateway() {
+        assert_eq!(
+            ApnsEnvironment::Sandbox.endpoint(),
+            "https://api.sandbox.push.apple.com"
+        );
+        assert_eq!(
+            ApnsEnvironment::Production.endpoint(),
+            "https://api.push.apple.com"
         );
     }
 }

@@ -62,7 +62,9 @@ pub use auth::{AuthError, NullVerifier, StaticVerifier, Subject, TokenVerifier, 
 pub use config::ServerConfig;
 pub use logging::{account_h, id_h};
 pub use metrics::Metrics;
-pub use push::{LoggingProvider, PushIntent, PushPlatform, PushProvider, PushTokenRegistration};
+pub use push::{
+    ApnsProvider, Dispatcher, PushIntent, PushPlatform, PushProvider, PushTokenRegistration,
+};
 pub use relay::RelayHub;
 pub use state::{Clock, ServerState, SystemClock};
 pub use store::{Account, Device, Store, StoreError};

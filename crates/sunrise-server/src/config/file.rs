@@ -143,6 +143,10 @@ pub struct FileConfig {
     /// whose every key defaults, so a table that sets one limit changes one
     /// limit — the same overlay rule as the tables above.
     pub limits: Option<super::LimitsConfig>,
+    /// The `[push]` table, deserialized straight into the model's type. Its
+    /// `[push.apns]` sub-table has no defaults: written at all, it is written
+    /// whole.
+    pub push: Option<super::PushConfig>,
 }
 
 impl FileConfig {
@@ -178,6 +182,9 @@ impl FileConfig {
         }
         if let Some(v) = self.limits {
             base.limits = v;
+        }
+        if let Some(v) = self.push {
+            base.push = v;
         }
         if let Some(v) = self.auth.oidc_issuer {
             base.oidc_issuer = Some(v);
@@ -554,6 +561,51 @@ mod file_tests {
         let e = FileConfig::parse("[tls]\nmode = \"acme\"", "t.toml").unwrap_err();
         let msg = e.to_string();
         assert!(msg.contains("tls"), "{msg}");
+    }
+
+    /// `[push.apns]` is read whole into the model, and a table missing a key
+    /// or carrying an unknown one is refused rather than half-applied.
+    #[test]
+    fn the_apns_table_is_read_whole_or_refused() {
+        let cfg = FileConfig::parse(
+            r#"
+            [push.apns]
+            key_path = "/etc/sunrise/AuthKey_ABC123DEFG.p8"
+            key_id = "ABC123DEFG"
+            team_id = "DEF123GHIJ"
+            topic = "dev.sunrise.app"
+            environment = "sandbox"
+            "#,
+            "t.toml",
+        )
+        .unwrap()
+        .apply(ServerConfig::default());
+        let apns = cfg.push.apns.as_ref().expect("the table is applied");
+        assert_eq!(
+            apns.key_path,
+            PathBuf::from("/etc/sunrise/AuthKey_ABC123DEFG.p8")
+        );
+        assert_eq!(apns.environment, super::super::ApnsEnvironment::Sandbox);
+        assert!(cfg.validate(true).is_ok());
+
+        let missing = FileConfig::parse(
+            "[push.apns]\nkey_id = \"ABC123DEFG\"\nteam_id = \"DEF123GHIJ\"\n\
+             topic = \"t\"\nenvironment = \"production\"",
+            "t.toml",
+        )
+        .unwrap_err();
+        assert!(missing.to_string().contains("key_path"), "{missing}");
+
+        let unknown = FileConfig::parse("[push.fcm]\nproject = \"p\"", "t.toml").unwrap_err();
+        assert!(unknown.to_string().contains("fcm"), "{unknown}");
+
+        let bad_env = FileConfig::parse(
+            "[push.apns]\nkey_path = \"k\"\nkey_id = \"ABC123DEFG\"\n\
+             team_id = \"DEF123GHIJ\"\ntopic = \"t\"\nenvironment = \"staging\"",
+            "t.toml",
+        )
+        .unwrap_err();
+        assert!(bad_env.to_string().contains("staging"), "{bad_env}");
     }
 
     #[test]
