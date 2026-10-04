@@ -89,6 +89,9 @@ fn bench_compaction(c: &mut Criterion) {
 
     for n in sizes() {
         let mut vault = open_vault(5);
+        // A wall-clock reading of the bench's own setup, not of the vault's
+        // clock, which is fixed.
+        #[allow(clippy::disallowed_methods)]
         let seeding = std::time::Instant::now();
         seed_tasks(&mut vault, n, 11);
         eprintln!(
