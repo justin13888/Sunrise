@@ -67,7 +67,10 @@ an unknown top-level field, an unknown enum value, an unknown `SunriseTime` kind
 inside `due_at`, and an unknown op kind (`cross_version/future.rs`). Each is a
 `HEAD` `Task` with that one thing added, sealed with `seal_envelope` as device
 C, which `HEAD` pairs to B and which therefore holds a real cert and the Inbox
-key. C writes nothing on the Inbox itself, so the harness owns that sequence.
+key. The harness owns C's Inbox sequence, so C's own core is shut down once
+setup has synced the account: a live `HEAD` core publishes a `StreamDigest`
+into every stream it has applied an op in ([ADR-0043](./0043-commit-tree.md)
+§5), at the seq the harness's first op also takes.
 
 These ops do not go through the relay. The harness hands each one to A and to B
 with `apply_remote`, at points the scenario chooses: to one side now and to the
