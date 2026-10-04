@@ -27,6 +27,10 @@ use sunrise_crypto_test_vectors as vectors;
 const FUTURE_SMALL_FIELD: u64 = 23;
 const FUTURE_LARGE_FIELD: u64 = 40;
 
+/// Field 13 as a writer one document-schema version newer would stamp it: the
+/// prefix of a fingerprint this build has no registry entry for (ADR-0045 §3).
+const NEWER_SCHEMA_FP: [u8; 8] = [0x5f; 8];
+
 fn fixture_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
@@ -59,6 +63,9 @@ fn synthetic_v2_envelope() -> Vec<u8> {
         OpEnvelope {
             v: u32::from(sunrise_cbor::ENVELOPE_FORMAT_V),
             doc_schema_v: u32::from(sunrise_cbor::DOC_SCHEMA_V) + 1,
+            // A newer writer stamps its own version's fingerprint, which this
+            // build has no registry entry for and so cannot check.
+            schema_fp: Some(NEWER_SCHEMA_FP),
             stream_id: vectors::STREAM_ID,
             device_id: vectors::DEVICE_ID,
             seq: 11,
@@ -102,6 +109,11 @@ fn unknown_envelope_fields_round_trip_byte_for_byte() {
         env.doc_schema_v,
         u32::from(sunrise_cbor::DOC_SCHEMA_V) + 1,
         "the payload schema is newer than this build's"
+    );
+    assert_eq!(
+        env.schema_fp,
+        Some(NEWER_SCHEMA_FP),
+        "field 13 is read as written, though this build cannot check it"
     );
     assert_eq!(
         env.unknown.len(),
@@ -157,6 +169,7 @@ fn next_container_envelope() -> (Vec<u8>, StreamKey) {
         OpEnvelope {
             v: u32::from(ENVELOPE_FORMAT_V) + 1,
             doc_schema_v: u32::from(sunrise_cbor::DOC_SCHEMA_V),
+            schema_fp: sunrise_cbor::doc_schema_fp_prefix(u32::from(sunrise_cbor::DOC_SCHEMA_V)),
             stream_id: vectors::STREAM_ID,
             device_id: vectors::DEVICE_ID,
             seq: 12,

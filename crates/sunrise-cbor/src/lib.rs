@@ -34,6 +34,7 @@ pub use envelope_header::{
 pub use hlc::{Hlc, HlcError, MAX_DRIFT_MS};
 pub use magic::{decode_prefix, write_prefix, MagicError, MagicKind, MagicPrefix, MAGIC_LEN};
 pub use version::{
-    CRYPTO_SUITE_V, DOC_SCHEMA_FLOOR, DOC_SCHEMA_V, ENVELOPE_FORMAT_FLOOR, ENVELOPE_FORMAT_V,
-    STORAGE_V, WIRE_PROTO_V,
+    doc_schema_fingerprint, doc_schema_fp_prefix, CRYPTO_SUITE_V, DOC_SCHEMA_FINGERPRINTS,
+    DOC_SCHEMA_FLOOR, DOC_SCHEMA_FP_DOMAIN, DOC_SCHEMA_FP_FIRST, DOC_SCHEMA_FP_PREFIX_LEN,
+    DOC_SCHEMA_V, ENVELOPE_FORMAT_FLOOR, ENVELOPE_FORMAT_V, STORAGE_V, WIRE_PROTO_V,
 };

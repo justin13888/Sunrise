@@ -96,7 +96,94 @@ pub const ENVELOPE_FORMAT_FLOOR: u16 = 3;
 /// different `DOC_SCHEMA_V` opens the vault (issue #320, ADR-0045 §4). That
 /// replay is keyed on this constant, so a new variant MUST move it, or a
 /// parked op of that kind is not retried until something else does.
-pub const DOC_SCHEMA_V: u16 = 6;
+///
+/// `7` is the first version with a fingerprint (issue #323, ADR-0045 §2–§3):
+/// [`DOC_SCHEMA_FP_FIRST`]. Its shapes are the ones v6 had plus what landed
+/// since without a bump, all of it additive: the `Unknown` arm of every
+/// lossless enum (#321), unknown maps on every nested record and
+/// `SunriseTime`'s unknown kind (#322). A writer at 7 stamps envelope field
+/// 13 with the first 8 bytes of the fingerprint registered here, and every
+/// later version MUST be registered in [`DOC_SCHEMA_FINGERPRINTS`] in the
+/// change that bumps it. A test in `sunrise-core` fails while the generated
+/// schema's fingerprint differs from this version's entry, so a shape cannot
+/// change without the bump.
+pub const DOC_SCHEMA_V: u16 = 7;
+
+/// The first [`DOC_SCHEMA_V`] that has a fingerprint (ADR-0045 §3, `N_fp`).
+///
+/// An envelope below it carries no field 13 and is read under the legacy
+/// rules. A writer at or above it MUST emit field 13.
+pub const DOC_SCHEMA_FP_FIRST: u16 = 7;
+
+// The build's own version is fingerprinted, so its writer can stamp field 13.
+const _: () = assert!(DOC_SCHEMA_V >= DOC_SCHEMA_FP_FIRST);
+
+/// BLAKE3 `derive_key` context for the document-schema fingerprint
+/// (ADR-0045 §2): `fp = BLAKE3::derive_key(this, JCS(schema))`.
+pub const DOC_SCHEMA_FP_DOMAIN: &str = "sunrise.doc_schema.fingerprint.v1";
+
+/// How many leading bytes of the fingerprint envelope field 13 carries.
+pub const DOC_SCHEMA_FP_PREFIX_LEN: usize = 8;
+
+/// Every document-schema version that has a fingerprint, to that fingerprint,
+/// in version order. **Append-only.**
+///
+/// This is the build's registry: the writer stamps envelope field 13 from it,
+/// and a receiver compares field 13 against it. It is committed as
+/// `schemas/doc-schema/registry.json`, and each entry is frozen as a literal
+/// in `sunrise-crypto-test-vectors` (`protocol::DOC_SCHEMA_REGISTRY`), so an
+/// entry that is edited or removed fails a test. An entry is what every build
+/// that shipped it believes its version means; changing one makes two builds
+/// disagree while their version numbers say they agree, which is the failure
+/// the fingerprint exists to catch.
+pub const DOC_SCHEMA_FINGERPRINTS: &[(u16, [u8; 32])] = &[(
+    7,
+    hex32("fb893b62bb2f9bf7d9adf7ba95d5bee20498a63aa0e03c4f14a7a28a7d0d6fcb"),
+)];
+
+/// The registered fingerprint of document schema `v`, or `None` for a version
+/// this build has no entry for: one before [`DOC_SCHEMA_FP_FIRST`], or one
+/// newer than this build.
+#[must_use]
+pub fn doc_schema_fingerprint(v: u32) -> Option<[u8; 32]> {
+    DOC_SCHEMA_FINGERPRINTS
+        .iter()
+        .find(|(known, _)| u32::from(*known) == v)
+        .map(|(_, fp)| *fp)
+}
+
+/// What envelope field 13 carries for document schema `v`: the first
+/// [`DOC_SCHEMA_FP_PREFIX_LEN`] bytes of its registered fingerprint, or `None`
+/// where [`doc_schema_fingerprint`] has no entry.
+#[must_use]
+pub fn doc_schema_fp_prefix(v: u32) -> Option<[u8; DOC_SCHEMA_FP_PREFIX_LEN]> {
+    doc_schema_fingerprint(v).map(|fp| {
+        let mut prefix = [0u8; DOC_SCHEMA_FP_PREFIX_LEN];
+        prefix.copy_from_slice(&fp[..DOC_SCHEMA_FP_PREFIX_LEN]);
+        prefix
+    })
+}
+
+/// Decode 64 lowercase hex digits at compile time. A wrong length or digit in
+/// a registry entry is a compile error.
+const fn hex32(s: &str) -> [u8; 32] {
+    const fn nibble(c: u8) -> u8 {
+        match c {
+            b'0'..=b'9' => c - b'0',
+            b'a'..=b'f' => c - b'a' + 10,
+            _ => panic!("registry fingerprints are lowercase hex"),
+        }
+    }
+    let b = s.as_bytes();
+    assert!(b.len() == 64, "a fingerprint is 64 hex digits");
+    let mut out = [0u8; 32];
+    let mut i = 0;
+    while i < 32 {
+        out[i] = (nibble(b[2 * i]) << 4) | nibble(b[2 * i + 1]);
+        i += 1;
+    }
+    out
+}
 
 /// Lowest [`DOC_SCHEMA_V`] this build can still interpret.
 ///

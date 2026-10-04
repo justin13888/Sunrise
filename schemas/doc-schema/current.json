@@ -1,0 +1,1130 @@
+{
+    "entities": [
+        {
+            "features": [],
+            "merge": "lww",
+            "ops": [
+                {
+                    "class": "create",
+                    "inner_kind": "attachment.create",
+                    "payload": "Attachment",
+                    "target": "id",
+                    "variant": "AttachmentCreate"
+                },
+                {
+                    "class": "delete",
+                    "inner_kind": "attachment.delete",
+                    "payload": "Attachment",
+                    "target": "id",
+                    "variant": "AttachmentDelete"
+                }
+            ],
+            "owner": "parent",
+            "prefix": "att_",
+            "records": [
+                {
+                    "fields": [
+                        {
+                            "crdt": "register",
+                            "name": "blob_id",
+                            "type": "[u8;16]"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "blob_key",
+                            "type": "[u8;32]"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "chunk_count",
+                            "type": "u32"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "ciphertext_hash",
+                            "type": "[u8;32]"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "content_hash",
+                            "type": "[u8;32]"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "created_at",
+                            "type": "Timestamp"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "deleted",
+                            "type": "bool"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "filename",
+                            "type": "String"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "id",
+                            "type": "EntityRef"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "mime_type",
+                            "type": "String"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "parent",
+                            "type": "EntityRef"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "size_bytes",
+                            "type": "u64"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "updated_at",
+                            "type": "Timestamp"
+                        }
+                    ],
+                    "keeps_unknowns": true,
+                    "name": "Attachment"
+                }
+            ],
+            "tag": "attachment"
+        },
+        {
+            "features": [],
+            "merge": "lww",
+            "ops": [
+                {
+                    "class": "create",
+                    "inner_kind": "block.create",
+                    "payload": "Block",
+                    "target": "id",
+                    "variant": "BlockCreate"
+                },
+                {
+                    "class": "delete",
+                    "inner_kind": "block.delete",
+                    "payload": "Block",
+                    "target": "id",
+                    "variant": "BlockDelete"
+                },
+                {
+                    "class": "update",
+                    "inner_kind": "block.update",
+                    "payload": "Block",
+                    "target": "id",
+                    "variant": "BlockUpdate"
+                }
+            ],
+            "owner": {
+                "field": "stream_id"
+            },
+            "prefix": "blk_",
+            "records": [
+                {
+                    "fields": [
+                        {
+                            "crdt": "register",
+                            "name": "created_at",
+                            "type": "Timestamp"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "deleted",
+                            "type": "bool"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "ends_at",
+                            "type": "SunriseTime"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "id",
+                            "type": "EntityRef"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "starts_at",
+                            "type": "SunriseTime"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "stream_id",
+                            "type": "EntityRef"
+                        },
+                        {
+                            "crdt": "or_set",
+                            "name": "tasks",
+                            "type": "BTreeSet<EntityRef>"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "title",
+                            "type": "Option<String>"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "title_track_task",
+                            "type": "bool"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "updated_at",
+                            "type": "Timestamp"
+                        }
+                    ],
+                    "keeps_unknowns": true,
+                    "name": "Block"
+                }
+            ],
+            "tag": "block"
+        },
+        {
+            "features": [],
+            "merge": "lww",
+            "ops": [
+                {
+                    "class": "create",
+                    "inner_kind": "context.create",
+                    "payload": "Context",
+                    "target": "id",
+                    "variant": "ContextCreate"
+                },
+                {
+                    "class": "delete",
+                    "inner_kind": "context.delete",
+                    "payload": "Context",
+                    "target": "id",
+                    "variant": "ContextDelete"
+                },
+                {
+                    "class": "update",
+                    "inner_kind": "context.update",
+                    "payload": "Context",
+                    "target": "id",
+                    "variant": "ContextUpdate"
+                }
+            ],
+            "owner": "meta",
+            "prefix": "ctx_",
+            "records": [
+                {
+                    "fields": [
+                        {
+                            "crdt": "register",
+                            "name": "archived",
+                            "type": "bool"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "created_at",
+                            "type": "Timestamp"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "deleted",
+                            "type": "bool"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "description",
+                            "type": "Option<String>"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "id",
+                            "type": "EntityRef"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "name",
+                            "type": "String"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "updated_at",
+                            "type": "Timestamp"
+                        }
+                    ],
+                    "keeps_unknowns": true,
+                    "name": "Context"
+                }
+            ],
+            "tag": "context"
+        },
+        {
+            "features": [],
+            "merge": "control",
+            "ops": [],
+            "owner": "meta",
+            "prefix": "dev_",
+            "records": [],
+            "tag": "device"
+        },
+        {
+            "features": [],
+            "merge": "append_only",
+            "ops": [
+                {
+                    "class": "update",
+                    "inner_kind": "focus.end",
+                    "payload": "FocusEnd",
+                    "target": "session_id",
+                    "variant": "FocusEnd"
+                },
+                {
+                    "class": "update",
+                    "inner_kind": "focus.interrupt",
+                    "payload": "Interruption",
+                    "target": "session_id",
+                    "variant": "FocusInterrupt"
+                },
+                {
+                    "class": "create",
+                    "inner_kind": "focus.start",
+                    "payload": "FocusStart",
+                    "target": "id",
+                    "variant": "FocusStart"
+                }
+            ],
+            "owner": {
+                "field": "stream_id"
+            },
+            "prefix": "fcs_",
+            "records": [
+                {
+                    "fields": [
+                        {
+                            "crdt": "register",
+                            "name": "actual_focused_ms",
+                            "type": "u64"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "completed_task",
+                            "type": "bool"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "ended_at_ms",
+                            "type": "Timestamp"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "interruptions",
+                            "type": "Vec<Interruption>"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "session_id",
+                            "type": "EntityRef"
+                        }
+                    ],
+                    "keeps_unknowns": true,
+                    "name": "FocusEnd"
+                },
+                {
+                    "fields": [
+                        {
+                            "crdt": "register",
+                            "name": "chunk",
+                            "type": "Option<Chunk>"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "energy",
+                            "type": "Option<Energy>"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "id",
+                            "type": "EntityRef"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "kind",
+                            "type": "FocusKind"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "planned_ms",
+                            "type": "Option<u64>"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "started_at_ms",
+                            "type": "Timestamp"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "stream_id",
+                            "type": "EntityRef"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "task_id",
+                            "type": "EntityRef"
+                        }
+                    ],
+                    "keeps_unknowns": true,
+                    "name": "FocusStart"
+                },
+                {
+                    "fields": [
+                        {
+                            "crdt": "register",
+                            "name": "at_ms",
+                            "type": "Timestamp"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "reason",
+                            "type": "InterruptionReason"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "session_id",
+                            "type": "EntityRef"
+                        }
+                    ],
+                    "keeps_unknowns": false,
+                    "name": "Interruption"
+                }
+            ],
+            "tag": "focus_session"
+        },
+        {
+            "features": [],
+            "merge": "control",
+            "ops": [],
+            "owner": "meta",
+            "prefix": "idn_",
+            "records": [],
+            "tag": "identity"
+        },
+        {
+            "features": [],
+            "merge": "unsynced",
+            "ops": [],
+            "owner": "unowned",
+            "prefix": "not_",
+            "records": [
+                {
+                    "fields": [
+                        {
+                            "crdt": "register",
+                            "name": "body",
+                            "type": "NoteBody"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "created_at",
+                            "type": "Timestamp"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "deleted",
+                            "type": "bool"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "id",
+                            "type": "EntityRef"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "parent",
+                            "type": "EntityRef"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "updated_at",
+                            "type": "Timestamp"
+                        }
+                    ],
+                    "keeps_unknowns": true,
+                    "name": "Note"
+                }
+            ],
+            "tag": "note"
+        },
+        {
+            "features": [],
+            "merge": "unsynced",
+            "ops": [],
+            "owner": "unowned",
+            "prefix": "prs_",
+            "records": [
+                {
+                    "fields": [
+                        {
+                            "crdt": "register",
+                            "name": "created_at",
+                            "type": "Timestamp"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "deleted",
+                            "type": "bool"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "display_name",
+                            "type": "String"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "id",
+                            "type": "EntityRef"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "identity_id",
+                            "type": "Option<EntityRef>"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "updated_at",
+                            "type": "Timestamp"
+                        }
+                    ],
+                    "keeps_unknowns": true,
+                    "name": "Person"
+                }
+            ],
+            "tag": "person"
+        },
+        {
+            "features": [],
+            "merge": "append_only",
+            "ops": [
+                {
+                    "class": "create",
+                    "inner_kind": "review.snapshot",
+                    "payload": "ReviewSnapshot",
+                    "target": "id",
+                    "variant": "ReviewSnapshotCreate"
+                }
+            ],
+            "owner": "meta",
+            "prefix": "rvw_",
+            "records": [
+                {
+                    "fields": [
+                        {
+                            "crdt": "register",
+                            "name": "created_at",
+                            "type": "Timestamp"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "id",
+                            "type": "EntityRef"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "note",
+                            "type": "Option<String>"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "streaks",
+                            "type": "Vec<StreakRow>"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "streams",
+                            "type": "Vec<ReviewSnapshotStream>"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "totals",
+                            "type": "ReviewTotals"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "window_end_ms",
+                            "type": "Timestamp"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "window_start_ms",
+                            "type": "Timestamp"
+                        }
+                    ],
+                    "keeps_unknowns": true,
+                    "name": "ReviewSnapshot"
+                }
+            ],
+            "tag": "review_snapshot"
+        },
+        {
+            "features": [],
+            "merge": "lww",
+            "ops": [
+                {
+                    "class": "create",
+                    "inner_kind": "routine.create",
+                    "payload": "Routine",
+                    "target": "id",
+                    "variant": "RoutineCreate"
+                },
+                {
+                    "class": "delete",
+                    "inner_kind": "routine.delete",
+                    "payload": "Routine",
+                    "target": "id",
+                    "variant": "RoutineDelete"
+                },
+                {
+                    "class": "update",
+                    "inner_kind": "routine.update",
+                    "payload": "Routine",
+                    "target": "id",
+                    "variant": "RoutineUpdate"
+                }
+            ],
+            "owner": "meta",
+            "prefix": "rtn_",
+            "records": [
+                {
+                    "fields": [
+                        {
+                            "crdt": "register",
+                            "name": "archived",
+                            "type": "bool"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "catchup_policy",
+                            "type": "RoutineCatchupPolicy"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "created_at",
+                            "type": "Timestamp"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "deleted",
+                            "type": "bool"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "ends_at",
+                            "type": "Option<Timestamp>"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "forgiveness_enabled",
+                            "type": "bool"
+                        },
+                        {
+                            "crdt": "derived",
+                            "name": "forgivenesses_in_window",
+                            "type": "u32"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "grace_window_s",
+                            "type": "Option<u64>"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "id",
+                            "type": "EntityRef"
+                        },
+                        {
+                            "crdt": "derived",
+                            "name": "last_completed_at",
+                            "type": "Option<Timestamp>"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "paused",
+                            "type": "bool"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "paused_until",
+                            "type": "Option<Timestamp>"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "rrule",
+                            "type": "RRule"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "scheduling_constraints",
+                            "type": "Vec<ScheduleConstraint>"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "skip_dates",
+                            "type": "Vec<Timestamp>"
+                        },
+                        {
+                            "crdt": "or_set",
+                            "name": "skipped_keys",
+                            "type": "Vec<String>"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "starts_at",
+                            "type": "Timestamp"
+                        },
+                        {
+                            "crdt": "derived",
+                            "name": "streak_counter",
+                            "type": "i64"
+                        },
+                        {
+                            "crdt": "or_set",
+                            "name": "streak_keys",
+                            "type": "Vec<String>"
+                        },
+                        {
+                            "crdt": "derived",
+                            "name": "streak_started_at",
+                            "type": "Option<Timestamp>"
+                        },
+                        {
+                            "crdt": "nested",
+                            "name": "template",
+                            "type": "TaskTemplate"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "timezone",
+                            "type": "String"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "updated_at",
+                            "type": "Timestamp"
+                        }
+                    ],
+                    "keeps_unknowns": true,
+                    "name": "Routine"
+                },
+                {
+                    "fields": [
+                        {
+                            "crdt": "register",
+                            "name": "body",
+                            "type": "Option<NoteBody>"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "contexts",
+                            "type": "Vec<EntityRef>"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "energy",
+                            "type": "Option<Energy>"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "estimated_duration_s",
+                            "type": "Option<u64>"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "priority",
+                            "type": "Option<u8>"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "stream_id",
+                            "type": "EntityRef"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "title",
+                            "type": "String"
+                        }
+                    ],
+                    "keeps_unknowns": true,
+                    "name": "TaskTemplate"
+                }
+            ],
+            "tag": "routine"
+        },
+        {
+            "features": [],
+            "merge": "lww",
+            "ops": [
+                {
+                    "class": "create",
+                    "inner_kind": "stream.create",
+                    "payload": "Stream",
+                    "target": "id",
+                    "variant": "StreamCreate"
+                },
+                {
+                    "class": "delete",
+                    "inner_kind": "stream.delete",
+                    "payload": "Stream",
+                    "target": "id",
+                    "variant": "StreamDelete"
+                },
+                {
+                    "class": "update",
+                    "inner_kind": "stream.update",
+                    "payload": "Stream",
+                    "target": "id",
+                    "variant": "StreamUpdate"
+                }
+            ],
+            "owner": "meta",
+            "prefix": "str_",
+            "records": [
+                {
+                    "fields": [
+                        {
+                            "crdt": "register",
+                            "name": "archived",
+                            "type": "bool"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "color",
+                            "type": "StreamColor"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "created_at",
+                            "type": "Timestamp"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "default_context",
+                            "type": "Option<EntityRef>"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "deleted",
+                            "type": "bool"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "description",
+                            "type": "Option<NoteBody>"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "icon",
+                            "type": "Option<String>"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "id",
+                            "type": "EntityRef"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "name",
+                            "type": "String"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "parent_id",
+                            "type": "Option<EntityRef>"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "paused",
+                            "type": "bool"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "paused_until",
+                            "type": "Option<Timestamp>"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "reminder_lead_s",
+                            "type": "Option<u32>"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "review_cadence",
+                            "type": "StreamReviewCadence"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "sort_order",
+                            "type": "String"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "updated_at",
+                            "type": "Timestamp"
+                        }
+                    ],
+                    "keeps_unknowns": true,
+                    "name": "Stream"
+                }
+            ],
+            "tag": "stream"
+        },
+        {
+            "features": [],
+            "merge": "lww",
+            "ops": [
+                {
+                    "class": "create",
+                    "inner_kind": "task.create",
+                    "payload": "Task",
+                    "target": "id",
+                    "variant": "TaskCreate"
+                },
+                {
+                    "class": "delete",
+                    "inner_kind": "task.delete",
+                    "payload": "Task",
+                    "target": "id",
+                    "variant": "TaskDelete"
+                },
+                {
+                    "class": "update",
+                    "inner_kind": "task.update",
+                    "payload": "Task",
+                    "target": "id",
+                    "variant": "TaskUpdate"
+                }
+            ],
+            "owner": {
+                "field": "stream_id"
+            },
+            "prefix": "tsk_",
+            "records": [
+                {
+                    "fields": [
+                        {
+                            "crdt": "register",
+                            "name": "archived",
+                            "type": "bool"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "assignee",
+                            "type": "Option<EntityRef>"
+                        },
+                        {
+                            "crdt": "or_set",
+                            "name": "blocked_by",
+                            "type": "BTreeSet<EntityRef>"
+                        },
+                        {
+                            "crdt": "derived",
+                            "name": "blocks",
+                            "type": "BTreeSet<EntityRef>"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "body",
+                            "type": "Option<NoteBody>"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "completed_at",
+                            "type": "Option<SunriseTime>"
+                        },
+                        {
+                            "crdt": "or_set",
+                            "name": "contexts",
+                            "type": "BTreeSet<EntityRef>"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "created_at",
+                            "type": "Timestamp"
+                        },
+                        {
+                            "crdt": "counter",
+                            "name": "deferred_count",
+                            "type": "i64"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "deleted",
+                            "type": "bool"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "due_at",
+                            "type": "Option<SunriseTime>"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "energy",
+                            "type": "Option<Energy>"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "estimated_duration_s",
+                            "type": "Option<u64>"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "id",
+                            "type": "EntityRef"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "priority",
+                            "type": "Option<u8>"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "reminder_lead_s",
+                            "type": "Option<u32>"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "routine_id",
+                            "type": "Option<EntityRef>"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "routine_occurrence",
+                            "type": "Option<Timestamp>"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "scheduled_at",
+                            "type": "Option<SunriseTime>"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "scheduling_constraints",
+                            "type": "Vec<ScheduleConstraint>"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "state",
+                            "type": "TaskState"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "stream_id",
+                            "type": "EntityRef"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "title",
+                            "type": "String"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "updated_at",
+                            "type": "Timestamp"
+                        }
+                    ],
+                    "keeps_unknowns": true,
+                    "name": "Task"
+                }
+            ],
+            "tag": "task"
+        }
+    ],
+    "enums": [
+        {
+            "fallback": "soft",
+            "name": "ConstraintSeverity",
+            "variants": ["hard", "soft"]
+        },
+        {
+            "fallback": "med",
+            "name": "Energy",
+            "variants": ["high", "low", "med"]
+        },
+        {
+            "fallback": "work",
+            "name": "FocusKind",
+            "variants": ["break", "work"]
+        },
+        {
+            "fallback": null,
+            "name": "Frequency",
+            "variants": ["DAILY", "MONTHLY", "WEEKLY", "YEARLY"]
+        },
+        {
+            "fallback": "other",
+            "name": "InterruptionReason",
+            "variants": ["blocked", "meeting", "other", "self"]
+        },
+        {
+            "fallback": "skip",
+            "name": "RoutineCatchupPolicy",
+            "variants": ["merge", "queue", "skip"]
+        },
+        {
+            "fallback": "slate",
+            "name": "StreamColor",
+            "variants": [
+                "amber",
+                "emerald",
+                "indigo",
+                "pink",
+                "rose",
+                "sky",
+                "slate",
+                "violet"
+            ]
+        },
+        {
+            "fallback": "weekly",
+            "name": "StreamReviewCadence",
+            "variants": ["biweekly", "monthly", "none", "weekly"]
+        },
+        {
+            "fallback": "todo",
+            "name": "TaskState",
+            "variants": ["cancelled", "done", "in_progress", "todo"]
+        },
+        {
+            "fallback": null,
+            "name": "Weekday",
+            "variants": ["FR", "MO", "SA", "SU", "TH", "TU", "WE"]
+        }
+    ],
+    "format": 1,
+    "op_kinds": [
+        "AttachmentCreate",
+        "AttachmentDelete",
+        "BlockCreate",
+        "BlockDelete",
+        "BlockUpdate",
+        "ContextCreate",
+        "ContextDelete",
+        "ContextUpdate",
+        "DeviceCertPublish",
+        "DeviceRevoke",
+        "FocusEnd",
+        "FocusInterrupt",
+        "FocusStart",
+        "IdentityTransition",
+        "KeyEnvelope",
+        "ReviewSnapshotCreate",
+        "RoutineCreate",
+        "RoutineDelete",
+        "RoutineUpdate",
+        "StreamCreate",
+        "StreamDelete",
+        "StreamUpdate",
+        "TaskCreate",
+        "TaskDelete",
+        "TaskUpdate"
+    ]
+}

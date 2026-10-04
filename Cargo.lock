@@ -3077,6 +3077,7 @@ name = "sunrise-core"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "blake3",
  "ciborium",
  "jiff",
  "parking_lot",
@@ -3086,6 +3087,8 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_bytes",
+ "serde_jcs",
+ "serde_json",
  "sunrise-cbor",
  "sunrise-crypto",
  "sunrise-crypto-test-vectors",
