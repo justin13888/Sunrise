@@ -206,17 +206,25 @@ Payload schema by kind is defined in the domain specs (`02-domain/*.md`) for `cr
 
 `identity_sig` on `share_grant` is `Ed25519_sign(ID_S_priv, "sunrise.share_grant.v1" || canonical_cbor(payload_without_identity_sig))`. Verification requires the granting identity's `ID_S_pub`, looked up from the server-published bundle.
 
-### The four families that are implemented
+### The six families that are implemented
 
-[ADR-0024](../11-adr/0024-key-hierarchy.md) added `key_envelope`, `device_revoke` and `device_cert` at `DOC_SCHEMA_V = 5`; [ADR-0037](../11-adr/0037-identity-transition.md) added `identity_transition` at `DOC_SCHEMA_V = 6`. `share_grant`, `share_revoke`, `snapshot` and `checkpoint` remain unimplemented; a new op family is a breaking change to the op vocabulary — a build that does not know a family refuses the op rather than applying it wrongly — while `ENVELOPE_FORMAT_V` stays put, because the container is unchanged.
+[ADR-0024](../11-adr/0024-key-hierarchy.md) added `key_envelope`, `device_revoke` and `device_cert` at `DOC_SCHEMA_V = 5`; [ADR-0037](../11-adr/0037-identity-transition.md) added `identity_transition` at `DOC_SCHEMA_V = 6`; [ADR-0045](../11-adr/0045-schema-identity-and-feature-gating.md) §7 added `vault_requires` and `device_features`, which carry the vault's feature state rather than keys, at `DOC_SCHEMA_V = 8`. `share_grant`, `share_revoke`, `snapshot` and `checkpoint` remain unimplemented; a new op family is a breaking change to the op vocabulary — a build that does not know a family refuses the op rather than applying it wrongly — while `ENVELOPE_FORMAT_V` stays put, because the container is unchanged.
 
-The four are **not** the `OpKind`-tagged shape sketched above. The inner op is a Rust enum encoded externally tagged, so what is on the wire is a one-entry map from the variant name to its payload — the same shape the 21 domain variants already have. This is the encoder's shape, and it is normative:
+The six are **not** the `OpKind`-tagged shape sketched above. The inner op is a Rust enum encoded externally tagged, so what is on the wire is a one-entry map from the variant name to its payload — the same shape the 21 domain variants already have. This is the encoder's shape, and it is normative:
 
 ```cddl
 InnerOp /= { "KeyEnvelope" => KeyEnvelopePayload }
          / { "DeviceRevoke" => DeviceRevokePayload }
          / { "DeviceCertPublish" => bstr }        ; canonical-CBOR DeviceCert
          / { "IdentityTransition" => IdentityTransitionPayload }
+         / { "VaultRequires" => FeatureList }     ; grow-only union per vault
+         / { "DeviceFeatures" => FeatureList }    ; latest per sending device, by HLC
+
+FeatureList = {
+    "features" => [ + feature-id ],   ; never emitted empty
+    * tstr => any,                 ; fields a later build adds, kept verbatim
+}
+feature-id = tstr .regexp "[a-z][a-z0-9_]*(\\.[a-z0-9_]+)+"
 
 KeyEnvelopePayload = {
     "stream_id" => bstr .size 16,

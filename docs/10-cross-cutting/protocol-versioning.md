@@ -85,7 +85,7 @@ whether this build can safely write to this vault is a feature id.
 WIRE_PROTO_V          = 1
 ENVELOPE_FORMAT_V     = 3
 ENVELOPE_FORMAT_FLOOR = 3
-DOC_SCHEMA_V          = 7
+DOC_SCHEMA_V          = 8
 DOC_SCHEMA_FLOOR      = 1
 DOC_SCHEMA_FP_FIRST   = 7
 CRYPTO_SUITE_V        = 5
@@ -154,7 +154,7 @@ transition is lifted on purpose.
 
 `DOC_SCHEMA_FLOOR` is the lowest schema this build can still interpret. It
 moves only when a shape stops being readable, never merely because a newer one
-exists. It is `1` while `DOC_SCHEMA_V` is `7`, because a schema-1 payload
+exists. It is `1` while `DOC_SCHEMA_V` is `8`, because a schema-1 payload
 really does still decode: its bare-instant time fields read as
 `SunriseTime::Instant`. Every op ever written stays in logs and on relays and
 is the source of truth for a rebuild. So the floor MUST NOT be raised above any
@@ -601,13 +601,21 @@ A client that lacks a required feature:
 - parks what it cannot read
 - keeps reading
 - refuses local writes on the feature's scope with `DOC_FEATURE_MISSING`. The
-  scope is its entity kinds, or the whole vault for a structural feature.
+  scope is read off the id: the entity whose tag precedes the first dot, or the
+  whole vault for `core.*`. Control writes (revocation, rotation, pairing) are
+  never refused.
 - shows **"Update Sunrise to edit"**
 
 A feature MUST NOT be added to `vault_requires` while a non-revoked device has
 not advertised it, unless the user confirms
 ([ADR-0045](../11-adr/0045-schema-identity-and-feature-gating.md) §7–§8).
-*Today:* nothing records which features a vault uses ([#324](https://github.com/justin13888/Sunrise/issues/324)).
+
+Both control ops exist from `DOC_SCHEMA_V` 8
+([#324](https://github.com/justin13888/Sunrise/issues/324)). Their folds are
+`vault_required_features` and `device_features` (migration 0033), the gate runs
+where every local op is sealed (`crates/sunrise-core/src/engine/features.rs`),
+and the registry is `crates/sunrise-core/src/feature.rs#FEATURES`. The registry
+is empty: no shipped feature needs gating yet.
 
 ### 7.7 The relay's fence
 
@@ -667,7 +675,7 @@ related to versioning:
 | `CRYPTO_SUITE_MISMATCH` | The crypto-suite intersection is empty. |
 | `DOC_SCHEMA_TOO_OLD` | The server's `doc_schema_floor` exceeds the client's `doc_schema_max`, or an envelope's `doc_schema_v` is below this build's floor. |
 | `DOC_SCHEMA_TOO_NEW` | **Reserved. It MUST NOT be used as a refusal**, because a newer schema is always accepted (§2, §7). The code exists in `crates/sunrise-error/src/codes.rs`, and nothing emits it. |
-| `DOC_FEATURE_MISSING` | *Allocated by ADR-0045 §8, not yet in `codes.rs`.* A local command would write to a scope whose feature this build lacks. The vault stays readable, and it keeps syncing. |
+| `DOC_FEATURE_MISSING` | A local command would write to a scope whose feature this build lacks (ADR-0045 §8). The vault stays readable, and it keeps syncing. Raised as `EngineError::FeatureMissing` and crossing UniFFI as `BindingError::FeatureMissing`. |
 | `STORAGE_V_TOO_NEW` | The local database file is at a `STORAGE_V` newer than the binary. |
 | `STORAGE_V_TOO_OLD` | The local database predates the baseline. `STORAGE_V_PRE_BASELINE` maps here. |
 | `CAPABILITY_REQUIRED_MISSING` | Negotiation succeeded on versions, but a required capability bit is unset on the peer. |

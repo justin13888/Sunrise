@@ -141,8 +141,10 @@ mise run fix
   `ScheduleConstraint`, `RRule`, `SunriseTime`, `NoteBody`, `Chunk` and the
   review rows. The control-op payloads are not described either. A field added
   to one of them does not move the fingerprint. Field defaults wait for
-  [#319](https://github.com/justin13888/Sunrise/issues/319), and feature ids for
-  [#324](https://github.com/justin13888/Sunrise/issues/324).
+  [#319](https://github.com/justin13888/Sunrise/issues/319). Feature ids are
+  covered: each registered feature, with its scope, op kinds, fields,
+  field-op kinds and arrival version, is hashed from `DOC_SCHEMA_V` 8
+  ([#324](https://github.com/justin13888/Sunrise/issues/324)).
 
 ## How fields merge
 
@@ -246,14 +248,15 @@ can be lost ([#319](https://github.com/justin13888/Sunrise/issues/319)).
   `vault_requires` set. A build that lacks one of them:
   - keeps syncing
   - parks what it cannot read
-  - refuses local writes to the affected entity kinds, or to the whole vault
-    for a structural feature, with `DOC_FEATURE_MISSING`
+  - refuses local writes to the entity kind its id names, or to the whole
+    vault for a `core.*` feature, with `DOC_FEATURE_MISSING`
   - shows **"Update Sunrise to edit"**
 
   A feature is only added to `vault_requires` once every non-revoked device
   has advertised it, or once the user confirms. See
   [ADR-0045](../11-adr/0045-schema-identity-and-feature-gating.md) §7–§8.
-  *Today:* nothing records which features a vault uses ([#324](https://github.com/justin13888/Sunrise/issues/324)).
+  The registry is `crates/sunrise-core/src/feature.rs#FEATURES`, and it is
+  empty: no shipped feature needs gating yet ([#324](https://github.com/justin13888/Sunrise/issues/324)).
 - **DB schema.** It is local only. Migrations run in place on the first launch
   of a new build, under the rules in
   [`../04-storage/migrations.md`](../04-storage/migrations.md) §Migration rigor.
@@ -288,7 +291,17 @@ A new op kind, or a new field-op kind such as a text CRDT, **always** needs a
 feature id. Older builds park it. A new op kind that writes an existing entity
 kind has that entity kind as its scope. A new entity kind has itself as its
 scope. Anything that changes how every entity merges is `structural`. Emit
-`vault_requires` before the first op of the new kind.
+`vault_requires` before the first op of the new kind: call
+`Engine::require_features` from the command path. The seal guard refuses an op
+that uses a registered feature the vault does not yet require, so a missed call
+fails a test rather than reaching an older device.
+
+The scope is read off the id, because the build that needs it is the one that
+lacks the feature's registry entry. So a feature that changes how two entity
+kinds are written is structural, or is two features, one per kind. Register it
+in `crates/sunrise-core/src/feature.rs#FEATURES` and, when it is entity-scoped,
+in that entity's `features` list in the entity registry; a test holds the two
+equal.
 
 Feature ids follow one scheme. An entity-scoped feature is
 `<entity>.<feature>`, and a new entity kind is `<entity>.entity`: for example
