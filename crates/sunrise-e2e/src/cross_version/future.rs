@@ -2,7 +2,9 @@
 //!
 //! The property needs ops carrying kinds, fields and enum values that only a
 //! newer build has. `HEAD` has none of those relative to the ADR-0042 floor
-//! (both are at `DOC_SCHEMA_V` 6), and none relative to itself, so the harness
+//! (the floor is at `DOC_SCHEMA_V` 6; `HEAD`'s 7 is the first fingerprinted
+//! version and adds no field, enum value or op kind), and none relative to
+//! itself, so the harness
 //! supplies them: it
 //! takes a real device of the account (paired by `HEAD`, holding a real cert
 //! and the Stream's key), and seals ops that device's build could not have
@@ -19,7 +21,7 @@ use std::collections::BTreeMap;
 use ciborium::value::Value;
 use rand_chacha::rand_core::{RngCore, SeedableRng};
 use rand_chacha::ChaCha20Rng;
-use sunrise_cbor::version::{DOC_SCHEMA_V, ENVELOPE_FORMAT_V};
+use sunrise_cbor::version::{doc_schema_fp_prefix, DOC_SCHEMA_V, ENVELOPE_FORMAT_V};
 use sunrise_cbor::{CborValue, Hlc};
 use sunrise_crypto::keys::{DeviceSigningKeyPair, StreamKey};
 use sunrise_crypto::op_envelope::{seal_envelope, OpEnvelope};
@@ -170,6 +172,7 @@ impl FutureWriter {
             payload: inner,
             sig: [0u8; 64],
             doc_schema_v: u32::from(DOC_SCHEMA_V),
+            schema_fp: doc_schema_fp_prefix(u32::from(DOC_SCHEMA_V)),
             unknown: BTreeMap::new(),
         };
         seal_envelope(

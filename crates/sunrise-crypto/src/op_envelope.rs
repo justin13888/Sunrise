@@ -16,8 +16,20 @@
 //!     10: bstr,           ; ciphertext_or_payload
 //!     11: bstr .size 64,  ; sig           (Ed25519)
 //!     12: uint,           ; doc_schema_v  (schema of the *payload*, >= DOC_SCHEMA_FLOOR)
+//!     ? 13: bstr .size 8, ; schema_fp     (first 8 bytes of fingerprint(doc_schema_v))
+//!     * uint => any       ; later fields, preserved verbatim
 //! }
 //! ```
+//!
+//! Field 13 binds the document schema's *identity* to its number (ADR-0045
+//! §3, issue #323). Field 12 says which version the payload was written
+//! against; field 13 carries the first 8 bytes of that version's registered
+//! fingerprint (`sunrise_cbor::version::DOC_SCHEMA_FINGERPRINTS`), so two
+//! builds that disagree about what a version means can tell. A writer at
+//! `doc_schema_v >= DOC_SCHEMA_FP_FIRST` MUST emit it; [`encode_envelope`]
+//! does. An envelope below that version has none and is read under the legacy
+//! rules. Adding it is not a container change: every build already preserves
+//! an unknown field 13 and covers it with the AAD and the signature.
 //!
 //! Field 5 is a hybrid logical clock, not a bare wall clock: a two-element array
 //! `[physical_ms, logical]`. Ordering ops by an unbounded device wall clock let
@@ -47,10 +59,10 @@
 //! not know in [`OpEnvelope::unknown`].
 //!
 //! AAD (when `aead_alg = 1`) = canonical CBOR of the same map with fields 10
-//! and 11 removed — i.e. `{1..9, 12}`.
+//! and 11 removed — i.e. `{1..9, 12, 13, ...}`.
 //!
 //! Signature input = `"sunrise.op_envelope.v1" || BLAKE3(canonical_cbor_without_field_11, 32)`
-//! — i.e. over `{1..10, 12}`.
+//! — i.e. over `{1..10, 12, 13, ...}`.
 
 use crate::aead::{aead_open_xchacha, AEAD_NONCE_LEN};
 use crate::keys::{verify_ed25519, DeviceSigningKeyPair, StreamKey};
@@ -61,7 +73,8 @@ use sunrise_cbor::envelope_header::{envelope_floor_readable, envelope_format_rea
 use sunrise_cbor::hlc::Hlc;
 use sunrise_cbor::magic::{decode_prefix, write_prefix, MagicKind, MAGIC_LEN};
 use sunrise_cbor::version::{
-    DOC_SCHEMA_FLOOR, DOC_SCHEMA_V, ENVELOPE_FORMAT_FLOOR, ENVELOPE_FORMAT_V,
+    doc_schema_fp_prefix, DOC_SCHEMA_FLOOR, DOC_SCHEMA_FP_PREFIX_LEN, DOC_SCHEMA_V,
+    ENVELOPE_FORMAT_FLOOR, ENVELOPE_FORMAT_V,
 };
 use sunrise_error::ErrorCode;
 use thiserror::Error;
@@ -157,6 +170,16 @@ pub struct OpEnvelope {
     /// Document schema version of the payload (field 12). Independent of
     /// [`OpEnvelope::v`]; any value `>= DOC_SCHEMA_FLOOR` is readable.
     pub doc_schema_v: u32,
+    /// Field 13: the first 8 bytes of the registered fingerprint of
+    /// [`OpEnvelope::doc_schema_v`] (ADR-0045 §3), or `None` when the envelope
+    /// carries no field 13, as every envelope below
+    /// `sunrise_cbor::DOC_SCHEMA_FP_FIRST` does.
+    ///
+    /// The decoder takes it as written and does not compare it with this
+    /// build's registry: whether a mismatch is parked is the receiver's
+    /// decision, and the bytes have to survive a hop through this build either
+    /// way, because the signature covers them.
+    pub schema_fp: Option<[u8; DOC_SCHEMA_FP_PREFIX_LEN]>,
     /// Envelope fields this build does not know, kept verbatim and re-emitted
     /// in their canonical position.
     ///
@@ -230,6 +253,9 @@ fn encode_cbor(env: &OpEnvelope, omit: Omit) -> Result<Vec<u8>, OpEnvelopeError>
     put(10, Value::Bytes(env.payload.clone()));
     put(11, Value::Bytes(env.sig.to_vec()));
     put(12, Value::Integer(Integer::from(env.doc_schema_v)));
+    if let Some(fp) = env.schema_fp {
+        put(13, Value::Bytes(fp.to_vec()));
+    }
 
     // Preserved unknowns sit at their own field ids. Sorting the whole map by
     // id afterwards puts each one exactly where its author put it: field ids
@@ -310,6 +336,10 @@ pub fn encode_envelope(
     let env = OpEnvelope {
         v: u32::from(ENVELOPE_FORMAT_V),
         doc_schema_v: u32::from(DOC_SCHEMA_V),
+        // Field 13 is required from the first fingerprinted version on, and
+        // this build's own version is always registered: a test in
+        // `sunrise-core` fails otherwise.
+        schema_fp: doc_schema_fp_prefix(u32::from(DOC_SCHEMA_V)),
         stream_id,
         device_id,
         seq,
@@ -398,6 +428,7 @@ pub fn decode_envelope(bytes: &[u8]) -> Result<OpEnvelope, OpEnvelopeError> {
     let mut env = OpEnvelope {
         v: 0,
         doc_schema_v: 0,
+        schema_fp: None,
         stream_id: [0u8; 16],
         device_id: [0u8; 16],
         seq: 0,
@@ -443,6 +474,11 @@ pub fn decode_envelope(bytes: &[u8]) -> Result<OpEnvelope, OpEnvelopeError> {
                 env.sig = arr;
             }
             12 => env.doc_schema_v = u32_from(&v, "doc_schema_v")?,
+            // Optional, and taken as written: comparing it with the registry
+            // is the receiver's job (ADR-0045 §3), not the codec's.
+            13 => {
+                env.schema_fp = Some(bytes_n_from(&v, "schema_fp", DOC_SCHEMA_FP_PREFIX_LEN)?);
+            }
             other => {
                 // Forward compat, for real this time. A field from a newer
                 // container format is kept at its own id and re-emitted in
@@ -850,6 +886,7 @@ mod tests {
             OpEnvelope {
                 v: u32::from(ENVELOPE_FORMAT_V),
                 doc_schema_v,
+                schema_fp: None,
                 stream_id: [2u8; 16],
                 device_id: [3u8; 16],
                 seq: 1,
@@ -993,6 +1030,7 @@ mod tests {
             payload: vec![0x0a; 3],
             sig: [0x0b; 64],
             doc_schema_v: 12,
+            schema_fp: None,
             unknown: BTreeMap::new(),
         };
         let cbor = encode_cbor(&env, Omit::Nothing).unwrap();
@@ -1064,6 +1102,7 @@ mod tests {
             OpEnvelope {
                 v: u32::from(ENVELOPE_FORMAT_V),
                 doc_schema_v: 1,
+                schema_fp: None,
                 stream_id: [2u8; 16],
                 device_id: [3u8; 16],
                 seq: 1,
@@ -1109,6 +1148,131 @@ mod tests {
             decode_envelope(&out),
             Err(OpEnvelopeError::BadField("doc_schema_v"))
         ));
+    }
+
+    /// ADR-0045 §3: a writer at a fingerprinted version emits field 13, and it
+    /// holds the first 8 bytes of that version's registered fingerprint.
+    #[test]
+    fn the_writer_stamps_field_13_with_its_registered_fingerprint() {
+        use sunrise_cbor::version::doc_schema_fingerprint;
+        let signing = fixed_signing();
+        let bytes = encode_envelope(
+            b"x",
+            [2u8; 16],
+            [3u8; 16],
+            1,
+            Hlc::at(1),
+            AeadAlgId::None,
+            0,
+            [0u8; AEAD_NONCE_LEN],
+            None,
+            &signing,
+        )
+        .unwrap();
+        let env = decode_envelope(&bytes).unwrap();
+        let registered = doc_schema_fingerprint(u32::from(DOC_SCHEMA_V)).expect("registered");
+        assert_eq!(
+            env.schema_fp.map(|fp| fp.to_vec()),
+            Some(registered[..8].to_vec())
+        );
+        assert!(env.unknown.is_empty(), "field 13 is known, not preserved");
+
+        // `0d 48 <8 bytes>`: field 13 as an 8-byte byte string, last in the map.
+        let mut tail = vec![0x0d, 0x48];
+        tail.extend_from_slice(&registered[..8]);
+        assert!(contains_subseq(&bytes, &tail));
+    }
+
+    /// An envelope from before the fingerprint has no field 13, and still
+    /// decodes and verifies.
+    #[test]
+    fn an_envelope_without_field_13_decodes_with_none() {
+        let signing = fixed_signing();
+        let bytes = envelope_at_doc_schema(6, &signing);
+        let env = decode_envelope(&bytes).unwrap();
+        assert_eq!(env.schema_fp, None);
+        verify_envelope(&env, &signing.public_bytes()).unwrap();
+    }
+
+    /// Field 13 is inside the signature input and the AEAD associated data,
+    /// by the exclusion rule: a relay can neither strip nor rewrite it.
+    #[test]
+    fn field_13_is_covered_by_the_signature_and_the_aad() {
+        let signing = fixed_signing();
+        let pub_bytes = signing.public_bytes();
+        let stream_key = fixed_stream_key();
+        let bytes = seal_envelope(
+            OpEnvelope {
+                v: u32::from(ENVELOPE_FORMAT_V),
+                doc_schema_v: u32::from(DOC_SCHEMA_V),
+                schema_fp: Some([0xab; 8]),
+                stream_id: [2u8; 16],
+                device_id: [3u8; 16],
+                seq: 1,
+                hlc: Hlc::at(1),
+                aead_alg: AeadAlgId::XChaCha20Poly1305,
+                sig_alg: SigAlgId::Ed25519,
+                epoch: 1,
+                nonce: [0u8; AEAD_NONCE_LEN],
+                payload: b"secret".to_vec(),
+                sig: [0u8; 64],
+                unknown: BTreeMap::new(),
+            },
+            Some(&stream_key),
+            &signing,
+        )
+        .unwrap();
+        let env = decode_envelope(&bytes).unwrap();
+        assert_eq!(env.schema_fp, Some([0xab; 8]));
+        open_envelope(&env, &pub_bytes, Some(&stream_key)).unwrap();
+
+        for tampered in [Some([0xcd; 8]), None] {
+            let mut env = env.clone();
+            env.schema_fp = tampered;
+            assert!(
+                matches!(
+                    verify_envelope(&env, &pub_bytes),
+                    Err(OpEnvelopeError::SigVerify)
+                ),
+                "{tampered:?} passed the signature"
+            );
+            sign_envelope(&mut env, &signing).unwrap();
+            assert!(
+                matches!(
+                    open_envelope(&env, &pub_bytes, Some(&stream_key)),
+                    Err(OpEnvelopeError::AeadAuth)
+                ),
+                "{tampered:?} passed the AAD"
+            );
+        }
+    }
+
+    /// Field 13 has one shape. Anything else is a malformed envelope, refused
+    /// like a wrong-sized `stream_id`, rather than kept as an unknown.
+    #[test]
+    fn a_field_13_of_the_wrong_shape_is_refused() {
+        let signing = fixed_signing();
+        let bytes = envelope_at_doc_schema(1, &signing);
+        let mut value: ciborium::value::Value =
+            ciborium::de::from_reader(&bytes[MAGIC_LEN..]).unwrap();
+        for wrong in [
+            ciborium::value::Value::Bytes(vec![0; 7]),
+            ciborium::value::Value::Bytes(vec![0; 32]),
+            ciborium::value::Value::Integer(13.into()),
+        ] {
+            if let ciborium::value::Value::Map(m) = &mut value {
+                m.retain(
+                    |(k, _)| !matches!(k, ciborium::value::Value::Integer(i) if i128::from(*i) == 13),
+                );
+                m.push((ciborium::value::Value::Integer(13.into()), wrong));
+            }
+            let mut out = bytes[..MAGIC_LEN].to_vec();
+            ciborium::ser::into_writer(&value, &mut out).unwrap();
+            assert!(matches!(
+                decode_envelope(&out),
+                Err(OpEnvelopeError::BadField("schema_fp"))
+            ));
+        }
     }
 
     fn contains_subseq(haystack: &[u8], needle: &[u8]) -> bool {

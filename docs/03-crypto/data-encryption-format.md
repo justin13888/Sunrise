@@ -40,8 +40,12 @@ OpEnvelope = {
                         ;   if aead_alg = 0: canonical-CBOR-encoded Op (signed-only control envelope)
     11: bstr .size 64,  ; sig           (Ed25519; see signature rules)
     12: uint,           ; doc_schema_v  (DOC_SCHEMA_V of the inner Op; >= the reader's floor)
+    ? 13: bstr .size 8, ; schema_fp     (first 8 bytes of doc_schema_v's registered fingerprint)
+    * uint => any       ; later fields, preserved verbatim
 }
 ```
+
+Field `13` ties field 12's number to the schema it names. Every writer at `DOC_SCHEMA_V` 7 or later emits it, and envelopes below 7 have none. The AAD and the signature cover it like every field they do not exclude. Its rules are in [`../10-cross-cutting/protocol-versioning.md`](../10-cross-cutting/protocol-versioning.md) §7.1 and [ADR-0045](../11-adr/0045-schema-identity-and-feature-gating.md) §3.
 
 ### Two versions, two rules
 

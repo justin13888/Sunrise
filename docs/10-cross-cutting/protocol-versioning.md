@@ -56,8 +56,10 @@ second definition MUST NOT be introduced. The magic prefix, the `Hello`
 exchange, the envelope header and the migration runner all read the same
 `u16`, and if two of them disagreed the result would be a wire break no test
 would catch. Consumers import from `sunrise_cbor::version`. The fingerprint
-registry is the one exception to "one file". It is data, not a constant, and it
-lives under `schemas/doc-schema/`
+registry lives there too, as `DOC_SCHEMA_FINGERPRINTS`, because the writer
+stamps field 13 from it. Its published copy is
+`schemas/doc-schema/registry.json`, beside the canonical schema
+`schemas/doc-schema/current.json`, and a test keeps the two equal
 ([ADR-0045](../11-adr/0045-schema-identity-and-feature-gating.md) §2).
 
 Each surface is a monotonic `u16`. Semantic versioning and date versions are
@@ -83,8 +85,9 @@ whether this build can safely write to this vault is a feature id.
 WIRE_PROTO_V          = 1
 ENVELOPE_FORMAT_V     = 3
 ENVELOPE_FORMAT_FLOOR = 3
-DOC_SCHEMA_V          = 6
+DOC_SCHEMA_V          = 7
 DOC_SCHEMA_FLOOR      = 1
+DOC_SCHEMA_FP_FIRST   = 7
 CRYPTO_SUITE_V        = 5
 ```
 
@@ -151,7 +154,7 @@ transition is lifted on purpose.
 
 `DOC_SCHEMA_FLOOR` is the lowest schema this build can still interpret. It
 moves only when a shape stops being readable, never merely because a newer one
-exists. It is `1` while `DOC_SCHEMA_V` is `6`, because a schema-1 payload
+exists. It is `1` while `DOC_SCHEMA_V` is `7`, because a schema-1 payload
 really does still decode: its bare-instant time fields read as
 `SunriseTime::Instant`. Every op ever written stays in logs and on relays and
 is the source of truth for a rebuild. So the floor MUST NOT be raised above any
@@ -445,7 +448,27 @@ Every envelope at a fingerprinted `DOC_SCHEMA_V` carries field 13: the first 8
 bytes of that version's schema fingerprint. The field is covered by the AAD
 and the signature under ADR-0015's exclusion rule.
 
-A receiver checks field 13 against its committed registry:
+```cddl
+? 13: bstr .size 8,   ; schema_fp   first 8 bytes of fingerprint(doc_schema_v)
+```
+
+The first fingerprinted version is `DOC_SCHEMA_FP_FIRST`, which is `7`. Each
+version's fingerprint is `BLAKE3::derive_key("sunrise.doc_schema.fingerprint.v1",
+JCS(schema))`, over the canonical schema generated from the code. The build's
+registry is `DOC_SCHEMA_FINGERPRINTS` in `crates/sunrise-cbor/src/version.rs`.
+It is append-only and frozen entry by entry in `sunrise-crypto-test-vectors`.
+[`../02-domain/schema-versioning.md`](../02-domain/schema-versioning.md)
+§Schema identity says where each piece lives and which test fails when a shape
+changes without a bump.
+
+`crates/sunrise-crypto/src/op_envelope.rs#encode_envelope` stamps field 13
+from the registry. `decode_envelope` reads it as written into
+`OpEnvelope::schema_fp` and refuses one that is not an 8-byte byte string. It
+does not compare the value with the registry. That is the receiver's job, and
+the bytes have to survive a hop through any build because the signature covers
+them.
+
+A receiver checks field 13 against its registry:
 
 | Case | Outcome |
 |---|---|
@@ -462,8 +485,12 @@ envelope field and includes it in the AAD and the signature. So it needs no
 and no other use may claim them. A reader that meets either preserves it like
 any unknown field. Their meaning is assigned only when
 [ADR-0043](../11-adr/0043-commit-tree.md), now proposed, is accepted; being
-additive, they will need no `ENVELOPE_FORMAT_V` bump either. *Today:* there is no field 13 and no registry
-([#323](https://github.com/justin13888/Sunrise/issues/323)).
+additive, they will need no `ENVELOPE_FORMAT_V` bump either.
+
+*Today:* writers stamp field 13 and the decoder reads it, but no receiver
+compares it with the registry yet. A known version whose fingerprint differs
+is applied, not parked
+([#438](https://github.com/justin13888/Sunrise/issues/438)).
 
 ### 7.2 Parking
 
@@ -489,7 +516,7 @@ failed signature, or a failed AEAD tag. *Today:* the first reason parks
 marks the op, `Engine::replay_parked_ops` retries it from `Core::open`, and
 `crates/sunrise-core/src/sync_driver.rs#is_corruption` never sees it. The
 others do not exist yet. A field-op kind arrives with ADR-0044, the
-fingerprint with [#323](https://github.com/justin13888/Sunrise/issues/323),
+fingerprint check with [#438](https://github.com/justin13888/Sunrise/issues/438),
 and until then every other inner decode failure is still `RemoteOpInvalid`
 and dropped as corruption.
 
@@ -700,7 +727,7 @@ The crypto spec describes byte-exact test vectors. This spec adds:
 
 - `tests/fixtures/hello/v1.cbor` and `tests/fixtures/hello/ack_v1.cbor` — canonical `Hello` and `HelloAck` byte fixtures.
 - `tests/fixtures/version-mismatch/*.cbor` — every negotiation error path has a fixture, and the test decodes the FIXTURE (not a freshly built value) and asserts the error it produces: `wire-mismatch`, `crypto-mismatch`, `doc-schema-too-old`, `capability-missing`.
-- `tests/fixtures/forward-compat/v1-reads-v2.cbor` — a synthetic envelope at `DOC_SCHEMA_V + 1` carrying two envelope fields this build does not know (ids 23 and 40: 23 is the largest single-byte CBOR key, and 40 needs two bytes). The round trip preserves them byte-for-byte. The small id was 13 until [ADR-0045](../11-adr/0045-schema-identity-and-feature-gating.md) assigned field 13 and reserved 14–15. `crates/sunrise-crypto/tests/forward_compat.rs` also seals an envelope at `ENVELOPE_FORMAT_V + 1` with a field this build does not know, and asserts that it decodes, verifies, opens, re-encodes byte-identically and is routed by the relay's header decoder (ADR-0045 §5).
+- `tests/fixtures/forward-compat/v1-reads-v2.cbor` — a synthetic envelope at `DOC_SCHEMA_V + 1`, with a field 13 this build has no registry entry to check, carrying two envelope fields this build does not know (ids 23 and 40: 23 is the largest single-byte CBOR key, and 40 needs two bytes). The round trip preserves them byte-for-byte. The small id was 13 until [ADR-0045](../11-adr/0045-schema-identity-and-feature-gating.md) assigned field 13 and reserved 14–15. `crates/sunrise-crypto/tests/forward_compat.rs` also seals an envelope at `ENVELOPE_FORMAT_V + 1` with a field this build does not know, and asserts that it decodes, verifies, opens, re-encodes byte-identically and is routed by the relay's header decoder (ADR-0045 §5).
 
   CBOR, not the JSON this section originally named: the artefact under test is a signed, canonically encoded envelope, and JSON cannot represent one without a re-encoding step that would be the thing actually being tested.
 
