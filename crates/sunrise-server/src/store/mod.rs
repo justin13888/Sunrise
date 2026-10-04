@@ -97,6 +97,22 @@ pub enum StoreError {
         /// The newest version this binary migrates to.
         supported: u32,
     },
+    /// A busy timeout longer than SQLite can hold.
+    ///
+    /// `sqlite3_busy_timeout` takes a C `int` of milliseconds, and rusqlite
+    /// panics on a `Duration` above `i32::MAX` of them rather than returning
+    /// an error. Refusing it here is what turns `[storage] busy_timeout_ms =
+    /// 3000000000` into exit 78 and `srv.start.refused` instead of a crash.
+    #[error(
+        "the SQLite busy timeout is {ms} ms, and SQLite takes at most {max} ms (about 24 days): \
+         lower [storage] busy_timeout_ms"
+    )]
+    BusyTimeoutTooLong {
+        /// The timeout asked for, in milliseconds.
+        ms: u128,
+        /// The longest SQLite accepts, `i32::MAX` milliseconds.
+        max: i32,
+    },
 }
 
 /// SQLite-backed account/device store.
@@ -130,6 +146,14 @@ impl Store {
     /// file header — the integrity check run and logged, and the migrations in
     /// `store/migrations` applied.
     pub fn open_with(path: Option<&Path>, busy_timeout: Duration) -> Result<Self, StoreError> {
+        // Checked before the file is opened, so a refused timeout creates no
+        // database either.
+        if busy_timeout.as_millis() > i32::MAX.unsigned_abs().into() {
+            return Err(StoreError::BusyTimeoutTooLong {
+                ms: busy_timeout.as_millis(),
+                max: i32::MAX,
+            });
+        }
         let mut conn = match path {
             Some(p) => Connection::open(p)?,
             None => Connection::open_in_memory()?,

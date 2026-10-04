@@ -75,6 +75,7 @@ The server exits 78 rather than starting, when:
 | `require_device_sig` without an issuer | Device signatures are meaningless under the self-host verifier |
 | An origin is `*` or not scheme-qualified | Ambiguous CORS |
 | `max_body_bytes = 0` | Rejects every request |
+| `busy_timeout_ms` above 2147483647 | SQLite holds the timeout in a 32-bit signed integer of milliseconds (about 24 days) |
 | `sunrise.db` is at a schema version newer than this binary's | A newer release migrated it; writing to it could corrupt what that release relies on (see "Upgrade") |
 
 Unknown keys and unknown tables are **rejected**, not ignored. Writing a

@@ -207,4 +207,35 @@ mod tests {
             777
         );
     }
+
+    /// A busy timeout SQLite cannot hold is refused by `try_new`, the path
+    /// `main` maps to exit 78, rather than panicking inside rusqlite; the
+    /// longest one SQLite can hold still opens.
+    #[test]
+    fn a_busy_timeout_sqlite_cannot_hold_is_refused_not_a_panic() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = |ms: u64| ServerConfig {
+            sqlite_path: Some(dir.path().join("sunrise.db")),
+            sqlite_busy_timeout_ms: ms,
+            ..ServerConfig::default()
+        };
+        let max = u64::from(i32::MAX.unsigned_abs());
+
+        let refused = ServerState::try_new(config(max + 1));
+        assert!(
+            matches!(
+                refused,
+                Err(StoreError::BusyTimeoutTooLong { ms, max: i32::MAX })
+                    if ms == u128::from(max + 1)
+            ),
+            "{:?}",
+            refused.err()
+        );
+        assert!(
+            !dir.path().join("sunrise.db").exists(),
+            "a refused timeout creates no database"
+        );
+        assert!(ServerState::try_new(config(u64::MAX)).is_err());
+        assert!(ServerState::try_new(config(max)).is_ok());
+    }
 }
