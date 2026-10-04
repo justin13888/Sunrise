@@ -474,44 +474,66 @@ mod tests {
     /// compat unknowns survive materialization rather than only `tasks`,
     /// `blocks` and `attachments` doing so.
     ///
-    /// The two exclusions are asserted too, because both are decisions rather
-    /// than omissions: `focus_interruptions` holds the one entity with no
-    /// `unknown` map (its whole value is its key), and `review_snapshots`
-    /// already round-trips through its whole-record CBOR `body` blob, so a
-    /// column there would be a second home for the same data.
+    /// The projected tables are read from the entity registry
+    /// (`sunrise_id::for_each_entity!`), so a record registered with a table
+    /// no migration creates fails here. The two exclusions are registry
+    /// declarations too, because both are decisions rather than omissions:
+    /// `focus_interruptions` holds the one entity with no `unknown` map (its
+    /// whole value is its key), and `review_snapshots` already round-trips
+    /// through its whole-record CBOR `body` blob, so a column there would be a
+    /// second home for the same data.
     #[test]
     fn every_column_projected_entity_has_an_extra_blob() {
+        use sunrise_id::registry::{Merge, Unknowns, ENTITIES};
+
         let db = Db::open_memory(&vault_key()).unwrap();
-        let has_extra = |table: &str| -> i64 {
+        let has_column = |table: &str, column: &str| -> bool {
             db.conn()
                 .query_row(
-                    "SELECT count(*) FROM pragma_table_info(?) WHERE name = 'extra'",
-                    rusqlite::params![table],
-                    |r| r.get(0),
+                    "SELECT count(*) FROM pragma_table_info(?) WHERE name = ?",
+                    rusqlite::params![table, column],
+                    |r| r.get::<_, i64>(0),
                 )
                 .unwrap()
+                == 1
         };
 
-        for table in [
-            "tasks",
-            "blocks",
-            "attachments",
-            "streams",
-            "contexts",
-            "routines",
-            "focus_sessions",
-            "focus_session_ends",
-        ] {
-            assert_eq!(has_extra(table), 1, "`{table}.extra` must exist");
+        let mut projected = 0;
+        for entity in &ENTITIES {
+            for record in entity.records {
+                let Some(storage) = record.storage else {
+                    continue;
+                };
+                projected += 1;
+                let table = storage.table;
+                assert!(
+                    has_column(table, storage.key),
+                    "`{table}.{}` must hold {}'s id",
+                    storage.key,
+                    record.name
+                );
+                assert_eq!(
+                    has_column(table, "extra"),
+                    storage.unknowns == Unknowns::Extra,
+                    "`{table}.extra` disagrees with the registry; see 0015's header"
+                );
+                if storage.unknowns == Unknowns::Body {
+                    assert!(has_column(table, "body"), "`{table}.body` must exist");
+                }
+            }
+            // The table the materializer reads an LWW stamp from must hold one.
+            if let (Merge::Lww, Some(storage)) = (entity.merge, entity.storage()) {
+                for column in ["lww_hlc_ms", "lww_hlc_logical", "lww_seq", "lww_device"] {
+                    assert!(
+                        has_column(storage.table, column),
+                        "`{}.{column}` must exist for {:?}'s merge",
+                        storage.table,
+                        entity.kind
+                    );
+                }
+            }
         }
-
-        for table in ["focus_interruptions", "review_snapshots"] {
-            assert_eq!(
-                has_extra(table),
-                0,
-                "`{table}` is deliberately exempt; see 0015's header"
-            );
-        }
+        assert_eq!(projected, 10, "the registry projects ten tables");
     }
 
     /// 0014 adds `streams.sort_order`, defaulting to the "never ordered"

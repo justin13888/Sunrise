@@ -31,7 +31,7 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;
     use sunrise_cbor::magic::{write_prefix, MagicKind, MAGIC_LEN};
-    use sunrise_cbor::version::{ENVELOPE_FORMAT_V, WIRE_PROTO_V};
+    use sunrise_cbor::version::{ENVELOPE_FORMAT_FLOOR, ENVELOPE_FORMAT_V, WIRE_PROTO_V};
     use sunrise_wire_protocol::{Capability, CapabilityBits};
 
     const STREAM_BYTES: [u8; 16] = [0x11; 16];
@@ -154,6 +154,35 @@ mod tests {
         ];
         let mut out = vec![0u8; MAGIC_LEN];
         write_prefix(&mut out, MagicKind::OpEnvelope, ENVELOPE_FORMAT_V);
+        ciborium::ser::into_writer(&Value::Map(entries), &mut out).unwrap();
+        base64::engine::general_purpose::STANDARD.encode(out)
+    }
+
+    /// [`envelope`] as a writer one container newer would emit it (ADR-0045
+    /// §5): this build's floor in the prefix, `ENVELOPE_FORMAT_V + 1` in field
+    /// 1, and a field this build does not know.
+    fn newer_container_envelope(device: [u8; 16], seq: u64) -> String {
+        use base64::Engine as _;
+        use ciborium::value::Value;
+        let entries: Vec<(Value, Value)> = vec![
+            (
+                Value::Integer(1.into()),
+                Value::Integer((ENVELOPE_FORMAT_V + 1).into()),
+            ),
+            (
+                Value::Integer(2.into()),
+                Value::Bytes(STREAM_BYTES.to_vec()),
+            ),
+            (Value::Integer(3.into()), Value::Bytes(device.to_vec())),
+            (Value::Integer(4.into()), Value::Integer(seq.into())),
+            (
+                Value::Integer(10.into()),
+                Value::Bytes(vec![u8::try_from(seq & 0xff).unwrap(); 32]),
+            ),
+            (Value::Integer(23.into()), Value::Text("future".into())),
+        ];
+        let mut out = vec![0u8; MAGIC_LEN];
+        write_prefix(&mut out, MagicKind::OpEnvelope, ENVELOPE_FORMAT_FLOOR);
         ciborium::ser::into_writer(&Value::Map(entries), &mut out).unwrap();
         base64::engine::general_purpose::STANDARD.encode(out)
     }
@@ -552,6 +581,40 @@ mod tests {
         );
     }
 
+    /// ADR-0045 §5, issue #329: an envelope one container newer, at a floor
+    /// this relay implements, is routed by its header like any other. The
+    /// cursor narrows its replay, which it can only do if the relay read the
+    /// device and seq out of it.
+    #[tokio::test]
+    async fn a_newer_container_at_this_floor_is_routed_by_its_header() {
+        let client = Client::new(ServerConfig::default());
+        let writer = establish(&client).await;
+        let device = [9u8; 16];
+
+        for seq in 1..=3u64 {
+            assert_eq!(
+                publish(
+                    &client,
+                    &writer,
+                    vec![newer_container_envelope(device, seq)],
+                    seq
+                )
+                .await,
+                StatusCode::OK
+            );
+        }
+
+        let reader = establish(&client).await;
+        subscribe(&client, &reader, Some((hex::encode(device), 2))).await;
+
+        let body = read(&client, &reader, &[]).await;
+        assert_eq!(
+            body.matches("\"kind\":\"ops\"").count(),
+            1,
+            "the relay must read the newer container's header to narrow the replay: {body}"
+        );
+    }
+
     /// Was `eviction_of_already_applied_ops_is_not_a_gap`.
     #[tokio::test]
     async fn a_cursor_at_the_head_replays_nothing_and_reports_no_gap() {
@@ -921,6 +984,28 @@ mod tests {
         assert!(
             CapabilityBits(agreed).has(Capability::SrvTokenRefresh),
             "a client only asks for a refresh if it sees this bit come back"
+        );
+    }
+
+    /// ADR-0045 §5: bit 9 tells a client this relay routes a newer envelope
+    /// container. It is agreed by AND, so the client offers it here.
+    #[tokio::test]
+    async fn the_relay_advertises_the_envelope_floor_capability() {
+        let client = Client::new(ServerConfig::default());
+        let mut hello = hello();
+        hello["capabilities"] = serde_json::json!(
+            sunrise_wire_protocol::REQUIRED_CLIENT_BITS.0
+                | CapabilityBits::EMPTY.with(Capability::SrvEnvelopeFloor).0
+        );
+        let res = client
+            .send(Method::POST, "/api/v1/sync/session", Some(&hello))
+            .await;
+        res.assert_status(StatusCode::CREATED);
+
+        let agreed = res.json()["capabilities"].as_u64().expect("a bitfield");
+        assert!(
+            CapabilityBits(agreed).has(Capability::SrvEnvelopeFloor),
+            "a client writes a newer container only to a relay that agreed this bit"
         );
     }
 

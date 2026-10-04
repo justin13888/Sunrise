@@ -2,105 +2,56 @@
 //!
 //! Per `docs/02-domain/identifiers.md`, every ULID is namespaced by a
 //! 4-character ASCII prefix (3 letters + `_`).
+//!
+//! The kinds, their prefixes and everything else about them are declared once
+//! in the entity registry ([`crate::for_each_entity!`]); [`EntityKind`] is
+//! generated from it.
 
-use serde::{Deserialize, Serialize};
-
-/// Domain entity kinds.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-#[non_exhaustive]
-pub enum EntityKind {
-    /// `tsk_` — Task.
-    Task,
-    /// `str_` — Stream.
-    Stream,
-    /// `ctx_` — Context.
-    Context,
-    /// `rtn_` — Routine.
-    Routine,
-    /// `blk_` — Block.
-    Block,
-    /// `not_` — Note.
-    Note,
-    /// `att_` — Attachment.
-    Attachment,
-    /// `prs_` — Person.
-    Person,
-    /// `dev_` — Device.
-    Device,
-    /// `idn_` — Identity.
-    Identity,
-    /// `fcs_` — Focus session (append-only; see ADR-0013).
-    FocusSession,
-    /// `rvw_` — Saved review snapshot (append-only; see
-    /// `docs/08-features/reviews-and-stats.md` §Weekly review step 5).
-    ReviewSnapshot,
-}
-
-impl EntityKind {
-    /// Canonical 4-char prefix (3 letters + `_`).
-    #[must_use]
-    pub const fn prefix(self) -> &'static str {
-        match self {
-            Self::Task => "tsk_",
-            Self::Stream => "str_",
-            Self::Context => "ctx_",
-            Self::Routine => "rtn_",
-            Self::Block => "blk_",
-            Self::Note => "not_",
-            Self::Attachment => "att_",
-            Self::Person => "prs_",
-            Self::Device => "dev_",
-            Self::Identity => "idn_",
-            Self::FocusSession => "fcs_",
-            Self::ReviewSnapshot => "rvw_",
-        }
-    }
-
-    /// Look up an entity kind from its 4-char prefix (including the `_`).
-    /// Returns `None` for unknown prefixes.
-    #[must_use]
-    pub fn from_prefix(prefix: &str) -> Option<Self> {
-        match prefix {
-            "tsk_" => Some(Self::Task),
-            "str_" => Some(Self::Stream),
-            "ctx_" => Some(Self::Context),
-            "rtn_" => Some(Self::Routine),
-            "blk_" => Some(Self::Block),
-            "not_" => Some(Self::Note),
-            "att_" => Some(Self::Attachment),
-            "prs_" => Some(Self::Person),
-            "dev_" => Some(Self::Device),
-            "idn_" => Some(Self::Identity),
-            "fcs_" => Some(Self::FocusSession),
-            "rvw_" => Some(Self::ReviewSnapshot),
-            _ => None,
-        }
-    }
-
-    /// All kinds, in declaration order.
-    #[must_use]
-    pub const fn all() -> [Self; 12] {
-        [
-            Self::Task,
-            Self::Stream,
-            Self::Context,
-            Self::Routine,
-            Self::Block,
-            Self::Note,
-            Self::Attachment,
-            Self::Person,
-            Self::Device,
-            Self::Identity,
-            Self::FocusSession,
-            Self::ReviewSnapshot,
-        ]
-    }
-}
+pub use crate::registry::EntityKind;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The serde names are part of exported JSON; generating the enum must
+    /// not move them.
+    #[test]
+    fn serde_names_are_the_lowercased_variant_names() {
+        let names: Vec<String> = EntityKind::all()
+            .iter()
+            .map(|k| serde_json::to_string(k).unwrap())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "\"task\"",
+                "\"stream\"",
+                "\"context\"",
+                "\"routine\"",
+                "\"block\"",
+                "\"note\"",
+                "\"attachment\"",
+                "\"person\"",
+                "\"device\"",
+                "\"identity\"",
+                "\"focussession\"",
+                "\"reviewsnapshot\"",
+            ]
+        );
+    }
+
+    /// The prefixes are on every id ever minted.
+    #[test]
+    fn prefixes_are_pinned() {
+        let prefixes: Vec<&str> = EntityKind::all().iter().map(|k| k.prefix()).collect();
+        assert_eq!(
+            prefixes,
+            [
+                "tsk_", "str_", "ctx_", "rtn_", "blk_", "not_", "att_", "prs_", "dev_", "idn_",
+                "fcs_", "rvw_",
+            ]
+        );
+    }
 
     #[test]
     fn round_trip_prefix() {

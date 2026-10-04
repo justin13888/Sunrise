@@ -42,108 +42,168 @@ use sunrise_domain::{
 use sunrise_id::{EntityKind, EntityRef};
 use thiserror::Error;
 
-/// The canonical op record. See the module docs: variant names + payload shapes
-/// are wire-stable.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) enum InnerOp {
-    /// Create a task (full state).
-    TaskCreate(Task),
-    /// Replace a task's full state.
-    TaskUpdate(Task),
-    /// Tombstone a task, carrying the task's **full state** with `deleted`
-    /// set — not just its id.
-    ///
-    /// A delete is an op like any other in a full-state op model, and
-    /// entity-level LWW (ADR-0014) is defined as "the winning op's state
-    /// replaces the entity". An id-only delete has no state to contribute, so
-    /// when it won it set the tombstone and left every other column at
-    /// whatever the local replica happened to hold — permanently divergent
-    /// across replicas that had applied different updates, and stable, because
-    /// both then carried the same winning stamp.
-    TaskDelete(Task),
-    /// Create a stream (full state).
-    StreamCreate(Stream),
-    /// Replace a stream's full state.
-    StreamUpdate(Stream),
-    /// Tombstone a stream, carrying its **full state** with `deleted` set.
-    /// See [`Self::TaskDelete`] for why an id alone does not converge.
-    StreamDelete(Stream),
-    /// Create a context (full state).
-    ContextCreate(Context),
-    /// Replace a context's full state.
-    ContextUpdate(Context),
-    /// Tombstone a context, carrying its **full state** with `deleted` set.
-    /// See [`Self::TaskDelete`] for why an id alone does not converge.
-    ///
-    /// Every replica that applies this op also drops the context from every
-    /// Task carrying it, per `docs/02-domain/contexts-and-tags.md`.
-    ContextDelete(Context),
-    /// Create a routine (full state). Boxed to keep the enum small.
-    RoutineCreate(Box<Routine>),
-    /// Replace a routine's full state.
-    RoutineUpdate(Box<Routine>),
-    /// Tombstone a routine, carrying its **full state** with `deleted` set.
-    /// Boxed to keep the enum small, as create and update are. See
-    /// [`Self::TaskDelete`] for why an id alone does not converge.
-    RoutineDelete(Box<Routine>),
-    /// Create a time block (full state). Boxed to keep the enum small.
-    BlockCreate(Box<Block>),
-    /// Replace a time block's full state, bindings included.
-    BlockUpdate(Box<Block>),
-    /// Tombstone a time block, carrying its **full state** with `deleted` set,
-    /// bindings included. Boxed to keep the enum small, as create and update
-    /// are. See [`Self::TaskDelete`] for why an id alone does not converge.
-    BlockDelete(Box<Block>),
-    /// Record attachment metadata. Write-once: every field but the tombstone
-    /// describes one specific run of ciphertext, so there is no update op.
-    AttachmentCreate(Box<Attachment>),
-    /// Tombstone attachment metadata, carrying its **full state** with
-    /// `deleted` set. Boxed to keep the enum small, as create is. See
-    /// [`Self::TaskDelete`] for why an id alone does not converge.
-    ///
-    /// The blob itself is reclaimed by the relay's GC after the device-cursor
-    /// quorum, not here.
-    AttachmentDelete(Box<Attachment>),
-    /// Open a focus session (ADR-0013's `start` op). Append-only: the record
-    /// is written once and never edited.
-    FocusStart(Box<FocusStart>),
-    /// Close a focus session (ADR-0013's `end` op). A *separate* record
-    /// addressed to the same session id — never an update of the start.
-    FocusEnd(Box<FocusEnd>),
-    /// Log one interruption against a session. Grow-only set semantics.
-    FocusInterrupt(Interruption),
-    /// Record a completed weekly review (`docs/08-features/reviews-and-stats.md`
-    /// §Weekly review step 5). Append-only, exactly like the focus family: the
-    /// snapshot is written once under its own `rvw_` id and never edited, so
-    /// two devices reviewing the same week produce two records rather than a
-    /// lost write.
-    ReviewSnapshotCreate(Box<ReviewSnapshot>),
-    /// Distribute one `(stream_id, epoch)` Stream key to one recipient
-    /// (ADR-0024 decision 4). A **control** op: it has no entity and never
-    /// reaches the LWW materializer.
-    KeyEnvelope(KeyEnvelopePayload),
-    /// Record that a device is no longer a member of this account (ADR-0024
-    /// decision 5). Control op.
-    DeviceRevoke(DeviceRevokePayload),
-    /// Publish a device's identity-signed [`sunrise_crypto::DeviceCert`] as
-    /// canonical CBOR, so every replica can verify that device's envelopes.
-    ///
-    /// Replaces `Command::TrustDevice`, which took a cert straight from a
-    /// caller and accepted it if it was self-signed — which every cert is.
-    /// This op is **self-authenticating**: the receiver checks the envelope
-    /// signature against the cert's own `d_s_pub` and then checks the cert
-    /// against the account identity, so a stranger's cert cannot enter the
-    /// device list however it is delivered. Control op.
-    DeviceCertPublish(#[serde(with = "serde_bytes")] Vec<u8>),
-    /// Replace the account identity with a successor (ADR-0032,
-    /// `docs/03-crypto/key-rotation.md` §Identity rotation). Control op.
-    ///
-    /// Boxed for the reason `RoutineCreate` is: the payload carries a roster
-    /// and a share per device, and an unboxed variant would set the size of
-    /// *every* `InnerOp` — including the task ops, which are the ones that
-    /// actually occur in bulk — to the size of the largest rotation.
-    IdentityTransition(Box<IdentityTransitionPayload>),
+/// Expands the entity registry ([`sunrise_id::for_each_entity!`]) into
+/// [`InnerOp`] and its routing.
+///
+/// Every entity op variant, its payload, its `inner_kind`, its effect, its
+/// target field and its entity are read from the registry; only the four
+/// control families, which carry key material and trust rather than an
+/// entity, are written here. An entity op therefore cannot be added without
+/// every routing table below learning it.
+///
+/// The derived `inner_kind` and `target_kind` reach the op log only on the
+/// paths that read them from the op: a remote op
+/// ([`crate::engine::Engine::apply_remote`]) and a control op
+/// (`emit_control_op`). A local entity write passes its two op-log strings to
+/// `ops_insert` by hand, and nothing checks them against the op it seals. One
+/// differs on purpose: a local defer is logged as `task.defer`, while the
+/// same `TaskUpdate` is logged as `task.update` when a peer receives it.
+macro_rules! define_inner_op {
+    (
+        $(
+            $(#[$kind_meta:meta])*
+            $kind:ident {
+                prefix: $prefix:literal,
+                tag: $tag:literal,
+                merge: $merge:ident,
+                owner: $owner:ident $(($owner_field:literal))?,
+                features: [$($feature:literal),* $(,)?],
+                ops: [
+                    $(
+                        $(#[$op_meta:meta])*
+                        $op:ident($payload:ty) = $inner_kind:literal, $class:ident, $target:ident;
+                    )*
+                ],
+                records: [
+                    $(
+                        $record:ident @ $storage:tt {
+                            $(
+                                $field:ident $(as $wire:literal)?: $field_ty:ty => $crdt:ident;
+                            )*
+                            $(..$unknown:ident)?
+                        }
+                    )*
+                ],
+            }
+        )*
+    ) => {
+        /// The canonical op record. See the module docs: variant names + payload shapes
+        /// are wire-stable.
+        #[derive(Debug, Clone, Serialize, Deserialize)]
+        pub(crate) enum InnerOp {
+            $($(
+                $(#[$op_meta])*
+                $op($payload),
+            )*)*
+            /// Distribute one `(stream_id, epoch)` Stream key to one recipient
+            /// (ADR-0024 decision 4). A **control** op: it has no entity and never
+            /// reaches the LWW materializer.
+            KeyEnvelope(KeyEnvelopePayload),
+            /// Record that a device is no longer a member of this account (ADR-0024
+            /// decision 5). Control op.
+            DeviceRevoke(DeviceRevokePayload),
+            /// Publish a device's identity-signed [`sunrise_crypto::DeviceCert`] as
+            /// canonical CBOR, so every replica can verify that device's envelopes.
+            ///
+            /// Replaces `Command::TrustDevice`, which took a cert straight from a
+            /// caller and accepted it if it was self-signed — which every cert is.
+            /// This op is **self-authenticating**: the receiver checks the envelope
+            /// signature against the cert's own `d_s_pub` and then checks the cert
+            /// against the account identity, so a stranger's cert cannot enter the
+            /// device list however it is delivered. Control op.
+            DeviceCertPublish(#[serde(with = "serde_bytes")] Vec<u8>),
+            /// Replace the account identity with a successor (ADR-0032,
+            /// `docs/03-crypto/key-rotation.md` §Identity rotation). Control op.
+            ///
+            /// Boxed for the reason `RoutineCreate` is: the payload carries a roster
+            /// and a share per device, and an unboxed variant would set the size of
+            /// *every* `InnerOp` — including the task ops, which are the ones that
+            /// actually occur in bulk — to the size of the largest rotation.
+            IdentityTransition(Box<IdentityTransitionPayload>),
+        }
+
+        impl InnerOp {
+            /// The op-log `inner_kind` tag (e.g. `"task.create"`).
+            pub(crate) fn inner_kind(&self) -> &'static str {
+                match self {
+                    $($( Self::$op(_) => $inner_kind, )*)*
+                    Self::KeyEnvelope(_) => "key.envelope",
+                    Self::DeviceRevoke(_) => "device.revoke",
+                    Self::DeviceCertPublish(_) => "device.cert",
+                    Self::IdentityTransition(_) => "identity.transition",
+                }
+            }
+
+            /// The op-log `target_kind` tag: the registry's `tag` for an entity
+            /// op (`"task"`, `"focus_session"`, …).
+            pub(crate) fn target_kind(&self) -> &'static str {
+                match self {
+                    $($( Self::$op(_) => $tag, )*)*
+                    Self::KeyEnvelope(_) => "stream_key",
+                    Self::DeviceRevoke(_) | Self::DeviceCertPublish(_) => "device",
+                    Self::IdentityTransition(_) => "identity",
+                }
+            }
+
+            /// The entity this op targets.
+            pub(crate) fn target_ref(&self) -> EntityRef {
+                match self {
+                    $($( Self::$op(p) => p.$target, )*)*
+                    // Control ops target no entity. The op log's `target_id` column is
+                    // nullable and the engine passes `None` for these, so this arm is
+                    // only reachable through a caller that asked for a ref it will not
+                    // use; a stream-shaped ref over the stream id is the least
+                    // misleading answer.
+                    Self::KeyEnvelope(p) => EntityRef::new(EntityKind::Stream, p.stream_id),
+                    Self::DeviceRevoke(p) => EntityRef::new(EntityKind::Device, p.revoked_device_id),
+                    Self::DeviceCertPublish(_) => EntityRef::new(EntityKind::Device, [0u8; 16]),
+                    // The *successor*, not the predecessor: a ref names the thing the
+                    // op brings about, and after this op the account is `to`.
+                    Self::IdentityTransition(p) => {
+                        EntityRef::new(EntityKind::Identity, p.to_identity_id)
+                    }
+                }
+            }
+
+            /// This op's effect class.
+            pub(crate) fn effect(&self) -> OpEffect {
+                match self {
+                    $($( Self::$op(_) => OpEffect::$class, )*)*
+                    Self::KeyEnvelope(_)
+                    | Self::DeviceRevoke(_)
+                    | Self::DeviceCertPublish(_)
+                    | Self::IdentityTransition(_) => OpEffect::Control,
+                }
+            }
+
+            /// The [`EntityKind`] this op targets.
+            pub(crate) fn entity_kind(&self) -> EntityKind {
+                match self {
+                    $($( Self::$op(_) => EntityKind::$kind, )*)*
+                    Self::KeyEnvelope(_) => EntityKind::Stream,
+                    Self::DeviceRevoke(_) | Self::DeviceCertPublish(_) => EntityKind::Device,
+                    Self::IdentityTransition(_) => EntityKind::Identity,
+                }
+            }
+
+            /// Whether this op carries key material or trust rather than user data.
+            ///
+            /// Checked before materialization rather than inferred from the kind
+            /// string, so adding a family cannot forget it.
+            pub(crate) const fn is_control(&self) -> bool {
+                matches!(
+                    self,
+                    Self::KeyEnvelope(_)
+                        | Self::DeviceRevoke(_)
+                        | Self::DeviceCertPublish(_)
+                        | Self::IdentityTransition(_)
+                )
+            }
+        }
+    };
 }
+
+sunrise_id::for_each_entity!(define_inner_op);
 
 /// The op's effect class, used to pick the materialization path and the emitted
 /// [`crate::events::DomainEvent`].
@@ -157,10 +217,10 @@ pub(crate) enum OpEffect {
     Delete,
     /// Not an entity at all: a control op carrying key material or trust.
     ///
-    /// This variant exists so the compiler stops a control op reaching
-    /// `materialize_remote`, whose kind table ends in a `_ =>` arm that files
-    /// anything it does not recognise under `tasks`. A missing arm there is a
-    /// silent wrong-table write; a missing arm here is a build failure.
+    /// This variant exists so a control op is told apart from an entity op by
+    /// type rather than by its kind string: `materialize_remote` routes every
+    /// entity op by its registry entry, and a control op's `entity_kind` names
+    /// the kind it is *about* (a Stream, a Device), not a row it writes.
     Control,
 }
 
@@ -177,154 +237,6 @@ pub enum InnerOpError {
     /// it (ADR-0045 §4).
     #[error("inner-op kind `{0}` is not one this build knows")]
     UnknownKind(String),
-}
-
-impl InnerOp {
-    /// The op-log `inner_kind` tag (e.g. `"task.create"`).
-    pub(crate) fn inner_kind(&self) -> &'static str {
-        match self {
-            Self::TaskCreate(_) => "task.create",
-            Self::TaskUpdate(_) => "task.update",
-            Self::TaskDelete(_) => "task.delete",
-            Self::StreamCreate(_) => "stream.create",
-            Self::StreamUpdate(_) => "stream.update",
-            Self::StreamDelete(_) => "stream.delete",
-            Self::ContextCreate(_) => "context.create",
-            Self::ContextUpdate(_) => "context.update",
-            Self::ContextDelete(_) => "context.delete",
-            Self::RoutineCreate(_) => "routine.create",
-            Self::RoutineUpdate(_) => "routine.update",
-            Self::RoutineDelete(_) => "routine.delete",
-            Self::BlockCreate(_) => "block.create",
-            Self::BlockUpdate(_) => "block.update",
-            Self::BlockDelete(_) => "block.delete",
-            Self::AttachmentCreate(_) => "attachment.create",
-            Self::AttachmentDelete(_) => "attachment.delete",
-            Self::FocusStart(_) => "focus.start",
-            Self::FocusEnd(_) => "focus.end",
-            Self::FocusInterrupt(_) => "focus.interrupt",
-            Self::ReviewSnapshotCreate(_) => "review.snapshot",
-            Self::KeyEnvelope(_) => "key.envelope",
-            Self::DeviceRevoke(_) => "device.revoke",
-            Self::DeviceCertPublish(_) => "device.cert",
-            Self::IdentityTransition(_) => "identity.transition",
-        }
-    }
-
-    /// The op-log `target_kind` tag (`"task"`, `"stream"`, `"context"`,
-    /// `"routine"`).
-    pub(crate) fn target_kind(&self) -> &'static str {
-        match self {
-            Self::TaskCreate(_) | Self::TaskUpdate(_) | Self::TaskDelete(_) => "task",
-            Self::StreamCreate(_) | Self::StreamUpdate(_) | Self::StreamDelete(_) => "stream",
-            Self::ContextCreate(_) | Self::ContextUpdate(_) | Self::ContextDelete(_) => "context",
-            Self::RoutineCreate(_) | Self::RoutineUpdate(_) | Self::RoutineDelete(_) => "routine",
-            Self::BlockCreate(_) | Self::BlockUpdate(_) | Self::BlockDelete(_) => "block",
-            Self::AttachmentCreate(_) | Self::AttachmentDelete(_) => "attachment",
-            Self::FocusStart(_) | Self::FocusEnd(_) | Self::FocusInterrupt(_) => "focus_session",
-            Self::ReviewSnapshotCreate(_) => "review_snapshot",
-            Self::KeyEnvelope(_) => "stream_key",
-            Self::DeviceRevoke(_) | Self::DeviceCertPublish(_) => "device",
-            Self::IdentityTransition(_) => "identity",
-        }
-    }
-
-    /// The entity this op targets.
-    pub(crate) fn target_ref(&self) -> EntityRef {
-        match self {
-            Self::TaskCreate(t) | Self::TaskUpdate(t) | Self::TaskDelete(t) => t.id,
-            Self::StreamCreate(s) | Self::StreamUpdate(s) | Self::StreamDelete(s) => s.id,
-            Self::ContextCreate(c) | Self::ContextUpdate(c) | Self::ContextDelete(c) => c.id,
-            Self::RoutineCreate(rt) | Self::RoutineUpdate(rt) | Self::RoutineDelete(rt) => rt.id,
-            Self::BlockCreate(b) | Self::BlockUpdate(b) | Self::BlockDelete(b) => b.id,
-            Self::AttachmentCreate(a) | Self::AttachmentDelete(a) => a.id,
-            Self::FocusStart(f) => f.id,
-            Self::FocusEnd(f) => f.session_id,
-            Self::FocusInterrupt(i) => i.session_id,
-            Self::ReviewSnapshotCreate(r) => r.id,
-            // Control ops target no entity. The op log's `target_id` column is
-            // nullable and the engine passes `None` for these, so this arm is
-            // only reachable through a caller that asked for a ref it will not
-            // use; a stream-shaped ref over the stream id is the least
-            // misleading answer.
-            Self::KeyEnvelope(p) => EntityRef::new(EntityKind::Stream, p.stream_id),
-            Self::DeviceRevoke(p) => EntityRef::new(EntityKind::Device, p.revoked_device_id),
-            Self::DeviceCertPublish(_) => EntityRef::new(EntityKind::Device, [0u8; 16]),
-            // The *successor*, not the predecessor: a ref names the thing the
-            // op brings about, and after this op the account is `to`.
-            Self::IdentityTransition(p) => EntityRef::new(EntityKind::Identity, p.to_identity_id),
-        }
-    }
-
-    /// This op's effect class.
-    pub(crate) fn effect(&self) -> OpEffect {
-        match self {
-            Self::TaskCreate(_)
-            | Self::StreamCreate(_)
-            | Self::ContextCreate(_)
-            | Self::RoutineCreate(_)
-            | Self::BlockCreate(_)
-            | Self::AttachmentCreate(_)
-            | Self::FocusStart(_)
-            | Self::ReviewSnapshotCreate(_) => OpEffect::Create,
-            Self::TaskUpdate(_)
-            | Self::StreamUpdate(_)
-            | Self::ContextUpdate(_)
-            | Self::RoutineUpdate(_)
-            | Self::BlockUpdate(_)
-            | Self::FocusEnd(_)
-            | Self::FocusInterrupt(_) => OpEffect::Update,
-            Self::TaskDelete(_)
-            | Self::StreamDelete(_)
-            | Self::ContextDelete(_)
-            | Self::RoutineDelete(_)
-            | Self::BlockDelete(_)
-            | Self::AttachmentDelete(_) => OpEffect::Delete,
-            Self::KeyEnvelope(_)
-            | Self::DeviceRevoke(_)
-            | Self::DeviceCertPublish(_)
-            | Self::IdentityTransition(_) => OpEffect::Control,
-        }
-    }
-
-    /// The [`EntityKind`] this op targets.
-    pub(crate) fn entity_kind(&self) -> EntityKind {
-        match self {
-            Self::TaskCreate(_) | Self::TaskUpdate(_) | Self::TaskDelete(_) => EntityKind::Task,
-            Self::StreamCreate(_) | Self::StreamUpdate(_) | Self::StreamDelete(_) => {
-                EntityKind::Stream
-            }
-            Self::ContextCreate(_) | Self::ContextUpdate(_) | Self::ContextDelete(_) => {
-                EntityKind::Context
-            }
-            Self::RoutineCreate(_) | Self::RoutineUpdate(_) | Self::RoutineDelete(_) => {
-                EntityKind::Routine
-            }
-            Self::BlockCreate(_) | Self::BlockUpdate(_) | Self::BlockDelete(_) => EntityKind::Block,
-            Self::AttachmentCreate(_) | Self::AttachmentDelete(_) => EntityKind::Attachment,
-            Self::FocusStart(_) | Self::FocusEnd(_) | Self::FocusInterrupt(_) => {
-                EntityKind::FocusSession
-            }
-            Self::ReviewSnapshotCreate(_) => EntityKind::ReviewSnapshot,
-            Self::KeyEnvelope(_) => EntityKind::Stream,
-            Self::DeviceRevoke(_) | Self::DeviceCertPublish(_) => EntityKind::Device,
-            Self::IdentityTransition(_) => EntityKind::Identity,
-        }
-    }
-
-    /// Whether this op carries key material or trust rather than user data.
-    ///
-    /// Checked before materialization rather than inferred from the kind
-    /// string, so adding a family cannot forget it.
-    pub(crate) const fn is_control(&self) -> bool {
-        matches!(
-            self,
-            Self::KeyEnvelope(_)
-                | Self::DeviceRevoke(_)
-                | Self::DeviceCertPublish(_)
-                | Self::IdentityTransition(_)
-        )
-    }
 }
 
 /// Encode an [`InnerOp`] to its canonical CBOR blob (the envelope payload).
@@ -501,6 +413,61 @@ mod tests {
         }
         let bytes = encode_inner_op(&transition()).unwrap();
         assert!(unknown_kind(&bytes).is_none(), "a known op is not unknown");
+    }
+
+    /// `InnerOp` is the registry's ops, in registry order, then the four
+    /// control families — read out of the derive, so it is the list the
+    /// decoder actually accepts.
+    #[test]
+    fn the_derive_declares_the_registry_ops_then_the_control_families() {
+        let mut expected: Vec<&str> = sunrise_id::registry::ENTITIES
+            .iter()
+            .flat_map(|e| e.ops.iter().map(|o| o.variant))
+            .collect();
+        expected.extend([
+            "KeyEnvelope",
+            "DeviceRevoke",
+            "DeviceCertPublish",
+            "IdentityTransition",
+        ]);
+        assert_eq!(known_kinds(), expected.as_slice());
+    }
+
+    /// The op-log strings every stored op already carries. Generating the
+    /// routing from the registry must not move one, and a registry edit that
+    /// would is caught here rather than in a vault.
+    #[test]
+    fn entity_op_log_tags_are_pinned() {
+        let tags: Vec<(&str, &str, &str)> = sunrise_id::registry::ENTITIES
+            .iter()
+            .flat_map(|e| e.ops.iter().map(move |o| (o.variant, o.inner_kind, e.tag)))
+            .collect();
+        assert_eq!(
+            tags,
+            [
+                ("TaskCreate", "task.create", "task"),
+                ("TaskUpdate", "task.update", "task"),
+                ("TaskDelete", "task.delete", "task"),
+                ("StreamCreate", "stream.create", "stream"),
+                ("StreamUpdate", "stream.update", "stream"),
+                ("StreamDelete", "stream.delete", "stream"),
+                ("ContextCreate", "context.create", "context"),
+                ("ContextUpdate", "context.update", "context"),
+                ("ContextDelete", "context.delete", "context"),
+                ("RoutineCreate", "routine.create", "routine"),
+                ("RoutineUpdate", "routine.update", "routine"),
+                ("RoutineDelete", "routine.delete", "routine"),
+                ("BlockCreate", "block.create", "block"),
+                ("BlockUpdate", "block.update", "block"),
+                ("BlockDelete", "block.delete", "block"),
+                ("AttachmentCreate", "attachment.create", "attachment"),
+                ("AttachmentDelete", "attachment.delete", "attachment"),
+                ("FocusStart", "focus.start", "focus_session"),
+                ("FocusEnd", "focus.end", "focus_session"),
+                ("FocusInterrupt", "focus.interrupt", "focus_session"),
+                ("ReviewSnapshotCreate", "review.snapshot", "review_snapshot"),
+            ]
+        );
     }
 
     #[test]

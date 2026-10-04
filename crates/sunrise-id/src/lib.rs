@@ -11,6 +11,7 @@
 pub mod crockford;
 pub mod entity_ref;
 pub mod kind;
+pub mod registry;
 pub mod ulid;
 
 pub use crockford::{decode_str, encode_bytes, CrockfordError};
