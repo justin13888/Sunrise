@@ -412,7 +412,8 @@ description = "Build every cargo-fuzz target (the compile gate for fuzz/, run lo
 shell = "bash -c"
 run = "cargo \"+${SUNRISE_FUZZ_TOOLCHAIN:-nightly}\" fuzz build --fuzz-dir fuzz"
 
-# Ten seconds a target, six targets: about a minute once the build is warm.
+# Ten seconds a target, nine targets: about a minute and a half once the build
+# is warm.
 # This is not a search — ten seconds finds nothing a corpus does not already
 # contain. What it proves is that each harness starts, reads its committed
 # seeds, and does not abort on one of them, which is the failure `fuzz-build`
@@ -429,7 +430,7 @@ shell = "bash -c"
 run = """
 set -euo pipefail
 seconds="${SUNRISE_FUZZ_SECONDS:-10}"
-for target in op_envelope wire_frame rrule ical oauth_state recovery_blob; do
+for target in op_envelope wire_frame rrule ical oauth_state recovery_blob identity_transition device_cert key_envelope; do
   mkdir -p "fuzz/corpus/$target"
   echo "== $target (${seconds}s)"
   cargo "+${SUNRISE_FUZZ_TOOLCHAIN:-nightly}" fuzz run --fuzz-dir fuzz "$target" \
