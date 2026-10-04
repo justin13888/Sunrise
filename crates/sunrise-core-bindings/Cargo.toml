@@ -34,7 +34,8 @@ uniffi = { version = "0.32.0", default-features = false, features = ["tokio"] }
 base64 = { workspace = true }
 jiff = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["rt", "rt-multi-thread", "sync"] }
+# `time` for the pairing rendezvous, which polls the relay between messages.
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "sync", "time"] }
 sunrise-auth = { workspace = true }
 sunrise-client-core = { workspace = true }
 sunrise-core = { workspace = true }
