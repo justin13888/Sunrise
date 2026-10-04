@@ -85,5 +85,8 @@ futures-util = { workspace = true }
 # embedding seam, so the thirty lines below cost less than the policy change.
 http-body-util = { workspace = true }
 tempfile = "3"
+# Reads exported spans back in `tests/span-redaction.rs` and the span-tree
+# tests.
+sunrise-telemetry = { workspace = true, features = ["testing"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 sunrise-crypto-test-vectors = { workspace = true }

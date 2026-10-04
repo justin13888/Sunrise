@@ -271,8 +271,39 @@ async fn run(args: Vec<String>) -> Result<(), u8> {
         );
     }
 
+    // Only with `[observability]` written: otherwise no exporter is built and
+    // no batch thread starts. Built here rather than in `ServerState::try_new`
+    // because the exporter sends on the runtime, and this is the first point
+    // one is certain to exist.
+    if let Some(export) = state
+        .config
+        .trace_export(sunrise_server::state::BUILD_COMMIT)
+    {
+        match sunrise_server::telemetry::Telemetry::otlp(&export, tokio::runtime::Handle::current())
+        {
+            Ok(telemetry) => state = state.with_telemetry(telemetry),
+            Err(e) => {
+                tracing::error!(
+                    ev = "srv.start.refused",
+                    err_code = "CONFIG_INVALID",
+                    err_kind = "permanent",
+                    retryable = false,
+                    cause = %e,
+                    "refusing to start"
+                );
+                return Err(EX_CONFIG);
+            }
+        }
+    }
+
     spawn_maintenance(state.clone());
-    serve_until_signalled(state, &bind).await
+    let telemetry = state.telemetry.clone();
+    let served = serve_until_signalled(state, &bind).await;
+    // The spans of the drain itself are queued until here. The flush blocks
+    // until the exporter answers or times out, so it runs off the runtime; a
+    // failed flush is reported by the exporter's own log and loses only spans.
+    let _ = tokio::task::spawn_blocking(move || telemetry.shutdown()).await;
+    served
 }
 
 /// Bind `bind`, serve until `SIGTERM`/`SIGINT`, and drain.

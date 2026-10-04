@@ -40,7 +40,31 @@ pub mod sampler;
 
 pub use attr::{Attr, Count};
 pub use export::{ExportConfig, HyperExport, EXPORT_TIMEOUT};
+/// Run a future under a [`SpanGuard::context`], so the spans it opens are
+/// children of that span.
+pub use opentelemetry::trace::FutureExt;
 pub use sampler::CappedSampler;
+
+/// An in-memory recorder for tests that read exported spans back.
+#[cfg(any(test, feature = "testing"))]
+pub mod testing {
+    pub use opentelemetry_sdk::trace::{InMemorySpanExporter, SpanData};
+
+    use crate::{CappedSampler, Telemetry};
+    use opentelemetry_sdk::trace::SdkTracerProvider;
+
+    /// Telemetry sampling `ratio` of traces through [`CappedSampler`], which
+    /// exports each span to the returned recorder the moment it ends.
+    #[must_use]
+    pub fn recording(ratio: f64) -> (Telemetry, InMemorySpanExporter) {
+        let exporter = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder()
+            .with_sampler(CappedSampler::new(ratio))
+            .with_simple_exporter(exporter.clone())
+            .build();
+        (Telemetry::from_provider(provider), exporter)
+    }
+}
 
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -311,18 +335,8 @@ impl Drop for SpanGuard {
 
 #[cfg(test)]
 mod tests {
+    use super::testing::{recording, InMemorySpanExporter, SpanData};
     use super::*;
-    use opentelemetry::trace::FutureExt as _;
-    use opentelemetry_sdk::trace::{InMemorySpanExporter, SpanData};
-
-    fn recording(ratio: f64) -> (Telemetry, InMemorySpanExporter) {
-        let exporter = InMemorySpanExporter::default();
-        let provider = SdkTracerProvider::builder()
-            .with_sampler(CappedSampler::new(ratio))
-            .with_simple_exporter(exporter.clone())
-            .build();
-        (Telemetry::from_provider(provider), exporter)
-    }
 
     fn finished(exporter: &InMemorySpanExporter) -> Vec<SpanData> {
         exporter.get_finished_spans().expect("spans")

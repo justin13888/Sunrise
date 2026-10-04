@@ -27,6 +27,11 @@ sunrise-log = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt"] }
 
+[features]
+# `testing::recording`: telemetry over an in-memory exporter, for the server's
+# span tests. Never enabled outside a dev-dependency.
+testing = ["opentelemetry_sdk/testing"]
+
 [dev-dependencies]
 opentelemetry_sdk = { workspace = true, features = ["testing"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

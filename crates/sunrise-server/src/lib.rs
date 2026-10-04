@@ -69,6 +69,8 @@ pub use push::{
 pub use relay::RelayHub;
 pub use state::{Clock, ServerState, SystemClock};
 pub use store::{Account, Device, Store, StoreError};
+/// Redacted trace export: the handle [`ServerState::with_telemetry`] takes.
+pub use sunrise_telemetry as telemetry;
 pub use sync_session::{Session, SessionStore};
 
 use kynos::router::service::Service;
