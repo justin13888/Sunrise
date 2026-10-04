@@ -53,7 +53,14 @@ async fn boot_server() -> SocketAddr {
         .await
         .expect("bind ephemeral port");
     let addr = listener.local_addr().expect("local addr");
-    let state = ServerState::new(ServerConfig::default());
+    // Limits off, as `LimitsConfig::enabled` documents for a benchmark: this
+    // times establishment, and Criterion establishes thousands of sessions
+    // from one address in a few seconds. With the defaults the relay answers
+    // `429 RATE_LIMITED` part-way through the warm-up and the bench panics,
+    // which is how the nightly job failed before reaching the comparison.
+    let mut config = ServerConfig::default();
+    config.limits.enabled = false;
+    let state = ServerState::new(config);
     tokio::spawn(async move {
         let _ = sunrise_server::serve(state, listener).await;
     });

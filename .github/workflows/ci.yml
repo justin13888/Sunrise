@@ -744,17 +744,29 @@ jobs:
         run: grep -rqF 'https://relay.invalid' apps/web/dist/assets
 
   bench-regression:
-    name: Bench regression (informational)
-    runs-on: ubuntu-latest
-    # 2.5x the one nightly run with real steps, which took 12m00s on a cold
-    # cache. Read that 12 minutes as compilation, not measurement: at
-    # `--warm-up-time 2 --measurement-time 5` criterion's own window is a
-    # small minority of it, and run 33491168956 spent 9m22s in `cargo bench`
-    # and a further 2m19s compiling and running the `baseline` binary the
-    # second step below uses. So this budget grows with `sunrise-bench`'s
-    # dependency graph and with every target added to it -- if it starts
-    # tripping, check what the crate now compiles before assuming a hang.
-    timeout-minutes: 30
+    name: Bench regression (informational, ${{ matrix.platform }})
+    # One leg per platform key in bench/baseline.json. The macOS image is
+    # pinned rather than `macos-latest`, so a runner-image change is a commit
+    # here and a re-recorded `darwin-aarch64` baseline, not a silent shift in
+    # what the numbers mean.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x86_64
+            os: ubuntu-latest
+          - platform: darwin-aarch64
+            os: macos-15
+    runs-on: ${{ matrix.os }}
+    # Not measured at this shape. The one nightly run with real steps took
+    # 12m00s on a cold cache, mostly compilation: run 33491168956 spent 9m22s
+    # in `cargo bench` and 2m19s compiling and running the `baseline` binary.
+    # Since then the suite gained `vault_open` (10k and 100k rows, two arms
+    # each) and `compaction` (seeding 10k tasks through the command path takes
+    # minutes on its own), and the macOS leg compiles with no cache at all.
+    # 45 is that 12 minutes plus those, with room; if it trips, check what the
+    # crate now compiles and seeds before assuming a hang.
+    timeout-minutes: 45
     # Nightly and on demand only, not on every push. It costs ~9 minutes and,
     # per the note below, produces a report rather than a verdict — paying that
     # on every commit for something nobody can act on is waste. testing.md
@@ -763,16 +775,23 @@ jobs:
     # NOT a merge gate, deliberately. docs/10-cross-cutting/testing.md specifies
     # a required check that blocks on a >5% regression, and that figure assumes
     # stable hardware. Measured on this runner, the same binary against its own
-    # recorded baseline reports swings of +270% (ws_handshake) and -39%
-    # (submit_create_task) purely from scheduling noise and a short measurement
-    # window. A gate that red-lights on noise gets ignored within a week, and
+    # recorded baseline reports swings of +270% (ws_handshake, now
+    # sync_session) and -39% (submit_create_task) purely from scheduling noise
+    # and a short measurement window. A gate that red-lights on noise gets ignored within a week, and
     # then it protects nothing — the determinism and log-redaction gates in this
     # very file spent months green and unenforceable.
     #
     # So: run it, print the comparison, annotate the outliers, and let a human
     # read it. Promoting this to a blocking check needs dedicated hardware and
     # full-length measurement runs, at which point drop `continue-on-error` and
-    # tighten the tolerance to the spec's 5%.
+    # tighten the tolerance to the spec's 5%. What does gate nightly is the
+    # `sync-latency` job below: an absolute budget with an order of magnitude
+    # of headroom, which runner noise does not reach.
+    #
+    # The comparison step does fail, on this job's own terms, when a bench in
+    # `baseline.rs`'s table did not run or a directory it does not know
+    # appeared: that is the job measuring something other than what it says,
+    # not noise.
     continue-on-error: true
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
@@ -805,9 +824,47 @@ jobs:
         # `--benches` alone still includes the lib's unittest harness, which
         # rejects criterion flags; the crate opts its lib and bin out via
         # `bench = false`.
+        #
+        # `compaction` at its default sizes seeds 100k tasks through the
+        # command path, about 24 minutes on an M-series Mac before a single
+        # sample, so it runs at the 10k size `baseline.rs` records.
+        env:
+          SUNRISE_BENCH_COMPACT_TASKS: "10000"
         run: cargo bench -p sunrise-bench --benches -- --warm-up-time 2 --measurement-time 5
       - name: Compare against bench/baseline.json
         run: cargo run -q -p sunrise-bench --bin baseline -- --check target/criterion bench/baseline.json 60
+
+  # The end-to-end sync budget, measured: two cores and a real relay on
+  # loopback, injected RTT, ten thousand ops per RTT, p99 against 500 ms
+  # (docs/10-cross-cutting/performance-budgets.md section Sync propagation).
+  # Unlike the job above it gates: the budget is absolute and the measured p99
+  # sits far below it, so a red run is a regression rather than a noisy
+  # neighbour. Nightly and on demand, because it commits 30 000 ops at 40 a
+  # second, about 13 minutes of measurement on its own.
+  sync-latency:
+    name: Sync latency
+    runs-on: ubuntu-latest
+    # Not observed on a runner yet. 13 minutes of measurement (12m30s at
+    # 40 ops a second, plus setup), a cold release build of `sunrise-e2e`'s
+    # graph, and the same again in hand.
+    timeout-minutes: 45
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+        with:
+          # A reader of the `rust` gate's entry, as `bench-regression` is, and
+          # for the same reasons. That entry is a debug build, so the release
+          # build here gains only its downloaded crates.
+          shared-key: rust
+          save-if: false
+      - name: Commit-to-apply latency at 0, 20 and 80 ms RTT
+        # A release build, because the debug build's unoptimised SQLCipher
+        # would put the vault's cost, not the sync path's, in the tail.
+        run: cargo test --release -p sunrise-e2e --test sync_latency -- --ignored --nocapture
 
   mutants:
     name: Mutation coverage
