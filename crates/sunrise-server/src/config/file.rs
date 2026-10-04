@@ -159,6 +159,10 @@ pub struct FileConfig {
     /// `[push.apns]` sub-table has no defaults: written at all, it is written
     /// whole.
     pub push: Option<super::PushConfig>,
+    /// The `[observability]` table, deserialized straight into the model's
+    /// type. Absent, no trace is exported; written, `endpoint` is required and
+    /// every other key defaults.
+    pub observability: Option<super::ObservabilityConfig>,
 }
 
 impl FileConfig {
@@ -197,6 +201,9 @@ impl FileConfig {
         }
         if let Some(v) = self.push {
             base.push = v;
+        }
+        if let Some(v) = self.observability {
+            base.observability = Some(v);
         }
         if let Some(v) = self.auth.oidc_issuer {
             base.oidc_issuer = Some(v);
@@ -697,6 +704,55 @@ mod file_tests {
         )
         .unwrap_err();
         assert!(bad_env.to_string().contains("staging"), "{bad_env}");
+    }
+
+    /// `[observability]` was one of the refused tables until tracing was
+    /// built. Written, it needs only `endpoint`; a misspelled key is refused
+    /// like every other table's.
+    #[test]
+    fn the_observability_table_is_read_with_its_defaults() {
+        let cfg = FileConfig::parse(
+            "[observability]\nendpoint = \"http://127.0.0.1:4318/v1/traces\"",
+            "t.toml",
+        )
+        .unwrap()
+        .apply(ServerConfig::default());
+        let obs = cfg.observability.as_ref().expect("the table is applied");
+        assert_eq!(obs.endpoint, "http://127.0.0.1:4318/v1/traces");
+        assert!((obs.sample_ratio - 0.01).abs() < f64::EPSILON);
+        assert_eq!(obs.service_name, "sunrise-server");
+        assert_eq!(obs.deployment, None);
+        assert!(cfg.validate(true).is_ok());
+
+        let full = FileConfig::parse(
+            "[observability]\nendpoint = \"https://otel.example/v1/traces\"\n\
+             sample_ratio = 1.0\nservice_name = \"relay\"\ndeployment = \"staging\"",
+            "t.toml",
+        )
+        .unwrap()
+        .apply(ServerConfig::default());
+        let obs = full.observability.as_ref().expect("applied");
+        assert!((obs.sample_ratio - 1.0).abs() < f64::EPSILON);
+        assert_eq!(obs.service_name, "relay");
+        assert_eq!(obs.deployment.as_deref(), Some("staging"));
+
+        let missing =
+            FileConfig::parse("[observability]\nsample_ratio = 0.5", "t.toml").unwrap_err();
+        assert!(missing.to_string().contains("endpoint"), "{missing}");
+        let unknown = FileConfig::parse(
+            "[observability]\nendpoint = \"http://c/v1/traces\"\nsampling = 0.5",
+            "t.toml",
+        )
+        .unwrap_err();
+        assert!(unknown.to_string().contains("sampling"), "{unknown}");
+        assert!(
+            FileConfig::parse("", "t.toml")
+                .unwrap()
+                .apply(ServerConfig::default())
+                .observability
+                .is_none(),
+            "absent, there is no tracing"
+        );
     }
 
     #[test]

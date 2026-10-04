@@ -67,6 +67,8 @@ sunrise-log = { workspace = true }
 # relay and the spec read one set of constants.
 sunrise-pairing = { workspace = true }
 sunrise-storage = { workspace = true }
+# Redacted trace export, off unless `[observability]` is written.
+sunrise-telemetry = { workspace = true }
 sunrise-wire-protocol = { workspace = true }
 # The relay database key is wiped when its holder drops (ADR-0060).
 zeroize = { workspace = true }
