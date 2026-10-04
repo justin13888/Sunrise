@@ -146,9 +146,9 @@ impl TaskEdit {
                 Set::Clear => None,
             });
         }
-        if let Some(set) = self.energy {
+        if let Some(set) = &self.energy {
             patch.energy = Some(match set {
-                Set::To(e) => Some(e),
+                Set::To(e) => Some(e.clone()),
                 Set::Clear => None,
             });
         }
@@ -219,8 +219,8 @@ impl TaskEdit {
             parts.push("clear contexts".into());
         }
         push_set(&mut parts, self.priority, "priority", |p| format!("!{p}"));
-        push_set(&mut parts, self.energy, "energy", |e| {
-            energy_word(e).to_string()
+        push_set(&mut parts, self.energy.clone(), "energy", |e| {
+            energy_word(&e).to_string()
         });
         push_set(&mut parts, self.duration_s, "estimate", |s| {
             format!("~{}", duration_label(s))
@@ -255,7 +255,7 @@ impl TaskEdit {
 }
 
 /// Render one `Set` into the preview list.
-fn push_set<T: Copy>(
+fn push_set<T>(
     parts: &mut Vec<String>,
     set: Option<Set<T>>,
     label: &str,
@@ -288,6 +288,10 @@ pub fn parse(
     let words: Vec<&str> = input.split_whitespace().collect();
     let mut i = 0usize;
     while i < words.len() {
+        // Every arm below consumes at least the word it matched, so the cursor
+        // strictly advances each turn. Asserted rather than assumed: a cursor
+        // that stops advancing is otherwise noticed only by the wall clock.
+        let start = i;
         let w = words[i];
         i += 1;
         if let Some(body) = w.strip_prefix('#') {
@@ -331,6 +335,7 @@ pub fn parse(
         } else {
             edit.errors.push(EditError::NotAToken(w.into()));
         }
+        debug_assert!(i > start, "annotate::parse cursor did not advance");
     }
     edit
 }
@@ -473,10 +478,12 @@ fn stamp(ts: Timestamp, tz: &TimeZone) -> String {
 }
 
 /// Word for an energy level.
-const fn energy_word(e: Energy) -> &'static str {
+const fn energy_word(e: &Energy) -> &'static str {
     match e {
         Energy::Low => "%low",
-        Energy::Med => "%med",
+        // The parser only produces known levels; an unknown one reads as its
+        // fallback, like everywhere else logic reads it.
+        Energy::Med | Energy::Unknown(_) => "%med",
         Energy::High => "%high",
     }
 }
@@ -598,6 +605,24 @@ mod tests {
         assert!(c.errors.is_empty(), "{:?}", c.errors);
         assert_eq!(c.patch_for(&[]).priority, Some(Some(1)));
         assert!(c.patch_for(&[]).scheduled_at.is_some());
+    }
+
+    #[test]
+    fn a_date_spanning_words_consumes_them_and_only_them() {
+        // Both date sigils take a second word here, so the cursor has to skip
+        // it: re-reading "friday" or "monday" as a token would report
+        // `NotAToken`, and stepping back would re-read the sigil itself.
+        let e = edit("^next friday !1 due:next monday @home");
+        assert!(e.errors.is_empty(), "{:?}", e.errors);
+        let p = e.patch_for(&[]);
+        assert_eq!(
+            p.scheduled_at,
+            edit("^next friday").patch_for(&[]).scheduled_at
+        );
+        assert_eq!(p.due_at, edit("due:next monday").patch_for(&[]).due_at);
+        assert_ne!(p.scheduled_at, edit("^next").patch_for(&[]).scheduled_at);
+        assert_eq!(p.priority, Some(Some(1)));
+        assert_eq!(p.contexts, Some(vec![cid(1)]));
     }
 
     #[test]

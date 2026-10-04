@@ -69,6 +69,20 @@ struct VaultLocation: Sendable {
     }
 }
 
+/// Where one vault's data and one vault's key live, resolved together.
+///
+/// A pair rather than two values, because they are only ever correct together:
+/// see `SessionModel.switchTo`.
+struct VaultBinding: Sendable {
+    let location: VaultLocation
+    let rootStore: any VaultRootStore
+    /// Where the relay's id for this vault's device lives. Part of the pair
+    /// rather than resolved at the call site: it is keyed by the same vault id
+    /// as the other two, and a client that presents one vault's device id while
+    /// signing with another's key is refused in a way it cannot diagnose.
+    let relayDeviceStore: any RelayDeviceIDStore
+}
+
 enum VaultLocationError: Error, Equatable, LocalizedError {
     case unusableIdentifier(String)
 

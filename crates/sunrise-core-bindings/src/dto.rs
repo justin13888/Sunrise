@@ -44,17 +44,6 @@ use sunrise_domain::{
 };
 use sunrise_id::{EntityKind, EntityRef};
 
-/// Monday-first, matching how the domain orders a weekday set.
-const ALL_WEEKDAYS: [Weekday; 7] = [
-    Weekday::Mo,
-    Weekday::Tu,
-    Weekday::We,
-    Weekday::Th,
-    Weekday::Fr,
-    Weekday::Sa,
-    Weekday::Su,
-];
-
 /// Format the 16-byte op/device/identity ids UniFFI cannot carry as lowercase
 /// hex.
 pub(crate) fn hex16(bytes: &[u8; 16]) -> String {
@@ -119,6 +108,12 @@ impl From<&SunriseTime> for TimeValue {
             },
             SunriseTime::Floating { civil } => Self::Floating { civil: *civil },
             SunriseTime::AllDay { date } => Self::AllDay { date: *date },
+            // The mirror has no case for a kind this build does not know; a
+            // client sees the instant it resolves to. A value a client hands
+            // back replaces the stored one, as for any explicit set.
+            SunriseTime::Unknown { .. } => Self::Instant {
+                at: t.to_instant(&jiff::tz::TimeZone::UTC),
+            },
         }
     }
 }
@@ -178,21 +173,23 @@ impl From<&ScheduleConstraint> for Constraint {
             days_of_week,
             date_range,
             severity,
+            // The mirror does not carry fields this build does not know; a
+            // value a client hands back replaces the stored one whole.
+            unknown: _,
         } = c;
         Self {
             time_of_day: time_of_day.as_ref().map(|w| TimeWindow {
                 start: w.start,
                 end: w.end,
             }),
-            days_of_week: ALL_WEEKDAYS
-                .into_iter()
-                .filter(|d| days_of_week.contains(*d))
-                .collect(),
+            // Monday-first, then any day token this build does not know, so a
+            // client that hands the list back carries it through.
+            days_of_week: days_of_week.iter().collect(),
             date_range: date_range.as_ref().map(|r| DateWindow {
                 start: r.start,
                 end: r.end,
             }),
-            severity: *severity,
+            severity: severity.clone(),
         }
     }
 }
@@ -200,16 +197,11 @@ impl From<&ScheduleConstraint> for Constraint {
 impl From<Constraint> for ScheduleConstraint {
     fn from(c: Constraint) -> Self {
         Self {
-            time_of_day: c.time_of_day.map(|w| TimeOfDayRange {
-                start: w.start,
-                end: w.end,
-            }),
+            time_of_day: c.time_of_day.map(|w| TimeOfDayRange::new(w.start, w.end)),
             days_of_week: sunrise_domain::WeekdaySet::from_days(c.days_of_week),
-            date_range: c.date_range.map(|r| DateRange {
-                start: r.start,
-                end: r.end,
-            }),
+            date_range: c.date_range.map(|r| DateRange::new(r.start, r.end)),
             severity: c.severity,
+            unknown: sunrise_domain::Unknowns::new(),
         }
     }
 }
@@ -253,9 +245,11 @@ impl From<&RRule> for Recurrence {
             count,
             until,
             wkst,
+            // Not mirrored; see `Constraint`.
+            unknown: _,
         } = r;
         Self {
-            freq: *freq,
+            freq: freq.clone(),
             interval: *interval,
             by_day: by_day.clone(),
             by_month_day: by_month_day.clone(),
@@ -263,7 +257,7 @@ impl From<&RRule> for Recurrence {
             by_set_pos: by_set_pos.clone(),
             count: *count,
             until: *until,
-            wkst: *wkst,
+            wkst: wkst.clone(),
         }
     }
 }
@@ -280,6 +274,7 @@ impl From<Recurrence> for RRule {
             count: r.count,
             until: r.until,
             wkst: r.wkst,
+            unknown: sunrise_domain::Unknowns::new(),
         }
     }
 }
@@ -384,9 +379,9 @@ impl From<&Task> for TaskItem {
             body: body.clone(),
             stream_id: *stream_id,
             contexts: contexts.iter().copied().collect(),
-            state: *state,
+            state: state.clone(),
             priority: *priority,
-            energy: *energy,
+            energy: energy.clone(),
             estimated_duration_s: *estimated_duration_s,
             scheduled_at: scheduled_at.as_ref().map(TimeValue::from),
             due_at: due_at.as_ref().map(TimeValue::from),
@@ -659,14 +654,14 @@ impl From<&Stream> for StreamItem {
             updated_at: *updated_at,
             name: name.clone(),
             description: description.clone(),
-            color: *color,
+            color: color.clone(),
             icon: icon.clone(),
             parent_id: *parent_id,
             sort_order: sort_order.clone(),
             archived: *archived,
             paused: *paused,
             paused_until: *paused_until,
-            review_cadence: *review_cadence,
+            review_cadence: review_cadence.clone(),
             default_context: *default_context,
             reminder_lead_s: *reminder_lead_s,
             deleted: *deleted,
@@ -916,12 +911,14 @@ impl From<&TaskTemplate> for Template {
             priority,
             estimated_duration_s,
             body,
+            // Not mirrored; see `Constraint`.
+            unknown: _,
         } = t;
         Self {
             title: title.clone(),
             stream_id: *stream_id,
             contexts: contexts.clone(),
-            energy: *energy,
+            energy: energy.clone(),
             priority: *priority,
             estimated_duration_s: *estimated_duration_s,
             body: body.clone(),
@@ -939,6 +936,7 @@ impl From<Template> for TaskTemplate {
             priority: t.priority,
             estimated_duration_s: t.estimated_duration_s,
             body: t.body,
+            unknown: sunrise_domain::Unknowns::new(),
         }
     }
 }
@@ -1035,7 +1033,7 @@ impl From<&Routine> for RoutineItem {
                 .map(Constraint::from)
                 .collect(),
             skipped_keys: skipped_keys.clone(),
-            catchup_policy: *catchup_policy,
+            catchup_policy: catchup_policy.clone(),
             streak_counter: *streak_counter,
             last_completed_at: *last_completed_at,
             grace_window_s: *grace_window_s,
@@ -1265,7 +1263,7 @@ impl From<&Interruption> for InterruptionRow {
         Self {
             session_id: *session_id,
             at: *at,
-            reason: *reason,
+            reason: reason.clone(),
         }
     }
 }
@@ -1310,8 +1308,8 @@ impl From<&FocusStart> for SessionStart {
             stream_id: *stream_id,
             started_at: *started_at,
             planned_ms: *planned_ms,
-            energy: *energy,
-            kind: *kind,
+            energy: energy.clone(),
+            kind: kind.clone(),
             chunk: chunk.as_ref().map(ChunkMarker::from),
         }
     }
@@ -1325,8 +1323,8 @@ impl From<&SessionStart> for FocusStart {
             stream_id: s.stream_id,
             started_at: s.started_at,
             planned_ms: s.planned_ms,
-            energy: s.energy,
-            kind: s.kind,
+            energy: s.energy.clone(),
+            kind: s.kind.clone(),
             chunk: s.chunk.map(|c| Chunk {
                 index: c.index,
                 total: c.total,
@@ -1389,7 +1387,7 @@ impl From<&InterruptionRow> for Interruption {
         Self {
             session_id: i.session_id,
             at: i.at,
-            reason: i.reason,
+            reason: i.reason.clone(),
         }
     }
 }
@@ -1524,7 +1522,7 @@ impl From<&EnergyFocus> for EnergyFocusRow {
             calibration,
         } = e;
         Self {
-            energy: *energy,
+            energy: energy.clone(),
             sessions: *sessions,
             focused_ms: *focused_ms,
             calibration: calibration.as_ref().map(CalibrationRow::from),
@@ -1533,7 +1531,7 @@ impl From<&EnergyFocus> for EnergyFocusRow {
 }
 
 /// See [`sunrise_domain::InterruptionTally`].
-#[derive(Debug, Clone, Copy, uniffi::Record)]
+#[derive(Debug, Clone, uniffi::Record)]
 pub struct InterruptionTallyRow {
     /// The reason.
     pub reason: InterruptionReason,
@@ -1545,7 +1543,7 @@ impl From<&InterruptionTally> for InterruptionTallyRow {
     fn from(t: &InterruptionTally) -> Self {
         let InterruptionTally { reason, count } = t;
         Self {
-            reason: *reason,
+            reason: reason.clone(),
             count: *count,
         }
     }
@@ -2368,7 +2366,7 @@ impl From<&StreamRow> for StreamListRow {
         Self {
             id: *id,
             name: name.clone(),
-            color: *color,
+            color: color.clone(),
             open_task_count: *open_task_count,
             archived: *archived,
             paused: *paused,
@@ -2606,7 +2604,7 @@ impl From<&CommandResult> for CommandOutcome {
         } = r;
         Self {
             entity: *entity,
-            state: *state,
+            state: state.clone(),
             op_id: hex16(op_id),
             seq: *seq,
             soft_violations: soft_violations.iter().map(Constraint::from).collect(),
@@ -3251,7 +3249,7 @@ impl From<&sunrise_domain::TaskDraft> for TaskDraftIn {
             stream_id: *stream_id,
             contexts: contexts.clone(),
             priority: *priority,
-            energy: *energy,
+            energy: energy.clone(),
             estimated_duration_s: *estimated_duration_s,
             scheduled_at: scheduled_at.as_ref().map(TimeValue::from),
             due_at: due_at.as_ref().map(TimeValue::from),
@@ -3278,6 +3276,14 @@ pub struct AccountBootstrap {
     /// owns and this value reports rather than sets.
     pub email: String,
     /// The id the relay assigned this device. Every later request names it.
+    ///
+    /// **The caller must record it before it lets this record go.** The relay
+    /// returns it to the registering device and to nobody else, never sends it
+    /// again, and without it a relay with `require_device_sig` refuses every
+    /// request this device makes. The Apple app writes it to the vault's
+    /// `KeychainRelayDeviceIDStore`; it used to read `recovery_code` off this
+    /// record and drop the rest
+    /// ([#183](https://github.com/justin13888/Sunrise/issues/183)).
     pub device_id: String,
     /// The twenty-four words, or `None` on a device admitted by pairing.
     ///
@@ -3293,3 +3299,98 @@ pub struct AccountBootstrap {
     /// that can, and it already did.
     pub recovery_code: Option<String>,
 }
+
+// ---------------------------------------------------------------------------
+// Registry coverage
+// ---------------------------------------------------------------------------
+
+/// A domain record's foreign mirror.
+///
+/// The exhaustive destructuring in each `From` impl above catches a new
+/// *field*; this catches a new *record*. Every record of every entity the
+/// registry ([`sunrise_id::for_each_entity!`]) syncs must name its mirror
+/// here, and the mirror must convert from it, or this crate does not build.
+/// The mirror itself stays hand-written for the reasons the module docs give.
+pub(crate) trait Mirrored {
+    /// The `UniFFI` record that mirrors this domain record.
+    type Dto: for<'a> From<&'a Self>;
+}
+
+impl Mirrored for Task {
+    type Dto = TaskItem;
+}
+impl Mirrored for Stream {
+    type Dto = StreamItem;
+}
+impl Mirrored for Context {
+    type Dto = ContextItem;
+}
+impl Mirrored for Routine {
+    type Dto = RoutineItem;
+}
+impl Mirrored for TaskTemplate {
+    type Dto = Template;
+}
+impl Mirrored for Block {
+    type Dto = BlockItem;
+}
+impl Mirrored for Attachment {
+    type Dto = AttachmentItem;
+}
+impl Mirrored for FocusStart {
+    type Dto = SessionStart;
+}
+impl Mirrored for FocusEnd {
+    type Dto = SessionEnd;
+}
+impl Mirrored for Interruption {
+    type Dto = InterruptionRow;
+}
+impl Mirrored for ReviewSnapshot {
+    type Dto = Snapshot;
+}
+
+/// Requires [`Mirrored`] of every record of every entity that syncs.
+/// `Unsynced` entities reach no foreign caller; `Control` ones have no record.
+macro_rules! require_mirrors {
+    (@merge Unsynced $($record:ident)*) => {};
+    (@merge $merge:ident $($record:ident)*) => {
+        $( mirrored::<$record>(); )*
+    };
+    (
+        $(
+            $(#[$kind_meta:meta])*
+            $kind:ident {
+                prefix: $prefix:literal,
+                tag: $tag:literal,
+                merge: $merge:ident,
+                owner: $owner:ident $(($owner_field:literal))?,
+                features: [$($feature:literal),* $(,)?],
+                ops: [
+                    $(
+                        $(#[$op_meta:meta])*
+                        $op:ident($payload:ty) = $inner_kind:literal, $class:ident, $target:ident;
+                    )*
+                ],
+                records: [
+                    $(
+                        $record:ident @ $storage:tt {
+                            $(
+                                $field:ident $(as $wire:literal)?: $field_ty:ty => $crdt:ident;
+                            )*
+                            $(..$unknown:ident)?
+                        }
+                    )*
+                ],
+            }
+        )*
+    ) => {
+        #[allow(dead_code)]
+        fn every_synced_record_is_mirrored() {
+            fn mirrored<T: Mirrored>() {}
+            $( require_mirrors!(@merge $merge $($record)*); )*
+        }
+    };
+}
+
+sunrise_id::for_each_entity!(require_mirrors);

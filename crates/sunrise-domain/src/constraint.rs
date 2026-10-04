@@ -13,12 +13,14 @@
 //! spec's stated forms for whole-second times.
 
 use crate::rrule::Weekday;
+use crate::unknown::{UnknownVariant, Unknowns};
 use crate::validation::ValidationError;
 use jiff::civil::{Date, Time};
 use jiff::Zoned;
 use serde::de::{SeqAccess, Visitor};
 use serde::ser::SerializeSeq;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use std::collections::HashSet;
 use thiserror::Error;
 
 /// Maximum number of constraints carried on a single Task/Routine.
@@ -29,60 +31,80 @@ pub const MAX_CONSTRAINTS: usize = 16;
 /// A `hard` violation blocks auto-scheduling and fails validation when the
 /// user schedules against it; a `soft` violation never blocks and only
 /// demotes ranking in planning views.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
+///
+/// An unrecognised severity reads as [`ConstraintSeverity::Soft`] and is
+/// written back verbatim. An unknown severity must not HARD-block scheduling:
+/// a soft constraint influences ranking; a hard one rejects the user's command
+/// outright.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConstraintSeverity {
     /// Blocks scheduling and fails validation.
     Hard,
     /// Only demotes ranking; never blocks.
     Soft,
+    /// A severity this build does not know, kept verbatim (ADR-0045 §6).
+    Unknown(UnknownVariant),
 }
 
-impl ConstraintSeverity {
-    /// The stable lowercase wire/storage string.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Soft => "soft",
-            Self::Hard => "hard",
-        }
-    }
-
-    /// Parse from the wire/storage string. An unrecognised value degrades to
-    /// [`ConstraintSeverity::Soft`] rather than failing.
-    ///
-    /// An unknown severity must not HARD-block scheduling. A soft constraint
-    /// influences ranking; a hard one rejects the user's command outright.
-    #[must_use]
-    pub fn from_str_lossy(s: &str) -> Self {
-        match s {
-            "hard" => Self::Hard,
-            // "soft" and anything this build has never heard of.
-            _ => Self::Soft,
-        }
-    }
-}
-
-crate::unknown::lossy_enum!(ConstraintSeverity);
+crate::unknown::lossy_enum!(ConstraintSeverity, fallback = Soft, {
+    Hard => "hard",
+    Soft => "soft",
+});
 
 /// Local wall-clock time-of-day window. Half-open `[start, end)`; `start` MUST
 /// be strictly `< end` (midnight wrap is not supported).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Not `Copy`: it keeps the fields a newer build adds to it (ADR-0045 §6).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TimeOfDayRange {
     /// Inclusive lower bound (local wall-clock).
     pub start: Time,
     /// Exclusive upper bound (local wall-clock).
     pub end: Time,
+    /// Fields this build does not know, re-emitted verbatim. See
+    /// [`crate::unknown`].
+    #[serde(flatten)]
+    pub unknown: Unknowns,
+}
+
+impl TimeOfDayRange {
+    /// A window with no unknown fields.
+    #[must_use]
+    pub fn new(start: Time, end: Time) -> Self {
+        Self {
+            start,
+            end,
+            unknown: Unknowns::new(),
+        }
+    }
 }
 
 /// Inclusive civil-date range. Open-ended when `end` is absent.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Not `Copy`: it keeps the fields a newer build adds to it (ADR-0045 §6).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DateRange {
     /// Inclusive lower bound.
     pub start: Date,
     /// Inclusive upper bound; open-ended if `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub end: Option<Date>,
+    /// Fields this build does not know, re-emitted verbatim. See
+    /// [`crate::unknown`].
+    #[serde(flatten)]
+    pub unknown: Unknowns,
+}
+
+impl DateRange {
+    /// A range with no unknown fields.
+    #[must_use]
+    pub fn new(start: Date, end: Option<Date>) -> Self {
+        Self {
+            start,
+            end,
+            unknown: Unknowns::new(),
+        }
+    }
 }
 
 /// Canonical weekday order (`MO`..`SU`) used for the compact set.
@@ -96,9 +118,10 @@ const WEEKDAY_ORDER: [Weekday; 7] = [
     Weekday::Su,
 ];
 
-/// Bit index of a weekday within [`WeekdaySet`] (`MO`=0 .. `SU`=6).
-const fn weekday_bit(w: Weekday) -> u8 {
-    match w {
+/// Bit index of a weekday within [`WeekdaySet`] (`MO`=0 .. `SU`=6); `None`
+/// for a token this build does not know.
+const fn weekday_bit(w: &Weekday) -> Option<u8> {
+    Some(match w {
         Weekday::Mo => 0,
         Weekday::Tu => 1,
         Weekday::We => 2,
@@ -106,61 +129,114 @@ const fn weekday_bit(w: Weekday) -> u8 {
         Weekday::Fr => 4,
         Weekday::Sa => 5,
         Weekday::Su => 6,
-    }
+        Weekday::Unknown(_) => return None,
+    })
 }
 
-/// A compact set over the seven weekdays.
+/// A set over the seven weekdays, plus any day tokens this build does not
+/// know.
 ///
-/// Backed by a 7-bit mask, so membership is O(1) and duplicate tokens are
-/// collapsed automatically (the spec's "entries MUST be distinct" rule is
-/// free). Serializes as a list of `"MO".."SU"` strings in canonical `MO..SU`
-/// order; an **empty** set means "all days" and is skipped on the wire.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct WeekdaySet(u8);
+/// The known days are a 7-bit mask, so membership is O(1) and duplicate
+/// tokens are collapsed automatically (the spec's "entries MUST be distinct"
+/// rule is free). Serializes as a list of `"MO".."SU"` strings in canonical
+/// `MO..SU` order; an **empty** set means "all days" and is skipped on the
+/// wire.
+///
+/// An unknown token is kept, in arrival order after the known days, and
+/// written back verbatim (ADR-0045 §6). It names no day this build can match,
+/// and a set that holds one places **no** restriction on the day: reading the
+/// set as only its known days could turn a newer peer's "Mondays or a day
+/// this build has no name for" into a hard block on every day but Monday, and
+/// inventing a block
+/// is exactly what an unknown value must never do.
+///
+/// The unknown tokens come off the wire from a peer, so their count is
+/// unbounded. They are indexed by a hash set beside the arrival-order list,
+/// which keeps decoding `n` of them linear rather than quadratic.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct WeekdaySet {
+    mask: u8,
+    /// Unknown tokens in arrival order, each once.
+    unknown: Vec<UnknownVariant>,
+    /// The same tokens as `unknown`, for O(1) membership.
+    unknown_index: HashSet<UnknownVariant>,
+}
 
 impl WeekdaySet {
     /// The empty set (== "all days").
     #[must_use]
-    pub const fn new() -> Self {
-        Self(0)
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// Build from an iterator of weekdays.
     #[must_use]
     pub fn from_days<I: IntoIterator<Item = Weekday>>(days: I) -> Self {
-        let mut s = Self(0);
+        let mut s = Self::new();
         for d in days {
             s.insert(d);
         }
         s
     }
 
-    /// Insert a weekday.
+    /// Insert a weekday. An unknown token is kept once, in arrival order.
     pub fn insert(&mut self, w: Weekday) {
-        self.0 |= 1 << weekday_bit(w);
+        match (weekday_bit(&w), w) {
+            (Some(bit), _) => self.mask |= 1 << bit,
+            (None, Weekday::Unknown(raw)) => {
+                if self.unknown_index.insert(raw.clone()) {
+                    self.unknown.push(raw);
+                }
+            }
+            // `weekday_bit` is `None` only for `Unknown`.
+            (None, _) => {}
+        }
     }
 
-    /// True if `w` is present.
+    /// True if `w` is present. An unknown token is compared by its spelling.
     #[must_use]
-    pub const fn contains(self, w: Weekday) -> bool {
-        self.0 & (1 << weekday_bit(w)) != 0
+    pub fn contains(&self, w: &Weekday) -> bool {
+        match (weekday_bit(w), w) {
+            (Some(bit), _) => self.mask & (1 << bit) != 0,
+            (None, Weekday::Unknown(raw)) => self.unknown_index.contains(raw),
+            (None, _) => false,
+        }
     }
 
     /// True if the set is empty ("all days").
     #[must_use]
-    pub const fn is_empty(&self) -> bool {
-        self.0 == 0
+    pub fn is_empty(&self) -> bool {
+        self.mask == 0 && self.unknown.is_empty()
     }
 
-    /// Number of weekdays in the set.
+    /// Number of entries in the set, unknown tokens included.
     #[must_use]
-    pub const fn len(&self) -> u32 {
-        self.0.count_ones()
+    pub fn len(&self) -> u32 {
+        self.mask.count_ones() + u32::try_from(self.unknown.len()).unwrap_or(u32::MAX)
     }
 
-    /// Iterate the members in canonical `MO..SU` order.
-    fn iter(self) -> impl Iterator<Item = Weekday> {
-        WEEKDAY_ORDER.into_iter().filter(move |&w| self.contains(w))
+    /// Whether the set restricts which day it is: non-empty, and every token
+    /// in it one this build knows. See the type's docs for why an unknown
+    /// token lifts the restriction.
+    #[must_use]
+    pub fn restricts(&self) -> bool {
+        self.mask != 0 && self.unknown.is_empty()
+    }
+
+    /// Whether the set admits `w`, the weekday of a moment being checked:
+    /// true when it places no restriction, or when `w` is in it.
+    #[must_use]
+    pub fn admits(&self, w: &Weekday) -> bool {
+        !self.restricts() || self.contains(w)
+    }
+
+    /// Iterate the members: known days in canonical `MO..SU` order, then any
+    /// unknown tokens in arrival order.
+    pub fn iter(&self) -> impl Iterator<Item = Weekday> + '_ {
+        WEEKDAY_ORDER
+            .into_iter()
+            .filter(move |w| self.contains(w))
+            .chain(self.unknown.iter().cloned().map(Weekday::Unknown))
     }
 }
 
@@ -195,7 +271,10 @@ impl<'de> Deserialize<'de> for WeekdaySet {
 }
 
 /// One scheduling constraint. At least one window dimension MUST be populated.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Not `Copy`: its severity can hold a value this build does not know, kept
+/// verbatim (ADR-0045 §6).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScheduleConstraint {
     /// Time-of-day window (local wall-clock).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -208,6 +287,12 @@ pub struct ScheduleConstraint {
     pub date_range: Option<DateRange>,
     /// Severity (required).
     pub severity: ConstraintSeverity,
+    /// Fields this build does not know, re-emitted verbatim. See
+    /// [`crate::unknown`]. A newer build's window dimension lands here: it
+    /// makes the constraint non-empty, and it restricts nothing this build
+    /// evaluates.
+    #[serde(flatten)]
+    pub unknown: Unknowns,
 }
 
 /// Errors from validating a scheduling constraint (or a list of them).
@@ -252,8 +337,10 @@ impl From<ConstraintError> for ValidationError {
 impl ScheduleConstraint {
     /// Bitmask of populated dimensions: bit0=time_of_day, bit1=days_of_week
     /// (non-empty), bit2=date_range. This is the constraint's "kind" for the
-    /// OR/AND combination semantics. Always non-zero for a valid constraint.
-    const fn kind_key(&self) -> u8 {
+    /// OR/AND combination semantics. Zero only for a constraint whose populated
+    /// fields are all unknown to this build, which validates and is satisfied
+    /// at every moment, so its group of one never produces a violation.
+    fn kind_key(&self) -> u8 {
         let mut k = 0u8;
         if self.time_of_day.is_some() {
             k |= 1;
@@ -268,16 +355,20 @@ impl ScheduleConstraint {
     }
 
     /// Validate a single constraint against the domain rules.
+    ///
+    /// A constraint whose only populated fields are ones this build does not
+    /// know is not empty: a newer build's window dimension is a real
+    /// restriction there, and refusing it here would refuse the whole list.
     pub fn validate(&self) -> Result<(), ConstraintError> {
-        if self.kind_key() == 0 {
+        if self.kind_key() == 0 && self.unknown.is_empty() {
             return Err(ConstraintError::Empty);
         }
-        if let Some(t) = self.time_of_day {
+        if let Some(t) = &self.time_of_day {
             if t.start >= t.end {
                 return Err(ConstraintError::TimeRange);
             }
         }
-        if let Some(d) = self.date_range {
+        if let Some(d) = &self.date_range {
             if let Some(end) = d.end {
                 if d.start > end {
                     return Err(ConstraintError::DateRange);
@@ -291,20 +382,25 @@ impl ScheduleConstraint {
     /// zoned datetime's local wall-clock terms).
     ///
     /// - `time_of_day`: local time within `[start, end)`.
-    /// - `days_of_week`: local weekday in the set (empty set == all days).
+    /// - `days_of_week`: local weekday in the set (empty set == all days; a
+    ///   set holding a day token this build does not know == all days too,
+    ///   see [`WeekdaySet`]).
     /// - `date_range`: local date within the inclusive range.
+    ///
+    /// A field this build does not know is not evaluated: it cannot say what
+    /// the field restricts, and an unknown value must never invent a block.
     #[must_use]
     pub fn is_satisfied_at(&self, zdt: &Zoned) -> bool {
-        if let Some(t) = self.time_of_day {
+        if let Some(t) = &self.time_of_day {
             let now = zdt.time();
             if now < t.start || now >= t.end {
                 return false;
             }
         }
-        if !self.days_of_week.is_empty() && !self.days_of_week.contains(weekday_of(zdt)) {
+        if !self.days_of_week.admits(&weekday_of(zdt)) {
             return false;
         }
-        if let Some(d) = self.date_range {
+        if let Some(d) = &self.date_range {
             let day = zdt.date();
             if day < d.start {
                 return false;
@@ -358,8 +454,9 @@ pub fn validate_list(list: &[ScheduleConstraint]) -> Result<(), ConstraintError>
 /// the caller filters by [`ConstraintSeverity`].
 #[must_use]
 pub fn list_violations(list: &[ScheduleConstraint], zdt: &Zoned) -> Vec<usize> {
-    // kind_key is in 1..=7 for valid constraints, so a u8 mask over the eight
-    // possible kinds is enough to record which kind-groups are satisfied.
+    // kind_key is in 0..=7 for valid constraints (0 for one holding only
+    // fields this build does not know), so a u8 mask over the eight possible
+    // kinds is enough to record which kind-groups are satisfied.
     let mut satisfied_kinds: u8 = 0;
     for c in list {
         if c.is_satisfied_at(zdt) {
@@ -388,10 +485,12 @@ pub fn violations_by_severity(
     let mut hard = Vec::new();
     let mut soft = Vec::new();
     for i in list_violations(list, zdt) {
-        let c = list[i];
-        match c.severity {
+        let c = list[i].clone();
+        // An unknown severity reads as its fallback, `soft`: it must never
+        // invent a hard block.
+        match &c.severity {
             ConstraintSeverity::Hard => hard.push(c),
-            ConstraintSeverity::Soft => soft.push(c),
+            ConstraintSeverity::Soft | ConstraintSeverity::Unknown(_) => soft.push(c),
         }
     }
     (hard, soft)
@@ -416,6 +515,7 @@ mod tests {
             days_of_week: WeekdaySet::new(),
             date_range: None,
             severity: sev,
+            unknown: Unknowns::new(),
         }
     }
 
@@ -426,6 +526,7 @@ mod tests {
             days_of_week: WeekdaySet::new(),
             date_range: None,
             severity: ConstraintSeverity::Hard,
+            unknown: Unknowns::new(),
         };
         assert_eq!(c.validate(), Err(ConstraintError::Empty));
     }
@@ -436,6 +537,7 @@ mod tests {
             TimeOfDayRange {
                 start: time(18, 0, 0, 0),
                 end: time(9, 0, 0, 0),
+                unknown: Unknowns::new(),
             },
             ConstraintSeverity::Hard,
         );
@@ -446,6 +548,7 @@ mod tests {
             TimeOfDayRange {
                 start: time(9, 0, 0, 0),
                 end: time(9, 0, 0, 0),
+                unknown: Unknowns::new(),
             },
             ConstraintSeverity::Hard,
         );
@@ -460,8 +563,10 @@ mod tests {
             date_range: Some(DateRange {
                 start: date(2026, 8, 17),
                 end: Some(date(2026, 8, 3)),
+                unknown: Unknowns::new(),
             }),
             severity: ConstraintSeverity::Hard,
+            unknown: Unknowns::new(),
         };
         assert_eq!(c.validate(), Err(ConstraintError::DateRange));
     }
@@ -474,8 +579,10 @@ mod tests {
             date_range: Some(DateRange {
                 start: date(2026, 8, 3),
                 end: None,
+                unknown: Unknowns::new(),
             }),
             severity: ConstraintSeverity::Soft,
+            unknown: Unknowns::new(),
         };
         c.validate().unwrap();
     }
@@ -487,6 +594,7 @@ mod tests {
             days_of_week: WeekdaySet::from_days([Weekday::Mo, Weekday::We]),
             date_range: None,
             severity: ConstraintSeverity::Hard,
+            unknown: Unknowns::new(),
         };
         c.validate().unwrap();
     }
@@ -497,10 +605,11 @@ mod tests {
             TimeOfDayRange {
                 start: time(9, 0, 0, 0),
                 end: time(17, 0, 0, 0),
+                unknown: Unknowns::new(),
             },
             ConstraintSeverity::Soft,
         );
-        let ok = vec![c; 16];
+        let ok = vec![c.clone(); 16];
         assert!(validate_list(&ok).is_ok());
         let too_many = vec![c; 17];
         assert_eq!(validate_list(&too_many), Err(ConstraintError::TooMany));
@@ -510,9 +619,9 @@ mod tests {
     fn weekday_set_collapses_duplicates() {
         let s = WeekdaySet::from_days([Weekday::Mo, Weekday::Mo, Weekday::Tu]);
         assert_eq!(s.len(), 2);
-        assert!(s.contains(Weekday::Mo));
-        assert!(s.contains(Weekday::Tu));
-        assert!(!s.contains(Weekday::We));
+        assert!(s.contains(&Weekday::Mo));
+        assert!(s.contains(&Weekday::Tu));
+        assert!(!s.contains(&Weekday::We));
     }
 
     #[test]
@@ -521,6 +630,7 @@ mod tests {
             TimeOfDayRange {
                 start: time(9, 0, 0, 0),
                 end: time(17, 0, 0, 0),
+                unknown: Unknowns::new(),
             },
             ConstraintSeverity::Hard,
         );
@@ -538,6 +648,7 @@ mod tests {
             days_of_week: WeekdaySet::from_days([Weekday::Mo]),
             date_range: None,
             severity: ConstraintSeverity::Hard,
+            unknown: Unknowns::new(),
         };
         assert!(c.is_satisfied_at(&zoned(2026, 8, 3, 12, 0))); // Monday
         assert!(!c.is_satisfied_at(&zoned(2026, 8, 4, 12, 0))); // Tuesday
@@ -551,8 +662,10 @@ mod tests {
             date_range: Some(DateRange {
                 start: date(2026, 8, 3),
                 end: Some(date(2026, 8, 17)),
+                unknown: Unknowns::new(),
             }),
             severity: ConstraintSeverity::Hard,
+            unknown: Unknowns::new(),
         };
         assert!(c.is_satisfied_at(&zoned(2026, 8, 3, 0, 0))); // inclusive start
         assert!(c.is_satisfied_at(&zoned(2026, 8, 17, 23, 0))); // inclusive end
@@ -567,6 +680,7 @@ mod tests {
             time_of_day: Some(TimeOfDayRange {
                 start: time(9, 0, 0, 0),
                 end: time(12, 0, 0, 0),
+                unknown: Unknowns::new(),
             }),
             days_of_week: WeekdaySet::from_days([
                 Weekday::Mo,
@@ -578,8 +692,10 @@ mod tests {
             date_range: Some(DateRange {
                 start: date(2026, 8, 1),
                 end: Some(date(2026, 8, 31)),
+                unknown: Unknowns::new(),
             }),
             severity: ConstraintSeverity::Hard,
+            unknown: Unknowns::new(),
         };
         assert!(c.is_satisfied_at(&zoned(2026, 8, 3, 10, 0))); // Mon 10:00 in range
         assert!(!c.is_satisfied_at(&zoned(2026, 8, 3, 13, 0))); // right day, wrong time
@@ -595,6 +711,7 @@ mod tests {
             TimeOfDayRange {
                 start: time(6, 0, 0, 0),
                 end: time(12, 0, 0, 0),
+                unknown: Unknowns::new(),
             },
             ConstraintSeverity::Hard,
         );
@@ -602,6 +719,7 @@ mod tests {
             TimeOfDayRange {
                 start: time(18, 0, 0, 0),
                 end: time(22, 0, 0, 0),
+                unknown: Unknowns::new(),
             },
             ConstraintSeverity::Hard,
         );
@@ -621,6 +739,7 @@ mod tests {
             TimeOfDayRange {
                 start: time(18, 0, 0, 0),
                 end: time(23, 0, 0, 0),
+                unknown: Unknowns::new(),
             },
             ConstraintSeverity::Hard,
         );
@@ -635,6 +754,7 @@ mod tests {
             ]),
             date_range: None,
             severity: ConstraintSeverity::Hard,
+            unknown: Unknowns::new(),
         };
         let list = [after_six, weekdays];
         // Mon 19:00: both satisfied → no violations.
@@ -653,6 +773,7 @@ mod tests {
             TimeOfDayRange {
                 start: time(6, 0, 0, 0),
                 end: time(8, 0, 0, 0),
+                unknown: Unknowns::new(),
             },
             ConstraintSeverity::Hard,
         );
@@ -660,6 +781,7 @@ mod tests {
             TimeOfDayRange {
                 start: time(20, 0, 0, 0),
                 end: time(22, 0, 0, 0),
+                unknown: Unknowns::new(),
             },
             ConstraintSeverity::Hard,
         );
@@ -684,18 +806,20 @@ mod tests {
             ]),
             date_range: None,
             severity: ConstraintSeverity::Hard,
+            unknown: Unknowns::new(),
         };
         let evening = tod(
             TimeOfDayRange {
                 start: time(18, 0, 0, 0),
                 end: time(22, 0, 0, 0),
+                unknown: Unknowns::new(),
             },
             ConstraintSeverity::Soft,
         );
-        let list = [weekdays, evening];
+        let list = [weekdays.clone(), evening.clone()];
         let (hard, soft) = violations_by_severity(&list, &zoned(2026, 8, 8, 12, 0));
         assert_eq!(hard, vec![weekdays]);
-        assert_eq!(soft, vec![evening]);
+        assert_eq!(soft, vec![evening.clone()]);
 
         // Monday 19:00 satisfies both.
         let (hard, soft) = violations_by_severity(&list, &zoned(2026, 8, 3, 19, 0));
@@ -713,15 +837,18 @@ mod tests {
             time_of_day: Some(TimeOfDayRange {
                 start: time(9, 0, 0, 0),
                 end: time(17, 30, 0, 0),
+                unknown: Unknowns::new(),
             }),
             days_of_week: WeekdaySet::from_days([Weekday::Mo, Weekday::We, Weekday::Fr]),
             date_range: Some(DateRange {
                 start: date(2026, 8, 3),
                 end: Some(date(2026, 8, 17)),
+                unknown: Unknowns::new(),
             }),
             severity: ConstraintSeverity::Hard,
+            unknown: Unknowns::new(),
         };
-        let j = serde_json::to_value(c).unwrap();
+        let j = serde_json::to_value(&c).unwrap();
         assert_eq!(j["time_of_day"]["start"], "09:00:00");
         assert_eq!(j["time_of_day"]["end"], "17:30:00");
         assert_eq!(
@@ -745,6 +872,7 @@ mod tests {
             days_of_week: WeekdaySet::from_days([Weekday::Sa, Weekday::Su]),
             date_range: None,
             severity: ConstraintSeverity::Soft,
+            unknown: Unknowns::new(),
         };
         let j = serde_json::to_value(c).unwrap();
         assert!(j.get("time_of_day").is_none());
@@ -762,5 +890,86 @@ mod tests {
         });
         let c: ScheduleConstraint = serde_json::from_value(j).unwrap();
         assert!(c.days_of_week.is_empty());
+    }
+
+    #[test]
+    fn an_unknown_day_token_is_kept_and_lifts_the_day_restriction() {
+        let j = serde_json::json!({
+            "days_of_week": ["MO", "XX", "MO", "XX"],
+            "severity": "hard"
+        });
+        let c: ScheduleConstraint = serde_json::from_value(j).unwrap();
+        // Kept once each, and written back: known days first, then unknown.
+        assert_eq!(c.days_of_week.len(), 2);
+        assert!(c.days_of_week.contains(&Weekday::from_raw("XX")));
+        let back = serde_json::to_value(&c).unwrap();
+        assert_eq!(back["days_of_week"], serde_json::json!(["MO", "XX"]));
+
+        // A Saturday is not Monday, but the set holds a token this build
+        // cannot read, so it does not block the Saturday.
+        assert!(!c.days_of_week.restricts());
+        assert!(c.is_satisfied_at(&zoned(2026, 8, 8, 12, 0)));
+        let (hard, _) = violations_by_severity(std::slice::from_ref(&c), &zoned(2026, 8, 8, 12, 0));
+        assert!(hard.is_empty(), "an unknown day never invents a hard block");
+    }
+
+    #[test]
+    fn many_distinct_unknown_day_tokens_decode_in_linear_time_and_keep_order() {
+        // A peer controls this list. With a quadratic de-duplication, 100k
+        // distinct tokens would cost ~5e9 string comparisons and this test
+        // would not finish; indexed, it is 100k set inserts.
+        const N: usize = 100_000;
+        let mut days: Vec<String> = (0..N).map(|i| format!("X{i}")).collect();
+        // Every token repeated once more, after the first pass, plus a known day.
+        days.extend((0..N).map(|i| format!("X{i}")));
+        days.push("TU".to_owned());
+        let j = serde_json::json!({ "days_of_week": days, "severity": "hard" });
+        let c: ScheduleConstraint = serde_json::from_value(j).unwrap();
+
+        assert_eq!(c.days_of_week.len() as usize, N + 1);
+        assert!(c.days_of_week.contains(&Weekday::from_raw("X99999")));
+        assert!(!c.days_of_week.contains(&Weekday::from_raw("X100000")));
+        // Round trip: the known day first, then each unknown once, in arrival order.
+        let back = serde_json::to_value(&c).unwrap();
+        let back = back["days_of_week"].as_array().unwrap();
+        assert_eq!(back.len(), N + 1);
+        assert_eq!(back[0], "TU");
+        for (i, v) in back[1..].iter().enumerate() {
+            assert_eq!(v.as_str(), Some(format!("X{i}").as_str()));
+        }
+    }
+
+    /// A newer build's field at each nesting level survives decode and is
+    /// written back byte for byte.
+    #[test]
+    fn unknown_fields_at_every_level_round_trip_byte_exact() {
+        let j = serde_json::json!({
+            "time_of_day": { "start": "09:00:00", "end": "17:00:00", "slack_m": 15 },
+            "date_range": { "start": "2026-08-03", "zz": [1, "a"] },
+            "severity": "soft",
+            "place": "office"
+        });
+        let c: ScheduleConstraint = serde_json::from_value(j).unwrap();
+        assert_eq!(c.unknown.len(), 1);
+        assert_eq!(c.time_of_day.as_ref().unwrap().unknown.len(), 1);
+        assert_eq!(c.date_range.as_ref().unwrap().unknown.len(), 1);
+
+        let bytes = sunrise_cbor::encode_canonical(&c).unwrap();
+        let back: ScheduleConstraint = sunrise_cbor::decode_canonical(&bytes).unwrap();
+        assert_eq!(back, c);
+        assert_eq!(sunrise_cbor::encode_canonical(&back).unwrap(), bytes);
+    }
+
+    /// A constraint whose only dimension is one this build does not know is
+    /// valid, and restricts nothing here.
+    #[test]
+    fn a_constraint_of_only_unknown_fields_validates_and_never_blocks() {
+        let j = serde_json::json!({ "place": "office", "severity": "hard" });
+        let c: ScheduleConstraint = serde_json::from_value(j).unwrap();
+        c.validate().unwrap();
+        assert!(c.is_satisfied_at(&zoned(2026, 8, 8, 3, 0)));
+        let (hard, soft) =
+            violations_by_severity(std::slice::from_ref(&c), &zoned(2026, 8, 8, 3, 0));
+        assert!(hard.is_empty() && soft.is_empty());
     }
 }

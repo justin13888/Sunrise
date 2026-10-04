@@ -37,12 +37,17 @@
 -- ------------------
 --
 -- A **ratchet**: a device enters it the first time any replica-believed
--- revocation names it, and nothing in the tree ever takes it out again. There
--- is no `DELETE FROM device_read_bounds` and no `UPDATE`; the only writer is
--- the `INSERT OR IGNORE` `refold_device_revocations` runs over the register it
--- is about to rebuild, immediately before its `DELETE`. So the fold stays a
--- pure function of the op set for the question that has to converge, and the
--- bound stays one-directional for the question that has to hold.
+-- revocation names it, and nothing in the tree takes out a device this
+-- replica holds a cert for. The fold's writer is the upsert
+-- `refold_device_revocations` runs over the register it is about to rebuild,
+-- immediately before its `DELETE`; since 0030 its conflict arm only clears
+-- `from_sponsor`. The one other writer is `adopt_sponsor_read_bounds`, an
+-- `INSERT OR IGNORE` run once when a paired vault is created (issue #282).
+-- The one `DELETE` is `release_orphan_read_bounds`, which takes only an
+-- unmarked row for a certless id that no ledger row names (issue #315). So
+-- the fold stays a pure function of the op set for the question that has to
+-- converge, and the bound stays one-directional for the question that has to
+-- hold.
 --
 -- Order dependence is the price, and it is **not** bounded to one direction.
 -- Two replicas that have seen the same ops in different orders can hold
@@ -61,8 +66,9 @@
 -- it mints. What this table does close is the single-replica unwind: once a
 -- replica has bounded a device, nothing here gives the bound back.
 -- `crates/sunrise-core/src/engine/revocation.rs` states the fork at the write
--- itself, and issue #282 holds the unclosed half and the two design questions
--- it turns on.
+-- itself. A device that pairs adopts its sponsor's bound (0030, issue #282),
+-- so it no longer starts as the second replica; issue #411 holds the half
+-- between replicas that already exist.
 --
 -- The *register* still could not be made the ratchet instead (ADR-0041's own
 -- revisit trigger 4 says a ratchet and a fold cannot both be true of one

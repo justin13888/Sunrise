@@ -22,11 +22,11 @@ use rand_chacha::ChaCha20Rng;
 use rand_core::SeedableRng;
 use sunrise_crypto::{
     blake3_kdf::derive_key_32,
-    chunk_aad, chunk_nonce, derive_key, encode_envelope, hpke_open, hpke_seal,
-    identity_id_from_pub, key_envelope_info,
+    chain_root_init, chain_root_step, chunk_aad, chunk_nonce, derive_key, encode_envelope,
+    hpke_open, hpke_seal, identity_id_from_pub, key_envelope_info,
     keys::{DeviceDhKeyPair, DeviceSigningKeyPair, StreamKey},
-    open_chunk, seal_chunk, stream_key_id, stream_root_init, stream_root_step, AeadAlgId,
-    HPKE_ENC_LEN,
+    open_chunk, seal_chunk, stream_digest, stream_key_id, stream_root_init, stream_root_step,
+    AeadAlgId, FrontierEntry, HPKE_ENC_LEN,
 };
 use sunrise_crypto_test_vectors as vectors;
 
@@ -87,6 +87,59 @@ fn stream_merkle_root_vectors_hold() {
     assert_eq!(r1, vectors::STREAM_ROOT_1);
     let r2 = stream_root_step(&r1, b"b");
     assert_eq!(r2, vectors::STREAM_ROOT_2);
+}
+
+/// ADR-0043 §5. Two replicas compare these values without exchanging the
+/// formula, so a build that spelled a context or ordered the material
+/// differently would report every peer as diverged.
+#[test]
+fn op_chain_and_stream_digest_vectors_hold() {
+    let r0 = chain_root_init(&vectors::STREAM_ID, &vectors::DEVICE_ID);
+    assert_eq!(r0, vectors::CHAIN_ROOT_0, "{}", hex::encode(r0));
+    assert_eq!(
+        r0,
+        derive_key_32_longhand(
+            "sunrise.op_chain.init.v1",
+            &[vectors::STREAM_ID, vectors::DEVICE_ID].concat()
+        )
+    );
+    let r1 = chain_root_step(&r0, &vectors::CHAIN_OP_HASH_1);
+    assert_eq!(r1, vectors::CHAIN_ROOT_1, "{}", hex::encode(r1));
+    let other = [0x01; 16];
+    let digest = stream_digest(
+        &vectors::STREAM_ID,
+        &[
+            FrontierEntry {
+                device_id: vectors::DEVICE_ID,
+                seq: 1,
+                root: r1,
+            },
+            FrontierEntry {
+                device_id: other,
+                seq: 0,
+                root: chain_root_init(&vectors::STREAM_ID, &other),
+            },
+        ],
+    );
+    assert_eq!(digest, vectors::STREAM_DIGEST_2, "{}", hex::encode(digest));
+}
+
+/// The longhand `derive_key` the chain functions must agree with, so a
+/// context change is caught even if the literals are regenerated.
+fn derive_key_32_longhand(context: &'static str, material: &[u8]) -> [u8; 32] {
+    derive_key(context, material, 32).try_into().unwrap()
+}
+
+/// `op_hash` of the frozen signed-only envelope: the hash of its bytes after
+/// the magic prefix, which is canonical by construction.
+#[test]
+fn op_hash_of_the_frozen_envelope_holds() {
+    let env = sunrise_crypto::decode_envelope(&vectors::signed_only_envelope::ENCODED).unwrap();
+    assert_eq!(
+        sunrise_crypto::op_hash(&env).unwrap(),
+        *blake3::hash(&vectors::signed_only_envelope::ENCODED[sunrise_cbor::MAGIC_LEN..])
+            .as_bytes()
+    );
 }
 
 #[test]

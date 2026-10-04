@@ -248,7 +248,7 @@ impl Engine {
     /// constraints use — so a week boundary is never read from ambient state.
     fn week_grid(&self, now_ms: u64, weeks: u32) -> Result<WeekGrid, EngineError> {
         let tz = jiff::tz::TimeZone::get(&self.clock.timezone()).unwrap_or(jiff::tz::TimeZone::UTC);
-        WeekGrid::trailing(now_ms, weeks.clamp(1, MAX_TREND_WEEKS), &tz, Weekday::Mo)
+        WeekGrid::trailing(now_ms, weeks.clamp(1, MAX_TREND_WEEKS), &tz, &Weekday::Mo)
             .map_err(|e| EngineError::Invalid(format!("week grid: {e}")))
     }
 
@@ -559,6 +559,12 @@ fn op_payload(inner: InnerOp) -> OpPayload {
         | InnerOp::DeviceRevoke(_)
         | InnerOp::DeviceCertPublish(_)
         | InnerOp::IdentityTransition(_)
+        // A digest says what a replica holds, not what anyone did.
+        | InnerOp::StreamDigest(_)
+        // A field-level write carries no whole task to diff against, and this
+        // build never emits one (ADR-0044 §9). The timeline reads it once
+        // commands emit it.
+        | InnerOp::Patch(_)
         | InnerOp::ReviewSnapshotCreate(_) => OpPayload::Ignored,
     }
 }

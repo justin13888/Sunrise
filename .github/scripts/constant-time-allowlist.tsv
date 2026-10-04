@@ -1,0 +1,15 @@
+# Comparisons `constant-time-gate.sh` flags that are not timing oracles.
+#
+# One entry per line, three TAB-separated fields:
+#
+#   path<TAB>the source line, whitespace-trimmed<TAB>why it is not a timing oracle
+#
+# An entry is matched on its path and its exact line text, never on a line
+# number. An entry that matches no line fails the gate: delete it with the line
+# it excused. The preferred fix for a new hit is `subtle::ConstantTimeEq`, not
+# a new entry; an entry is for a comparison whose operands are public, or whose
+# timing reveals nothing an attacker does not already hold.
+
+crates/sunrise-crypto/src/stream_key.rs	if wrapped.len() != WRAPPED_STREAM_KEY_LEN {	A length check against a public constant: every wrapped blob is the same length, so the length is not secret.
+crates/sunrise-crypto/src/bip39.rs	if cs_seen != checksum(&entropy, cs_bits) {	The BIP-39 checksum of the phrase the caller typed. Both operands derive from that input alone, so the timing tells the caller nothing they did not type.
+crates/sunrise-pairing/src/payload.rs	!bytes.windows(secret.len()).any(|w| w == secret),	Test code inside #[cfg(test)] mod tests, asserting the signing secret never appears in an encoded payload. It runs on fixtures, never on attacker input.

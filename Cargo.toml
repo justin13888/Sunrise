@@ -79,10 +79,19 @@ rustls = { version = "0.23", default-features = false, features = ["std", "ring"
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
 
 # --- storage ---
-rusqlite = { version = "0.31", default-features = false, features = ["bundled-sqlcipher", "blob", "trace"] }
+# 0.40 is the first line with `ffi-sqlite-wasm-rs`, which the web core
+# (`crates/sunrise-core-wasm`, ADR-0055) builds on. `fallible_uint` restores the
+# `u64` `ToSql`/`FromSql` impls 0.31 carried unconditionally — the same checked
+# conversion (an out-of-range value is an error, never a wrap) — so the
+# storage layer's `u64` columns bind exactly as they did.
+rusqlite = { version = "0.40.2", default-features = false, features = ["bundled-sqlcipher", "blob", "trace", "fallible_uint"] }
 
 # --- async runtime / web ---
-tokio = { version = "1.41", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "io-util", "net", "signal"] }
+# Only the features every target can build. A member inherits these and cannot
+# remove them, and `mio` (behind `net`, `fs`, `signal` and `rt-multi-thread`)
+# refuses `wasm32-unknown-unknown`, which `sunrise-core` must build for
+# (`crates/sunrise-core-wasm`, ADR-0055). Each crate names the rest itself.
+tokio = { version = "1.41", features = ["macros", "sync", "time", "io-util"] }
 # `original-uri` keeps the pre-nesting request target available to handlers.
 # `Router::nest` rewrites `Uri` to the path *inside* the nest, and the device
 # signature covers the target the client actually sent.
@@ -171,6 +180,16 @@ url = { version = "2.5", default-features = false }
 # of the host OS tzdb. `default-features = false` also disables `tzdb-zoneinfo`,
 # so without an explicit bundle no named zone would resolve at all.
 jiff = { version = "0.2", default-features = false, features = ["std", "serde", "tzdb-bundle-always"] }
+
+# --- internationalization ---
+# CLDR plural rules and integer formatting for the CLI's generated string
+# binding (ADR-0054) — the "CLDR via ICU4X" of docs/10-cross-cutting/i18n.md.
+# `compiled_data` bakes the CLDR data into the binary, so there is no data
+# provider to find at run time. `icu_locale_core` is already in the lock
+# through `url`'s IDNA stack; these share its 2.x line.
+icu_plurals = { version = "2.3", default-features = false, features = ["compiled_data"] }
+icu_decimal = { version = "2.3", default-features = false, features = ["compiled_data"] }
+icu_locale_core = { version = "2.3", default-features = false }
 
 # --- random ---
 rand = { version = "0.8", default-features = false, features = ["std", "std_rng", "getrandom"] }

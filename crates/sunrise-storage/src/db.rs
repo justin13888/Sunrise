@@ -19,7 +19,9 @@
 
 use crate::migrations::{BASELINE_STORAGE_V, MIGRATIONS};
 use rusqlite::{Connection, OpenFlags};
-use std::path::Path;
+use std::ffi::OsString;
+use std::fs;
+use std::path::{Path, PathBuf};
 use sunrise_cbor::version::STORAGE_V;
 use sunrise_crypto::keys::VaultRootKey;
 use sunrise_error::ErrorCode;
@@ -77,6 +79,33 @@ pub enum DbError {
         /// Underlying error.
         source: rusqlite::Error,
     },
+    /// `PRAGMA quick_check` found the database file damaged.
+    ///
+    /// Distinct from [`DbError::Sqlite`] because the file *was* read: the key
+    /// is right and SQLite answered, and what it answered is that pages or
+    /// indexes are inconsistent. A check that runs before a migration and
+    /// fails stops the migration from starting, so the vault is left at the
+    /// version it was found at
+    /// (`docs/04-storage/migrations.md` §Migration rigor rule 3).
+    #[error("vault integrity check failed: {detail}")]
+    IntegrityCheckFailed {
+        /// The first lines `quick_check` reported. SQLite's own wording about
+        /// pages and indexes; it names no row content.
+        detail: String,
+    },
+    /// The copy taken before a migration could not be written, so nothing
+    /// was migrated.
+    ///
+    /// "No backup, no migration": the vault is left untouched at `from_v`
+    /// (`docs/04-storage/migrations.md` §Migration rigor rule 2).
+    #[error("could not back up the vault before migrating it from storage_v {from_v}: {source}")]
+    Backup {
+        /// The version the vault was found at, and stays at.
+        from_v: u32,
+        /// Why the copy failed: the disk filled, the directory is read-only,
+        /// or SQLite refused the `VACUUM INTO`.
+        source: std::io::Error,
+    },
 }
 
 impl DbError {
@@ -107,10 +136,18 @@ impl core::fmt::Debug for Db {
 impl Db {
     /// Open (or create) the vault DB at `path` keyed by `vault_root`.
     ///
-    /// The first time this is called for a fresh vault, all migrations are
-    /// applied. On subsequent opens, the schema version is read and either
-    /// the DB is current (returns `Ok`) or the version is mismatched and the
-    /// caller must surface a clear error.
+    /// In order:
+    ///
+    /// 1. `PRAGMA quick_check`. A damaged file is refused with
+    ///    [`DbError::IntegrityCheckFailed`] before anything writes to it.
+    /// 2. A fresh file gets every migration. A current one gets none, and
+    ///    any pre-migration copy beside it is deleted: this open is the
+    ///    second one at the new version, which is what proves the migrated
+    ///    vault usable. An older one is first copied to
+    ///    [`Self::backup_path`] and then migrated, and `quick_check` runs again
+    ///    after the batch commits. A copy that cannot be written stops the
+    ///    open with [`DbError::Backup`], and the vault stays at its version.
+    /// 3. A newer or pre-baseline stamp is refused with its own error.
     pub fn open(path: &Path, vault_root: &VaultRootKey) -> Result<Self, DbError> {
         let mut conn = Connection::open_with_flags(
             path,
@@ -120,17 +157,211 @@ impl Db {
         )?;
         Self::apply_sqlcipher_key(&conn, vault_root)?;
         Self::apply_pragmas(&conn)?;
-        Self::ensure_schema(&mut conn)?;
+        Self::quick_check(&conn, true)?;
+        Self::ensure_schema(&mut conn, Some(path))?;
         Ok(Self { conn })
     }
 
     /// Open an in-memory DB (used by tests and for non-persisted vaults).
+    ///
+    /// Checked like [`Self::open`], and never backed up: there is no file to
+    /// copy, and nothing outlives the connection.
     pub fn open_memory(vault_root: &VaultRootKey) -> Result<Self, DbError> {
         let mut conn = Connection::open_in_memory()?;
         Self::apply_sqlcipher_key(&conn, vault_root)?;
         Self::apply_pragmas(&conn)?;
-        Self::ensure_schema(&mut conn)?;
+        Self::quick_check(&conn, false)?;
+        Self::ensure_schema(&mut conn, None)?;
         Ok(Self { conn })
+    }
+
+    /// Where [`Self::open`] copies the vault at `vault` before migrating it
+    /// from `from_v`: `<vault>.pre-v<from_v>.bak`, beside it.
+    ///
+    /// The copy is a whole vault, encrypted under the same key, so restoring
+    /// it is replacing `vault` with it while nothing has the vault open.
+    #[must_use]
+    pub fn backup_path(vault: &Path, from_v: u32) -> PathBuf {
+        let mut name = vault.file_name().map(OsString::from).unwrap_or_default();
+        name.push(format!(".pre-v{from_v}.bak"));
+        vault.with_file_name(name)
+    }
+
+    /// Run `PRAGMA quick_check` and turn any answer but `ok` into
+    /// [`DbError::IntegrityCheckFailed`].
+    ///
+    /// A failure to run the pragma at all, such as a wrong key, stays a
+    /// [`DbError::Sqlite`]: that is a file this key cannot read, not a damaged
+    /// one, and the caller must not be told to rebuild it.
+    ///
+    /// `encrypted_file` says the connection is a keyed file, which is what
+    /// SQLCipher's per-page HMAC check needs: an in-memory database answers
+    /// it with "database file is undefined".
+    fn quick_check(conn: &Connection, encrypted_file: bool) -> Result<(), DbError> {
+        use rusqlite::ErrorCode::{DatabaseCorrupt, NotADatabase};
+        let rows = |pragma: &str| -> rusqlite::Result<Vec<String>> {
+            let mut stmt = conn.prepare(pragma)?;
+            let rows = stmt
+                .query_map([], |r| r.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(rows)
+        };
+        let lines = match rows("PRAGMA quick_check") {
+            Ok(lines) => lines,
+            // A page SQLite cannot parse is reported as an error rather than
+            // as a row. It is the same finding.
+            Err(rusqlite::Error::SqliteFailure(e, msg)) if e.code == DatabaseCorrupt => {
+                vec![msg.unwrap_or_else(|| e.to_string())]
+            }
+            // Under SQLCipher a page whose HMAC no longer verifies surfaces as
+            // a bare `SQLITE_ERROR`, indistinguishable from any other. Only
+            // then is the page check run, which reads every page and reports
+            // each bad one as a row: running it on every open would read the
+            // whole file a second time. `SQLITE_NOTADB` is excluded because a
+            // wrong key produces it too, and that is not damage.
+            Err(rusqlite::Error::SqliteFailure(e, msg))
+                if encrypted_file && e.code != NotADatabase =>
+            {
+                let damaged_pages = rows("PRAGMA cipher_integrity_check")?;
+                if damaged_pages.is_empty() {
+                    return Err(rusqlite::Error::SqliteFailure(e, msg).into());
+                }
+                damaged_pages
+            }
+            Err(e) => return Err(e.into()),
+        };
+        if lines.len() == 1 && lines[0] == "ok" {
+            return Ok(());
+        }
+        Err(Self::integrity_failed(&lines))
+    }
+
+    /// Log a failed check and build its error from the first few findings.
+    fn integrity_failed(lines: &[String]) -> DbError {
+        /// `quick_check` reports up to 100 problems by default. The first few
+        /// say what is wrong; the rest only lengthen the error.
+        const REPORTED: usize = 5;
+        tracing::error!(
+            ev = "db.integrity.failed",
+            err_code = %ErrorCode::FatalInternal,
+            err_kind = "internal",
+            retryable = false,
+            "the vault failed its integrity check"
+        );
+        DbError::IntegrityCheckFailed {
+            detail: lines
+                .iter()
+                .take(REPORTED)
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .join("; "),
+        }
+    }
+
+    /// Copy the vault to [`Self::backup_path`] with `VACUUM INTO`, durably.
+    ///
+    /// Written under a temporary name, fsynced, then renamed over any older
+    /// copy of the same version, so a crash mid-copy never leaves a truncated
+    /// file under the name a restore would trust. A copy already there from an
+    /// earlier attempt is a copy of the same version — that attempt's
+    /// migration rolled back — so replacing it loses nothing.
+    ///
+    /// `VACUUM INTO` writes the output under the connection's own SQLCipher
+    /// key, which `the_backup_is_encrypted_under_the_vaults_own_key` pins.
+    fn back_up(conn: &Connection, vault: &Path, from_v: u32) -> Result<(), DbError> {
+        let backup = Self::backup_path(vault, from_v);
+        let mut tmp_name = backup.file_name().map(OsString::from).unwrap_or_default();
+        tmp_name.push(".tmp");
+        let tmp = backup.with_file_name(tmp_name);
+        let fail = |source: std::io::Error| {
+            tracing::error!(
+                ev = "db.backup.failed",
+                from_v = u64::from(from_v),
+                err_code = %ErrorCode::FatalInternal,
+                err_kind = "internal",
+                retryable = false,
+                cause = %source,
+                "could not back up the vault; it was not migrated"
+            );
+            DbError::Backup { from_v, source }
+        };
+        let copy = || -> std::io::Result<()> {
+            match fs::remove_file(&tmp) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e),
+            }
+            let target = tmp.to_str().ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "the vault path is not UTF-8, which VACUUM INTO needs",
+                )
+            })?;
+            conn.execute("VACUUM INTO ?1", [target])
+                .map_err(std::io::Error::other)?;
+            fs::File::open(&tmp)?.sync_all()?;
+            fs::rename(&tmp, &backup)?;
+            // The rename is durable only once the directory entry is.
+            #[cfg(unix)]
+            if let Some(dir) = backup.parent() {
+                let dir = if dir.as_os_str().is_empty() {
+                    Path::new(".")
+                } else {
+                    dir
+                };
+                fs::File::open(dir)?.sync_all()?;
+            }
+            Ok(())
+        };
+        if let Err(e) = copy() {
+            let _ = fs::remove_file(&tmp);
+            return Err(fail(e));
+        }
+        tracing::info!(
+            ev = "db.backup.ok",
+            from_v = u64::from(from_v),
+            "backed up the vault before migrating it"
+        );
+        Ok(())
+    }
+
+    /// Delete every pre-migration copy beside `vault`, and any half-written
+    /// one a crash left.
+    ///
+    /// Called only on an open that found the vault current. Best-effort: a
+    /// copy that cannot be deleted costs disk, never the open, and the next
+    /// open tries again.
+    fn remove_backups(vault: &Path) {
+        let Some(file_name) = vault.file_name().and_then(|n| n.to_str()) else {
+            return;
+        };
+        let prefix = format!("{file_name}.pre-v");
+        let dir = match vault.parent() {
+            Some(d) if !d.as_os_str().is_empty() => d,
+            _ => Path::new("."),
+        };
+        let Ok(entries) = fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else { continue };
+            let Some(rest) = name.strip_prefix(&prefix) else {
+                continue;
+            };
+            let version = rest
+                .strip_suffix(".bak")
+                .or_else(|| rest.strip_suffix(".bak.tmp"));
+            if version.is_some_and(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit())) {
+                if let Err(e) = fs::remove_file(entry.path()) {
+                    tracing::warn!(
+                        ev = "db.backup.remove_failed",
+                        cause = %e,
+                        "could not delete a pre-migration copy; the next open retries"
+                    );
+                }
+            }
+        }
     }
 
     /// Key `path` and apply the pragmas, but run no migration and check no
@@ -220,7 +451,12 @@ impl Db {
         Ok(())
     }
 
-    fn ensure_schema(conn: &mut Connection) -> Result<(), DbError> {
+    /// Bring the schema to this build's `STORAGE_V`.
+    ///
+    /// `vault` is the file behind `conn`, or `None` for a connection with no
+    /// file. It is what an upgrade is copied from first and what a current
+    /// open deletes the copies beside.
+    fn ensure_schema(conn: &mut Connection, vault: Option<&Path>) -> Result<(), DbError> {
         // Detect existing schema by probing for `schema_meta`.
         let exists: i64 = conn
             .query_row(
@@ -231,7 +467,9 @@ impl Db {
             .unwrap_or(0);
         let binary_v: u32 = u32::from(STORAGE_V);
         if exists == 0 {
-            return Self::run_migrations(conn, 0, binary_v, "fresh");
+            // Nothing to back up: there is no data yet.
+            Self::run_migrations(conn, 0, binary_v, "fresh")?;
+            return Self::quick_check(conn, vault.is_some());
         }
 
         let db_v: u32 =
@@ -261,7 +499,18 @@ impl Db {
             });
         }
         if db_v < binary_v {
-            return Self::run_migrations(conn, db_v, binary_v, "upgrade");
+            // No backup, no migration: a copy that cannot be made returns
+            // here with the vault still at `db_v`.
+            if let Some(vault) = vault {
+                Self::back_up(conn, vault, db_v)?;
+            }
+            Self::run_migrations(conn, db_v, binary_v, "upgrade")?;
+            return Self::quick_check(conn, vault.is_some());
+        }
+        // Current, and the caller's `quick_check` passed: this is the open
+        // that proves a migrated vault usable, so its copy has done its job.
+        if let Some(vault) = vault {
+            Self::remove_backups(vault);
         }
         Ok(())
     }
@@ -474,44 +723,66 @@ mod tests {
     /// compat unknowns survive materialization rather than only `tasks`,
     /// `blocks` and `attachments` doing so.
     ///
-    /// The two exclusions are asserted too, because both are decisions rather
-    /// than omissions: `focus_interruptions` holds the one entity with no
-    /// `unknown` map (its whole value is its key), and `review_snapshots`
-    /// already round-trips through its whole-record CBOR `body` blob, so a
-    /// column there would be a second home for the same data.
+    /// The projected tables are read from the entity registry
+    /// (`sunrise_id::for_each_entity!`), so a record registered with a table
+    /// no migration creates fails here. The two exclusions are registry
+    /// declarations too, because both are decisions rather than omissions:
+    /// `focus_interruptions` holds the one entity with no `unknown` map (its
+    /// whole value is its key), and `review_snapshots` already round-trips
+    /// through its whole-record CBOR `body` blob, so a column there would be a
+    /// second home for the same data.
     #[test]
     fn every_column_projected_entity_has_an_extra_blob() {
+        use sunrise_id::registry::{Merge, Unknowns, ENTITIES};
+
         let db = Db::open_memory(&vault_key()).unwrap();
-        let has_extra = |table: &str| -> i64 {
+        let has_column = |table: &str, column: &str| -> bool {
             db.conn()
                 .query_row(
-                    "SELECT count(*) FROM pragma_table_info(?) WHERE name = 'extra'",
-                    rusqlite::params![table],
-                    |r| r.get(0),
+                    "SELECT count(*) FROM pragma_table_info(?) WHERE name = ?",
+                    rusqlite::params![table, column],
+                    |r| r.get::<_, i64>(0),
                 )
                 .unwrap()
+                == 1
         };
 
-        for table in [
-            "tasks",
-            "blocks",
-            "attachments",
-            "streams",
-            "contexts",
-            "routines",
-            "focus_sessions",
-            "focus_session_ends",
-        ] {
-            assert_eq!(has_extra(table), 1, "`{table}.extra` must exist");
+        let mut projected = 0;
+        for entity in &ENTITIES {
+            for record in entity.records {
+                let Some(storage) = record.storage else {
+                    continue;
+                };
+                projected += 1;
+                let table = storage.table;
+                assert!(
+                    has_column(table, storage.key),
+                    "`{table}.{}` must hold {}'s id",
+                    storage.key,
+                    record.name
+                );
+                assert_eq!(
+                    has_column(table, "extra"),
+                    storage.unknowns == Unknowns::Extra,
+                    "`{table}.extra` disagrees with the registry; see 0015's header"
+                );
+                if storage.unknowns == Unknowns::Body {
+                    assert!(has_column(table, "body"), "`{table}.body` must exist");
+                }
+            }
+            // The table the materializer reads an LWW stamp from must hold one.
+            if let (Merge::Lww, Some(storage)) = (entity.merge, entity.storage()) {
+                for column in ["lww_hlc_ms", "lww_hlc_logical", "lww_seq", "lww_device"] {
+                    assert!(
+                        has_column(storage.table, column),
+                        "`{}.{column}` must exist for {:?}'s merge",
+                        storage.table,
+                        entity.kind
+                    );
+                }
+            }
         }
-
-        for table in ["focus_interruptions", "review_snapshots"] {
-            assert_eq!(
-                has_extra(table),
-                0,
-                "`{table}` is deliberately exempt; see 0015's header"
-            );
-        }
+        assert_eq!(projected, 10, "the registry projects ten tables");
     }
 
     /// 0014 adds `streams.sort_order`, defaulting to the "never ordered"
@@ -813,7 +1084,7 @@ mod tests {
         )
         .unwrap();
 
-        let err = Db::ensure_schema(&mut conn).unwrap_err();
+        let err = Db::ensure_schema(&mut conn, None).unwrap_err();
         assert!(
             matches!(
                 err,
@@ -846,7 +1117,7 @@ mod tests {
             .unwrap();
             assert!(
                 matches!(
-                    Db::ensure_schema(&mut conn),
+                    Db::ensure_schema(&mut conn, None),
                     Err(DbError::StorageVPreBaseline { .. })
                 ),
                 "storage_v = {db_v} must be refused"
@@ -857,7 +1128,7 @@ mod tests {
     fn rejects_db_from_newer_binary() {
         let mut conn = Connection::open_in_memory().unwrap();
         Db::apply_pragmas(&conn).unwrap();
-        Db::ensure_schema(&mut conn).unwrap();
+        Db::ensure_schema(&mut conn, None).unwrap();
         // Stamp a version strictly newer than this binary supports.
         let too_new = u32::from(STORAGE_V) + 1;
         conn.execute(
@@ -865,7 +1136,7 @@ mod tests {
             rusqlite::params![too_new],
         )
         .unwrap();
-        let err = Db::ensure_schema(&mut conn).unwrap_err();
+        let err = Db::ensure_schema(&mut conn, None).unwrap_err();
         assert!(matches!(err, DbError::StorageVTooNew { .. }));
     }
 
@@ -882,5 +1153,266 @@ mod tests {
             .unwrap();
         // FTS5 creates several backing tables; at least one matches.
         assert!(count >= 1);
+    }
+
+    // --- pre-migration backup (§Migration rigor rule 2) -------------------
+
+    /// The version one migration behind this build, so every open below has
+    /// exactly one migration to run.
+    fn previous_v() -> u32 {
+        u32::from(STORAGE_V) - 1
+    }
+
+    /// A real vault file at [`previous_v`], holding one stream, closed.
+    fn vault_one_behind(dir: &Path) -> PathBuf {
+        let path = dir.join("vault.db");
+        let db = Db::create_at_storage_v(&path, &vault_key(), previous_v()).unwrap();
+        db.conn()
+            .execute(
+                "INSERT INTO streams
+                 (stream_id, head_root, last_op_seq, name, created_at_ms, updated_at_ms)
+                 VALUES (X'01', X'00', 0, 'Kept in the copy', 0, 0)",
+                [],
+            )
+            .unwrap();
+        path
+    }
+
+    fn stamp(db: &Db) -> u32 {
+        db.conn()
+            .query_row("SELECT storage_v FROM schema_meta", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    #[test]
+    fn the_backup_path_sits_beside_the_vault_and_names_the_version() {
+        assert_eq!(
+            Db::backup_path(Path::new("/v/acct/vault.db"), 27),
+            PathBuf::from("/v/acct/vault.db.pre-v27.bak")
+        );
+    }
+
+    /// The copy is a whole vault at the version it was taken from, under the
+    /// same SQLCipher key, and the live vault moves on without it.
+    #[test]
+    fn the_backup_is_encrypted_under_the_vaults_own_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = vault_one_behind(dir.path());
+
+        let db = Db::open(&path, &vault_key()).unwrap();
+        assert_eq!(stamp(&db), u32::from(STORAGE_V));
+        drop(db);
+
+        let backup = Db::backup_path(&path, previous_v());
+        let bytes = fs::read(&backup).expect("the open must leave a copy");
+        assert!(
+            !bytes.starts_with(b"SQLite format 3\0"),
+            "the copy must be encrypted like the vault it copies"
+        );
+        assert!(
+            !bytes
+                .windows(b"Kept in the copy".len())
+                .any(|w| w == b"Kept in the copy"),
+            "the copy holds content in the clear"
+        );
+
+        let copy = Db::open_unmigrated(&backup, &vault_key()).unwrap();
+        assert_eq!(stamp(&copy), previous_v(), "the copy is the old version");
+        let name: String = copy
+            .conn()
+            .query_row("SELECT name FROM streams", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(name, "Kept in the copy");
+        drop(copy);
+
+        let read_with_another_key =
+            Db::open_unmigrated(&backup, &VaultRootKey::from_bytes([0; 32]))
+                .ok()
+                .and_then(|c| {
+                    c.conn()
+                        .query_row("SELECT storage_v FROM schema_meta", [], |r| {
+                            r.get::<_, u32>(0)
+                        })
+                        .ok()
+                });
+        assert!(
+            read_with_another_key.is_none(),
+            "another key must not read the copy"
+        );
+    }
+
+    /// Kept through the migrating open, deleted by the next one — the first
+    /// open to prove the migrated vault usable. A half-written copy a crash
+    /// left goes with it; a file that only resembles one does not.
+    #[test]
+    fn the_backup_is_kept_until_the_next_open_at_the_new_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = vault_one_behind(dir.path());
+        drop(Db::open(&path, &vault_key()).unwrap());
+        let backup = Db::backup_path(&path, previous_v());
+        assert!(backup.exists(), "kept after the migrating open");
+
+        let stale_tmp = dir.path().join("vault.db.pre-v3.bak.tmp");
+        let unrelated = dir.path().join("vault.db.pre-vNOTES.bak");
+        let other_vault = dir.path().join("other.db.pre-v3.bak");
+        for f in [&stale_tmp, &unrelated, &other_vault] {
+            fs::write(f, b"x").unwrap();
+        }
+
+        drop(Db::open(&path, &vault_key()).unwrap());
+        assert!(!backup.exists(), "removed by the next successful open");
+        assert!(!stale_tmp.exists(), "a crash's half-written copy goes too");
+        assert!(unrelated.exists(), "only `.pre-v<digits>.bak` is a copy");
+        assert!(
+            other_vault.exists(),
+            "another vault's copy is not this one's"
+        );
+    }
+
+    /// No backup, no migration: when the copy cannot be written the open
+    /// fails with a typed error and the vault is still at its old version.
+    #[test]
+    fn a_vault_that_cannot_be_backed_up_is_not_migrated() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = vault_one_behind(dir.path());
+        // A directory where the temporary copy goes: removing it fails, and
+        // so would writing it. Portable, and unaffected by running as root,
+        // which a read-only directory is not.
+        let mut tmp = Db::backup_path(&path, previous_v()).into_os_string();
+        tmp.push(".tmp");
+        fs::create_dir(&tmp).unwrap();
+        fs::write(PathBuf::from(&tmp).join("occupant"), b"x").unwrap();
+
+        let err = Db::open(&path, &vault_key()).unwrap_err();
+        assert!(
+            matches!(err, DbError::Backup { from_v, .. } if from_v == previous_v()),
+            "expected a backup failure, got {err:?}"
+        );
+        let raw = Db::open_unmigrated(&path, &vault_key()).unwrap();
+        assert_eq!(
+            stamp(&raw),
+            previous_v(),
+            "the vault must be left untouched"
+        );
+    }
+
+    /// A fresh vault and an in-memory one have nothing to copy.
+    #[test]
+    fn a_fresh_vault_is_not_backed_up() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vault.db");
+        drop(Db::open(&path, &vault_key()).unwrap());
+        let names: Vec<String> = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.contains(".pre-v"))
+            .collect();
+        assert!(names.is_empty(), "unexpected copies: {names:?}");
+    }
+
+    // --- integrity check (§Migration rigor rule 3) ------------------------
+
+    #[test]
+    fn a_sound_vault_passes_its_integrity_check() {
+        let db = Db::open_memory(&vault_key()).unwrap();
+        Db::quick_check(db.conn(), false).unwrap();
+    }
+
+    /// A row that breaks its table's declared constraint is a finding
+    /// `quick_check` reports as a row, and it must come back typed rather than
+    /// as a bare SQLite error.
+    #[test]
+    fn a_row_breaking_its_schema_fails_the_integrity_check_as_its_own_error() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE t (a INTEGER);
+             INSERT INTO t VALUES (1), (NULL);
+             PRAGMA writable_schema = ON;
+             UPDATE sqlite_schema SET sql = 'CREATE TABLE t (a INTEGER NOT NULL)'
+               WHERE name = 't';
+             PRAGMA writable_schema = RESET;",
+        )
+        .unwrap();
+        let err = Db::quick_check(&conn, false).unwrap_err();
+        assert!(
+            matches!(err, DbError::IntegrityCheckFailed { .. }),
+            "expected an integrity failure, got {err:?}"
+        );
+    }
+
+    /// A page whose bytes were changed on disk fails the check on open, and
+    /// the file is not migrated or otherwise written.
+    #[test]
+    fn a_vault_with_a_damaged_page_is_refused_on_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vault.db");
+        {
+            let db = Db::open(&path, &vault_key()).unwrap();
+            for i in 0..200u32 {
+                db.conn()
+                    .execute(
+                        "INSERT INTO streams
+                         (stream_id, head_root, last_op_seq, name, created_at_ms, updated_at_ms)
+                         VALUES (?, X'00', 0, 'a stream name long enough to fill pages', 0, 0)",
+                        rusqlite::params![i.to_be_bytes().to_vec()],
+                    )
+                    .unwrap();
+            }
+            db.conn()
+                .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+                .unwrap();
+        }
+        let mut bytes = fs::read(&path).unwrap();
+        // Well past page 1, whose damage would read as a wrong key.
+        let at = bytes.len() - 4096 + 100;
+        for b in &mut bytes[at..at + 64] {
+            *b ^= 0xff;
+        }
+        fs::write(&path, &bytes).unwrap();
+
+        let err = Db::open(&path, &vault_key()).unwrap_err();
+        assert!(
+            matches!(err, DbError::IntegrityCheckFailed { .. }),
+            "expected an integrity failure, got {err:?}"
+        );
+    }
+
+    /// `quick_check` failing with an error other than `SQLITE_NOTADB` on a
+    /// keyed file runs the page check, and when every page verifies the
+    /// original error comes back as it was: the file is not damaged, so it
+    /// must not be reported as damaged.
+    ///
+    /// The error here is a `CHECK` constraint naming a function this build
+    /// does not have, which `quick_check` evaluates and cannot resolve.
+    #[test]
+    fn a_check_failure_on_sound_pages_stays_the_sqlite_error_it_was() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vault.db");
+        drop(Db::open(&path, &vault_key()).unwrap());
+        let conn = Connection::open(&path).unwrap();
+        Db::apply_sqlcipher_key(&conn, &vault_key()).unwrap();
+        Db::apply_pragmas(&conn).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE t (a INTEGER);
+             INSERT INTO t VALUES (1);
+             PRAGMA writable_schema = ON;
+             UPDATE sqlite_schema
+               SET sql = 'CREATE TABLE t (a INTEGER CHECK (no_such_function(a)))'
+               WHERE name = 't';
+             PRAGMA writable_schema = RESET;",
+        )
+        .unwrap();
+
+        let err = Db::quick_check(&conn, true).unwrap_err();
+        let DbError::Sqlite(rusqlite::Error::SqliteFailure(e, msg)) = &err else {
+            panic!("expected the original SQLite error, got {err:?}");
+        };
+        assert_ne!(e.code, rusqlite::ErrorCode::NotADatabase);
+        assert_ne!(e.code, rusqlite::ErrorCode::DatabaseCorrupt);
+        assert!(
+            msg.as_deref()
+                .is_some_and(|m| m.contains("no_such_function")),
+            "expected the unresolved function to be named, got {err:?}"
+        );
     }
 }

@@ -34,8 +34,8 @@ use std::sync::Arc;
 use sunrise_auth::CredentialStore;
 
 use sunrise_core::{
-    BoxTransport, ConnectFuture, Core, CoreConfig, CoreError, SyncConfig, TokenSource,
-    TransportFactory, Unlock,
+    BoxTransport, ConnectFuture, Core, CoreConfig, CoreError, CredentialRead, SyncConfig,
+    TokenSource, TransportFactory, Unlock,
 };
 use sunrise_crypto::keys::VaultRootKey;
 use sunrise_sync::{DeviceSigner, SseTransport};
@@ -208,12 +208,12 @@ pub fn plan_from_env(env: &SyncEnv) -> SyncPlan {
 
 /// Build a [`TransportFactory`] that reaches `url` with the real [`SseTransport`]
 /// on every connect attempt (initial connect + every reconnect), presenting
-/// whatever bearer `credential` holds **at that moment**.
+/// the bearer the driver read for **that attempt**.
 ///
-/// Reading the token per attempt rather than capturing it is the whole point:
-/// a reconnect after a renewal has to present the new token, and a factory
-/// that closed over a `String` would present the one sync started with
-/// forever.
+/// The factory holds no bearer: the driver reads the core's
+/// [`Core::sync_credential`] per attempt and hands the read over, so a
+/// reconnect after a renewal presents the new token, and the driver knows
+/// which version each attempt carried.
 ///
 /// This is the same factory shape `sunrise-e2e::ws_factory` uses; the driver is
 /// transport-agnostic and calls it once per connection attempt.
@@ -224,18 +224,13 @@ pub fn plan_from_env(env: &SyncEnv) -> SyncPlan {
 /// and the one route where that matters most is the revocation `DELETE`, which
 /// runs on whatever connection the driver has at the time.
 #[must_use]
-pub fn ws_factory(
-    url: &str,
-    credential: TokenSource,
-    signer: Option<Arc<dyn DeviceSigner>>,
-) -> TransportFactory {
+pub fn ws_factory(url: &str, signer: Option<Arc<dyn DeviceSigner>>) -> TransportFactory {
     let url = url.to_string();
-    Arc::new(move || {
+    Arc::new(move |read: CredentialRead| {
         let url = url.clone();
-        let bearer = credential.get();
         let signer = signer.clone();
         Box::pin(async move {
-            let t = SseTransport::connect_with_bearer(&url, bearer.as_deref());
+            let t = SseTransport::connect_with_bearer(&url, read.bearer());
             let t = match signer {
                 Some(s) => t.with_device_signer(s),
                 None => t,
@@ -277,7 +272,13 @@ pub fn apply_plan(core: &Arc<Core>, plan: &SyncPlan) -> Vec<String> {
     let signer = plan.device_id.as_ref().map(|id| core.device_signer(id));
     match &plan.sync {
         Some(sc) => {
-            match core.start_sync(ws_factory(&sc.url, sc.credential.clone(), signer.clone())) {
+            // The driver presents the core's own credential cell, and `core`
+            // may have been opened before this plan existed — `main` opens
+            // with an empty plan first, and `recover` builds its plan after
+            // registering — so the plan's bearer is handed to that cell here,
+            // the way the FFI seam's `start_sync` does.
+            core.sync_credential().set(sc.credential.get());
+            match core.start_sync(ws_factory(&sc.url, signer.clone())) {
                 Ok(()) => {
                     // The relay *host* is the sanctioned connection-diagnostic
                     // identifier (logging.md §6.2); the full URL could carry a
@@ -665,5 +666,45 @@ mod tests {
             None,
             "an expired token must not be presented"
         );
+    }
+
+    /// The plan's bearer reaches the cell the driver reads, even when the core
+    /// was opened before the plan existed.
+    ///
+    /// `main` opens the vault with an empty plan and `recover` builds its plan
+    /// only after registering, so in both the core's credential cell is not the
+    /// plan's. The driver reads the core's cell per attempt and hands that read
+    /// to the factory; without the hand-over in `apply_plan` every connect
+    /// would present no bearer at all.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_plan_bearer_reaches_a_core_opened_without_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (core, _) = open_with_plan(
+            dir.path().to_path_buf(),
+            "0.1.0+test",
+            [7u8; 32],
+            &SyncPlan::default(),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(core.sync_credential().get(), None, "opened with no plan");
+
+        let plan = SyncPlan {
+            // Nothing listens on port 9; the driver retries in the background
+            // and the assertion does not wait on it.
+            sync: Some(
+                SyncConfig::new("http://127.0.0.1:9")
+                    .with_credential(TokenSource::new(Some("planned-bearer".into()))),
+            ),
+            device_id: None,
+        };
+        let _ = apply_plan(&core, &plan);
+        assert_eq!(
+            core.sync_credential().get().as_deref(),
+            Some("planned-bearer"),
+            "the driver's cell must hold the bearer the plan carries"
+        );
+        core.shutdown().await;
     }
 }

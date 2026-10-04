@@ -8,6 +8,8 @@
 //! relay channel namespace is fixed at establishment and nowhere else.
 
 use crate::api::error::ApiError;
+use crate::api::ratelimit::policy::Budget;
+use crate::api::ratelimit::Throttled;
 use crate::api::signed::Signed;
 use crate::state::ServerState;
 use crate::sync_session::Session;
@@ -92,8 +94,19 @@ pub async fn session(
         caller,
         value: body,
     }: Signed<SessionRequest>,
-) -> Result<Created<Json<SessionResponse>>, ApiError> {
+) -> Result<Created<Json<SessionResponse>>, Throttled> {
     let now_ms = state.clock.now_ms();
+    // Before any work: a client re-establishing in a tight loop is the case
+    // this budget exists for, and negotiating for it first would be the work
+    // it is meant to spare.
+    state
+        .limiter
+        .charge(&state, "/api/v1/sync/session", Budget::Sessions, &caller, 1)
+        .await?;
+    crate::api::account_deletion::refuse_if_pending_deletion(
+        &state,
+        &caller.principal.account.account_id,
+    )?;
     // Hung off the busiest path rather than a timer task whose only job is to
     // take a lock occasionally.
     state.sessions.collect(now_ms);
@@ -111,9 +124,15 @@ pub async fn session(
     // `SrvTokenRefresh` is optional, so it rides on top of the required set.
     // The client only asks for a refresh if it sees this bit come back agreed,
     // which is what stops one being silently swallowed by an older server.
+    // `SrvEnvelopeFloor` is optional for the same reason: this relay's header
+    // decoder routes a newer envelope container at a floor it implements
+    // (ADR-0045 §5), and an older relay's does not.
     let server_caps = REQUIRED_CLIENT_BITS.0
         | REQUIRED_SERVER_BITS.0
-        | CapabilityBits::EMPTY.with(Capability::SrvTokenRefresh).0;
+        | CapabilityBits::EMPTY
+            .with(Capability::SrvTokenRefresh)
+            .with(Capability::SrvEnvelopeFloor)
+            .0;
     let ack = hello
         .negotiate(
             state.config.server_app_v.clone(),
@@ -133,7 +152,10 @@ pub async fn session(
             // rewording. `NegotiationError::as_error_code` has always computed
             // the distinction; this is the call that delivers it.
             let code = e.as_error_code();
-            state.metrics.incr("sunrise_sync_negotiate_refused_total");
+            state.metrics.incr_with(
+                "sunrise_sync_negotiate_refused_total",
+                &[("reason", code.as_str())],
+            );
             tracing::warn!(
                 ev = "srv.sync.negotiate_refused",
                 err_code = %code,

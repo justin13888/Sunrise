@@ -1,3 +1,4 @@
+import { createMessages } from "@sunrise/i18n";
 import { color } from "@sunrise/ui-tokens";
 import react from "@vitejs/plugin-react";
 import { defineConfig, type Plugin } from "vite";
@@ -24,6 +25,30 @@ import { VitePWA } from "vite-plugin-pwa";
 const themeColor = color.light.surface.accent;
 
 /**
+ * The strings the build itself writes — the static `<title>` and the web app
+ * manifest — in the catalog's source locale. Both are fixed at build time, so
+ * they cannot follow the reader's language; `src/main.tsx` sets `<html lang>`
+ * and `dir` at load, and a translated manifest waits for a per-locale build.
+ */
+const messages = createMessages([]);
+
+/** Write `<title>` from the string catalog, the way the colour is written. */
+function titleFromCatalog(): Plugin {
+    return {
+        name: "sunrise-title",
+        transformIndexHtml() {
+            return [
+                {
+                    tag: "title",
+                    children: messages.web.app.title(),
+                    injectTo: "head",
+                },
+            ];
+        },
+    };
+}
+
+/**
  * Write `<meta name="theme-color">` into the HTML from the token above.
  *
  * The tag used to be a literal in `index.html`, which put it outside the token
@@ -46,19 +71,34 @@ function themeColorMeta(): Plugin {
 }
 
 export default defineConfig({
+    /**
+     * Only `SUNRISE_WEB_*` reaches the bundle (#11). Vite's `VITE_` default
+     * would do, but a prefix naming the app keeps a variable meant for the Rust
+     * build, or for a deploy step's credentials, from being published to every
+     * browser by a name that happens to match. `src/vite-env.d.ts` lists them.
+     */
+    envPrefix: "SUNRISE_WEB_",
     plugins: [
         react(),
         themeColorMeta(),
+        titleFromCatalog(),
         VitePWA({
             registerType: "autoUpdate",
             workbox: {
                 navigateFallback: "/index.html",
                 globPatterns: ["**/*.{js,css,html,svg,wasm}"],
+                // The web core (`public/wasm/`, ADR-0055) is ~4.6 MB, over
+                // Workbox's 2 MiB default, and a PWA that cannot launch its
+                // core offline is not offline-capable. Workbox fails the build
+                // on an asset over the limit rather than skipping it.
+                maximumFileSizeToCacheInBytes: 8 * 1024 * 1024,
             },
             manifest: {
-                name: "Sunrise",
-                short_name: "Sunrise",
-                description: "Local-first, end-to-end encrypted productivity",
+                name: messages.common.productName(),
+                short_name: messages.common.productName(),
+                lang: messages.locale,
+                dir: messages.dir,
+                description: messages.web.app.description(),
                 theme_color: themeColor,
                 icons: [],
             },

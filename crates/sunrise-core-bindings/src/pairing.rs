@@ -10,17 +10,14 @@
 //! # What crosses, and why it is base64 text
 //!
 //! The three handshake messages and the three pairing messages cross as
-//! base64url strings. That is not a serialization convenience: the *transport*
-//! for them is currently the user. The relay's pairing rendezvous — the
-//! WebSocket that routes by `pair_id` and buffers three messages per role, spec
-//! §Relay framing for Noise — is not built, so there is nowhere for the two
-//! devices to exchange these on their own. Text is what a user can move between
-//! two machines, and the crypto is entirely unaffected by how the ciphertext
-//! travelled: the SAS binds the transcript either way, and a MITM still has to
-//! match six digits in one interactive attempt.
-//!
-//! When the rendezvous lands, these same methods drive it — the state machine
-//! does not change, only who carries the bytes.
+//! base64url strings, because this object does not care who carries them.
+//! Normally that is the relay: [`crate::pairing_relay::RelayPairing`] wraps one
+//! of these and moves each string through the relay's pairing rendezvous
+//! (`docs/06-server/api.md` §Pairing rendezvous), in the order below. Where the
+//! relay cannot be reached, a client can still drive these methods by hand and
+//! let the user copy the text between two screens. The crypto is unaffected by
+//! how the ciphertext travelled: the SAS binds the transcript either way, and a
+//! MITM still has to match six digits in one interactive attempt.
 //!
 //! # What crosses
 //!
@@ -172,8 +169,8 @@ impl DevicePairing {
     pub fn offer(relay_url: String, account_email: String) -> Result<Self, BindingError> {
         let keys = PairingSession::generate_static_keypair()?;
         let mut pair_id = [0u8; 16];
-        // The pair id is a routing label the relay will one day key its
-        // rendezvous on. It is not a secret and it is not authentication —
+        // The pair id is the routing label the relay keys its rendezvous on.
+        // It is not a secret and it is not authentication —
         // `n_static_pub` is — so drawing it from the same CSPRNG that made the
         // key is enough.
         let filler = PairingSession::generate_static_keypair()?;

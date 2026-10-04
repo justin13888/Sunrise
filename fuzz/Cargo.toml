@@ -7,7 +7,7 @@
 # `-Cpassess=sancov-*`, and the workspace pins 1.91.1 in `rust-toolchain.toml`
 # with an ADR guarding the pin. Folding this in would either break every
 # workspace command on a stable toolchain or force the whole tree onto nightly
-# for the sake of six harnesses.
+# for the sake of nine harnesses.
 #
 # The `[workspace]` table below is what makes this its own workspace root, so
 # `cargo` inside `fuzz/` does not walk up to the root manifest and refuse a
@@ -46,15 +46,19 @@ libfuzzer-sys = "0.4"
 # Under test. Every one of these is reached through its ordinary public API —
 # nothing here is `pub(crate)`-widened for the fuzzer's benefit, because a
 # surface only a fuzzer can reach is a surface no attacker reaches either.
+# `sunrise-cbor` is here for `decode_canonical`, which the `identity_transition`
+# target decodes its body with: the decoder whose encoder `body_hash` hashes.
+sunrise-cbor ={ path = "../crates/sunrise-cbor" }
 sunrise-crypto = { path = "../crates/sunrise-crypto" }
 sunrise-domain = { path = "../crates/sunrise-domain" }
 sunrise-integrations = { path = "../crates/sunrise-integrations" }
 sunrise-server = { path = "../crates/sunrise-server" }
 sunrise-wire-protocol = { path = "../crates/sunrise-wire-protocol" }
 
-# The frozen envelope vectors under `fuzz/seeds/op_envelope/` were minted from
-# these constants; naming the crate here is what keeps the harness's fixed
-# device key and the seed corpus the same key.
+# The frozen vectors under `fuzz/seeds/op_envelope/`, `device_cert/`,
+# `identity_transition/` and `key_envelope/` were minted from these constants;
+# naming the crate here is what keeps each harness's fixed keys and its seed
+# corpus the same keys.
 sunrise-crypto-test-vectors = { path = "../crates/sunrise-crypto-test-vectors" }
 
 # `jiff` drives the DST-aware half of the `rrule` target. Features match the
@@ -77,7 +81,7 @@ async-trait = { version = "0.1", default-features = false }
 # nothing and therefore a gate that checks nothing. The module comment on each
 # harness is where the property that target asserts is written down, so a
 # broken intra-doc link there flattens the one explanation of what the fuzzer
-# is for. `mise run rust-doc` builds these six.
+# is for. `mise run rust-doc` builds all nine.
 
 [[bin]]
 name = "op_envelope"
@@ -117,6 +121,27 @@ bench = false
 [[bin]]
 name = "recovery_blob"
 path = "fuzz_targets/recovery_blob.rs"
+test = false
+doc = true
+bench = false
+
+[[bin]]
+name = "device_cert"
+path = "fuzz_targets/device_cert.rs"
+test = false
+doc = true
+bench = false
+
+[[bin]]
+name = "identity_transition"
+path = "fuzz_targets/identity_transition.rs"
+test = false
+doc = true
+bench = false
+
+[[bin]]
+name = "key_envelope"
+path = "fuzz_targets/key_envelope.rs"
 test = false
 doc = true
 bench = false

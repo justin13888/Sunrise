@@ -105,8 +105,19 @@ pub struct Core {
     /// any one session — that is the reason it is a table at all — while
     /// `SyncShared` is scoped to the driver's own connection state.
     blob_fetch: Arc<crate::blob_fetch::BlobFetchSignals>,
+    /// What [`Core::compact_op_log`] may fold (ADR-0059). Set by
+    /// [`Core::set_compaction_policy`]; the design of record's numbers until
+    /// then.
+    compaction_policy: Mutex<crate::engine::CompactionPolicy>,
+    /// When the sync driver's tick last ran compaction, so it runs at most
+    /// once per [`COMPACT_EVERY_MS`] rather than on every tick.
+    last_compaction_ms: Mutex<Option<u64>>,
     closed: Mutex<bool>,
 }
+
+/// How often the sync driver's anti-entropy tick runs op-log compaction: once
+/// a day, the cadence the compactor rewrites its snapshots at.
+pub(crate) const COMPACT_EVERY_MS: u64 = 24 * 60 * 60 * 1000;
 
 impl std::fmt::Debug for Core {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -122,7 +133,7 @@ impl Core {
     /// Acquires the OS-level vault lock; if another process holds it, returns
     /// `VaultLock(AlreadyHeld { holder_pid, holder_started_at })`.
     pub async fn open(cfg: CoreConfig, unlock: Unlock) -> Result<Self, CoreError> {
-        let pid = std::process::id();
+        let pid = holder_pid();
         let started_at = format_iso8601(cfg.clock.now_ms());
         let lock = VaultLock::acquire(&cfg.vault_dir, pid, &started_at)?;
         let (vault_root, identity_seed) = unlock.into_parts();
@@ -173,7 +184,24 @@ impl Core {
         // device arriving by pairing has already imported the account's epochs
         // in `Keychain::open` above, so this finds them and mints nothing.
         engine.ensure_base_epochs(&mut db)?;
-        // Between the two, and in that order for two reasons.
+        // Replay what an earlier build parked because it did not know the
+        // op's kind (issue #320, ADR-0045 §4). This is the upgrade the parking
+        // was waiting for, and nothing else would bring those ops back: they
+        // advanced the sync cursor, so the relay will not send them again.
+        //
+        // After `prime_hlc`, because a released op goes through the clock gate
+        // like any delivery. Before `recompute_identity_head`, because a parked
+        // op can be an identity transition, and the head it moves is the one
+        // `publish_device_cert` below announces under. No subscriber exists
+        // yet, so the events it returns have nobody to reach; every screen
+        // reads the vault fresh after open.
+        //
+        // It cannot fail the open. A parked op whose replay fails in storage is
+        // logged and left for the next open, so a fault that recurs on every
+        // try costs one retry per open and never locks the vault.
+        let _ = engine.replay_parked_ops(&mut db);
+        // Between `ensure_base_epochs` and `publish_device_cert`, and in that
+        // order for two reasons.
         //
         // After `ensure_base_epochs`, because adopting a successor identity
         // re-issues this device's cert and writes it into `local_identity`, and
@@ -218,6 +246,8 @@ impl Core {
             sync_handle: Mutex::new(None),
             routine_handle: Mutex::new(None),
             blob_fetch: Arc::new(crate::blob_fetch::BlobFetchSignals::new()),
+            compaction_policy: Mutex::new(crate::engine::CompactionPolicy::default()),
+            last_compaction_ms: Mutex::new(None),
             closed: Mutex::new(false),
         })
     }
@@ -269,7 +299,7 @@ impl Core {
     /// Apply a remote op envelope (the receive half of sync).
     ///
     /// Locks the vault, applies the op via [`Engine::apply_remote_all`]
-    /// (idempotent, entity-level LWW), and broadcasts every resulting
+    /// (idempotent, merged field by field), and broadcasts every resulting
     /// [`DomainEvent`] on `changes()`. Returns `Ok(None)` for an idempotent
     /// re-receive. The sync driver calls this for every inbound envelope.
     ///
@@ -416,8 +446,9 @@ impl Core {
     /// on an `Arc<Core>` so the task can hold a `Weak<Core>` back-reference —
     /// this keeps [`Core::open`] usable without a runtime for offline / TUI
     /// sync-off cases. The `factory` yields a fresh transport per connection
-    /// attempt; `sunrise_sync::WsTransport` is the production one, an in-process
-    /// loopback is used in tests.
+    /// attempt, presenting the [`crate::CredentialRead`] the driver takes from
+    /// [`Core::sync_credential`] for that attempt; `sunrise_sync::SseTransport`
+    /// is the production one, an in-process loopback is used in tests.
     pub fn start_sync(self: &Arc<Self>, factory: TransportFactory) -> Result<(), CoreError> {
         let mut guard = self.sync_handle.lock();
         if guard.is_some() {
@@ -693,10 +724,17 @@ impl Core {
         &self,
         request: &sunrise_pairing::PairingRequest,
     ) -> Result<sunrise_pairing::PairingGrant, CoreError> {
+        // The read bound travels with the keys, so the joiner starts with
+        // this device's bound rather than none (#282). Read under the same
+        // lock the keys are held under, from the table the engine owns.
+        let read_bounds = {
+            let db = self.db.lock();
+            crate::engine::read_bounds_for_pairing(db.conn())?
+        };
         Ok(self
             .engine
             .keychain()
-            .issue_pairing_grant(request, self.now_ms())?)
+            .issue_pairing_grant(request, read_bounds, self.now_ms())?)
     }
 
     /// Every Stream key this device holds: `stream_id -> epoch -> key`.
@@ -1020,6 +1058,141 @@ impl Core {
         })?;
         Ok(sunrise_storage::Outbox::pending_count(&db)?)
     }
+
+    /// What this vault holds about op chains (ADR-0043): fork evidence,
+    /// digest disagreements with peers, and ops it knows it is missing. The
+    /// input to an integrity indicator.
+    ///
+    /// # Errors
+    /// [`CoreError::Closed`] after close; storage failures.
+    pub fn chain_integrity(&self) -> Result<crate::ChainIntegrity, CoreError> {
+        if *self.closed.lock() {
+            return Err(CoreError::Closed);
+        }
+        let db = self.db.lock();
+        Ok(self.engine.chain_integrity(&db)?)
+    }
+
+    /// How many ops this vault knows it should hold and does not. The sync
+    /// driver re-subscribes when this grows. A read failure reads as no
+    /// change, which leaves the timer as the backstop it already is.
+    pub(crate) fn sync_chain_wanted(&self) -> u64 {
+        let db = self.db.lock();
+        self.engine.chain_integrity(&db).map_or(0, |c| c.wanted)
+    }
+
+    /// Publish every stream digest that is due, and wake the outbox drain if
+    /// any was written. Returns how many were. A failure is logged and
+    /// publishes nothing; the next resync tick tries again.
+    pub(crate) fn sync_publish_due_digests(&self) -> usize {
+        let written = {
+            let mut db = self.db.lock();
+            match self.engine.publish_due_stream_digests(&mut db) {
+                Ok(n) => n,
+                Err(e) => {
+                    tracing::warn!(
+                        ev = "core.chain.digest_publish_failed",
+                        cause = %e,
+                        "stream digests were not published; the next resync retries"
+                    );
+                    0
+                }
+            }
+        };
+        if written > 0 && self.sync_shared.is_active() {
+            self.sync_shared.poke_submit();
+        }
+        self.sync_compact_if_due();
+        written
+    }
+
+    /// Run op-log compaction from the sync driver's tick, at most once per
+    /// [`COMPACT_EVERY_MS`]. A failure is logged and retried on the next
+    /// day's tick; nothing it would have folded is lost by waiting.
+    fn sync_compact_if_due(&self) {
+        let now_ms = self.cfg.clock.now_ms();
+        {
+            let mut last = self.last_compaction_ms.lock();
+            if last.is_some_and(|t| now_ms.saturating_sub(t) < COMPACT_EVERY_MS) {
+                return;
+            }
+            *last = Some(now_ms);
+        }
+        let policy = *self.compaction_policy.lock();
+        let mut db = self.db.lock();
+        if let Err(e) = self.engine.compact_op_log(&mut db, &policy) {
+            tracing::warn!(
+                ev = "core.compaction.failed",
+                cause = %e,
+                "the op log was not compacted; the next day's tick retries"
+            );
+        }
+    }
+
+    /// Replace what op-log compaction may fold: the retention window, how long
+    /// a silent device is waited for, and how often the compactor rewrites a
+    /// stream's snapshot (ADR-0059).
+    pub fn set_compaction_policy(&self, policy: crate::engine::CompactionPolicy) {
+        *self.compaction_policy.lock() = policy;
+    }
+
+    /// The compaction policy in force.
+    #[must_use]
+    pub fn compaction_policy(&self) -> crate::engine::CompactionPolicy {
+        *self.compaction_policy.lock()
+    }
+
+    /// Fold this vault's op log below every floor its policy allows, now,
+    /// whatever the sync driver's cadence (ADR-0059).
+    ///
+    /// # Errors
+    /// [`CoreError::Closed`] after close; storage failures.
+    pub fn compact_op_log(&self) -> Result<crate::engine::CompactionReport, CoreError> {
+        if *self.closed.lock() {
+            return Err(CoreError::Closed);
+        }
+        let policy = *self.compaction_policy.lock();
+        let mut db = self.db.lock();
+        Ok(self.engine.compact_op_log(&mut db, &policy)?)
+    }
+
+    /// The latest snapshot record of `stream_id` this vault wrote or applied,
+    /// verbatim: what a new device bootstraps that stream from.
+    ///
+    /// # Errors
+    /// [`CoreError::Closed`] after close; storage failures.
+    pub fn stream_snapshot(&self, stream_id: [u8; 16]) -> Result<Option<Vec<u8>>, CoreError> {
+        if *self.closed.lock() {
+            return Err(CoreError::Closed);
+        }
+        let db = self.db.lock();
+        Ok(self.engine.stream_snapshot(&db, &stream_id)?)
+    }
+
+    /// Apply a snapshot record another device wrote, and broadcast what it
+    /// changed on `changes()`. See [`Engine::apply_snapshot`] for the checks
+    /// and for what each outcome means.
+    ///
+    /// # Errors
+    /// [`CoreError::Closed`] after close; [`EngineError::Invalid`] for a
+    /// record that is malformed, forged or of another history; storage
+    /// failures.
+    pub fn apply_stream_snapshot(
+        &self,
+        record: &[u8],
+    ) -> Result<crate::engine::SnapshotApplied, CoreError> {
+        if *self.closed.lock() {
+            return Err(CoreError::Closed);
+        }
+        let (outcome, events) = {
+            let mut db = self.db.lock();
+            self.engine.apply_snapshot(&mut db, record)?
+        };
+        for ev in events {
+            let _ = self.changes_tx.send(ev);
+        }
+        Ok(outcome)
+    }
 }
 
 impl Drop for Core {
@@ -1070,6 +1243,22 @@ impl sunrise_sync::DeviceSigner for CoreDeviceSigner {
 
     fn now_ms(&self) -> u64 {
         self.core.now_ms()
+    }
+}
+
+/// The id the vault lock records for this holder.
+///
+/// A browser worker has no process id, and `std::process::id` panics on
+/// `wasm32-unknown-unknown` rather than saying so; the web build records 0,
+/// the same value a contender reads from an unreadable owner file.
+fn holder_pid() -> u32 {
+    #[cfg(all(target_family = "wasm", target_os = "unknown"))]
+    {
+        0
+    }
+    #[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
+    {
+        std::process::id()
     }
 }
 

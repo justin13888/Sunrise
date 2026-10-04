@@ -4,7 +4,7 @@
 //!
 //! ```cddl
 //! OpEnvelope = {
-//!     1: uint,            ; v             (= ENVELOPE_FORMAT_V, currently 3)
+//!     1: uint,            ; v             (writer's ENVELOPE_FORMAT_V, currently 3)
 //!     2: bstr .size 16,   ; stream_id     (0x00..00 = vault-meta; otherwise a Stream)
 //!     3: bstr .size 16,   ; device_id     (signing device)
 //!     4: uint,            ; seq           (per-(stream_id, device_id) monotonic; starts at 1)
@@ -16,8 +16,30 @@
 //!     10: bstr,           ; ciphertext_or_payload
 //!     11: bstr .size 64,  ; sig           (Ed25519)
 //!     12: uint,           ; doc_schema_v  (schema of the *payload*, >= DOC_SCHEMA_FLOOR)
+//!     ? 13: bstr .size 8, ; schema_fp     (first 8 bytes of fingerprint(doc_schema_v))
+//!     ? 14: bstr .size 32,; prev_hash     (op_hash of this device's op at seq - 1)
+//!     ? 15: [+ head],     ; heads         (other devices' tips seen since the last op)
+//!     * uint => any       ; later fields, preserved verbatim
 //! }
+//! head = [bstr .size 16, uint, bstr .size 32]   ; [device_id, seq, op_hash]
 //! ```
+//!
+//! Fields 14 and 15 chain each device's ops and name what its writer had
+//! seen (ADR-0043 §1–§2, issue #325). Both are optional and additive under
+//! ADR-0045 §5: an envelope without them is a *legacy link* that asserts
+//! nothing about its predecessor, every build before them keeps them verbatim
+//! as unknowns, and they sit inside the AAD and the signature by the same
+//! exclusion rule as field 13. [`op_hash`] is the hash both fields carry.
+//!
+//! Field 13 binds the document schema's *identity* to its number (ADR-0045
+//! §3, issue #323). Field 12 says which version the payload was written
+//! against; field 13 carries the first 8 bytes of that version's registered
+//! fingerprint (`sunrise_cbor::version::DOC_SCHEMA_FINGERPRINTS`), so two
+//! builds that disagree about what a version means can tell. A writer at
+//! `doc_schema_v >= DOC_SCHEMA_FP_FIRST` MUST emit it; [`encode_envelope`]
+//! does. An envelope below that version has none and is read under the legacy
+//! rules. Adding it is not a container change: every build already preserves
+//! an unknown field 13 and covers it with the AAD and the signature.
 //!
 //! Field 5 is a hybrid logical clock, not a bare wall clock: a two-element array
 //! `[physical_ms, logical]`. Ordering ops by an unbounded device wall clock let
@@ -40,22 +62,30 @@
 //!
 //! The 5-byte magic prefix from `sunrise-cbor::magic` precedes the canonical
 //! CBOR on the wire / on disk; readers MUST verify it before decoding. It
-//! carries `ENVELOPE_FORMAT_V`.
+//! carries the writer's `ENVELOPE_FORMAT_FLOOR`, and field 1 the writer's
+//! `ENVELOPE_FORMAT_V` (ADR-0045 §5). A reader accepts a container whose floor
+//! it implements and whose field 1 is at least that floor
+//! (`sunrise_cbor::envelope_format_readable`), and keeps every field it does
+//! not know in [`OpEnvelope::unknown`].
 //!
 //! AAD (when `aead_alg = 1`) = canonical CBOR of the same map with fields 10
-//! and 11 removed — i.e. `{1..9, 12}`.
+//! and 11 removed — i.e. `{1..9, 12, 13, ...}`.
 //!
 //! Signature input = `"sunrise.op_envelope.v1" || BLAKE3(canonical_cbor_without_field_11, 32)`
-//! — i.e. over `{1..10, 12}`.
+//! — i.e. over `{1..10, 12, 13, ...}`.
 
 use crate::aead::{aead_open_xchacha, AEAD_NONCE_LEN};
 use crate::keys::{verify_ed25519, DeviceSigningKeyPair, StreamKey};
 use crate::suite::{aead_alg_id, sig_alg_id, AeadAlgId, SigAlgId};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use sunrise_cbor::envelope_header::{envelope_floor_readable, envelope_format_readable};
 use sunrise_cbor::hlc::Hlc;
 use sunrise_cbor::magic::{decode_prefix, write_prefix, MagicKind, MAGIC_LEN};
-use sunrise_cbor::version::{DOC_SCHEMA_FLOOR, DOC_SCHEMA_V, ENVELOPE_FORMAT_V};
+use sunrise_cbor::version::{
+    doc_schema_fp_prefix, DOC_SCHEMA_FLOOR, DOC_SCHEMA_FP_PREFIX_LEN, DOC_SCHEMA_V,
+    ENVELOPE_FORMAT_FLOOR, ENVELOPE_FORMAT_V,
+};
 use sunrise_error::ErrorCode;
 use thiserror::Error;
 
@@ -121,7 +151,8 @@ impl OpEnvelopeError {
 /// 64-byte Ed25519 signature.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpEnvelope {
-    /// Envelope **container format** version — `ENVELOPE_FORMAT_V`.
+    /// Envelope **container format** version: the writer's
+    /// `ENVELOPE_FORMAT_V`, which may be newer than this build's.
     pub v: u32,
     /// 16 bytes; `0x00..00` denotes the vault-meta log.
     pub stream_id: [u8; 16],
@@ -149,6 +180,26 @@ pub struct OpEnvelope {
     /// Document schema version of the payload (field 12). Independent of
     /// [`OpEnvelope::v`]; any value `>= DOC_SCHEMA_FLOOR` is readable.
     pub doc_schema_v: u32,
+    /// Field 13: the first 8 bytes of the registered fingerprint of
+    /// [`OpEnvelope::doc_schema_v`] (ADR-0045 §3), or `None` when the envelope
+    /// carries no field 13, as every envelope below
+    /// `sunrise_cbor::DOC_SCHEMA_FP_FIRST` does.
+    ///
+    /// The decoder takes it as written and does not compare it with this
+    /// build's registry: whether a mismatch is parked is the receiver's
+    /// decision, and the bytes have to survive a hop through this build either
+    /// way, because the signature covers them.
+    pub schema_fp: Option<[u8; DOC_SCHEMA_FP_PREFIX_LEN]>,
+    /// Field 14: the [`op_hash`] of the same device's op at
+    /// `(stream_id, seq - 1)` (ADR-0043 §1), or `None` for a *legacy link*:
+    /// the first op of a sequence, an op written before chaining existed, or
+    /// an op whose writer could not find its own predecessor.
+    pub prev_hash: Option<[u8; 32]>,
+    /// Field 15: for each other device whose contiguous prefix in this stream
+    /// advanced since the writer's previous op here, the tip of that prefix
+    /// (ADR-0043 §2). Sorted by device id, each device at most once, and at
+    /// most [`MAX_CHAIN_HEADS`] long. Empty means the field is absent.
+    pub heads: Vec<ChainHead>,
     /// Envelope fields this build does not know, kept verbatim and re-emitted
     /// in their canonical position.
     ///
@@ -158,6 +209,48 @@ pub struct OpEnvelope {
     /// no longer verifies. Preserving them is what makes an envelope from a
     /// newer container format survive a hop through this build.
     pub unknown: BTreeMap<u64, sunrise_cbor::CborValue>,
+}
+
+/// One entry of envelope field 15: the tip of another device's contiguous
+/// prefix in the same stream, as the writer held it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ChainHead {
+    /// The device whose prefix this is.
+    pub device_id: [u8; 16],
+    /// The last seq of that prefix.
+    pub seq: u64,
+    /// [`op_hash`] of that device's op at `seq`.
+    pub op_hash: [u8; 32],
+}
+
+/// The most entries field 15 may carry. A writer lists one per other device
+/// writing to the stream, so a real list is a handful long; the bound is what
+/// stops a malformed envelope from making a receiver allocate without limit.
+pub const MAX_CHAIN_HEADS: usize = 256;
+
+/// The chain fields a writer stamps into an envelope (fields 14 and 15).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ChainLinks {
+    /// Field 14. See [`OpEnvelope::prev_hash`].
+    pub prev_hash: Option<[u8; 32]>,
+    /// Field 15. See [`OpEnvelope::heads`].
+    pub heads: Vec<ChainHead>,
+}
+
+/// The one hash of an op in the system (ADR-0043 §1): BLAKE3 over the
+/// envelope's full canonical CBOR, **including** field 11, the signature, and
+/// excluding the 5-byte magic prefix.
+///
+/// It is computed from a re-encoding rather than from the bytes a peer sent,
+/// so two replicas holding the same envelope agree on its hash whatever
+/// encoding reached them. It is the `env_hash` of
+/// `docs/03-crypto/audit-and-tamper-evidence.md`.
+///
+/// # Errors
+/// CBOR encode failure (essentially impossible).
+pub fn op_hash(env: &OpEnvelope) -> Result<[u8; 32], OpEnvelopeError> {
+    let cbor = encode_cbor(env, Omit::Nothing)?;
+    Ok(*blake3::hash(&cbor).as_bytes())
 }
 
 // CBOR ground form. We build the canonical map explicitly, in ascending
@@ -222,6 +315,29 @@ fn encode_cbor(env: &OpEnvelope, omit: Omit) -> Result<Vec<u8>, OpEnvelopeError>
     put(10, Value::Bytes(env.payload.clone()));
     put(11, Value::Bytes(env.sig.to_vec()));
     put(12, Value::Integer(Integer::from(env.doc_schema_v)));
+    if let Some(fp) = env.schema_fp {
+        put(13, Value::Bytes(fp.to_vec()));
+    }
+    if let Some(prev) = env.prev_hash {
+        put(14, Value::Bytes(prev.to_vec()));
+    }
+    if !env.heads.is_empty() {
+        put(
+            15,
+            Value::Array(
+                env.heads
+                    .iter()
+                    .map(|h| {
+                        Value::Array(vec![
+                            Value::Bytes(h.device_id.to_vec()),
+                            Value::Integer(h.seq.into()),
+                            Value::Bytes(h.op_hash.to_vec()),
+                        ])
+                    })
+                    .collect(),
+            ),
+        );
+    }
 
     // Preserved unknowns sit at their own field ids. Sorting the whole map by
     // id afterwards puts each one exactly where its author put it: field ids
@@ -299,9 +415,50 @@ pub fn encode_envelope(
     stream_key: Option<&StreamKey>,
     device_signing: &DeviceSigningKeyPair,
 ) -> Result<Vec<u8>, OpEnvelopeError> {
+    encode_chained_envelope(
+        inner,
+        stream_id,
+        device_id,
+        seq,
+        hlc,
+        aead_alg,
+        epoch,
+        nonce,
+        ChainLinks::default(),
+        stream_key,
+        device_signing,
+    )
+}
+
+/// [`encode_envelope`], stamping the chain fields `chain` carries (fields 14
+/// and 15, ADR-0043). An empty `chain` writes neither, which is exactly what
+/// [`encode_envelope`] produces.
+///
+/// # Errors
+/// CBOR/AEAD failures.
+#[allow(clippy::too_many_arguments)]
+pub fn encode_chained_envelope(
+    inner: &[u8],
+    stream_id: [u8; 16],
+    device_id: [u8; 16],
+    seq: u64,
+    hlc: Hlc,
+    aead_alg: AeadAlgId,
+    epoch: u32,
+    nonce: [u8; AEAD_NONCE_LEN],
+    chain: ChainLinks,
+    stream_key: Option<&StreamKey>,
+    device_signing: &DeviceSigningKeyPair,
+) -> Result<Vec<u8>, OpEnvelopeError> {
     let env = OpEnvelope {
+        prev_hash: chain.prev_hash,
+        heads: chain.heads,
         v: u32::from(ENVELOPE_FORMAT_V),
         doc_schema_v: u32::from(DOC_SCHEMA_V),
+        // Field 13 is required from the first fingerprinted version on, and
+        // this build's own version is always registered: a test in
+        // `sunrise-core` fails otherwise.
+        schema_fp: doc_schema_fp_prefix(u32::from(DOC_SCHEMA_V)),
         stream_id,
         device_id,
         seq,
@@ -337,6 +494,9 @@ pub fn seal_envelope(
     if env.aead_alg == AeadAlgId::XChaCha20Poly1305 && stream_key.is_none() {
         return Err(OpEnvelopeError::InconsistentAead);
     }
+    // The decoder refuses a field 15 out of shape, so the writer must not
+    // emit one: an envelope nobody can read is worse than a refused write.
+    check_heads(&env.heads)?;
 
     if env.aead_alg == AeadAlgId::XChaCha20Poly1305 {
         let inner = std::mem::take(&mut env.payload);
@@ -351,7 +511,9 @@ pub fn seal_envelope(
     let cbor = encode_cbor(&env, Omit::Nothing)?;
     let mut out = Vec::with_capacity(MAGIC_LEN + cbor.len());
     let mut prefix = [0u8; MAGIC_LEN];
-    write_prefix(&mut prefix, MagicKind::OpEnvelope, ENVELOPE_FORMAT_V);
+    // The prefix names the writer's floor, not its container (ADR-0045 §5):
+    // the oldest container that still reads these bytes correctly.
+    write_prefix(&mut prefix, MagicKind::OpEnvelope, ENVELOPE_FORMAT_FLOOR);
     out.extend_from_slice(&prefix);
     out.extend_from_slice(&cbor);
     Ok(out)
@@ -366,11 +528,15 @@ pub fn decode_envelope(bytes: &[u8]) -> Result<OpEnvelope, OpEnvelopeError> {
         return Err(OpEnvelopeError::BadMagic);
     }
     let prefix = decode_prefix(&bytes[..MAGIC_LEN]).map_err(|_| OpEnvelopeError::BadMagic)?;
-    // The prefix carries the CONTAINER FORMAT version. A mismatch is the one
-    // thing a decoder cannot work around — it does not know the field layout,
-    // so it cannot even find the payload. The document schema is field 12 and
-    // is checked further down against the floor, not for equality.
-    if prefix.kind != MagicKind::OpEnvelope || prefix.version != ENVELOPE_FORMAT_V {
+    // The prefix carries the writer's CONTAINER FLOOR (ADR-0045 §5). A floor
+    // this build does not implement is the one thing a decoder cannot work
+    // around — it does not know the field layout, so it cannot even find the
+    // payload. A newer container at a floor this build implements keeps fields
+    // 1–12 where they were, and its new fields land in `unknown` below. The
+    // relay's header decoder applies the same rule through the same function.
+    // The document schema is field 12 and is checked further down against its
+    // own floor.
+    if prefix.kind != MagicKind::OpEnvelope || !envelope_floor_readable(prefix.version) {
         return Err(OpEnvelopeError::BadMagic);
     }
     let cbor_bytes = &bytes[MAGIC_LEN..];
@@ -384,6 +550,9 @@ pub fn decode_envelope(bytes: &[u8]) -> Result<OpEnvelope, OpEnvelopeError> {
     let mut env = OpEnvelope {
         v: 0,
         doc_schema_v: 0,
+        schema_fp: None,
+        prev_hash: None,
+        heads: Vec::new(),
         stream_id: [0u8; 16],
         device_id: [0u8; 16],
         seq: 0,
@@ -429,6 +598,18 @@ pub fn decode_envelope(bytes: &[u8]) -> Result<OpEnvelope, OpEnvelopeError> {
                 env.sig = arr;
             }
             12 => env.doc_schema_v = u32_from(&v, "doc_schema_v")?,
+            // Optional, and taken as written: comparing it with the registry
+            // is the receiver's job (ADR-0045 §3), not the codec's.
+            13 => {
+                env.schema_fp = Some(bytes_n_from(&v, "schema_fp", DOC_SCHEMA_FP_PREFIX_LEN)?);
+            }
+            // Taken as written, like field 13: whether a link holds is a
+            // question about the receiver's op log, not about these bytes.
+            14 => env.prev_hash = Some(bytes_n_from(&v, "prev_hash", 32)?),
+            15 => {
+                env.heads = heads_from(&v)?;
+                check_heads(&env.heads)?;
+            }
             other => {
                 // Forward compat, for real this time. A field from a newer
                 // container format is kept at its own id and re-emitted in
@@ -466,7 +647,9 @@ pub fn decode_envelope(bytes: &[u8]) -> Result<OpEnvelope, OpEnvelopeError> {
         }
     }
 
-    if env.v != u32::from(ENVELOPE_FORMAT_V) {
+    // Field 1 is the writer's own container, which may be newer than this
+    // build's but never older than the floor the same writer stamped.
+    if !envelope_format_readable(prefix.version, u64::from(env.v)) {
         return Err(OpEnvelopeError::BadField("v"));
     }
     // Forward compatibility: a NEWER document schema is readable. Only an
@@ -605,6 +788,39 @@ fn hlc_from(v: &ciborium::value::Value) -> Result<Hlc, OpEnvelopeError> {
         physical_ms: u64_from(&arr[0], "hlc.physical_ms")?,
         logical: u32_from(&arr[1], "hlc.logical")?,
     })
+}
+
+/// Field 15: a non-empty array of `[device_id, seq, op_hash]`. An empty array
+/// is refused rather than read as "no heads": the writer omits the field in
+/// that case, so re-emitting an empty one would change the signed bytes.
+fn heads_from(v: &ciborium::value::Value) -> Result<Vec<ChainHead>, OpEnvelopeError> {
+    let ciborium::value::Value::Array(items) = v else {
+        return Err(OpEnvelopeError::BadField("heads"));
+    };
+    if items.is_empty() || items.len() > MAX_CHAIN_HEADS {
+        return Err(OpEnvelopeError::BadField("heads"));
+    }
+    items
+        .iter()
+        .map(|item| match item {
+            ciborium::value::Value::Array(h) if h.len() == 3 => Ok(ChainHead {
+                device_id: bytes16_from(&h[0], "heads")?,
+                seq: u64_from(&h[1], "heads")?,
+                op_hash: bytes_n_from(&h[2], "heads", 32)?,
+            }),
+            _ => Err(OpEnvelopeError::BadField("heads")),
+        })
+        .collect()
+}
+
+/// Field 15's shape rule, shared by the writer and the reader: at most
+/// [`MAX_CHAIN_HEADS`] entries, strictly ascending by device id, so a device
+/// appears once and the encoding of a set is unique.
+fn check_heads(heads: &[ChainHead]) -> Result<(), OpEnvelopeError> {
+    if heads.len() > MAX_CHAIN_HEADS || heads.windows(2).any(|w| w[0].device_id >= w[1].device_id) {
+        return Err(OpEnvelopeError::BadField("heads"));
+    }
+    Ok(())
 }
 
 fn bytes16_from(
@@ -834,6 +1050,7 @@ mod tests {
             OpEnvelope {
                 v: u32::from(ENVELOPE_FORMAT_V),
                 doc_schema_v,
+                schema_fp: None,
                 stream_id: [2u8; 16],
                 device_id: [3u8; 16],
                 seq: 1,
@@ -844,6 +1061,8 @@ mod tests {
                 nonce: [0u8; AEAD_NONCE_LEN],
                 payload: b"inner".to_vec(),
                 sig: [0u8; 64],
+                prev_hash: None,
+                heads: Vec::new(),
                 unknown: BTreeMap::new(),
             },
             None,
@@ -916,6 +1135,114 @@ mod tests {
         ));
     }
 
+    /// Field 1 is the writer's own container, so it cannot be older than the
+    /// floor the same writer stamped in the prefix (ADR-0045 §5).
+    #[test]
+    fn a_container_below_its_own_floor_is_refused() {
+        let signing = fixed_signing();
+        let mut env = decode_envelope(&envelope_at_doc_schema(1, &signing)).unwrap();
+        env.v = u32::from(ENVELOPE_FORMAT_FLOOR) - 1;
+        let bytes = seal_envelope(env, None, &signing).unwrap();
+        assert!(matches!(
+            decode_envelope(&bytes),
+            Err(OpEnvelopeError::BadField("v"))
+        ));
+    }
+
+    /// ADR-0045 §5: a change to the meaning of fields 1–12, to the AAD
+    /// construction or to the signature input MUST raise
+    /// [`ENVELOPE_FORMAT_FLOOR`]. Each of the three is pinned here to the
+    /// floor it was frozen at, so changing one fails this test until the
+    /// floor moves, and the floor moving is what tells this test to re-pin.
+    #[test]
+    fn the_container_meaning_is_pinned_to_its_floor() {
+        /// The floor everything below was frozen at.
+        const PINNED_FLOOR: u16 = 3;
+        assert_eq!(
+            ENVELOPE_FORMAT_FLOOR, PINNED_FLOOR,
+            "the floor moved: re-pin fields 1-12, the Omit sets and SIG_DOMAIN \
+             to the new container, then PINNED_FLOOR"
+        );
+
+        // The signature input's domain.
+        assert_eq!(SIG_DOMAIN, b"sunrise.op_envelope.v1");
+
+        // The AAD and signature inputs, by exclusion.
+        for id in 0..=u8::MAX {
+            assert!(!Omit::Nothing.omits(id), "full encoding omits {id}");
+            assert_eq!(Omit::Sig.omits(id), id == 11, "signature input, field {id}");
+            assert_eq!(
+                Omit::PayloadAndSig.omits(id),
+                id == 10 || id == 11,
+                "AAD, field {id}"
+            );
+        }
+
+        // Fields 1–12: their ids, their order and their encodings, from an
+        // envelope whose every field holds a distinct value.
+        let env = OpEnvelope {
+            v: 3,
+            stream_id: [0x02; 16],
+            device_id: [0x03; 16],
+            seq: 4,
+            hlc: Hlc {
+                physical_ms: 5,
+                logical: 55,
+            },
+            aead_alg: AeadAlgId::XChaCha20Poly1305,
+            sig_alg: SigAlgId::Ed25519,
+            epoch: 8,
+            nonce: [0x09; AEAD_NONCE_LEN],
+            payload: vec![0x0a; 3],
+            sig: [0x0b; 64],
+            doc_schema_v: 12,
+            schema_fp: None,
+            prev_hash: None,
+            heads: Vec::new(),
+            unknown: BTreeMap::new(),
+        };
+        let cbor = encode_cbor(&env, Omit::Nothing).unwrap();
+        // One line per field: its id, then its encoded value.
+        let pinned = concat!(
+            "ac",                                                     // map(12)
+            "0103",                                                   // 1: v
+            "025002020202020202020202020202020202",                   // 2: stream_id
+            "035003030303030303030303030303030303",                   // 3: device_id
+            "0404",                                                   // 4: seq
+            "0582051837",                                             // 5: hlc [5, 55]
+            "0601",                                                   // 6: aead_alg
+            "0701",                                                   // 7: sig_alg
+            "0808",                                                   // 8: epoch
+            "095818090909090909090909090909090909090909090909090909", // 9: nonce
+            "0a430a0a0a",                                             // 10: payload
+            "0b5840",                                                 // 11: sig, 64 x 0x0b
+            "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+            "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+            "0c0c", // 12: doc_schema_v
+        );
+        assert_eq!(hex::encode(&cbor), pinned, "fields 1-12 changed encoding");
+
+        // ...and read back to the same meaning.
+        let mut framed = vec![0u8; MAGIC_LEN];
+        write_prefix(&mut framed, MagicKind::OpEnvelope, PINNED_FLOOR);
+        framed.extend_from_slice(&cbor);
+        assert_eq!(decode_envelope(&framed).unwrap(), env);
+    }
+
+    /// The transition rule of ADR-0045 §5. Every build before the floor
+    /// compares the prefix and field 1 with its own container for equality,
+    /// so a writer that stamps a newer field 1 strands all of them. That stays
+    /// forbidden until `core.envelope_floor` is in `vault_requires` and the
+    /// relay agrees `SrvEnvelopeFloor`, neither of which exists yet.
+    #[test]
+    fn writers_still_emit_the_container_every_build_reads() {
+        assert_eq!(ENVELOPE_FORMAT_V, ENVELOPE_FORMAT_FLOOR);
+        let signing = fixed_signing();
+        let bytes = envelope_at_doc_schema(1, &signing);
+        assert_eq!(&bytes[..MAGIC_LEN], b"SR\x02\x00\x03");
+        assert_eq!(decode_envelope(&bytes).unwrap().v, 3);
+    }
+
     /// Field 12 rides inside the signature input. Rewriting it therefore
     /// invalidates the signature rather than passing unnoticed.
     #[test]
@@ -943,6 +1270,7 @@ mod tests {
             OpEnvelope {
                 v: u32::from(ENVELOPE_FORMAT_V),
                 doc_schema_v: 1,
+                schema_fp: None,
                 stream_id: [2u8; 16],
                 device_id: [3u8; 16],
                 seq: 1,
@@ -953,6 +1281,8 @@ mod tests {
                 nonce: [0u8; AEAD_NONCE_LEN],
                 payload: b"secret".to_vec(),
                 sig: [0u8; 64],
+                prev_hash: None,
+                heads: Vec::new(),
                 unknown: BTreeMap::new(),
             },
             Some(&stream_key),
@@ -988,6 +1318,329 @@ mod tests {
             decode_envelope(&out),
             Err(OpEnvelopeError::BadField("doc_schema_v"))
         ));
+    }
+
+    /// ADR-0045 §3: a writer at a fingerprinted version emits field 13, and it
+    /// holds the first 8 bytes of that version's registered fingerprint.
+    #[test]
+    fn the_writer_stamps_field_13_with_its_registered_fingerprint() {
+        use sunrise_cbor::version::doc_schema_fingerprint;
+        let signing = fixed_signing();
+        let bytes = encode_envelope(
+            b"x",
+            [2u8; 16],
+            [3u8; 16],
+            1,
+            Hlc::at(1),
+            AeadAlgId::None,
+            0,
+            [0u8; AEAD_NONCE_LEN],
+            None,
+            &signing,
+        )
+        .unwrap();
+        let env = decode_envelope(&bytes).unwrap();
+        let registered = doc_schema_fingerprint(u32::from(DOC_SCHEMA_V)).expect("registered");
+        assert_eq!(
+            env.schema_fp.map(|fp| fp.to_vec()),
+            Some(registered[..8].to_vec())
+        );
+        assert!(env.unknown.is_empty(), "field 13 is known, not preserved");
+
+        // `0d 48 <8 bytes>`: field 13 as an 8-byte byte string, last in the map.
+        let mut tail = vec![0x0d, 0x48];
+        tail.extend_from_slice(&registered[..8]);
+        assert!(contains_subseq(&bytes, &tail));
+    }
+
+    /// An envelope from before the fingerprint has no field 13, and still
+    /// decodes and verifies.
+    #[test]
+    fn an_envelope_without_field_13_decodes_with_none() {
+        let signing = fixed_signing();
+        let bytes = envelope_at_doc_schema(6, &signing);
+        let env = decode_envelope(&bytes).unwrap();
+        assert_eq!(env.schema_fp, None);
+        verify_envelope(&env, &signing.public_bytes()).unwrap();
+    }
+
+    /// Field 13 is inside the signature input and the AEAD associated data,
+    /// by the exclusion rule: a relay can neither strip nor rewrite it.
+    #[test]
+    fn field_13_is_covered_by_the_signature_and_the_aad() {
+        let signing = fixed_signing();
+        let pub_bytes = signing.public_bytes();
+        let stream_key = fixed_stream_key();
+        let bytes = seal_envelope(
+            OpEnvelope {
+                v: u32::from(ENVELOPE_FORMAT_V),
+                doc_schema_v: u32::from(DOC_SCHEMA_V),
+                schema_fp: Some([0xab; 8]),
+                stream_id: [2u8; 16],
+                device_id: [3u8; 16],
+                seq: 1,
+                hlc: Hlc::at(1),
+                aead_alg: AeadAlgId::XChaCha20Poly1305,
+                sig_alg: SigAlgId::Ed25519,
+                epoch: 1,
+                nonce: [0u8; AEAD_NONCE_LEN],
+                payload: b"secret".to_vec(),
+                sig: [0u8; 64],
+                prev_hash: None,
+                heads: Vec::new(),
+                unknown: BTreeMap::new(),
+            },
+            Some(&stream_key),
+            &signing,
+        )
+        .unwrap();
+        let env = decode_envelope(&bytes).unwrap();
+        assert_eq!(env.schema_fp, Some([0xab; 8]));
+        open_envelope(&env, &pub_bytes, Some(&stream_key)).unwrap();
+
+        for tampered in [Some([0xcd; 8]), None] {
+            let mut env = env.clone();
+            env.schema_fp = tampered;
+            assert!(
+                matches!(
+                    verify_envelope(&env, &pub_bytes),
+                    Err(OpEnvelopeError::SigVerify)
+                ),
+                "{tampered:?} passed the signature"
+            );
+            sign_envelope(&mut env, &signing).unwrap();
+            assert!(
+                matches!(
+                    open_envelope(&env, &pub_bytes, Some(&stream_key)),
+                    Err(OpEnvelopeError::AeadAuth)
+                ),
+                "{tampered:?} passed the AAD"
+            );
+        }
+    }
+
+    /// Field 13 has one shape. Anything else is a malformed envelope, refused
+    /// like a wrong-sized `stream_id`, rather than kept as an unknown.
+    #[test]
+    fn a_field_13_of_the_wrong_shape_is_refused() {
+        let signing = fixed_signing();
+        let bytes = envelope_at_doc_schema(1, &signing);
+        let mut value: ciborium::value::Value =
+            ciborium::de::from_reader(&bytes[MAGIC_LEN..]).unwrap();
+        for wrong in [
+            ciborium::value::Value::Bytes(vec![0; 7]),
+            ciborium::value::Value::Bytes(vec![0; 32]),
+            ciborium::value::Value::Integer(13.into()),
+        ] {
+            if let ciborium::value::Value::Map(m) = &mut value {
+                m.retain(
+                    |(k, _)| !matches!(k, ciborium::value::Value::Integer(i) if i128::from(*i) == 13),
+                );
+                m.push((ciborium::value::Value::Integer(13.into()), wrong));
+            }
+            let mut out = bytes[..MAGIC_LEN].to_vec();
+            ciborium::ser::into_writer(&value, &mut out).unwrap();
+            assert!(matches!(
+                decode_envelope(&out),
+                Err(OpEnvelopeError::BadField("schema_fp"))
+            ));
+        }
+    }
+
+    fn chained(chain: ChainLinks, signing: &DeviceSigningKeyPair) -> Vec<u8> {
+        encode_chained_envelope(
+            b"x",
+            [2u8; 16],
+            [3u8; 16],
+            2,
+            Hlc::at(1),
+            AeadAlgId::XChaCha20Poly1305,
+            1,
+            [0u8; AEAD_NONCE_LEN],
+            chain,
+            Some(&fixed_stream_key()),
+            signing,
+        )
+        .unwrap()
+    }
+
+    fn head(device: u8, seq: u64) -> ChainHead {
+        ChainHead {
+            device_id: [device; 16],
+            seq,
+            op_hash: [device ^ 0xff; 32],
+        }
+    }
+
+    /// ADR-0043 §1–§2: fields 14 and 15 round-trip, sit after field 13, and
+    /// are known fields rather than preserved unknowns.
+    #[test]
+    fn chain_fields_round_trip_as_known_fields() {
+        let signing = fixed_signing();
+        let chain = ChainLinks {
+            prev_hash: Some([0x14; 32]),
+            heads: vec![head(1, 4), head(9, 2)],
+        };
+        let bytes = chained(chain.clone(), &signing);
+        let env = decode_envelope(&bytes).unwrap();
+        assert_eq!(env.prev_hash, chain.prev_hash);
+        assert_eq!(env.heads, chain.heads);
+        assert!(env.unknown.is_empty());
+        open_envelope(&env, &signing.public_bytes(), Some(&fixed_stream_key())).unwrap();
+
+        // `0e 58 20 <32 bytes>`: field 14 as a 32-byte byte string.
+        let mut f14 = vec![0x0e, 0x58, 0x20];
+        f14.extend_from_slice(&[0x14; 32]);
+        assert!(contains_subseq(&bytes, &f14));
+    }
+
+    /// An envelope with no chain fields is the legacy link, and the chained
+    /// writer with an empty chain is byte-identical to the plain one.
+    #[test]
+    fn an_empty_chain_writes_neither_field() {
+        let signing = fixed_signing();
+        let env = decode_envelope(&chained(ChainLinks::default(), &signing)).unwrap();
+        assert_eq!(env.prev_hash, None);
+        assert!(env.heads.is_empty());
+        let plain = encode_envelope(
+            b"x",
+            [2u8; 16],
+            [3u8; 16],
+            2,
+            Hlc::at(1),
+            AeadAlgId::XChaCha20Poly1305,
+            1,
+            [0u8; AEAD_NONCE_LEN],
+            Some(&fixed_stream_key()),
+            &signing,
+        )
+        .unwrap();
+        assert_eq!(plain, chained(ChainLinks::default(), &signing));
+    }
+
+    /// Both fields are inside the signature input and the AAD by the
+    /// exclusion rule: a relay can neither strip nor forge a link.
+    #[test]
+    fn chain_fields_are_covered_by_the_signature_and_the_aad() {
+        let signing = fixed_signing();
+        let pub_bytes = signing.public_bytes();
+        let key = fixed_stream_key();
+        let env = decode_envelope(&chained(
+            ChainLinks {
+                prev_hash: Some([0x14; 32]),
+                heads: vec![head(1, 4)],
+            },
+            &signing,
+        ))
+        .unwrap();
+        let tampers: [fn(&mut OpEnvelope); 4] = [
+            |e| e.prev_hash = None,
+            |e| e.prev_hash = Some([0x15; 32]),
+            |e| e.heads.clear(),
+            |e| e.heads[0].seq += 1,
+        ];
+        for (i, tamper) in tampers.iter().enumerate() {
+            let mut t = env.clone();
+            tamper(&mut t);
+            assert!(
+                matches!(
+                    verify_envelope(&t, &pub_bytes),
+                    Err(OpEnvelopeError::SigVerify)
+                ),
+                "tamper {i} passed the signature"
+            );
+            sign_envelope(&mut t, &signing).unwrap();
+            assert!(
+                matches!(
+                    open_envelope(&t, &pub_bytes, Some(&key)),
+                    Err(OpEnvelopeError::AeadAuth)
+                ),
+                "tamper {i} passed the AAD"
+            );
+        }
+    }
+
+    /// Field 15 has one encoding per set: unsorted, duplicated, empty or
+    /// oversized lists are refused by the writer and by the reader alike.
+    #[test]
+    fn heads_out_of_shape_are_refused_both_ways() {
+        let signing = fixed_signing();
+        let too_many: Vec<ChainHead> = (0..=MAX_CHAIN_HEADS)
+            .map(|i| {
+                let mut id = [0u8; 16];
+                id[..8].copy_from_slice(&(i as u64).to_be_bytes());
+                ChainHead {
+                    device_id: id,
+                    seq: 1,
+                    op_hash: [0; 32],
+                }
+            })
+            .collect();
+        for heads in [
+            vec![head(9, 1), head(1, 1)],
+            vec![head(1, 1), head(1, 2)],
+            too_many,
+        ] {
+            let env = OpEnvelope {
+                heads: heads.clone(),
+                ..decode_envelope(&chained(ChainLinks::default(), &signing)).unwrap()
+            };
+            assert!(matches!(
+                seal_envelope(env.clone(), Some(&fixed_stream_key()), &signing),
+                Err(OpEnvelopeError::BadField("heads"))
+            ));
+            // The reader, fed the same list by hand.
+            let mut cbor = encode_cbor(&env, Omit::Nothing).unwrap();
+            let mut framed = vec![0u8; MAGIC_LEN];
+            write_prefix(&mut framed, MagicKind::OpEnvelope, ENVELOPE_FORMAT_FLOOR);
+            framed.append(&mut cbor);
+            assert!(matches!(
+                decode_envelope(&framed),
+                Err(OpEnvelopeError::BadField("heads"))
+            ));
+        }
+
+        // An empty array on the wire, and a malformed entry.
+        let base = chained(ChainLinks::default(), &signing);
+        let mut value: ciborium::value::Value =
+            ciborium::de::from_reader(&base[MAGIC_LEN..]).unwrap();
+        for wrong in [
+            ciborium::value::Value::Array(vec![]),
+            ciborium::value::Value::Array(vec![ciborium::value::Value::Integer(1.into())]),
+            ciborium::value::Value::Bytes(vec![0; 32]),
+        ] {
+            if let ciborium::value::Value::Map(m) = &mut value {
+                m.retain(
+                    |(k, _)| !matches!(k, ciborium::value::Value::Integer(i) if i128::from(*i) == 15),
+                );
+                m.push((ciborium::value::Value::Integer(15.into()), wrong));
+            }
+            let mut out = base[..MAGIC_LEN].to_vec();
+            ciborium::ser::into_writer(&value, &mut out).unwrap();
+            assert!(matches!(
+                decode_envelope(&out),
+                Err(OpEnvelopeError::BadField("heads"))
+            ));
+        }
+    }
+
+    /// `op_hash` covers the signature (field 11) and every header field, and
+    /// is the hash of the canonical encoding without the magic prefix.
+    #[test]
+    fn op_hash_is_the_hash_of_the_full_canonical_encoding() {
+        let signing = fixed_signing();
+        let bytes = chained(ChainLinks::default(), &signing);
+        let env = decode_envelope(&bytes).unwrap();
+        assert_eq!(
+            op_hash(&env).unwrap(),
+            *blake3::hash(&bytes[MAGIC_LEN..]).as_bytes()
+        );
+        let mut resigned = env.clone();
+        resigned.sig[0] ^= 1;
+        assert_ne!(op_hash(&env).unwrap(), op_hash(&resigned).unwrap());
+        let mut relinked = env.clone();
+        relinked.prev_hash = Some([1; 32]);
+        assert_ne!(op_hash(&env).unwrap(), op_hash(&relinked).unwrap());
     }
 
     fn contains_subseq(haystack: &[u8], needle: &[u8]) -> bool {

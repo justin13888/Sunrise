@@ -48,8 +48,19 @@ struct KeyboardTipsTests {
     @Test
     func theTipNamesTheTwoShortcutsThatWorkWithAnEmptyVault() {
         #expect(KeyboardTips.hint.contains("?"))
-        #expect(KeyboardTips.hint.contains("⌘⇧P"))
+        #expect(KeyboardTips.hint.contains("⇧⌘P"))
         #expect(KeyboardTips.enabledKey == "keyboard.tips")
+    }
+
+    /// The coachmark and the tip print their chords from the keymap, in the
+    /// keymap's order — ⇧⌘, the order a Mac menu prints — rather than a
+    /// hand-typed ⌘⇧ that disagrees with every menu and the cheat sheet.
+    @Test
+    func theTipsPrintTheKeymapsOwnChords() {
+        #expect(KeyboardTips.hint.contains(Keymap.shortcutLabel(for: .commandPalette)))
+        #expect(KeyboardTipsCoachmark.text.contains(Keymap.shortcutLabel(for: .quickCaptureGlobal)))
+        #expect(!KeyboardTips.hint.contains("⌘⇧"))
+        #expect(!KeyboardTipsCoachmark.text.contains("⌘⇧"))
     }
 
     /// Vim mode is reachable from Settings *and* from the `?` sheet, and the

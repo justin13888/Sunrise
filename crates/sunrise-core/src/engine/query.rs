@@ -157,7 +157,7 @@ impl Engine {
                 continue;
             };
             out.push(ActionableTask {
-                effective_state: effective_state(task.state, open),
+                effective_state: effective_state(&task.state, open),
                 open_blockers: open,
                 unblocks,
                 task,

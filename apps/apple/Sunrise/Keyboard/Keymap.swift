@@ -42,6 +42,11 @@ enum AppAction: String, CaseIterable, Hashable, Sendable {
     /// be the wrong trade.
     case exportPDF
     case cheatSheet
+    /// ⌥⌘M and ⌥⌘E: the two daily briefs, which a reminder also opens.
+    case morningSummary
+    case endOfDay
+    /// ⇧⌘I. File → Import Calendar…, which raises a file picker.
+    case importCalendar
 
     /// What the palette, the cheat sheet and the menu all call it.
     var title: String {
@@ -73,6 +78,9 @@ enum AppAction: String, CaseIterable, Hashable, Sendable {
         case .printView: "Print…"
         case .exportPDF: "Export as PDF…"
         case .cheatSheet: "Keyboard Shortcuts"
+        case .morningSummary: "Morning Summary"
+        case .endOfDay: "End of Day"
+        case .importCalendar: "Import Calendar…"
         }
     }
 
@@ -101,18 +109,22 @@ enum AppAction: String, CaseIterable, Hashable, Sendable {
         case .printView: "printer"
         case .exportPDF: "doc.richtext"
         case .cheatSheet: "keyboard"
+        case .morningSummary: "sunrise"
+        case .endOfDay: "moon.stars"
+        case .importCalendar: "square.and.arrow.down"
         }
     }
 
     var section: KeySection {
         switch self {
         case .quickCaptureGlobal, .quickCapture: .capture
-        case .today, .inbox, .searchInView, .searchGlobal, .commandPalette, .newStream: .navigation
+        case .today, .inbox, .searchInView, .searchGlobal, .commandPalette, .newStream,
+             .morningSummary, .endOfDay: .navigation
         case .moveUp, .moveDown, .listTop, .listBottom, .openDetail, .closeDetail,
              .toggleSelection, .extendSelectionUp, .extendSelectionDown: .list
         case .markDone, .deferTask, .schedule, .moveToStream, .focusMode: .task
         case .undo, .redo: .edit
-        case .printView, .exportPDF: .document
+        case .printView, .exportPDF, .importCalendar: .document
         case .cheatSheet: .help
         }
     }
@@ -122,6 +134,20 @@ enum AppAction: String, CaseIterable, Hashable, Sendable {
     /// The palette reads this to grey an entry out rather than hide it: a
     /// command that vanishes when it cannot run teaches nobody that it exists.
     var needsSelection: Bool { section == .task }
+
+    /// Whether this platform can run the action at all.
+    ///
+    /// Printing is the Mac's alone (`macOS/PrintJob.swift`), so on iOS and
+    /// iPadOS it is left out of the palette, the cheat sheet and the key
+    /// commands rather than offered greyed: unlike a row command waiting for a
+    /// selection, there is nothing the user could do here to make it work.
+    var isOffered: Bool {
+        #if os(macOS)
+        true
+        #else
+        self != .printView && self != .exportPDF
+        #endif
+    }
 }
 
 /// How the cheat sheet groups the keymap.
@@ -141,7 +167,7 @@ enum KeySection: String, CaseIterable, Hashable, Sendable {
         case .list: "Moving through a list"
         case .task: "Acting on what is selected"
         case .edit: "Undo"
-        case .document: "Printing"
+        case .document: "Files and printing"
         case .help: "Help"
         }
     }
@@ -185,6 +211,10 @@ enum Keymap {
         app(KeyChord("s", [.command, .shift]), .newStream),
         app(KeyChord("z", [.command]), .undo),
         app(KeyChord("z", [.command, .shift]), .redo),
+        // The rest of the spec's table: the two briefs, and calendar import.
+        app(KeyChord("m", [.command, .option]), .morningSummary),
+        app(KeyChord("e", [.command, .option]), .endOfDay),
+        app(KeyChord("i", [.command, .shift]), .importCalendar),
         // Not in the spec's table either. `docs/07-clients/parity-matrix.md`
         // marks Print / PDF export a macOS SHOULD, and ⌘P is the chord every
         // Mac user already has in their fingers for it.
@@ -249,5 +279,74 @@ enum Keymap {
     /// right-hand column. Alternates are joined so `↑ / K` reads as one row.
     static func shortcutLabel(for action: AppAction) -> String {
         chords(for: action).map(\.display).joined(separator: " / ")
+    }
+}
+
+// MARK: - Hints
+
+/// Rendering a binding into the places an action appears.
+///
+/// `docs/08-features/keyboard.md` Rule 1: every surface that offers a bound
+/// action shows its key, and no surface formats a chord by hand. Each helper
+/// reads ``Keymap/shortcutLabel(for:)``, so a tooltip, a context menu and an
+/// empty state cannot name a key the app does not answer.
+extension Keymap {
+    /// A tooltip: the title, then the key in parentheses — "Undo complete
+    /// ‘Report’ (⌘Z)". The bare title when the action has no binding.
+    static func help(_ title: String, for action: AppAction) -> String {
+        hinted(title, shortcutLabel(for: action))
+    }
+
+    /// The same, for a chord that is not an ``AppAction`` — a note mark.
+    static func help(_ title: String, chord: KeyChord) -> String {
+        hinted(title, chord.display)
+    }
+
+    /// A menu row whose platform draws no key equivalent — a context menu,
+    /// whose keys are bare letters bound on the list rather than menu
+    /// equivalents. The key is set after the title, apart from it.
+    static func menuTitle(_ title: String, for action: AppAction) -> String {
+        let keys = shortcutLabel(for: action)
+        return keys.isEmpty ? title : "\(title)   \(keys)"
+    }
+
+    /// The sentence an empty state ends on: "Press ⌘N to capture." Empty when
+    /// the action has no binding, so the caller never prints "Press  to".
+    static func pressHint(_ action: AppAction, to purpose: String) -> String {
+        let keys = shortcutLabel(for: action)
+        return keys.isEmpty ? "" : "Press \(keys) to \(purpose)."
+    }
+
+    private static func hinted(_ title: String, _ keys: String) -> String {
+        keys.isEmpty ? title : "\(title) (\(keys))"
+    }
+}
+
+// MARK: - Chords that are not app actions
+
+/// The handful of chords that belong to a control rather than to the app.
+///
+/// Held here so that `Keymap` stays the only place a chord is written down
+/// (Rule 2). None of them is an ``AppAction``: none can run from the palette.
+/// Quit is the platform's own command, which the Mac's app menu already lists
+/// and iOS does not have; the capture bar's Return commits the field it sits
+/// beside; and a note mark acts on the text under the caret of one editor.
+extension Keymap {
+    /// ⌘Q on the menu bar panel's own Quit button.
+    static let quit = KeyChord("q", [.command])
+
+    /// Return on the capture bar's Add button.
+    static let submitCapture = KeyChord(.returnKey)
+
+    /// The note editor's formatting keys — the table in
+    /// `docs/08-features/keyboard.md` §Note editor.
+    static func chord(for mark: NoteMark) -> KeyChord {
+        switch mark {
+        case .bold: KeyChord("b", [.command])
+        case .italic: KeyChord("i", [.command])
+        case .underline: KeyChord("u", [.command])
+        case .strike: KeyChord("x", [.command])
+        case .code: KeyChord("e", [.command])
+        }
     }
 }

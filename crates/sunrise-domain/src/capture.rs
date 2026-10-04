@@ -133,6 +133,10 @@ pub fn parse(
     let words: Vec<&str> = input.split_whitespace().collect();
     let mut i = 0usize;
     while i < words.len() {
+        // Every arm below consumes at least the word it matched, so the cursor
+        // strictly advances each turn. Asserted rather than assumed: a cursor
+        // that stops advancing is otherwise noticed only by the wall clock.
+        let start = i;
         let w = words[i];
         let (tag, rest) = split_tag(w);
         match tag {
@@ -194,6 +198,7 @@ pub fn parse(
                 i += 1;
             }
         }
+        debug_assert!(i > start, "capture::parse cursor did not advance");
     }
 
     draft.title = title_words.join(" ");

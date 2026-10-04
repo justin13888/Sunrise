@@ -1,0 +1,380 @@
+{
+  "sourceLanguage": "en",
+  "strings": {
+    "apple.devices.cancel": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cancel"
+          }
+        }
+      }
+    },
+    "apple.devices.done": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Done"
+          }
+        }
+      }
+    },
+    "apple.devices.empty": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No devices yet."
+          }
+        }
+      }
+    },
+    "apple.devices.gated_reason": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This %1$@ has itself been removed from the account, so the account discards its removals of other devices. %2$@ is still current everywhere and still receives new keys, and this removal tells the relay nothing."
+          }
+        }
+      }
+    },
+    "apple.devices.gated_remedy": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Remove it from a device the account still trusts. The request is kept, not discarded, and is reconsidered whenever another removal arrives."
+          }
+        }
+      }
+    },
+    "apple.devices.gated_title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ was NOT removed."
+          }
+        }
+      }
+    },
+    "apple.devices.identity_key": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This %1$@ holds the account identity key. Your recovery code is its only other copy: without one, losing this device destroys the key permanently, and no recovery feature added later can retrieve it."
+          }
+        }
+      }
+    },
+    "apple.devices.mark_admitted_after_revocation": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Joined after a device was removed. Usually that is just a device you added later; it is worth a look if it is not."
+          }
+        }
+      }
+    },
+    "apple.devices.mark_not_current": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Not active on this account — the identity that certified it is no longer the one in force. An honest device that has not caught up with a change yet looks the same."
+          }
+        }
+      }
+    },
+    "apple.devices.mark_read_bounded": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Removed earlier. The account no longer records that, so it shows as current — but it still receives no keys and reads nothing written since. Remove it again from a device you still trust."
+          }
+        }
+      }
+    },
+    "apple.devices.mark_removed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Removed. It reads nothing written since."
+          }
+        }
+      }
+    },
+    "apple.devices.mark_this_device": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This %1$@."
+          }
+        }
+      }
+    },
+    "apple.devices.reason_compromised": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Someone else got into it"
+          }
+        }
+      }
+    },
+    "apple.devices.reason_lost": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "I lost it"
+          }
+        }
+      }
+    },
+    "apple.devices.reason_retired": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No longer using it"
+          }
+        }
+      }
+    },
+    "apple.devices.reason_stolen": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "It was stolen"
+          }
+        }
+      }
+    },
+    "apple.devices.relay_pending": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The relay has NOT been told yet. That is queued and goes out on the next sync."
+          }
+        }
+      }
+    },
+    "apple.devices.relay_told": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The relay has been told."
+          }
+        }
+      }
+    },
+    "apple.devices.remove": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Remove"
+          }
+        }
+      }
+    },
+    "apple.devices.remove_confirm_message": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Every Stream key is rotated, so this device reads nothing written afterwards. It can still read what it already has — revocation is forward-only."
+          }
+        }
+      }
+    },
+    "apple.devices.remove_confirm_title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Remove %1$@?"
+          }
+        }
+      }
+    },
+    "apple.devices.remove_confirm_title_unnamed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Remove this device?"
+          }
+        }
+      }
+    },
+    "apple.devices.remove_ellipsis": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Remove…"
+          }
+        }
+      }
+    },
+    "apple.devices.removed_all_rotated": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Every Stream key was rotated, and the account identity with it."
+          }
+        }
+      }
+    },
+    "apple.devices.removed_some_unrotated": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%#@count@"
+          },
+          "substitutions": {
+            "count": {
+              "argNum": 1,
+              "formatSpecifier": "lld",
+              "variations": {
+                "plural": {
+                  "one": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "The account identity rotated, and every Stream key but one. That device may still read that Stream. This is a damaged row in this vault's storage, not something the removal can retry."
+                    }
+                  },
+                  "other": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "The account identity rotated, and every Stream key but %arg. That device may still read those. This is a damaged row in this vault's storage, not something the removal can retry."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "apple.devices.removed_title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Removed %1$@ from this account."
+          }
+        }
+      }
+    },
+    "apple.devices.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Devices"
+          }
+        }
+      }
+    },
+    "apple.devices.unnamed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unnamed device"
+          }
+        }
+      }
+    },
+    "apple.devices.unwound": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%#@count@"
+          },
+          "substitutions": {
+            "count": {
+              "argNum": 1,
+              "formatSpecifier": "lld",
+              "variations": {
+                "plural": {
+                  "one": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "The account no longer records a removal of one other device, because the device that removed it was itself removed. It is not back in — it receives no keys and reads nothing written since — but the account does not say it was removed. Remove it again from a device you still trust."
+                    }
+                  },
+                  "other": {
+                    "stringUnit": {
+                      "state": "translated",
+                      "value": "The account no longer records a removal of %arg other devices, because the device that removed them was itself removed. They are not back in — they receive no keys and read nothing written since — but the account does not say they were removed. Remove each of them again from a device you still trust."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "common.product_name": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sunrise"
+          }
+        }
+      }
+    }
+  },
+  "version": "1.0"
+}

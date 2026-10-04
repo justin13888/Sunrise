@@ -79,17 +79,21 @@ use thiserror::Error;
 
 mod attachment;
 mod block;
+mod chain;
+mod compaction;
 mod context;
 mod focus;
 mod identity;
 mod ids;
 mod lww;
+mod merge;
 mod notify;
 mod oplog;
 mod query;
 mod review;
 mod revocation;
 mod routine;
+mod snapshot;
 mod stream;
 mod sync;
 mod task;
@@ -101,8 +105,12 @@ mod tests;
 // resolving across this split. `META_STREAM` stays defined below; `hex_short`
 // moved to `ids` and is re-exported here at its old name.
 pub(crate) use self::attachment::read_attachment;
+pub use self::chain::ChainIntegrity;
+pub use self::compaction::{CompactionPolicy, CompactionReport};
 pub(crate) use self::ids::hex_short;
 use self::lww::LwwStamp;
+pub(crate) use self::revocation::{adopt_sponsor_read_bounds, read_bounds_for_pairing};
+pub use self::snapshot::{SnapshotApplied, SNAPSHOT_FORMAT_V};
 
 /// Vault-meta op-log stream id: 16 zero bytes.
 ///
@@ -150,14 +158,18 @@ const MAX_TREND_WEEKS: u32 = 104;
 /// vault cannot turn one keypress into a full-table sort.
 const FOCUS_PLAN_SCAN_CAP: u32 = 512;
 
-/// How far above this replica's live epoch an absorbed Stream key may sit.
+/// How far above the highest epoch this replica holds an absorbed Stream key
+/// may sit.
 ///
 /// `epoch` is a plain field of the signed envelope, so a member chooses it
-/// freely, and `current_epoch_tx` reads the live epoch as `MAX(epoch)`. Without
-/// a bound a single `key_envelope` at `u32::MAX` does two things at once:
+/// freely, and `mint_epoch` counts from the highest epoch held
+/// (`Keychain::max_epoch_tx`). Without a bound a single `key_envelope` at
+/// `u32::MAX` does two things at once:
 /// [`Keychain::mint_epoch`](crate::keychain::Keychain::mint_epoch) saturates,
-/// so rotation can never advance past it again, and every op this device seals
-/// from then on is sealed under a key only the sender holds — the victim goes
+/// so rotation can never advance past it again, and, from a sender this
+/// replica has not read-bounded, whose key `current_epoch_tx` adopts as live,
+/// every op this device seals from then on is sealed under a key only the
+/// sender holds — the victim goes
 /// dark to its own account, permanently, from one op.
 ///
 /// The window can be this tight because a legitimate epoch is *walked*, never
@@ -174,7 +186,7 @@ const FOCUS_PLAN_SCAN_CAP: u32 = 512;
 /// envelope still enters `ops`, and the op counts toward the contiguous prefix
 /// exactly like an applied one. Whether the cursor then moves past it is a
 /// question about the seqs *below* it and never about the refusal — see
-/// `crates/sunrise-core/src/engine/oplog.rs:916#upsert_sync_cursor`. Once it
+/// `crates/sunrise-core/src/engine/oplog.rs#upsert_sync_cursor`. Once it
 /// does, the relay will not re-send the op and nothing re-offers the key. Ops
 /// sealed under that `(stream, epoch)` therefore stay unreadable on this
 /// replica until the device is re-paired, which is what hands it every Stream
@@ -255,6 +267,17 @@ const DEFERRED_TOTAL_CAP: i64 = 4096;
 /// re-emits one on request. Keeping it is keeping ciphertext this device will
 /// never read. Thirty days is generous against every offline window a person
 /// actually has and still bounds a slow drip that never reaches either cap.
+///
+/// # Neither this nor the two caps bound `parked_ops`
+///
+/// An op of a kind this build does not know parks in `parked_ops` instead
+/// (`Engine::park_op`, issue #320), and that table has no TTL and no cap on
+/// purpose. Everything that justifies the three bounds above is false of it:
+/// its op verified and opened, so its epoch is not a free claim and its bytes
+/// are not ciphertext this device may never read; and it advanced the sync
+/// cursor, so the relay will never re-send it, and an evicted row would be an
+/// op lost rather than one fetched again. What bounds it is what bounds `ops`:
+/// only a member can write one.
 const DEFERRED_TTL_MS: u64 = 30 * 24 * 60 * 60 * 1000;
 
 /// Engine error. Maps to `CoreError::Engine` at the public API.
@@ -433,6 +456,13 @@ impl Engine {
     /// Storage failures reading the log.
     pub fn prime_hlc(&self, db: &Db) -> Result<(), EngineError> {
         let conn = db.conn();
+        // A compaction floor keeps the stamp of the op at its seq, which
+        // bounds every op it covers (ADR-0059). Compaction keeps each tip's
+        // row, but a floor a snapshot set may cover ops this replica never
+        // held, so the clock is primed from both.
+        if let Some(floor) = compaction::max_floor_hlc(conn)? {
+            self.hlc.prime(floor);
+        }
         let max_ms: Option<i64> = conn.query_row("SELECT MAX(ts_ms) FROM ops", [], |r| r.get(0))?;
         let Some(physical_ms) = max_ms.and_then(|v| u64::try_from(v).ok()) else {
             return Ok(());

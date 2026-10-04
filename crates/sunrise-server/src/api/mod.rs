@@ -27,6 +27,7 @@
 
 use crate::state::ServerState;
 
+pub mod account_deletion;
 pub mod accounts;
 pub mod auth;
 pub mod blobs;
@@ -36,6 +37,8 @@ pub mod health;
 pub mod meta;
 pub mod metrics;
 pub mod observe;
+pub mod pairing;
+pub mod ratelimit;
 pub mod signed;
 pub mod sync;
 #[cfg(test)]
@@ -54,7 +57,8 @@ pub fn document() -> kynos::Result<kynos::openapi::Document> {
     // them: `BodySize` contributes 413 to every operation whatever the limit
     // is, and an undocumented `Cors` contributes nothing either way. What would
     // vary is the numbers, and no number appears in the document.
-    router(&crate::ServerConfig::default()).openapi_as(kynos::openapi::SpecVersion::V3_2)
+    router(&crate::ServerConfig::default(), &crate::Metrics::new())
+        .openapi_as(kynos::openapi::SpecVersion::V3_2)
 }
 
 /// The router's type, interceptor stack included.
@@ -68,16 +72,23 @@ pub type ApiRouter = kynos::Router<
     kynos::middleware::catch_panic::Propagate,
     kynos::middleware::stack::Cons<
         kynos::middleware::cors::Cors,
-        kynos::middleware::stack::Cons<kynos::middleware::limits::BodySize, ()>,
+        kynos::middleware::stack::Cons<
+            kynos::middleware::limits::BodySize,
+            kynos::middleware::stack::Cons<ratelimit::Admission, ()>,
+        >,
     >,
 >;
 
 /// Build the typed router for every ported operation.
 ///
+/// `metrics` is the registry the HTTP observer records into. It is the
+/// context's own registry in every built service — an observer is not handed
+/// the context when the response is known, so it is given the registry here.
+///
 /// # Errors
 /// Returns kynos's build error when the router cannot be described — a route
 /// whose operations conflict, or a handler whose types do not resolve.
-pub fn router(config: &crate::ServerConfig) -> ApiRouter {
+pub fn router(config: &crate::ServerConfig, metrics: &crate::Metrics) -> ApiRouter {
     kynos::Router::<ServerState>::new()
         // Named, because the description is about to become a published
         // artefact that `spargen` reads: kynos's default `Info` is
@@ -92,7 +103,9 @@ pub fn router(config: &crate::ServerConfig) -> ApiRouter {
         .mount(kynos::routes![
             accounts::create,
             accounts::me,
-            accounts::recovery_blob
+            accounts::recovery_blob,
+            account_deletion::initiate,
+            account_deletion::delete
         ])
         .mount(kynos::routes![
             devices::list,
@@ -105,7 +118,8 @@ pub fn router(config: &crate::ServerConfig) -> ApiRouter {
             blobs::init,
             blobs::finalize,
             blobs::put_chunk,
-            blobs::fetch
+            blobs::fetch,
+            blobs::delete
         ])
         .mount(kynos::routes![
             sync::session,
@@ -114,7 +128,22 @@ pub fn router(config: &crate::ServerConfig) -> ApiRouter {
             sync::refresh,
             sync::events
         ])
+        .mount(kynos::routes![
+            pairing::send,
+            pairing::receive,
+            pairing::abort
+        ])
         .merge(operator_surface(config))
+        // Who the client is. Empty, nothing a request says about its own
+        // origin is believed and the socket peer is the client; the rate
+        // limiter below keys on whatever this resolves.
+        .trusted_proxies(kynos::http::forwarded::TrustedProxies::networks(
+            config.trusted_proxy_networks(),
+        ))
+        // First, so outermost: a flood is refused before `BodySize` reads a
+        // chunked body into memory to measure it. Covering every operation is
+        // also what puts `429` in every operation's description.
+        .intercept(ratelimit::Admission)
         // Configuring the limit and documenting that a limit exists are one
         // action here: `BodySize` contributes 413 to every operation it covers,
         // so an API cannot quietly reject payloads it claims to accept.
@@ -123,6 +152,7 @@ pub fn router(config: &crate::ServerConfig) -> ApiRouter {
         ))
         .intercept(cors(config))
         .observe(observe::RequestLog)
+        .observe(observe::HttpMetrics::new(metrics.clone()))
 }
 
 /// `/metrics`, mounted only where the documented contract allows serving it.
@@ -362,6 +392,9 @@ mod tests {
             "/api/v1/devices",
             "/api/v1/devices/{device_id}",
             "/api/v1/devices/push-tokens",
+            "/api/v1/pairing/send",
+            "/api/v1/pairing/receive",
+            "/api/v1/pairing/abort",
         ] {
             assert!(
                 v["paths"].get(path).is_some(),

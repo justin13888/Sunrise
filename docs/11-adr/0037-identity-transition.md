@@ -140,8 +140,12 @@ one integer comparison at each point of use and cannot drift.
 **3. Refuse a transition at apply time unless it succeeds the current head.**
 Tempting and wrong, for ADR-0034's reason. A transition naming an identity two
 links ahead is legitimate — the replica simply has not seen the intermediate one
-— and refusing it loses the op, because the relay does not redeliver. It is
-stored, and the fold ignores it until its predecessor arrives.
+— and refusing it writes no op row, so the sender's sync cursor stalls below it.
+The relay replays it on the next subscribe, but only while its log retains the
+frame (30 days or 256 MiB per channel, whichever evicts first); past that the op
+is lost. Until then every later op from that device is replayed with it, and the
+predecessor's arrival triggers no replay of its own. It is stored, and the fold
+ignores it until its predecessor arrives.
 
 **4. A per-transition `effective_at`, as key-rotation.md draws it.** Rejected
 for `DeviceRevokePayload`'s reasons, worse. See Context.
@@ -270,9 +274,16 @@ already know who it trusts; that is what makes `prev_sig` mean anything.
    thing to watch: an account whose creator is lost can revoke but cannot move
    its identity, and the way out of that is a recovery-code restore rather than
    anything in this ADR.
-2. **A relay-side write bound** ([#80](https://github.com/justin13888/Sunrise/issues/80)).
+2. ~~**A relay-side write bound**~~ **Done, conditionally** ([#80](https://github.com/justin13888/Sunrise/issues/80)).
    A revoked device that cannot upload cannot publish a cert, which bounds the
-   bypass before the fold ever sees it.
+   bypass before the fold ever sees it. `Command::RevokeDevice` queues a
+   durable intent the sync driver drains to
+   `DELETE /api/v1/devices/by-vault-id/{id}`, and the relay enforces it only
+   against a device-bound request: with `[auth] require_device_sig` at its
+   default `false` a revoked device that stops signing still uploads, so this
+   ADR's rotation remains the defence there
+   ([`key-rotation.md`](../03-crypto/key-rotation.md) §Implementation status
+   states all three conditions).
 3. **Sharing with peers outside the account.** `share_grant` is signed by the
    account identity, so a rotation invalidates every outstanding grant.
    key-rotation.md's step 5 says to re-emit them; nothing implements sharing

@@ -89,6 +89,8 @@ extension StreamColor {
         case .indigo: SunriseTokens.Stream.Light.indigo
         case .violet: SunriseTokens.Stream.Light.violet
         case .pink: SunriseTokens.Stream.Light.pink
+        // A colour a newer client wrote: drawn as the core's fallback, slate.
+        case .unknown: SunriseTokens.Stream.Light.slate
         }
     }
 
@@ -102,6 +104,7 @@ extension StreamColor {
         case .indigo: SunriseTokens.Stream.Dark.indigo
         case .violet: SunriseTokens.Stream.Dark.violet
         case .pink: SunriseTokens.Stream.Dark.pink
+        case .unknown: SunriseTokens.Stream.Dark.slate
         }
     }
 

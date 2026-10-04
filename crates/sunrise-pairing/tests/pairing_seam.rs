@@ -144,6 +144,7 @@ fn grant(request: &PairingRequest, signing: &IdentitySigningKeyPair) -> PairingG
             .expect("cbor"),
         vault_root: VAULT_ROOT,
         stream_keys: stream_keys(3, 2),
+        read_bounds: std::collections::BTreeSet::new(),
     }
 }
 

@@ -9,7 +9,10 @@
 //! new attachment. Which is why this module has an upsert and a read and no
 //! update-row at all.
 
-use super::ids::{blob16, blob32, decode_unknowns, encode_unknowns, ms_to_ts, require_kind};
+use super::ids::{
+    blob16, blob32, decode_unknowns, encode_unknowns, extra_over_opaque, ms_to_ts, require_kind,
+    ExtraTable,
+};
 use super::lww::LwwStamp;
 use super::task::read_task;
 use super::{Engine, EngineError};
@@ -161,6 +164,12 @@ pub(super) fn upsert_attachment_row(
     a: &Attachment,
     lww: &LwwStamp,
 ) -> rusqlite::Result<()> {
+    let extra_blob = extra_over_opaque(
+        tx,
+        ExtraTable::Attachments,
+        &a.id.bytes()[..],
+        encode_unknowns(&a.unknown)?,
+    )?;
     tx.execute(
         "INSERT INTO attachments
          (id, parent_kind, parent_id, filename, mime_type, size_bytes,
@@ -198,7 +207,7 @@ pub(super) fn upsert_attachment_row(
             &a.content_hash[..],
             &a.ciphertext_hash[..],
             a.deleted as i64,
-            encode_unknowns(&a.unknown)?,
+            extra_blob,
             a.created_at.as_millisecond(),
             a.updated_at.as_millisecond(),
             lww.hlc.physical_ms as i64,

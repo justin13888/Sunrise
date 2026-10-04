@@ -342,10 +342,22 @@ extension StreamColor {
         case .indigo: "Indigo"
         case .violet: "Violet"
         case .pink: "Pink"
+        // A colour a newer client wrote; it is kept, not renamed.
+        case .unknown: "Unknown"
         }
     }
 
     static let all: [StreamColor] = [
         .slate, .rose, .amber, .emerald, .sky, .indigo, .violet, .pink
     ]
+
+    /// The picker's choices: the palette, plus the colour a stream already
+    /// holds when a newer client wrote one this build does not know — so
+    /// saving the sheet without touching it keeps that colour.
+    static func options(holding held: StreamColor?) -> [StreamColor] {
+        if let held, case .unknown = held {
+            return all + [held]
+        }
+        return all
+    }
 }

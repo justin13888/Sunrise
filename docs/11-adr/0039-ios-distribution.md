@@ -78,8 +78,10 @@ Read from the tree rather than from a plan:
 
 - **`SunriseiOS` is a full application target** (`apps/apple/project.yml`),
   iPhone and iPad, sharing `Sunrise/` with the Mac and adding `iOS/`.
-- **`SunriseiOSTests` and `SunriseiOSUITests` both run in CI on every pull
-  request**, and ADR-0028 rests on that: iOS is the only Apple product where CI
+- **`SunriseiOSTests` and `SunriseiOSUITests` both run on every change that
+  reaches the app** — locally through `mise run ios-app` before merge, and in
+  CI on the push to `master` (ADR-0028, revisit trigger 2, second amendment) —
+  and ADR-0028 rests on that: iOS is the only Apple product where a test run
   proves a tap reaches the core.
 - **`mise run ios-app` and `ios-run` build and launch it on a simulator**, with
   `CODE_SIGN_IDENTITY: "-"` — ad-hoc signing, which

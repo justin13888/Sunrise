@@ -110,12 +110,21 @@ pub enum ErrorCode {
     /// neither ack a batch nor prove a replay was complete. Transient: the
     /// client keeps the op and retries.
     RelayStorageUnavailable,
+    /// A pairing rendezvous route named no live session under that `pair_id`
+    /// for the caller's account — never opened, expired, aborted, overflowed,
+    /// or another account's. Permanent: the pairing restarts from a new code.
+    RelayPairSessionGone,
 
     // Integrations
     /// Integration OAuth refresh failed; user must re-auth.
     IntegrationReauthRequired,
     /// External provider returned 429.
     IntegrationRateLimited,
+
+    // Admission
+    /// The relay refused the request under its own rate-limit policy: a `429`
+    /// carrying `Retry-After`. Transient — wait at least that long and retry.
+    RateLimited,
 
     // Internal
     /// Catastrophic internal error (e.g., panic caught at FFI boundary).
@@ -164,8 +173,10 @@ impl ErrorCode {
             Self::CapabilityRequiredMissing => "CAPABILITY_REQUIRED_MISSING",
             Self::RelayGrantRevoked => "RELAY_GRANT_REVOKED",
             Self::RelayStorageUnavailable => "RELAY_STORAGE_UNAVAILABLE",
+            Self::RelayPairSessionGone => "RELAY_PAIR_SESSION_GONE",
             Self::IntegrationReauthRequired => "INTEGRATION_REAUTH_REQUIRED",
             Self::IntegrationRateLimited => "INTEGRATION_RATE_LIMITED",
+            Self::RateLimited => "RATE_LIMITED",
             Self::FatalInternal => "FATAL_INTERNAL",
         }
     }
@@ -209,13 +220,15 @@ impl ErrorCode {
             | Self::DocSchemaTooOld
             | Self::DocSchemaTooNew
             | Self::CapabilityRequiredMissing
-            | Self::RelayGrantRevoked => ErrorKind::Permanent,
+            | Self::RelayGrantRevoked
+            | Self::RelayPairSessionGone => ErrorKind::Permanent,
             // Transient
             Self::AuthTokenExpired
             | Self::StorageVaultLocked
             | Self::SyncNetworkUnavailable
             | Self::RelayStorageUnavailable
-            | Self::IntegrationRateLimited => ErrorKind::Transient,
+            | Self::IntegrationRateLimited
+            | Self::RateLimited => ErrorKind::Transient,
         }
     }
 
@@ -230,12 +243,13 @@ impl ErrorCode {
                 | Self::SyncNetworkUnavailable
                 | Self::RelayStorageUnavailable
                 | Self::IntegrationRateLimited
+                | Self::RateLimited
         )
     }
 
     /// Iteration over every code variant — useful for completeness tests.
     #[must_use]
-    pub const fn all() -> [Self; 38] {
+    pub const fn all() -> [Self; 40] {
         [
             Self::InternalUnknownCode,
             Self::ValidationInvalidTitle,
@@ -272,8 +286,10 @@ impl ErrorCode {
             Self::CapabilityRequiredMissing,
             Self::RelayGrantRevoked,
             Self::RelayStorageUnavailable,
+            Self::RelayPairSessionGone,
             Self::IntegrationReauthRequired,
             Self::IntegrationRateLimited,
+            Self::RateLimited,
             Self::FatalInternal,
         ]
     }

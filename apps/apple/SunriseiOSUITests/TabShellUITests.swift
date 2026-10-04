@@ -183,8 +183,9 @@ final class TabShellUITests: SunriseUITestCase {
         // constrains the write rather than a label the sheet drew — and it has
         // no window to miss, because the row is never taken away again, where
         // both of the sheet's labels are states the view drops. The negative
-        // case — a refusal actually observed — needs a seam that can fail a
-        // commit on demand, and is issue #295.
+        // case — a refusal actually observed — is
+        // `testARefusedCaptureShowsTheFailureAndKeepsTheLine` below, which
+        // fails the commit on demand through the harness.
 
         // Cancel takes the sheet and its keyboard away together, which is what
         // makes the tab bar tappable again.
@@ -209,6 +210,61 @@ final class TabShellUITests: SunriseUITestCase {
         XCTAssertTrue(
             app.staticTexts["Book the ferry"].appears(within: 10),
             "what the sheet captured is in the Inbox"
+        )
+    }
+
+    /// A refused capture is **shown**, and the line is kept.
+    ///
+    /// The positive half of `quick-capture.failure`, which nothing else
+    /// asserts is ever drawn (#295). Without it, a refactor that stopped
+    /// rendering the label would leave every absence of it looking like an
+    /// accepted capture.
+    ///
+    /// The refusal comes from `-sunrise-ui-test-fail-capture`, which makes
+    /// `AppSurfaces.commitCapture` throw before it reaches the core — the
+    /// same seam a real refusal comes back through, so the sheet's catch arm
+    /// is the code under test and nothing here is simulated past it.
+    ///
+    /// Unlike the confirmation, this label is durable: the view drops it only
+    /// on the next successful commit. So a wait on its existence has no
+    /// window to miss, and cannot be the flake #277 removed.
+    func testARefusedCaptureShowsTheFailureAndKeepsTheLine() throws {
+        relaunch(adding: ["-sunrise-ui-test-fail-capture"])
+        createVault()
+
+        activate(app.tabBars.buttons["Calendar"], named: "the Calendar tab")
+        activate(app.buttons["capture"], named: "Calendar's Capture button")
+
+        let field = app.textFields["quick-capture.field"]
+        activate(field, named: "the capture sheet's field")
+        field.typeText("Book the ferry")
+
+        let add = app.buttons["quick-capture.add"]
+        XCTAssertTrue(
+            waitUntil(timeout: 10) { add.isEnabled },
+            "the capture preview enables Add"
+        )
+        activate(add, named: "the capture sheet's Add button")
+
+        // The static text, not any element with the identifier. The failure
+        // is a `Label`, and iOS splits that into an image and a text which
+        // both inherit the identifier (as with the Inbox row above); the
+        // image's accessibility label is the symbol's, not the message.
+        let failure = app.staticTexts["quick-capture.failure"].firstMatch
+        XCTAssertTrue(
+            failure.waitForExistence(timeout: 10),
+            "a refused capture draws quick-capture.failure"
+        )
+        XCTAssertTrue(
+            failure.label.hasPrefix("Not saved:"),
+            "the refusal says the line was not saved, got “\(failure.label)”"
+        )
+        // The sheet's other promise on a refusal: the user's words go back
+        // into the field rather than vanishing with the failed write.
+        XCTAssertEqual(
+            field.value as? String,
+            "Book the ferry",
+            "the refused line is back in the field"
         )
     }
 }

@@ -49,17 +49,18 @@ What exists today:
   A simulator runner needs no change to the machine's security posture, so iOS is
   the platform where a tap is proved to reach the core on every build.
 - CI: an `ios-app` job on `macos-26`, downstream of the `apple-xcframework`
-  job that builds the framework it links. It runs whenever CI runs, except on
-  a pull request that touches nothing the Apple apps are built from — no Rust,
-  no manifest, no `apps/apple/**`, no `mise.toml` — which the `changes` job
-  decides. A skipped job reports a check GitHub counts as successful, so the
-  required context is still satisfied. Four triggers
+  job that builds the framework it links. It runs on every trigger except
+  `pull_request`, where it is skipped. A skipped job reports a check GitHub
+  counts as successful, so the required context is still satisfied. Before
+  merge, the same `mise run ios-app` runs locally on a Mac instead (ADR-0028,
+  clause 2 of "What would force revisiting this"). Four triggers
   (`.github/workflows/ci.yml:3-17`), one of them branch-filtered: `push` on
   `master`. `pull_request` carries no `branches:` key, deliberately — that key
   filters on the *base* branch, so constraining it meant a pull request stacked
   on another pull request's branch ran nothing at all. Every pull request is
-  gated now, whatever it targets. The nightly schedule is constrained too, but
-  by GitHub rather than by this file: a `schedule` fires on the repository's
+  gated by the rest of the workflow, whatever it targets. The nightly schedule
+  is constrained too, but by GitHub rather than by this file: a `schedule`
+  fires on the repository's
   **default branch** alone, and that is `master`, so the 04:00 nightly builds
   `master` and nothing else, and no `--ref` can change it.
   `workflow_dispatch` is the one that will build any ref on request:
@@ -219,9 +220,12 @@ would have had to catch a travelling token, neither of which does:
   it mints carries the device claim of the *original* authorization.
 - **The relay checks that claim only when a device signature is presented.**
   `api::signed::verify_bytes` returns before the comparison when the
-  `X-Sunrise-Device` headers are absent and `require_device_sig` is off — which
-  is the default, and is *required* to be off in the single-tenant self-host
-  mode [ADR-0027](../11-adr/0027-v1-self-host-first.md) makes the only shape.
+  `X-Sunrise-Device` headers are absent and `require_device_sig` is off. It is
+  *required* to be off in the single-tenant self-host mode
+  [ADR-0027](../11-adr/0027-v1-self-host-first.md) makes the only shape, and it
+  is off on a multi-tenant relay whose operator set `require_device_sig =
+  false`. A relay with an OIDC issuer and the flag left unset requires the
+  binding, and there an unsigned refresh-minted token is refused.
 
 So a refresh token lifted out of an encrypted backup opens a live session
 against the account from hardware the account never authorized. What it reaches
@@ -238,7 +242,7 @@ the user is already standing in front of.
 registration, per vault, in the same class — so on iOS a restore onto new
 hardware leaves neither the vault root nor the device id behind, and the two
 halves of the binding stay consistent. The argument for the Keychain over
-`UserDefaults` or the vault, and the fact that the app cannot yet register
+`UserDefaults` or the vault, and the two routes by which the app registers
 itself, are in
 [`desktop.md`](./desktop.md#device-binding); the store is shared code and the
 reasoning does not differ by platform.

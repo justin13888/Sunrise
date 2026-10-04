@@ -9,9 +9,10 @@ The Sunrise server is a thin, untrusted-for-content relay. It is an open-source 
 > **Implementation status.** What `crates/sunrise-server` builds today is the
 > self-host single-binary shape and nothing else: `rusqlite` against one SQLite
 > file (`store/`) and blobs on the local filesystem (`sunrise_storage::BlobStore`).
-> There is **no** Postgres, S3, Redis, pub/sub, or push delivery anywhere in
-> `crates/` — no `sqlx`, `aws-sdk-s3`, `apns2`, `fcm`, or `web-push` appears in
-> any `Cargo.toml`. The managed and scale-out sections below are design targets;
+> There is **no** Postgres, S3, Redis, or pub/sub anywhere in `crates/` — no
+> `sqlx` or `aws-sdk-s3` appears in any `Cargo.toml` — and push delivery is
+> APNs only, over the `hyper` client already in the tree
+> ([`push-notifications.md`](./push-notifications.md)). The managed and scale-out sections below are design targets;
 > each unbuilt piece is marked. Two accepted ADRs moved this document's ground
 > and both have landed:
 > [ADR-0021](../11-adr/0021-kynos-openapi-server.md) replaced the hand-written
@@ -72,8 +73,8 @@ Stateless except for:
 | Server core | Rust, `kynos` over `hyper` ([ADR-0021](../11-adr/0021-kynos-openapi-server.md)); the sync stream is `kynos::response::stream::sse`, and the routing, the security schemes and the OpenAPI 3.2 document all come off the handlers | yes |
 | DB access | `rusqlite` (workspace feature set `bundled-sqlcipher`, `blob`, `trace`) | yes |
 | Object storage | `sunrise_storage::BlobStore` — chunk files on the local filesystem | yes |
-| Push | `push::PushProvider` trait plus `push::LoggingProvider`, which increments a counter and returns `Ok(())` | trait only |
-| HTTPS client (JWKS/discovery) | `hyper` + `hyper-rustls` | yes |
+| Push | `push::PushProvider` trait; `push::ApnsProvider` (HTTP/2, `.p8` provider tokens) behind the `push::Dispatcher` queue. FCM and Web Push are not built | APNs only |
+| HTTPS client (JWKS/discovery, APNs) | `hyper` + `hyper-rustls` | yes |
 | Containerization | OCI image, distroless base | no |
 
 The relay links **no** `sunrise-crypto`. Its only view into an op is

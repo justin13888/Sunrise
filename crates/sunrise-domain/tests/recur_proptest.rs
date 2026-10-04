@@ -109,6 +109,7 @@ fn rrule_strategy() -> impl Strategy<Value = RRule> {
                     count,
                     until,
                     wkst,
+                    unknown: sunrise_domain::Unknowns::new(),
                 }
             },
         )

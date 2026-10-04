@@ -176,3 +176,35 @@ final class RecoveryCodeModel {
         somewhere you'll find it years from now.
         """
 }
+
+extension SessionModel {
+    /// Why a recovery blob could not be sealed and uploaded yet.
+    ///
+    /// Each case is something the user can fix, and each says what: none of
+    /// them means the vault is broken, and all of them mean the account key
+    /// still has no second copy.
+    enum RecoverySetupError: LocalizedError, Equatable {
+        case vaultClosed
+        case notConfigured
+        case signedOut
+
+        var errorDescription: String? {
+            switch self {
+            case .vaultClosed:
+                "The vault closed before recovery could be set up."
+            case .notConfigured:
+                """
+                Sunrise needs a relay address and your account email before it \
+                can store your recovery blob. Add them in Settings, then set \
+                recovery up again.
+                """
+            case .signedOut:
+                """
+                Sign in first. Your recovery blob is stored on the relay under \
+                your account, and the relay will not take it from a device it \
+                cannot identify.
+                """
+            }
+        }
+    }
+}

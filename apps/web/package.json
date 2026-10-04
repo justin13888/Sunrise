@@ -10,6 +10,7 @@
         "typecheck": "tsc --noEmit"
     },
     "dependencies": {
+        "@sunrise/i18n": "workspace:*",
         "@sunrise/ui": "workspace:*",
         "@sunrise/ui-tokens": "workspace:*",
         "react": "^18.3.1",

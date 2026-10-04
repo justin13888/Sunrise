@@ -56,11 +56,11 @@ struct KeychainMigrationFallbackTests {
     /// whose value `load` has to consume — a caller that discards it and reads
     /// the destination instead sees nothing and reports a lost vault.
     ///
-    /// Its last assertion is one of the **five** an entitlement turns false: with
-    /// a team the destination is reachable, the migration completes, and the
-    /// source is deleted. `KeychainDomainTests`'
-    /// `theProbeAnswersWhatThisBuildCanActuallyReach` lists the five and what is
-    /// done with them.
+    /// Its last assertion is one of the **five** an entitled host turns false:
+    /// there the destination is reachable, the migration completes, and the
+    /// source is deleted. A team alone does not, because tests run on Debug.
+    /// `KeychainDomainTests`' `theProbeAnswersWhatThisBuildCanActuallyReach`
+    /// lists the five and what is done with them.
     @Test
     func aDestinationThisBuildCannotReachFallsBackToTheSource() throws {
         let pair = crossDomainPair()
@@ -112,10 +112,12 @@ struct KeychainMigrationFallbackTests {
     /// true form of it on a build that cannot reach `.dataProtection`: the
     /// destination write is refused first with `errSecMissingEntitlement`, so
     /// the cross-domain delete is never reached and the case would pass without
-    /// exercising anything. It is skipped on every build this repository can
-    /// make today and becomes live the hour an entitlement lands. That is a
-    /// different handoff from the five assertions an entitlement turns false,
-    /// which are rewritten rather than guarded; this one only starts running.
+    /// exercising anything. It is skipped on every Debug build, which is every
+    /// build a test runs in, and becomes live only on a test run hosted by an
+    /// entitled build; the Release entitlement alone does not reach it. That is
+    /// a different handoff from the five assertions an entitled host turns
+    /// false, which are extended rather than guarded; this one only starts
+    /// running.
     @Test(.enabled(if: KeychainDomain.current == .dataProtection))
     func theMigrationsDestinationWriteDoesNotTakeTheSourceWithIt() throws {
         let pair = crossDomainPair()
@@ -159,7 +161,7 @@ struct KeychainMigrationFallbackTests {
     /// cross-domain delete can be observed running after its own domain has
     /// already refused.
     ///
-    /// One of the **five** an entitlement turns false, and the one that is three
+    /// One of the **five** an entitled host turns false, and the one that is three
     /// assertions rather than one: every `errSecMissingEntitlement` expectation
     /// below flips. `KeychainDomainTests`'
     /// `theProbeAnswersWhatThisBuildCanActuallyReach` lists the five and what is
@@ -287,8 +289,8 @@ struct KeychainMigrationFallbackTests {
     /// a live refresh token behind a Sign out the user was told had worked.
     /// Both are attempted; the refusal is still raised afterwards.
     ///
-    /// Its first assertion is one of the **five** an entitlement turns false: with
-    /// a team this domain's own delete succeeds and nothing is raised.
+    /// Its first assertion is one of the **five** an entitled host turns false:
+    /// there this domain's own delete succeeds and nothing is raised.
     /// `KeychainDomainTests`'
     /// `theProbeAnswersWhatThisBuildCanActuallyReach` lists the five and what is
     /// done with them.
@@ -329,8 +331,8 @@ struct KeychainMigrationFallbackTests {
     /// refusal `theUnreachableDomainRefusesMutationsAndAnswersReadsAsEmpty`
     /// measures on `SecItemUpdate` and `SecItemAdd`.
     ///
-    /// Its throws-expectation is one of the **five** an entitlement turns false:
-    /// with a team the write is not refused at all. `KeychainDomainTests`'
+    /// Its throws-expectation is one of the **five** an entitled host turns
+    /// false: there the write is not refused at all. `KeychainDomainTests`'
     /// `theProbeAnswersWhatThisBuildCanActuallyReach` lists the five and what is
     /// done with them.
     @Test

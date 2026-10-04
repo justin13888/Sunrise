@@ -76,8 +76,8 @@ docstring is where it is written down.** No ADR carries it: `docs/11-adr/`
 records architecture decisions and a lint grammar is not one. The two other
 places a maintainer meets this gate — `mise.toml`'s `citations` task and the
 `citations` job in `.github/workflows/ci.yml` — state the same rule in short,
-and point here. If the grammar changes, those three move together or the
-records lag the code, which is the exact defect this gate was built to catch.
+and point here. If the grammar or a failure it reports changes, all three
+move together or the records lag the code: the defect this gate catches.
 
 Three things the suffix deliberately does, each of them a decision rather than
 a detail:
@@ -127,6 +127,43 @@ a detail:
   idiom, not an edge shape. Cite the `struct`, `enum` or `trait`, or the `fn`
   inside the block.
 
+A single line inside the item's own doc comment
+----------------------------------------------
+
+Containment has one blind spot this gate can close without an opinion about
+prose. A citation written for an item's *declaration* — "see
+`oplog.rs:874#upsert_sync_cursor`" — stays inside the item when paragraphs are
+added to the item's doc comment, because the doc run is part of the span; the
+signature moves down and the cited line is left sitting on whatever doc
+sentence now occupies it. Reviewing #264 that was a section heading three
+sections away from what the citing sentence claimed, green on this gate.
+
+So a `path:LINE#symbol` citation — one line, not a range — **fails when that
+line is a `///` line of the named item's doc comment other than its first**,
+in every declaration of the name that contains it. The summary line is exempt
+because citing it is citing the item; an attribute line is exempt because a
+route string inside a `#[kynos::delete(...)]` is a deliberate thing to cite, and
+the one attribute citation in the tree is one. The declaration and the body
+are what containment already covered.
+
+The waiver is written in the citation, not kept in a list: **a range is read as
+a citation of the passage it covers**, so the deliberate case — citing one
+sentence of a doc run, which this repository does — is `:923-926#item`, or
+`:916-916#item` where the sentence fits on one line. A list keyed on line
+numbers would have to be edited every time the target file moved, and would
+still pass the drift it was meant to catch.
+
+Measured before it was built, which is what decided the rule's shape (#299).
+Of the 120 line-bearing `#symbol` citations into Rust in this tree, eight
+landed wholly inside an item's leading doc-and-attribute run. Six were
+deliberate — four ranges over a doc passage, a route attribute, and a test's
+summary line — and two were single lines that had drifted: one written for
+`upsert_sync_cursor`'s signature (`65749614` repointed it there) and one
+written for `ops_run_end`'s `start` parameter, each left on a doc line by
+later growth. The rule as stated flags exactly those two and none of the six.
+A rule over *every* line of the run would have flagged all eight, with three
+in four of them a false failure, and is why the unit is a single line.
+
 What it does **not** buy: containment is not aboutness. A citation naming the
 wrong symbol, or the right symbol for the wrong reason, passes — ADR-0034's step
 b citation would have passed had it named `publish_own_cert`. The step from "the
@@ -136,8 +173,33 @@ before the repair, with each citation carrying the symbol the repair gives it,
 this catches **five** of the eight. The three it misses are the three whose line
 had drifted *within* the item it names — `:280` is still inside
 `emit_key_envelopes`, `:936-979` is still inside a 700-line `apply_control_op`,
-and `:381` is inside `backfill_key_envelopes`'s own doc run. Containment is a
-weaker test the larger the item, and nothing line-based fixes that.
+and `:381` is inside `backfill_key_envelopes`'s own doc run. The doc-run rule
+above reaches the last of those only if its line is not the summary; the first
+two drifted within a body, and containment is a weaker test the larger the
+item. Nothing line-based fixes that, and nothing here reads whether the
+citing sentence drops a guard the cited span holds — #299's second shape, a
+sentence stating unconditionally what the span makes conditional. That is
+aboutness, and it is a reviewer's to read.
+
+Conventions this gate depends on
+--------------------------------
+
+Two rules keep line-bearing citations honest where no check reaches. Neither
+is enforced; both are written here because this docstring is where the
+citation convention lives.
+
+* **`crates/sunrise-core/src/engine/tests.rs` is append-only.** Documents cite
+  its tests by line, and a unit inserted among them moves every citation below
+  it. A new test goes below every existing one, never between two. The same
+  holds for any file a document cites densely by line: add at the end, or add
+  a `#symbol` to the citations the insertion moves.
+* **Never reflow unrelated prose to hold a line where a citation points.** When
+  an edit moves an item a citation names, repoint the citation, or drop its
+  line and keep the `#symbol`. Reflowing lines above the item for no editorial
+  reason, so its signature stays on the cited number, makes prose layout a
+  function of a line number somewhere else in the tree — the fragility the
+  `#symbol` suffix exists to remove — and hides the drift this gate would
+  otherwise report.
 
 Anchors
 -------
@@ -188,9 +250,11 @@ resolvable Rust item name, when the named item is not declared in the resolved
 file, when **any** `#suffix` is cited on a directory — whatever the path's
 extension and whatever the suffix spells, because a directory declares no items
 under any grammar and has no lines either, which is the same ground the bare
-`dir:702` fails on — and when the cited line falls outside every span of the
-named item. Every failure is reported with the citing file and its line; the
-gate exits 1 if any failed and 0 with a count when clean.
+`dir:702` fails on — when the cited line falls outside every span of the
+named item, and when a single cited line is a doc line below the named item's
+summary in every span that contains it. Every failure is reported with the
+citing file and its line; the gate exits 1 if any failed and 0 with a count
+when clean.
 
 What is deliberately not checked
 --------------------------------
@@ -464,6 +528,14 @@ LINE_FRAGMENT = re.compile(r"^L[0-9]+(?:C[0-9]+)?(?:-L[0-9]+(?:C[0-9]+)?)?$")
 # `impl`s it is now a red check, and a module cited by its own name has no
 # target at all. Both spellings say less than they appear to, which is the
 # whole reason they went.
+#
+# `const` is in the alternation as well as in the qualifier run above it, and
+# the two are different items. `const fn f` is a function: the qualifier takes
+# the `const` and `kind` is `fn`. `pub const LIMIT: u64 = …;` is a constant: the
+# qualifier cannot be followed by `LIMIT`, so it backs off and `kind` is
+# `const`. A top-level constant is the item an ADR most often cites by value —
+# "10 MiB (`blob_sync.rs:164`)" — and it was the one declaration a `#LIMIT`
+# suffix could not name, which left exactly those citations to rot unchecked.
 SYMBOL_DECL = (
     r"^(?P<indent>[ \t]*)"
     r"(?:pub(?:\([^)]*\))?[ \t]+)?"
@@ -471,7 +543,7 @@ SYMBOL_DECL = (
     r"(?:async[ \t]+)?"
     r"(?:unsafe[ \t]+)?"
     r"(?:const[ \t]+)?"
-    r"(?:fn|struct|enum|trait|type|static|union)[ \t]+"
+    r"(?P<kind>fn|struct|enum|trait|type|static|union|const)[ \t]+"
     r"{name}\b"
 )
 
@@ -510,10 +582,6 @@ ALLOWED: dict[tuple[str, str], str] = {
         "docs/05-sync/transports.md",
         "crates/sunrise-server/src/ws.rs",
     ): "the sentence is that this module was deleted with the WebSocket; it names what is gone",
-    (
-        "docs/06-server/observability.md",
-        "crates/sunrise-server/tests/metric-label-safety.rs",
-    ): "the page says in bold that this specified CI test does not exist",
     (
         "docs/06-server/observability.md",
         "tests/span-redaction.rs",
@@ -718,8 +786,39 @@ def attribute_opener(lines: list[str], index: int) -> int | None:
     return None
 
 
+@dataclass(frozen=True)
+class Item:
+    """One declaration of a named Rust item, as `symbol_items` walks it.
+
+    `start` and `end` are the span containment is tested against. The two
+    fields between them are what `classify` needs for the doc-run check:
+    `declaration` is the line the `fn`, `struct` or `const` keyword is on, and
+    `doc` the `///` lines of the run above it, in order, so `doc[0]` is the
+    item's summary line. All 1-based.
+    """
+
+    start: int
+    declaration: int
+    end: int
+    doc: tuple[int, ...]
+
+
+# A `///` doc line and nothing else: `////` is an ordinary comment. The same
+# lookahead `MARKER` carries, and for the same reason.
+DOC_LINE = re.compile(r"^[ \t]*///(?!/)")
+
+
 def symbol_span(path: str, name: str) -> list[tuple[int, int]]:
     """Every span in a Rust file that declares `name`, doc comment included.
+
+    The `(start, end)` pairs of `symbol_items`, which owns the walk and says
+    how each end is found.
+    """
+    return [(item.start, item.end) for item in symbol_items(path, name)]
+
+
+def symbol_items(path: str, name: str) -> list[Item]:
+    """Every declaration of `name` in a Rust file, doc comment included.
 
     Returns a list rather than the one span the first draft of this reached
     for, because a name is declared more than once in a single file all over
@@ -756,7 +855,54 @@ def symbol_span(path: str, name: str) -> list[tuple[int, int]]:
     braces balance on the declaration ends there. A span whose close is never
     found runs to the end of the file: over-broad, so it can only pass a
     citation, never fail one.
+
+    A `const` or `static` is the one item whose *initialiser* can hide both
+    rules from the walk, and it is read through `code` for that reason. Its
+    value can be a string literal spanning lines — `relay_log.rs`'s `SCHEMA`
+    is a raw string of SQL whose every statement ends in `;` — and a walk that
+    reads those semicolons ends the item at its first `CREATE TABLE`, which
+    red-lines a citation of the table the ADR is actually about. Its value can
+    also be a struct literal, which closes on `};` rather than on a `}` of its
+    own, so the closing-brace rule misses it and the span runs on through
+    every item below until some other `}` sits at the same indent. For those
+    two kinds only, the rules read each line with its string contents and any
+    trailing `//` comment removed, and `};` closes the item as `}` does. Every
+    other kind is walked exactly as before, character for character, because
+    a `fn` body is where a stray `'"'` or an odd quote in a comment would
+    flip the string state and widen spans that are correct today.
     """
+
+    def code(line: str, quoted: bool) -> tuple[str, bool]:
+        """`line` outside string literals, and whether one is still open after it.
+
+        Line-based like the rest of this walk: `quoted` carries a string that
+        opened on an earlier line. A backslash escapes the next character
+        inside a string, and a `'"'` char literal is not a quote. A raw string
+        that holds a `"` of its own is the shape this misreads, and none of
+        the constants this gate resolves has one.
+        """
+        kept: list[str] = []
+        cursor = 0
+        while cursor < len(line):
+            char = line[cursor]
+            if quoted:
+                if char == "\\":
+                    cursor += 2
+                    continue
+                if char == '"':
+                    quoted = False
+            elif char == '"':
+                quoted = True
+            elif line.startswith("'\"'", cursor):
+                cursor += 3
+                continue
+            elif line.startswith("//", cursor):
+                break
+            else:
+                kept.append(char)
+            cursor += 1
+        return "".join(kept).rstrip(), quoted
+
     try:
         with open(path, "rb") as handle:
             lines = handle.read().decode("utf-8", errors="replace").splitlines()
@@ -764,7 +910,7 @@ def symbol_span(path: str, name: str) -> list[tuple[int, int]]:
         return []
 
     declaration = re.compile(SYMBOL_DECL.format(name=re.escape(name)))
-    spans: list[tuple[int, int]] = []
+    items: list[Item] = []
 
     for index, line in enumerate(lines):
         found = declaration.match(line)
@@ -783,11 +929,16 @@ def symbol_span(path: str, name: str) -> list[tuple[int, int]]:
             start = opener
 
         closing = found.group("indent") + "}"
+        initialiser = found.group("kind") in ("const", "static")
+        closings = (closing, closing + ";") if initialiser else (closing,)
         end = len(lines)
         opened = False
+        quoted = False
         for cursor in range(index, len(lines)):
             body = lines[cursor].rstrip()
-            if cursor > index and body == closing:
+            if initialiser:
+                body, quoted = code(body, quoted)
+            if cursor > index and body in closings:
                 end = cursor + 1
                 break
             if "{" in body:
@@ -802,9 +953,12 @@ def symbol_span(path: str, name: str) -> list[tuple[int, int]]:
                 end = cursor + 1
                 break
 
-        spans.append((start + 1, end))
+        doc = tuple(
+            cursor + 1 for cursor in range(start, index) if DOC_LINE.match(lines[cursor])
+        )
+        items.append(Item(start=start + 1, declaration=index + 1, end=end, doc=doc))
 
-    return spans
+    return items
 
 
 def git_tracked(root: str) -> list[str]:
@@ -1054,17 +1208,38 @@ def classify(span: Span, citing: str, root: str, tree: Tree) -> tuple[str, Findi
                 f"carries `#{symbol}`, which is not a Rust item name this gate can "
                 f"resolve; name the item itself, or drop the suffix."
             )
-        spans = symbol_span(posixpath.join(root, target), symbol)
-        if not spans:
+        items = symbol_items(posixpath.join(root, target), symbol)
+        if not items:
             return broken(f"names `{symbol}`, which `{target}` does not declare.")
         if first_line is not None and not any(
-            low <= first_line and last_line <= high for low, high in spans
+            item.start <= first_line and last_line <= item.end for item in items
         ):
             where = f"line {first_line}" if end is None else f"lines {first_line}-{last_line}"
-            spelled = ", ".join(f"{low}-{high}" for low, high in spans)
+            spelled = ", ".join(f"{item.start}-{item.end}" for item in items)
             return broken(
                 f"cites {where}, but `{symbol}` in `{target}` spans {spelled}."
             )
+        if first_line is not None and end is None:
+            # Contained, and still possibly drifted: a single line inside the
+            # item's own doc comment, below its summary. That is where a line
+            # written for the declaration lands once the doc above it grows,
+            # and containment cannot see it. See "A single line inside the
+            # item's own doc comment" in this module's docstring for the rule,
+            # its measurement and its waiver -- a range.
+            #
+            # Every declaration that contains the line has to place it there.
+            # A name declared twice is one target, as it is for containment,
+            # so a line that is doc interior to one declaration and code in
+            # another is taken as the code.
+            containing = [item for item in items if item.start <= first_line <= item.end]
+            if all(first_line in item.doc[1:] for item in containing):
+                declared = ", ".join(str(item.declaration) for item in containing)
+                return broken(
+                    f"cites line {first_line}, inside `{symbol}`'s doc comment in "
+                    f"`{target}` rather than at its declaration ({declared}) or its "
+                    f"summary line; cite the declaration, write the passage meant as "
+                    f"a range (`:{first_line}-{first_line}` for one line), or drop the line."
+                )
 
     return "checked", None
 
@@ -1215,6 +1390,10 @@ pub fn f() {
 #   1-9   `wanted`'s span, doc and attribute included
 #   11-13 `other`               15-17 `trait T`        16 `twice`, `;`-ended
 #   19-23 `impl`                20-22 `twice` again, this one with a body
+#   39    `const LIMIT`         40-43 `const SCHEMA`, doc included
+#   45-47 `const fn doubled`    49-51 `static DEFAULTS`, closed by `};`
+#   55-58 `static ESCAPED`, a `\"` in its initialiser
+#   60-63 `const QUOTES`, associated, a `'"'` in its initialiser
 #
 # `twice` appearing twice is the whole reason `symbol_span` returns a list.
 SYMBOL_FIXTURE = """\
@@ -1255,6 +1434,32 @@ pub static LIST: [u8; 2] = [
 ];
 pub fn after_an_array() -> u8 {
     0
+}
+pub const LIMIT: u64 = 10; // "an odd quote in a comment
+/// A schema held in a raw string, one `;` per statement.
+pub(crate) const SCHEMA: &str = r"
+CREATE TABLE a (x);
+CREATE TABLE b (y);";
+
+const fn doubled(x: u8) -> u8 {
+    x * 2
+}
+
+static DEFAULTS: Split = Split {
+    field: 0,
+};
+pub fn after_a_literal() -> u8 {
+    1
+}
+static ESCAPED: [&str; 2] = [
+    "a \\"; b",
+    "c",
+];
+impl Split {
+    const QUOTES: [char; 2] = [
+        '"',
+        'x',
+    ];
 }
 """
 
@@ -1518,6 +1723,21 @@ def self_test() -> int:
                 f"`{main}:{line}#wanted` reported {found}, expected a span miss",
             )
 
+        # A single line inside `wanted`'s doc comment below its summary is
+        # contained and still fails: that is where a line written for the
+        # declaration lands once the doc above it grows. The summary (1), the
+        # attribute (3) and the declaration (4) are asserted clean above, and a
+        # range -- `N-N` included -- is the waiver for citing the doc itself.
+        _, found = symbol_verdict(f"{main}:2#wanted")
+        wrong(
+            found is None or "inside `wanted`'s doc comment" not in found.message
+            or "declaration (4)" not in found.message,
+            f"`{main}:2#wanted` reported {found}, expected a doc-run miss",
+        )
+        for body in (f"{main}:2-2#wanted", f"{main}:1-2#wanted", f"{main}:2-4#wanted"):
+            _, found = symbol_verdict(body)
+            wrong(found is not None, f"`{body}` reported {found}, expected clean")
+
         # A name declared twice is one citation target, not two: the trait
         # method and its impl are both `twice`, and a line in either is in.
         for line in (16, 20, 21):
@@ -1679,7 +1899,7 @@ def self_test() -> int:
 
         # No suffix: byte-for-byte the behaviour of every citation in the tree
         # before this suffix existed. If this moves, the widening was not one.
-        for line, want in ((4, True), (38, True), (39, False)):
+        for line, want in ((4, True), (64, True), (65, False)):
             _, found = symbol_verdict(f"{main}:{line}")
             wrong(
                 (found is None) != want,
@@ -1715,6 +1935,59 @@ def self_test() -> int:
             found is None or "spans 36-38" not in found.message,
             f"`{main}:33#after_an_array` reported {found}, expected a span miss",
         )
+
+        # A top-level `const` resolves, and `const fn` is still a function.
+        # `LIMIT` ends on its own `;` even with an odd quote in the comment
+        # after it, because that comment is not code.
+        for body in (f"{main}:39#LIMIT", f"{main}#LIMIT", f"{main}:46#doubled"):
+            _, found = symbol_verdict(body)
+            wrong(found is not None, f"`{body}` reported {found}, expected clean")
+        _, found = symbol_verdict(f"{main}:40#LIMIT")
+        wrong(
+            found is None or "spans 39-39" not in found.message,
+            f"`{main}:40#LIMIT` reported {found}, expected a span miss",
+        )
+
+        # The `;` inside `SCHEMA`'s raw string does not end it. Read as code,
+        # line 42 ends the item and a citation of the second table -- the one
+        # `relay_log.rs`'s `relay_batches` is -- would be red.
+        for line in (40, 42, 43):
+            _, found = symbol_verdict(f"{main}:{line}#SCHEMA")
+            wrong(found is not None, f"`{main}:{line}#SCHEMA` reported {found}, expected clean")
+        _, found = symbol_verdict(f"{main}:45#SCHEMA")
+        wrong(
+            found is None or "spans 40-43" not in found.message,
+            f"`{main}:45#SCHEMA` reported {found}, expected a span miss",
+        )
+
+        # A struct-literal initialiser closes on `};`. Without that the span
+        # ran on to the `}` of `after_a_literal`, so a citation of the next
+        # function was certified as inside `DEFAULTS`.
+        _, found = symbol_verdict(f"{main}:51#DEFAULTS")
+        wrong(found is not None, f"`{main}:51#DEFAULTS` reported {found}, expected clean")
+        _, found = symbol_verdict(f"{main}:53#DEFAULTS")
+        wrong(
+            found is None or "spans 49-51" not in found.message,
+            f"`{main}:53#DEFAULTS` reported {found}, expected a span miss",
+        )
+
+        # An escaped `\"` does not close a string, and a `'"'` char literal
+        # does not open one. Read either way, the `];` that ends the item
+        # lands inside a string and the span runs on: `ESCAPED` to 63,
+        # `QUOTES` to the end of the file, so the misses below go clean.
+        # `QUOTES` is an associated const inside an `impl`, which `#NAME`
+        # resolves as it does a top-level one.
+        for body, last, after, want in (
+            ("ESCAPED", 58, 59, "spans 55-58"),
+            ("QUOTES", 63, 64, "spans 60-63"),
+        ):
+            _, found = symbol_verdict(f"{main}:{last}#{body}")
+            wrong(found is not None, f"`{main}:{last}#{body}` reported {found}, expected clean")
+            _, found = symbol_verdict(f"{main}:{after}#{body}")
+            wrong(
+                found is None or want not in found.message,
+                f"`{main}:{after}#{body}` reported {found}, expected a span miss",
+            )
 
     if failures:
         return 1

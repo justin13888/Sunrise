@@ -213,7 +213,7 @@ struct DeepLinkRoutingTests {
     @Test
     func anEntityLinkForATaskResolvesToTheTaskItself() async throws {
         let vault = try await TestVault()
-        let models = VaultModels(bridge: vault.bridge)
+        let models = VaultModels(bridge: vault.bridge, account: AccountModel(store: StubCredentialStore()))
         let created = try await vault.bridge.submit(.createTask(draft: draft("Renew passport")))
 
         let revealed = await models.reveal(created.entity)
@@ -234,7 +234,7 @@ struct DeepLinkRoutingTests {
     @Test
     func anEntityLinkForABlockMovesTheGridOntoIt() async throws {
         let vault = try await TestVault()
-        let models = VaultModels(bridge: vault.bridge)
+        let models = VaultModels(bridge: vault.bridge, account: AccountModel(store: StubCredentialStore()))
         let calendar = models.calendar
         await calendar.refresh()
         let start = calendar.windowStartMs + 9 * 3_600_000
@@ -267,7 +267,7 @@ struct DeepLinkRoutingTests {
     @Test
     func anEntityThisVaultDoesNotHoldRevealsNothing() async throws {
         let vault = try await TestVault()
-        let models = VaultModels(bridge: vault.bridge)
+        let models = VaultModels(bridge: vault.bridge, account: AccountModel(store: StubCredentialStore()))
 
         #expect(await models.reveal(missing) == nil)
 

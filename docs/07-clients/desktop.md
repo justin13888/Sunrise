@@ -126,15 +126,18 @@ Rust source on every build, so committing them would let the two drift.
 **CI builds this.** `.github/workflows/ci.yml` has a `macos-app` job on the
 `macos-26` runner — pinned because `project.yml` sets a macOS 26.0 deployment
 target that no earlier image can build — which runs `mise run macos-app` as a
-single step on every push to `master` and on every pull request that touches
-something the app is built from, whatever it targets. (A pull request that
-touches no Rust, no manifest, no `apps/apple/**` and no `mise.toml` skips it;
-the `changes` job decides, and a skipped job still reports a passing check.)
-The framework it links is built upstream, once per run, by the
-`apple-xcframework` job. Plus a 04:00 UTC nightly on `master` alone, since GitHub fires a
-`schedule` only on the repository's default branch, which is `master`. Any
-other ref builds on demand through `workflow_dispatch` — `gh workflow run
-ci.yml --ref <branch>`. So a Swift-side break is caught.
+single step on every push to `master`. It does **not** run on a pull request,
+because a macOS job queues for up to two hours behind the account's
+five-runner cap; there it is skipped, and a skipped job still reports a
+passing check. The evidence before merge is the same command run locally —
+`mise run apple-app` on a Mac, for any change that touches something the app
+is built from (see the README's Apple section for that list). The framework it links is built
+upstream, once per run, by the `apple-xcframework` job. Plus a 04:00 UTC
+nightly on `master` alone, since GitHub fires a `schedule` only on the
+repository's default branch, which is `master`. Any other ref builds on demand
+through `workflow_dispatch` — `gh workflow run ci.yml --ref <branch>` — and
+the results appear on that branch's pull request. So a Swift-side break is
+caught, at the latest by the merge that brings it in.
 
 **The UI tests are not run by that job.** `SunriseUITests` is `skipped: true` in
 the `Sunrise` scheme, because a macOS XCUITest takes control of another process
@@ -226,18 +229,21 @@ document's intent, not yet implemented).
   the class, because the class only starts meaning anything once the item is
   somewhere that implements one. Which keychain that is comes from
   `KeychainDomain.probe()`, which asks the platform rather than assuming from
-  `#if os(…)`. On every **Mac** build this repository can make the probe
-  answers `.login`, so both halves are inert on this platform today; see below.
+  `#if os(…)`. On a **Mac** the probe answers `.login` for every Debug build
+  and for any Release build no team's provisioning profile authorises, and
+  `.dataProtection` only for a Release signed by the team with a profile that
+  grants `keychain-access-groups`. No such build has been made yet, so both
+  halves are inert on this platform today; see below.
   On iOS it answers `.dataProtection` — the only keychain that platform has —
   which `KeychainDomainTests` pins, and there the migration is a no-op for
   the other reason: one keychain means the source and destination name one
   stored item.
 
-  **The Mac does not honour the class**: without the App Sandbox or a
-  keychain-access-group entitlement the app uses the file-based login keychain,
-  which stores no protection class at all, so a Mac moved by Migration
-  Assistant or restored from Time Machine carries all three items with it. iOS
-  enforces the class; see
+  **The Mac does not honour the class yet**: without the App Sandbox or an
+  authorised keychain-access-group entitlement the app uses the file-based
+  login keychain, which stores no protection class at all, so a Mac moved by
+  Migration Assistant or restored from Time Machine carries all three items
+  with it. iOS enforces the class; see
   [`../03-crypto/recovery.md`](../03-crypto/recovery.md#device-backups-do-not-carry-the-vault-root).
 - **built — App Intents / Shortcuts.** Six intents — capture, complete, today,
   inbox, start focus, end focus — plus a `TaskEntity` with an
@@ -327,15 +333,62 @@ what that costs:
    because an ad-hoc signature carries no team id for the group to be validated
    against.
 
-So the entitlement is not a setting that can be committed on its own: a build
-carrying it will not launch without a real signing identity, and
-`mise run macos-app` builds `CODE_SIGNING_ALLOWED=NO` — which is what keeps the
+So the entitlement cannot be on every build: a build carrying it will not
+launch without a real signing identity and a profile that grants it, and every
+Debug consumer is team-less by design. `mise run macos-app` and
+`mise run macos-run` build `CODE_SIGNING_ALLOWED=NO`, which is what keeps the
 Mac app buildable by a contributor with no Apple account, the same thing
-`DEVELOPMENT_TEAM: ""` exists for.
+`DEVELOPMENT_TEAM: ""` exists for; `mise run macos-uitest` and a Run from
+`mise run macos-open` sign ad-hoc, and would die at AMFI.
 
-**The migration that has to go with it is built; the entitlement is not.** The
-half that does not need a signing identity is in the tree, and the half that
-does is not:
+It is therefore on **Release only**: `apps/apple/macOS/Sunrise.entitlements`
+carries `keychain-access-groups` with the one group
+`$(AppIdentifierPrefix)dev.sunrise.Sunrise`, and `apps/apple/project.yml` sets
+`CODE_SIGN_ENTITLEMENTS` on the `Sunrise` target's Release configuration and
+nowhere else. Release is the configuration the team signs: `release.yml`
+archives Release with the Developer ID identity. Its one team-less caller,
+the workflow's `unsigned_macos_dmg` dry run, archives
+`CODE_SIGNING_ALLOWED=NO`, which embeds no entitlements, so it is unaffected. A
+local Release build without a team no longer produces a bundle at all: Xcode
+refuses it before signing, with `"Sunrise" has entitlements that require
+signing with a development certificate`, rather than producing the
+configuration-2 bundle AMFI would kill. Such a bundle was never one that could
+ship; a team-less Release build that is wanted anyway adds
+`CODE_SIGNING_ALLOWED=NO`, as the dry run does.
+
+What is still missing is outside this repository's files: an Apple Developer
+Program team for `DEVELOPMENT_TEAM`, and a Developer ID provisioning profile
+that grants the group. The release pipeline does not yet install one, and the
+signed path cannot produce a launchable app until it does; that is
+[#389](https://github.com/justin13888/Sunrise/issues/389), and it has to land
+before the macOS signing secrets are created.
+
+#### Debug and Release keep separate keychains
+
+The Release-only entitlement has a price, and it falls on developers rather
+than users. On one Mac, against one vault, a signed Release build probes
+`.dataProtection` and moves the three items there on their first `load`; a
+Debug build of the same bundle identifier probes `.login`, cannot read the
+data-protection keychain at all, and so finds none of them. What it shows is
+the lost-vault screen for a vault that is intact, which is the failure this
+page warns about everywhere else, reproduced on purpose.
+
+Nothing is lost, and nothing should be done from that screen. In particular,
+**do not recover or re-pair from it**: the root is still in the data-protection
+keychain, and the next signed Release build reads it. The remedies are to point
+the Debug build at a scratch vault (`mise run macos-run <dir>`, which also uses
+an in-memory key store) or to keep one Mac's real vault on one configuration.
+The reverse direction is harmless: a Release build that finds an item only in
+the login keychain migrates it.
+
+The alternative — the entitlement on Debug as well, with every contributor
+signing with a team — was rejected because it makes an Apple Developer Program
+membership the price of building the app, which `DEVELOPMENT_TEAM: ""` exists
+to avoid.
+
+**The migration that has to go with it is built, and so is the entitlement;
+the signature is not.** Everything that does not need a signing identity is in
+the tree:
 
 - `KeychainDomain` — `.login` and `.dataProtection`, and a memoised
   `probe()` that adds one fixed non-secret byte under a probe-only service in
@@ -670,18 +723,40 @@ does is not:
   account would have inverted it, by making a second concurrent probe's add fail
   with `errSecDuplicateItem` and answer `.login` on iOS.
 
-  The **credential** store also `save`s across both, and it is the only one that
-  needs to. Its token is rewritten with no user action — `refreshIfNeeded`
-  renews at 75% of the token's life — so one launch whose probe failed open
-  leaves a fresh token in one keychain and a stale one in the other, and every
-  later launch with a correct probe reads two secrets under one name and raises
-  `.migrationUnverified`, which refuses the load rather than signing the user
-  out in silence — and which this same cross-domain `save`, run by the next
-  sign-in, is what collapses. The vault root and the relay device id are written
-  once and never rewritten on the ordinary path, so neither can diverge that
-  way. `KeychainMigration`'s own write is deliberately
-  exempt too: it deletes its source only after the verify step, and a write that
-  removed the other domain would take the source out from under it.
+  The **credential** store also `save`s across both. Its token is rewritten
+  with no user action — `refreshIfNeeded` renews at 75% of the token's life —
+  so one launch whose probe failed open leaves a fresh token in one keychain and
+  a stale one in the other, and every later launch with a correct probe reads
+  two secrets under one name and raises `.migrationUnverified`, which refuses
+  the load rather than signing the user out in silence — and which this same
+  cross-domain `save`, run by the next sign-in, is what collapses.
+
+  The **relay device id** store does too (#254), because it is not written once:
+  `RelayDeviceRegistration.bind` runs at every sync start and replaces a
+  binding minted for another relay or another account (#183). The same
+  failed-open launch leaves the new id in one keychain and the old one in the
+  other; every later launch's load then refuses, `RelayDeviceID.resolve` reads
+  the refusal as no id, and `bind` registers again — a fresh relay row per sync
+  start, with no end. The copy the cross-domain write removes is the binding it
+  is replacing, and the worst a wrongly removed one costs is a re-registration.
+  Unlike `save`, it lets `writtenButOtherDomainRefused` through: both of its
+  callers record with `try?` and act on nothing, so catching it would change no
+  behaviour and add an eighth line no build here can execute.
+
+  The **vault root** deliberately does not. A stale token or binding is
+  recovered by a sign-in or a re-registration; a root in the other domain is not
+  stale, it may be the key the vault on disk is sealed under, and no second copy
+  of it exists anywhere. Left alone it costs a `.migrationUnverified` refused
+  load with both roots still readable; deleted, it costs the vault. Today's
+  writers gain nothing from it either: `createVault` stores only after both
+  domains answered not-found, and `adoptPairing` runs from
+  `.locked(.keychainUnavailable)` — a load that threw — which is exactly where
+  the other domain may hold a root nobody has read. A future re-key or rotation
+  has to choose between two read roots, not inherit a delete.
+
+  `KeychainMigration`'s own write is exempt whatever the stores do: it deletes
+  its source only after the verify step, and a write that removed the other
+  domain would take the source out from under it.
 - `KeychainMigration` — five resumable steps holding one invariant: **a
   readable copy exists at every instant.** Read the destination, read the
   source, write the destination, read it back and compare byte-for-byte, and
@@ -699,21 +774,30 @@ does is not:
   There is no launch-time pass over all three: the OIDC credential is keyed per
   account and the other two per vault, so "all three" is not one set.
 
-None of it changes behaviour on any build this repository can produce. The
+None of it changes behaviour on any build this repository can produce yet. The
 probe answers `.login` on an unsigned or ad-hoc-signed Mac, and iOS has only
 one keychain, so in both cases the migration's source and destination are two
 names for one stored item and it does nothing at all — a case the code checks
 for explicitly and the tests pin, because a migration that missed it would
 verify that item against itself and then delete it.
 
-What is left for whoever holds an Apple team is the entitlements file,
-`DEVELOPMENT_TEAM`, turning the probe's answer over on macOS — **and eight
-things in the suite: five test assertions to rewrite, and three tests to
-write.**
-The *shipping* code needs no further change on this side; the suite does, and
-"no further code change is needed" said without that qualification is not
-exact. Five assertions encode the fact that this build reaches exactly one
-domain, and each is a true statement today that a team makes false:
+The entitlements file is in, on Release. What is left for whoever holds an
+Apple team is `DEVELOPMENT_TEAM`, the Developer ID profile and the release
+pipeline that installs it (#389), which together turn the probe's answer over
+on a shipped Mac. The *shipping* code needs no further change on this side;
+the suite does, and "no further code change is needed" said without that
+qualification is not exact.
+
+**The suite does not run where the entitlement is.** Every scheme's `test`
+action is Debug, and Debug stays unentitled, so a team on its own flips none
+of what follows: the five assertions below stay true of the build they run
+in, and the cross-domain move a signed Release performs is exercised by no
+test at all. Reaching it needs a test run hosted by an entitled build — a
+configuration signed with the team and the profile — and that run is where
+**eight things in the suite** belong: five test assertions that assert the
+entitled behaviour there, and three tests to write. Five assertions encode the
+fact that this build reaches exactly one domain, and each is a true statement
+of every Debug build that an entitled host makes false:
 
 - `theProbeAnswersWhatThisBuildCanActuallyReach` — `KeychainDomainTests`
 - `aDestinationThisBuildCannotReachFallsBackToTheSource`
@@ -731,17 +815,20 @@ build this repository can make. It pins the one arrangement where
 a service and an account and differing only by domain, which is the shape all
 three stores build and which no `.login` → `.login` case can construct. Swap
 that write for `writeAcrossDomains(_:)` and the destination's cross-domain
-delete takes the source with it — and until an entitlement lands, nothing
-anywhere will say so.
+delete takes the source with it — and until a test run is hosted by an
+entitled build, nothing anywhere will say so. The Release entitlement does not
+change that, because no test runs on Release.
 
 The last four are in the `KeychainMigrationFallbackTests` suite, which is
 `macOS`-only — the `KeychainErrorMessageTests` suite sharing its file sits
 outside that gate on purpose and is not one of the five.
-Each of the five is **rewritten to assert the entitled behaviour** — not
-deleted, and not guarded by an availability check. Deleting them drops the
-coverage exactly when the path first runs for real, and four of the five are
-the only pins on their behaviour; guarding them leaves the entitled
-configuration asserting nothing. (The two platform-conditional accessibility
+Each of the five is **extended to assert the entitled behaviour** on an
+entitled host — not deleted, not skipped there, and not rewritten away from
+the Debug answer, which stays the right answer on every Debug run. Deleting
+them drops the coverage exactly when the path first runs for real, and four of
+the five are the only pins on their behaviour; skipping them on the entitled
+host leaves that configuration asserting nothing; and rewriting them outright
+would turn every Debug run red. (The two platform-conditional accessibility
 expectations in `VaultRootStoreTests` flip with them and already say so where
 they sit; they are constants rather than assertions, and are not part of the
 five.)
@@ -755,7 +842,7 @@ about what they do; none has executed on any platform this repository builds
 for, which is why they sit in the untestable set rather than in a gap someone
 forgot to fill.
 
-**Only one of the three is writable the day a team lands**, and an earlier
+**Only one of the three is writable the day an entitled host exists**, and an earlier
 revision of this page promised all three of them to the entitlement. That one
 is item 2: plant a copy in `.dataProtection`, address the item at `.login`, and
 assert the other domain's copy gone after the write. It wants reach and nothing
@@ -844,28 +931,70 @@ The two rejected homes, for the record:
   where every device replicates every other device's id and a merge has to
   decide which one is "this" one.
 
-**The app cannot yet register itself.** `sunrise_relay_client::bootstrap` — the
-`POST /api/v1/accounts` then `POST /api/v1/devices` pair the CLI runs as
-`sunrise bootstrap` — is not exposed across the UniFFI seam, so nothing in the
-app produces an id. Until it is, the only way an Apple client is device-bound is
-the environment override the CLI has for the same case: launch it with
+**The app registers itself, by one of two routes** (#183), and each ends in
+that store (`RelayDeviceRegistration` in `RelayDeviceStore.swift`):
+
+- **The device that created the vault** registers inside the recovery ceremony.
+  `SunriseCore::bootstrap_account` runs `POST /api/v1/accounts` then
+  `POST /api/v1/devices`, and the app records the returned `device_id` only
+  after the relay accepted it. A Keychain refusal at that point still shows the
+  recovery code, because the relay already holds the blob that code opens.
+- **Every other device** — one admitted by pairing, or a founding device whose
+  id was never recorded — registers at sync start. `SessionModel.bindRelayDevice`
+  calls `SunriseCore::register_relay_device`, which is `POST /api/v1/devices`
+  alone, as `sunrise recover` does. It publishes nothing about the account and
+  asserts no terms acceptance ([`../06-server/api.md`](../06-server/api.md)
+  §Terms acceptance). It does nothing when an id already resolves, or while a
+  recovery ceremony is outstanding.
+
+**A stored id is valid only where it was minted.** The relay looks it up
+under the account on that relay (`Store::active_device`), so the same id sent
+to another relay, or under another account's bearer, names no row and is
+answered as a bad bearer. The store therefore records each id with its scope:
+the relay URL (trimmed, trailing slashes dropped) and the bearer's OIDC `iss`
+and `sub`, read from the JWT without verifying it. A stored id is presented
+only while that scope is the one sync runs in; after the relay URL changes or
+the user signs in to another account it resolves to nothing, and the next sync
+start registers again and replaces it. A value stored with no scope reads as
+nothing for the same reason. An opaque (non-JWT) bearer has no readable
+account, so its scope rests on the relay URL alone.
+
+A driver started *before* the ceremony recorded its id keeps running unbound
+until the next start, because a repeated start is a no-op rather than a
+re-point. For the same reason a running driver keeps the id it started with
+when the relay URL or the account changes mid-process; the next launch binds
+the new scope.
+
+The environment override the CLI has for the same case still wins: launch with
 `SUNRISE_SYNC_DEVICE_ID` set to an id registered elsewhere, and the driver
-presents and signs for it. That is the same variable name, the same precedence
-(override before stored) and the same meaning as
-`sunrise_cli::livesync::ENV_SYNC_DEVICE_ID`.
+presents and signs for it and the app registers nothing. That is the same
+variable name, the same precedence (override before stored) and the same
+meaning as `sunrise_cli::livesync::ENV_SYNC_DEVICE_ID`.
 
 An unbound driver is not a failure state and is not refused: it is what every
 self-host relay runs, and a client that would not connect without a binding
 could never reach the relay that mints one.
+
+**A Keychain that refuses the read is not an unregistered device** (#284). A
+locked keychain, a dismissed access prompt, or an unreadable other keychain may
+be hiding an id this device is bound by, so `RelayDeviceID.resolve` throws
+rather than answering no id: `bind` registers nothing on top of it, and
+`SyncPlan` stays off with a reason naming the Keychain instead of starting an
+unbound driver. The next sync start reads again. Two disagreeing copies
+(`.migrationUnverified`) are the one refusal read as no id, because both were
+read and the re-registration's cross-domain write is what collapses them.
 
 ## Pairing
 
 A second device is paired over a **six-leg copy/paste handshake**: the QR/text
 code, three Noise XX messages, a SAS comparison, and the sealed vault root.
 
-**The relay's pairing rendezvous does not exist, so the user is the transport.**
-The `relay_url` in the QR payload is a routing label for later; nothing dials
-it. Five legs move bytes the user copies between the two Macs; the sixth moves
+**The app does not use the relay's pairing rendezvous yet, so the user is the
+transport.** The rendezvous exists on the relay, and so does the `RelayPairing`
+seam that drives it from the `relay_url` in the QR
+([`../06-server/api.md`](../06-server/api.md) §Pairing rendezvous). The app does
+not call either yet ([#464](https://github.com/justin13888/Sunrise/issues/464)).
+Five legs move bytes the user copies between the two Macs; the sixth moves
 none, because it is the SAS.
 
 - **Show QR** is a real CoreImage render, with the same payload as copyable text

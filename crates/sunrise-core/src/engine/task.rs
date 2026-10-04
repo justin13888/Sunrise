@@ -10,8 +10,9 @@
 
 use super::block::read_task_blocks;
 use super::ids::{
-    blob16, decode_unknowns, encode_unknowns, energy_str, ms_to_ts, parse_energy, parse_task_state,
-    require_kind, require_writable_stream, task_state_str, time_from_parts, time_to_parts,
+    blob16, decode_unknowns, encode_unknowns, energy_str, extra_over_opaque, ms_to_ts,
+    parse_energy, parse_task_state, require_kind, require_writable_stream, task_state_str,
+    time_from_parts, time_to_parts, ExtraTable,
 };
 use super::lww::LwwStamp;
 use super::routine::update_routine_row;
@@ -121,7 +122,8 @@ impl Engine {
         let now_ms = self.clock.now_ms();
         let mut task = read_task(db.conn(), id.bytes())?
             .ok_or_else(|| EngineError::NotFound(format!("task {id}")))?;
-        let prev_state = task.state;
+        let prev_state = task.state.clone();
+        let sets_done = patch.state == Some(TaskState::Done);
         // Which gates this patch has to clear. Scheduling constraints are only
         // re-evaluated when the patch actually *schedules* (per
         // docs/02-domain/scheduling-constraints.md a `hard` violation "fails
@@ -145,14 +147,15 @@ impl Engine {
             task.contexts = cs.into_iter().collect();
         }
         if let Some(state) = patch.state {
-            if !task.state.can_transition_to(state) {
+            if !task.state.can_transition_to(&state) {
                 return Err(EngineError::Invalid(format!(
                     "task state {:?} cannot transition to {:?}",
                     task.state, state
                 )));
             }
+            let done = state == TaskState::Done;
             task.state = state;
-            if state == TaskState::Done {
+            if done {
                 task.completed_at = Some(ms_to_ts(now_ms as i64).into());
             } else {
                 task.completed_at = None;
@@ -214,7 +217,7 @@ impl Engine {
         // grace-window / forgiveness / idempotency rules and reports
         // `Duplicate` when this occurrence was already counted, in which case
         // no routine op is emitted at all.
-        let streak_op = if patch.state == Some(TaskState::Done) && prev_state != TaskState::Done {
+        let streak_op = if sets_done && prev_state != TaskState::Done {
             self.streak_advance(db, &task, now_ms)?
         } else {
             None
@@ -296,7 +299,9 @@ impl Engine {
         let Some(at) = task.scheduled_at.as_ref() else {
             return Ok(Vec::new());
         };
-        if task.scheduling_constraints.is_empty() {
+        // A time kind this build cannot place on the timeline is checked
+        // against nothing: its stand-in instant would invent a violation.
+        if task.scheduling_constraints.is_empty() || at.index_key().is_none() {
             return Ok(Vec::new());
         }
         let tz = jiff::tz::TimeZone::get(&self.clock.timezone()).unwrap_or(jiff::tz::TimeZone::UTC);
@@ -460,7 +465,9 @@ pub(super) fn actionable_scan(
                         AND d.state NOT IN ('done', 'cancelled')) AS unblocks
              FROM tasks t
              WHERE t.deleted = 0 AND t.archived = 0
-               AND t.state IN ('todo', 'in_progress')
+               -- Open: not finished. Spelled as an exclusion so a state this
+               -- build does not know counts as open, as `todo` (ADR-0045 §6).
+               AND t.state NOT IN ('done', 'cancelled')
                AND (?1 IS NULL OR t.stream_id = ?1)
          )
          WHERE (?3 = 0 OR open_blockers = 0)
@@ -525,9 +532,9 @@ pub(super) fn insert_task_row(
             id_blob,
             stream_blob,
             t.title,
-            task_state_str(t.state),
+            task_state_str(&t.state),
             t.priority.map(i64::from),
-            t.energy.map(energy_str),
+            t.energy.as_ref().map(energy_str),
             t.estimated_duration_s.and_then(|s| {
                 let m = s / 60;
                 i64::try_from(m).ok()
@@ -569,9 +576,13 @@ pub(super) fn update_task_row(
     let (sched_ms, sched_kind, sched_tz) = time_to_parts(t.scheduled_at.as_ref());
     let (due_ms, due_kind, due_tz) = time_to_parts(t.due_at.as_ref());
     let (done_ms, done_kind, done_tz) = time_to_parts(t.completed_at.as_ref());
-    let extra_blob = encode_unknowns(&t.unknown)?;
-
     let id_blob: Vec<u8> = t.id.bytes().to_vec();
+    let extra_blob = extra_over_opaque(
+        tx,
+        ExtraTable::Tasks,
+        &id_blob,
+        encode_unknowns(&t.unknown)?,
+    )?;
     let stream_blob: Vec<u8> = t.stream_id.bytes().to_vec();
     let body_blob: Option<Vec<u8>> = t.body.as_ref().map(|b| b.0.clone());
     let constraints_blob = encode_constraints(&t.scheduling_constraints)?;
@@ -589,9 +600,9 @@ pub(super) fn update_task_row(
         params![
             stream_blob,
             t.title,
-            task_state_str(t.state),
+            task_state_str(&t.state),
             t.priority.map(i64::from),
-            t.energy.map(energy_str),
+            t.energy.as_ref().map(energy_str),
             t.estimated_duration_s
                 .and_then(|s| i64::try_from(s / 60).ok()),
             sched_ms,
@@ -841,7 +852,7 @@ pub(super) fn read_task(
         contexts,
         state: parse_task_state(&t.2),
         priority: t.3.and_then(|v| u8::try_from(v).ok()),
-        energy: t.4.as_deref().and_then(parse_energy),
+        energy: t.4.as_deref().map(parse_energy),
         estimated_duration_s: t.5.and_then(|m| {
             let secs = m.checked_mul(60)?;
             u64::try_from(secs).ok()

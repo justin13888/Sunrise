@@ -125,6 +125,29 @@ pub enum SigError {
     BadSignature,
 }
 
+impl SigError {
+    /// A short, stable name for the failure, from a closed set.
+    ///
+    /// Every rejection reaches a client as the one code
+    /// `AUTH_DEVICE_SIG_INVALID`, so the code cannot tell an operator which
+    /// failure is rising. This can, and it carries nothing from the request,
+    /// which is what makes it safe as a metric label: `skew` is a client
+    /// clock, `bad_signature` a key or canonicalisation disagreement,
+    /// `malformed` a client building the headers or body wrong, and
+    /// `bad_device_key` a registered key that was never usable.
+    #[must_use]
+    pub const fn reason(&self) -> &'static str {
+        match self {
+            Self::StaleDate { .. } => "skew",
+            Self::BadSignature => "bad_signature",
+            Self::BadDeviceKey => "bad_device_key",
+            Self::MissingHeader(_) | Self::MalformedHeader(_) | Self::NotCanonicalizable(_) => {
+                "malformed"
+            }
+        }
+    }
+}
+
 /// The RFC 8785 canonical JSON encoding of `value`.
 ///
 /// # Errors
@@ -435,6 +458,24 @@ mod tests {
             ),
             Err(SigError::BadSignature)
         ));
+    }
+
+    /// `reason` is a metric label, so it must stay a closed set that carries
+    /// nothing from the request: a header name or a parser message in it would
+    /// be one series per malformed input.
+    #[test]
+    fn every_rejection_has_a_closed_reason() {
+        let cases = [
+            (SigError::MissingHeader("date"), "malformed"),
+            (SigError::MalformedHeader("x-sunrise-sig"), "malformed"),
+            (SigError::NotCanonicalizable("key 1".into()), "malformed"),
+            (SigError::BadDeviceKey, "bad_device_key"),
+            (SigError::StaleDate { skew: 301 }, "skew"),
+            (SigError::BadSignature, "bad_signature"),
+        ];
+        for (error, reason) in cases {
+            assert_eq!(error.reason(), reason, "{error:?}");
+        }
     }
 
     /// The registration bug, pinned from both directions.

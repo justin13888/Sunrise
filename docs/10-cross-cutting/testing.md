@@ -99,6 +99,23 @@ replaced with a gate everywhere else.
 - Verify integrity warnings fire on tampered envelopes.
 - **Seed**: the harness's RNG seed comes from `SUNRISE_FUZZ_SEED` when set — hex, a leading `0x` forcing hex, and a plain decimal also accepted — and otherwise from the fixed `DEFAULT_FUZZ_SEED` (`0x5352_5f43_4841_4f53`, "SR_CHAOS"), so a chaos run reproduces out of the box without reading git state. `sunrise_test_seed::seed_from_env` is the reader, re-exported on `sunrise_e2e::chaos` where callers already name it, and its unit tests cover hex, `0x`, decimal and absence; `crates/sunrise-e2e/tests/chaos.rs` xors the resolved value with a per-scenario tag so two scenarios never draw the same stream, and `Toxic::new` announces the base value. **The variable is workspace-wide** — the property tests read the same one (see [§2](#convergence-property-test-determinism)) — but the two harnesses fall back differently when it is unset, because a chaos run wants the same fault schedule twice and a property run wants a wider search.
 
+#### Cross-version merge
+
+The one place two builds of `sunrise-core` meet: `crates/sunrise-e2e/tests/cross_version_convergence.rs`, designed in [ADR-0057](../11-adr/0057-cross-version-merge-harness.md). What it asserts is [`../02-domain/schema-versioning.md`](../02-domain/schema-versioning.md) §Compatibility testing.
+
+- **The control** (`head_and_head_merge_without_loss_or_break`, `head_known_gaps_still_reproduce`) runs `HEAD` against `HEAD` and needs nothing built. It is part of `cargo test --workspace`, so it runs on every pull request.
+- **The baseline run** (`baseline_and_head_merge_without_loss_or_break`, `baseline_known_gaps_still_reproduce`) is `#[ignore]`d, because it needs the baseline driver, which is built from another tree:
+
+    ```sh
+    SUNRISE_BASELINE_DRIVER=$(crates/sunrise-e2e/baseline-driver/build-baseline.sh d9566ade714bf49714ea1b034625a5b6a1792984 | tail -n1) \
+      cargo test -p sunrise-e2e --test cross_version_convergence -- --ignored
+    ```
+
+  With `SUNRISE_BASELINE_DRIVER` unset, the ignored tests fail and say how to build it. They never pass with nothing run. The `Cross-version merge` CI job runs them on every merge to master, nightly, and on a manual dispatch, once per baseline in its matrix.
+- **Cases:** `SUNRISE_CROSS_VERSION_CASES`, 4 by default and 64 in CI. Every case boots a relay and three vaults, about 0.2 s each locally.
+- **Reproducing a failure:** the same two mechanisms as every other property test (§2). The counterexample is persisted at `proptest-regressions/tests/cross_version_convergence.txt` under `crates/sunrise-e2e/`, which the CI job uploads when it fails, and the run is replayed with `SUNRISE_FUZZ_SEED`.
+- **Expected failures:** a violation listed in `crates/sunrise-e2e/src/cross_version/gaps.rs` is reported against its issue and passes. A violation not listed fails. Each entry has a fixed reproduction in the test file, which fails the day the violation stops happening, and that is when its entry is removed.
+
 ### 6. Performance tests
 
 - Per-platform benchmark suite (op apply rate, capture latency, search latency).
@@ -146,7 +163,7 @@ replaced with a gate everywhere else.
 ## CI matrix
 
 - Per PR: Rust core unit + property + integration; web + desktop UI smoke.
-- Nightly: full mobile UI on real-device simulators; chaos suite; performance benchmarks.
+- Nightly: full mobile UI on real-device simulators; chaos suite; performance benchmarks; the cross-version merge against every baseline (also on every merge to master).
 - Per release: manual a11y; manual cross-platform pairing flow.
 
 ## Coverage and what we don't measure
@@ -365,13 +382,14 @@ is mostly not shell: a TOML `run = '''` fence and a YAML scalar with an
 apostrophe in it are both unbalanced quotations to a shell lexer, and blocking a
 merge for one is how a gate gets switched off. The tally is printed rather than
 kept quiet, so that a number which grew from forty-odd to four hundred would say
-so. On this repository it is 47: **38** of `mise.toml`'s triple-quote fences,
+so. On this repository it is 59: **46** of `mise.toml`'s triple-quote fences,
 the first and last lines of the single-quoted `python3 -c` program `ios-app`
-picks its simulator with, and `mise.toml:561`; **three** in
-`.github/scripts/sparkle-tools.sh` where one
-`awk` program's single-quoted body spans three lines inside a `$( )`, and
+picks its simulator with, and `mise.toml:710`; **three** in
+`.github/scripts/sparkle-tools.sh` where one `awk` program's single-quoted body
+spans three lines inside a `$( )`, **four** in `.github/scripts/grep-gate.sh`
+where two such `awk` programs each count at their opening and closing line, and
 **three** `- name:` scalars whose English apostrophe is an unbalanced quotation
-— two in `ci.yml`, one in `release.yml`. Six of the 47 are not in `mise.toml`,
+— two in `ci.yml`, one in `release.yml`. Ten of the 59 are not in `mise.toml`,
 which matters because the three workflow entries are the visible half of the
 limit two paragraphs up: the gate cannot tell an executable line from prose.
 Prose that does not lex lands in this tally and is skipped, which is the safe
@@ -519,8 +537,9 @@ treats more shards as sub-proportional relief rather than free.
 
 `sunrise-core`'s row is a partial sample over its first 76 mutants — it is the
 one crate no local pass has run to completion — and projects to roughly 5.4
-hours whole. It is why `sunrise-core` is still the only scoped crate without a
-recorded floor. It is also the one row that cannot be recomputed here, because
+hours whole. It is why `sunrise-core` is the one scoped crate whose floor was
+recorded from a nightly's four shards rather than a local pass (#272; see
+`mutants/baseline.json`). It is also the one row that cannot be recomputed here, because
 its `wall` cell is empty: nothing in this repository records whether 15.4 is
 the same full-pass average, taken over those 76 mutants, or a marginal rate
 read off `cargo mutants`' own output. The two differ by one baseline build's
@@ -703,11 +722,45 @@ the whole Rust suite, and adding hours to a push is how a hook gets bypassed.
 
 ## Security testing
 
-Security testing is a first-class layer alongside unit and property tests. It has three pillars:
+Security testing is a first-class layer alongside unit and property tests. It
+has four pillars: continuous fuzzing, a constant-time comparison gate, the
+quarterly pen test, and an external cryptographic review whose scope lives in
+[`../03-crypto/audit-scope.md`](../03-crypto/audit-scope.md)
+([ADR-0061](../11-adr/0061-crypto-audit-scope.md)).
+
+What is wired today, in one place:
+
+| Check | Where | Runs on |
+|---|---|---|
+| Nine fuzz targets, 30 minutes each | `ci.yml` `fuzz` | nightly and `workflow_dispatch` |
+| The fuzz targets a pull request's changed paths reach, 120 seconds each | `ci.yml` `fuzz-pr-plan` and `fuzz-pr` | a pull request touching `crates/sunrise-crypto/`, `crates/sunrise-wire-protocol/`, `crates/sunrise-http-sig/`, `crates/sunrise-server/src/auth/` or `fuzz/` |
+| No variable-time `==` over a secret-named value | `ci.yml` `constant-time`, contract in `constant-time-gate-contract` | every trigger |
+| External cryptographic review | [`../03-crypto/audit-scope.md`](../03-crypto/audit-scope.md) | scoped, not yet commissioned |
+
+### Constant-time comparison gate
+
+`.github/scripts/constant-time-gate.sh` rejects `==`, `!=`, `.eq(` and `.ne(`
+where an operand's last path segment contains `mac`, `tag`, `digest`, `hash`,
+`sig`, `secret`, `key`, `nonce`, `checksum`, `token` or `proof` (either case),
+in `sunrise-crypto`, `sunrise-pairing`, `sunrise-http-sig` and
+`sunrise-server::auth`. The fix for a hit is `subtle::ConstantTimeEq`. The
+exception is an entry in `.github/scripts/constant-time-allowlist.tsv` — the
+path, the exact trimmed line and the reason it is not a timing oracle — and an
+entry whose line has gone fails the gate. `clippy.toml` cannot carry this rule:
+`disallowed-methods` never sees the `==` operator.
+
+It reads names, not types. A secret under a name without one of those words,
+a comparison split across lines, an operand that is a call with arguments or
+a method chain (`compute_mac(k, m) == received`,
+`mac.finalize().into_bytes() == expected`), and `matches!` or `assert_eq!` all
+pass it,
+and [`audit-scope.md`](../03-crypto/audit-scope.md) asks the external reviewer
+to look for exactly those. `test_constant_time_gate.py` plants a `==` over a
+`[u8; 32]` tag in `sunrise-crypto` and asserts the gate goes red.
 
 ### Continuous fuzz targets
 
-`cargo-fuzz` harnesses live in `fuzz/`, one binary per target. **All six
+`cargo-fuzz` harnesses live in `fuzz/`, one binary per target. **All nine
 targets are built and run.** Each drives a workspace crate through its
 ordinary public API — nothing was widened to `pub` for the fuzzer's benefit,
 because a surface only a fuzzer can reach is one no attacker reaches either.
@@ -720,6 +773,14 @@ because a surface only a fuzzer can reach is one no attacker reaches either.
 | `ical` | inbound iCalendar feed parser (`sunrise-integrations`). | `ical::write` is a fixed point over `ical::parse`, and re-parsing its own output raises no notices. |
 | `oauth_state` | bearer-token verification in `sunrise-server::auth`: JWT header parse, JWKS resolution, algorithm pinning, claim checks. | Verification never *succeeds*. No seed carries a private key, so an `Ok` is an accepted forgery — including the `HS256`-signed-with-the-public-key and `alg: none` classics. |
 | `recovery_blob` | recovery-blob decode + KDF input validation (`sunrise-crypto`). | A payload that comes back is bound to the identity the caller demanded. |
+| `identity_transition` | identity-transition chain verify (`sunrise-crypto`, ADR-0037): canonical body decode, `verify_identity_transition`, `verify_successor_signature`. | Nothing but the frozen transition verifies under the frozen outgoing identity, and nothing but the frozen body and `prev_sig` passes the successor check for a body naming the frozen successor key (a body naming another key passes it whenever that key signed it, which is all the check claims); full verification implies the successor check; the signature pair never verifies swapped. |
+| `device_cert` | device cert decode + verify (`sunrise-crypto`): `from_cbor`, `verify`, `verify_binding`. | Nothing but the frozen cert verifies under the frozen identity; `verify_binding` holds only for the identity that signed; `from_cbor(to_cbor(c)) == c`, signed bytes included. |
+| `key_envelope` | key-envelope / Stream-key unwrap (`sunrise-crypto`, ADR-0024): `hpke_open` under the `key_envelope` info, and `unwrap_stream_key` under the vault root. | Only the frozen blob opens on each path, to the frozen Stream key, and never for another `(stream_id, epoch)`. |
+
+No target drives `sunrise-http-sig` (`header_sig_v2`). A pull request touching
+it still runs the fuzz plan, which names no target for it; the external review
+in [`audit-scope.md`](../03-crypto/audit-scope.md) covers it instead, and a
+harness for it is the obvious next target.
 
 One scope has been corrected against the original specification. `oauth_state`
 was written as "OAuth/PKCE state-machine transitions in `sunrise-server::auth`",
@@ -741,7 +802,7 @@ nothing there is built by an ordinary workspace command.
 
 ```sh
 cargo install cargo-fuzz --locked   # once
-mise run fuzz-build                 # compile all six
+mise run fuzz-build                 # compile all nine
 mise run fuzz-smoke                 # 10s each against the committed seeds
 mise run fuzz op_envelope 3600      # one target, one hour
 ```
@@ -755,7 +816,7 @@ flag and reads none of the three.
 Being a separate workspace means every gate has to name the manifest to reach
 it, and three now do. `mise run rust-fmt-check`, `mise run rust-clippy` and
 `mise run rust-doc` each run twice — once over the workspace, once over
-`fuzz/Cargo.toml` — so the six harnesses are formatted, linted and
+`fuzz/Cargo.toml` — so the nine harnesses are formatted, linted and
 rustdoc-checked on the same terms as everything else. CI's `rust` job carries
 the clippy and rustdoc halves as steps of their own, on the pinned stable: only
 `cargo fuzz run` needs the nightly, for `-Zsanitizer=address`. The root
@@ -787,6 +848,9 @@ Every seed comes from something the tree already had:
 | `ical` | `regression_negative_year.ics` | The minimized reproducer for the second finding (below). Not a vendor shape — a `DTSTART` no client emits, kept because the round trip it broke is the property the target asserts. |
 | `oauth_state` | `rs256_full`, `no_keys`, `symmetric_jwks` | Hand-built `<bearer>\0<discovery>\0<JWKS>` triples: a well-formed RS256 token against a 2048-bit RSA key set, the same token against an empty key set, and the same token against an `oct` key set — the algorithm-confusion branch. |
 | `recovery_blob` | `sealed` | `seal_recovery_blob` output for a fixed seed, identity and CSPRNG state; the harness unseals against the same constants. |
+| `identity_transition` | `frozen` | `identity_transition::transition::BODY_CBOR`, `PREV_SIG` and `NEXT_SIG` from `crates/sunrise-crypto-test-vectors`, concatenated in that order — the harness's input encoding. The harness verifies against that crate's `IDENTITY_SIGNING_PUBLIC`, so the seed verifies rather than merely decodes. |
+| `device_cert` | `frozen` | `identity_transition::device_cert::ENCODED`, byte for byte, signed by the same frozen identity the harness verifies against. |
+| `key_envelope` | `hpke_sealed`, `wrapped` | `key_envelope::SEALED` and `at_rest::wrapped_stream_key::WRAPPED`, byte for byte. Each opens under its own path's frozen key and context, and is refused by the other path. |
 
 Any new crash a target finds opens a P1 bug, and the minimized input joins the
 seed corpus. That has happened twice.
@@ -816,30 +880,49 @@ it samples `interval in 1u32..=3`.
 #### CI shape
 
 The earlier text of this section said the targets "run on every CI build (short
-budget) and nightly (long budget)". Half of that is now wired and half is
-withdrawn:
+budget) and nightly (long budget)", and then withdrew the first half. ADR-0061
+wires a narrower version of it:
 
 - **Nightly — wired.** `.github/workflows/ci.yml`'s `fuzz` job, one matrix leg
   per target, 30 minutes each, gated to `schedule` and `workflow_dispatch`
-  exactly like the `mutants` job. A finding uploads its reproducer as an
-  artifact. **No run of it has ever completed**: GitHub Actions on this
-  repository is billing-blocked and every job finishes in ~6 seconds having
-  executed zero steps, so its timeout is derived rather than measured and the
-  job's comment says so.
-- **Short budget on every CI build — deliberately not wired.** Two independent
-  reasons. It needs a nightly rustc, which would put a pull request's verdict
-  at the mercy of a toolchain this repository does not pin and cannot assert;
-  and a budget short enough for a pull request explores nothing the committed
-  seed corpus does not already contain, so it would spend three runner-hours
-  a day to re-derive a file that is already in the diff. What a pull request
-  needs from `fuzz/` is that the harnesses still compile against the crates
-  they drive, and that is `mise run fuzz-build` — cheap, but still a nightly
-  toolchain, so it is a local gate rather than a CI job until the billing
-  block lifts and someone can watch one run.
+  exactly like the `mutants` job, on the floating `nightly`. A finding uploads
+  its reproducer as an artifact. Its timeout is derived rather than measured,
+  and the job's comment says so.
+- **A pull request that touches a decoder — wired, path-filtered.**
+  `fuzz-pr-plan` reads the merge commit's diff against its base and names the
+  targets the changed paths reach: `crates/sunrise-crypto/` the five crypto
+  targets, `crates/sunrise-wire-protocol/` `wire_frame`,
+  `crates/sunrise-server/src/auth/` `oauth_state`, a target's own harness or
+  seeds that target, and `fuzz/Cargo.toml` or `fuzz/Cargo.lock` all nine.
+  `fuzz-pr` then runs each named target for 120 seconds from the committed
+  seeds, and a pull request touching none of those paths runs no fuzzer at
+  all. A finding uploads its reproducer, and the reproducer joins
+  `fuzz/seeds/<target>/` in the commit that fixes it.
+- **The two objections the earlier text raised, and what answers them.** A
+  nightly rustc on a pull request's critical path: `fuzz-pr` pins one
+  (`RUSTUP_TOOLCHAIN` in the job), and a toolchain that will not install, will
+  not build `cargo-fuzz`, or will not build the target turns into a warning
+  annotation naming the pin to move, not a red check. A harness that does not
+  compile is still red, in the `rust` job's clippy step over `fuzz/` on the
+  pinned stable. And a short budget explores little: true, which is why the
+  budget is spent only where the diff is, and the corpus-building search stays
+  in the nightly job.
+- **Every pull request — still not wired.** The path filter is the point:
+  nine targets at two minutes each, on every pull request, is a runner-hour
+  spent mostly re-reading seeds for changes that touch no decoder.
 
 ### Quarterly external pen test
 
 A scoped external penetration test runs once per quarter. The standing scope covers: pairing/onboarding (Noise-XX), sync wire protocol (auth, replay, downgrade), crypto suite (envelope tampering, recovery-blob misuse), server auth surface (`sunrise-server::auth`), and integration OAuth flows. Findings are tracked in the same issue tracker as internal bugs; high/critical findings block the next minor release.
+
+The cryptographic design itself gets a separate, deeper review, scoped in
+[`../03-crypto/audit-scope.md`](../03-crypto/audit-scope.md): the key
+hierarchy (ADR-0024), the identity chain (ADR-0037), the revocation fold
+(ADR-0041), `header_sig_v2` (ADR-0022), the recovery blob, and
+`sunrise-crypto` as a whole. It is held to the same rule — a high or critical
+finding blocks the next release — and that document records the commit it is
+pinned to and links every finding. **No external review of either kind has
+run yet**; both are scoped, and commissioning one is an act for a person.
 
 ### Security-review gate
 

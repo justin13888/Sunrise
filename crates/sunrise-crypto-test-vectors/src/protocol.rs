@@ -209,3 +209,32 @@ pub const OCCURRENCE_TASK_ID_VECTORS: [OccurrenceTaskIdVector; 2] = [
         task_id: crate::hex("f5440a32f336d581a2576058f0e2d87a"),
     },
 ];
+
+/// The `derive_key` context of the document-schema fingerprint (ADR-0045 §2):
+/// `fp = BLAKE3.derive_key(this, JCS(schema))`.
+///
+/// Two builds that hash the same schema under different contexts register
+/// different fingerprints for the same shapes, and every envelope between
+/// them reads as a version disagreement.
+pub const DOC_SCHEMA_FP_DOMAIN: &str = "sunrise.doc_schema.fingerprint.v1";
+
+/// Every registered document-schema fingerprint, frozen (ADR-0045 §2).
+///
+/// `sunrise_cbor::version::DOC_SCHEMA_FINGERPRINTS` must equal this list.
+/// Both are **append-only**: a new `DOC_SCHEMA_V` appends its entry to both.
+/// An entry is what every build that shipped that version believes it means,
+/// so an edit here is never a test fix.
+pub const DOC_SCHEMA_REGISTRY: &[(u16, [u8; 32])] = &[
+    (
+        7,
+        crate::hex("fb893b62bb2f9bf7d9adf7ba95d5bee20498a63aa0e03c4f14a7a28a7d0d6fcb"),
+    ),
+    (
+        8,
+        crate::hex("69a555bc13a1b05143608bf16370bb6fcdb0268e514efdbc30df070049dbf58d"),
+    ),
+    (
+        9,
+        crate::hex("875fc9a8b8d426ff9c52dd6fa5ce2da8685903353fc58f98446c4825c2d7de01"),
+    ),
+];

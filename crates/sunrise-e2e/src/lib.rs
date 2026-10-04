@@ -14,6 +14,7 @@
 #![allow(clippy::missing_panics_doc)]
 
 pub mod chaos;
+pub mod cross_version;
 
 use std::net::SocketAddr;
 use std::path::Path;
@@ -23,8 +24,8 @@ use std::time::Duration;
 
 use crate::chaos::{FaultHandle, Toxic, ToxicConfig};
 use sunrise_core::{
-    BoxTransport, Clock, Core, CoreConfig, Query, QueryResult, SyncConfig, SystemRng,
-    TransportFactory, Unlock,
+    BoxTransport, Clock, Core, CoreConfig, CredentialRead, Query, QueryResult, SyncConfig,
+    SystemRng, TransportFactory, Unlock,
 };
 use sunrise_crypto::keys::VaultRootKey;
 use sunrise_domain::{SunriseTime, Task, TaskState};
@@ -78,64 +79,52 @@ pub async fn spawn_relay_with(
 
 /// Build a [`TransportFactory`] that reaches `http://{addr}` with the real
 /// [`SseTransport`] on every connect attempt (initial connect + every
-/// reconnect).
+/// reconnect), presenting the bearer the driver read for that attempt.
 ///
-/// **This factory never renews.** It reads no `TokenSource` and presents no
-/// bearer, so it satisfies [`TransportFactory`]'s read-in-the-body
-/// precondition vacuously — there is no credential for the driver to consume
-/// at connect. A driver run against it cannot exercise the
-/// renewal-across-reconnect behaviour; the shipped factories in `sunrise-cli`
-/// and `sunrise-core-bindings` are where that contract is actually met.
+/// The harness cores open with no credential, so that bearer is absent unless
+/// a test writes one through [`Core::sync_credential`]; the harness relay runs
+/// the self-host `NullVerifier`, which accepts an absent bearer.
+/// Authenticated access is covered by the sync surface's own tests in
+/// `sunrise-server::api::sync`, and by [`signed_ws_factory`]'s suites.
 #[must_use]
 pub fn ws_factory(addr: SocketAddr) -> TransportFactory {
-    // The harness relay runs the self-host `NullVerifier`, which accepts an
-    // absent bearer. Authenticated access is covered by the sync surface's own
-    // tests in `sunrise-server::api::sync`.
     let url = format!("http://{addr}");
-    Arc::new(move || {
+    Arc::new(move |read: CredentialRead| {
         let url = url.clone();
         Box::pin(async move {
-            let t = SseTransport::connect(&url);
+            let t = SseTransport::connect_with_bearer(&url, read.bearer());
             Ok(Box::new(t) as BoxTransport)
         }) as sunrise_core::ConnectFuture
     })
 }
 
-/// Build a [`TransportFactory`] that reaches `http://{addr}` presenting
-/// `bearer` and bound to `signer` — the shape a real deployment uses.
+/// Build a [`TransportFactory`] that reaches `http://{addr}` bound to `signer`
+/// and presenting the bearer the driver read for each attempt — the shape a
+/// real deployment uses.
 ///
-/// [`ws_factory`] is the self-host shape: no bearer, no binding, against a
-/// relay running `NullVerifier`. Nothing in this harness had ever been
-/// device-bound, which is why the relay's refusal of a revoked device could
-/// only be covered through `sunrise-server`'s own HTTP tests.
+/// [`ws_factory`] is the self-host shape: no binding, against a relay running
+/// `NullVerifier`. Nothing in this harness had ever been device-bound, which is
+/// why the relay's refusal of a revoked device could only be covered through
+/// `sunrise-server`'s own HTTP tests.
+///
+/// The bearer is the core's own [`Core::sync_credential`], which the driver
+/// reads per attempt: write it before [`Core::start_sync`], as the FFI seam
+/// does, and a later write reaches both the live session and the next
+/// reconnect. It used to be an `Option<String>` fixed when the factory was
+/// built, which presented a bearer the driver never knew about and could not
+/// carry a renewal (#273).
 ///
 /// The signer is cloned per attempt because every reconnect is a new transport
 /// and has to carry the binding too.
-///
-/// **This factory never renews.** `bearer` is an `Option<String>` fixed when
-/// the factory is *built* and cloned unchanged on every attempt; it is not a
-/// `TokenSource`, and no write can reach it. It therefore satisfies
-/// [`TransportFactory`]'s read-in-the-body precondition only because there is
-/// nothing to read: a driver whose `SyncConfig` carries a `TokenSource` must
-/// not be driven by this factory, because the driver would consume at connect
-/// a renewal this transport never presented, and the relay would never be told
-/// of it. Taking a `TokenSource` and reading it per attempt is the change that
-/// would lift that restriction, and it is a change to every call site in this
-/// suite.
 #[must_use]
-pub fn signed_ws_factory(
-    addr: SocketAddr,
-    bearer: Option<String>,
-    signer: Arc<dyn DeviceSigner>,
-) -> TransportFactory {
+pub fn signed_ws_factory(addr: SocketAddr, signer: Arc<dyn DeviceSigner>) -> TransportFactory {
     let url = format!("http://{addr}");
-    Arc::new(move || {
+    Arc::new(move |read: CredentialRead| {
         let url = url.clone();
-        let bearer = bearer.clone();
         let signer = Arc::clone(&signer);
         Box::pin(async move {
-            let t = SseTransport::connect_with_bearer(&url, bearer.as_deref())
-                .with_device_signer(signer);
+            let t =
+                SseTransport::connect_with_bearer(&url, read.bearer()).with_device_signer(signer);
             Ok(Box::new(t) as BoxTransport)
         }) as sunrise_core::ConnectFuture
     })
@@ -151,8 +140,8 @@ pub fn signed_ws_factory(
 /// monotonic connection counter, so a reconnect does not replay the identical
 /// fault pattern the previous connection saw.
 ///
-/// **This factory never renews**, on the same terms as [`ws_factory`]: no
-/// `TokenSource`, no bearer, nothing for the driver to consume at connect.
+/// It presents the bearer the driver read for each attempt, as [`ws_factory`]
+/// does.
 #[must_use]
 pub fn toxic_ws_factory(
     addr: SocketAddr,
@@ -164,13 +153,13 @@ pub fn toxic_ws_factory(
     let delay = config.delay;
     let counter = Arc::new(AtomicU64::new(0));
     let conn_handle = handle.clone();
-    let factory: TransportFactory = Arc::new(move || {
+    let factory: TransportFactory = Arc::new(move |read: CredentialRead| {
         let url = url.clone();
         let faults = conn_handle.clone();
         let n = counter.fetch_add(1, Ordering::Relaxed);
         let conn_seed = seed.wrapping_add(n);
         Box::pin(async move {
-            let inner = SseTransport::connect(&url);
+            let inner = SseTransport::connect_with_bearer(&url, read.bearer());
             let toxic = Toxic::with_handle(inner, faults, delay, conn_seed);
             Ok(Box::new(toxic) as BoxTransport)
         }) as sunrise_core::ConnectFuture
@@ -374,17 +363,35 @@ async fn open_core_unlocked(
     factory: Option<TransportFactory>,
     unlock: Unlock,
 ) -> Arc<Core> {
+    try_open_core_unlocked(vault_dir, addr, clock, factory, unlock)
+        .await
+        .expect("open core")
+}
+
+/// [`open_core_unlocked`], handing back the open's refusal instead of
+/// panicking on it.
+///
+/// The cross-version harness needs the refusal itself: `HEAD` declining to
+/// open a vault an older build wrote is a finding about the invariant, not a
+/// broken fixture.
+pub(crate) async fn try_open_core_unlocked(
+    vault_dir: &Path,
+    addr: SocketAddr,
+    clock: Arc<dyn Clock>,
+    factory: Option<TransportFactory>,
+    unlock: Unlock,
+) -> Result<Arc<Core>, sunrise_core::CoreError> {
     let cfg = CoreConfig {
         sync: Some(
             SyncConfig::new(format!("http://{addr}")).with_resync_interval(HARNESS_RESYNC_INTERVAL),
         ),
         ..CoreConfig::with_clock(vault_dir.to_path_buf(), APP_ID, clock, Arc::new(SystemRng))
     };
-    let core = Arc::new(Core::open(cfg, unlock).await.expect("open core"));
+    let core = Arc::new(Core::open(cfg, unlock).await?);
     if let Some(factory) = factory {
         core.start_sync(factory).expect("start sync");
     }
-    core
+    Ok(core)
 }
 
 // ---------------------------------------------------------------------------
@@ -427,21 +434,15 @@ pub struct CanonicalStream {
     pub archived: bool,
 }
 
-fn state_str(s: TaskState) -> String {
-    match s {
-        TaskState::Todo => "todo",
-        TaskState::InProgress => "in_progress",
-        TaskState::Done => "done",
-        TaskState::Cancelled => "cancelled",
-    }
-    .to_string()
+fn state_str(s: &TaskState) -> String {
+    s.as_str().to_string()
 }
 
 fn project_task(t: &Task) -> CanonicalTask {
     CanonicalTask {
         id: t.id.to_str(),
         title: t.title.clone(),
-        state: state_str(t.state),
+        state: state_str(&t.state),
         stream_id: *t.stream_id.bytes(),
         scheduled_at_ms: t.scheduled_at.as_ref().map(SunriseTime::index_ms),
         due_at_ms: t.due_at.as_ref().map(SunriseTime::index_ms),

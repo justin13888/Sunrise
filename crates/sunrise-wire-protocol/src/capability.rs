@@ -66,6 +66,14 @@ pub enum Capability {
     /// does not see this bit agreed simply never sends the frame and renews by
     /// reconnecting, which every server understands.
     SrvTokenRefresh,
+    /// `9` The relay's envelope header decoder applies the container floor
+    /// rule of ADR-0045 §5 rather than exact match, so it routes an envelope
+    /// from a newer container at a floor it implements.
+    ///
+    /// Optional. A relay without it cannot read the routing header of a newer
+    /// container, so a client MUST NOT write one to a relay that did not agree
+    /// this bit (protocol-versioning.md §2.1).
+    SrvEnvelopeFloor,
     // --- client bits (32..64) ---
     //
     // Bits 32, 33 and 34 originally asserted three Loro CRDT capabilities:
@@ -108,6 +116,7 @@ impl Capability {
             // 6 is reserved; see the enum.
             Self::SrvDiagnosticUpload => 7,
             Self::SrvTokenRefresh => 8,
+            Self::SrvEnvelopeFloor => 9,
             Self::CliEntityLww => 32,
             Self::CliHlcTimestamps => 33,
             Self::CliForwardCompat => 34,
@@ -160,7 +169,7 @@ mod tests {
     /// Every capability the enum still names, kept exhaustive by the `match`
     /// in [`the_retired_billing_bit_leaves_a_hole_at_six`]: adding a variant
     /// stops that compiling until it is listed here too.
-    const EVERY_CAPABILITY: [Capability; 14] = [
+    const EVERY_CAPABILITY: [Capability; 15] = [
         Capability::SrvPushApns,
         Capability::SrvPushFcm,
         Capability::SrvPushWeb,
@@ -169,6 +178,7 @@ mod tests {
         Capability::SrvIntegrationGcal,
         Capability::SrvDiagnosticUpload,
         Capability::SrvTokenRefresh,
+        Capability::SrvEnvelopeFloor,
         Capability::CliEntityLww,
         Capability::CliHlcTimestamps,
         Capability::CliForwardCompat,
@@ -196,6 +206,7 @@ mod tests {
                 | Capability::SrvIntegrationGcal
                 | Capability::SrvDiagnosticUpload
                 | Capability::SrvTokenRefresh
+                | Capability::SrvEnvelopeFloor
                 | Capability::CliEntityLww
                 | Capability::CliHlcTimestamps
                 | Capability::CliForwardCompat
@@ -209,6 +220,14 @@ mod tests {
         // silent renumbering of everything above it.
         assert_eq!(Capability::SrvIntegrationGcal.bit(), 5);
         assert_eq!(Capability::SrvDiagnosticUpload.bit(), 7);
+    }
+
+    /// ADR-0045 §5 allocates bit 9 to the envelope floor. It is optional, so
+    /// a relay without it is a clean degrade rather than a refused session.
+    #[test]
+    fn the_envelope_floor_bit_is_nine_and_optional() {
+        assert_eq!(Capability::SrvEnvelopeFloor.bit(), 9);
+        assert!(!REQUIRED_SERVER_BITS.has(Capability::SrvEnvelopeFloor));
     }
 
     #[test]

@@ -40,6 +40,27 @@ struct RoutineModelTests {
         #expect(!field.isValid)
     }
 
+    /// A rule a newer client wrote, with a frequency this build does not know,
+    /// describes back as text the parser refuses. Untouched, the field keeps
+    /// the held rule, so the sheet can still save; typed over, it parses.
+    @Test
+    func anUntouchedFieldKeepsAHeldRuleItCannotReparse() throws {
+        let held = Recurrence(
+            freq: .unknown("HOURLY"), interval: 1, byDay: [], byMonthDay: [],
+            byMonth: [], bySetPos: [], count: nil, until: nil, wkst: nil
+        )
+        let field = RecurrenceField(held: held)
+        #expect(field.text.contains("unrecognised"), "\(field.text)")
+        #expect(field.isValid)
+        #expect(field.rule?.freq == .unknown("HOURLY"))
+
+        field.text = "every day"
+        #expect(field.rule?.freq == .daily)
+
+        field.text = recurrenceSummary(rule: held)
+        #expect(field.rule?.freq == .unknown("HOURLY"), "restoring the text restores the rule")
+    }
+
     /// Editing a routine starts from its rule described back, and saving that
     /// unchanged must not rewrite the schedule.
     @Test

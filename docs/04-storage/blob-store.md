@@ -18,7 +18,7 @@ The creating device computes it while sealing
 ([`../02-domain/attachments.md`](../02-domain/attachments.md)`:27`, "assigned by
 the creating device"). The relay re-derives it at `finalize` from what is
 actually on disk rather than trusting the client's claim
-(`crates/sunrise-server/src/api/blobs.rs:239-264`), takes the same first 16
+(`crates/sunrise-server/src/api/blobs.rs:239-265`), takes the same first 16
 bytes as the storage key (`blob_key`, `blobs.rs:433-442`), and returns it as
 `blb_` + 32 lowercase hex (`blobs.rs:289`). The two values are equal by
 construction; if they were not, the upload would have failed the hash check.

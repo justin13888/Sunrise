@@ -16,9 +16,7 @@ import XCTest
 final class RecoveryCeremonyUITests: SunriseUITestCase {
     override func setUp() async throws {
         try await super.setUp()
-        app.terminate()
-        app.launchArguments.append("-sunrise-ui-test-recovery")
-        app.launch()
+        relaunch(adding: ["-sunrise-ui-test-recovery"])
     }
 
     /// Creating a vault presents the ceremony, and a device that cannot reach a

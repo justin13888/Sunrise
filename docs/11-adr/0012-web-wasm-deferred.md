@@ -1,6 +1,14 @@
 # 0012 — Web WASM core deferred; localStorage stub is the v1 web story
 
-**Status:** accepted
+**Status:** superseded by [ADR-0055](./0055-web-wasm-core.md)
+
+**Superseded by:** [ADR-0055](./0055-web-wasm-core.md) — the deferral is over.
+The workspace is on `rusqlite` 0.40.2, the hard gate below passed unchanged,
+and the web client runs `sunrise-core` compiled to wasm in a dedicated worker,
+with the `localStorage` stub as its fallback. The two web gaps named at the end
+of this ADR are accepted and stated there. What follows is kept as the record
+of why the first attempt stopped and which integration paths were rejected;
+both still hold.
 
 **Amended by:** [ADR-0026](./0026-msrv-bump.md) — the revisit trigger below has
 fired (the workspace MSRV is now 1.91.1), so the MSRV half of this deferral no

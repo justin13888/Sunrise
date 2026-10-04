@@ -45,10 +45,11 @@
     // otherwise rewrite one, and that gate would then fail with "stale;
     // regenerate it" while naming the wrong cause.
     //
-    // Two directories today, each with a generator and the gate that checks it:
+    // Three directories today, each with a generator and the gate that checks it:
     //
     //   packages/sunrise-ui-tokens/generated/   `mise run tokens`    `tokens-current`
     //   schemas/generated/                      `mise run openapi`   `openapi-current`
+    //   packages/sunrise-i18n/generated/        `mise run i18n`      `i18n-current`
     //
     // Committed and drift-gated is the whole membership test, and it is
     // narrower than "generator output" on purpose. A gitignored build

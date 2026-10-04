@@ -73,7 +73,9 @@ A `DOC_SCHEMA_V` names exactly one schema. The canonical schema covers:
 - every feature id
 
 It is generated from the entity registry ([#328](https://github.com/justin13888/Sunrise/issues/328)), not written by hand. It is
-committed under `schemas/doc-schema/`. Its fingerprint is:
+committed under `schemas/doc-schema/`. Every list in it is sorted before it
+is hashed, because no declaration order reaches the wire: reordering source
+never forces a bump. Its fingerprint is:
 
 ```
 BLAKE3::derive_key("sunrise.doc_schema.fingerprint.v1", JCS(schema))
@@ -93,9 +95,54 @@ BLAKE3::derive_key("sunrise.doc_schema.fingerprint.v1", JCS(schema))
 The details are in
 [ADR-0045](../11-adr/0045-schema-identity-and-feature-gating.md) §2–§3.
 
-*Today:* there is no canonical schema, no fingerprint and no field 13. The
-integer is bound under the signature but means only what the doc comment on
-`DOC_SCHEMA_V` in `crates/sunrise-cbor/src/version.rs` says ([#323](https://github.com/justin13888/Sunrise/issues/323)).
+### Where each piece lives
+
+| Piece | Where |
+|---|---|
+| The generator | `crates/sunrise-core/src/doc_schema.rs#canonical_schema`, test-only |
+| The canonical schema | `schemas/doc-schema/current.json` |
+| The build's registry, which the writer reads | `DOC_SCHEMA_FINGERPRINTS` in `crates/sunrise-cbor/src/version.rs` |
+| The committed registry | `schemas/doc-schema/registry.json`, version (as a decimal string) to lowercase hex |
+| The frozen entries | `DOC_SCHEMA_REGISTRY` in `crates/sunrise-crypto-test-vectors/src/protocol.rs` |
+| The writer | `crates/sunrise-crypto/src/op_envelope.rs#encode_envelope` stamps field 13 |
+
+`DOC_SCHEMA_V` 7 is the first fingerprinted version (`DOC_SCHEMA_FP_FIRST`).
+Versions 1 through 6 have no entry. Their envelopes carry no field 13 and are
+read under the legacy rules.
+
+The tests in `doc_schema.rs` fail when:
+
+- the fingerprint of the generated schema differs from the build's entry for
+  `DOC_SCHEMA_V`;
+- `DOC_SCHEMA_FINGERPRINTS` differs from the frozen list, so an entry changed,
+  disappeared or was appended to one list only;
+- either committed file differs from what the build generates.
+
+The committed files are compared as parsed JSON. They sit outside a
+`generated/` directory, so Biome lays them out, and the fingerprint is over
+their JCS form anyway. When a shape changes, the failure prints the new
+fingerprint. Bump `DOC_SCHEMA_V`, append the new entry to both lists, then
+regenerate the two files:
+
+```
+SUNRISE_REGEN_FIXTURES=1 cargo test -p sunrise-core --lib doc_schema
+mise run fix
+```
+
+*Today:* two parts of the design are not built yet.
+
+- **No receiver compares field 13 with its registry**
+  ([#438](https://github.com/justin13888/Sunrise/issues/438)). The decoder
+  reads field 13 and keeps it under the signature, but a mismatch is applied
+  rather than parked.
+- **The schema does not yet cover every shape**
+  ([#439](https://github.com/justin13888/Sunrise/issues/439)). Value types that
+  are not registry records appear only as a type name. These are
+  `ScheduleConstraint`, `RRule`, `SunriseTime`, `NoteBody`, `Chunk` and the
+  review rows. The control-op payloads are not described either. A field added
+  to one of them does not move the fingerprint. Field defaults wait for
+  [#319](https://github.com/justin13888/Sunrise/issues/319), and feature ids for
+  [#324](https://github.com/justin13888/Sunrise/issues/324).
 
 ## How fields merge
 
@@ -137,8 +184,12 @@ can be lost ([#319](https://github.com/justin13888/Sunrise/issues/319)).
   - a schema-fingerprint mismatch
 
   See [ADR-0045](../11-adr/0045-schema-identity-and-feature-gating.md) §4.
-  *Today:* an unknown op kind is reported as `RemoteOpInvalid`, classed as
-  corruption and dropped ([#320](https://github.com/justin13888/Sunrise/issues/320)).
+  *Today:* an unknown op kind parks
+  ([#320](https://github.com/justin13888/Sunrise/issues/320), `STORAGE_V` 31),
+  and the replay runs at `Core::open` when the `DOC_SCHEMA_V` that parked or
+  last tried an op differs from the build's. The other three reasons do not
+  exist yet, so any other inner decode failure is still `RemoteOpInvalid`,
+  classed as corruption and dropped.
 - **Document schema: unknowns are lossless at every level.** Three rules, all
   required:
   1. **Every struct that crosses the wire keeps an unknown map.** That means
@@ -165,10 +216,31 @@ can be lost ([#319](https://github.com/justin13888/Sunrise/issues/319)).
     `extra BLOB` from
     `crates/sunrise-storage/migrations/0015_entity_extra_columns.sql`.
 
-  *Today:* rule 1 holds at the top level of an entity only ([#322](https://github.com/justin13888/Sunrise/issues/322)). Rule 2 is
-  lossy, because `lossy_enum!` writes the fallback back
-  (`lossy_enum!` in `crates/sunrise-domain/src/unknown.rs`, [#321](https://github.com/justin13888/Sunrise/issues/321)). `StreamColor`,
-  `Frequency` and `Weekday` still reject unknown values.
+  *Today:* rule 1 holds for every entity and for the nested value types
+  `ScheduleConstraint`, `TimeOfDayRange`, `DateRange`, `RRule` and
+  `TaskTemplate` ([#322](https://github.com/justin13888/Sunrise/issues/322)).
+  `Chunk` (in `FocusStart`) and `ReviewTotals` and `ReviewSnapshotStream` (in
+  `ReviewSnapshot`) have no map yet, nor do the four known `SunriseTime`
+  kinds. Rule 3 holds for every table whose `extra` a write can overwrite: a
+  write whose entity carries no unknown fields keeps a blob this build cannot
+  parse, and logs `core.storage.extra_kept_opaque`. Rule 2
+  holds for every string-valued enum ([#321](https://github.com/justin13888/Sunrise/issues/321)): `lossy_enum!` in
+  `crates/sunrise-domain/src/unknown.rs` gives each one an
+  `Unknown(UnknownVariant)` arm, an `effective()` that reads it as the
+  fallback, and a `Serialize` that writes the raw string back. The storage
+  projection keeps the raw string in the enum's own column, and SQL that
+  filters on an enum is spelled so an unknown value reads as its fallback
+  (`state NOT IN ('done', 'cancelled')`, not `state IN ('todo',
+  'in_progress')`). A routine's rule is also stored as canonical CBOR in
+  `routines.rrule_cbor` (migration `0032_routine_rrule_blob.sql`), because its
+  RFC 5545 text cannot hold a raw token that contains `;`, `,` or `=`. An
+  unknown `Frequency` or `Weekday` in `BYDAY`/`WKST` makes the routine generate
+  no occurrences, and its summary says so. An unknown weekday in a scheduling
+  constraint's `days_of_week` lifts that day restriction rather than blocking
+  every day. `SunriseTime::Unknown { kind, raw }` keeps a kind this build does
+  not know, on the wire and in storage, where the `_kind` column holds the raw
+  kind and the `_tz` sidecar the other fields' canonical CBOR, hex-encoded
+  after `cbor:` ([#322](https://github.com/justin13888/Sunrise/issues/322)).
 - **Document schema: a missing feature makes a build read-only, not broken.**
   A vault lists the features its data requires in a signed, grow-only
   `vault_requires` set. A build that lacks one of them:
@@ -206,7 +278,9 @@ can be lost ([#319](https://github.com/justin13888/Sunrise/issues/319)).
 5. Bump `DOC_SCHEMA_V`, regenerate the canonical schema, and append the new
    fingerprint to the registry. Leave `DOC_SCHEMA_FLOOR` alone.
 6. Add a case to the cross-version harness ([#326](https://github.com/justin13888/Sunrise/issues/326)): an older build merges
-   ops that set the field, and the field survives.
+   ops that set the field, and the field survives. The case is a step that
+   sets the field on B (`HEAD`) and a `Field` in
+   `crates/sunrise-e2e/src/cross_version/model.rs` that reads it back.
 
 ## Adding an op kind or a field-op kind
 
@@ -264,12 +338,35 @@ gating. Nothing else is allowed.
 
 ## Compatibility testing
 
-- **Cross-version merge ([#326](https://github.com/justin13888/Sunrise/issues/326)).** Two different builds, a pinned older tag
-  and `HEAD`, run as replicas over an in-process relay under a property test.
-  - *No break:* the older build never errors, never classes an op as
-    corruption, and never stops syncing.
-  - *No loss:* after the older build upgrades and replays its parked ops, both
-    projections equal a `HEAD`-only run of the same op set.
+- **Cross-version merge ([#326](https://github.com/justin13888/Sunrise/issues/326), [ADR-0057](../11-adr/0057-cross-version-merge-harness.md)).**
+  Two different builds run as replicas over the in-process relay under a
+  property test: a pinned baseline commit, in its own process, and `HEAD`. The
+  baseline creates the account, and `HEAD` opens one of its vaults, which is
+  the upgrade. A newer-build writer adds what only a newer build writes: an
+  unknown field, an unknown enum value, an unknown nested `SunriseTime` kind
+  and an unknown op kind, handed to either side first.
+  - *No break:* `HEAD` opens the vault the baseline wrote, the baseline never
+    logs a warning or an error, neither replica refuses a newer op, logs an op
+    as corruption or fails a command, and A is still live at the end. Only a
+    baseline refusal as corruption, or a corruption it logs, can be an expected
+    failure; ADR-0057 §5 lists the rest.
+  - *No loss:* after the baseline replica is reopened by `HEAD` and has
+    replayed its parked ops, every field on both replicas holds what its last
+    writer set, unless a concurrent write to that same field won. The
+    reference is computed from the ops, because a second `HEAD` run cannot
+    reproduce which of two concurrent writes wins. The same property runs
+    `HEAD` against `HEAD` in the ordinary suite to keep that reference honest.
+  - The baselines are the builds the invariant binds: the
+    [ADR-0042](../11-adr/0042-v0-forever.md) floor, `d9566ade`, and anything
+    after it. `v0.1.0-rc.1` predates the withdrawn licence, and `HEAD` does
+    not open a vault it wrote (`CRYPTO_SUITE_V` 3 to 5).
+  - Known violations are expected failures that name their issue, listed in
+    `crates/sunrise-e2e/src/cross_version/gaps.rs`. Against the floor they are
+    #319, #320, #321, #322 and #324. A fix at `HEAD` does not clear an entry
+    scoped to an older baseline, because that build never changes; the entry
+    leaves when the matrix moves past it.
+  - How to run it: [`../10-cross-cutting/testing.md`](../10-cross-cutting/testing.md)
+    §Cross-version merge.
 - **Per-entity round trip.** Each entity is decoded and re-encoded with random
   unknown keys injected at every nesting level, and must produce identical
   bytes.
@@ -317,6 +414,7 @@ Version history, for reading old ops:
 | 4 | The six delete ops changed shape to full-state. |
 | 5 | Added the control families `KeyEnvelope`, `DeviceRevoke` and `DeviceCertPublish` ([ADR-0024](../11-adr/0024-key-hierarchy.md)). |
 | 6 | Added the control family `IdentityTransition`. |
+| 7 | The first fingerprinted version ([#323](https://github.com/justin13888/Sunrise/issues/323)), so envelopes gained field 13. It also records the additive shapes that landed after 6 without a bump: the `Unknown` arm of every lossless enum ([#321](https://github.com/justin13888/Sunrise/issues/321)), and unknown maps on nested records with `SunriseTime`'s unknown kind ([#322](https://github.com/justin13888/Sunrise/issues/322)). Every v6 payload still decodes. |
 
 Versions 3, 4, 5 and 6 each shipped a change an older build could not decode.
 Each relied on a pre-release licence that

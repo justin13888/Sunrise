@@ -1,0 +1,15 @@
+{
+    "extends": "../../tsconfig.base.json",
+    "compilerOptions": {
+        "noEmit": true
+    },
+    // No `rootDir`: `build.ts` and `plurals.ts` sit at the package root,
+    // outside `src/`, exactly as in `packages/sunrise-ui-tokens`.
+    "include": [
+        "src/**/*",
+        "build.ts",
+        "plurals.ts",
+        "test/**/*",
+        "generated/**/*"
+    ]
+}

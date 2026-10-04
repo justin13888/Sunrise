@@ -11,18 +11,22 @@
 //! revokes one, so the only code that writes them is code already holding the
 //! device it is writing for.
 //!
-//! The in-place column addition is here for the same reason: the only column
-//! ever added to a released database is a device column, and
-//! [`add_missing_columns`] has to run between [`SCHEMA`] and [`LATE_INDEXES`]
-//! for the ordering reason `LATE_INDEXES` records.
+//! The table's later history — the `vault_device_id` column added to databases
+//! that predate it, and the index over it — is migration 0002 in
+//! [`super::migrations`], because every schema change now goes through that
+//! numbered list.
 
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 use super::{mint_id, unsigned, Store, StoreError};
 
 /// The `devices` table, its by-account index, and the `push_tokens` rows that
 /// cascade off it.
+///
+/// Part of migration 0001, and therefore frozen: a change to these tables is a
+/// new migration in [`super::migrations`], never an edit here, because a
+/// database that already ran 0001 never runs it again.
 pub(super) const SCHEMA: &str = r"
 CREATE TABLE IF NOT EXISTS devices (
     device_id       TEXT PRIMARY KEY,
@@ -48,21 +52,6 @@ CREATE TABLE IF NOT EXISTS push_tokens (
     updated_at_ms INTEGER NOT NULL,
     PRIMARY KEY (device_id, platform)
 );";
-
-/// Indexes over columns [`add_missing_columns`] may have just added.
-///
-/// Separate from `SCHEMA` because of the order: `SCHEMA` runs against a
-/// database an earlier release created, where the column does not exist yet, so
-/// an index naming it there fails with `no such column` and takes the whole
-/// startup with it.
-pub(super) const LATE_INDEXES: &str = r"
--- Revocation arrives naming a vault id, so this is the lookup that route runs.
--- Deliberately *not* unique: `docs/06-server/api.md` records that a device
--- re-registering is a second row rather than an error, and all of that device's
--- rows must be revoked together.
-CREATE INDEX IF NOT EXISTS devices_by_vault_id
-    ON devices(account_id, vault_device_id);
-";
 
 /// A device row, matching `DeviceMeta` in `docs/06-server/api.md`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -350,44 +339,71 @@ impl Store {
         }
         Ok(out)
     }
-}
 
-/// Columns added to a table that already exists on a running relay.
-///
-/// `SCHEMA` is `CREATE TABLE IF NOT EXISTS`, so it is inert against a database
-/// a previous release created and a column added there is never applied. There
-/// is no migration framework here and this does not want to become one: SQLite
-/// has no `ADD COLUMN IF NOT EXISTS`, so the presence check is `PRAGMA
-/// table_info` and the whole mechanism is one idempotent statement per column.
-///
-/// Every column added this way must be nullable with no default, which is the
-/// only shape `ALTER TABLE ... ADD COLUMN` applies to a populated table without
-/// rewriting it.
-pub(super) fn add_missing_columns(conn: &Connection) -> Result<(), StoreError> {
-    add_column_if_absent(conn, "devices", "vault_device_id", "TEXT")
-}
-
-/// One idempotent `ALTER TABLE ... ADD COLUMN`.
-///
-/// SQLite has no `ADD COLUMN IF NOT EXISTS`, so the presence check is a
-/// `pragma_table_info` count. `table`, `column` and `decl` are interpolated
-/// into the statement because SQLite binds values and not identifiers; every
-/// caller is a literal in this file, and nothing here takes one from a request.
-fn add_column_if_absent(
-    conn: &Connection,
-    table: &str,
-    column: &str,
-    decl: &str,
-) -> Result<(), StoreError> {
-    let present: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = ?2",
-        params![table, column],
-        |r| r.get(0),
-    )?;
-    if present == 0 {
-        conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {decl};"))?;
+    /// Every active device of `account_id` holding a `platform` token, as
+    /// `(device_id, token)`, ordered by device id.
+    ///
+    /// The `revoked = 0` filter is in the SQL even though revocation deletes
+    /// the tokens in the same transaction: a revoked device must never be
+    /// woken, and that should not rest on one statement elsewhere.
+    pub fn push_targets(
+        &self,
+        account_id: &str,
+        platform: &str,
+    ) -> Result<Vec<(String, String)>, StoreError> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT d.device_id, p.token FROM devices d \
+             JOIN push_tokens p ON p.device_id = d.device_id \
+             WHERE d.account_id = ?1 AND d.revoked = 0 AND p.platform = ?2 \
+             ORDER BY d.device_id",
+        )?;
+        let rows = stmt.query_map(params![account_id, platform], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
     }
-    Ok(())
+
+    /// The `platform` token of one active device, if it holds one.
+    pub fn push_target(
+        &self,
+        device_id: &str,
+        platform: &str,
+    ) -> Result<Option<String>, StoreError> {
+        let conn = self.conn.lock();
+        Ok(conn
+            .query_row(
+                "SELECT p.token FROM push_tokens p \
+                 JOIN devices d ON d.device_id = p.device_id \
+                 WHERE p.device_id = ?1 AND p.platform = ?2 AND d.revoked = 0",
+                params![device_id, platform],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
+    /// Delete a device's `platform` token, but only while it is still `token`.
+    ///
+    /// The provider said this token is dead. The device may have registered a
+    /// new one between the send and this call, and deleting by key alone would
+    /// throw the working replacement away. Returns whether a row went.
+    pub fn delete_push_token(
+        &self,
+        device_id: &str,
+        platform: &str,
+        token: &str,
+    ) -> Result<bool, StoreError> {
+        let conn = self.conn.lock();
+        let n = conn.execute(
+            "DELETE FROM push_tokens WHERE device_id = ?1 AND platform = ?2 AND token = ?3",
+            params![device_id, platform, token],
+        )?;
+        Ok(n > 0)
+    }
 }
 
 fn row_to_device(r: &rusqlite::Row<'_>) -> Result<Device, rusqlite::Error> {

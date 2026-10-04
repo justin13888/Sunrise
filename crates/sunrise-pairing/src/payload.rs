@@ -25,8 +25,13 @@
 //!    12: bstr .size 32,   ; D_S_priv, minted by this device
 //!    13: bstr .size 32,   ; D_D_priv, minted by this device
 //!    14: bstr,            ; DeviceCert issued for this device under ID_S
+//!  ? 15: [ * bstr .size 16 ],  ; read_bounds: the sponsor's bounded device ids
 //! }
 //! ```
+//!
+//! Field 15 is omitted when the set is empty, so a payload with no read bound
+//! encodes to the bytes it did before the field existed. Its reason for
+//! existing is [`PairingPayload::read_bounds`].
 //!
 //! # Why `ID_S_priv` does not travel (field 1, burned)
 //!
@@ -124,7 +129,7 @@
 //! of one account then folded from different starting points and disagreed about
 //! who the account was — silently, because each was internally consistent.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use thiserror::Error;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
@@ -243,6 +248,28 @@ pub struct PairingPayload {
     /// step, and so two devices that assembled the same set produce the same
     /// bytes.
     pub stream_keys: BTreeMap<[u8; 16], BTreeMap<u32, [u8; 32]>>,
+    /// Every device the sponsor has **read-bounded**: its whole
+    /// `device_read_bounds` table, which the joiner adopts as its own.
+    ///
+    /// The bound is a ratchet over the registers a replica computed along its
+    /// own arrival order, and no fold of the ledger rebuilds it: a device
+    /// bounded when its revoker was still ungated stays bounded, but a
+    /// replica that learns of the revoker's own revocation first never bounds
+    /// it at all. A device that paired with nothing started as that second
+    /// kind of replica, the weakest in the account, and sealed keys to every
+    /// device its sponsor had cut off
+    /// ([#282](https://github.com/justin13888/Sunrise/issues/282)). Carrying
+    /// the bound makes it start where its sponsor stands.
+    ///
+    /// The **bound**, not the revocation ledger. A joiner folding the ledger
+    /// would reach the account's final register, which is exactly what a
+    /// replica that met the ops late computes, and the relay delivers every
+    /// op anyway. What only the sponsor holds is its history.
+    ///
+    /// The joiner cannot check the claim, and does not need to: the sponsor is
+    /// the device holding `ID_S_priv`, and this same message hands over every
+    /// Stream key in the account. Not secret, so not zeroized.
+    pub read_bounds: BTreeSet<[u8; 16]>,
 }
 
 impl Zeroize for PairingPayload {
@@ -316,7 +343,7 @@ pub fn encode_pairing_payload(p: &PairingPayload) -> Result<Vec<u8>, PairingPayl
         streams.push((Value::Bytes(stream_id.to_vec()), Value::Map(per_epoch)));
     }
 
-    let map = vec![
+    let mut map = vec![
         (int(3), Value::Bytes(p.id_s_pub.to_vec())),
         (int(4), Value::Bytes(p.id_d_pub.to_vec())),
         (int(5), Value::Bytes(p.identity_id.to_vec())),
@@ -328,6 +355,9 @@ pub fn encode_pairing_payload(p: &PairingPayload) -> Result<Vec<u8>, PairingPayl
         (int(13), Value::Bytes(p.d_d_priv.to_vec())),
         (int(14), Value::Bytes(p.device_cert.clone())),
     ];
+    if let Some(bounds) = read_bounds_value(&p.read_bounds) {
+        map.push((int(15), bounds));
+    }
     let mut out = Vec::with_capacity(512);
     ciborium::ser::into_writer(&Value::Map(map), &mut out)
         .map_err(|e| PairingPayloadError::Cbor(e.to_string()))?;
@@ -377,6 +407,7 @@ pub fn decode_pairing_payload(bytes: &[u8]) -> Result<PairingPayload, PairingPay
     let mut d_d_priv: Option<[u8; 32]> = None;
     let mut device_cert: Option<Vec<u8>> = None;
     let mut stream_keys: BTreeMap<[u8; 16], BTreeMap<u32, [u8; 32]>> = BTreeMap::new();
+    let mut read_bounds: BTreeSet<[u8; 16]> = BTreeSet::new();
 
     for (k, v) in map {
         let Value::Integer(i) = k else {
@@ -415,6 +446,9 @@ pub fn decode_pairing_payload(bytes: &[u8]) -> Result<PairingPayload, PairingPay
             (12, Value::Bytes(b)) => d_s_priv = Some(arr32(&b, "d_s_priv")?),
             (13, Value::Bytes(b)) => d_d_priv = Some(arr32(&b, "d_d_priv")?),
             (14, Value::Bytes(b)) => device_cert = Some(b),
+            // Optional: a sponsor with nothing bounded omits it, and so does
+            // one that predates it. Either way the set starts empty.
+            (15, Value::Array(ids)) => read_read_bounds(ids, &mut read_bounds)?,
             // The reserved range: every field this version defines, plus the
             // four burned ones. A value in it that matched none of the arms
             // above is either the wrong CBOR shape for a field we know or a
@@ -428,7 +462,7 @@ pub fn decode_pairing_payload(bytes: &[u8]) -> Result<PairingPayload, PairingPay
             // the key dropped, which is exactly the state `#76` and `#105` were
             // filed about. `a_payload_still_carrying_a_burned_identity_key_is_refused`
             // pins it.
-            (id, _) if (1..=14).contains(&id) => {
+            (id, _) if (1..=15).contains(&id) => {
                 return Err(PairingPayloadError::BadField("field shape"));
             }
             // Forward-compat: a newer sender's extra fields are ignored, not
@@ -450,6 +484,7 @@ pub fn decode_pairing_payload(bytes: &[u8]) -> Result<PairingPayload, PairingPay
         device_cert: device_cert.ok_or(PairingPayloadError::BadField("device_cert"))?,
         vault_root: vault_root.ok_or(PairingPayloadError::BadField("vault_root"))?,
         stream_keys,
+        read_bounds,
     };
 
     // Both comparisons are constant-time, which is what
@@ -520,6 +555,40 @@ pub(crate) fn read_stream_keys(
     Ok(())
 }
 
+/// The CBOR array a read-bound set travels as, or `None` for an empty set.
+///
+/// `None` rather than an empty array so that the field is **absent** when
+/// there is nothing to carry: a sponsor with no bounded device then encodes
+/// exactly the bytes it did before the field existed, which is what keeps the
+/// Apple fixture and every older joiner's view of the message unchanged.
+/// Ascending, because a `BTreeSet` iterates in order, so the encoding is
+/// canonical without a sort step.
+pub(crate) fn read_bounds_value(bounds: &BTreeSet<[u8; 16]>) -> Option<ciborium::value::Value> {
+    use ciborium::value::Value;
+    (!bounds.is_empty())
+        .then(|| Value::Array(bounds.iter().map(|id| Value::Bytes(id.to_vec())).collect()))
+}
+
+/// Read a read-bound array into `out`.
+///
+/// Shared by the payload and the grant, like [`read_stream_keys`]. Every entry
+/// must be a 16-byte device id: a malformed one is refused rather than
+/// skipped, because a skipped id is a device the joiner goes on sealing keys
+/// to while believing it adopted its sponsor's bound.
+pub(crate) fn read_read_bounds(
+    ids: Vec<ciborium::value::Value>,
+    out: &mut BTreeSet<[u8; 16]>,
+) -> Result<(), PairingPayloadError> {
+    use ciborium::value::Value;
+    for id in ids {
+        let Value::Bytes(id) = id else {
+            return Err(PairingPayloadError::BadField("read_bounds entry"));
+        };
+        out.insert(arr16(&id, "read_bounds entry")?);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -560,7 +629,65 @@ mod tests {
             device_cert: vec![0xa0; 48],
             vault_root: [0x25; 32],
             stream_keys,
+            read_bounds: BTreeSet::new(),
         }
+    }
+
+    /// The sponsor's read bound survives the seam, and an empty one is not
+    /// written at all.
+    #[test]
+    fn read_bounds_round_trip_and_an_empty_set_is_omitted() {
+        let mut p = payload(1, 1);
+        let without = encode_pairing_payload(&p).unwrap();
+        assert!(
+            !contains_key(&without, 15),
+            "an empty bound must leave field 15 out, so the bytes match a payload \
+             from before the field existed"
+        );
+        assert!(decode_pairing_payload(&without)
+            .unwrap()
+            .read_bounds
+            .is_empty());
+
+        p.read_bounds = BTreeSet::from([[0xc1; 16], [0xa1; 16]]);
+        let back = decode_pairing_payload(&encode_pairing_payload(&p).unwrap()).unwrap();
+        assert_eq!(back.read_bounds, p.read_bounds);
+    }
+
+    /// A malformed bound is refused, not dropped: a dropped id is a device the
+    /// joiner would seal keys to while believing it had adopted the bound.
+    #[test]
+    fn a_malformed_read_bound_is_refused() {
+        use ciborium::value::Value;
+        let bytes = encode_pairing_payload(&payload(1, 1)).unwrap();
+        let Value::Map(mut map) = ciborium::de::from_reader(&bytes[..]).unwrap() else {
+            panic!("payload is a map");
+        };
+        map.push((int(15), Value::Array(vec![Value::Bytes(vec![0xc1; 15])])));
+        let mut out = Vec::new();
+        ciborium::ser::into_writer(&Value::Map(map.clone()), &mut out).unwrap();
+        assert!(matches!(
+            decode_pairing_payload(&out),
+            Err(PairingPayloadError::BadField("read_bounds entry"))
+        ));
+
+        map.pop();
+        map.push((int(15), Value::Bytes(vec![0xc1; 16])));
+        out.clear();
+        ciborium::ser::into_writer(&Value::Map(map), &mut out).unwrap();
+        assert!(matches!(
+            decode_pairing_payload(&out),
+            Err(PairingPayloadError::BadField("field shape"))
+        ));
+    }
+
+    fn contains_key(bytes: &[u8], key: u8) -> bool {
+        use ciborium::value::Value;
+        let Value::Map(map) = ciborium::de::from_reader(bytes).unwrap() else {
+            panic!("payload is a map");
+        };
+        map.iter()
+            .any(|(k, _)| matches!(k, Value::Integer(i) if i128::from(*i) == i128::from(key)))
     }
 
     #[test]

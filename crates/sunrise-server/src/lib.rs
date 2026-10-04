@@ -39,9 +39,12 @@
     clippy::missing_panics_doc
 )]
 
+pub mod admin;
 pub mod api;
 pub mod auth;
 pub mod config;
+pub mod drain;
+pub mod healthcheck;
 pub mod logging;
 pub mod metrics;
 pub mod push;
@@ -51,13 +54,18 @@ pub mod state;
 pub mod store;
 pub mod sync_session;
 
+#[cfg(test)]
+mod serve_tests;
+
 pub use api::error::ApiError;
 pub use auth::oidc::{OidcConfig, OidcVerifier};
 pub use auth::{AuthError, NullVerifier, StaticVerifier, Subject, TokenVerifier, Verified};
 pub use config::ServerConfig;
 pub use logging::{account_h, id_h};
 pub use metrics::Metrics;
-pub use push::{LoggingProvider, PushIntent, PushPlatform, PushProvider, PushTokenRegistration};
+pub use push::{
+    ApnsProvider, Dispatcher, PushIntent, PushPlatform, PushProvider, PushTokenRegistration,
+};
 pub use relay::RelayHub;
 pub use state::{Clock, ServerState, SystemClock};
 pub use store::{Account, Device, Store, StoreError};
@@ -75,22 +83,108 @@ use kynos::router::service::Service;
 /// Returns kynos's error naming every violation found.
 pub fn build_service(state: ServerState) -> kynos::Result<Service<ServerState>> {
     let config = ServerConfig::clone(&state.config);
-    api::router(&config).build(state)
+    api::router(&config, &state.metrics).build(state)
 }
 
 /// Serve the typed surface on `listener` until the process ends.
 ///
-/// kynos owns the accept loop. An earlier design in `api/mod.rs` described a
-/// hand-written dispatcher that would hand `/sync` to axum and everything else
-/// to kynos; ADR-0023 removed the need for it by making `/sync` describable, so
-/// there is one stack and no dispatcher.
+/// [`serve_until`] with a trigger that never fires, for the tests and
+/// embedders that end the server by dropping its task.
 ///
 /// # Errors
-/// Returns kynos's error if the surface cannot be built or the listener fails
-/// terminally.
+/// As [`serve_until`].
 pub async fn serve(state: ServerState, listener: tokio::net::TcpListener) -> kynos::Result<()> {
-    kynos::server::Server::new(build_service(state)?)
+    serve_until(state, listener, std::future::pending()).await
+}
+
+/// Serve the typed surface on `listener` until `shutdown` resolves, then drain.
+///
+/// kynos owns the accept loop and the drain. An earlier design in `api/mod.rs`
+/// described a hand-written dispatcher that would hand `/sync` to axum and
+/// everything else to kynos; ADR-0023 removed the need for it by making
+/// `/sync` describable, so there is one stack and no dispatcher.
+///
+/// When `shutdown` resolves, in this order:
+///
+/// 1. [`ServerState::drain`] is set, so `GET /api/v1/health?deep=1` answers
+///    `503` and every open SSE stream sends a retryable `closed` event and
+///    ends (`api::sync::stream`).
+/// 2. kynos stops accepting and waits up to
+///    [`ServerConfig::shutdown_grace_secs`] for in-flight requests.
+/// 3. The store's write-ahead log is checkpointed into the database file, so
+///    the data directory a stopped relay leaves behind is one file.
+///
+/// The binary passes its `SIGTERM`/`SIGINT` listener as `shutdown`; a test
+/// passes any future it controls.
+///
+/// # Errors
+/// Returns kynos's error if the surface cannot be built, the listener fails
+/// terminally, or in-flight requests outlast the drain deadline.
+pub async fn serve_until(
+    state: ServerState,
+    listener: tokio::net::TcpListener,
+    shutdown: impl std::future::Future<Output = ()> + Send + 'static,
+) -> kynos::Result<()> {
+    let grace = state.config.shutdown_grace();
+    let drain = state.drain.clone();
+    let store = std::sync::Arc::clone(&state.store);
+    let trigger = {
+        let drain = drain.clone();
+        async move {
+            shutdown.await;
+            tracing::info!(
+                ev = "srv.stop.draining",
+                n_streams = drain.open_streams() as u64,
+                // The longest the drain may take, in the allowlist's one
+                // duration field.
+                delay_ms = u64::try_from(grace.as_millis()).unwrap_or(u64::MAX),
+                "shutdown requested; draining"
+            );
+            drain.begin();
+        }
+    };
+    let served = kynos::server::Server::new(build_service(state)?)
         .listener(listener)
+        .graceful_shutdown(kynos::server::shutdown::Shutdown::on(trigger))
+        .shutdown_timeout(grace)
         .serve()
-        .await
+        .await;
+    // Only after a drain: a listener that failed outright still leaves the
+    // store to the process exit, which closes it the same way.
+    if drain.is_draining() {
+        let flushed = checkpoint(&store);
+        tracing::info!(
+            ev = "srv.stop",
+            result = match &served {
+                Ok(()) => "drained",
+                Err(kynos::Error::Server(kynos::server::error::ServerError::ShutdownTimeout {
+                    ..
+                })) => "timed_out",
+                Err(_) => "failed",
+            },
+            n_streams = drain.open_streams() as u64,
+            status = if flushed.is_ok() {
+                "store_flushed"
+            } else {
+                "store_flush_failed"
+            },
+            cause = flushed.as_ref().err().map(tracing::field::display),
+            "drained and stopped"
+        );
+    }
+    served
+}
+
+/// Fold the write-ahead log back into the database file.
+///
+/// Every acknowledged frame is already durable in the WAL, so this loses
+/// nothing if it fails; what it buys is a data directory that is one file once
+/// the relay stops, which is what `self-hosting.md` tells an operator to back
+/// up. `TRUNCATE` rather than `PASSIVE` because no request is left to contend
+/// with it.
+fn checkpoint(store: &store::Store) -> rusqlite::Result<()> {
+    store
+        .conn
+        .lock()
+        .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))
 }

@@ -234,9 +234,10 @@ struct AccountModelTests {
         #expect(account.state == .signedIn(expiresAtMs: 4_000))
     }
 
-    /// The bearer goes and the failure shows, but the refresh token stays: an
-    /// offline issuer and a refusal arrive as the same error, and a network
-    /// failure must not cost the user a browser sign-in.
+    /// The bearer goes and the failure shows, but the refresh token stays: a
+    /// failure that is not the issuer's refusal says nothing about the token,
+    /// and a network failure must not cost the user a browser sign-in. The
+    /// refusal itself is `AccountRenewalTickTests`' subject.
     @Test
     func anExpiredTokenThatCannotBeRenewedKeepsItsRefreshToken() async {
         let store = StubCredentialStore(value: credentials(accessToken: "access-old"))

@@ -299,7 +299,10 @@ pub fn build_weekly_review(input: WeeklyReviewInput) -> WeeklyReview {
     let mut inbox: Vec<Task> = tasks
         .iter()
         .filter(|t| {
-            t.stream_id == inbox_id && !t.deleted && !t.archived && t.state == TaskState::Todo
+            t.stream_id == inbox_id
+                && !t.deleted
+                && !t.archived
+                && t.state.effective() == TaskState::Todo
         })
         .cloned()
         .collect();
@@ -709,7 +712,7 @@ mod tests {
             MON + 6 * DAY,
             3,
             &jiff::tz::TimeZone::UTC,
-            crate::Weekday::Mo,
+            &crate::Weekday::Mo,
         )
         .unwrap();
         build_weekly_review(WeeklyReviewInput {
@@ -817,7 +820,7 @@ mod tests {
             MON + 6 * DAY,
             3,
             &jiff::tz::TimeZone::UTC,
-            crate::Weekday::Mo,
+            &crate::Weekday::Mo,
         )
         .unwrap();
         // Review the *previous* week; nothing in the fixture happened then.
@@ -869,6 +872,23 @@ mod tests {
         );
     }
 
+    /// ADR-0045 §6: an inbox task in a state this build does not know reads
+    /// as `todo`, its fallback, so it is still offered for triage.
+    #[test]
+    fn step_two_reads_an_unknown_state_as_untriaged() {
+        let inbox = inbox_stream_ref();
+        let mut f = fixture();
+        let mut unknown = task(9, inbox, "in a newer build's state", MON + DAY);
+        unknown.state = TaskState::from_raw("snoozed");
+        f.tasks.push(unknown);
+
+        let r = review_from(&f, vec![ReviewStream::from(&stream(3, "Work"))]);
+        assert_eq!(
+            r.inbox.iter().map(|t| t.title.as_str()).collect::<Vec<_>>(),
+            vec!["in a newer build's state"]
+        );
+    }
+
     #[test]
     fn step_four_lists_commitments_that_came_due_and_stayed_open() {
         let s = eref(EntityKind::Stream, 3);
@@ -913,6 +933,7 @@ mod tests {
                     priority: None,
                     estimated_duration_s: None,
                     body: None,
+                    unknown: crate::Unknowns::new(),
                 },
                 rrule: RRule::parse("FREQ=DAILY").unwrap(),
                 timezone: "UTC".into(),
@@ -957,7 +978,7 @@ mod tests {
             MON + 6 * DAY,
             3,
             &jiff::tz::TimeZone::UTC,
-            crate::Weekday::Mo,
+            &crate::Weekday::Mo,
         )
         .unwrap();
         let mut deleted = routine(3, "gone", 99);

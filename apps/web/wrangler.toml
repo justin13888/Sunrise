@@ -1,0 +1,20 @@
+# Cloudflare Pages project for the web client (#11).
+#
+# Static assets only: no Functions, no bindings, no server URL. The relay a
+# browser syncs with is chosen at run time, in that browser (`src/server-url.ts`),
+# so one deployment serves every self-hosted relay; an operator hosting the app
+# for their own relay sets `SUNRISE_WEB_DEFAULT_SERVER_URL` at build time.
+#
+# Deployed by the `web-pages` job in `.github/workflows/release.yml`, on a tag,
+# once the owner has created the project and its two secrets; until then that
+# job builds nothing and says so. By hand, from `apps/web/` after
+# `mise run web-wasm` and `bun run build`:
+#
+#   bunx wrangler pages deploy --branch master
+#
+# Single-page routing needs no `_redirects`: with no top-level `404.html` in
+# the output, Pages serves `index.html` for every path it has no file for.
+
+name = "sunrise-web"
+pages_build_output_dir = "./dist"
+compatibility_date = "2026-09-01"

@@ -144,7 +144,9 @@ pub(super) fn insert_device_row(
     Ok(())
 }
 
-/// Wrap and store one Stream key. Returns `true` if the row was new.
+/// Wrap and store one Stream key, and for a [`KeySource::Envelope`] key record
+/// the device that sealed it in `stream_key_senders`. Returns `true` if the key
+/// row was new; the sender row does not count.
 pub(super) fn insert_stream_key_row(
     tx: &rusqlite::Transaction<'_>,
     vault_root: &VaultRootKey,
@@ -185,7 +187,20 @@ pub(super) fn insert_stream_key_row(
             now_ms
         ],
     )?;
-    Ok(tx.changes() > 0)
+    // Read before the sender row below, whose own `changes()` would replace it.
+    let new_key = tx.changes() > 0;
+    // Recorded whether or not the key was new. A second device sealing a key
+    // this device already holds proves that device holds it too, and
+    // `Keychain::current_epoch_tx` asks whether *any* read-bounded device does.
+    if let KeySource::Envelope { sender } = source {
+        tx.execute(
+            "INSERT OR IGNORE INTO stream_key_senders
+             (stream_id, epoch, key_id, sender_device_id)
+             VALUES (?, ?, ?, ?)",
+            params![&stream_id[..], epoch, &key_id[..], &sender[..]],
+        )?;
+    }
+    Ok(new_key)
 }
 
 /// `(device_id, signing_secret_wrapped, dh_secret_wrapped, cert_blob)`.

@@ -58,7 +58,7 @@ const UNMATCHED: &str = "unmatched";
 /// `/api/v1/devices/{device_id}`. Translating keeps one endpoint spelling in
 /// the logs across the port, so a dashboard grouping by it does not split into
 /// two series on the day the server changed.
-fn templated(path: &str) -> String {
+pub(crate) fn templated(path: &str) -> String {
     let mut out = String::with_capacity(path.len());
     let mut in_param = false;
     for ch in path.chars() {
@@ -128,6 +128,59 @@ impl Observer<ServerState> for RequestLog {
                 );
             }
         });
+    }
+}
+
+/// Records `sunrise_http_requests_total` and
+/// `sunrise_http_request_duration_seconds`.
+///
+/// The labels come from the same place `endpoint` does in the log: the matched
+/// operation's `paths` key, in the description's own `{param}` spelling
+/// (`docs/06-server/metrics.md` §Label allowlist), its method, and the status
+/// actually returned. The request's URI is never read, so no id can reach a
+/// label, and every value is drawn from the route table or the status codes
+/// the surface returns.
+///
+/// It holds the registry rather than reading it off the context because
+/// [`Observer::on_response`] is handed no context: the status is only known
+/// there, and the context only in `on_request`.
+///
+/// Duration is kynos's `elapsed`: time to the response head. For a buffered
+/// response that is the whole request; for the SSE `events` stream it is time
+/// to the first byte, which is what `metrics.md` documents.
+#[derive(Debug, Clone)]
+pub struct HttpMetrics {
+    metrics: crate::Metrics,
+}
+
+impl HttpMetrics {
+    /// Record into `metrics`.
+    #[must_use]
+    pub const fn new(metrics: crate::Metrics) -> Self {
+        Self { metrics }
+    }
+}
+
+impl Observer<ServerState> for HttpMetrics {
+    fn on_request(&self, _request: &Request, _route: Option<Route<'_>>, _context: &ServerState) {}
+
+    fn on_response(&self, response: &Response, route: Option<Route<'_>>, elapsed: Duration) {
+        let (method, endpoint) =
+            route.map_or(("-", UNMATCHED), |r| (r.method().as_wire_str(), r.path()));
+        self.metrics.incr_with(
+            "sunrise_http_requests_total",
+            &[
+                ("endpoint", endpoint),
+                ("method", method),
+                ("status", response.status().as_str()),
+            ],
+        );
+        self.metrics.observe(
+            "sunrise_http_request_duration_seconds",
+            &[("endpoint", endpoint), ("method", method)],
+            crate::metrics::LATENCY_BUCKETS,
+            elapsed.as_secs_f64(),
+        );
     }
 }
 

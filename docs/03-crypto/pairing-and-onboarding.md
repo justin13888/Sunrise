@@ -8,7 +8,7 @@ Three flows: account creation, adding a new device, recovering identity. Recover
 
 ## Implementation status
 
-**The handshake is real; the transport under it is not, and what crosses is not yet the `PairingPayload` below.**
+**The handshake and the relay rendezvous under it are real; no Apple client drives the rendezvous yet, and what crosses is not yet the `PairingPayload` below.**
 
 Implemented, in `crates/sunrise-pairing`:
 
@@ -16,10 +16,17 @@ Implemented, in `crates/sunrise-pairing`:
 * The **QR payload** codec — lex-ordered UTF-8 JSON, base64url no-pad, magic prefix (`qr.rs`).
 * The **6-digit SAS**, `BLAKE3("sunrise.pair_sas.v1" || h, 3)` (`sas.rs`), with the SAS gate enforced by the session type rather than by a caller remembering to check it.
 
+Implemented on the relay and in the seam:
+
+* **The rendezvous.** `sunrise-server` serves `POST /api/v1/pairing/send`, `/receive` and `/abort` (`crates/sunrise-server/src/api/pairing.rs`; [`../06-server/api.md`](../06-server/api.md) §Pairing rendezvous). It holds an in-memory session per `pair_id`, opened by the new device's first handshake message and bound to that bearer's account. Each role may buffer three messages, and a session lives 300 s. §Relay framing for Noise below says what changed from the frame layout described there.
+* **The pair-attempt limits.** `AttemptWindow` in `rate_limit.rs` is a rolling log. The relay charges it once per opened session: 10 an hour and 30 a day per account, 60 an hour per client address. A refusal is `429 RATE_LIMITED` with `Retry-After` set to when the oldest attempt ages out.
+* **One seam that drives it.** `RelayPairing` (`crates/sunrise-core-bindings/src/pairing_relay.rs`) moves all six messages through the rendezvous over the existing `DevicePairing` state machine. A client sees three phases: show or scan the code, compare the SAS, done. `crates/sunrise-e2e/tests/pairing_over_the_relay.rs` pairs two seams over a live relay with no manual transfer. It also shows that a substituted `n_static_pub` is refused before the SAS.
+* **The bearer goes only to the device's own relay.** `RelayPairing::accept` takes the existing device's configured relay and refuses a code whose `relay_url` names another origin, and the seam refuses any relay URL that is not `https://` (`http://` only to a loopback host, for tests). `wss://` is refused too: the relay serves no WebSocket ([ADR-0023](../11-adr/0023-sse-sync-transport.md)). A `429` to the message that opens a session ends `RelayPairing::offer` at once with the relay's `Retry-After`; every other `429` is retried inside the wait.
+
 Not implemented:
 
-* **The relay rendezvous does not exist.** There is no pairing route on `sunrise-server` — the router exposes `/accounts`, `/devices`, `/blobs`, `/meta`, `/health` and the `/sync` WebSocket, and nothing that routes by `pair_id`. §Relay framing for Noise, the three-message-per-role buffer and the 60 s window describe nothing. `crates/sunrise-core-bindings/src/pairing.rs` states the consequence outright: "the *transport* for them **is currently the user**" — the three handshake messages and the sealed root cross as base64url strings a person copies between the two machines by hand. The crypto is unaffected by that: the SAS binds the transcript either way.
-* **The rate limits are constants, not a limiter.** `RATE_LIMIT_HOURLY = 10` and `RATE_LIMIT_DAILY = 30` are declared in `rate_limit.rs` and read by nothing. No counter, no `429`, no `Retry-After`.
+* **No Apple client uses the rendezvous.** `apps/apple` still walks the eight copy/paste legs over `DevicePairing`, and nothing on either platform reads a QR with the camera ([#464](https://github.com/justin13888/Sunrise/issues/464)). The crypto is unaffected by how the bytes travel: the SAS binds the transcript either way.
+* **The numeric-only path.** Nothing turns a typed six-digit code into a session: the rendezvous is addressed by the 16-byte `pair_id` alone ([#465](https://github.com/justin13888/Sunrise/issues/465)).
 * **The rendezvous, not the messages.** What crosses the channel is the three-message exchange §Flow specifies — offer, request, grant — encoded as integer-keyed canonical CBOR (`crates/sunrise-pairing/src/protocol.rs`). **Neither identity private key travels.** `ID_D_priv` stopped in [#76](https://github.com/justin13888/Sunrise/issues/76): sealing to the identity needs only the public half, and a paired device that held the private one could open the identity copy of every epoch. `ID_S_priv` stopped in [#105](https://github.com/justin13888/Sunrise/issues/105): it signs every `DeviceCert`, so a device holding it could mint one for any device id it invented. The joining device mints its own `D_S` / `D_D` and the sponsor issues its cert; `Command::TrustDevice` is gone.
 * **Account creation (§Account creation) has a client on the CLI only.** `sunrise bootstrap` mints nothing new — the identity keypair is `Keychain::create`'s, minted at first vault open — but it is what publishes `ID_S_pub`/`ID_D_pub` and a sealed recovery blob to the relay, and it shows the 24-word recovery code once. **No Apple client does**, so a vault created there still uploads no blob and its `ID_D_priv` has no second copy; see [`recovery.md`](./recovery.md) §Implementation status. The unlock method is still not chosen by any client: every `Unlock` variant carries an already-materialized vault root.
 
@@ -83,6 +90,18 @@ Noise messages run over a TLS WebSocket. Each WebSocket frame is a single binary
 
 Maximum payload: 64 KiB. Routing: each side authenticates its WebSocket with `(account_email_hash, role)` where role ∈ `{N, E}`. The relay buffers up to 3 messages (≤ 64 KiB each) per `(pair_session_id, role)` for at most 60 s; beyond either limit the session is dropped.
 
+**As built.** [ADR-0023](../11-adr/0023-sse-sync-transport.md) took the WebSocket out of the relay, so the rendezvous is three typed `POST`s instead of a socket ([`../06-server/api.md`](../06-server/api.md) §Pairing rendezvous):
+
+- `send` carries one `noise_payload`, base64url, with the role in the body rather than in a frame header.
+- `receive` is polled with a cursor.
+- `abort` is the relay half of `pair_abort`.
+
+The SAS answers are not relayed. Each device keeps its own: a "Don't match" aborts the session, and the other side's next poll finds it gone.
+
+Each side authenticates with the account bearer rather than `account_email_hash`. Only the new device may open a session, and a session is reachable only by the account that opened it. Any other caller gets the same `404 RELAY_PAIR_SESSION_GONE` as a caller naming a session that never existed.
+
+The 3-message and 64 KiB bounds hold as written, except that an oversized message is refused with `400` and leaves the session open. The 60 s window is folded into one 300 s lifetime counted from the opening message, because the SAS screen alone may take 90 s.
+
 ### Flow
 
 1. **N → E**: presents a QR (and fallback 6-digit code) with the contents above.
@@ -130,10 +149,13 @@ Maximum payload: 64 KiB. Routing: each side authenticates its WebSocket with `(a
    PairingGrant = {
        1: bstr,                  ; DeviceCert for N, signed by ID_S_priv
        2: bstr .size 32,         ; vault_root
-       3: { * bstr .size 16 => { * uint => bstr .size 32 } }
+       3: { * bstr .size 16 => { * uint => bstr .size 32 } },
                                  ; stream_keys: stream_id => epoch => key
+     ? 4: [ * bstr .size 16 ]    ; read_bounds: E's device_read_bounds, omitted when empty
    }
    ```
+
+   Field 4 is E's whole read bound, and N adopts it in the transaction that creates its vault. The bound is a ratchet over what E's own folds produced, so it holds devices no fold of the ledger bounds today; a device that paired without it learned every revocation afterwards and was the weakest replica in the account ([ADR-0041](../11-adr/0041-peer-side-revocation-is-a-fold.md) §Decision 5). N does not verify the claim, because the same message already hands over every Stream key. An E that predates the field sends none and N adopts nothing; an N that predates it ignores it.
 
 7. **What each side checks**, and every field is a value the *other* side chose, so each is recomputed rather than believed. All comparisons are constant-time via `subtle::ConstantTimeEq`.
 
@@ -141,7 +163,7 @@ Maximum payload: 64 KiB. Routing: each side authenticates its WebSocket with `(a
    - **E, on the request**: `device_id == BLAKE3("sunrise.device_id.v1" || D_S_pub, 16)`, and `identity_id` is this account's. A joiner that could name its own id would choose one the revocation register already excludes, or one that collides with a sibling's row.
    - **N, on the grant**: the cert parses, verifies under the `ID_S_pub` **the offer named** — not under whatever identity the cert claims, so a cert that is internally consistent under some other well-formed identity is refused — and names N's own `device_id`, `d_s_pub` and `d_d_pub`. This is the check that makes a captured request useless at a second sponsor: that sponsor will happily issue, and N refuses what comes back.
 
-8. **N assembles a `PairingPayload`** from the three — the account's public identity, its own device keys, its cert, the vault root and the Stream keys — and opens its vault with it. That type is no longer a wire message; it exists because two seams have to carry the assembled result across a process or language boundary (UniFFI's `paired_bundle`, the CLI's pending-pairing file). Fields 1, 2, 7 and 8 of its encoding are **burned**: 1 was `ID_S_priv` and 2 was `ID_D_priv`, and a payload still carrying either is refused rather than silently stripped, because tolerating it would leave the operator believing a revocation binds when it does not.
+8. **N assembles a `PairingPayload`** from the three — the account's public identity, its own device keys, its cert, the vault root, the Stream keys and E's read bound (field 15, omitted when empty) — and opens its vault with it. That type is no longer a wire message; it exists because two seams have to carry the assembled result across a process or language boundary (UniFFI's `paired_bundle`, the CLI's pending-pairing file). Fields 1, 2, 7 and 8 of its encoding are **burned**: 1 was `ID_S_priv` and 2 was `ID_D_priv`, and a payload still carrying either is refused rather than silently stripped, because tolerating it would leave the operator believing a revocation binds when it does not.
 9. **N publishes its `device_cert` op** (signed by its new `D_S_priv`, control envelope) into the vault-meta log, and stores keys per [`identity-and-device-keys.md`](./identity-and-device-keys.md).
 10. **E displays** "Paired with N at `<time>`" in its devices list; N displays "Ready."
 
@@ -178,8 +200,9 @@ The relay sees only Noise traffic (opaque ciphertext) and the eventual `device_c
 
 - **Per account_email_hash:** at most **10 pair attempts per rolling hour**, **30 per rolling day**.
 - **Per relay-IP:** at most 60/hour (defense in depth against shared-NAT users).
-- Excess returns `srv.pair.rate_limited` HTTP 429 with `Retry-After` set to the seconds until the next slot opens. The Noise transport is never opened.
+- Excess returns HTTP 429 with `Retry-After` set to the seconds until the next slot opens. The Noise transport is never opened. The code is the relay's shared `RATE_LIMITED`, not a pairing-specific one: a client does the same thing on either, which is to wait.
 - A pair attempt counts against quota the moment the relay accepts the first Noise message; aborted-before-first-message attempts do not count. SAS aborts (whether by tap or timeout) DO count.
+- As built, the account bucket is the account the bearer resolves to rather than `account_email_hash`. The two name the same account, and the bearer's cannot be forged. All three limits are skipped when an operator sets `[limits] enabled = false`.
 
 ## Out-of-band channel security
 

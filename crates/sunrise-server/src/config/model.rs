@@ -12,7 +12,9 @@
 //! from.
 
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+use crate::store::{DbKey, StoreError};
 
 /// Server configuration. Read from `sunrise.toml` (production) or built
 /// programmatically (tests).
@@ -40,19 +42,15 @@ pub struct ServerConfig {
     /// expected to turn it off once their accounts exist.
     #[serde(default = "default_allow_signup")]
     pub allow_signup: bool,
-    /// Whether `X-Sunrise-Device` + `X-Sunrise-Device-Sig` are mandatory on
-    /// authenticated REST requests (`header_sig_v1`).
-    ///
-    /// Defaults to **on wherever an OIDC issuer is configured**, and off for
-    /// the single-tenant self-host verifier, which has no devices to tell apart
-    /// and for which [`ConfigError::DeviceSigWithoutOidc`] rejects the flag
-    /// anyway. Set it explicitly to override either way.
-    ///
-    /// When a binding *is* present it is always verified, whatever this says —
-    /// the flag governs whether absence is tolerated, never whether a bad
-    /// signature is.
+    /// Whether `X-Sunrise-Device` + `X-Sunrise-Device-Sig` are mandatory, as
+    /// the operator set it; `None` defers to
+    /// [`ServerConfig::device_sig_required`], which derives the default — on
+    /// wherever an OIDC issuer is configured — for every way a config is built.
+    /// An explicit `false` beside an issuer stays distinguishable from silence,
+    /// which is what `srv.start.device_sig_optional` warns on. A binding that
+    /// *is* present is always verified, whatever this says.
     #[serde(default)]
-    pub require_device_sig: bool,
+    pub require_device_sig: Option<bool>,
     /// How often a live `/sync` session re-checks that its device is still
     /// registered, in milliseconds.
     ///
@@ -93,6 +91,20 @@ pub struct ServerConfig {
     /// Self-host SQLite path (None = ephemeral in-memory, suitable for
     /// tests).
     pub sqlite_path: Option<PathBuf>,
+    /// How long a SQLite statement waits on another connection's lock before
+    /// failing, in milliseconds. `0` fails at once. See
+    /// [`crate::store::DEFAULT_BUSY_TIMEOUT`] for what it waits out.
+    #[serde(default = "default_sqlite_busy_timeout_ms")]
+    pub sqlite_busy_timeout_ms: u64,
+    /// Whether the SQLite file is SQLCipher-encrypted under the key in
+    /// [`ServerConfig::sqlite_key_file`]. `[storage] encrypt`, default off;
+    /// ADR-0060 records why.
+    #[serde(default)]
+    pub sqlite_encrypt: bool,
+    /// The file holding the database key: 64 hex digits, mode `0600`, outside
+    /// the data dir. `[storage] key_file`.
+    #[serde(default)]
+    pub sqlite_key_file: Option<PathBuf>,
     /// Self-host blob root (None = `<sqlite_dir>/blobs`).
     pub blob_root: Option<PathBuf>,
     /// Exact-match CORS allowlist for browser clients. Empty = no browser
@@ -103,12 +115,147 @@ pub struct ServerConfig {
     /// Maximum accepted request body, in bytes.
     #[serde(default = "default_max_body_bytes")]
     pub max_body_bytes: usize,
+    /// How long a shutdown waits for in-flight requests before cutting them,
+    /// in seconds. [`ServerConfig::validate`] refuses `0`: kynos ends a
+    /// zero-length drain as timed out without looking at what is in flight, so
+    /// every stop would report work cut and exit 1.
+    #[serde(default = "default_shutdown_grace_secs")]
+    pub shutdown_grace_secs: u64,
+    /// The reverse proxies whose `Forwarded` / `X-Forwarded-For` may be
+    /// believed, as addresses or CIDR networks.
+    ///
+    /// Empty — the default — believes nobody: the socket peer is the client,
+    /// and every forwarding header is ignored, because a client can write
+    /// those headers itself. With proxies listed, the client is the right-most
+    /// address in the chain that is not one of them. The per-address rate
+    /// limits key on that client, so behind a proxy this list is what keeps
+    /// every user from sharing the proxy's one bucket.
+    #[serde(default)]
+    pub trusted_proxies: Vec<String>,
+    /// The `[limits]` table: every rate limit the relay enforces.
+    #[serde(default)]
+    pub limits: super::limits::LimitsConfig,
+    /// The `[push]` table: the wake-up providers. Empty — the default — sends
+    /// no push at all; see `docs/06-server/push-notifications.md`.
+    #[serde(default)]
+    pub push: PushConfig,
+    /// Days between `DELETE /api/v1/accounts/me` and the maintenance pass
+    /// that erases the account. `[storage] account_delete_grace_days`.
+    #[serde(default = "default_thirty_days")]
+    pub account_delete_grace_days: u64,
+    /// Days a tombstoned blob is kept before it may be collected, quorum
+    /// permitting. `[storage] gc_grace_days`, the name
+    /// `docs/06-server/relay-and-blob-storage.md` §Retention gives it.
+    #[serde(default = "default_thirty_days")]
+    pub gc_grace_days: u64,
+    /// Hours an upload may sit untouched between `init` and `finalize` before
+    /// its pending chunks are swept. `[storage] pending_upload_ttl_hours`.
+    #[serde(default = "default_pending_upload_ttl_hours")]
+    pub pending_upload_ttl_hours: u64,
+    /// Seconds between maintenance passes — account erasure, blob GC and the
+    /// pending-upload sweep. `[storage] maintenance_interval_secs`.
+    #[serde(default = "default_maintenance_interval_secs")]
+    pub maintenance_interval_secs: u64,
+}
+
+/// The `[push]` table.
+///
+/// One sub-table per provider. Only APNs exists; FCM and Web Push are designed
+/// behind the same [`crate::push::PushProvider`] trait and not built.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct PushConfig {
+    /// `[push.apns]`. `None` leaves iOS devices to wake on their own schedule.
+    pub apns: Option<ApnsConfig>,
+}
+
+/// `[push.apns]`: token-based (`.p8`) authentication against APNs.
+///
+/// Every key is required. A partly written table is a refusal rather than a
+/// provider that fails on its first send, which an operator would only notice
+/// as phones that stopped syncing in the background.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ApnsConfig {
+    /// The `.p8` signing key Apple issued. Must not be readable by group or
+    /// others; the server refuses to start otherwise.
+    pub key_path: PathBuf,
+    /// The key's 10-character Key ID, the JWT `kid`.
+    pub key_id: String,
+    /// The 10-character Apple Developer Team ID, the JWT `iss`.
+    pub team_id: String,
+    /// The app's bundle id, sent as `apns-topic`.
+    pub topic: String,
+    /// Which APNs gateway the tokens were issued against.
+    pub environment: ApnsEnvironment,
+}
+
+/// The APNs gateway a device token belongs to.
+///
+/// A development build's token is valid only on the sandbox gateway and a
+/// release build's only on production, so this is a property of the app build
+/// the relay serves rather than a preference.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ApnsEnvironment {
+    /// `api.sandbox.push.apple.com`.
+    Sandbox,
+    /// `api.push.apple.com`.
+    Production,
+}
+
+impl ApnsEnvironment {
+    /// The gateway's origin.
+    #[must_use]
+    pub const fn endpoint(self) -> &'static str {
+        match self {
+            Self::Sandbox => "https://api.sandbox.push.apple.com",
+            Self::Production => "https://api.push.apple.com",
+        }
+    }
+}
+
+/// Whether `s` is an Apple 10-character identifier (Key ID, Team ID).
+fn is_apple_id(s: &str) -> bool {
+    s.len() == 10
+        && s.bytes()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
 }
 
 /// 2 MiB: comfortably above the largest legitimate REST body (a device cert or
 /// a blob-finalize manifest) and far below anything that would pressure memory.
 pub(super) const fn default_max_body_bytes() -> usize {
     2 * 1024 * 1024
+}
+
+/// 25 s: kynos's own default, which leaves a margin under the 30 s that
+/// Docker, systemd and Kubernetes each wait between `SIGTERM` and `SIGKILL`.
+pub(super) const fn default_shutdown_grace_secs() -> u64 {
+    25
+}
+
+/// [`crate::store::DEFAULT_BUSY_TIMEOUT`], in the unit the config is written
+/// in, so the two cannot disagree.
+pub(super) fn default_sqlite_busy_timeout_ms() -> u64 {
+    u64::try_from(crate::store::DEFAULT_BUSY_TIMEOUT.as_millis()).unwrap_or(u64::MAX)
+}
+
+/// Thirty days: the one window every retention number in
+/// `docs/06-server/relay-and-blob-storage.md` §Retention is unified to.
+pub(super) const fn default_thirty_days() -> u64 {
+    30
+}
+
+/// A day: an upload abandoned that long is not coming back, and the client
+/// that resumes one later simply starts a new `init`.
+pub(super) const fn default_pending_upload_ttl_hours() -> u64 {
+    24
+}
+
+/// An hour: every deadline the pass enforces is measured in days, so a pass an
+/// hour late changes nothing a user can see.
+pub(super) const fn default_maintenance_interval_secs() -> u64 {
+    3600
 }
 
 const fn default_allow_signup() -> bool {
@@ -160,6 +307,12 @@ pub enum ConfigError {
     /// Nonsensical body cap.
     #[error("max_body_bytes must be greater than zero")]
     ZeroBodyLimit,
+    /// A drain deadline no drain can meet.
+    #[error(
+        "shutdown_grace_secs is zero: a drain of no length is always reported as timed out, so \
+         every stop would log result = \"timed_out\" and exit 1 even with nothing in flight"
+    )]
+    ZeroShutdownGrace,
     /// An OIDC issuer without the client id that tokens must be audienced to.
     #[error(
         "oidc_issuer is set but oidc_client_id is not: without it there is no `aud` to check, \
@@ -184,6 +337,34 @@ pub enum ConfigError {
          caller maps to one account, so a device signature binds nothing"
     )]
     DeviceSigWithoutOidc,
+    /// A rate limit of zero, which refuses everything it covers.
+    #[error(
+        "[limits] {0} is zero, which refuses every request it covers; raise it, or set \
+         `enabled = false` to turn the limits off"
+    )]
+    ZeroLimit(&'static str),
+    /// A `trusted_proxies` entry that is not an address or a CIDR network.
+    #[error(
+        "trusted_proxies entry {0:?} is not an IP address or CIDR network (e.g. 10.0.0.0/8); \
+         hostnames are not resolved, because a proxy's address is what the socket reports"
+    )]
+    BadTrustedProxy(String),
+    /// A `[push.apns]` key that cannot be what Apple issued.
+    #[error(
+        "[push.apns] {0} is not a 10-character Apple identifier (uppercase letters and digits), \
+         so every token minted with it would be refused by APNs"
+    )]
+    BadApnsId(&'static str),
+    /// An empty `[push.apns] topic`.
+    #[error("[push.apns] topic is empty; it must be the app's bundle id")]
+    EmptyApnsTopic,
+    /// A `[storage]` maintenance setting of zero that would destroy live work
+    /// or spin.
+    #[error(
+        "[storage] {0} is zero: a pending-upload TTL of zero sweeps uploads still in flight, \
+         and a maintenance interval of zero runs the pass in a busy loop"
+    )]
+    ZeroMaintenance(&'static str),
 }
 
 impl ServerConfig {
@@ -210,6 +391,9 @@ impl ServerConfig {
         if self.max_body_bytes == 0 {
             return Err(ConfigError::ZeroBodyLimit);
         }
+        if self.shutdown_grace_secs == 0 {
+            return Err(ConfigError::ZeroShutdownGrace);
+        }
         if let Some(issuer) = &self.oidc_issuer {
             if self.oidc_client_id.is_none() {
                 return Err(ConfigError::MissingClientId);
@@ -218,7 +402,7 @@ impl ServerConfig {
                 return Err(ConfigError::InsecureIssuer(issuer.clone()));
             }
         }
-        if self.require_device_sig && single_tenant {
+        if self.device_sig_required() && single_tenant {
             return Err(ConfigError::DeviceSigWithoutOidc);
         }
         // A misconfiguration that boots and then refuses every recovery is
@@ -227,7 +411,69 @@ impl ServerConfig {
         if self.recovery_max_auth_age_secs == 0 {
             return Err(ConfigError::ZeroRecoveryAuthAge);
         }
+        if let Some(bad) = self
+            .trusted_proxies
+            .iter()
+            .find(|entry| super::limits::parse_cidr(entry).is_none())
+        {
+            return Err(ConfigError::BadTrustedProxy(bad.clone()));
+        }
+        // Checked even with the limits off, so turning them back on cannot
+        // be what reveals a value that never worked.
+        if let Some(key) = self.limits.first_zero() {
+            return Err(ConfigError::ZeroLimit(key));
+        }
+        // Both grace periods may be zero — collect as soon as the quorum
+        // holds, erase on the next pass — but these two may not.
+        if self.pending_upload_ttl_hours == 0 {
+            return Err(ConfigError::ZeroMaintenance("pending_upload_ttl_hours"));
+        }
+        if self.maintenance_interval_secs == 0 {
+            return Err(ConfigError::ZeroMaintenance("maintenance_interval_secs"));
+        }
+        // The key file itself is checked where it is read, in
+        // `crate::push::from_config`: this half is pure.
+        if let Some(apns) = &self.push.apns {
+            if !is_apple_id(&apns.key_id) {
+                return Err(ConfigError::BadApnsId("key_id"));
+            }
+            if !is_apple_id(&apns.team_id) {
+                return Err(ConfigError::BadApnsId("team_id"));
+            }
+            if apns.topic.trim().is_empty() {
+                return Err(ConfigError::EmptyApnsTopic);
+            }
+        }
         Ok(())
+    }
+
+    /// [`ServerConfig::trusted_proxies`] as the networks the router trusts.
+    ///
+    /// Entries that do not parse are skipped: [`ServerConfig::validate`]
+    /// refuses them before a server starts, so only a config that skipped
+    /// validation — a test — can reach this with one.
+    #[must_use]
+    pub fn trusted_proxy_networks(&self) -> Vec<(std::net::IpAddr, u8)> {
+        self.trusted_proxies
+            .iter()
+            .filter_map(|entry| super::limits::parse_cidr(entry))
+            .collect()
+    }
+
+    /// The maintenance pass's deadlines, in milliseconds.
+    #[must_use]
+    pub const fn retention(&self) -> Retention {
+        const DAY_MS: u64 = 24 * 60 * 60 * 1000;
+        Retention {
+            account_delete_grace_ms: self.account_delete_grace_days.saturating_mul(DAY_MS),
+            gc_grace_ms: self.gc_grace_days.saturating_mul(DAY_MS),
+            pending_upload_ttl_ms: self.pending_upload_ttl_hours.saturating_mul(60 * 60 * 1000),
+            // `attachments.md` §Deletion: a device silent for more than 30
+            // days is abandoned and leaves the quorum. Not configurable: it is
+            // the same window the relay log keeps ops for, so a device gone
+            // longer must re-pair whatever this says.
+            device_active_window_ms: 30 * DAY_MS,
+        }
     }
 
     /// The step-up this deployment demands in front of the recovery blob.
@@ -240,6 +486,44 @@ impl ServerConfig {
             leeway_secs: self.token_leeway_secs,
         }
     }
+
+    /// Whether an authenticated request must carry a complete device binding.
+    ///
+    /// The one place the default is derived: an explicit
+    /// [`ServerConfig::require_device_sig`] wins, and an unset one is on
+    /// exactly when an OIDC issuer is configured. A relay with a real issuer
+    /// can tell devices apart, so leaving the binding optional there would
+    /// mean a stolen bearer alone is enough — the property device binding
+    /// exists to remove. Single-tenant self-host cannot tell devices apart at
+    /// all, and [`ServerConfig::validate`] rejects the combination outright,
+    /// so it stays off there.
+    #[must_use]
+    pub fn device_sig_required(&self) -> bool {
+        self.require_device_sig
+            .unwrap_or(self.oidc_issuer.is_some())
+    }
+
+    /// Whether the operator turned the binding off on a relay that has an
+    /// issuer — the one override that weakens the default rather than
+    /// restating it, and so the one `srv.start.device_sig_optional` names.
+    #[must_use]
+    pub fn device_sig_explicitly_optional(&self) -> bool {
+        self.oidc_issuer.is_some() && self.require_device_sig == Some(false)
+    }
+}
+
+/// The deadlines [`ServerConfig::retention`] derives, in one unit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Retention {
+    /// From a deletion request to the account's erasure.
+    pub account_delete_grace_ms: u64,
+    /// From a blob's tombstone to the earliest it may be collected.
+    pub gc_grace_ms: u64,
+    /// How long an upload may go untouched before its chunks are swept.
+    pub pending_upload_ttl_ms: u64,
+    /// How recently a device must have declared a cursor to count toward a
+    /// tombstone's quorum.
+    pub device_active_window_ms: u64,
 }
 
 /// Whether `bind` keeps the listener on the local host only.
@@ -263,7 +547,7 @@ impl Default for ServerConfig {
             oidc_issuer: None,
             oidc_client_id: None,
             allow_signup: default_allow_signup(),
-            require_device_sig: false,
+            require_device_sig: None,
             device_recheck_ms: default_device_recheck_ms(),
             token_leeway_secs: default_token_leeway_secs(),
             jwks_default_ttl_secs: default_jwks_ttl_secs(),
@@ -271,10 +555,50 @@ impl Default for ServerConfig {
             recovery_acr_values: Vec::new(),
             recovery_amr_values: Vec::new(),
             sqlite_path: None,
+            sqlite_busy_timeout_ms: default_sqlite_busy_timeout_ms(),
+            sqlite_encrypt: false,
+            sqlite_key_file: None,
             blob_root: None,
+            account_delete_grace_days: default_thirty_days(),
+            gc_grace_days: default_thirty_days(),
+            pending_upload_ttl_hours: default_pending_upload_ttl_hours(),
+            maintenance_interval_secs: default_maintenance_interval_secs(),
             allowed_origins: Vec::new(),
             max_body_bytes: default_max_body_bytes(),
+            shutdown_grace_secs: default_shutdown_grace_secs(),
+            trusted_proxies: Vec::new(),
+            limits: super::limits::LimitsConfig::default(),
+            push: PushConfig::default(),
         }
+    }
+}
+
+impl ServerConfig {
+    /// [`ServerConfig::shutdown_grace_secs`] as the `Duration` the server
+    /// takes.
+    #[must_use]
+    pub const fn shutdown_grace(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.shutdown_grace_secs)
+    }
+
+    /// [`ServerConfig::sqlite_busy_timeout_ms`] as the `Duration` the store
+    /// takes.
+    #[must_use]
+    pub const fn sqlite_busy_timeout(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(self.sqlite_busy_timeout_ms)
+    }
+
+    /// The database key `[storage]` names, or `None` with encryption off;
+    /// [`DbKey::for_storage`] holds the rules.
+    ///
+    /// # Errors
+    /// Each refusal [`DbKey::for_storage`] makes.
+    pub fn sqlite_key(&self) -> Result<Option<DbKey>, StoreError> {
+        DbKey::for_storage(
+            self.sqlite_encrypt,
+            self.sqlite_key_file.as_deref(),
+            self.sqlite_path.as_deref().and_then(Path::parent),
+        )
     }
 }
 
@@ -348,6 +672,17 @@ mod tests {
         assert_eq!(c.validate(true), Err(ConfigError::ZeroBodyLimit));
     }
 
+    /// kynos turns a zero drain deadline into `ShutdownTimeout` without
+    /// waiting on anything, so `0` would make every stop exit 1.
+    #[test]
+    fn zero_shutdown_grace_is_rejected() {
+        let mut c = cfg("127.0.0.1:8443");
+        c.shutdown_grace_secs = 0;
+        assert_eq!(c.validate(true), Err(ConfigError::ZeroShutdownGrace));
+        c.shutdown_grace_secs = 1;
+        assert!(c.validate(true).is_ok());
+    }
+
     /// An issuer with no client id means no `aud` to check, which means every
     /// token that issuer ever minted — for any relying party — verifies here.
     #[test]
@@ -376,7 +711,7 @@ mod tests {
     #[test]
     fn device_signatures_are_meaningless_under_the_self_host_verifier() {
         let mut c = cfg("127.0.0.1:8443");
-        c.require_device_sig = true;
+        c.require_device_sig = Some(true);
         assert_eq!(c.validate(true), Err(ConfigError::DeviceSigWithoutOidc));
         assert!(c.validate(false).is_ok());
     }
@@ -388,6 +723,69 @@ mod tests {
         assert!(ServerConfig::default().allow_signup);
     }
 
+    /// A limit of zero refuses everything it covers, so it is refused at
+    /// startup by name rather than discovered as a relay that serves nothing.
+    #[test]
+    fn a_zero_limit_is_refused_by_name() {
+        let mut c = cfg("127.0.0.1:8443");
+        c.limits.sessions_per_5min = 0;
+        assert_eq!(
+            c.validate(true),
+            Err(ConfigError::ZeroLimit("sessions_per_5min"))
+        );
+        // Even with the limits off: turning them back on must not be what
+        // reveals the value never worked.
+        c.limits.enabled = false;
+        assert!(c.validate(true).is_err());
+    }
+
+    /// A zero TTL would sweep uploads in flight and a zero interval would
+    /// spin; zero grace periods are allowed and mean "as soon as possible".
+    #[test]
+    fn zero_maintenance_settings_are_refused_but_zero_grace_is_not() {
+        let mut c = cfg("127.0.0.1:8443");
+        c.gc_grace_days = 0;
+        c.account_delete_grace_days = 0;
+        assert_eq!(c.validate(true), Ok(()));
+        c.pending_upload_ttl_hours = 0;
+        assert_eq!(
+            c.validate(true),
+            Err(ConfigError::ZeroMaintenance("pending_upload_ttl_hours"))
+        );
+        c.pending_upload_ttl_hours = 1;
+        c.maintenance_interval_secs = 0;
+        assert_eq!(
+            c.validate(true),
+            Err(ConfigError::ZeroMaintenance("maintenance_interval_secs"))
+        );
+    }
+
+    /// A proxy entry is an address or a network. A hostname would have to be
+    /// resolved, and the address the socket reports is the only one that
+    /// means anything here.
+    #[test]
+    fn trusted_proxies_must_be_addresses_or_networks() {
+        let mut c = cfg("127.0.0.1:8443");
+        c.trusted_proxies = vec!["127.0.0.1".into(), "10.0.0.0/8".into()];
+        assert!(c.validate(true).is_ok());
+        assert_eq!(c.trusted_proxy_networks().len(), 2);
+
+        c.trusted_proxies.push("proxy.internal".into());
+        assert_eq!(
+            c.validate(true),
+            Err(ConfigError::BadTrustedProxy("proxy.internal".into()))
+        );
+    }
+
+    /// The safe default is to believe no forwarding header and to enforce
+    /// the documented policy.
+    #[test]
+    fn by_default_no_proxy_is_trusted_and_the_limits_are_on() {
+        let d = ServerConfig::default();
+        assert!(d.trusted_proxies.is_empty());
+        assert!(d.limits.enabled);
+    }
+
     #[test]
     fn defaults_are_valid_and_safe() {
         let d = ServerConfig::default();
@@ -395,6 +793,52 @@ mod tests {
         assert!(
             d.allowed_origins.is_empty(),
             "no browser origin may be permitted by default"
+        );
+        assert_eq!(d.push, PushConfig::default(), "no push provider by default");
+    }
+
+    /// An APNs table whose identifiers cannot be Apple's is refused by name:
+    /// every JWT minted from it would be rejected, and the operator would see
+    /// phones that stopped waking rather than this error.
+    #[test]
+    fn an_apns_table_with_malformed_identifiers_is_refused() {
+        let apns = ApnsConfig {
+            key_path: PathBuf::from("/etc/sunrise/AuthKey.p8"),
+            key_id: "ABC123DEFG".into(),
+            team_id: "DEF123GHIJ".into(),
+            topic: "dev.sunrise.app".into(),
+            environment: ApnsEnvironment::Production,
+        };
+        let mut c = cfg("127.0.0.1:8443");
+        c.push.apns = Some(apns.clone());
+        assert!(c.validate(true).is_ok());
+
+        c.push.apns = Some(ApnsConfig {
+            key_id: "abc123defg".into(),
+            ..apns.clone()
+        });
+        assert_eq!(c.validate(true), Err(ConfigError::BadApnsId("key_id")));
+        c.push.apns = Some(ApnsConfig {
+            team_id: "SHORT".into(),
+            ..apns.clone()
+        });
+        assert_eq!(c.validate(true), Err(ConfigError::BadApnsId("team_id")));
+        c.push.apns = Some(ApnsConfig {
+            topic: " ".into(),
+            ..apns
+        });
+        assert_eq!(c.validate(true), Err(ConfigError::EmptyApnsTopic));
+    }
+
+    #[test]
+    fn each_apns_environment_names_its_own_gateway() {
+        assert_eq!(
+            ApnsEnvironment::Sandbox.endpoint(),
+            "https://api.sandbox.push.apple.com"
+        );
+        assert_eq!(
+            ApnsEnvironment::Production.endpoint(),
+            "https://api.push.apple.com"
         );
     }
 }

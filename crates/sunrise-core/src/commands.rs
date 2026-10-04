@@ -154,7 +154,7 @@ pub enum Command {
     /// symmetrically") with **one** op rather than two: the binding lives in
     /// the `block_tasks` index and `Task.blocks` is derived from it on read,
     /// so a concurrent edit of the Task on another device cannot lose the
-    /// binding to entity-level LWW.
+    /// binding to a full-state write of the Task.
     BindTask {
         /// Target block.
         block: EntityRef,
@@ -302,7 +302,7 @@ pub enum Command {
         /// The session log still does not become a second writer of task
         /// state. The completion is derived once, on this device, and emitted
         /// as an ordinary `task.update` op that merges through the same
-        /// entity-level LWW path as a hand-edit; a replica applying the
+        /// path as a hand-edit; a replica applying the
         /// `focus.end` op derives nothing. An already-`done` or `cancelled`
         /// Task is left alone.
         completed_task: bool,

@@ -116,12 +116,16 @@ implied.
 
 **Stream tints are eight named values, not a ramp generated from `accent`.**
 This supersedes the earlier `stream-1..stream-12` specification. `StreamColor`
-in `crates/sunrise-domain/src/stream.rs` is a serde-stable eight-variant enum
-whose lowercase names are persisted in the vault and read back by a lossy
-parser, so renumbering the palette would be a storage-format change rather than
-a design change. The `[stream]` table in each theme is keyed on those names,
-and `test/invariants.test.ts` reads `StreamColor::as_str` out of the Rust and
-fails when the two lists diverge:
+in `crates/sunrise-domain/src/stream.rs` is a serde-stable enum of eight named
+colours, declared through `lossy_enum!`, whose lowercase names are persisted in
+the vault, so renumbering the palette would be a storage-format change rather
+than a design change. A name this build does not know is kept verbatim as
+`StreamColor::Unknown` and drawn as the table's fallback, `slate`
+([ADR-0045](../11-adr/0045-schema-identity-and-feature-gating.md) §6). The
+`[stream]` table in each theme is keyed on those names, and
+`test/invariants.test.ts` reads the spellings out of
+`StreamColor`'s `lossy_enum!` table in the Rust, fails when the two lists
+diverge, and checks the fallback is in the palette:
 
 ```toml
 # tokens/color/light.toml

@@ -109,7 +109,7 @@ pub fn duration_clock(ms: u64) -> String {
 #[uniffi::export]
 #[must_use]
 pub fn energy_label(energy: Option<sunrise_domain::Energy>) -> String {
-    sunrise_domain::energy_budget_label(energy).to_string()
+    sunrise_domain::energy_budget_label(energy.as_ref()).to_string()
 }
 
 /// One line describing a task's scheduling constraints, empty when it has

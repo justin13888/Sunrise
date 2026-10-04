@@ -21,7 +21,7 @@ What ships is free-text search over tasks, and nothing else.
   (`crates/sunrise-storage/migrations/0013_baseline.sql:475`) uses
   `porter unicode61 remove_diacritics 2`, fixed at vault creation, and only
   tasks are written to it
-  (`crates/sunrise-core/src/engine/task.rs:729#ftsr_upsert_task`). Streams,
+  (`crates/sunrise-core/src/engine/task.rs:740#ftsr_upsert_task`). Streams,
   blocks, notes, context names, attachment filenames and places cannot be found.
 - **Search is a literal AND.** `query_search`
   (`crates/sunrise-core/src/engine/query.rs:280#query_search`) matches

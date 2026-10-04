@@ -113,6 +113,314 @@ async fn a_freshly_opened_vault_already_carries_its_base_epochs() {
     core.close().await.unwrap();
 }
 
+/// **A paired device starts with its sponsor's read bound** (#282).
+///
+/// The bound is a ratchet over what the sponsor's own folds produced, so it
+/// can hold a device no fold of the ledger bounds today: retire C from A while
+/// A is trusted, then retire A from B, and a replica that met the ops in that
+/// order keeps C bounded while one that met `B -> A` first never bounds it. A
+/// joiner that paired with nothing met every op late and was always the
+/// second kind. The sponsor's rows are written straight into its table here,
+/// because what is under test is the carriage and not how the sponsor earned
+/// them, which `the_register_is_the_same_whichever_order_the_two_revocations_arrive`
+/// covers.
+#[tokio::test]
+async fn a_paired_device_adopts_its_sponsors_read_bound() {
+    use rusqlite::OptionalExtension as _;
+    let c_id = [0xc1u8; 16];
+    let dir = tempfile::tempdir().unwrap();
+    let sponsor = Core::open(cfg(dir.path()), unlock()).await.unwrap();
+    sponsor
+        .db
+        .lock()
+        .conn()
+        .execute(
+            "INSERT INTO device_read_bounds (device_id, first_bound_at_ms) VALUES (?, 1)",
+            [&c_id[..]],
+        )
+        .unwrap();
+    let payload = sponsor
+        .pair_device_in_process("joiner".into(), "test".into(), [0x71; 32], [0x72; 32])
+        .unwrap();
+    assert!(
+        payload.read_bounds.contains(&c_id),
+        "the grant carries the sponsor's bound"
+    );
+    sponsor.close().await.unwrap();
+
+    let joiner_dir = tempfile::tempdir().unwrap();
+    let joiner = Core::open(
+        cfg(joiner_dir.path()),
+        Unlock::DevicePaired {
+            root: VaultRootKey::from_bytes([2u8; 32]),
+            paired: Some(Box::new(payload)),
+        },
+    )
+    .await
+    .unwrap();
+    let adopted: Option<i64> = joiner
+        .db
+        .lock()
+        .conn()
+        .query_row(
+            "SELECT from_sponsor FROM device_read_bounds WHERE device_id = ?",
+            [&c_id[..]],
+            |r| r.get(0),
+        )
+        .optional()
+        .unwrap();
+    assert_eq!(
+        adopted,
+        Some(1),
+        "the joiner holds the sponsor's bound from its first open, marked as adopted"
+    );
+    joiner.close().await.unwrap();
+}
+
+/// `Core::issue_pairing_grant` is the path the CLI and the Apple apps pair
+/// through, and it reads the bound itself rather than through
+/// `pair_device_in_process`. A grant it issues must carry the sponsor's bound.
+#[tokio::test]
+async fn a_grant_core_issues_carries_the_sponsors_read_bound() {
+    let c_id = [0xc2u8; 16];
+    let dir = tempfile::tempdir().unwrap();
+    let sponsor = Core::open(cfg(dir.path()), unlock()).await.unwrap();
+    sponsor
+        .db
+        .lock()
+        .conn()
+        .execute(
+            "INSERT INTO device_read_bounds (device_id, first_bound_at_ms) VALUES (?, 1)",
+            [&c_id[..]],
+        )
+        .unwrap();
+    let offer = sponsor.export_pairing_offer().unwrap();
+    let joiner = sunrise_pairing::PairingJoiner::new(
+        offer,
+        "joiner".into(),
+        "test".into(),
+        [0x73; 32],
+        [0x74; 32],
+    );
+    let grant = sponsor.issue_pairing_grant(joiner.request()).unwrap();
+    assert_eq!(
+        grant.read_bounds,
+        std::collections::BTreeSet::from([c_id]),
+        "the grant carries exactly the sponsor's bound"
+    );
+    let payload = joiner.accept(grant).unwrap();
+    assert!(
+        payload.read_bounds.contains(&c_id),
+        "the bound reaches the joiner's payload"
+    );
+    sponsor.close().await.unwrap();
+}
+
+/// Issue #320 end to end through `Core::open`: a device whose build did not
+/// know an op's kind parked it, then upgraded, and the op is in its vault.
+///
+/// The joiner holds the sponsor's cert and keys, as any device in the account
+/// does. The sponsor's task op is parked by `park_op` under the previous
+/// `DOC_SCHEMA_V` — the row a build that could not read `TaskCreate` would
+/// have written — and everything else applies normally. Reopening the vault
+/// is the upgrade.
+#[tokio::test]
+async fn an_op_an_older_build_parked_is_materialized_when_the_vault_reopens() {
+    use sunrise_domain::TaskDraft;
+    let sponsor_dir = tempfile::tempdir().unwrap();
+    let sponsor = Core::open(cfg(sponsor_dir.path()), unlock()).await.unwrap();
+    let task = sponsor
+        .submit(Command::CreateTask(TaskDraft {
+            title: "written by a newer build".into(),
+            ..Default::default()
+        }))
+        .await
+        .unwrap()
+        .entity;
+    let payload = sponsor
+        .pair_device_in_process("joiner".into(), "test".into(), [0x75; 32], [0x76; 32])
+        .unwrap();
+    let envelopes: Vec<(Vec<u8>, String)> = {
+        let db = sponsor.db.lock();
+        let mut stmt = db
+            .conn()
+            .prepare("SELECT envelope, inner_kind FROM ops ORDER BY rowid")
+            .unwrap();
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    };
+    sponsor.close().await.unwrap();
+
+    let joiner_root = VaultRootKey::from_bytes([2u8; 32]);
+    let joiner_dir = tempfile::tempdir().unwrap();
+    let joiner = Core::open(
+        cfg(joiner_dir.path()),
+        Unlock::DevicePaired {
+            root: joiner_root.clone(),
+            paired: Some(Box::new(payload)),
+        },
+    )
+    .await
+    .unwrap();
+    let task_rows = |core: &Core| -> i64 {
+        core.db
+            .lock()
+            .conn()
+            .query_row(
+                "SELECT count(*) FROM tasks WHERE id = ?",
+                [&task.bytes()[..]],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    let parked_rows = |core: &Core| -> i64 {
+        core.db
+            .lock()
+            .conn()
+            .query_row("SELECT count(*) FROM parked_ops", [], |r| r.get(0))
+            .unwrap()
+    };
+    for (env, kind) in &envelopes {
+        if kind == "task.create" {
+            let op = sunrise_crypto::decode_envelope(env).unwrap();
+            joiner
+                .engine
+                .park_op(
+                    &mut joiner.db.lock(),
+                    env,
+                    &op,
+                    "TaskCreate",
+                    sunrise_cbor::version::DOC_SCHEMA_V - 1,
+                )
+                .unwrap();
+        } else {
+            // The sponsor's cert and key envelopes. Whether each one applies
+            // is not the subject; that the joiner can verify the task op at
+            // replay is, and the assertion below is what shows it could.
+            let _ = joiner.apply_remote_all(env).await;
+        }
+    }
+    assert_eq!(task_rows(&joiner), 0, "parked, so not materialized");
+    assert_eq!(parked_rows(&joiner), 1);
+    a_failing_replay_never_fails_the_open(joiner, joiner_dir.path(), &joiner_root, task).await;
+
+    let upgraded = Core::open(
+        cfg(joiner_dir.path()),
+        Unlock::DevicePaired {
+            root: joiner_root,
+            paired: None,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(task_rows(&upgraded), 1, "the open replayed it");
+    assert_eq!(parked_rows(&upgraded), 0, "and released the marker");
+    upgraded.close().await.unwrap();
+}
+
+/// A storage fault that fails the parked op's replay on every open, installed
+/// in `core`'s vault and removed again before this returns. It must never
+/// fail the open: the vault opens, the op stays parked under its old stamp,
+/// and the next open tries it again.
+async fn a_failing_replay_never_fails_the_open(
+    core: Core,
+    dir: &std::path::Path,
+    root: &VaultRootKey,
+    task: sunrise_id::EntityRef,
+) {
+    let exec = |core: &Core, sql: &str| core.db.lock().conn().execute_batch(sql).unwrap();
+    let reopen = || {
+        Core::open(
+            cfg(dir),
+            Unlock::DevicePaired {
+                root: root.clone(),
+                paired: None,
+            },
+        )
+    };
+    exec(
+        &core,
+        "CREATE TRIGGER fail_release BEFORE DELETE ON parked_ops
+         BEGIN SELECT RAISE(ABORT, 'disk full'); END;",
+    );
+    core.close().await.unwrap();
+    for _ in 0..2 {
+        let failing = reopen()
+            .await
+            .expect("a replay failure never fails the open");
+        let (tasks, older): (i64, i64) = failing
+            .db
+            .lock()
+            .conn()
+            .query_row(
+                "SELECT (SELECT count(*) FROM tasks WHERE id = ?1),
+                        (SELECT count(*) FROM parked_ops WHERE parked_under_doc_schema_v = ?2)",
+                rusqlite::params![
+                    &task.bytes()[..],
+                    i64::from(sunrise_cbor::version::DOC_SCHEMA_V - 1)
+                ],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(tasks, 0, "the replay failed, so nothing materialized");
+        assert_eq!(older, 1, "not re-stamped, so the next open retries it");
+        failing.close().await.unwrap();
+    }
+    let healed = reopen().await.unwrap();
+    exec(&healed, "DROP TRIGGER fail_release;");
+    healed.close().await.unwrap();
+}
+
+/// The sync driver's anti-entropy tick runs op-log compaction at most once a
+/// day, under the policy the caller set, and a record that is not a snapshot
+/// is refused rather than applied (ADR-0059).
+#[tokio::test]
+async fn the_sync_tick_compacts_at_most_once_a_day() {
+    const T: u64 = 1_700_000_000_000;
+    let dir = tempfile::tempdir().unwrap();
+    let clock = Arc::new(FakeClock(PLMutex::new(T)));
+    let core = Core::open(
+        CoreConfig::with_clock(
+            dir.path().to_path_buf(),
+            "0.1.0+test",
+            Arc::clone(&clock) as Arc<dyn crate::config::Clock>,
+            Arc::new(SystemRng),
+        ),
+        unlock(),
+    )
+    .await
+    .unwrap();
+    let policy = crate::engine::CompactionPolicy {
+        retention_ms: 1,
+        ..Default::default()
+    };
+    core.set_compaction_policy(policy);
+    assert_eq!(core.compaction_policy(), policy);
+
+    core.sync_publish_due_digests();
+    assert_eq!(*core.last_compaction_ms.lock(), Some(T));
+    *clock.0.lock() = T + 1_000;
+    core.sync_publish_due_digests();
+    assert_eq!(
+        *core.last_compaction_ms.lock(),
+        Some(T),
+        "not again within the day"
+    );
+    *clock.0.lock() = T + COMPACT_EVERY_MS;
+    core.sync_publish_due_digests();
+    assert_eq!(*core.last_compaction_ms.lock(), Some(T + COMPACT_EVERY_MS));
+
+    assert!(core.compact_op_log().is_ok());
+    assert!(matches!(
+        core.apply_stream_snapshot(b"SR\x04\x00\x01junk"),
+        Err(CoreError::Engine(EngineError::Invalid(_)))
+    ));
+    assert_eq!(core.stream_snapshot([0x11; 16]).unwrap(), None);
+    core.close().await.unwrap();
+}
+
 #[tokio::test]
 async fn open_and_close() {
     let dir = tempfile::tempdir().unwrap();
@@ -257,6 +565,7 @@ async fn every_create_and_delete_command_is_classified_by_its_own_arm() {
                 priority: None,
                 estimated_duration_s: None,
                 body: None,
+                unknown: sunrise_domain::Unknowns::new(),
             },
             rrule: RRule::parse("FREQ=DAILY").unwrap(),
             timezone: "UTC".into(),
@@ -385,6 +694,7 @@ async fn routine_timer_materializes_past_the_launch_horizon() {
             priority: None,
             estimated_duration_s: None,
             body: None,
+            unknown: sunrise_domain::Unknowns::new(),
         },
         rrule: RRule::parse("FREQ=DAILY").unwrap(),
         timezone: "UTC".into(),

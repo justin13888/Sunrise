@@ -56,7 +56,7 @@ struct VaultWindow: View {
         self.bridge = bridge
         self.session = session
         self.surfaces = surfaces
-        _models = State(initialValue: VaultModels(bridge: bridge))
+        _models = State(initialValue: VaultModels(bridge: bridge, account: session.account))
     }
 
     var body: some View {
@@ -217,9 +217,14 @@ struct VaultWindow: View {
         }
         .task {
             deviceID = await bridge.deviceId()
-            account.restore()
+            // The session's one account: a second window or a vault switch
+            // must not re-read a credential a sign-out left behind (#276).
+            account.restoreIfUnread()
             await startSync()
-            await renewSession()
+            // After the first look, so the tick's first look sees the token.
+            // The session owns the tick: closing this window, while the menu
+            // bar keeps the vault and its sync open, leaves it running (#307).
+            session.renewSessionWhileOpen()
         }
         .task { await sync.poll(from: bridge) }
         // The schedule is only correct until the next write. A task created on
@@ -348,6 +353,9 @@ struct VaultWindow: View {
             search.clear()
             selection = .search
             pane = .search
+        // From the palette; the menu items reach these as deep links.
+        case .morningSummary: selection = .morning
+        case .endOfDay: selection = .evening
         default: return false
         }
         return true
@@ -365,6 +373,7 @@ struct VaultWindow: View {
         case .undo: Task { await undo.undo() }
         case .redo: Task { await undo.redo() }
         case .printView, .exportPDF: PrintCommand.run(action, document: printable)
+        case .importCalendar: Task { await surfaces.importIcal() }
         default: return false
         }
         return true
@@ -404,17 +413,21 @@ struct VaultWindow: View {
     /// picks a new credential up on its next connect, and a repeated start
     /// against the same URL is refused by the core rather than doubled.
     private func startSync() async {
+        // Registered first, so the plan below reads the id it produced (#183).
+        await session.bindRelayDevice()
+        let (relayURL, token) = (settings.relayURL, account.accessToken)
         guard case let .connect(url, bearer, relayDeviceID) = SyncPlan(
-            relayURL: settings.relayURL,
-            accessToken: account.accessToken,
-            relayDeviceID: session.relayDeviceID
+            relayURL: relayURL,
+            accessToken: token,
+            relayDeviceID: session.relayDeviceID(relayURL: relayURL, bearer: token)
         ) else { return }
         try? await bridge.startSync(url: url, bearer: bearer, relayDeviceID: relayDeviceID)
     }
 }
 
-// The account's two drivers, in an extension so the window's own body stays
-// inside the length this project lints for.
+// The account's sign-in, in an extension so the window's own body stays inside
+// the length this project lints for. Its renewal is the session's — see
+// ``SessionModel/renewSessionWhileOpen(every:sleep:)``.
 extension VaultWindow {
     private func signIn() async {
         await account.signIn(
@@ -422,20 +435,6 @@ extension VaultWindow {
             clientID: settings.oidcClientID,
             deviceID: deviceID,
             nowMs: await bridge.nowMs()
-        )
-    }
-
-    /// Keep the session renewed for as long as this window is open.
-    ///
-    /// Called after `restore()` on purpose, from the same task: a `.task` of
-    /// its own could take its first look before the token is back. Scoped to
-    /// this window like everything else `models` drives — closing it tears the
-    /// models down, and cancels this with them.
-    private func renewSession() async {
-        await account.renewWhileRunning(
-            issuer: { settings.oidcIssuer },
-            clientID: { settings.oidcClientID },
-            now: { await bridge.nowMs() }
         )
     }
 }

@@ -1,34 +1,30 @@
-//! Remote materialization and the entity-level LWW rule (ADR-0014).
+//! Remote materialization: the one dispatcher every received entity op goes
+//! through, and the stamp it merges by.
 //!
-//! One decision rule — `lww_wins` over a `(ts_ms, device_id)` stamp — and the
-//! one dispatcher that applies it. `materialize_remote`'s `(table, id_col)`
-//! match is the single point in the engine that knows every entity's storage
-//! shape, which is exactly why it earns its own module rather than being
-//! smeared across seven: a new entity adds one arm here, and a reader checking
-//! that the merge is uniform across entities reads one function.
+//! `materialize_remote` reads each entity's merge class from the entity
+//! registry ([`sunrise_id::for_each_entity!`]). An entity that merges as
+//! [`Merge::Lww`] is folded field by field by [`super::merge`] (ADR-0044,
+//! which superseded ADR-0014's one survivor per row); an append-only record
+//! is written once under its own key. Its per-op match is exhaustive, so a new
+//! op variant is a build failure here until it is routed.
 
-use super::attachment::upsert_attachment_row;
-use super::block::{replace_block_tasks, upsert_block_row};
-use super::context::{insert_context_row, purge_context_from_tasks, update_context_row};
 use super::focus::materialize_focus_remote;
+use super::merge::merge_op;
 use super::review::insert_review_snapshot_row;
-use super::routine::{insert_routine_row, update_routine_row};
-use super::stream::{ensure_stream_row, insert_stream_row, update_stream_row};
-use super::task::{
-    ftsr_delete_task, ftsr_upsert_task, insert_task_contexts, insert_task_row,
-    replace_task_blockers, replace_task_contexts, update_task_row,
-};
 use super::META_STREAM;
 use crate::inner_op::InnerOp;
 use rusqlite::{params, OptionalExtension, Transaction};
 use sunrise_cbor::hlc::Hlc;
 use sunrise_domain::INBOX_STREAM_BYTES;
+use sunrise_id::registry::Merge;
 use sunrise_id::{EntityKind, EntityRef};
 
-/// The stamp that decides which of two writers to a materialized row survives.
+/// The stamp an op writes with: the envelope's `(hlc, device, seq)`.
 ///
-/// Ordering is `(hlc, device, seq)`, in that order, and every term earns its
-/// place:
+/// Every field write an op makes carries it, and the merge compares two
+/// writes to one field by it ([`super::merge::Stamp`], which appends the op's
+/// stream as a last term). Ordering is `(hlc, device, seq)`, in that order,
+/// and every term earns its place:
 ///
 /// * `hlc` — a hybrid logical clock, not a wall clock. It is the whole point:
 ///   an unbounded `ts_ms` let a device with a fast clock win every conflict it
@@ -40,7 +36,10 @@ use sunrise_id::{EntityKind, EntityRef};
 ///   field 4. Reached only when two ops from the SAME device carry an equal
 ///   `hlc`, which the send rule makes impossible while a device's HLC state
 ///   lives; it becomes possible across a process restart, when the logical
-///   counter resets to 0. In that window `seq` is what still orders them.
+///   counter resets to 0. In that window `seq` is what still orders them. It
+///   must decide there, and the device memcmp must not: `dev > dev` is false,
+///   so a device's own later op would lose to its own earlier one on every
+///   remote replica while the originating replica kept it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct LwwStamp {
     /// Causal timestamp from the writing device.
@@ -51,9 +50,10 @@ pub(super) struct LwwStamp {
     pub seq: u64,
 }
 
-/// The stamp stored on a materialized row. `device` is `None` only for a
+/// The stamp stored on a materialized row: the greatest stamp among the ops
+/// its entity's state was merged from. `device` is `None` only for a
 /// placeholder row that no real op has yet stamped (the lazily created
-/// inbox/meta stream), which loses to everything.
+/// inbox stream).
 #[derive(Debug, Clone)]
 pub(super) struct RowLww {
     pub(super) hlc: Hlc,
@@ -63,7 +63,7 @@ pub(super) struct RowLww {
 
 /// Read the stored LWW stamp for `id` in `table`. `None` when the row is
 /// absent.
-fn read_row_lww(
+pub(super) fn read_row_lww(
     tx: &Transaction<'_>,
     table: &str,
     id_col: &str,
@@ -86,14 +86,16 @@ fn read_row_lww(
     .optional()
 }
 
-/// Entity-level LWW decision: does the incoming stamp beat the row's stored
-/// one? Compares `(hlc, device, seq)` in that order.
+/// The register rule: does a write stamped `incoming` replace the one a
+/// register holds, stamped `row`? Compares `(hlc, device, seq)` in that
+/// order. Every field register and map key decides by it
+/// ([`super::merge`]), where it once decided whole rows.
 pub(super) fn lww_wins(incoming: &LwwStamp, row: &RowLww) -> bool {
     if incoming.hlc != row.hlc {
         return incoming.hlc > row.hlc;
     }
     let Some(row_dev) = row.device.as_deref() else {
-        // A placeholder row no op has stamped loses to any real op.
+        // A placeholder no op has stamped loses to any real op.
         return true;
     };
     if row_dev != incoming.device.as_slice() {
@@ -108,30 +110,13 @@ pub(super) fn lww_wins(incoming: &LwwStamp, row: &RowLww) -> bool {
     //
     // Ops from one device are causally ordered by their per-(stream, device)
     // `seq`, so the higher `seq` is the newer state and wins. Equal `seq` on the
-    // same device is the same op re-delivered; the caller's idempotence gate has
-    // already handled that, and `true` keeps a replay a harmless no-op rewrite.
+    // same device is the same op folded again, and `true` keeps that a
+    // harmless rewrite of the same value.
     //
     // See `docs/05-sync/conflict-resolution.md` and ADR-0016.
     incoming.seq >= row.seq
 }
 
-/// Apply one decoded remote inner op to the materialized tables under LWW.
-///
-/// Compares the envelope's `(hlc, device, seq)` stamp against the target row's
-/// stored one. If the envelope wins (or the row is absent for a
-/// create/update), it performs the same insert/update the local path does and
-/// stamps the LWW columns from the envelope. A losing op is a no-op here (it is
-/// still recorded in the op log by the caller).
-///
-/// `*Delete` ops are full-state like every other op: each carries its entity
-/// with `deleted` set, so a winning delete replaces the whole row and a delete
-/// that overtakes its own create still materializes the tombstone (see
-/// [`crate::inner_op`] docs and ADR-0014).
-//
-// Two arms below have empty bodies and are deliberately not merged: the
-// append-only families and the control families are handled by different
-// guards earlier in the function, and spelling both out is what makes adding a
-// fifth family a compile-time decision rather than a silent fall-through.
 /// Re-point a pre-0017 Inbox reference — the sixteen zero bytes the Inbox once
 /// shared with the vault-meta stream — at [`INBOX_STREAM_BYTES`].
 ///
@@ -177,192 +162,100 @@ pub(super) fn remap_legacy_inbox(inner: &mut InnerOp) {
     }
 }
 
-#[allow(clippy::match_same_arms)]
+/// Apply one decoded remote entity op to the materialized tables.
+///
+/// `lww` is the sender's stamp and `stream` the stream the envelope was sealed
+/// under. An op on an entity that merges as [`Merge::Lww`], full-state or
+/// `Patch`, is folded into that entity's field state and the entity is
+/// re-projected ([`merge_op`]); a losing write is kept in the state and
+/// changes nothing it shows. An append-only record is written once.
+//
+// The control arm below has an empty body and is spelled out rather than
+// caught by `_ =>`: control ops are turned away by the guard at the top of the
+// function, and naming each family is what makes adding a fifth a
+// compile-time decision rather than a silent fall-through.
 pub(super) fn materialize_remote(
     tx: &Transaction<'_>,
     inner: &InnerOp,
     lww: &LwwStamp,
+    stream: &[u8; 16],
 ) -> rusqlite::Result<()> {
-    // A control op has no entity and must never reach the kind table below,
-    // whose `_ =>` arm would file anything it does not recognise under
-    // `tasks`. `apply_remote` routes them away before this is called; this is
-    // the belt to that braces, and it is a `debug_assert` rather than a silent
-    // return so a routing mistake surfaces in a test run instead of as a
-    // mysterious task row in production.
+    // A control op has no entity and must never reach the registry lookup
+    // below: its `entity_kind` names what it is *about* — a KeyEnvelope says
+    // Stream — so it would be read as a write to that kind's row.
+    // `apply_remote` routes them away before this is called; this is the belt
+    // to that braces, and it is a `debug_assert` rather than a silent return
+    // so a routing mistake surfaces in a test run instead of as a mysterious
+    // row in production.
     if inner.is_control() {
         debug_assert!(false, "a control op reached the entity materializer");
         return Ok(());
     }
-    let ts_ms = lww.hlc.physical_ms;
-    // Focus ops never enter the LWW contest. Each writes one immutable record
-    // keyed by the session's own id (start, end, and interruption in three
-    // distinct tables), so there is nothing for a later op to overwrite and
-    // nothing for an earlier one to lose — including when an `end` overtakes
-    // its own `start`. Running an LWW comparison here would be actively wrong:
-    // a `start` stamped later than its `end` would suppress the `end`.
-    if matches!(
-        inner,
-        InnerOp::FocusStart(_) | InnerOp::FocusEnd(_) | InnerOp::FocusInterrupt(_)
-    ) {
-        return materialize_focus_remote(tx, inner, lww);
-    }
-    // A review snapshot is append-only for the same reason: it is keyed by its
-    // own `rvw_` id, written once, and never edited. Running LWW here would let
-    // one device's review of a week suppress another device's, which is exactly
-    // the loss the representation exists to prevent. It also deliberately does
-    // NOT `ensure_stream_row` for the Streams it names — the counts live inside
-    // an opaque blob, so a snapshot that overtakes a `stream.create` still
-    // lands intact.
-    if let InnerOp::ReviewSnapshotCreate(snapshot) = inner {
-        return insert_review_snapshot_row(tx, snapshot, lww);
-    }
-    let (table, id_col) = match inner.entity_kind() {
-        EntityKind::Stream => ("streams", "stream_id"),
-        EntityKind::Context => ("contexts", "id"),
-        EntityKind::Routine => ("routines", "id"),
-        EntityKind::Block => ("blocks", "id"),
-        EntityKind::Attachment => ("attachments", "id"),
-        // Task (and any future kind) key on `id`.
-        _ => ("tasks", "id"),
-    };
-    let target = inner.target_ref();
-    let existing = read_row_lww(tx, table, id_col, target.bytes())?;
-    let wins = existing.as_ref().is_none_or(|row| lww_wins(lww, row));
-    if !wins {
+    // The entity's registry entry decides how the op merges. There is no
+    // default: an entity the registry does not project cannot reach here,
+    // because its kind has no op variant.
+    let spec = inner.entity_kind().spec();
+    if spec.storage().is_none() || !matches!(spec.merge, Merge::Lww | Merge::AppendOnly) {
+        debug_assert!(false, "{:?} has no materialized row", spec.kind);
         return Ok(());
     }
-    let present = existing.is_some();
     match inner {
-        InnerOp::TaskCreate(t) | InnerOp::TaskUpdate(t) => {
-            // The owning stream must exist before the task (FK).
-            ensure_stream_row(tx, &t.stream_id, ts_ms)?;
-            if present {
-                update_task_row(tx, t, lww)?;
-                replace_task_contexts(tx, t)?;
-            } else {
-                insert_task_row(tx, t, lww)?;
-                insert_task_contexts(tx, t)?;
-            }
-            // Dependency edges ride along with the full-state task op. They are
-            // written even when the blockers they name have not arrived on this
-            // replica yet — an unknown blocker reads as still-open, so the
-            // dependent shows blocked until its blocker turns up, whichever
-            // order the two ops land in.
-            replace_task_blockers(tx, t)?;
-            ftsr_upsert_task(tx, t)?;
+        // Every entity write that merges field by field: the full-state ops,
+        // read as writes to every field they carry (ADR-0044 §7), and `Patch`.
+        //
+        // What used to be special here is now the merge's: a delete is a
+        // `deleted` register like any other, so a delete that overtakes its
+        // create still lands as a tombstone; a context delete still purges the
+        // context from every task, keyed on its id alone; dependency edges and
+        // block bindings are OR-sets, written even when the entity they name
+        // has not arrived yet; and an attachment's parent task need not exist.
+        InnerOp::TaskCreate(_)
+        | InnerOp::TaskUpdate(_)
+        | InnerOp::TaskDelete(_)
+        | InnerOp::StreamCreate(_)
+        | InnerOp::StreamUpdate(_)
+        | InnerOp::StreamDelete(_)
+        | InnerOp::ContextCreate(_)
+        | InnerOp::ContextUpdate(_)
+        | InnerOp::ContextDelete(_)
+        | InnerOp::RoutineCreate(_)
+        | InnerOp::RoutineUpdate(_)
+        | InnerOp::RoutineDelete(_)
+        | InnerOp::BlockCreate(_)
+        | InnerOp::BlockUpdate(_)
+        | InnerOp::BlockDelete(_)
+        | InnerOp::AttachmentCreate(_)
+        | InnerOp::AttachmentDelete(_)
+        | InnerOp::Patch(_) => {
+            return merge_op(tx, inner, lww, *stream);
         }
-        InnerOp::TaskDelete(t) => {
-            // Applied exactly like TaskUpdate, because that is what it now is:
-            // a full-state op whose state happens to have `deleted` set. The
-            // whole row is replaced, so two replicas that had diverged on
-            // `title` before the delete converge on the deleting replica's
-            // state rather than each keeping its own.
-            ensure_stream_row(tx, &t.stream_id, ts_ms)?;
-            if present {
-                update_task_row(tx, t, lww)?;
-                replace_task_contexts(tx, t)?;
-            } else {
-                insert_task_row(tx, t, lww)?;
-                insert_task_contexts(tx, t)?;
-            }
-            replace_task_blockers(tx, t)?;
-            // Not `ftsr_upsert_task`: a tombstoned task must leave the search
-            // index, and `update_task_row` does not touch it.
-            ftsr_delete_task(tx, &t.id)?;
+        // Focus ops never enter the LWW contest. Each writes one immutable record
+        // keyed by the session's own id (start, end, and interruption in three
+        // distinct tables), so there is nothing for a later op to overwrite and
+        // nothing for an earlier one to lose — including when an `end` overtakes
+        // its own `start`. Running an LWW comparison here would be actively wrong:
+        // a `start` stamped later than its `end` would suppress the `end`.
+        InnerOp::FocusStart(_) | InnerOp::FocusEnd(_) | InnerOp::FocusInterrupt(_) => {
+            return materialize_focus_remote(tx, inner, lww);
         }
-        InnerOp::StreamCreate(s) | InnerOp::StreamUpdate(s) => {
-            if present {
-                update_stream_row(tx, s, lww)?;
-            } else {
-                insert_stream_row(tx, s, lww)?;
-            }
+        // A review snapshot is append-only for the same reason: it is keyed by its
+        // own `rvw_` id, written once, and never edited. Running LWW here would let
+        // one device's review of a week suppress another device's, which is exactly
+        // the loss the representation exists to prevent. It also deliberately does
+        // NOT `ensure_stream_row` for the Streams it names — the counts live inside
+        // an opaque blob, so a snapshot that overtakes a `stream.create` still
+        // lands intact.
+        InnerOp::ReviewSnapshotCreate(snapshot) => {
+            return insert_review_snapshot_row(tx, snapshot, lww);
         }
-        InnerOp::StreamDelete(s) => {
-            // Applied as the full-state op it now is, so the whole row is
-            // replaced rather than only its tombstone flag.
-            if present {
-                update_stream_row(tx, s, lww)?;
-            } else {
-                insert_stream_row(tx, s, lww)?;
-            }
-        }
-        InnerOp::ContextCreate(c) | InnerOp::ContextUpdate(c) => {
-            if present {
-                update_context_row(tx, c, lww)?;
-            } else {
-                insert_context_row(tx, c, lww)?;
-            }
-        }
-        InnerOp::ContextDelete(c) => {
-            // The membership purge is keyed on the context id alone and is
-            // idempotent, so it runs even when this replica has not yet
-            // materialized the Context row itself (a delete that overtook its
-            // create). That keeps "deleting a Context removes it from all
-            // Tasks" true on every replica that sees the delete.
-            purge_context_from_tasks(tx, target.bytes())?;
-            // Full-state, like every other delete: insert when this replica has
-            // not materialized the Context yet. Without the `else` the delete
-            // was dropped on arrival, the older create then landed live, and
-            // the replica sat permanently out of step with the one that
-            // deleted — the purge above ran, so the memberships were stripped
-            // while the Context itself stayed alive, which is worse than
-            // either outcome alone.
-            if present {
-                update_context_row(tx, c, lww)?;
-            } else {
-                insert_context_row(tx, c, lww)?;
-            }
-        }
-        InnerOp::RoutineCreate(r) | InnerOp::RoutineUpdate(r) => {
-            ensure_stream_row(tx, &r.template.stream_id, ts_ms)?;
-            if present {
-                update_routine_row(tx, r, lww)?;
-            } else {
-                insert_routine_row(tx, r, ts_ms, lww)?;
-            }
-        }
-        InnerOp::RoutineDelete(rt) => {
-            if present {
-                update_routine_row(tx, rt, lww)?;
-            } else {
-                insert_routine_row(tx, rt, ts_ms, lww)?;
-            }
-        }
-        // The delete rides the same arm as create and update: it is a
-        // full-state op now, so the whole row is replaced rather than only its
-        // tombstone flag. That also makes a delete that overtakes its create
-        // land as a tombstoned row instead of vanishing.
-        InnerOp::BlockCreate(b) | InnerOp::BlockUpdate(b) | InnerOp::BlockDelete(b) => {
-            ensure_stream_row(tx, &b.stream_id, ts_ms)?;
-            upsert_block_row(tx, b, lww)?;
-            // Bindings ride along with the full-state Block op, and are written
-            // even for Tasks this replica has not materialized yet: a binding
-            // to an unknown Task is a fact, and `Task.blocks` picks it up the
-            // moment that Task's own op lands.
-            replace_block_tasks(tx, b)?;
-        }
-        // Create and delete share an arm for the same reason Block's do: the
-        // delete carries the attachment's full state, so it replaces the row.
-        // Deliberately no `ensure` of the parent task: an attachment op that
-        // overtook its task's create still lands, and the two join up when the
-        // task turns up. Nothing about the row depends on the parent existing.
-        InnerOp::AttachmentCreate(a) | InnerOp::AttachmentDelete(a) => {
-            upsert_attachment_row(tx, a, lww)?;
-        }
-        // Handled by the append-only branch at the top of this function; the
-        // arm exists so a new append-only op cannot be added without deciding
-        // here.
-        InnerOp::FocusStart(_)
-        | InnerOp::FocusEnd(_)
-        | InnerOp::FocusInterrupt(_)
-        | InnerOp::ReviewSnapshotCreate(_) => {}
         // Unreachable: the guard at the top of this function returns before
         // the LWW read. Spelled out rather than caught by a `_ =>` arm so a
-        // fifth control family cannot be added without being considered here.
+        // sixth control family cannot be added without being considered here.
         InnerOp::KeyEnvelope(_)
         | InnerOp::DeviceRevoke(_)
         | InnerOp::DeviceCertPublish(_)
-        | InnerOp::IdentityTransition(_) => {}
+        | InnerOp::IdentityTransition(_)
+        | InnerOp::StreamDigest(_) => {}
     }
     Ok(())
 }

@@ -8,6 +8,8 @@
 //! [`STREAM_BUFFER`] are the two bounds a long-lived stream is held to.
 
 use crate::api::error::{codes, ApiError};
+use crate::api::ratelimit::store::Permit;
+use crate::api::ratelimit::Throttled;
 use crate::api::signed::SignedParts;
 use crate::relay::{CursorGap, RelayFrame};
 use crate::state::ServerState;
@@ -28,7 +30,11 @@ use super::credential::{resolve, SessionHeader};
 /// The `Ping`/`Pong` exchange this replaces existed to keep an idle socket from
 /// being reaped by an intermediary. A comment does the same job with no frame
 /// type and nothing for the client to answer.
-const KEEP_ALIVE_SECS: u64 = 15;
+///
+/// The shipped reverse-proxy configurations (`deploy/`) set their read and
+/// idle timeouts well above this, so a quiet stream is never cut between two
+/// comments.
+pub const KEEP_ALIVE_SECS: u64 = 15;
 
 /// How many events may queue for a slow reader before the stream is dropped.
 ///
@@ -36,6 +42,15 @@ const KEEP_ALIVE_SECS: u64 = 15;
 /// it explicit is what keeps one stalled client from growing a queue instead of
 /// being disconnected.
 const STREAM_BUFFER: usize = 256;
+
+/// The `reason` of the `closed` event a draining server ends a stream with.
+///
+/// The code beside it is `SYNC_NETWORK_UNAVAILABLE`, which the catalogue marks
+/// transient and retryable, so a client reconnects with backoff and reaches
+/// whichever relay is serving next. A code of its own would read better and
+/// would park every client released before it: a close code a build cannot
+/// read is not retryable there, by design (`sunrise-sync`'s `closed` arm).
+const DRAINING: &str = "relay is shutting down";
 
 /// One event on the sync stream.
 ///
@@ -115,9 +130,14 @@ pub async fn events(
     Headers(header): Headers<SessionHeader>,
     LastEventId(resume): LastEventId,
     SignedParts(caller): SignedParts,
-) -> Result<Sse<EventStream>, ApiError> {
+) -> Result<Sse<EventStream>, Throttled> {
     let now_ms = state.clock.now_ms();
     let (id, session) = resolve(&state, &header, &caller, now_ms)?;
+    // Held by the stream's task and released when it ends, which includes
+    // the client going away: `live_loop` watches for that.
+    let slot = state
+        .limiter
+        .open_stream(&state, "/api/v1/sync/events", &caller)?;
     // A zero is not a resume point: `relay_replay_after` already reads 0 as
     // "first connection", so it carries no claim to conflict with.
     let after = resume
@@ -140,7 +160,8 @@ pub async fn events(
             codes::SYNC_RESUME_CONFLICT,
             "Last-Event-ID and a fresh Subscribe are two different positions; \
              reopen without the id to replay from the cursors",
-        ));
+        )
+        .into());
     }
     // The set is served from here on, so the ids this stream mints are a
     // statement about it and the next reconnect may resume on one.
@@ -164,7 +185,7 @@ pub async fn events(
     );
 
     Ok(
-        Sse::new(spawn_stream(state, id, session, after)).keep_alive(
+        Sse::new(spawn_stream(state, id, session, after, slot)).keep_alive(
             KeepAlive::new()
                 .interval(std::time::Duration::from_secs(KEEP_ALIVE_SECS))
                 .comment("sunrise"),
@@ -182,17 +203,25 @@ pub type EventStream =
 /// because what has to happen here is a `select!` over several sources — the
 /// per-stream live receivers, the token deadline, the revocation re-check — and
 /// that is the shape the socket loop already had. Dropping the returned stream
-/// drops the receiver, whose sender then fails, which ends the task.
+/// drops the receiver, which `live_loop` notices at once, which ends the task.
+///
+/// `slot` is the device's stream permit, moved into the task so it is held
+/// exactly as long as the task runs.
 fn spawn_stream(
     state: ServerState,
     id: String,
     session: Session,
     after: Option<u64>,
+    slot: Option<Permit>,
 ) -> EventStream {
     use futures_util::StreamExt as _;
     let (tx, rx) = tokio::sync::mpsc::channel::<Event<SyncEvent>>(STREAM_BUFFER);
 
     tokio::spawn(async move {
+        let _slot = slot;
+        // The device is online for exactly as long as this task runs, so the
+        // push dispatcher does not wake a device already receiving the ops.
+        let _present = state.push.hold(session.device_id.as_deref());
         let mut receivers = Vec::new();
 
         // Live receiver FIRST, then the durable read. A frame published between
@@ -299,11 +328,33 @@ async fn live_loop(
     let recheck = std::time::Duration::from_millis(state.config.device_recheck_ms.max(1));
     let mut ticker = tokio::time::interval(recheck);
     ticker.tick().await;
+    // Counted for as long as this loop runs, so the shutdown log can say how
+    // many streams the drain ended.
+    let _open = state.drain.track_stream();
+    let draining = state.drain.wait();
+    tokio::pin!(draining);
 
     loop {
         let next = recv_first(&mut receivers);
         tokio::select! {
             biased;
+
+            // First, so a busy stream cannot hold the drain open: kynos waits
+            // for every response to finish, and this one never would.
+            () = &mut draining => {
+                tracing::info!(
+                    ev = "srv.sync.stream_drained",
+                    account_h = %crate::logging::account_h(&session.account_id),
+                    "server is draining; ending the stream with a retryable close"
+                );
+                let _ = tx.send(closed(ErrorCode::SyncNetworkUnavailable, DRAINING)).await;
+                break;
+            }
+
+            // The client went away. Without this arm a quiet stream would
+            // only notice on its next frame, holding the device's stream
+            // slot (and a relay subscription) for a connection nobody reads.
+            () = tx.closed() => break,
 
             Some((sid, frame)) = next => {
                 // The session's own batches are not echoed back to it: it

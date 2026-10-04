@@ -23,13 +23,52 @@
 
 #![allow(clippy::missing_panics_doc, clippy::doc_markdown)]
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use sunrise_core_bindings::SunriseCore;
-use sunrise_e2e::spawn_relay;
+use sunrise_e2e::spawn_relay_with;
+use sunrise_server::{ServerConfig, Store, Subject};
 
 const BEARER: &str = "self-host";
 const ROOT: [u8; 32] = [0x4d; 32];
+/// A value no clock would produce, so the relay recording it proves the seam
+/// forwarded the caller's acceptance rather than reading its own clock (#183).
+const TERMS_ACCEPTED_AT_MS: u64 = 1_234_567;
+
+/// The account every self-host bearer resolves to.
+fn self_host_account(store: &Store) -> sunrise_server::store::Account {
+    store
+        .resolve_account(
+            &Subject::new(sunrise_server::auth::SELF_HOST_ISSUER, "self-host"),
+            true,
+            0,
+        )
+        .expect("the self-host account")
+}
+
+/// The vault device id as the relay records it: the seam reports it as hex,
+/// the relay's `vault_device_id` column holds Crockford base-32.
+fn vault_device_id(core: &SunriseCore) -> String {
+    let hex = core.device_id();
+    let mut bytes = [0u8; 16];
+    for (i, b) in bytes.iter_mut().enumerate() {
+        *b = u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).expect("hex device id");
+    }
+    sunrise_id::crockford::encode_bytes(&bytes)
+}
+
+/// A relay, and a handle on its own store to read what it recorded.
+async fn relay_with_store() -> (String, tokio::task::JoinHandle<()>, Arc<Store>) {
+    let mut captured: Option<Arc<Store>> = None;
+    let (addr, relay) = spawn_relay_with(ServerConfig::default(), |state| {
+        captured = Some(state.store.clone());
+        state
+    })
+    .await;
+    let store = captured.expect("the harness hands back the relay's own store");
+    (format!("http://{addr}"), relay, store)
+}
 
 fn client(base_url: &str) -> sunrise_relay_client::api::Client {
     sunrise_relay_client::api::Client::new(base_url)
@@ -71,8 +110,7 @@ async fn identity_id(base_url: &str) -> [u8; 16] {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_vault_created_through_the_app_seam_leaves_a_recovery_blob_on_the_relay() {
-    let (addr, relay) = spawn_relay().await;
-    let base_url = format!("http://{addr}");
+    let (base_url, relay, store) = relay_with_store().await;
 
     let dir = tempfile::tempdir().expect("a vault dir");
     let core = SunriseCore::open(
@@ -109,13 +147,30 @@ async fn a_vault_created_through_the_app_seam_leaves_a_recovery_blob_on_the_rela
             BEARER.to_owned(),
             "alice@example.com".to_owned(),
             "Alice's Mac".to_owned(),
+            TERMS_ACCEPTED_AT_MS,
         ),
     )
     .await
     .expect("bootstrap must not hang")
     .expect("the app publishes its vault");
 
-    assert!(!outcome.device_id.is_empty());
+    // The id handed back names a row the relay holds for *this* device — the
+    // one the app now records and every later request presents (#183).
+    let account = self_host_account(&store);
+    let rows = store
+        .list_devices(&account.account_id)
+        .expect("list devices");
+    let row = rows
+        .iter()
+        .find(|d| d.device_id == outcome.device_id)
+        .expect("the returned device id names a registered row");
+    assert_eq!(
+        row.vault_device_id.as_deref(),
+        Some(vault_device_id(&core).as_str()),
+    );
+    // The acceptance the caller supplied, not a reading of the core's clock.
+    assert_eq!(account.terms_at_ms, Some(TERMS_ACCEPTED_AT_MS));
+
     let code = outcome
         .recovery_code
         .expect("a founding device produces a code; only a paired one does not");
@@ -139,6 +194,64 @@ async fn a_vault_created_through_the_app_seam_leaves_a_recovery_blob_on_the_rela
         sunrise_crypto::keys::IdentityDhKeyPair::from_secret_bytes(restored.id_d_priv)
             .public_bytes(),
         restored.id_d_pub,
+    );
+
+    core.shutdown().await;
+    relay.abort();
+}
+
+/// The route a device admitted by pairing takes (#183): register this device
+/// and nothing else.
+///
+/// Before `register_relay_device` existed, the Apple app reached the relay
+/// only through `bootstrap_account`, and never for a paired device — so such a
+/// device held no relay id and a relay with `require_device_sig` refused it.
+/// What is asserted is both halves: the id names a row for this device, and
+/// the account record is left as it was — no identity keys, and above all no
+/// terms acceptance asserted on the holder's behalf.
+#[tokio::test(flavor = "multi_thread")]
+async fn registering_a_device_alone_binds_it_and_publishes_nothing_else() {
+    let (base_url, relay, store) = relay_with_store().await;
+
+    let dir = tempfile::tempdir().expect("a vault dir");
+    let core = SunriseCore::open(
+        dir.path().to_string_lossy().into_owned(),
+        ROOT.to_vec(),
+        "e2e".into(),
+        None,
+    )
+    .await
+    .expect("the app opens a vault");
+
+    let device_id = tokio::time::timeout(
+        Duration::from_secs(30),
+        core.register_relay_device(base_url, BEARER.to_owned(), "Alice's iPhone".to_owned()),
+    )
+    .await
+    .expect("registration must not hang")
+    .expect("the relay registers the device");
+
+    let account = self_host_account(&store);
+    let rows = store
+        .list_devices(&account.account_id)
+        .expect("list devices");
+    let row = rows
+        .iter()
+        .find(|d| d.device_id == device_id)
+        .expect("the returned id names a registered row");
+    assert_eq!(
+        row.vault_device_id.as_deref(),
+        Some(vault_device_id(&core).as_str())
+    );
+    assert_eq!(row.nickname, "Alice's iPhone");
+
+    assert_eq!(
+        account.identity_pub_s, None,
+        "registering publishes no identity"
+    );
+    assert_eq!(
+        account.terms_at_ms, None,
+        "registering asserts no terms acceptance"
     );
 
     core.shutdown().await;

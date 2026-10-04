@@ -115,7 +115,7 @@ it is.
 
 Today `index_ms` still decides the `due ≥ scheduled` invariant
 (`crates/sunrise-domain/src/task.rs#validate_invariants`), block overlap
-(`crates/sunrise-domain/src/block.rs#overlaps`) and the Today window
+(`crates/sunrise-domain/src/block/conflict.rs#overlaps`) and the Today window
 (`crates/sunrise-core/src/engine/query.rs#query_today`). Each is a defect against
 this rule.
 

@@ -112,6 +112,41 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "device_read_bounds",
         sql: include_str!("../migrations/0028_device_read_bounds.sql"),
     },
+    Migration {
+        id: 29,
+        name: "stream_key_senders",
+        sql: include_str!("../migrations/0029_stream_key_senders.sql"),
+    },
+    Migration {
+        id: 30,
+        name: "read_bounds_from_sponsor",
+        sql: include_str!("../migrations/0030_read_bounds_from_sponsor.sql"),
+    },
+    Migration {
+        id: 31,
+        name: "parked_ops",
+        sql: include_str!("../migrations/0031_parked_ops.sql"),
+    },
+    Migration {
+        id: 32,
+        name: "routine_rrule_blob",
+        sql: include_str!("../migrations/0032_routine_rrule_blob.sql"),
+    },
+    Migration {
+        id: 33,
+        name: "field_merge_state",
+        sql: include_str!("../migrations/0033_field_merge_state.sql"),
+    },
+    Migration {
+        id: 34,
+        name: "op_chain",
+        sql: include_str!("../migrations/0034_op_chain.sql"),
+    },
+    Migration {
+        id: 35,
+        name: "op_log_compaction",
+        sql: include_str!("../migrations/0035_op_log_compaction.sql"),
+    },
 ];
 
 /// Current storage version (= last migration id).

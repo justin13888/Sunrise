@@ -10,7 +10,8 @@
 //! exists, and [`pair`], which runs before the vault is opened because the
 //! usual path would create one the joiner could never replace, and whose
 //! four-step exchange across two machines is worth driving end to end in one
-//! process.
+//! process. [`i18n`] is here because both halves print prose: it is the
+//! generated binding of the string catalog `i18n/en.toml`.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -20,6 +21,7 @@
     clippy::single_match_else
 )]
 
+pub mod i18n;
 pub mod livesync;
 pub mod login;
 pub mod pair;

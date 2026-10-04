@@ -116,9 +116,22 @@ COPY --from=builder /out/sunrise-server /usr/local/bin/sunrise-server
 VOLUME ["/var/lib/sunrise"]
 EXPOSE 8443
 
-# No HEALTHCHECK. There is no curl or wget in this image to write one with, and
-# the admin health endpoint is loopback-only by default — an orchestrator
-# should probe the relay's own port from outside instead.
+# The binary probes its own configured listener, so the image needs no curl or
+# wget. `/api/v1/health` is mounted on every listener, loopback or not; it is
+# `/metrics` that is withheld off loopback. Liveness rather than `--deep`:
+# what readiness catches — a wedged store, an unwritable blob root, a drain in
+# progress — is a load balancer's to route around, and a restart cures none of
+# it. The probe resolves the config as the server does — `$SUNRISE_CONFIG`, then
+# `/etc/sunrise/sunrise.toml` — so a config passed with `--config` needs the
+# same path in `$SUNRISE_CONFIG` for the probe to find the port.
+HEALTHCHECK --interval=30s --timeout=15s --start-period=30s --retries=3 \
+    CMD ["/usr/local/bin/sunrise-server", "healthcheck"]
+
+# `SIGTERM` starts a drain bounded by `[server] shutdown_grace_secs` (25 s by
+# default). Docker sends `SIGKILL` 10 s after `SIGTERM` unless told otherwise,
+# so run with `--stop-timeout 30`, or `stop_grace_period: 30s` in Compose, to
+# let the drain finish.
+STOPSIGNAL SIGTERM
 
 USER sunrise:sunrise
 WORKDIR /var/lib/sunrise

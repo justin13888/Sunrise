@@ -6,6 +6,13 @@ import "@sunrise/ui-tokens/css";
 import React from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
+import { applyDocumentLocale } from "./i18n";
+import { configuredServerUrl } from "./server-url";
+
+applyDocumentLocale(document.documentElement);
+// Before the first render, so a `?server=` link is stored and taken off the
+// address whether or not anything on screen reads the server yet.
+configuredServerUrl();
 
 const container = document.getElementById("root");
 if (!container) {
