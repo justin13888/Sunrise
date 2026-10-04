@@ -316,6 +316,56 @@ fn a_disabled_dispatcher_has_no_worker_and_counts_nothing() {
         .contains("sunrise_push_dispatch_total"));
 }
 
+/// A provider that hands every intent to the test as it is sent.
+#[derive(Debug)]
+struct Channel(tokio::sync::mpsc::UnboundedSender<PushIntent>);
+
+#[async_trait]
+impl PushProvider for Channel {
+    fn platform(&self) -> PushPlatform {
+        PushPlatform::Apns
+    }
+    async fn send(&self, intent: &PushIntent) -> Result<(), PushError> {
+        let _ = self.0.send(intent.clone());
+        Ok(())
+    }
+}
+
+async fn next(sent: &mut tokio::sync::mpsc::UnboundedReceiver<PushIntent>) -> PushIntent {
+    tokio::time::timeout(Duration::from_secs(5), sent.recv())
+        .await
+        .expect("a push within five seconds")
+        .unwrap()
+}
+
+/// The spawned worker, not a hand-driven one: its tick is what sends the
+/// trailing push once the clock passes the window.
+#[tokio::test]
+async fn the_running_worker_sends_the_trailing_push_when_the_window_closes() {
+    let (tx, mut sent) = tokio::sync::mpsc::unbounded_channel();
+    let f = fixture_with(
+        Arc::new(Channel(tx)),
+        Tuning {
+            tick: Duration::from_millis(10),
+            ..Tuning::default()
+        },
+    );
+    f.state.push.notify(&f.state, f.wake(STREAM_A));
+    assert_eq!(next(&mut sent).await.registration.device_id, f.laptop);
+
+    f.clock.set(T0_MS + 1_000);
+    f.state.push.notify(&f.state, f.wake(STREAM_A));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), sent.recv())
+            .await
+            .is_err(),
+        "coalesced into the open window"
+    );
+
+    f.clock.set(T0_MS + 30_000);
+    assert_eq!(next(&mut sent).await.registration.device_id, f.laptop);
+}
+
 // -- backpressure -----------------------------------------------------------
 
 /// A full queue drops the wake, counts it, and returns at once. On a

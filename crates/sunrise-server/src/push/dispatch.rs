@@ -391,7 +391,8 @@ pub(super) struct Worker {
 impl Worker {
     async fn run(mut self, mut rx: mpsc::Receiver<Wake>) {
         let tuning = self.inner.tuning;
-        let mut tick = tokio::time::interval(tuning.tick);
+        // `interval` panics on a zero period, and `Tuning` is public.
+        let mut tick = tokio::time::interval(tuning.tick.max(Duration::from_millis(1)));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let slots = Arc::new(tokio::sync::Semaphore::new(tuning.in_flight.max(1)));
         loop {
