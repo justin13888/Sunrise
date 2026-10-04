@@ -272,6 +272,12 @@ pub enum RestoreError {
     #[error(transparent)]
     Code(#[from] RecoveryFlowError),
     /// The vault could not be opened from the restored identity.
+    ///
+    /// Not [`RestoreError::vault_written`], even though the open may have
+    /// left files behind: there is no vault under the restored identity, and
+    /// a client that kept the root and opened the directory anyway would mint
+    /// a fresh, empty account in it. The leftovers make the directory refuse
+    /// the next recovery until it is cleared, which is the safe failure.
     #[error(transparent)]
     Core(#[from] CoreError),
     /// The vault exists and the relay would not register this device.
@@ -289,19 +295,17 @@ pub enum RestoreError {
 }
 
 impl RestoreError {
-    /// Whether the failure happened after the vault was written to disk.
+    /// Whether the failure happened after a vault under the restored identity
+    /// was written to disk.
     ///
-    /// A client decides from this what to keep. Before the vault exists,
-    /// nothing was written and the directory is still empty, so a retry starts
-    /// clean. After, the directory holds a vault under the restored identity
-    /// and the root it was opened with: keep the root, or the vault is
-    /// unreadable.
+    /// A client decides from this what to keep. When `true`, the directory
+    /// holds that vault, opened under the root the client handed in: keep the
+    /// root, or the vault is unreadable. When `false`, there is no such vault,
+    /// and the root must not be kept, because opening the directory under it
+    /// would create a fresh, empty account, which looks exactly like success.
     #[must_use]
     pub fn vault_written(&self) -> bool {
-        matches!(
-            self,
-            Self::Core(_) | Self::Register(_) | Self::NeverCaughtUp { .. }
-        )
+        matches!(self, Self::Register(_) | Self::NeverCaughtUp { .. })
     }
 }
 
@@ -399,8 +403,9 @@ pub async fn restore_identity<R: RecoveryRelay>(
 /// can open the vault again in the same process.
 ///
 /// # Errors
-/// [`RestoreError::Core`], [`RestoreError::Register`], and
-/// [`RestoreError::NeverCaughtUp`]; every one of them has written the vault.
+/// [`RestoreError::Core`] when the vault would not open, and
+/// [`RestoreError::Register`] and [`RestoreError::NeverCaughtUp`], both of
+/// which have written it.
 #[allow(clippy::too_many_arguments)]
 pub async fn rejoin_account<R: RecoveryRelay>(
     relay: &R,

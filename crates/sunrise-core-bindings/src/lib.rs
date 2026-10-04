@@ -231,11 +231,15 @@ pub enum BindingError {
     /// problem.
     #[error("recovery: {0}")]
     StepUpRequired(String),
-    /// The recovery could not start: no relay, no account identity, no blob,
-    /// or a relay that would not answer.
+    /// The recovery did not produce a vault: no relay, no account identity, no
+    /// blob, a relay that would not answer, a directory that already holds a
+    /// vault, or a vault that would not open.
     ///
-    /// Raised before anything is written, so the vault directory is still
-    /// empty and the root the client handed in was never used.
+    /// No vault under the restored account exists, so the client must not
+    /// keep the root it handed in: opening the directory under it would mint
+    /// a fresh, empty account. A vault that would not open may have left files
+    /// behind, which make the directory refuse the next recovery until they
+    /// are cleared.
     #[error("recovery: {0}")]
     RecoveryRefused(String),
     /// The recovery wrote the vault and did not finish: the relay would not
@@ -396,8 +400,9 @@ impl SunriseCore {
     /// comes from the platform keychain, and this seam does not derive it. It
     /// is new, because a root is never in a recovery blob. Store it once this
     /// returns, or once it fails with [`BindingError::RecoveryIncomplete`],
-    /// which is the one failure that has written the vault. Every other
-    /// failure leaves the directory as it found it.
+    /// which is the one failure that has written the vault. After any other
+    /// failure, keeping the root would let the next open mint a fresh, empty
+    /// account in the directory.
     ///
     /// `listener` hears each [`recovery::RecoveryStep`]. The
     /// [`recovery::RecoveryStep::DeviceRegistered`] step carries the relay
