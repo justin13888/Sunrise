@@ -72,7 +72,7 @@ pub struct LatencyReport {
     /// `Created` B's change feed dropped under a burst, stamped instead by the
     /// snapshot that found them applied.
     pub bounded: usize,
-    /// Ops A committed that B had not applied [`DRAIN_TIMEOUT`] after A's
+    /// Ops A committed that B had not applied `DRAIN_TIMEOUT` (60 s) after A's
     /// last commit. The percentiles do not cover them, so a report with any is
     /// not a measurement of the budget.
     pub missing: usize,
