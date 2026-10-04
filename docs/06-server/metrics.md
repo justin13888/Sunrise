@@ -56,7 +56,7 @@ they diverge.
 | `status` | HTTP status code actually returned, as three digits | ~15 |
 | `kind` | frame or op-batch kind | the wire enum |
 | `provider` | `apns`, `fcm`, `web` | 3 |
-| `result` | `ok`, `failed`, `rejected`, `rate_limited`, `timeout`, `dropped` | 6 |
+| `result` | `ok`, `failed`, `rejected`, `rate_limited`, `timeout`, `dropped`; and on `sunrise_pairing_total`, `opened`, `relayed`, `gone`, `aborted`, `expired` | 11 |
 | `reason` | The typed error code (`crates/sunrise-error/codes.toml`), or the closed enum the metric's own row names where every failure shares one code | the code registry, or the row's enum |
 | `scope` | `ip`, `account`, `device` | 3 |
 | `direction` | `upload`, `download` | 2 |
@@ -160,6 +160,12 @@ in the description, so it is driven without anyone adding it to the test.
 | `sunrise_push_register_total` | counter | — | current | |
 | `sunrise_push_dispatch_total` | counter | `provider`, `result` | current | One per wake-up push, by how it ended: `ok` delivered; `rejected` refused by the provider, including a dead token, which is deleted; `rate_limited` throttled by the provider past every retry, or not sent because the device was at its ten-a-minute cap; `failed` a server or transport error past every retry; `timeout` no answer past every retry; `dropped` the dispatch queue was full, so the wake was discarded before any device was looked up. Coalesced ops are not counted. No series exists until `[push]` configures a provider. |
 | `sunrise_push_dispatch_duration_seconds` | histogram (latency buckets) | `provider` | current | Time for one provider round trip, observed per attempt, retries included. |
+
+### Pairing
+
+| Metric | Type | Labels | Status | Meaning |
+|---|---|---|---|---|
+| `sunrise_pairing_total` | counter | `result` | current | The pairing rendezvous (`api/pairing.rs`), one per outcome: `opened` a new device's first message opened a session, which is one pair attempt; `relayed` any later message was buffered; `gone` a send or receive named no live session of the caller's account, including a fourth message from one role, which drops the session; `rate_limited` opening a session was over a pair-attempt limit or the session table was full; `aborted` an abort dropped a live session; `expired` a session reached its 300 s lifetime and was swept. |
 
 ### Storage
 

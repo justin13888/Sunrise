@@ -22,6 +22,12 @@
 //! an in-memory database, which is what tests use — every `ServerState` then
 //! owns a private database and no test can observe another's rows.
 //!
+//! **At rest** the file is SQLCipher-encrypted when `[storage] encrypt = true`
+//! names a key file, and plain SQLite otherwise; ADR-0060 records why the
+//! whole file and not chosen columns, and why a key file. `store/cipher.rs` holds the
+//! key, the file classification and the one-way plaintext migration that
+//! [`Store::open_keyed`] runs before anything else touches the file.
+//!
 //! # Concurrency
 //!
 //! One `Connection` behind a `parking_lot::Mutex`, held by both tenants. Every
@@ -38,12 +44,13 @@
 //! that cost is described.
 
 mod accounts;
+mod cipher;
 mod devices;
 mod lifecycle;
 mod migrations;
 mod pragmas;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use parking_lot::Mutex;
@@ -56,6 +63,7 @@ use thiserror::Error;
 use crate::auth::Subject;
 
 pub use accounts::Account;
+pub use cipher::{pre_encryption_copy, DbKey};
 pub use devices::{Device, NewDevice};
 pub use lifecycle::{AccountSummary, DeclaredCursor, NewTombstone, StoreStats};
 pub use pragmas::DEFAULT_BUSY_TIMEOUT;
@@ -115,6 +123,85 @@ pub enum StoreError {
         /// The longest SQLite accepts, `i32::MAX` milliseconds.
         max: i32,
     },
+    /// The key file could not be read, or does not hold a key.
+    #[error("[storage] key_file {}: {cause}", path.display())]
+    KeyFile {
+        /// The file.
+        path: PathBuf,
+        /// What was wrong with it.
+        cause: String,
+    },
+    /// The key file can be read by its group or by others.
+    #[error(
+        "[storage] key_file {} has mode {mode:o}: it opens the whole database, so only its \
+         owner may read it — chmod 600",
+        path.display()
+    )]
+    KeyPermissions {
+        /// The file.
+        path: PathBuf,
+        /// Its permission bits.
+        mode: u32,
+    },
+    /// The key file lies inside the data dir, so every backup of the data dir
+    /// would carry the key beside the ciphertext it opens.
+    #[error(
+        "[storage] key_file {} is inside the data dir {}: keep it outside, so a copy of the \
+         data dir is not also a copy of its key",
+        key_file.display(),
+        data_dir.display()
+    )]
+    KeyInDataDir {
+        /// The key file.
+        key_file: PathBuf,
+        /// The data dir it is inside.
+        data_dir: PathBuf,
+    },
+    /// `[storage] encrypt` and `[storage] key_file` disagree.
+    #[error("{0}")]
+    KeyConfig(&'static str),
+    /// The database is not a plaintext SQLite file and no key was given: it
+    /// is encrypted, or is not a database at all.
+    #[error(
+        "{} is encrypted (or is not a SQLite database): set [storage] encrypt = true and the \
+         key_file it was encrypted with",
+        path.display()
+    )]
+    KeyRequired {
+        /// The database.
+        path: PathBuf,
+    },
+    /// The key does not open the database.
+    #[error(
+        "the key in [storage] key_file does not open {}: name the key it was encrypted with, \
+         or restore a backup taken under this one",
+        path.display()
+    )]
+    WrongKey {
+        /// The database.
+        path: PathBuf,
+    },
+    /// An operation that needs the database to itself found another
+    /// connection holding it.
+    #[error(
+        "{} is open in another process: stop the relay (and any other admin command) first",
+        path.display()
+    )]
+    InUse {
+        /// The database.
+        path: PathBuf,
+    },
+    /// The database is not encrypted, so there is no key to rotate.
+    #[error("the database is not encrypted: set [storage] encrypt = true and start once first")]
+    NotEncrypted,
+    /// A file beside the database could not be read or written.
+    #[error("{}: {cause}", path.display())]
+    Io {
+        /// The file.
+        path: PathBuf,
+        /// The operating system's reason.
+        cause: String,
+    },
 }
 
 /// SQLite-backed account/device store.
@@ -124,6 +211,12 @@ pub struct Store {
     /// relay runs — is the whole server's state, and a `tar` of the stopped
     /// data dir is a consistent backup.
     pub(crate) conn: Mutex<Connection>,
+    /// The file, or `None` in memory.
+    path: Option<PathBuf>,
+    /// The key the file is encrypted under, kept so a backup is written under
+    /// the same one, and replaced by [`Store::rekey`]. `None` for a plaintext
+    /// or in-memory database. Taken before `conn` wherever both are held.
+    key: Mutex<Option<DbKey>>,
 }
 
 impl std::fmt::Debug for Store {
@@ -148,6 +241,29 @@ impl Store {
     /// file header — the integrity check run and logged, and the migrations in
     /// `store/migrations` applied.
     pub fn open_with(path: Option<&Path>, busy_timeout: Duration) -> Result<Self, StoreError> {
+        Self::open_keyed(path, busy_timeout, None)
+    }
+
+    /// [`Store::open_with`], with the file SQLCipher-encrypted under `key`.
+    ///
+    /// Before the steps `open_with` describes, the file's first bytes decide
+    /// what the key does, and nothing is written until they have:
+    ///
+    /// - **no file**, with a key: the new database is created encrypted;
+    /// - **a plaintext file**, with a key: it is encrypted in place, once, and
+    ///   the original is kept beside it as `<file>.pre-encryption` — the
+    ///   migration ADR-0060 settles, logged as `srv.store.encrypted`;
+    /// - **an encrypted file** without a key: [`StoreError::KeyRequired`];
+    ///   with the wrong one: [`StoreError::WrongKey`]. Both exit 78.
+    ///
+    /// The key is applied before any other statement, which SQLCipher
+    /// requires. An in-memory database ignores the key: it has no rest to
+    /// encrypt at.
+    pub fn open_keyed(
+        path: Option<&Path>,
+        busy_timeout: Duration,
+        key: Option<&DbKey>,
+    ) -> Result<Self, StoreError> {
         // Checked before the file is opened, so a refused timeout creates no
         // database either.
         if busy_timeout.as_millis() > i32::MAX.unsigned_abs().into() {
@@ -156,13 +272,38 @@ impl Store {
                 max: i32::MAX,
             });
         }
+        let key = path.and(key);
+        if let Some(p) = path {
+            match (cipher::file_state(p)?, key) {
+                (cipher::FileState::Plaintext, Some(k)) => {
+                    cipher::encrypt_in_place(p, k, busy_timeout)?;
+                    // No path field: a path is not on the log allowlist, and
+                    // the copy's name is fixed beside the configured database.
+                    tracing::warn!(
+                        ev = "srv.store.encrypted",
+                        "the relay database was encrypted; its plaintext original is kept beside \
+                         it as sunrise.db.pre-encryption until the operator deletes it"
+                    );
+                }
+                (cipher::FileState::Opaque, None) => {
+                    return Err(StoreError::KeyRequired { path: p.to_owned() });
+                }
+                _ => {}
+            }
+        }
         let mut conn = match path {
             Some(p) => Connection::open(p)?,
             None => Connection::open_in_memory()?,
         };
+        if let Some(k) = key {
+            cipher::apply_key(&conn, k)?;
+        }
         // Set first, so that even the version read below waits out a peer's
         // lock rather than failing on it.
         conn.busy_timeout(busy_timeout)?;
+        if let Some(p) = path {
+            cipher::check_readable(&conn, p, key.is_some())?;
+        }
         migrations::refuse_newer(&conn)?;
         pragmas::set_durability(&conn, path.is_some())?;
         // The `ON DELETE CASCADE` each tenant declares is inert unless foreign
@@ -173,6 +314,8 @@ impl Store {
         migrations::migrate(&mut conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
+            path: path.map(Path::to_owned),
+            key: Mutex::new(key.cloned()),
         })
     }
 }

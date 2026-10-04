@@ -65,3 +65,7 @@ harness = false
 [[bench]]
 name = "vault_open"
 harness = false
+
+[[bench]]
+name = "compaction"
+harness = false

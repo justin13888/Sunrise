@@ -220,9 +220,12 @@ would have had to catch a travelling token, neither of which does:
   it mints carries the device claim of the *original* authorization.
 - **The relay checks that claim only when a device signature is presented.**
   `api::signed::verify_bytes` returns before the comparison when the
-  `X-Sunrise-Device` headers are absent and `require_device_sig` is off — which
-  is the default, and is *required* to be off in the single-tenant self-host
-  mode [ADR-0027](../11-adr/0027-v1-self-host-first.md) makes the only shape.
+  `X-Sunrise-Device` headers are absent and `require_device_sig` is off. It is
+  *required* to be off in the single-tenant self-host mode
+  [ADR-0027](../11-adr/0027-v1-self-host-first.md) makes the only shape, and it
+  is off on a multi-tenant relay whose operator set `require_device_sig =
+  false`. A relay with an OIDC issuer and the flag left unset requires the
+  binding, and there an unsigned refresh-minted token is refused.
 
 So a refresh token lifted out of an encrypted backup opens a live session
 against the account from hardware the account never authorized. What it reaches

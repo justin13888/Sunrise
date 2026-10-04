@@ -63,6 +63,14 @@ pub mod codes {
     pub const SYNC_RESUME_CONFLICT: &str = "SYNC_RESUME_CONFLICT";
     /// The relay could not read or write its durable op log.
     pub const RELAY_STORAGE_UNAVAILABLE: &str = "RELAY_STORAGE_UNAVAILABLE";
+    /// No live pairing session under that `pair_id` for this account: it was
+    /// never opened, expired, was aborted, overflowed its per-role buffer, or
+    /// belongs to another account. Not retryable; the pairing starts again
+    /// from a new code.
+    ///
+    /// Mirrors [`sunrise_error::ErrorCode::RelayPairSessionGone`] (registry id
+    /// 602).
+    pub const RELAY_PAIR_SESSION_GONE: &str = "RELAY_PAIR_SESSION_GONE";
     /// `POST /accounts` offered a recovery blob for an account that already
     /// holds a different one. The column is write-once; re-sending the same
     /// bytes still succeeds.
@@ -393,12 +401,21 @@ impl From<crate::store::StoreError> for ApiError {
                 codes::DEVICE_NOT_FOUND,
                 "no such record on this account".to_owned(),
             ),
-            // `SchemaTooNew` and `BusyTimeoutTooLong` are raised only by
-            // `Store::open`, before there is a route to answer, so a request
-            // reaching either would be a defect.
+            // Everything else is raised only by `Store::open` and the
+            // operator's `admin` commands, before or outside any route, so a
+            // request reaching one would be a defect.
             crate::store::StoreError::Sqlite(_)
             | crate::store::StoreError::SchemaTooNew { .. }
-            | crate::store::StoreError::BusyTimeoutTooLong { .. } => {
+            | crate::store::StoreError::BusyTimeoutTooLong { .. }
+            | crate::store::StoreError::KeyFile { .. }
+            | crate::store::StoreError::KeyPermissions { .. }
+            | crate::store::StoreError::KeyInDataDir { .. }
+            | crate::store::StoreError::KeyConfig(_)
+            | crate::store::StoreError::KeyRequired { .. }
+            | crate::store::StoreError::WrongKey { .. }
+            | crate::store::StoreError::InUse { .. }
+            | crate::store::StoreError::NotEncrypted
+            | crate::store::StoreError::Io { .. } => {
                 tracing::error!(
                     ev = "srv.store.failed",
                     err_kind = "internal",

@@ -86,7 +86,7 @@ module's own tests — `a_refresh_extends_the_session`,
 `a_refresh_for_a_token_with_no_expiry_reports_zero` are the four cases the table
 above describes.
 
-A per-request Ed25519 device signature (`X-Sunrise-Device-Sig`) accompanies the bearer token. The mode is `header_sig_v2`, specified byte-for-byte under §Device binding below, and it is the only mode the server accepts. It is **optional by default** — `[auth] require_device_sig` is `false` — but a signature that is present is always verified.
+A per-request Ed25519 device signature (`X-Sunrise-Device-Sig`) accompanies the bearer token. The mode is `header_sig_v2`, specified byte-for-byte under §Device binding below, and it is the only mode the server accepts. It is **required by default wherever an OIDC issuer is configured** — `[auth] require_device_sig`, left unset, resolves on with an issuer and off without one (`ServerConfig::device_sig_required`) — and the single-tenant self-host verifier, which has no devices to tell apart, refuses the flag outright. An operator may still set `require_device_sig = false` beside an issuer; the server then logs `srv.start.device_sig_optional` at `warn` when it starts, because a request with no binding is then accepted on its bearer alone. A signature that is present is always verified, whatever the flag says.
 
 For sync: every operation carries `Authorization: Bearer <token>`, and kynos's
 `BearerToken` carrier reads the `Authorization` header and nothing else

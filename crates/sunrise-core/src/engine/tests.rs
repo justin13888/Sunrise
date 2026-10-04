@@ -7948,7 +7948,7 @@ fn a_self_refused_revoke_still_advances_the_cursor() {
 /// cursor counts the op anyway.**
 ///
 /// This is the delivery half of the gate at
-/// `crates/sunrise-core/src/engine/sync.rs:982#apply_control_op`. The two
+/// `crates/sunrise-core/src/engine/sync.rs:989#apply_control_op`. The two
 /// units that reach that gate today —
 /// `a_revoked_devices_third_party_envelope_claim_is_not_recorded` and
 /// `an_unwound_devices_third_party_envelope_claim_is_not_recorded` — call
@@ -18955,3 +18955,7 @@ mod field_merge;
 
 /// Per-device op chains, fork evidence and the stream digest (ADR-0043).
 mod op_chain;
+
+/// Op-log compaction below an acknowledged floor, and stream snapshots
+/// (ADR-0059).
+mod compaction;

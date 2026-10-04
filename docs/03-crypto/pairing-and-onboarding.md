@@ -8,7 +8,7 @@ Three flows: account creation, adding a new device, recovering identity. Recover
 
 ## Implementation status
 
-**The handshake is real; the transport under it is not, and what crosses is not yet the `PairingPayload` below.**
+**The handshake and the relay rendezvous under it are real; no Apple client drives the rendezvous yet, and what crosses is not yet the `PairingPayload` below.**
 
 Implemented, in `crates/sunrise-pairing`:
 
@@ -16,10 +16,17 @@ Implemented, in `crates/sunrise-pairing`:
 * The **QR payload** codec — lex-ordered UTF-8 JSON, base64url no-pad, magic prefix (`qr.rs`).
 * The **6-digit SAS**, `BLAKE3("sunrise.pair_sas.v1" || h, 3)` (`sas.rs`), with the SAS gate enforced by the session type rather than by a caller remembering to check it.
 
+Implemented on the relay and in the seam:
+
+* **The rendezvous.** `sunrise-server` serves `POST /api/v1/pairing/send`, `/receive` and `/abort` (`crates/sunrise-server/src/api/pairing.rs`; [`../06-server/api.md`](../06-server/api.md) §Pairing rendezvous). It holds an in-memory session per `pair_id`, opened by the new device's first handshake message and bound to that bearer's account. Each role may buffer three messages, and a session lives 300 s. §Relay framing for Noise below says what changed from the frame layout described there.
+* **The pair-attempt limits.** `AttemptWindow` in `rate_limit.rs` is a rolling log. The relay charges it once per opened session: 10 an hour and 30 a day per account, 60 an hour per client address. A refusal is `429 RATE_LIMITED` with `Retry-After` set to when the oldest attempt ages out.
+* **One seam that drives it.** `RelayPairing` (`crates/sunrise-core-bindings/src/pairing_relay.rs`) moves all six messages through the rendezvous over the existing `DevicePairing` state machine. A client sees three phases: show or scan the code, compare the SAS, done. `crates/sunrise-e2e/tests/pairing_over_the_relay.rs` pairs two seams over a live relay with no manual transfer. It also shows that a substituted `n_static_pub` is refused before the SAS.
+* **The bearer goes only to the device's own relay.** `RelayPairing::accept` takes the existing device's configured relay and refuses a code whose `relay_url` names another origin, and the seam refuses any relay URL that is not `https://` (`http://` only to a loopback host, for tests). `wss://` is refused too: the relay serves no WebSocket ([ADR-0023](../11-adr/0023-sse-sync-transport.md)). A `429` to the message that opens a session ends `RelayPairing::offer` at once with the relay's `Retry-After`; every other `429` is retried inside the wait.
+
 Not implemented:
 
-* **The relay rendezvous does not exist.** There is no pairing route on `sunrise-server` — the router exposes `/accounts`, `/devices`, `/blobs`, `/meta`, `/health` and the `/sync` WebSocket, and nothing that routes by `pair_id`. §Relay framing for Noise, the three-message-per-role buffer and the 60 s window describe nothing. `crates/sunrise-core-bindings/src/pairing.rs` states the consequence outright: "the *transport* for them **is currently the user**" — the three handshake messages and the sealed root cross as base64url strings a person copies between the two machines by hand. The crypto is unaffected by that: the SAS binds the transcript either way.
-* **The rate limits are constants, not a limiter.** `RATE_LIMIT_HOURLY = 10` and `RATE_LIMIT_DAILY = 30` are declared in `rate_limit.rs` and read by nothing. No counter, no `429`, no `Retry-After`.
+* **No Apple client uses the rendezvous.** `apps/apple` still walks the eight copy/paste legs over `DevicePairing`, and nothing on either platform reads a QR with the camera ([#464](https://github.com/justin13888/Sunrise/issues/464)). The crypto is unaffected by how the bytes travel: the SAS binds the transcript either way.
+* **The numeric-only path.** Nothing turns a typed six-digit code into a session: the rendezvous is addressed by the 16-byte `pair_id` alone ([#465](https://github.com/justin13888/Sunrise/issues/465)).
 * **The rendezvous, not the messages.** What crosses the channel is the three-message exchange §Flow specifies — offer, request, grant — encoded as integer-keyed canonical CBOR (`crates/sunrise-pairing/src/protocol.rs`). **Neither identity private key travels.** `ID_D_priv` stopped in [#76](https://github.com/justin13888/Sunrise/issues/76): sealing to the identity needs only the public half, and a paired device that held the private one could open the identity copy of every epoch. `ID_S_priv` stopped in [#105](https://github.com/justin13888/Sunrise/issues/105): it signs every `DeviceCert`, so a device holding it could mint one for any device id it invented. The joining device mints its own `D_S` / `D_D` and the sponsor issues its cert; `Command::TrustDevice` is gone.
 * **Account creation (§Account creation) has a client on the CLI only.** `sunrise bootstrap` mints nothing new — the identity keypair is `Keychain::create`'s, minted at first vault open — but it is what publishes `ID_S_pub`/`ID_D_pub` and a sealed recovery blob to the relay, and it shows the 24-word recovery code once. **No Apple client does**, so a vault created there still uploads no blob and its `ID_D_priv` has no second copy; see [`recovery.md`](./recovery.md) §Implementation status. The unlock method is still not chosen by any client: every `Unlock` variant carries an already-materialized vault root.
 
@@ -82,6 +89,18 @@ Noise messages run over a TLS WebSocket. Each WebSocket frame is a single binary
 ```
 
 Maximum payload: 64 KiB. Routing: each side authenticates its WebSocket with `(account_email_hash, role)` where role ∈ `{N, E}`. The relay buffers up to 3 messages (≤ 64 KiB each) per `(pair_session_id, role)` for at most 60 s; beyond either limit the session is dropped.
+
+**As built.** [ADR-0023](../11-adr/0023-sse-sync-transport.md) took the WebSocket out of the relay, so the rendezvous is three typed `POST`s instead of a socket ([`../06-server/api.md`](../06-server/api.md) §Pairing rendezvous):
+
+- `send` carries one `noise_payload`, base64url, with the role in the body rather than in a frame header.
+- `receive` is polled with a cursor.
+- `abort` is the relay half of `pair_abort`.
+
+The SAS answers are not relayed. Each device keeps its own: a "Don't match" aborts the session, and the other side's next poll finds it gone.
+
+Each side authenticates with the account bearer rather than `account_email_hash`. Only the new device may open a session, and a session is reachable only by the account that opened it. Any other caller gets the same `404 RELAY_PAIR_SESSION_GONE` as a caller naming a session that never existed.
+
+The 3-message and 64 KiB bounds hold as written, except that an oversized message is refused with `400` and leaves the session open. The 60 s window is folded into one 300 s lifetime counted from the opening message, because the SAS screen alone may take 90 s.
 
 ### Flow
 
@@ -181,8 +200,9 @@ The relay sees only Noise traffic (opaque ciphertext) and the eventual `device_c
 
 - **Per account_email_hash:** at most **10 pair attempts per rolling hour**, **30 per rolling day**.
 - **Per relay-IP:** at most 60/hour (defense in depth against shared-NAT users).
-- Excess returns `srv.pair.rate_limited` HTTP 429 with `Retry-After` set to the seconds until the next slot opens. The Noise transport is never opened.
+- Excess returns HTTP 429 with `Retry-After` set to the seconds until the next slot opens. The Noise transport is never opened. The code is the relay's shared `RATE_LIMITED`, not a pairing-specific one: a client does the same thing on either, which is to wait.
 - A pair attempt counts against quota the moment the relay accepts the first Noise message; aborted-before-first-message attempts do not count. SAS aborts (whether by tap or timeout) DO count.
+- As built, the account bucket is the account the bearer resolves to rather than `account_email_hash`. The two name the same account, and the bearer's cannot be forged. All three limits are skipped when an operator sets `[limits] enabled = false`.
 
 ## Out-of-band channel security
 

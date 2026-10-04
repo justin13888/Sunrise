@@ -126,6 +126,10 @@ pub struct StorageTable {
     pub pending_upload_ttl_hours: Option<u64>,
     /// [`ServerConfig::maintenance_interval_secs`].
     pub maintenance_interval_secs: Option<u64>,
+    /// [`ServerConfig::sqlite_encrypt`].
+    pub encrypt: Option<bool>,
+    /// [`ServerConfig::sqlite_key_file`].
+    pub key_file: Option<PathBuf>,
 }
 
 /// A parsed `sunrise.toml`.
@@ -203,19 +207,12 @@ impl FileConfig {
         if let Some(v) = self.auth.allow_signup {
             base.allow_signup = v;
         }
-        match self.auth.require_device_sig {
-            Some(v) => base.require_device_sig = v,
-            // Unset means "decide from the deployment", not "off". A relay with
-            // a real issuer can tell devices apart, so binding is required
-            // there by default: leaving it off would mean a stolen bearer alone
-            // is enough, which is the property device binding exists to remove.
-            // Single-tenant self-host cannot tell devices apart at all -- every
-            // caller maps to one account -- and `validate` rejects the
-            // combination outright, so it stays off there.
-            //
-            // Applied after `oidc_issuer` above, so it reads the issuer this
-            // file actually resolved to rather than the default.
-            None => base.require_device_sig = base.oidc_issuer.is_some(),
+        // Unset leaves the base's own setting -- normally also unset, which
+        // `ServerConfig::device_sig_required` resolves from the issuer. The
+        // default is derived there, once, so it holds for configs that never
+        // pass through this file.
+        if let Some(v) = self.auth.require_device_sig {
+            base.require_device_sig = Some(v);
         }
         if let Some(v) = self.auth.token_leeway_secs {
             base.token_leeway_secs = v;
@@ -241,6 +238,12 @@ impl FileConfig {
         }
         if let Some(v) = self.storage.maintenance_interval_secs {
             base.maintenance_interval_secs = v;
+        }
+        if let Some(v) = self.storage.encrypt {
+            base.sqlite_encrypt = v;
+        }
+        if let Some(v) = self.storage.key_file {
+            base.sqlite_key_file = Some(v);
         }
         base
     }
@@ -410,9 +413,9 @@ mod file_tests {
     /// **Both directions of the one key whose default is computed rather than
     /// constant.** Unset means "decide from the deployment": a relay with a
     /// real issuer can tell devices apart, so binding is required there, and
-    /// leaving it off would mean a stolen bearer alone is enough. Nothing
-    /// asserted either direction, so collapsing the `match` to `false` — or to
-    /// `true` — failed no test.
+    /// leaving it off would mean a stolen bearer alone is enough. The overlay
+    /// must leave an unset key unset rather than resolve it, so the issuer it
+    /// is read against is the one the finished config holds.
     #[test]
     fn an_unset_device_sig_flag_follows_whether_an_issuer_is_configured() {
         let with_issuer = FileConfig::parse(
@@ -425,8 +428,9 @@ mod file_tests {
         )
         .unwrap()
         .apply(ServerConfig::default());
+        assert_eq!(with_issuer.require_device_sig, None);
         assert!(
-            with_issuer.require_device_sig,
+            with_issuer.device_sig_required(),
             "a multi-tenant relay must demand the binding unless told otherwise"
         );
 
@@ -434,7 +438,7 @@ mod file_tests {
             .unwrap()
             .apply(ServerConfig::default());
         assert!(
-            !without_issuer.require_device_sig,
+            !without_issuer.device_sig_required(),
             "single-tenant self-host cannot tell devices apart, and `validate` \
              rejects the combination outright"
         );
@@ -455,12 +459,14 @@ mod file_tests {
         )
         .unwrap()
         .apply(ServerConfig::default());
-        assert!(!off.require_device_sig);
+        assert_eq!(off.require_device_sig, Some(false));
+        assert!(!off.device_sig_required());
 
         let on = FileConfig::parse("[auth]\nrequire_device_sig = true", "t.toml")
             .unwrap()
             .apply(ServerConfig::default());
-        assert!(on.require_device_sig);
+        assert_eq!(on.require_device_sig, Some(true));
+        assert!(on.device_sig_required());
     }
 
     /// The one key whose file name differs from the field it lands on:
@@ -566,6 +572,29 @@ mod file_tests {
             .apply(ServerConfig::default());
         assert_eq!(one.account_delete_grace_days, 30);
         assert_eq!(one.retention().gc_grace_ms, 24 * 60 * 60 * 1000);
+    }
+
+    /// Encryption is off unless the file turns it on, and both keys reach the
+    /// model.
+    #[test]
+    fn encrypt_and_key_file_overlay_and_default_off() {
+        let defaults = FileConfig::parse("", "t.toml")
+            .unwrap()
+            .apply(ServerConfig::default());
+        assert!(!defaults.sqlite_encrypt);
+        assert_eq!(defaults.sqlite_key_file, None);
+
+        let cfg = FileConfig::parse(
+            "[storage]\nencrypt = true\nkey_file = \"/etc/sunrise/db.key\"",
+            "t.toml",
+        )
+        .unwrap()
+        .apply(ServerConfig::default());
+        assert!(cfg.sqlite_encrypt);
+        assert_eq!(
+            cfg.sqlite_key_file.as_deref(),
+            Some(std::path::Path::new("/etc/sunrise/db.key"))
+        );
     }
 
     #[test]

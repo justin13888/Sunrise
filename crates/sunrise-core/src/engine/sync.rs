@@ -11,7 +11,7 @@
 //! whether the sender is revoked, whether the key that opens the op has arrived
 //! yet, and only then what the op says.
 
-use super::chain::{check_duplicate, check_links, reconcile};
+use super::chain::{check_covered, check_duplicate, check_links, reconcile};
 use super::identity::{SiblingRank, MAX_ROSTER_ENTRIES};
 use super::ids::hex_short;
 use super::lww::{materialize_remote, remap_legacy_inbox, LwwStamp};
@@ -403,6 +403,12 @@ impl Engine {
         let mut applied = false;
         let mut absorbed: Vec<([u8; 16], u32)> = Vec::new();
         db.with_tx(|tx| -> rusqlite::Result<()> {
+            // e0. A position a compaction floor covers is an op this replica
+            //     folded and deleted: a duplicate, not a new op (ADR-0059). A
+            //     different op at the floor itself is kept as fork evidence.
+            if check_covered(tx, &env, envelope_bytes, now_ms)? {
+                return Ok(());
+            }
             // e. Idempotence gate.
             OpLog::insert(
                 tx,
@@ -453,7 +459,14 @@ impl Engine {
                 // f''. A peer's frontier in this stream, compared with ours.
                 //      Routed here rather than through `apply_control_op`,
                 //      which is not handed the envelope's stream.
-                reconcile(tx, &env.stream_id, &env.device_id, p, now_ms)?;
+                reconcile(
+                    tx,
+                    &env.stream_id,
+                    &env.device_id,
+                    p,
+                    env.hlc.physical_ms,
+                    now_ms,
+                )?;
             } else if inner.is_control() {
                 // f'. Control ops carry key material and trust, not entity
                 //     state. They have no row and no LWW contest; routing one
@@ -761,6 +774,13 @@ impl Engine {
         let now_ms = self.clock.now_ms();
         let mut parked = false;
         db.with_tx(|tx| {
+            // A position a compaction floor covers is an op this replica
+            // folded, so an op there is a duplicate, or fork evidence at the
+            // floor itself, whatever its kind: parking it would put a row below
+            // the floor for an upgrade to replay (ADR-0059 §2).
+            if check_covered(tx, env, envelope_bytes, now_ms)? {
+                return Ok(());
+            }
             OpLog::insert(
                 tx,
                 &op_id,

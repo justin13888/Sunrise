@@ -12,7 +12,9 @@
 //! from.
 
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+use crate::store::{DbKey, StoreError};
 
 /// Server configuration. Read from `sunrise.toml` (production) or built
 /// programmatically (tests).
@@ -40,19 +42,15 @@ pub struct ServerConfig {
     /// expected to turn it off once their accounts exist.
     #[serde(default = "default_allow_signup")]
     pub allow_signup: bool,
-    /// Whether `X-Sunrise-Device` + `X-Sunrise-Device-Sig` are mandatory on
-    /// authenticated REST requests (`header_sig_v1`).
-    ///
-    /// Defaults to **on wherever an OIDC issuer is configured**, and off for
-    /// the single-tenant self-host verifier, which has no devices to tell apart
-    /// and for which [`ConfigError::DeviceSigWithoutOidc`] rejects the flag
-    /// anyway. Set it explicitly to override either way.
-    ///
-    /// When a binding *is* present it is always verified, whatever this says —
-    /// the flag governs whether absence is tolerated, never whether a bad
-    /// signature is.
+    /// Whether `X-Sunrise-Device` + `X-Sunrise-Device-Sig` are mandatory, as
+    /// the operator set it; `None` defers to
+    /// [`ServerConfig::device_sig_required`], which derives the default — on
+    /// wherever an OIDC issuer is configured — for every way a config is built.
+    /// An explicit `false` beside an issuer stays distinguishable from silence,
+    /// which is what `srv.start.device_sig_optional` warns on. A binding that
+    /// *is* present is always verified, whatever this says.
     #[serde(default)]
-    pub require_device_sig: bool,
+    pub require_device_sig: Option<bool>,
     /// How often a live `/sync` session re-checks that its device is still
     /// registered, in milliseconds.
     ///
@@ -98,6 +96,15 @@ pub struct ServerConfig {
     /// [`crate::store::DEFAULT_BUSY_TIMEOUT`] for what it waits out.
     #[serde(default = "default_sqlite_busy_timeout_ms")]
     pub sqlite_busy_timeout_ms: u64,
+    /// Whether the SQLite file is SQLCipher-encrypted under the key in
+    /// [`ServerConfig::sqlite_key_file`]. `[storage] encrypt`, default off;
+    /// ADR-0060 records why.
+    #[serde(default)]
+    pub sqlite_encrypt: bool,
+    /// The file holding the database key: 64 hex digits, mode `0600`, outside
+    /// the data dir. `[storage] key_file`.
+    #[serde(default)]
+    pub sqlite_key_file: Option<PathBuf>,
     /// Self-host blob root (None = `<sqlite_dir>/blobs`).
     pub blob_root: Option<PathBuf>,
     /// Exact-match CORS allowlist for browser clients. Empty = no browser
@@ -395,7 +402,7 @@ impl ServerConfig {
                 return Err(ConfigError::InsecureIssuer(issuer.clone()));
             }
         }
-        if self.require_device_sig && single_tenant {
+        if self.device_sig_required() && single_tenant {
             return Err(ConfigError::DeviceSigWithoutOidc);
         }
         // A misconfiguration that boots and then refuses every recovery is
@@ -479,6 +486,30 @@ impl ServerConfig {
             leeway_secs: self.token_leeway_secs,
         }
     }
+
+    /// Whether an authenticated request must carry a complete device binding.
+    ///
+    /// The one place the default is derived: an explicit
+    /// [`ServerConfig::require_device_sig`] wins, and an unset one is on
+    /// exactly when an OIDC issuer is configured. A relay with a real issuer
+    /// can tell devices apart, so leaving the binding optional there would
+    /// mean a stolen bearer alone is enough — the property device binding
+    /// exists to remove. Single-tenant self-host cannot tell devices apart at
+    /// all, and [`ServerConfig::validate`] rejects the combination outright,
+    /// so it stays off there.
+    #[must_use]
+    pub fn device_sig_required(&self) -> bool {
+        self.require_device_sig
+            .unwrap_or(self.oidc_issuer.is_some())
+    }
+
+    /// Whether the operator turned the binding off on a relay that has an
+    /// issuer — the one override that weakens the default rather than
+    /// restating it, and so the one `srv.start.device_sig_optional` names.
+    #[must_use]
+    pub fn device_sig_explicitly_optional(&self) -> bool {
+        self.oidc_issuer.is_some() && self.require_device_sig == Some(false)
+    }
 }
 
 /// The deadlines [`ServerConfig::retention`] derives, in one unit.
@@ -516,7 +547,7 @@ impl Default for ServerConfig {
             oidc_issuer: None,
             oidc_client_id: None,
             allow_signup: default_allow_signup(),
-            require_device_sig: false,
+            require_device_sig: None,
             device_recheck_ms: default_device_recheck_ms(),
             token_leeway_secs: default_token_leeway_secs(),
             jwks_default_ttl_secs: default_jwks_ttl_secs(),
@@ -525,6 +556,8 @@ impl Default for ServerConfig {
             recovery_amr_values: Vec::new(),
             sqlite_path: None,
             sqlite_busy_timeout_ms: default_sqlite_busy_timeout_ms(),
+            sqlite_encrypt: false,
+            sqlite_key_file: None,
             blob_root: None,
             account_delete_grace_days: default_thirty_days(),
             gc_grace_days: default_thirty_days(),
@@ -553,6 +586,19 @@ impl ServerConfig {
     #[must_use]
     pub const fn sqlite_busy_timeout(&self) -> std::time::Duration {
         std::time::Duration::from_millis(self.sqlite_busy_timeout_ms)
+    }
+
+    /// The database key `[storage]` names, or `None` with encryption off;
+    /// [`DbKey::for_storage`] holds the rules.
+    ///
+    /// # Errors
+    /// Each refusal [`DbKey::for_storage`] makes.
+    pub fn sqlite_key(&self) -> Result<Option<DbKey>, StoreError> {
+        DbKey::for_storage(
+            self.sqlite_encrypt,
+            self.sqlite_key_file.as_deref(),
+            self.sqlite_path.as_deref().and_then(Path::parent),
+        )
     }
 }
 
@@ -665,7 +711,7 @@ mod tests {
     #[test]
     fn device_signatures_are_meaningless_under_the_self_host_verifier() {
         let mut c = cfg("127.0.0.1:8443");
-        c.require_device_sig = true;
+        c.require_device_sig = Some(true);
         assert_eq!(c.validate(true), Err(ConfigError::DeviceSigWithoutOidc));
         assert!(c.validate(false).is_ok());
     }

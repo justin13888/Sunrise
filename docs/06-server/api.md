@@ -40,9 +40,16 @@ The mode is `header_sig_v2` ([ADR-0022](../11-adr/0022-device-signature-canonica
 and its byte layout is specified in [`auth.md`](./auth.md) §Device binding
 rather than left to an implementation. Two live qualifications:
 
-- The binding is **optional by default**. `[auth] require_device_sig` defaults
-  to `false`, so a request with no `X-Sunrise-Device` is accepted with no
-  device resolved. A binding that *is* present is always verified in full,
+- The binding is **required by default on a relay with an OIDC issuer**:
+  `[auth] require_device_sig`, left unset, is on wherever an issuer is
+  configured, and a request with no complete binding is refused with
+  `401 AUTH_DEVICE_SIG_INVALID` before any device lookup. It is off on the
+  single-tenant self-host verifier, which has no devices to tell apart and
+  refuses the flag outright; there, and on a multi-tenant relay whose
+  operator sets `require_device_sig = false` (which logs
+  `srv.start.device_sig_optional`), a request with no `X-Sunrise-Device` is
+  accepted with no device resolved. `GET /meta` publishes the policy in force
+  as `device_binding_required`. A binding that *is* present is always verified in full,
   whatever the flag says — a signature that fails verification is never an
   ignored header. `POST /accounts` and `POST /devices` take a bootstrap
   exemption: a device cannot sign before it exists.
@@ -478,6 +485,45 @@ lands.
 
 The `share_envelope` is opaque to the server.
 
+### Pairing rendezvous
+
+Where two devices meet to run the pairing handshake
+([`../03-crypto/pairing-and-onboarding.md`](../03-crypto/pairing-and-onboarding.md)
+§Relay framing for Noise), so nobody copies the six messages between screens.
+Served by `crates/sunrise-server/src/api/pairing.rs`. Bearer only: the device
+being added holds no device key yet, so these take the bootstrap exemption, and
+a binding that is supplied is still verified.
+
+| Method | Path | Body | Returns |
+|---|---|---|---|
+| POST | `/api/v1/pairing/send` | `{ pair_id, role, index, message }` | `200 { sent, expires_at_ms }` |
+| POST | `/api/v1/pairing/receive` | `{ pair_id, role, after }` | `200 { messages, expires_at_ms }`: the other role's messages from index `after` on |
+| POST | `/api/v1/pairing/abort` | `{ pair_id, role }` | `204`, whether or not a session was dropped |
+
+`pair_id` is the QR's, 16 bytes base64url; `role` is `new_device` or
+`existing_device`; `message` is one Noise message, base64url, 1 to 64 KiB
+decoded. The relay never reads it.
+
+- **Only the new device opens a session**, with its first message, and the
+  session is bound to that bearer's account. That message is one pair attempt
+  against the limits in §Rate limits.
+- **Three messages per role**, which is what the protocol sends. A fourth drops
+  the session.
+- **`index` is the count of this role's earlier messages**, so a retry after a
+  lost answer is acknowledged rather than buffered twice. An index that names a
+  slot holding a different message, or skips past the next free slot, drops the
+  session.
+- **At most 4096 live sessions per relay.** Past that, opening one is `429`
+  until the oldest expires.
+- **300 s from the opening message**, then the session is dropped whatever its
+  state. Sessions live in memory and do not survive a restart.
+- A session that is not live **for the caller's account** — never opened,
+  expired, aborted, overflowed, or another account's — is `404
+  RELAY_PAIR_SESSION_GONE`. The answer is the same in every case, so the route
+  is not an oracle for live pair ids. Start again from a new code.
+
+Clients poll `receive`; there is no stream.
+
 ### Health / meta
 
 | Method | Path | Body | Returns | Status |
@@ -599,7 +645,7 @@ refills continuously.
 | `bootstrap` | `POST /api/v1/accounts`, `POST /api/v1/devices` | bearer | 10 / min (`bootstrap_per_min`) |
 | `account` | `GET /api/v1/accounts/me`, `GET /api/v1/accounts/me/recovery_blob`, `POST /api/v1/accounts/me/delete/initiate`, `DELETE /api/v1/accounts/me`, `GET /api/v1/devices`, `DELETE /api/v1/devices/{device_id}`, `DELETE /api/v1/devices/by-vault-id/{vault_device_id}`, `POST /api/v1/devices/push-tokens` | bearer+sig | 60 / min (`account_per_min`) |
 | `blob` | `POST /api/v1/blobs/init`, `PUT /api/v1/blobs/{upload_id}/{chunk_idx}`, `POST /api/v1/blobs/finalize`, `GET /api/v1/blobs/{blob_id}`, `DELETE /api/v1/blobs/{blob_id}` | bearer+sig | 600 / min (`blob_per_min`) |
-| `sync` | `POST /api/v1/sync/session`, `POST /api/v1/sync/session/refresh`, `POST /api/v1/sync/subscribe`, `POST /api/v1/sync/ops`, `GET /api/v1/sync/events` | bearer+sig (+session) | 600 / min (`sync_per_min`) |
+| `sync` | `POST /api/v1/sync/session`, `POST /api/v1/sync/session/refresh`, `POST /api/v1/sync/subscribe`, `POST /api/v1/sync/ops`, `GET /api/v1/sync/events`; the pairing rendezvous's `POST /api/v1/pairing/send`, `POST /api/v1/pairing/receive`, `POST /api/v1/pairing/abort` | bearer+sig (+session); pairing bearer only | 600 / min (`sync_per_min`) |
 
 **Failed authentication.** Every `401` an address earns on a `bootstrap`,
 `account`, `blob` or `sync` route is counted, 20 per five minutes
@@ -634,6 +680,7 @@ and its refusals are labelled `scope="account"`.
 | Open uploads | `POST /api/v1/blobs/init` | one per upload, until `finalize` or an hour untouched | 16 at once per account (`open_uploads`) |
 | Session creation | `POST /api/v1/sync/session` | one | 10 per 5 min per device (`sessions_per_5min`) |
 | Event streams | `GET /api/v1/sync/events` | one, held until the stream ends | 4 at once per device (`streams`) |
+| Pair attempts | `POST /api/v1/pairing/send`, the message that opens a session | one | 10 per rolling hour and 30 per rolling day per account, and 60 per rolling hour per client address (`sunrise_pairing::AttemptLimit`; not configurable). Off with `[limits] enabled = false` |
 
 A request whose cost exceeds a whole bucket — a 1,000-op batch, a 100 MB blob
 — is admitted from a full bucket and leaves the key in debt, so the next
@@ -690,6 +737,7 @@ that have not been built.
 | `/api/v1/devices/push-tokens` | yes | optional (operator's APNs/FCM creds) | **route built; no delivery path** |
 | `/api/v1/blobs/*` | yes (S3-backed) | yes (S3-backed) | **yes — local-disk-backed** |
 | `/api/v1/shares/*` | yes | yes | **no route** |
+| `/api/v1/pairing/*` | yes | yes | **yes — built, in memory** |
 | `/api/v1/meta`, `/api/v1/health` | yes | yes | **yes — built** |
 | `/metrics` (router root, not under `/api/v1`) | yes | yes | **yes — built, unauthenticated** |
 

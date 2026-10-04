@@ -1,142 +1,265 @@
 ---
-status: proposed
+status: accepted
 ---
 
 # Compaction
 
-> **Status: proposed. Not yet built; ranked on the roadmap ([`../roadmap.md`](../roadmap.md)).**
-> [ADR-0027](../11-adr/0027-v1-self-host-first.md) defers compaction.
-> This document is the design of record for that work, not a description of
-> anything that ships.
->
-> **What exists in the tree:** nothing. There is no snapshot op (`InnerOp` has
-> no such variant), no compactor election, and no retention sweep; the op log
-> grows without bound. See
-> [`../implementation/overview.md`](../implementation/overview.md) for what is
-> live.
->
-> **Why it is not built:** two blockers, and the first is inside this document.
->
-> 1. **`doc_state` is undecided** (§Snapshot format below). The field was
->    specified as `loro::Doc::export_snapshot()` bytes, which cannot be produced
->    — the workspace ships no CRDT library, and under
->    [ADR-0014](../11-adr/0014-entity-level-lww-merge.md) a Stream's state is
->    rows in SQLite rather than a mergeable document. A spec cannot be
->    `accepted` with an undecided field in its wire format.
-> 2. **§Catch-up contradicts the replay invariant.** The claim that a device
->    whose own old ops were compacted out is "fine" is incompatible with
->    `seq` being strictly monotonic per `(stream_id, device_id)` **with no gaps**
->    ([`../03-crypto/audit-and-tamper-evidence.md`](../03-crypto/audit-and-tamper-evidence.md)`:28`),
->    which every receiver enforces and which surfaces a gap as a sync warning.
->    Compaction that discards ops has to say what a receiver does with the hole
->    it leaves, and this document does not.
->
-> **What holds regardless:** the retention *pressure* is real — the op log
-> genuinely grows without bound, and that is a current operational fact, bounded on
-> the relay side only by the 30-day / 256 MiB per-channel relay-log retention
-> (`crates/sunrise-server/src/relay_log.rs:121,130`), which trims the relay's copy
-> and not the client's.
+A client folds the old part of its op log away once every device that still
+needs it has acknowledged it, and a device that missed the folded range
+catches up from a signed snapshot of the stream's state instead.
+[ADR-0059](../11-adr/0059-client-op-log-compaction.md) is the decision record;
+this document is the design of record for what ships.
 
-Without compaction, the op log grows forever. Compaction trims ops that are no longer needed for sync or audit.
+The code is `crates/sunrise-core/src/engine/compaction.rs` (the floor and the
+fold), `crates/sunrise-core/src/engine/snapshot.rs` (the record) and
+`crates/sunrise-core/src/engine/merge/snapshot.rs` (`doc_state`). The tables
+are migration `0035_op_log_compaction.sql`.
+
+## The floor
+
+Each `(stream, device)` prefix may have a floor (`compaction_floor`): every op
+of that device in that stream at or below `seq` is **covered**. Its effect is in
+the per-field merge state ([ADR-0044](../11-adr/0044-per-field-ops.md)), or its
+row is still held, and the floor's chain root
+([ADR-0043](../11-adr/0043-commit-tree.md)) commits to the whole prefix under
+it. The floor keeps:
+
+| Column | Meaning |
+|---|---|
+| `seq` | every op at or below it is covered |
+| `op_hash` | the `op_hash` of the op at `seq`, which the next op names in its `prev_hash` |
+| `root` | `root(device, seq)` |
+| `hlc_ms`, `hlc_logical` | the stamp of the op at `seq`, which bounds every op the floor covers |
+
+A floor never falls. Wherever the op log read the op at a position, it reads
+the floor once the row is gone:
+
+- the contiguous prefix, and so `sync_cursors`, starts above the floor;
+- the chain root resumes from the floor's root;
+- a `prev_hash` or a head naming a covered position is not recorded as a
+  missing op;
+- a delivery at a covered position is a duplicate and is not applied again. A
+  different op at the floor's own seq is fork evidence, kind `seq`;
+- a device never writes a `seq` at or below its own floor;
+- `Engine::prime_hlc` restores the clock from the floors as well as from
+  `ops`.
+
+This is how the no-gap rule of
+[`../03-crypto/audit-and-tamper-evidence.md`](../03-crypto/audit-and-tamper-evidence.md)
+§Identity and replay invariants holds with a floor: `seq` is contiguous above
+it, and the root at the floor stands for everything below. A peer that holds a
+different op below a floor disagrees with the floor's root, which the stream
+digest compares.
 
 ## Eligibility
 
-An op is eligible for compaction when **all** of the following hold:
+`Engine::compact_op_log` raises each floor to the highest seq that is, for its
+device in its stream, all of:
 
-1. Its `applied_at` is set on every "known device" of the identity (see below).
-2. It is older than a retention window (default: 30 days for normal ops, 365 days for control ops like share grants/revokes).
-3. The op is not a checkpoint or transition op needed for tamper-evidence anchors.
+1. acknowledged by every known device of the stream (below);
+2. older than the retention window: the op's stamp is at least
+   `retention_ms` old;
+3. strictly below this replica's own tip of that prefix, which is kept because
+   the next op links to it and `prime_hlc` reads it.
 
-### "Known device"
+It then deletes the ops at or below the floor whose whole effect is in the
+merge state: every op, full-state or `Patch`, of an entity the registry merges
+field by field into a row (`Merge::Lww` with a table), and old `StreamDigest`
+ops. It never deletes:
 
-A "known device" is a device with an entry in `vault_meta.devices` that is **not** revoked AND has emitted a cursor op in the last 30 days. A revoked device is excluded immediately (no grace delay). A device silent > 30 days is excluded; if it returns, it must catch up via snapshot rather than blocking compaction.
+- an op parked for a kind this build does not know (ADR-0045 §4);
+- a control op: key envelopes, device certs, revocations, identity
+  transitions;
+- a focus or review record, whose effect is an append-only row;
+- an op still waiting in the outbox;
+- an op that a missing op's expectation was named by (`chain_expected`).
 
-## How
+Before it deletes, it folds any entity row a local command wrote and the merge
+had not folded yet, because that fold reads the op's stream and kind back from
+the log (by the `ops_by_target` index migration 0035 adds).
 
-Compaction folds a range of ops into a **snapshot op** for a Stream. The snapshot's CBOR shape:
+The pages the deleted rows held go on SQLite's free list and are reused by
+later writes. The file does not shrink, because the vault's `auto_vacuum`
+pragma does not take effect ([#461](https://github.com/justin13888/Sunrise/issues/461)).
 
-```cddl
-; PROPOSED - not implemented, and not a wire format. See the banner above.
-Snapshot = {
-    v:                uint,                ; snapshot format version (1)
-    stream_id:        bstr .size 16,
-    upto_op_seq:      uint,
-    generated_at_ms:  uint,
-    doc_state:        bstr,                ; serialized Stream state, format TBD
-    head_root:        bstr .size 32,
-    participants:     [+ {device_id: bstr .size 16, last_op_seq: uint}],
-    hash:             bstr .size 32,       ; BLAKE3(canonical CBOR of the above fields, 32)
-}
+### Acknowledgement and known devices
+
+A device acknowledges a prefix by publishing a stream digest whose frontier
+reaches it. A digest that checks out is kept in `peer_frontiers` as the peer's
+acknowledgement of every prefix it names; a later digest only raises it. This
+replica's own acknowledgement is its sync cursor.
+
+A device is **known** in a stream when it is not revoked, was heard from within
+`known_device_window_ms` (its newest tip, floor or digest), and is either a
+member of the account or has written in the stream. This replica is always
+known. A device silent for longer than the window, or never heard from, stops
+holding compaction back, and catches up from a snapshot when it returns. A
+revoked device never holds it back.
+
+### Policy
+
+| Field | Default | |
+|---|---|---|
+| `retention_ms` | 30 days | the relay's own retention window |
+| `known_device_window_ms` | 30 days | |
+| `snapshot_every_ms` | 1 day | how often the compactor rewrites a stream's snapshot |
+
+`Core::set_compaction_policy` replaces it. The sync driver's anti-entropy tick
+runs compaction at most once a day; `Core::compact_op_log` runs it now.
+
+## Who writes the snapshot (compactor election)
+
+The known device with the least `device_id`, in byte order, is the stream's
+compactor. Election is recomputed on every run, so a compactor that goes silent
+is replaced once the window has passed. Only the compactor writes the stream's
+snapshot, at most once per `snapshot_every_ms`, and keeps the latest in
+`stream_snapshots`. A snapshot is not needed for a replica to fold its own log:
+its merge state already holds every op it deletes.
+
+## Snapshot record
+
+A snapshot covers one stream at a stated causal frontier.
+
+```text
+record = "SR" 0x04 0x0001 || canonical CBOR map
 ```
 
-`doc_state` **is undecided.** An earlier revision specified
-`loro::Doc::export_snapshot()` bytes, which cannot be produced: the workspace
-ships no CRDT library, and under ADR-0014 a Stream's state is rows in SQLite
-rather than a mergeable document. Whatever replaces it has to be a canonical
-serialization of the materialized entity rows plus their LWW stamps, since
-those stamps are what makes a later op's merge deterministic — but that is a
-design decision, not a settled one, and is the main reason this document is
-not buildable as written. The encrypted-CBOR envelope would wrap the whole
-structure, signed under the Stream key.
+| Key | Field | Type |
+|---|---|---|
+| 1 | `stream_id` | `bstr .size 16` |
+| 2 | `epoch` | `uint`, the stream-key epoch the body is sealed under |
+| 3 | `generated_by` | `bstr .size 16`, the writer's device id |
+| 4 | `generated_at_ms` | `uint`, the writer's wall clock |
+| 5 | `frontier` | `[* [device: bstr .size 16, seq: uint, root: bstr .size 32, op_hash: bstr .size 32, hlc_ms: uint, hlc_logical: uint]]`, sorted by device |
+| 6 | `digest` | `bstr .size 32`, ADR-0043's `stream_digest` over `(device, seq, root)` |
+| 7 | `cert` | `bstr`, the writer's identity-signed `DeviceCert` |
+| 8 | `nonce` | `bstr .size 24` |
+| 9 | `body` | `bstr`, XChaCha20-Poly1305 of the canonical CBOR body |
+| 10 | `sig` | `bstr .size 64`, Ed25519 under the writer's device key |
 
-Validation on application:
+- The body key is `BLAKE3-KDF("sunrise.snapshot.key.v1", stream_key)` for the
+  stream key at `epoch`.
+- The AAD is `"sunrise.snapshot.aad.v1" || magic || canonical CBOR of fields
+  1 to 8`.
+- The signature covers `"sunrise.snapshot.sig.v1" || magic || canonical CBOR of
+  fields 1 to 9`.
 
-1. Verify magic + version.
-2. Recompute `hash` over the canonical CBOR of all other fields; reject on mismatch.
-3. Verify `head_root` matches a re-derivation from the imported state.
-4. Replace local Stream state with snapshot.
+The body is `{1: doc_state, 2: [* retained envelope]}`.
 
-Devices that haven't yet processed the underlying ops can apply the snapshot directly and skip the predecessors. After all known devices acknowledge the snapshot, the predecessor ops can be deleted from local storage and the server's log.
+### `doc_state`
 
-## Who initiates (compactor election)
+The canonical per-field merge state the stream's ops wrote. For each entity: its
+merge bookkeeping, and every register, map entry, OR-set add, OR-set remove and
+counter delta whose stamp (an add's and a remove's tag) names the stream. Each
+entity lists its distinct stamps once and its rows name them by index.
 
-- Eligible compactor: the device with the smallest `device_id` (lex byte order) among all "known devices" at the moment compaction conditions become true.
-- Re-elected per-Stream per-day. Election re-runs at the next compaction-eligibility check if the previous compactor went silent.
-- No tie-breaker needed (`device_id`s are 16 random bytes; collision negligible).
+```cddl
+doc-state = { "v": 1, "entities": [* entity] }       ; sorted by id
+entity = {
+  "id": bstr .size 16, "kind": tstr,                  ; registry tag
+  "stamps": [* stamp],                                ; distinct, ascending
+  "created": bool, "create": s / null, "legacy": s / null,
+  "patch_ms": uint / null, "head": s,
+  "registers": [* [field, bstr / null, origin, s]],
+  "maps":      [* [field, key, bstr, origin, s]],
+  "adds":      [* [field, bstr, s]],
+  "removes":   [* [field, bstr, bstr .size 16, bstr .size 16, uint]],
+  "deltas":    [* [field, int, s]],
+}
+s = uint                                              ; index into "stamps"
+stamp = [hlc_ms, hlc_logical, device: bstr .size 16, seq, stream: bstr .size 16]
+```
 
-## What about devices we haven't heard from?
+Values are the canonical CBOR bytes the merge tables hold.
 
-A device that's been offline for >retention has missed compactions; it must catch up via:
+### Retained envelopes
 
-1. Apply the most recent snapshot (which the server still holds).
-2. Apply ops since the snapshot.
+Every op of the stream at or below the frontier whose effect is not in
+`doc_state`, verbatim and in stamp order: control ops, focus and review
+records, and parked ops. A writer refuses to write a snapshot while it holds an
+op above its device's contiguous prefix, since no frontier could state it.
 
-If a device has been offline so long that *its own old ops* have been compacted out (and the server has discarded them) — that's fine; the device's local copy still exists, and as long as no peer replays them, this is consistent.
+## Applying a snapshot
+
+`Engine::apply_snapshot` (and `Core::apply_stream_snapshot`) checks, in order:
+
+1. the magic prefix and the format version;
+2. the signature, under the writer's cert as this vault holds it, or under the
+   carried cert once it verifies under an identity on this account's chain;
+3. that the writer is not revoked;
+4. that the frontier is sorted and the digest is the digest of it;
+5. that the body opens under a key this replica holds at `epoch`;
+6. that every frontier entry this replica's own prefix reaches agrees with its
+   own chain root there.
+
+A record that fails 1 to 4 or 6 is refused. With no key at `epoch` the outcome
+is `NoKey`, and with every entry already reached it is `Covered`; neither
+writes anything. Otherwise the retained envelopes go through the ordinary
+receive path, each verified on its own. If one is still waiting for a key, the
+outcome is `Pending` and no floor rises. If one's writer has no cert here yet,
+the apply fails with `UnknownDevice` and no floor rises either: certs travel in
+the vault-meta stream, so a device that holds none applies that stream's
+snapshot first. Then `doc_state` is **joined** into
+the local merge state, every entity it names is re-projected, and each frontier
+device's floor rises to its entry.
+
+The join folds each row in through the write an op carrying it would have
+used. Every such write is idempotent and order-independent, so a replica that
+joins a snapshot and then applies the ops above its frontier holds what a
+replica that replayed every op holds, whatever it held before. Applying a
+record twice, or one older than the replica, changes nothing.
+
+A snapshot's state is attested by its writer's signature and nothing finer: the
+ops it folded are gone. That is the trust compaction trades for bounded
+storage, and the reason a revoked writer's snapshot is refused.
+
+## Catch-up
+
+A device that joins an account, or returns after the relay has trimmed what it
+missed, applies the stream's latest snapshot and then the ops above its
+frontier, which the relay replays from the cursor the snapshot set. A device's
+own old ops can be folded too: its floor covers them, it never reuses their
+seqs, and no receiver treats the hole as a gap.
+
+**Not built yet: transport.** Nothing carries a snapshot record between devices.
+`Core::stream_snapshot` hands out the stored record and
+`Core::apply_stream_snapshot` takes one in, but neither the relay, the blob
+store nor pairing moves it. That is
+[#462](https://github.com/justin13888/Sunrise/issues/462).
 
 ## What stays forever
 
-- Identity creation events.
-- DeviceCert events for currently-active devices.
-- Stream creation events.
-- Share grants and revocations.
-- The most recent snapshot per Stream.
+Nothing that is not an entity write: device certs, key envelopes,
+revocations, identity transitions, focus and review records, and parked ops.
+Each device's tip. The latest snapshot per stream, on its compactor and on any
+replica that applied it.
 
-These are the audit-relevant anchors; they are small and worth keeping.
+## Server side
 
-## Server-side compaction
-
-The server runs a parallel compaction:
-
-1. Sees devices report their `last_seq` per Stream and per device.
-2. When all devices ≥ a threshold, drops the underlying ciphertext from blob storage.
-3. Retains the snapshot op until superseded.
-
-The server does not reorder, rewrite, or merge ops; it only deletes ops it no longer needs to retain.
-
-### Server-side retention after compaction
-
-After compaction, the server retains the original ciphertext blobs for **30 days** under a `compacted/` prefix before deletion. This window allows:
-
-- Late-arriving devices to catch up via the original op stream (faster than snapshot in some cases).
-- Forensic recovery if a snapshot is determined to be defective.
-
-After 30 days, the original blobs are hard-deleted; the snapshot is the only authoritative state.
+The relay does not compact and cannot: it never reads an op. Its retention is
+unchanged, 30 days or 256 MiB per channel
+(`crates/sunrise-server/src/relay_log.rs#DEFAULT_MAX_AGE_MS`,
+`crates/sunrise-server/src/relay_log.rs#DEFAULT_MAX_BYTES`). Compaction makes
+that bound survivable: a device beyond it catches up from a snapshot rather
+than from ops nobody holds.
 
 ## User-visible effect
 
-None in the normal case. UI shows "vault size" and a manual "rebuild from history" button (which is mostly diagnostic).
+None in the normal case. An entity's activity feed and the review trends read
+the op log, so they reach back as far as the retention window and no further.
 
 ## Test surface
 
-- Round-trip test: produce a stream, generate snapshot, simulate fresh device joining, verify state matches.
-- Adversarial test: reorder ops the server delivers; verify devices detect via root mismatch.
+- `crates/sunrise-core/src/engine/tests/compaction.rs`: a missing
+  acknowledgement holds a fold back and a digest releases it; the retention
+  window; a silent or revoked device is not waited for; a replica writes on
+  above its floor; a re-delivery below a floor is a duplicate and a forged op
+  at it is fork evidence; what compaction never deletes; the compactor
+  election; a device bootstrapped from a snapshot and its tail equals one that
+  replayed every op, in projection, cursors and digest; a snapshot written
+  after a fold; parked ops carried by a snapshot; a covered snapshot; a
+  forged, foreign or divergent one is refused; the clock primed from the
+  floors.
+- `crates/sunrise-bench/benches/compaction.rs`: the op log at 10k and 100k
+  tasks before and after a fold, the snapshot record that replaces it, and
+  what both cost.

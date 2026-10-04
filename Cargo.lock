@@ -3130,6 +3130,7 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "uniffi",
+ "url",
  "zeroize",
 ]
 
@@ -3391,6 +3392,7 @@ dependencies = [
  "sunrise-http-sig",
  "sunrise-id",
  "sunrise-log",
+ "sunrise-pairing",
  "sunrise-storage",
  "sunrise-wire-protocol",
  "tempfile",
@@ -3398,6 +3400,7 @@ dependencies = [
  "tokio",
  "toml 1.1.4+spec-1.1.0",
  "tracing",
+ "zeroize",
 ]
 
 [[package]]

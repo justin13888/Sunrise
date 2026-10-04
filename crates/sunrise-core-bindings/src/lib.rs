@@ -62,6 +62,7 @@ pub mod dto;
 pub mod ical;
 pub mod notes;
 pub mod pairing;
+pub mod pairing_relay;
 pub mod query;
 pub mod recovery;
 pub mod types;
@@ -79,6 +80,7 @@ pub use notes::{
     NoteListItem, NoteMark,
 };
 pub use pairing::{DevicePairing, PairingRole, PairingStep};
+pub use pairing_relay::RelayPairing;
 pub use query::{CoreQuery, CoreQueryResult};
 pub use recovery::{check_recovery_code, is_recovery_word, RecoveryListener, RecoveryStep};
 pub use vocab::RelativeDay;
@@ -166,8 +168,9 @@ pub enum BindingError {
     ///
     /// Kept apart from [`BindingError::Core`] because the two need different
     /// things from the user: a core failure is a bug or a broken vault, and
-    /// this is a network, a token, or a relay saying no. `bootstrap_account` is
-    /// the only route that raises it.
+    /// this is a network, a token, or a relay saying no. Raised by
+    /// `bootstrap_account`, `register_relay_device` and
+    /// [`pairing_relay::RelayPairing`].
     #[error("relay: {0}")]
     Relay(String),
     /// An attachment's metadata is on this device and its bytes are not.

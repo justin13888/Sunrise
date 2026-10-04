@@ -53,7 +53,9 @@ trusted_proxies  = ["127.0.0.1"]          # default []; reverse proxies whose X-
 oidc_issuer        = "https://auth.example.com"  # must be https
 oidc_client_id     = "sunrise"                   # tokens must carry it in `aud`
 allow_signup       = false                # default true
-require_device_sig = true                 # default false; requires an issuer
+require_device_sig = true                 # default: on with an issuer, off without one;
+                                          # true without an issuer is refused, and false
+                                          # with one logs srv.start.device_sig_optional
 token_leeway_secs  = 60                   # clock-skew allowance on exp/nbf
 jwks_ttl_secs      = 300                  # cache TTL for a JWKS with no cache headers
 
@@ -68,6 +70,9 @@ account_delete_grace_days = 30            # default 30; from a confirmed account
                                           # its erasure
 pending_upload_ttl_hours = 24             # default 24; an upload untouched this long is swept
 maintenance_interval_secs = 3600          # default 3600; how often the maintenance pass runs
+encrypt  = true                           # default false; SQLCipher-encrypt sunrise.db at rest
+key_file = "/etc/sunrise/db.key"          # required with encrypt; 64 hex digits, mode 0600,
+                                          # outside data_dir (openssl rand -hex 32)
 
 [limits]                                  # api.md §Rate limits; every key defaults
 enabled              = true               # false turns every limit off (load tests only)
@@ -124,6 +129,9 @@ The server exits 78 rather than starting, when:
 | A `trusted_proxies` entry is not an address or CIDR network | Hostnames are not resolved; the socket reports an address |
 | `busy_timeout_ms` above 2147483647 | SQLite holds the timeout in a 32-bit signed integer of milliseconds (about 24 days) |
 | `pending_upload_ttl_hours = 0` or `maintenance_interval_secs = 0` | The first would sweep uploads still in flight; the second would run the maintenance pass in a busy loop. The two grace periods may be `0`. |
+| `encrypt = true` without `key_file`, or `key_file` without `encrypt = true` | Either the database would not be encrypted while the operator believes it is, or there is no key to encrypt it with |
+| `key_file` is missing, not 64 hex digits, readable by group or others, or inside `data_dir` | It opens the whole database; inside the data dir, every copy of the data dir would carry it |
+| `sunrise.db` is encrypted and `encrypt` is off, or `key_file` holds a different key | The relay cannot read it; the log names which (see "Encryption at rest") |
 | `sunrise.db` is at a schema version newer than this binary's | A newer release migrated it; writing to it could corrupt what that release relies on (see "Upgrade") |
 | `[push.apns] key_path` is readable by group or others, missing, or not a P-256 `.p8` key | It signs pushes for the whole app; a key that cannot sign would fail every push instead of the start |
 | `[push.apns] key_id` or `team_id` is not 10 uppercase letters and digits, or `topic` is empty | APNs would refuse every provider token or push |
@@ -306,7 +314,8 @@ sunrise-server admin [-c <path>] [--json] <command>
 | `account delete <id>` | Mark the account for deletion, as `DELETE /api/v1/accounts/me` does |
 | `account delete <id> --immediately` | Erase it now: rows, relay log and blob trees |
 | `device revoke <device_id>` | Revoke a device row, as `DELETE /api/v1/devices/<id>` does |
-| `backup <dest_dir>` | Write `<dest_dir>/sunrise.db` with `VACUUM INTO` (one consistent instant, even while the relay runs) and copy `blobs/` beside it |
+| `backup <dest_dir>` | Write `<dest_dir>/sunrise.db` through SQLite's online backup API (one consistent instant, under the database's own key, while the relay keeps writing) and copy `blobs/` beside it, manifests last |
+| `rekey <new_key_file>` | Re-encrypt the database under the key in `new_key_file`, with the relay stopped (see "Encryption at rest") |
 
 `--json` prints one JSON document; without it the same fields print as indented
 `key: value` lines. Output names account and device ids and never an email or an
@@ -333,25 +342,104 @@ The serving binary runs the same maintenance pass itself at startup and every
 `maintenance_interval_secs`, so `gc --now` is for when an operator wants it
 sooner.
 
+## Encryption at rest
+
+With `[storage] encrypt = true`, `sunrise.db` is SQLCipher-encrypted as a whole
+under the 32-byte key in `key_file`
+([ADR-0060](../11-adr/0060-relay-database-encryption-at-rest.md)). Without it
+the file is plain SQLite, readable by anyone who can read the data dir, and it
+holds account emails, OIDC subjects, device nicknames and push tokens (see
+[`relay-and-blob-storage.md`](./relay-and-blob-storage.md)). It is off by
+default, because the relay will not invent a key; turn it on for any
+deployment that holds real accounts.
+
+**Setting it up.** Create the key outside the data dir, readable by the user
+the relay runs as and nobody else, then name it:
+
+```sh
+install -d -m 700 /etc/sunrise
+openssl rand -hex 32 > /etc/sunrise/db.key
+chmod 600 /etc/sunrise/db.key
+```
+
+**Back the key up apart from the data dir.** It is the only way into the
+database and into every backup of it: lose it and both are unreadable. Keep it
+in a password manager or a secrets store, never beside a backup.
+
+**Turning it on for an existing install** is a one-way migration, run by the
+first process that opens the database under the key (the relay, or any `admin`
+command). It needs the file to itself: stop the relay, set the two keys, start
+it. The relay exports every row into an encrypted file, keeps the original as
+`sunrise.db.pre-encryption`, renames the encrypted file into place, and logs
+`srv.store.encrypted`. A crash before the rename leaves the plaintext database,
+and the next start retries. `admin doctor` fails its `encryption` check while
+`sunrise.db.pre-encryption` exists: once the relay runs on the encrypted
+database, delete it, and any backup that contains it. There is no way back to
+plaintext.
+
+**Rotating the key:**
+
+1. Stop the relay.
+2. Write the new key file: `openssl rand -hex 32 > /etc/sunrise/db.key.next`,
+   then `chmod 600` it.
+3. `sunrise-server admin rekey /etc/sunrise/db.key.next`. It refuses while any
+   other process has the database open, and leaves the old key working if it
+   fails.
+4. Point `key_file` at the new file (or move it over the old one), and start.
+5. Keep the old key for as long as you keep backups taken before the rotation:
+   they are still under it.
+
 ## Backup
 
-- Online: `sunrise-server admin backup <dest_dir>` while the relay runs. The
-  database copy is one consistent instant; the blob copy takes only whole
-  files, since chunks are renamed into place and temporaries are skipped.
-- Single-binary: stop, `tar czf` the data dir, start. Or use a snapshot-aware
+- **Online, the default:** `sunrise-server admin backup <dest_dir>` while the
+  relay runs. The database is copied with SQLite's online backup API in one
+  pass over a single snapshot, so the copy is one committed instant, and the
+  relay's writes carry on throughout; the WAL grows by what is written during
+  the copy and shrinks at the next checkpoint. An encrypted database is copied
+  under the same key, so the backup is ciphertext and needs the same
+  `key_file` to open. The blob tree is copied after the database, manifests
+  last, so every blob in the backup is whole; a blob finalized after the
+  database copy is left out, which is safe because no op in that copy names
+  it.
+- **Scheduled:** run the same command from a systemd timer or cron, into a new
+  directory each time, and ship the directories off-host. For an encrypted
+  install this is the continuous option: what leaves the host is ciphertext,
+  and the key stays behind.
+- **Continuous replication with Litestream**, for a plaintext install only.
+  Litestream ships the WAL as it is written, and recovers to within seconds.
+  Point it at `<data_dir>/sunrise.db`, keep `blobs/` on its own backup, and
+  expect its `_litestream_seq` and `_litestream_lock` tables in the file,
+  which the relay ignores. Litestream opens the database through its own
+  SQLite build, which has no SQLCipher codec, so it cannot read an encrypted
+  install; use the scheduled backup there.
+- **Offline:** stop, `tar czf` the data dir, start. Or use a snapshot-aware
   filesystem (ZFS, Btrfs). The op log lives inside `sunrise.db`, so that one
   file plus `blobs/` is the entire server state. The database runs in WAL mode,
   so while the server runs its recent writes are in `sunrise.db-wal` beside it:
   a copy of `sunrise.db` alone, taken from a running server, can be missing
   them. A stop by `SIGTERM` checkpoints the WAL into `sunrise.db` once its
-  drain ends; a snapshot must take
-  the whole directory at one instant, which ZFS and Btrfs snapshots do.
-- **The data dir is not encrypted.** Unlike the client vault, the relay database
-  applies no SQLCipher key, and it holds account emails, device nicknames and
-  push tokens in plaintext — see
-  [`relay-and-blob-storage.md`](./relay-and-blob-storage.md). Treat a backup of
-  it accordingly.
+  drain ends; a snapshot must take the whole directory at one instant, which
+  ZFS and Btrfs snapshots do.
+- **What is in a backup.** Without encryption, everything the relay database
+  holds, in plaintext: treat the backup accordingly. With it, ciphertext.
+  Neither carries the key file or the APNs key, which are config.
 - Scaled: standard Postgres + S3 backup tooling. There is no scaled deployment.
+
+### Restore
+
+1. Stop the relay.
+2. Move the data dir aside (keep it until the restore is verified).
+3. Copy the backup's `sunrise.db` and `blobs/` into a fresh data dir, owned by
+   the user the relay runs as. Leave out any `sunrise.db-wal` and
+   `sunrise.db-shm`: an `admin backup` has none, and a stale one beside a
+   restored file is not its WAL.
+4. Keep `[storage] key_file` naming the key the backup was taken under, if it
+   is encrypted.
+5. Start the relay, and run `sunrise-server admin doctor`.
+
+Clients whose cursors the backup covers resume from them with no gap. What
+the relay accepted after the backup was taken is not in it: the interval
+between backups is the relay history you accept losing.
 
 ## Upgrade
 
