@@ -663,8 +663,7 @@ impl Engine {
             ev = "core.snapshot.applied",
             stream_h = hex_short(&stream_id),
             sender_h = hex_short(&rec.generated_by),
-            entities = joined,
-            retained = retained.len(),
+            n_retained = retained.len(),
             "a snapshot was joined and the stream's floors rose to its frontier"
         );
         Ok((

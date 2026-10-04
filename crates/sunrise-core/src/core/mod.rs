@@ -105,8 +105,19 @@ pub struct Core {
     /// any one session — that is the reason it is a table at all — while
     /// `SyncShared` is scoped to the driver's own connection state.
     blob_fetch: Arc<crate::blob_fetch::BlobFetchSignals>,
+    /// What [`Core::compact_op_log`] may fold (ADR-0059). Set by
+    /// [`Core::set_compaction_policy`]; the design of record's numbers until
+    /// then.
+    compaction_policy: Mutex<crate::engine::CompactionPolicy>,
+    /// When the sync driver's tick last ran compaction, so it runs at most
+    /// once per [`COMPACT_EVERY_MS`] rather than on every tick.
+    last_compaction_ms: Mutex<Option<u64>>,
     closed: Mutex<bool>,
 }
+
+/// How often the sync driver's anti-entropy tick runs op-log compaction: once
+/// a day, the cadence the compactor rewrites its snapshots at.
+pub(crate) const COMPACT_EVERY_MS: u64 = 24 * 60 * 60 * 1000;
 
 impl std::fmt::Debug for Core {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -235,6 +246,8 @@ impl Core {
             sync_handle: Mutex::new(None),
             routine_handle: Mutex::new(None),
             blob_fetch: Arc::new(crate::blob_fetch::BlobFetchSignals::new()),
+            compaction_policy: Mutex::new(crate::engine::CompactionPolicy::default()),
+            last_compaction_ms: Mutex::new(None),
             closed: Mutex::new(false),
         })
     }
@@ -1089,7 +1102,96 @@ impl Core {
         if written > 0 && self.sync_shared.is_active() {
             self.sync_shared.poke_submit();
         }
+        self.sync_compact_if_due();
         written
+    }
+
+    /// Run op-log compaction from the sync driver's tick, at most once per
+    /// [`COMPACT_EVERY_MS`]. A failure is logged and retried on the next
+    /// day's tick; nothing it would have folded is lost by waiting.
+    fn sync_compact_if_due(&self) {
+        let now_ms = self.cfg.clock.now_ms();
+        {
+            let mut last = self.last_compaction_ms.lock();
+            if last.is_some_and(|t| now_ms.saturating_sub(t) < COMPACT_EVERY_MS) {
+                return;
+            }
+            *last = Some(now_ms);
+        }
+        let policy = *self.compaction_policy.lock();
+        let mut db = self.db.lock();
+        if let Err(e) = self.engine.compact_op_log(&mut db, &policy) {
+            tracing::warn!(
+                ev = "core.compaction.failed",
+                cause = %e,
+                "the op log was not compacted; the next day's tick retries"
+            );
+        }
+    }
+
+    /// Replace what op-log compaction may fold: the retention window, how long
+    /// a silent device is waited for, and how often the compactor rewrites a
+    /// stream's snapshot (ADR-0059).
+    pub fn set_compaction_policy(&self, policy: crate::engine::CompactionPolicy) {
+        *self.compaction_policy.lock() = policy;
+    }
+
+    /// The compaction policy in force.
+    #[must_use]
+    pub fn compaction_policy(&self) -> crate::engine::CompactionPolicy {
+        *self.compaction_policy.lock()
+    }
+
+    /// Fold this vault's op log below every floor its policy allows, now,
+    /// whatever the sync driver's cadence (ADR-0059).
+    ///
+    /// # Errors
+    /// [`CoreError::Closed`] after close; storage failures.
+    pub fn compact_op_log(&self) -> Result<crate::engine::CompactionReport, CoreError> {
+        if *self.closed.lock() {
+            return Err(CoreError::Closed);
+        }
+        let policy = *self.compaction_policy.lock();
+        let mut db = self.db.lock();
+        Ok(self.engine.compact_op_log(&mut db, &policy)?)
+    }
+
+    /// The latest snapshot record of `stream_id` this vault wrote or applied,
+    /// verbatim: what a new device bootstraps that stream from.
+    ///
+    /// # Errors
+    /// [`CoreError::Closed`] after close; storage failures.
+    pub fn stream_snapshot(&self, stream_id: [u8; 16]) -> Result<Option<Vec<u8>>, CoreError> {
+        if *self.closed.lock() {
+            return Err(CoreError::Closed);
+        }
+        let db = self.db.lock();
+        Ok(self.engine.stream_snapshot(&db, &stream_id)?)
+    }
+
+    /// Apply a snapshot record another device wrote, and broadcast what it
+    /// changed on `changes()`. See [`Engine::apply_snapshot`] for the checks
+    /// and for what each outcome means.
+    ///
+    /// # Errors
+    /// [`CoreError::Closed`] after close; [`EngineError::Invalid`] for a
+    /// record that is malformed, forged or of another history; storage
+    /// failures.
+    pub fn apply_stream_snapshot(
+        &self,
+        record: &[u8],
+    ) -> Result<crate::engine::SnapshotApplied, CoreError> {
+        if *self.closed.lock() {
+            return Err(CoreError::Closed);
+        }
+        let (outcome, events) = {
+            let mut db = self.db.lock();
+            self.engine.apply_snapshot(&mut db, record)?
+        };
+        for ev in events {
+            let _ = self.changes_tx.send(ev);
+        }
+        Ok(outcome)
     }
 }
 

@@ -404,9 +404,8 @@ impl Engine {
         if report.ops_removed > 0 || report.snapshots_written > 0 {
             tracing::info!(
                 ev = "core.compaction.done",
-                floors = report.floors_raised,
-                removed = report.ops_removed,
-                snapshots = report.snapshots_written,
+                n_devices = report.floors_raised,
+                n_ops = report.ops_removed,
                 "the op log was folded below its acknowledged floors"
             );
         }
@@ -565,7 +564,7 @@ impl Engine {
                 stream_h = hex_short(stream_id),
                 subject_h = hex_short(&device),
                 seq = target,
-                removed = n,
+                n_ops = n,
                 "a device's prefix was folded below its acknowledged floor"
             );
         }
