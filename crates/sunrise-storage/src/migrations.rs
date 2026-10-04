@@ -137,6 +137,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "field_merge_state",
         sql: include_str!("../migrations/0033_field_merge_state.sql"),
     },
+    Migration {
+        id: 34,
+        name: "op_chain",
+        sql: include_str!("../migrations/0034_op_chain.sql"),
+    },
 ];
 
 /// Current storage version (= last migration id).

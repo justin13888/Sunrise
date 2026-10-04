@@ -11,6 +11,7 @@
 //! whether the sender is revoked, whether the key that opens the op has arrived
 //! yet, and only then what the op says.
 
+use super::chain::{check_duplicate, check_links, reconcile};
 use super::identity::{SiblingRank, MAX_ROSTER_ENTRIES};
 use super::ids::hex_short;
 use super::lww::{materialize_remote, remap_legacy_inbox, LwwStamp};
@@ -222,14 +223,22 @@ impl Engine {
     /// 6. Idempotence gate: `INSERT OR IGNORE` into `ops` on the deterministic
     ///    op-id and the `UNIQUE(stream_id, device_id, seq)` constraint. If the
     ///    op was already present (`changes() == 0`), return `Ok(None)` with no
-    ///    materialization and no event.
+    ///    materialization and no event. If what is present is a *different*
+    ///    op at that `(stream_id, device_id, seq)`, the delivered envelope is
+    ///    kept as fork evidence first (ADR-0043 §4).
+    ///
+    ///    Past the gate, the op's chain fields are checked against the log
+    ///    (ADR-0043 §3): a gap is recorded as an expected op, a mismatch as
+    ///    fork evidence, and the op goes on to be applied either way. A
+    ///    `StreamDigest` is compared with this replica's own chain roots
+    ///    instead of reaching the control-op arm.
     /// 7. LWW materialization: the entity's stored `(hlc, device, seq)` stamp
     ///    is compared against the envelope's. The greater tuple wins. A winning
     ///    op performs the same materialized-row upsert the local path does and
     ///    stamps the row with the SENDER's values; a losing op keeps the row
     ///    but stays recorded in the op log.
     /// 8. Advance `sync_cursors(stream_id, device_id)` over the contiguous
-    ///    applied prefix.
+    ///    applied prefix, and the device's chain root with it.
     ///
     /// Remote ops are **not** enqueued in the outbox: the relay fans out to
     /// peers, so re-broadcasting a received op would loop.
@@ -429,10 +438,23 @@ impl Engine {
                 )
                 .map_err(oplog_to_sqlite)?
             {
+                // A *different* op at a position the log already holds is
+                // fork evidence, kept verbatim rather than dropped (ADR-0043
+                // §4). The op the log holds stays the one materialized.
+                check_duplicate(tx, &env, envelope_bytes, now_ms)?;
                 return Ok(());
             }
             applied = true;
-            if inner.is_control() {
+            // e'. Chain links: fields 14 and 15 against what this replica
+            //     holds, and what earlier ops said this one would be. Never a
+            //     refusal (ADR-0043 §3).
+            check_links(tx, &op_id, &env, envelope_bytes, now_ms)?;
+            if let InnerOp::StreamDigest(p) = &inner {
+                // f''. A peer's frontier in this stream, compared with ours.
+                //      Routed here rather than through `apply_control_op`,
+                //      which is not handed the envelope's stream.
+                reconcile(tx, &env.stream_id, &env.device_id, p, now_ms)?;
+            } else if inner.is_control() {
                 // f'. Control ops carry key material and trust, not entity
                 //     state. They have no row and no LWW contest; routing one
                 //     into `materialize_remote` would file it under `tasks`,
@@ -445,7 +467,7 @@ impl Engine {
                 materialize_remote(tx, &inner, &lww, &env.stream_id)?;
             }
             // g. Advance the sync cursor to the end of the contiguous prefix.
-            upsert_sync_cursor(tx, &env.stream_id, &env.device_id)?;
+            upsert_sync_cursor(tx, &env.stream_id, &env.device_id, now_ms)?;
             Ok(())
         })?;
 
@@ -757,10 +779,15 @@ impl Engine {
             )
             .map_err(oplog_to_sqlite)?;
             // A re-delivery of an op already in the log, parked or not, adds
-            // nothing: the row and its marker are the first delivery's.
+            // nothing: the row and its marker are the first delivery's. A
+            // different op at that position is fork evidence (ADR-0043 §4).
             if tx.changes() == 0 {
+                check_duplicate(tx, env, envelope_bytes, now_ms)?;
                 return Ok(());
             }
+            // A parked op is in the log and counts toward the prefix, so its
+            // links are checked now, like an applied op's (ADR-0043 §3).
+            check_links(tx, &op_id, env, envelope_bytes, now_ms)?;
             OpLog::park(
                 tx,
                 &Parking {
@@ -773,7 +800,7 @@ impl Engine {
                 },
             )
             .map_err(oplog_to_sqlite)?;
-            upsert_sync_cursor(tx, &env.stream_id, &env.device_id)?;
+            upsert_sync_cursor(tx, &env.stream_id, &env.device_id, now_ms)?;
             parked = true;
             Ok(())
         })?;

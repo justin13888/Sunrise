@@ -1123,6 +1123,7 @@
         "RoutineUpdate",
         "StreamCreate",
         "StreamDelete",
+        "StreamDigest",
         "StreamUpdate",
         "TaskCreate",
         "TaskDelete",

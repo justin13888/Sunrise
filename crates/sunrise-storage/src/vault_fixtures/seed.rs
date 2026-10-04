@@ -341,6 +341,8 @@ pub(super) const SEED: &[SeedRow] = &[
             ("applied_at", I(112)),
             ("received_from", B(&DEVICE_LAPTOP)),
             ("received_at", I(113)),
+            ("op_hash", B(&[0x61; 32])),
+            ("chain_root", B(&[0x62; 32])),
         ],
     },
     SeedRow {
@@ -648,6 +650,59 @@ pub(super) const SEED: &[SeedRow] = &[
             ("hlc_ms", I(HLC_MS + 48)),
             ("hlc_logical", I(257)),
             ("delta", I(-1)),
+        ],
+    },
+    SeedRow {
+        table: "chain_heads_sent",
+        values: &[
+            ("stream_id", B(&STREAM_ALPHA)),
+            ("device_id", B(&DEVICE_RETIRED)),
+            ("seq", I(258)),
+        ],
+    },
+    SeedRow {
+        table: "chain_expected",
+        values: &[
+            ("stream_id", B(&STREAM_ALPHA)),
+            ("device_id", B(&DEVICE_RETIRED)),
+            ("seq", I(259)),
+            ("op_hash", B(&[0x63; 32])),
+            ("named_by", B(&OP_ID)),
+        ],
+    },
+    SeedRow {
+        table: "chain_claims",
+        values: &[
+            ("stream_id", B(&STREAM_ALPHA)),
+            ("device_id", B(&DEVICE_RETIRED)),
+            ("claimed_by", B(&DEVICE_LAPTOP)),
+            ("seq", I(260)),
+            ("root", B(&[0x64; 32])),
+        ],
+    },
+    SeedRow {
+        table: "fork_evidence",
+        values: &[
+            ("stream_id", B(&STREAM_ALPHA)),
+            ("device_id", B(&DEVICE_LAPTOP)),
+            ("seq", I(1)),
+            ("kind", T(b"seq")),
+            ("held_hash", B(&[0x61; 32])),
+            ("other_hash", B(&[0x65; 32])),
+            ("other_envelope", B(OP_ENVELOPE)),
+            ("recorded_at_ms", I(261)),
+        ],
+    },
+    SeedRow {
+        table: "chain_divergence",
+        values: &[
+            ("stream_id", B(&STREAM_ALPHA)),
+            ("device_id", B(&DEVICE_LAPTOP)),
+            ("peer_device_id", B(&DEVICE_RETIRED)),
+            ("seq", I(1)),
+            ("peer_root", B(&[0x66; 32])),
+            ("held_root", B(&[0x62; 32])),
+            ("recorded_at_ms", I(262)),
         ],
     },
 ];

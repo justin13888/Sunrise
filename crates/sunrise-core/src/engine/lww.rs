@@ -250,11 +250,12 @@ pub(super) fn materialize_remote(
         }
         // Unreachable: the guard at the top of this function returns before
         // the LWW read. Spelled out rather than caught by a `_ =>` arm so a
-        // fifth control family cannot be added without being considered here.
+        // sixth control family cannot be added without being considered here.
         InnerOp::KeyEnvelope(_)
         | InnerOp::DeviceRevoke(_)
         | InnerOp::DeviceCertPublish(_)
-        | InnerOp::IdentityTransition(_) => {}
+        | InnerOp::IdentityTransition(_)
+        | InnerOp::StreamDigest(_) => {}
     }
     Ok(())
 }
