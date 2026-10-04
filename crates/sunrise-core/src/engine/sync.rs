@@ -175,7 +175,8 @@ impl Engine {
         Ok(())
     }
 
-    /// Apply a remote op envelope: idempotent, entity-level last-writer-wins.
+    /// Apply a remote op envelope: idempotent, and merged field by field
+    /// (ADR-0044; see `merge`).
     ///
     /// This is the receive half of sync. The whole pipeline runs under one
     /// `BEGIN IMMEDIATE` transaction (after out-of-tx crypto verification):
