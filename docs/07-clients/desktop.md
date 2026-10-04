@@ -989,9 +989,12 @@ read and the re-registration's cross-domain write is what collapses them.
 A second device is paired over a **six-leg copy/paste handshake**: the QR/text
 code, three Noise XX messages, a SAS comparison, and the sealed vault root.
 
-**The relay's pairing rendezvous does not exist, so the user is the transport.**
-The `relay_url` in the QR payload is a routing label for later; nothing dials
-it. Five legs move bytes the user copies between the two Macs; the sixth moves
+**The app does not use the relay's pairing rendezvous yet, so the user is the
+transport.** The rendezvous exists on the relay, and so does the `RelayPairing`
+seam that drives it from the `relay_url` in the QR
+([`../06-server/api.md`](../06-server/api.md) §Pairing rendezvous). The app does
+not call either yet ([#464](https://github.com/justin13888/Sunrise/issues/464)).
+Five legs move bytes the user copies between the two Macs; the sixth moves
 none, because it is the SAS.
 
 - **Show QR** is a real CoreImage render, with the same payload as copyable text

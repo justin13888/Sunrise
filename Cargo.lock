@@ -3130,6 +3130,7 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "uniffi",
+ "url",
  "zeroize",
 ]
 
@@ -3386,6 +3387,7 @@ dependencies = [
  "sunrise-http-sig",
  "sunrise-id",
  "sunrise-log",
+ "sunrise-pairing",
  "sunrise-storage",
  "sunrise-wire-protocol",
  "tempfile",

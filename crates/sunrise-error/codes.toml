@@ -285,6 +285,14 @@ kind = "transient"
 retryable = true
 since = "v1"
 
+[[code]]
+id = 602
+name = "RELAY_PAIR_SESSION_GONE"
+kind = "permanent"
+retryable = false
+since = "v1"
+docs = "A pairing rendezvous route named no live session under that pair_id for the caller's account: it was never opened, expired after 300 s, was aborted, overflowed its three-message-per-role buffer, or belongs to another account. Sent as 404. Recovery is to start the pairing again from a new code, not to retry (docs/03-crypto/pairing-and-onboarding.md §Relay framing for Noise)."
+
 # --- Integrations ---------------------------------------------------------
 
 [[code]]
