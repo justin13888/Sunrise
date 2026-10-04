@@ -111,9 +111,15 @@ pub async fn session(
     // `SrvTokenRefresh` is optional, so it rides on top of the required set.
     // The client only asks for a refresh if it sees this bit come back agreed,
     // which is what stops one being silently swallowed by an older server.
+    // `SrvEnvelopeFloor` is optional for the same reason: this relay's header
+    // decoder routes a newer envelope container at a floor it implements
+    // (ADR-0045 §5), and an older relay's does not.
     let server_caps = REQUIRED_CLIENT_BITS.0
         | REQUIRED_SERVER_BITS.0
-        | CapabilityBits::EMPTY.with(Capability::SrvTokenRefresh).0;
+        | CapabilityBits::EMPTY
+            .with(Capability::SrvTokenRefresh)
+            .with(Capability::SrvEnvelopeFloor)
+            .0;
     let ack = hello
         .negotiate(
             state.config.server_app_v.clone(),
