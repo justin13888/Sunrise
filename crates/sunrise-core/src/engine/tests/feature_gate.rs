@@ -258,6 +258,39 @@ fn a_structural_feature_locks_every_entity_write_but_not_key_rotation() {
     .expect("key rotation is a control write and stays allowed");
 }
 
+/// Routine materialization writes tasks, so a task lock refuses it with the
+/// typed error `Core::open` treats as the read-only state working rather than
+/// a failed open, and it writes none of them.
+#[test]
+fn routine_materialization_is_refused_with_the_typed_error_under_a_task_lock() {
+    let mut db = db();
+    let e = engine();
+    let other = engine_seeded(ROOT, [9u8; 32], clock());
+    e.apply(
+        &mut db,
+        Command::CreateRoutine(routine_draft(
+            stream_ref(5),
+            "FREQ=DAILY",
+            NOW + 3_600_000,
+            RoutineCatchupPolicy::Skip,
+            Vec::new(),
+        )),
+    )
+    .unwrap();
+    apply_requires(&e, &mut db, &other, &["task.probe"]);
+    let tasks_before = live_task_ids(&db);
+    let later = NOW as u64 + 30 * DAY_MS as u64;
+    assert!(matches!(
+        e.apply(&mut db, Command::MaterializeRoutines { now_ms: later }),
+        Err(EngineError::FeatureMissing { ref feature }) if feature == "task.probe"
+    ));
+    assert_eq!(
+        live_task_ids(&db),
+        tasks_before,
+        "no occurrence was written"
+    );
+}
+
 /// A feature whose prefix names an entity this build does not have locks
 /// nothing here, because nothing here writes that entity, and is still
 /// reported so the user is told to update.
