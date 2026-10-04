@@ -2,18 +2,30 @@
     "_comment": "Per-platform performance baselines, compared by `cargo run -p sunrise-bench --bin baseline -- --check target/criterion bench/baseline.json 60`. Nothing enforces them and nothing updates them automatically. The bench-regression job in .github/workflows/ci.yml runs on schedule and workflow_dispatch only \u2014 never on a pull request \u2014 carries continue-on-error: true, and passes a 60% tolerance rather than the 5% docs/10-cross-cutting/performance-budgets.md specifies, because on the shared runner the same binary swings +270% (ws_handshake) and \u221239% (submit_create_task) against its own recorded baseline. So this file is edited by hand, in a commit that says what changed and why. A null is a metric never measured on that platform. See performance-budgets.md \u00a7Regression policy and https://github.com/justin13888/Sunrise/issues/33.",
     "platforms": {
         "darwin-aarch64": {
+            "compaction_fold_10k_tasks_p99_ms": null,
+            "compaction_snapshot_10k_tasks_p99_ms": null,
             "fts_query_10k_p99_ms": null,
             "query_today_10k_tasks_p99_ms": null,
             "submit_create_task_p50_us": null,
             "submit_create_task_p99_us": null,
-            "ws_handshake_p99_ms": null
+            "sync_session_p99_ms": null,
+            "vault_open_prime_hlc_indexed_100k_ops_p99_ms": null,
+            "vault_open_prime_hlc_indexed_10k_ops_p99_ms": null,
+            "vault_open_prime_hlc_scan_100k_ops_p99_ms": null,
+            "vault_open_prime_hlc_scan_10k_ops_p99_ms": null
         },
         "linux-x86_64": {
+            "compaction_fold_10k_tasks_p99_ms": null,
+            "compaction_snapshot_10k_tasks_p99_ms": null,
             "fts_query_10k_p99_ms": 1.25,
             "query_today_10k_tasks_p99_ms": 40.1,
             "submit_create_task_p50_us": 1532.03,
             "submit_create_task_p99_us": 2259.87,
-            "ws_handshake_p99_ms": 0.1
+            "sync_session_p99_ms": null,
+            "vault_open_prime_hlc_indexed_100k_ops_p99_ms": null,
+            "vault_open_prime_hlc_indexed_10k_ops_p99_ms": null,
+            "vault_open_prime_hlc_scan_100k_ops_p99_ms": null,
+            "vault_open_prime_hlc_scan_10k_ops_p99_ms": null
         }
     },
     "schema_version": 1
