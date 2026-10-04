@@ -4,7 +4,7 @@
 //! # Two calls, and what each proves
 //!
 //! Both are bearer + device signature, and both demand the OIDC step-up the
-//! recovery blob does ([`super::accounts::require_step_up`]): a stolen session
+//! recovery blob does (`super::accounts::require_step_up`): a stolen session
 //! is exactly an ordinary bearer, and deletion is the one act more final than
 //! reading the recovery blob. The step-up is what proves *who* is asking. The
 //! token is what makes the deletion deliberate: `initiate` mints a single-use
@@ -27,7 +27,7 @@
 //!
 //! It marks the account at once. From then on the account may open no sync
 //! session, publish no op, and start or finish no upload
-//! ([`refuse_if_pending_deletion`]), and the maintenance pass erases every row
+//! (`refuse_if_pending_deletion`), and the maintenance pass erases every row
 //! and file it owns once `[storage] account_delete_grace_days` have passed
 //! (`crate::admin::maintenance`). Nothing undoes the mark: there is no route
 //! for it, and the operator's `admin account delete --immediately` only moves
