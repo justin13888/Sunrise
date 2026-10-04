@@ -455,3 +455,39 @@ fn digests_are_published_on_their_cadence() {
         "a day later the inbox, which moved, is due; the meta stream is not"
     );
 }
+
+/// A peer's digest is not activity: two idle replicas do not answer each
+/// other's digests once a day forever.
+#[test]
+fn a_peer_digest_does_not_make_a_digest_due() {
+    let c = clock();
+    let ea = engine_seeded(ROOT, [1; 32], Arc::clone(&c));
+    let eb = engine_seeded(ROOT, [2; 32], clock());
+    let mut dba = db_root(ROOT);
+    let mut dbb = db_root(ROOT);
+    trust(&ea, &mut dba, &eb);
+    let b = eb.keychain.device_id();
+    new_task(&ea, &mut dba, "one");
+    ea.publish_due_stream_digests(&mut dba).unwrap();
+
+    new_task(&eb, &mut dbb, "theirs");
+    for env in envs(&dbb, &INBOX, &b) {
+        ea.apply_remote(&mut dba, &env).unwrap();
+    }
+    set_clock(&c, T0 + crate::engine::chain::DIGEST_EVERY_MS);
+    assert_eq!(
+        ea.publish_due_stream_digests(&mut dba).unwrap(),
+        1,
+        "B's task is activity in the inbox"
+    );
+
+    assert!(eb.publish_stream_digest(&mut dbb, &INBOX).unwrap());
+    let digest = envs(&dbb, &INBOX, &b).pop().unwrap();
+    ea.apply_remote(&mut dba, &digest).unwrap();
+    set_clock(&c, T0 + 2 * crate::engine::chain::DIGEST_EVERY_MS);
+    assert_eq!(
+        ea.publish_due_stream_digests(&mut dba).unwrap(),
+        0,
+        "B's digest alone is not"
+    );
+}

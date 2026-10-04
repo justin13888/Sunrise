@@ -796,7 +796,8 @@ impl Engine {
     /// Publish a digest in every stream where one is due: no digest from this
     /// device yet and at least one op held, [`DIGEST_EVERY_OPS`] ops since
     /// the last, or [`DIGEST_EVERY_MS`] since the last with at least one op
-    /// in between. Returns how many were written.
+    /// in between. Digest ops are not counted, so an idle account publishes
+    /// nothing. Returns how many were written.
     ///
     /// # Errors
     /// Storage failures.
@@ -826,9 +827,17 @@ impl Engine {
                         |r| Ok((r.get(0)?, r.get(1)?)),
                     )
                     .optional()?;
+                // Other devices' digests do not count: otherwise an idle
+                // account's devices would answer each other's digests once a
+                // day per stream, forever.
                 let since: i64 = tx.query_row(
-                    "SELECT COUNT(*) FROM ops WHERE stream_id = ?1 AND rowid > ?2",
-                    params![&stream_id[..], last.map_or(0, |(rowid, _)| rowid)],
+                    "SELECT COUNT(*) FROM ops
+                     WHERE stream_id = ?1 AND rowid > ?2 AND inner_kind <> ?3",
+                    params![
+                        &stream_id[..],
+                        last.map_or(0, |(rowid, _)| rowid),
+                        DIGEST_KIND
+                    ],
                     |r| r.get(0),
                 )?;
                 let since = u64::try_from(since).unwrap_or(0);
