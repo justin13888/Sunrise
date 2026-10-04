@@ -77,6 +77,7 @@ ADRs are numbered sequentially (`0001`, `0002`, …) and never renumbered.
 | 0057 | [Cross-version merges are tested by driving a pinned baseline build out of process](./0057-cross-version-merge-harness.md) | accepted (tests 0042 §2 and 0045; baselines start at the 0042 floor; built by #326) |
 | 0058 | [The account identity is the authority for membership, and its revocations are never gated and never discounted](./0058-the-account-identity-is-the-membership-authority.md) | accepted (amends 0041 §"What a user sees" item 4; answers 0056's revisit item 4; depends on 0045 §4 and §7; answers #394) |
 | 0059 | [The client op log is folded below an acknowledged floor, and a stream is bootstrapped from a signed snapshot of its merge state](./0059-client-op-log-compaction.md) | accepted (answers 0043's resolved question 8; depends on 0043, 0044 and 0045 §4; built by #330) |
+| 0060 | [The relay database is SQLCipher-encrypted under an operator's key file, and backed up online through SQLite's backup API](./0060-relay-database-encryption-at-rest.md) | accepted (supersedes the push-token scheme in `push-notifications.md`; built by #360) |
 
 ## When to write a new ADR
 
