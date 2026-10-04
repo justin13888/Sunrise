@@ -1081,6 +1081,12 @@ impl Engine {
             epoch,
             &key,
         )?;
+        tracing::debug!(
+            ev = "core.chain.digest_published",
+            stream_h = hex_short(stream_id),
+            seq,
+            "published this replica's stream digest"
+        );
         Ok(true)
     }
 }

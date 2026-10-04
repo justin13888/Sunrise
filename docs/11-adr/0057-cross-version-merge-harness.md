@@ -115,9 +115,11 @@ A violation is any of these, on either side unless it names one:
 
 The classifier can explain three of these: a refusal as corruption on the
 baseline, a corruption the baseline logs after a `HEAD` write carried a newer
-value it kept, and a lost field. Every other violation has no gap that can
-excuse it, so it always fails the property: a refusal the sync driver does not
-count as corruption, a refusal on `HEAD`, a logged warning or error, a failed
+value it kept or after a `HEAD` core published a `StreamDigest` (an op kind
+of `HEAD`'s own, [ADR-0043](./0043-commit-tree.md) §5, which `HEAD` logs as
+`core.chain.digest_published`), and a lost field. Every other violation has
+no gap that can excuse it, so it always fails the property: a refusal the
+sync driver does not count as corruption, a refusal on `HEAD`, a logged warning or error, a failed
 command, a stopped replica, a refused upgrade.
 
 A fix at `HEAD` does not remove an entry scoped to an older baseline. A build
