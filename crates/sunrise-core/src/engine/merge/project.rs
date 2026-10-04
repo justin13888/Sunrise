@@ -363,27 +363,30 @@ pub(super) fn read_row_state(
         .map_err(|e| EngineError::Cbor(e.to_string()))
 }
 
-/// The stream an op on this entity was sealed under, for an op this replica
-/// logged: read from `ops` by the op's device and `seq`, falling back to the
-/// entity's owning stream as the registry declares it.
-pub(super) fn logged_stream(
+/// The stream an op on this entity was sealed under, and its op-log
+/// `inner_kind`, for an op this replica logged: read from `ops` by the op's
+/// device and `seq`. An op this replica has no log row for has no kind, and
+/// its stream falls back to the entity's owning stream as the registry
+/// declares it.
+pub(super) fn logged_op(
     tx: &Transaction<'_>,
     spec: &'static EntitySpec,
     id: &[u8; 16],
     device: &[u8],
     seq: u64,
     state: &Value,
-) -> rusqlite::Result<[u8; 16]> {
-    let found: Option<Vec<u8>> = tx
+) -> rusqlite::Result<([u8; 16], Option<String>)> {
+    let found: Option<(Vec<u8>, String)> = tx
         .query_row(
-            "SELECT stream_id FROM ops WHERE target_id = ? AND device_id = ? AND seq = ?
+            "SELECT stream_id, inner_kind FROM ops
+             WHERE target_id = ? AND device_id = ? AND seq = ?
              ORDER BY rowid DESC LIMIT 1",
             params![&id[..], device, seq],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .optional()?;
-    if let Some(stream) = found {
-        return Ok(blob16(&stream));
+    if let Some((stream, kind)) = found {
+        return Ok((blob16(&stream), Some(kind)));
     }
     let owned_by = |field: &str| -> Option<[u8; 16]> {
         let entries = state.as_map()?;
@@ -392,10 +395,11 @@ pub(super) fn logged_stream(
             .ok()
             .map(|r| *r.bytes())
     };
-    Ok(match spec.owner {
+    let stream = match spec.owner {
         Owner::Field(field) => owned_by(field).unwrap_or(META_STREAM),
         Owner::Meta | Owner::Parent | Owner::Unowned => META_STREAM,
-    })
+    };
+    Ok((stream, None))
 }
 
 /// Whether `table` holds a row for `id`.

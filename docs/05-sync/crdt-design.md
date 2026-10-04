@@ -122,6 +122,15 @@ older tags agrees with one that replayed every op. That is the case for any
 replica that seeded an entity from its row (below), so the rule is the one
 that converges.
 
+`L` and every register compare the same full stamp, `(hlc, device_id, seq,
+stream)`: the stream breaks a tie between two ops one device made in two
+streams with an equal clock and `seq`, so the register that holds the
+greatest stamp is never read as below `L`. When `L` rises, what it makes
+unreadable is deleted: the adds below it, the removes that named them, and the
+counter deltas at or below it. An add or delta that arrives below `L` is not
+stored. So a set written only by legacy ops holds one add per element, not one
+per element per op.
+
 ### Seeding and local writes
 
 An entity a vault held before migration 0033 has a row and no field state. The
@@ -130,7 +139,9 @@ wrote it, at the row's stamp. Under the rule above only `L` matters, so this is
 what replaying every earlier op would give, up to what the row cannot hold, and
 the row projects identically. A local command still writes its row directly.
 The merge sees a row stamp it did not write and folds the row in the same way
-before the next op.
+before the next op, with the origin the logged op that wrote the row reads
+as, so a routine's occurrence create is `generated` on the replica that made
+it as on every peer.
 
 ### Visibility, timestamps and validation
 

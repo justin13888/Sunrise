@@ -509,6 +509,178 @@ fn full_state_ops_alone_reproduce_entity_level_lww() {
     assert_eq!(merged.priority, Some(5));
 }
 
+fn orset_adds(db: &Db, id: EntityRef) -> i64 {
+    db.conn()
+        .query_row(
+            "SELECT count(*) FROM merge_orset_adds WHERE entity_id = ?",
+            params![&id.bytes()[..]],
+            |r| r.get(0),
+        )
+        .unwrap()
+}
+
+/// Each full-state op re-adds every element it carries under its own tag,
+/// and every add below the newest one reads as removed. Those adds are
+/// deleted when the floor rises, and a redelivered older op adds none, so a
+/// set written only by full-state ops holds one add per element however many
+/// ops wrote it, in any delivery order.
+#[test]
+fn full_state_ops_keep_one_add_per_element() {
+    let mut p = pair();
+    let home = new_context(&p.ea, &mut p.dba, "home");
+    let work = new_context(&p.ea, &mut p.dba, "work");
+    for c in [home, work] {
+        p.eb.apply_remote(
+            &mut p.dbb,
+            &env_for_kind(&p.dba, c.bytes(), "context.create"),
+        )
+        .unwrap();
+    }
+    let task = shared_task(
+        &mut p,
+        TaskDraft {
+            title: "t".into(),
+            contexts: vec![home, work],
+            ..Default::default()
+        },
+    );
+    let mut updates = Vec::new();
+    for i in 1..=5_u64 {
+        set_clock(&p.ca, T0 + i * 1_000);
+        let res =
+            p.ea.apply(
+                &mut p.dba,
+                Command::UpdateTask {
+                    id: task,
+                    patch: TaskPatch {
+                        title: Some(format!("t{i}")),
+                        ..Default::default()
+                    },
+                },
+            )
+            .unwrap();
+        updates.push(env_bytes(&p.dba, &res.op_id));
+    }
+    // The newest first, then every older one late.
+    let newest = updates.pop().unwrap();
+    p.eb.apply_remote(&mut p.dbb, &newest).unwrap();
+    for env in &updates {
+        p.eb.apply_remote(&mut p.dbb, env).unwrap();
+    }
+    let merged = task_at(&p.dbb, task);
+    assert_eq!(merged.title, "t5");
+    assert_eq!(merged.contexts, BTreeSet::from([home, work]));
+    assert_eq!(orset_adds(&p.dbb, task), 2, "one add per element");
+}
+
+/// The legacy floor and a register compare the same full stamp. Two
+/// full-state ops of one device with an equal `(hlc, seq)` in two streams are
+/// told apart by the stream alone, and the one with the greater stream is both
+/// the floor and every register's value, whichever arrives last.
+#[test]
+fn an_equal_clock_in_two_streams_is_decided_by_the_stream() {
+    let mut p = pair();
+    let task = shared_task(
+        &mut p,
+        TaskDraft {
+            title: "t".into(),
+            ..Default::default()
+        },
+    );
+    let base = task_at(&p.dba, task);
+    let lww = crate::engine::lww::LwwStamp {
+        hlc: sunrise_cbor::hlc::Hlc::at(T0 + 10_000),
+        device: [0x09; 16],
+        seq: 7,
+    };
+    let lesser = (
+        InnerOp::TaskUpdate(Task {
+            title: "lesser stream".into(),
+            ..base.clone()
+        }),
+        [0x01; 16],
+    );
+    let greater = (
+        InnerOp::TaskUpdate(Task {
+            title: "greater stream".into(),
+            ..base
+        }),
+        [0x02; 16],
+    );
+    for (db, order) in [
+        (&mut p.dba, [&greater, &lesser]),
+        (&mut p.dbb, [&lesser, &greater]),
+    ] {
+        db.with_tx(|tx| {
+            for (op, stream) in order {
+                merge_op(tx, op, &lww, *stream)?;
+            }
+            Ok(())
+        })
+        .unwrap();
+    }
+    let merged = assert_converged(&p, task);
+    assert_eq!(merged.title, "greater stream");
+}
+
+/// A routine's occurrence create is `generated` (ADR-0044 §3) on every
+/// replica: on the one that generated it, whose merge folds the row the
+/// command wrote, as on a peer that replayed the op.
+#[test]
+fn a_generated_occurrence_is_generated_on_every_replica() {
+    let mut p = pair();
+    p.ea.apply(
+        &mut p.dba,
+        Command::CreateRoutine(routine_draft(
+            inbox_stream_ref(),
+            "FREQ=DAILY",
+            i64::try_from(T0).unwrap() + 3_600_000,
+            RoutineCatchupPolicy::Skip,
+            Vec::new(),
+        )),
+    )
+    .unwrap();
+    let occurrence: Vec<u8> = p
+        .dba
+        .conn()
+        .query_row(
+            "SELECT target_id FROM ops WHERE inner_kind = 'task.create' LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let task = EntityRef::new(EntityKind::Task, blob16(&occurrence));
+    assert!(task_at(&p.dba, task).routine_id.is_some());
+    p.eb.apply_remote(&mut p.dbb, &create_env_for(&p.dba, task.bytes()))
+        .unwrap();
+    // Any op on the task makes the generating replica fold its row.
+    set_clock(&p.ca, T0 + 1_000);
+    let (edit, _) = emit_patch(
+        &p.ea,
+        &mut p.dba,
+        &inbox(),
+        &patch(
+            task,
+            false,
+            vec![("priority", set(Value::Integer(1.into())))],
+        ),
+    );
+    p.eb.apply_remote(&mut p.dbb, &edit).unwrap();
+    let origin = |db: &Db, field: &str| -> String {
+        db.conn()
+            .query_row(
+                "SELECT origin FROM merge_registers WHERE entity_id = ? AND field = ?",
+                params![&task.bytes()[..], field],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    for db in [&p.dba, &p.dbb] {
+        assert_eq!(origin(db, "title"), "generated");
+        assert_eq!(origin(db, "priority"), "user");
+    }
+}
+
 /// An entity the vault held before migration 0033 has a row and no field
 /// state. The first `Patch` to reach it seeds the state from the row, so the
 /// fields the patch does not name keep the values the row held.
@@ -812,30 +984,96 @@ fn a_patch_with_an_unknown_field_op_kind_is_parked_whole() {
 #[test]
 fn an_ill_typed_patch_is_refused() {
     let task = EntityRef::new(EntityKind::Task, [0x78; 16]);
-    let cases: Vec<(&str, Value)> = vec![
-        ("title", set(Value::Integer(3.into()))),
-        ("title", inc(1)),
-        ("contexts", set(Value::Array(Vec::new()))),
-        ("contexts", add(vec![Value::Integer(1.into())])),
-        ("deferred_count", set(Value::Integer(1.into()))),
-        ("updated_at", set(Value::Integer(1.into()))),
-        ("blocks", add(vec![text("blk_x")])),
-        ("title", op("set", text("x"))),
+    let routine = EntityRef::new(EntityKind::Routine, [0x7b; 16]);
+    let refused: Vec<(EntityRef, &str, Value)> = vec![
+        (task, "title", set(Value::Integer(3.into()))),
+        (task, "title", inc(1)),
+        (task, "contexts", set(Value::Array(Vec::new()))),
+        (task, "contexts", add(vec![Value::Integer(1.into())])),
+        (task, "deferred_count", set(Value::Integer(1.into()))),
+        (task, "id", set(eref(task))),
+        (task, "created_at", set(Value::Integer(1.into()))),
+        (task, "updated_at", set(Value::Integer(1.into()))),
+        (task, "blocks", add(vec![text("blk_x")])),
+        // The nested parent is not a register: each `template.*` field is.
+        (routine, "template", set(Value::Map(Vec::new()))),
     ];
-    for (i, (field, value)) in cases.into_iter().enumerate() {
-        let InnerOp::Patch(p) = patch(task, true, vec![(field, value.clone())]) else {
+    for (target, field, value) in refused {
+        let InnerOp::Patch(p) = patch(target, true, vec![(field, value.clone())]) else {
             unreachable!()
         };
         let verdict = check_patch(&p);
-        if i == 7 {
-            assert!(verdict.is_ok(), "a well-typed set is accepted");
-        } else {
-            assert!(
-                matches!(verdict, Err(PatchProblem::Invalid(_))),
-                "{field} <- {value:?} must be refused, got {verdict:?}"
-            );
-        }
+        assert!(
+            matches!(verdict, Err(PatchProblem::Invalid(_))),
+            "{field} <- {value:?} must be refused, got {verdict:?}"
+        );
     }
+    for (target, field, value) in [
+        (task, "title", set(text("x"))),
+        (routine, "template.title", set(text("x"))),
+    ] {
+        let InnerOp::Patch(p) = patch(target, true, vec![(field, value)]) else {
+            unreachable!()
+        };
+        assert!(
+            check_patch(&p).is_ok(),
+            "a well-typed {field} set is accepted"
+        );
+    }
+}
+
+/// A `Patch` of an entity kind this build models but does not sync (Note,
+/// Person) is a newer build's write, and waits for an upgrade. One of an
+/// append-only or control kind is never a field-op write, and is refused.
+/// Both verdicts come before any field is read.
+#[test]
+fn a_patch_of_a_kind_this_build_does_not_merge_is_parked_or_refused() {
+    let body = vec![("deleted", set(Value::Bool(true)))];
+    for kind in [EntityKind::Note, EntityKind::Person] {
+        let InnerOp::Patch(p) = patch(EntityRef::new(kind, [0x7c; 16]), true, body.clone()) else {
+            unreachable!()
+        };
+        assert_eq!(
+            check_patch(&p),
+            Err(PatchProblem::Park("Patch".into())),
+            "{kind:?}"
+        );
+    }
+    for kind in [
+        EntityKind::FocusSession,
+        EntityKind::ReviewSnapshot,
+        EntityKind::Device,
+        EntityKind::Identity,
+    ] {
+        let InnerOp::Patch(p) = patch(EntityRef::new(kind, [0x7d; 16]), true, body.clone()) else {
+            unreachable!()
+        };
+        assert!(
+            matches!(check_patch(&p), Err(PatchProblem::Invalid(_))),
+            "{kind:?}"
+        );
+    }
+
+    // And through the receive path: the Note patch is parked whole.
+    let mut p = pair();
+    let note = patch(EntityRef::new(EntityKind::Note, [0x7e; 16]), true, body);
+    let env = super::emit_raw_inner(
+        &p.ea,
+        &mut p.dba,
+        &META_STREAM,
+        &encode_inner_op(&note).unwrap(),
+    );
+    assert!(p.eb.apply_remote_all(&mut p.dbb, &env).unwrap().is_empty());
+    let parked: Vec<String> = p
+        .dbb
+        .conn()
+        .prepare("SELECT kind FROM parked_ops")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(parked, vec!["Patch".to_owned()]);
 }
 
 /// The wire shape is ADR-0044 §1's: `{"Patch": {"ref": .., "fields": ..}}`,

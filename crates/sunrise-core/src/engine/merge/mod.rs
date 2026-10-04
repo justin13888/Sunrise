@@ -48,6 +48,11 @@
 //! seeded from its row (and so never saw the older tags) in agreement with
 //! one that replayed every op. `docs/05-sync/crdt-design.md` records it.
 //!
+//! What the floor makes unreadable is deleted when the floor rises: the adds
+//! below it, the removes that named them, and the counter deltas at or below
+//! it (`state::prune_below_floor`). A set written only by full-state ops so
+//! holds one add per element, not one per element per op.
+//!
 //! # Seeding, and local full-state writes
 //!
 //! An entity a vault held before migration 0033 has a row and no field state.
@@ -86,11 +91,11 @@ use super::EngineError;
 use crate::inner_op::InnerOp;
 use ciborium::value::Value;
 use patch::FieldOp;
-use project::{logged_stream, project, read_row_state, row_stamp, write_projection};
+use project::{logged_op, project, read_row_state, row_stamp, write_projection};
 use rusqlite::Transaction;
 use state::{
-    add_delta, add_element, read_meta, remove_element, write_map_entry, write_meta, write_register,
-    Meta,
+    add_delta, add_element, prune_below_floor, read_meta, remove_element, write_map_entry,
+    write_meta, write_register, Meta,
 };
 use sunrise_cbor::hlc::Hlc;
 use sunrise_id::registry::{Crdt, EntitySpec};
@@ -181,6 +186,22 @@ impl OpRef {
 const USER: &str = "user";
 const GENERATED: &str = "generated";
 
+/// The origin of a legacy full-state op, from its op-log `inner_kind` and its
+/// payload's CBOR map. ADR-0044 §3: a legacy op is a user write, except the
+/// routine engine's own occurrence creates, a `task.create` that names its
+/// routine. The receive path and [`sync_from_row`] both read it here, so a
+/// replica that folded its own row and one that replayed the op agree.
+fn legacy_origin(inner_kind: &str, state: &[(Value, Value)]) -> &'static str {
+    let names_routine = state
+        .iter()
+        .any(|(k, v)| k.as_text() == Some("routine_id") && !v.is_null());
+    if inner_kind == "task.create" && names_routine {
+        GENERATED
+    } else {
+        USER
+    }
+}
+
 /// Fold a legacy full-state op, given as its payload's CBOR map (§7).
 fn fold_legacy(
     tx: &Transaction<'_>,
@@ -193,7 +214,11 @@ fn fold_legacy(
 ) -> rusqlite::Result<()> {
     meta.note(at);
     meta.note_create(at);
-    meta.legacy = Some(meta.legacy.map_or(at, |l| l.max(at)));
+    if meta.legacy.is_none_or(|l| at > l) {
+        meta.legacy = Some(at);
+        prune_below_floor(tx, id, at)?;
+    }
+    let floor = meta.legacy;
     let Some(record) = spec.records.first() else {
         return Ok(());
     };
@@ -216,7 +241,7 @@ fn fold_legacy(
                     .into_iter()
                     .flatten()
                 {
-                    add_element(tx, id, field.name, element, at)?;
+                    add_element(tx, id, field.name, element, at, floor)?;
                 }
             }
             Crdt::Map => {
@@ -286,7 +311,7 @@ fn fold_patch(
             FieldOp::Set(v) => write_register(tx, id, field, Some(v), at, origin)?,
             FieldOp::Edit { add, remove } => {
                 for element in add {
-                    add_element(tx, id, field, element, at)?;
+                    add_element(tx, id, field, element, at, meta.legacy)?;
                 }
                 for (element, tags) in remove {
                     for tag in tags {
@@ -294,7 +319,7 @@ fn fold_patch(
                     }
                 }
             }
-            FieldOp::Inc(n) => add_delta(tx, id, field, *n, at)?,
+            FieldOp::Inc(n) => add_delta(tx, id, field, *n, at, meta.legacy)?,
             FieldOp::Map(entries) => {
                 for (k, v) in entries {
                     write_map_entry(tx, id, field, k, v, at, origin)?;
@@ -329,7 +354,7 @@ fn sync_from_row(
     let Some(state) = read_row_state(tx, target.kind(), id)? else {
         return Ok(meta);
     };
-    let stream = logged_stream(tx, spec, id, device, row.seq, &state)?;
+    let (stream, kind) = logged_op(tx, spec, id, device, row.seq, &state)?;
     let at = Stamp {
         hlc: row.hlc,
         device: blob16(device),
@@ -338,7 +363,11 @@ fn sync_from_row(
     };
     let mut m = meta.take().unwrap_or_else(|| Meta::fresh(at));
     let entries = state.as_map().map_or(&[][..], Vec::as_slice);
-    fold_legacy(tx, spec, id, entries, at, USER, &mut m)?;
+    // The origin of the logged op that wrote the row, by the rule the receive
+    // path reads it with, so this replica and a peer that replayed the op
+    // store the same one.
+    let origin = kind.map_or(USER, |k| legacy_origin(&k, entries));
+    fold_legacy(tx, spec, id, entries, at, origin, &mut m)?;
     m.row = Some(seen);
     Ok(Some(m))
 }
@@ -473,13 +502,8 @@ fn merge_op_inner(
                 return Ok(());
             };
             let state = state.map_err(|e| EngineError::Cbor(e.to_string()))?;
-            // ADR-0044 §3: a legacy op is a user write, except the routine
-            // engine's own occurrence creates.
-            let origin = match other {
-                InnerOp::TaskCreate(t) if t.routine_id.is_some() => GENERATED,
-                _ => USER,
-            };
             let entries = state.as_map().map_or(&[][..], Vec::as_slice);
+            let origin = legacy_origin(other.inner_kind(), entries);
             fold_legacy(tx, spec, id, entries, at, origin, &mut meta)?;
         }
     }

@@ -16,9 +16,16 @@ use rusqlite::{params, OptionalExtension, Transaction};
 use sunrise_cbor::hlc::Hlc;
 
 /// Whether a write stamped `at` replaces the one a register holds, stamped
-/// `held`: the register rule, [`lww_wins`]. An equal stamp is the same op
+/// `held`: the register rule, [`lww_wins`], over `(hlc, device, seq)`, with
+/// the stream breaking a tie between two ops one device made in two streams.
+/// So a register keeps the greatest full [`Stamp`], the same order the legacy
+/// floor is compared in (`project::superseded`), and a register written at or
+/// above the floor is never read as below it. An equal stamp is the same op
 /// folded again, and replaces itself with the same value.
 fn replaces(at: Stamp, held: Stamp) -> bool {
+    if at.lww() == held.lww() {
+        return at.stream >= held.stream;
+    }
     lww_wins(
         &at.lww(),
         &RowLww {
@@ -354,13 +361,20 @@ pub(super) fn write_map_entry(
     Ok(())
 }
 
+/// Add `element` under `at`'s tag, unless `at` is below the legacy floor,
+/// where the add would read as removed anyway (see the module docs of
+/// [`super`]) and storing it would only grow the table.
 pub(super) fn add_element(
     tx: &Transaction<'_>,
     id: &[u8; 16],
     field: &str,
     element: &Value,
     at: Stamp,
+    floor: Option<Stamp>,
 ) -> rusqlite::Result<()> {
+    if floor.is_some_and(|l| at < l) {
+        return Ok(());
+    }
     tx.execute(
         "INSERT OR IGNORE INTO merge_orset_adds
          (entity_id, field, element, tag_stream, tag_device, tag_seq, hlc_ms, hlc_logical)
@@ -402,13 +416,19 @@ pub(super) fn remove_element(
     Ok(())
 }
 
+/// Record one `inc`, unless `at` is at or below the legacy floor, whose base
+/// already counts it.
 pub(super) fn add_delta(
     tx: &Transaction<'_>,
     id: &[u8; 16],
     field: &str,
     delta: i64,
     at: Stamp,
+    floor: Option<Stamp>,
 ) -> rusqlite::Result<()> {
+    if floor.is_some_and(|l| at <= l) {
+        return Ok(());
+    }
     tx.execute(
         "INSERT OR IGNORE INTO merge_counter_deltas
          (entity_id, field, op_stream, op_device, op_seq, hlc_ms, hlc_logical, delta)
@@ -423,6 +443,55 @@ pub(super) fn add_delta(
             at.hlc.logical,
             delta,
         ],
+    )?;
+    Ok(())
+}
+
+/// Delete the state the legacy floor `floor` has made unreadable: every OR-set
+/// add stamped below it, the removes that named one of those adds, and every
+/// counter delta at or below it.
+///
+/// Each legacy op re-adds every element it carries under its own tag, so
+/// without this a long-lived set (`Routine.streak_keys`) written by full-state
+/// updates would hold one add per element per op, and every projection would
+/// read them all. Nothing deleted here can be read again: the floor only
+/// rises, and [`add_element`] and [`add_delta`] refuse a redelivered write
+/// below it.
+pub(super) fn prune_below_floor(
+    tx: &Transaction<'_>,
+    id: &[u8; 16],
+    floor: Stamp,
+) -> rusqlite::Result<()> {
+    let floor_params = params![
+        &id[..],
+        floor.hlc.physical_ms,
+        floor.hlc.logical,
+        &floor.device[..],
+        floor.seq,
+        &floor.stream[..],
+    ];
+    tx.execute(
+        "DELETE FROM merge_orset_removes AS r
+         WHERE r.entity_id = ?1 AND EXISTS (
+            SELECT 1 FROM merge_orset_adds a
+            WHERE a.entity_id = r.entity_id AND a.field = r.field
+              AND a.element = r.element AND a.tag_stream = r.tag_stream
+              AND a.tag_device = r.tag_device AND a.tag_seq = r.tag_seq
+              AND (a.hlc_ms, a.hlc_logical, a.tag_device, a.tag_seq, a.tag_stream)
+                  < (?2, ?3, ?4, ?5, ?6))",
+        floor_params,
+    )?;
+    tx.execute(
+        "DELETE FROM merge_orset_adds
+         WHERE entity_id = ?1
+           AND (hlc_ms, hlc_logical, tag_device, tag_seq, tag_stream) < (?2, ?3, ?4, ?5, ?6)",
+        floor_params,
+    )?;
+    tx.execute(
+        "DELETE FROM merge_counter_deltas
+         WHERE entity_id = ?1
+           AND (hlc_ms, hlc_logical, op_device, op_seq, op_stream) <= (?2, ?3, ?4, ?5, ?6)",
+        floor_params,
     )?;
     Ok(())
 }
