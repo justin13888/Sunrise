@@ -601,4 +601,11 @@ fn a_log_record_inside_a_traced_request_carries_its_trace_and_span_ids() {
         "{record}"
     );
     assert_eq!(record["span"]["endpoint"], "/api/v1/sync/session");
+    // Every field the correlating span carries is vocabulary the log admits.
+    for key in record["span"].as_object().expect("an object").keys() {
+        assert!(
+            key == "name" || sunrise_log::is_allowed(key),
+            "span field {key:?} is off the allowlist"
+        );
+    }
 }

@@ -401,7 +401,10 @@ failure is reported through the OpenTelemetry SDK's own log records.
 While a sampled request runs, its handler also runs inside an `http.request` log
 span carrying `method`, `endpoint`, `trace_id` and `span_id`, so a record written
 during the request carries the ids of its root span under `span`
-(`a_log_record_inside_a_traced_request_carries_its_trace_and_span_ids`). A
+(`a_log_record_inside_a_traced_request_carries_its_trace_and_span_ids`). Both
+ids are on `sunrise_log`'s field allowlist, carved out of its `_id` rule by name
+because they name a trace and not an entity
+([`../10-cross-cutting/logging.md`](../10-cross-cutting/logging.md) §4, §6). A
 request that is not sampled, or a relay without `[observability]`, writes
 exactly the records it did before.
 
