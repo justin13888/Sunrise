@@ -171,12 +171,16 @@ fn devices(intents: &[PushIntent]) -> Vec<&str> {
 fn the_first_op_sends_and_the_rest_of_its_window_coalesce() {
     let mut p = Planner::new(&Tuning::default());
     assert_eq!(p.offer("d", STREAM_A, PushKind::Sync, 0), Offer::Send);
+    // An offer alone opens nothing; the push does.
+    assert_eq!(p.offer("d", STREAM_A, PushKind::Sync, 1), Offer::Send);
+    p.open("d", STREAM_A, PushKind::Sync, 0);
     assert_eq!(
         p.offer("d", STREAM_A, PushKind::Sync, 29_999),
         Offer::Coalesced
     );
     // Another stream is another key.
     assert_eq!(p.offer("d", STREAM_B, PushKind::Sync, 10), Offer::Send);
+    p.open("d", STREAM_B, PushKind::Sync, 10);
     // The window is 30 s from the push, not from the last op.
     assert!(p.due(29_999).is_empty());
     assert_eq!(
@@ -261,6 +265,58 @@ fn n_ops_inside_the_window_coalesce_to_one_push() {
     assert!(
         worker.plan_due().is_empty(),
         "nothing arrived after the trailing push, so nothing more is owed"
+    );
+}
+
+#[test]
+fn a_device_online_when_its_window_closes_gets_no_trailing_push() {
+    let f = fixture();
+    let mut worker = f.state.push.test_worker(&f.state).unwrap();
+    assert_eq!(worker.plan_wake(&f.wake(STREAM_A)).len(), 1);
+    f.clock.set(T0_MS + 1_000);
+    assert!(
+        worker.plan_wake(&f.wake(STREAM_A)).is_empty(),
+        "the second op is owed a trailing push"
+    );
+    let online = f.state.push.presence().hold(&f.laptop);
+    f.clock.set(T0_MS + 30_000);
+    assert!(
+        worker.plan_due().is_empty(),
+        "the laptop opened a stream before the window closed"
+    );
+    drop(online);
+    f.clock.set(T0_MS + 31_000);
+    assert_eq!(
+        devices(&worker.plan_wake(&f.wake(STREAM_A))),
+        vec![f.laptop.as_str()],
+        "the skipped trailing push opened no window, so the next op sends at once"
+    );
+}
+
+#[test]
+fn a_push_refused_at_the_cap_opens_no_window() {
+    let f = fixture_with(
+        Arc::new(Fake::default()),
+        // A window longer than the cap's minute, so a window wrongly opened
+        // by the refused push would still hold when the cap has cleared.
+        Tuning {
+            per_device_per_min: 1,
+            window_ms: 120_000,
+            ..Tuning::default()
+        },
+    );
+    let mut worker = f.state.push.test_worker(&f.state).unwrap();
+    assert_eq!(worker.plan_wake(&f.wake(STREAM_A)).len(), 1);
+    assert!(
+        worker.plan_wake(&f.wake(STREAM_B)).is_empty(),
+        "the second push inside the minute is refused at the cap"
+    );
+    assert_eq!(f.rate_limited(), 1);
+    f.clock.set(T0_MS + 60_000);
+    assert_eq!(
+        devices(&worker.plan_wake(&f.wake(STREAM_B))),
+        vec![f.laptop.as_str()],
+        "the refused push held no window, so the next op on its stream sends at once"
     );
 }
 

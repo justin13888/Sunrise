@@ -155,6 +155,10 @@ impl Planner {
     }
 
     /// An op for `(device_id, stream_id, kind)` arrived at `now_ms`.
+    ///
+    /// Opens nothing: a window is opened by the push itself, through
+    /// [`Planner::open`], so an op whose push is skipped or refused leaves the
+    /// next op free to send at once.
     pub fn offer(
         &mut self,
         device_id: &str,
@@ -168,17 +172,20 @@ impl Planner {
                 w.trailing = true;
                 Offer::Coalesced
             }
-            _ => {
-                self.windows.insert(
-                    key,
-                    Window {
-                        opened_ms: now_ms,
-                        trailing: false,
-                    },
-                );
-                Offer::Send
-            }
+            _ => Offer::Send,
         }
+    }
+
+    /// A push for `(device_id, stream_id, kind)` went out at `now_ms`: open
+    /// its window.
+    pub fn open(&mut self, device_id: &str, stream_id: [u8; 16], kind: PushKind, now_ms: u64) {
+        self.windows.insert(
+            (device_id.to_owned(), stream_id, kind),
+            Window {
+                opened_ms: now_ms,
+                trailing: false,
+            },
+        );
     }
 
     /// Charge one push to `device_id`'s minute, or refuse it at the cap.
@@ -198,7 +205,8 @@ impl Planner {
     }
 
     /// Close every window that has run its length, and return the keys owed
-    /// a trailing push, in key order. Each of those opens a fresh window.
+    /// a trailing push, in key order. None of them is reopened here: the
+    /// caller opens a window for each trailing push it actually sends.
     pub fn due(&mut self, now_ms: u64) -> Vec<(String, [u8; 16], PushKind)> {
         let window_ms = self.window_ms;
         let mut owed = Vec::new();
@@ -212,15 +220,6 @@ impl Planner {
             false
         });
         owed.sort();
-        for key in &owed {
-            self.windows.insert(
-                key.clone(),
-                Window {
-                    opened_ms: now_ms,
-                    trailing: false,
-                },
-            );
-        }
         self.sent.retain(|_, sent| {
             sent.back()
                 .is_some_and(|t| now_ms.saturating_sub(*t) < 60_000)
@@ -455,7 +454,7 @@ impl Worker {
             {
                 continue;
             }
-            if let Some(intent) = self.admit(device_id, token, wake.kind, now_ms) {
+            if let Some(intent) = self.admit(device_id, token, wake.stream_id, wake.kind, now_ms) {
                 out.push(intent);
             }
         }
@@ -467,7 +466,7 @@ impl Worker {
         let now_ms = self.clock.now_ms();
         let platform = self.inner.provider.platform();
         let mut out = Vec::new();
-        for (device_id, _stream, kind) in self.planner.due(now_ms) {
+        for (device_id, stream_id, kind) in self.planner.due(now_ms) {
             if self.presence.is_online(&device_id) {
                 continue;
             }
@@ -476,17 +475,21 @@ impl Worker {
             let Ok(Some(token)) = self.store.push_target(&device_id, platform.store_tag()) else {
                 continue;
             };
-            if let Some(intent) = self.admit(device_id, token, kind, now_ms) {
+            if let Some(intent) = self.admit(device_id, token, stream_id, kind, now_ms) {
                 out.push(intent);
             }
         }
         out
     }
 
+    /// Charge a push to the device's cap and, if it is under it, open the
+    /// push's window and return the intent. A push refused at the cap opens no
+    /// window.
     fn admit(
         &mut self,
         device_id: String,
         token: String,
+        stream_id: [u8; 16],
         kind: PushKind,
         now_ms: u64,
     ) -> Option<PushIntent> {
@@ -501,6 +504,7 @@ impl Worker {
             );
             return None;
         }
+        self.planner.open(&device_id, stream_id, kind, now_ms);
         Some(PushIntent {
             registration: PushTokenRegistration {
                 device_id,
