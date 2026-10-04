@@ -71,8 +71,8 @@ themselves:
 3. HPKE Base mode authenticates no sender. Is every `key_envelope` open
    reachable only after the enclosing envelope's signature has verified?
 4. Constant-time comparison is enforced by a name heuristic, not by types
-   (below). Is there a secret compared with `==` under a name the heuristic
-   does not read?
+   (below). Is there a secret compared with `==` under a name, or in an
+   operand shape, the heuristic does not read?
 
 ## Constant-time gate
 
@@ -85,6 +85,10 @@ reason. Its blind spots, which question 4 above asks the reviewer to search:
 
 - a secret bound to a name without one of those words;
 - a comparison split across lines;
+- an operand that is a call with arguments or a method chain, such as
+  `compute_mac(k, m) == received` or `mac.finalize().into_bytes() == expected`,
+  since only the operand's last path segment is read, and only an empty `()`
+  call is looked through;
 - `matches!` and `assert_eq!`, deliberately, since neither is how a verifier
   decides.
 

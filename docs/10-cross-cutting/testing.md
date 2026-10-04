@@ -749,7 +749,10 @@ entry whose line has gone fails the gate. `clippy.toml` cannot carry this rule:
 `disallowed-methods` never sees the `==` operator.
 
 It reads names, not types. A secret under a name without one of those words,
-a comparison split across lines, and `matches!` or `assert_eq!` all pass it,
+a comparison split across lines, an operand that is a call with arguments or
+a method chain (`compute_mac(k, m) == received`,
+`mac.finalize().into_bytes() == expected`), and `matches!` or `assert_eq!` all
+pass it,
 and [`audit-scope.md`](../03-crypto/audit-scope.md) asks the external reviewer
 to look for exactly those. `test_constant_time_gate.py` plants a `==` over a
 `[u8; 32]` tag in `sunrise-crypto` and asserts the gate goes red.

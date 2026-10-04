@@ -26,10 +26,13 @@
 # cannot outlive the code it excuses.
 #
 # The heuristic's blind spots are stated rather than hidden: a secret bound to
-# a name with none of these words in it, a comparison split across lines, and
-# `matches!`/`assert_eq!` (deliberately: neither is how a verifier decides).
-# The external audit (docs/03-crypto/audit-scope.md) is the backstop for all
-# three.
+# a name with none of these words in it, a comparison split across lines, an
+# operand that is a call with arguments or a method chain
+# (`compute_mac(k, m) == received`, `mac.finalize().into_bytes() == expected`:
+# only the last path segment is read, and only an empty `()` is looked
+# through), and `matches!`/`assert_eq!` (deliberately: neither is how a
+# verifier decides). The external audit (docs/03-crypto/audit-scope.md) is the
+# backstop for all four.
 set -uo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
