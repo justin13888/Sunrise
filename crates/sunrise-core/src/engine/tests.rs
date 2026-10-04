@@ -18955,3 +18955,7 @@ mod field_merge;
 
 /// Per-device op chains, fork evidence and the stream digest (ADR-0043).
 mod op_chain;
+
+/// Op-log compaction below an acknowledged floor, and stream snapshots
+/// (ADR-0059).
+mod compaction;
