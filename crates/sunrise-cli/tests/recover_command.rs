@@ -168,7 +168,7 @@ async fn sunrise_recover_rebuilds_the_account_from_the_words_alone() {
     std::env::remove_var("SUNRISE_VAULT_ROOT");
 
     let mut lines: Vec<String> = Vec::new();
-    let done = recover::rebuild_vault(
+    let done = recover::rejoin_account(
         recovered_dir.path(),
         identity,
         &base_url,
@@ -184,6 +184,13 @@ async fn sunrise_recover_rebuilds_the_account_from_the_words_alone() {
     assert!(
         lines.iter().any(|l| l.contains("re-keyed as device")),
         "step 6 has to say it re-keyed: {lines:?}"
+    );
+    // What starting sync says is printed, after the re-key and in order.
+    let rekeyed = lines.iter().position(|l| l.contains("re-keyed as device"));
+    let started = lines.iter().position(|l| l.contains("sync driver started"));
+    assert!(
+        started.is_some() && started > rekeyed,
+        "step 8 has to say sync started, after the re-key: {lines:?}"
     );
 
     // Reopen what the command left on disk — the state a user is in when they

@@ -18,7 +18,17 @@ serde = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
 sunrise-crypto = { workspace = true }
 sunrise-error = { workspace = true }
+# The account-level recovery flow (`recovery::recover_account`) opens the vault
+# it restores and waits for the replay, so the CLI and the UniFFI seam run one
+# implementation of `docs/03-crypto/recovery.md` §Recovery flow rather than
+# two. The relay is injected (`recovery::RecoveryRelay`), which is what keeps
+# this crate below `sunrise-relay-client` instead of beside it.
+sunrise-core = { workspace = true }
+sunrise-sync = { workspace = true }
+tokio = { workspace = true, features = ["sync", "time"] }
 
 [dev-dependencies]
 rand_chacha = { workspace = true }
 rand_core = { workspace = true }
+tempfile = "3"
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
