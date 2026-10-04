@@ -17,18 +17,23 @@
 //! doc-state = { "v": 1, "entities": [* entity] }       ; sorted by id
 //! entity = {
 //!   "id": bstr .size 16, "kind": tstr,                  ; registry tag
-//!   "created": bool, "create": stamp / null, "legacy": stamp / null,
-//!   "patch_ms": uint / null, "head": stamp,
-//!   "registers": [* [field, bstr / null, stamp, origin]],
-//!   "maps":      [* [field, key, bstr, stamp, origin]],
-//!   "adds":      [* [field, bstr, stamp]],              ; stamp of the tag
+//!   "stamps": [* stamp],                                ; distinct, ascending
+//!   "created": bool, "create": s / null, "legacy": s / null,
+//!   "patch_ms": uint / null, "head": s,
+//!   "registers": [* [field, bstr / null, origin, s]],
+//!   "maps":      [* [field, key, bstr, origin, s]],
+//!   "adds":      [* [field, bstr, s]],                  ; the tag's stamp
 //!   "removes":   [* [field, bstr, bstr .size 16, bstr .size 16, uint]],
-//!   "deltas":    [* [field, int, stamp]],
+//!   "deltas":    [* [field, int, s]],
 //! }
+//! s = uint                                              ; index into "stamps"
 //! stamp = [hlc_ms, hlc_logical, device: bstr .size 16, seq, stream: bstr .size 16]
 //! ```
 //!
-//! Values are the canonical CBOR bytes the state tables hold.
+//! Values are the canonical CBOR bytes the state tables hold. A stamp is
+//! written once per entity and named by its index: one legacy op writes every
+//! field of an entity at one stamp, and repeating it on each register made a
+//! record three times the size of the state it carried.
 //!
 //! # Why a join reproduces a full replay
 //!
@@ -50,7 +55,7 @@ use crate::engine::ids::blob16;
 use crate::engine::EngineError;
 use ciborium::value::Value;
 use rusqlite::{params, Transaction};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use sunrise_cbor::hlc::Hlc;
 use sunrise_id::registry::{EntitySpec, Merge};
 use sunrise_id::{EntityKind, EntityRef};
@@ -112,10 +117,6 @@ fn stamp_value(s: Stamp) -> Value {
     ])
 }
 
-fn opt_stamp(s: Option<Stamp>) -> Value {
-    s.map_or(Value::Null, stamp_value)
-}
-
 fn as_u64(v: &Value) -> Option<u64> {
     u64::try_from(v.as_integer()?).ok()
 }
@@ -140,12 +141,20 @@ fn read_stamp(v: &Value) -> Option<Stamp> {
     })
 }
 
-/// A stamp or `null`; anything else is malformed.
-fn read_opt_stamp(v: &Value, what: &str) -> Result<Option<Stamp>, EngineError> {
+/// The stamp an index names, in an entity's `stamps`.
+fn stamp_at(stamps: &[Stamp], v: Option<&Value>, what: &str) -> Result<Stamp, EngineError> {
+    v.and_then(as_u64)
+        .and_then(|i| usize::try_from(i).ok())
+        .and_then(|i| stamps.get(i).copied())
+        .ok_or_else(|| malformed(what))
+}
+
+/// A stamp index or `null`; anything else is malformed.
+fn opt_stamp_at(stamps: &[Stamp], v: &Value, what: &str) -> Result<Option<Stamp>, EngineError> {
     if v.is_null() {
         Ok(None)
     } else {
-        read_stamp(v).map(Some).ok_or_else(|| malformed(what))
+        stamp_at(stamps, Some(v), what).map(Some)
     }
 }
 
@@ -174,14 +183,47 @@ fn stamp_cols(ms: i64, logical: i64, device: &[u8], seq: i64, stream: &[u8]) -> 
 
 // ---- dump ----
 
+/// One row as it is gathered: its items, and the stamp that goes last as an
+/// index once the entity's stamps are known.
+type Item = (Vec<Value>, Option<Stamp>);
+
 /// One entity's rows, gathered from the six state tables.
 #[derive(Default)]
 struct Rows {
-    registers: Vec<Value>,
-    maps: Vec<Value>,
-    adds: Vec<Value>,
-    removes: Vec<Value>,
-    deltas: Vec<Value>,
+    registers: Vec<Item>,
+    maps: Vec<Item>,
+    adds: Vec<Item>,
+    removes: Vec<Item>,
+    deltas: Vec<Item>,
+}
+
+impl Rows {
+    fn stamps(&self) -> impl Iterator<Item = Stamp> + '_ {
+        [
+            &self.registers,
+            &self.maps,
+            &self.adds,
+            &self.removes,
+            &self.deltas,
+        ]
+        .into_iter()
+        .flatten()
+        .filter_map(|(_, s)| *s)
+    }
+}
+
+/// `items` as one CBOR array, with the stamp's index appended.
+fn indexed(rows: Vec<Item>, index: &BTreeMap<Stamp, u64>) -> Value {
+    Value::Array(
+        rows.into_iter()
+            .map(|(mut items, s)| {
+                if let Some(s) = s {
+                    items.push(int(index[&s]));
+                }
+                Value::Array(items)
+            })
+            .collect(),
+    )
 }
 
 /// Gather `sql`'s rows, each mapped by `row` to `(entity_id, item)`, into
@@ -191,8 +233,8 @@ fn gather(
     stream: &[u8; 16],
     sql: &str,
     out: &mut BTreeMap<[u8; 16], Rows>,
-    pick: fn(&mut Rows) -> &mut Vec<Value>,
-    row: fn(&rusqlite::Row<'_>) -> rusqlite::Result<Value>,
+    pick: fn(&mut Rows) -> &mut Vec<Item>,
+    row: fn(&rusqlite::Row<'_>) -> rusqlite::Result<Item>,
 ) -> rusqlite::Result<()> {
     let mut stmt = tx.prepare(sql)?;
     let mut rows = stmt.query(params![&stream[..]])?;
@@ -222,19 +264,21 @@ pub(in crate::engine) fn dump_stream_state(
         &mut rows,
         |r| &mut r.registers,
         |r| {
-            Ok(Value::Array(vec![
-                Value::Text(r.get(1)?),
-                r.get::<_, Option<Vec<u8>>>(2)?
-                    .map_or(Value::Null, Value::Bytes),
-                stamp_value(stamp_cols(
+            Ok((
+                vec![
+                    Value::Text(r.get(1)?),
+                    r.get::<_, Option<Vec<u8>>>(2)?
+                        .map_or(Value::Null, Value::Bytes),
+                    Value::Text(r.get(8)?),
+                ],
+                Some(stamp_cols(
                     r.get(3)?,
                     r.get(4)?,
                     &r.get::<_, Vec<u8>>(5)?,
                     r.get(6)?,
                     &r.get::<_, Vec<u8>>(7)?,
                 )),
-                Value::Text(r.get(8)?),
-            ]))
+            ))
         },
     )?;
     gather(
@@ -245,19 +289,21 @@ pub(in crate::engine) fn dump_stream_state(
         &mut rows,
         |r| &mut r.maps,
         |r| {
-            Ok(Value::Array(vec![
-                Value::Text(r.get(1)?),
-                Value::Text(r.get(2)?),
-                Value::Bytes(r.get(3)?),
-                stamp_value(stamp_cols(
+            Ok((
+                vec![
+                    Value::Text(r.get(1)?),
+                    Value::Text(r.get(2)?),
+                    Value::Bytes(r.get(3)?),
+                    Value::Text(r.get(9)?),
+                ],
+                Some(stamp_cols(
                     r.get(4)?,
                     r.get(5)?,
                     &r.get::<_, Vec<u8>>(6)?,
                     r.get(7)?,
                     &r.get::<_, Vec<u8>>(8)?,
                 )),
-                Value::Text(r.get(9)?),
-            ]))
+            ))
         },
     )?;
     gather(
@@ -269,17 +315,16 @@ pub(in crate::engine) fn dump_stream_state(
         &mut rows,
         |r| &mut r.adds,
         |r| {
-            Ok(Value::Array(vec![
-                Value::Text(r.get(1)?),
-                Value::Bytes(r.get(2)?),
-                stamp_value(stamp_cols(
+            Ok((
+                vec![Value::Text(r.get(1)?), Value::Bytes(r.get(2)?)],
+                Some(stamp_cols(
                     r.get(3)?,
                     r.get(4)?,
                     &r.get::<_, Vec<u8>>(5)?,
                     r.get(6)?,
                     &r.get::<_, Vec<u8>>(7)?,
                 )),
-            ]))
+            ))
         },
     )?;
     gather(
@@ -291,13 +336,16 @@ pub(in crate::engine) fn dump_stream_state(
         &mut rows,
         |r| &mut r.removes,
         |r| {
-            Ok(Value::Array(vec![
-                Value::Text(r.get(1)?),
-                Value::Bytes(r.get(2)?),
-                Value::Bytes(r.get(3)?),
-                Value::Bytes(r.get(4)?),
-                int(u64_col(r.get(5)?)),
-            ]))
+            Ok((
+                vec![
+                    Value::Text(r.get(1)?),
+                    Value::Bytes(r.get(2)?),
+                    Value::Bytes(r.get(3)?),
+                    Value::Bytes(r.get(4)?),
+                    int(u64_col(r.get(5)?)),
+                ],
+                None,
+            ))
         },
     )?;
     gather(
@@ -309,17 +357,19 @@ pub(in crate::engine) fn dump_stream_state(
         &mut rows,
         |r| &mut r.deltas,
         |r| {
-            Ok(Value::Array(vec![
-                Value::Text(r.get(1)?),
-                Value::Integer(r.get::<_, i64>(2)?.into()),
-                stamp_value(stamp_cols(
+            Ok((
+                vec![
+                    Value::Text(r.get(1)?),
+                    Value::Integer(r.get::<_, i64>(2)?.into()),
+                ],
+                Some(stamp_cols(
                     r.get(3)?,
                     r.get(4)?,
                     &r.get::<_, Vec<u8>>(5)?,
                     r.get(6)?,
                     &r.get::<_, Vec<u8>>(7)?,
                 )),
-            ]))
+            ))
         },
     )?;
     // An entity whose bookkeeping names the stream but whose every field row
@@ -340,22 +390,37 @@ pub(in crate::engine) fn dump_stream_state(
         let Some((kind, meta)) = read_meta_with_kind(tx, &id)? else {
             continue;
         };
+        let distinct: BTreeSet<Stamp> = r
+            .stamps()
+            .chain(meta.create)
+            .chain(meta.legacy)
+            .chain([meta.head])
+            .collect();
+        let index: BTreeMap<Stamp, u64> = distinct.iter().copied().zip(0..).collect();
+        let at = |s: Option<Stamp>| s.map_or(Value::Null, |s| int(index[&s]));
         entities.push(Value::Map(vec![
             (Value::Text("id".into()), bytes(&id)),
             (Value::Text("kind".into()), Value::Text(kind)),
+            (
+                Value::Text("stamps".into()),
+                Value::Array(distinct.iter().copied().map(stamp_value).collect()),
+            ),
             (Value::Text("created".into()), Value::Bool(meta.created)),
-            (Value::Text("create".into()), opt_stamp(meta.create)),
-            (Value::Text("legacy".into()), opt_stamp(meta.legacy)),
+            (Value::Text("create".into()), at(meta.create)),
+            (Value::Text("legacy".into()), at(meta.legacy)),
             (
                 Value::Text("patch_ms".into()),
                 meta.patch_ms.map_or(Value::Null, int),
             ),
-            (Value::Text("head".into()), stamp_value(meta.head)),
-            (Value::Text("registers".into()), Value::Array(r.registers)),
-            (Value::Text("maps".into()), Value::Array(r.maps)),
-            (Value::Text("adds".into()), Value::Array(r.adds)),
-            (Value::Text("removes".into()), Value::Array(r.removes)),
-            (Value::Text("deltas".into()), Value::Array(r.deltas)),
+            (Value::Text("head".into()), at(Some(meta.head))),
+            (
+                Value::Text("registers".into()),
+                indexed(r.registers, &index),
+            ),
+            (Value::Text("maps".into()), indexed(r.maps, &index)),
+            (Value::Text("adds".into()), indexed(r.adds, &index)),
+            (Value::Text("removes".into()), indexed(r.removes, &index)),
+            (Value::Text("deltas".into()), indexed(r.deltas, &index)),
         ]));
     }
     Ok(Value::Map(vec![
@@ -391,6 +456,7 @@ struct Entity<'a> {
     target: EntityRef,
     spec: &'static EntitySpec,
     meta: Meta,
+    stamps: Vec<Stamp>,
     entries: &'a [(Value, Value)],
 }
 
@@ -406,24 +472,28 @@ fn read_entity(v: &Value) -> Result<Entity<'_>, EngineError> {
     let kind =
         kind_of_tag(tag).ok_or_else(|| malformed("an entity kind this build does not know"))?;
     let spec = merged_spec(kind).ok_or_else(|| malformed("an entity kind that does not merge"))?;
-    let head = read_stamp(field("head")?).ok_or_else(|| malformed("head"))?;
+    let stamps = list(entries, "stamps")?
+        .iter()
+        .map(|s| read_stamp(s).ok_or_else(|| malformed("stamp")))
+        .collect::<Result<Vec<_>, _>>()?;
     let meta = Meta {
         created: field("created")?
             .as_bool()
             .ok_or_else(|| malformed("created"))?,
-        create: read_opt_stamp(field("create")?, "create")?,
-        legacy: read_opt_stamp(field("legacy")?, "legacy")?,
+        create: opt_stamp_at(&stamps, field("create")?, "create")?,
+        legacy: opt_stamp_at(&stamps, field("legacy")?, "legacy")?,
         patch_ms: match field("patch_ms")? {
             Value::Null => None,
             v => Some(as_u64(v).ok_or_else(|| malformed("patch_ms"))?),
         },
-        head,
+        head: stamp_at(&stamps, Some(field("head")?), "head")?,
         row: None,
     };
     Ok(Entity {
         target: EntityRef::new(kind, id),
         spec,
         meta,
+        stamps,
         entries,
     })
 }
@@ -445,10 +515,6 @@ fn blob(v: Option<&Value>, what: &str) -> Result<Vec<u8>, EngineError> {
     v.and_then(Value::as_bytes)
         .cloned()
         .ok_or_else(|| malformed(what))
-}
-
-fn stamp(v: Option<&Value>, what: &str) -> Result<Stamp, EngineError> {
-    v.and_then(read_stamp).ok_or_else(|| malformed(what))
 }
 
 /// `local` joined with `snap`: the bookkeeping of the union of the ops each
@@ -507,6 +573,7 @@ pub(in crate::engine) fn join_stream_state(
 
     for e in &entities {
         let id = e.target.bytes();
+        let stamp = |v: Option<&Value>, what: &str| stamp_at(&e.stamps, v, what);
         let local = sync_from_row(tx, e.spec, e.target)?;
         let before = local.as_ref().and_then(|m| m.legacy);
         let meta = join_meta(local, &e.meta);
@@ -524,8 +591,8 @@ pub(in crate::engine) fn join_stream_state(
                 id,
                 &text(items.first(), "register field")?,
                 value.as_ref(),
-                stamp(items.get(2), "register stamp")?,
-                &text(items.get(3), "register origin")?,
+                stamp(items.get(3), "register stamp")?,
+                &text(items.get(2), "register origin")?,
             )?;
         }
         for r in list(e.entries, "maps")? {
@@ -536,8 +603,8 @@ pub(in crate::engine) fn join_stream_state(
                 &text(items.first(), "map field")?,
                 &text(items.get(1), "map key")?,
                 &dec(&blob(items.get(2), "map value")?),
-                stamp(items.get(3), "map stamp")?,
-                &text(items.get(4), "map origin")?,
+                stamp(items.get(4), "map stamp")?,
+                &text(items.get(3), "map origin")?,
             )?;
         }
         for r in list(e.entries, "adds")? {
