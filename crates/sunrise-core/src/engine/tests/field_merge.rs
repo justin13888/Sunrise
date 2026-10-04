@@ -754,6 +754,9 @@ enum Write {
     RemoveOwnContext(usize),
     Defer(i8),
     Label(u8, u8),
+    /// A rename through the command path, which writes a full-state op: a
+    /// write to every field, at its own stamp (ADR-0044 §7).
+    FullState(u8),
 }
 
 fn arb_write() -> impl Strategy<Value = Write> {
@@ -766,6 +769,7 @@ fn arb_write() -> impl Strategy<Value = Write> {
         3 => (0usize..2).prop_map(Write::RemoveOwnContext),
         2 => prop_oneof![Just(1i8), Just(-1i8)].prop_map(Write::Defer),
         2 => (0u8..2, 0u8..3).prop_map(|(k, v)| Write::Label(k, v)),
+        1 => (0u8..4).prop_map(Write::FullState),
     ]
 }
 
@@ -787,18 +791,25 @@ struct Oracle {
 proptest! {
     #![proptest_config(ProptestConfig {
         cases: 24,
-        failure_persistence: None,
+        // The repository's convention (docs/10-cross-cutting/testing.md §2):
+        // a shrunken counterexample is committed, at a path named here.
+        failure_persistence: Some(Box::new(
+            proptest::test_runner::FileFailurePersistence::Direct(
+                "proptest-regressions/tests/field_merge.txt",
+            ),
+        )),
         ..ProptestConfig::default()
     })]
 
     /// ADR-0044's convergence property, for every field type at once. Three
     /// devices write to one task without seeing each other: registers, an
-    /// OR-set with observed removes, a counter and a map. A fourth replica
-    /// receives every op, in an arbitrary order with repeats, and must hold
-    /// exactly what an engine-free model says: the greatest write of each
-    /// register and map key, every add no remove observed, and the sum of the
-    /// deltas. A second, differently ordered delivery must project byte for
-    /// byte the same.
+    /// OR-set with observed removes, a counter and a map, mixed with
+    /// full-state renames from the command path. Receivers take every op
+    /// forward, reversed, and in an arbitrary order with repeats, and must
+    /// project byte for byte the same task. Where no full-state op was
+    /// written, the projection must also be exactly what an engine-free model
+    /// says: the greatest write of each register and map key, every add no
+    /// remove observed, and the sum of the deltas.
     #[test]
     fn any_delivery_order_converges_and_loses_no_concurrent_write(
         writes in proptest::collection::vec((0usize..3, arb_write()), 1..14),
@@ -835,6 +846,7 @@ proptest! {
         }
 
         let mut oracle = Oracle::default();
+        let mut saw_full_state = false;
         let mut envelopes = vec![create];
         for (n, (who, write)) in writes.iter().enumerate() {
             set_clock(&clocks[*who], T0 + 1_000 + u64::try_from(n).unwrap() * 7);
@@ -860,6 +872,20 @@ proptest! {
                     "x_labels",
                     op("map", Value::Map(vec![(text(&format!("k{k}")), set(Value::Integer((*v).into())))])),
                 )],
+                Write::FullState(t) => {
+                    let res = devices[*who]
+                        .apply(&mut dbs[*who], Command::UpdateTask {
+                            id: task,
+                            patch: TaskPatch {
+                                title: Some(format!("full {t}")),
+                                ..Default::default()
+                            },
+                        })
+                        .unwrap();
+                    envelopes.push(env_bytes(&dbs[*who], &res.op_id));
+                    saw_full_state = true;
+                    continue;
+                }
             };
             let (env, tag) = emit_patch(
                 &devices[*who],
@@ -896,6 +922,7 @@ proptest! {
                         oracle.labels.insert(*k, (stamp, *v));
                     }
                 }
+                Write::FullState(_) => unreachable!("handled above"),
             }
             envelopes.push(env);
         }
@@ -927,6 +954,11 @@ proptest! {
         prop_assert_eq!(&a_stamp, &b_stamp);
         prop_assert_eq!(&a_stamp, &c_stamp);
 
+        // The model has no full-state ops: one writes every field from its
+        // writer's own view, which the delivery orders above already agree on.
+        if saw_full_state {
+            return Ok(());
+        }
         prop_assert_eq!(
             a.title,
             oracle.title.map_or_else(|| "t".to_owned(), |(_, t)| t)

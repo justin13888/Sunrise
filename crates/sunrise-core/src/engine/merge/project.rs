@@ -425,11 +425,12 @@ pub(super) fn write_projection(
         ($ty:ty) => {
             match value.deserialized::<$ty>() {
                 Ok(v) => v,
-                Err(e) => {
+                // The decode error is not logged: it can quote the plaintext
+                // value it failed on.
+                Err(_) => {
                     tracing::debug!(
                         ev = "core.merge.unprojectable",
                         kind = spec.tag,
-                        error = %e,
                         "the merged state is not yet a whole entity; it waits for the field it lacks"
                     );
                     return Ok(false);

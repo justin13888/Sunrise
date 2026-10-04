@@ -435,8 +435,13 @@ fn merge_op_inner(
     let mut meta = sync_from_row(tx, spec, target)?.unwrap_or_else(|| Meta::fresh(at));
     match inner {
         InnerOp::Patch(p) => {
-            let ops = check_patch(p)
-                .map_err(|problem| EngineError::RemoteOpInvalid(format!("patch: {problem:?}")))?;
+            // Checked before the transaction opened (`apply_remote_all`), and
+            // the check is a pure function of the op. A refusal here, below
+            // the idempotence gate, would roll the op row back with it.
+            let Ok(ops) = check_patch(p) else {
+                debug_assert!(false, "an unchecked patch reached the merge");
+                return Ok(());
+            };
             let origin = if p.is_generated() { GENERATED } else { USER };
             fold_patch(tx, id, p.create, &ops, at, origin, &mut meta)?;
         }
