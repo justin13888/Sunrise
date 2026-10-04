@@ -271,6 +271,7 @@ async fn delay_preserves_convergence() {
         drop_prob: 0.0,
         corrupt_prob: 0.0,
         delay: Some((Duration::from_millis(50), Duration::from_millis(300))),
+        delay_send_only: false,
     };
     let (fa, _ha) = toxic_ws_factory(addr, cfg, base_seed(0xD));
     let (fb, _hb) = toxic_ws_factory(addr, cfg, base_seed(0xE));

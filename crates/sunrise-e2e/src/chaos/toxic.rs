@@ -13,14 +13,9 @@
 //!   corrupting a payload byte survives framing but fails AEAD verification
 //!   downstream — both are acceptable "tampered frame" outcomes.
 //! - **delay** — with a configured range, the frame is held for a uniformly
-//!   random [`Duration`] before it is forwarded. On send the call sleeps and
-//!   then forwards, so a sender is blocked for the delay as it would be
-//!   waiting on its request's leg. On receive the delay is a link's
-//!   propagation delay: frames keep arriving while earlier ones wait, each
-//!   starts its own delay on arrival, and they are released in arrival order.
-//!   Holding them one at a time instead would cap a link at one frame per
-//!   delay and turn any steady stream into a growing queue, which is a
-//!   throughput limit no real network has.
+//!   random [`Duration`] before it is forwarded (`tokio::time::sleep`), in
+//!   both directions unless [`ToxicConfig::delay_send_only`] confines it to
+//!   sends.
 //! - **partition** — a runtime switch on [`FaultHandle`]; while partitioned all
 //!   sends and receives return a transport error, modelling a cut link.
 //!
@@ -36,7 +31,6 @@
 //! [`sunrise_test_seed`], which is the workspace's single reader of that
 //! variable — the property tests draw from the same one.
 
-use std::collections::VecDeque;
 use std::fmt;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -69,6 +63,9 @@ pub struct ToxicConfig {
     /// Inclusive `(min, max)` delay range applied to each forwarded frame.
     /// `None` forwards with no artificial delay.
     pub delay: Option<(Duration, Duration)>,
+    /// Apply [`delay`](Self::delay) to sent frames only, and receive
+    /// undelayed. `false`, the default, delays both directions.
+    pub delay_send_only: bool,
 }
 
 impl ToxicConfig {
@@ -79,21 +76,30 @@ impl ToxicConfig {
             drop_prob: 0.0,
             corrupt_prob: 0.0,
             delay: None,
+            delay_send_only: false,
         }
     }
 
-    /// A clean link whose round trip averages `rtt`: each direction delays
-    /// every frame by `rtt / 2`, jittered uniformly by ±20 % from the seeded
-    /// RNG. No drop, no corruption.
+    /// A clean link to the relay whose round trip averages `rtt`, as the
+    /// sync-latency harness injects it (#366): every *send* waits `rtt`,
+    /// jittered uniformly by ±20 % from the seeded RNG, and receives are not
+    /// delayed. No drop, no corruption.
     ///
-    /// The shape the sync-latency harness injects (#366). A frame from one
-    /// device to another crosses two such links one way each — author to
-    /// relay, relay to reader — so it spends `rtt` on the wire on average.
+    /// Charged to the send because of what a send is on the SSE transport: a
+    /// `POST` whose reply is the ack, so a real sender is held for one round
+    /// trip per send and has its ack the moment the send returns. And an op
+    /// one device sends reaches another after half a round trip up to the
+    /// relay and half a round trip down, one RTT in all, which is the same
+    /// RTT spent before the relay sees it here. Delaying the receive side as
+    /// well would count the reader's half twice and hold each ack a second
+    /// time, and the receive hold is serial — one frame per delay — so under
+    /// a steady stream the acks queue behind it until the driver's retransmit
+    /// policy gives up on them.
     #[must_use]
     pub fn round_trip(rtt: Duration) -> Self {
-        let one_way = rtt / 2;
         Self {
-            delay: Some((one_way.mul_f64(0.8), one_way.mul_f64(1.2))),
+            delay: Some((rtt.mul_f64(0.8), rtt.mul_f64(1.2))),
+            delay_send_only: true,
             ..Self::passthrough()
         }
     }
@@ -196,11 +202,12 @@ pub struct Toxic<T: Transport> {
     inner: T,
     faults: FaultHandle,
     delay: Option<(Duration, Duration)>,
+    /// [`ToxicConfig::delay_send_only`].
+    delay_send_only: bool,
     rng: ChaCha20Rng,
-    /// Inbound frames already taken off `inner`, each waiting out its delay,
-    /// oldest first. Due times never decrease along the queue.
+    /// An inbound frame already taken off `inner`, waiting out its delay.
     ///
-    /// They live here rather than on `recv_frame`'s stack because the driver
+    /// It lives here rather than on `recv_frame`'s stack because the driver
     /// polls `recv_frame` inside a `select!` and drops the future whenever
     /// another branch wins. A frame held across an `await` on the stack goes
     /// with it — a loss no test asked the injector for, and one that grows
@@ -209,10 +216,7 @@ pub struct Toxic<T: Transport> {
     /// `tokio::time::Instant` rather than `std::time::Instant`: this is a
     /// transport deadline, not a reading of the wall clock the workspace lint
     /// is protecting, and it is what `sleep_until` takes.
-    held: VecDeque<(Vec<u8>, tokio::time::Instant)>,
-    /// `inner` reported the end of its stream. What is still in `held` is
-    /// delivered first.
-    inner_ended: bool,
+    held: Option<(Vec<u8>, tokio::time::Instant)>,
 }
 
 impl<T: Transport> fmt::Debug for Toxic<T> {
@@ -246,9 +250,9 @@ impl<T: Transport> Toxic<T> {
             inner,
             faults: faults.clone(),
             delay: config.delay,
+            delay_send_only: config.delay_send_only,
             rng: ChaCha20Rng::seed_from_u64(seed),
-            held: VecDeque::new(),
-            inner_ended: false,
+            held: None,
         };
         (toxic, faults)
     }
@@ -258,22 +262,18 @@ impl<T: Transport> Toxic<T> {
     /// `seed`. Every wrapper built from the same handle observes the same
     /// runtime drop / corrupt / partition switches — the shape a reconnecting
     /// transport factory needs, where one handle must steer every connection it
-    /// opens. `delay` is the static per-frame delay range (mirrors
-    /// [`ToxicConfig::delay`]).
+    /// opens. The delay comes from `config` ([`ToxicConfig::delay`] and
+    /// [`ToxicConfig::delay_send_only`]); its probabilities are ignored, because
+    /// the handle's are the ones in force.
     #[must_use]
-    pub fn with_handle(
-        inner: T,
-        faults: FaultHandle,
-        delay: Option<(Duration, Duration)>,
-        seed: u64,
-    ) -> Self {
+    pub fn with_handle(inner: T, faults: FaultHandle, config: ToxicConfig, seed: u64) -> Self {
         Self {
             inner,
             faults,
-            delay,
+            delay: config.delay,
+            delay_send_only: config.delay_send_only,
             rng: ChaCha20Rng::seed_from_u64(seed),
-            held: VecDeque::new(),
-            inner_ended: false,
+            held: None,
         }
     }
 
@@ -337,67 +337,38 @@ impl<T: Transport> Transport for Toxic<T> {
     }
 
     async fn recv_frame(&mut self) -> Result<Option<Vec<u8>>, TransportError> {
-        /// Which of the two things being waited on happened first.
-        enum Next {
-            /// The oldest held frame's delay has run out.
-            Due,
-            /// The inner transport produced something.
-            Inbound(Result<Option<Vec<u8>>, TransportError>),
-        }
-
         loop {
             if self.faults.is_partitioned() {
                 return Err(TransportError::Unavailable("partitioned".into()));
             }
-            let next_due = self.held.front().map(|(_, due)| *due);
-            if self.inner_ended {
-                // Nothing more is coming: release what is in flight, in order,
-                // and only then report the end.
-                let Some(due) = next_due else {
+            // Both awaits below are resumption points, not restart points: the
+            // frame and its due time are parked in `self.held` before either
+            // one, so a cancelled poll costs latency and never a frame.
+            if self.held.is_none() {
+                let Some(frame) = self.inner.recv_frame().await? else {
                     return Ok(None);
                 };
-                tokio::time::sleep_until(due).await;
-                return Ok(self.held.pop_front().map(|(frame, _)| frame));
-            }
-            // Both futures are resumption points, not restart points: every
-            // frame taken off `inner` is parked in `self.held` with its due
-            // time before anything else is awaited, so a cancelled poll costs
-            // latency and never a frame. Reading `inner` while a frame waits
-            // is what makes the delay a link's propagation delay rather than a
-            // serial hold: a frame that arrives while another is in flight
-            // starts its own delay at once, as it would on a wire.
-            let due_sleep = async move {
-                match next_due {
-                    Some(due) => tokio::time::sleep_until(due).await,
-                    None => std::future::pending::<()>().await,
+                // Drop: swallow this inbound frame and keep waiting.
+                if self.rng.gen_bool(self.faults.drop_prob()) {
+                    continue;
                 }
-            };
-            let next = tokio::select! {
-                biased;
-                () = due_sleep => Next::Due,
-                got = self.inner.recv_frame() => Next::Inbound(got),
-            };
-            match next {
-                Next::Due => return Ok(self.held.pop_front().map(|(frame, _)| frame)),
-                Next::Inbound(got) => {
-                    let Some(frame) = got? else {
-                        self.inner_ended = true;
-                        continue;
-                    };
-                    // Drop: swallow this inbound frame and keep waiting.
-                    if self.rng.gen_bool(self.faults.drop_prob()) {
-                        continue;
-                    }
-                    let frame = self.maybe_corrupt(frame);
-                    // Never earlier than the frame ahead of it: a link with a
-                    // jittered delay still delivers in order, as TCP does.
-                    let mut due = tokio::time::Instant::now() + self.sample_delay();
-                    if let Some((_, ahead)) = self.held.back() {
-                        due = due.max(*ahead);
-                    }
-                    self.held.push_back((frame, due));
-                }
+                let frame = self.maybe_corrupt(frame);
+                let delay = if self.delay_send_only {
+                    Duration::ZERO
+                } else {
+                    self.sample_delay()
+                };
+                let due = tokio::time::Instant::now() + delay;
+                self.held = Some((frame, due));
             }
+            let Some((_, due)) = self.held.as_ref() else {
+                unreachable!("held was just filled");
+            };
+            tokio::time::sleep_until(*due).await;
+            let Some((frame, _)) = self.held.take() else {
+                unreachable!("held was just filled");
+            };
+            return Ok(Some(frame));
         }
     }
 

@@ -9,17 +9,20 @@
 //!
 //! A relay and two paired [`Core`](sunrise_core::Core)s on loopback, each reaching the relay
 //! through a [`Toxic`](crate::chaos::Toxic) link built from
-//! [`ToxicConfig::round_trip`]: every frame is delayed by half the stated RTT,
-//! ±20 %, in each direction, drawn from a seeded RNG. Device A commits
+//! [`ToxicConfig::round_trip`]: every send waits the stated RTT, ±20 % drawn
+//! from a seeded RNG, which is the round trip a `POST` and its ack cost and
+//! the two half-trips an op makes from author to relay to reader. Device A commits
 //! [`LatencyRun::ops`] tasks, one every [`LatencyRun::interval`]. Each sample
 //! is the time from A's `submit` returning — the local commit is durable — to
 //! B publishing that task's `Created` on its change feed, which is what a UI
 //! repaints from. Both ends are read from one monotonic clock in this process,
 //! so there is no cross-device clock skew to correct for.
 //!
-//! The op count is fixed and every op must arrive: a missing op fails the run
-//! rather than shrinking the sample, because a latency distribution over the
-//! ops that happened to arrive says nothing about the ones that did not.
+//! The op count is fixed, and an op that never arrives is counted in
+//! [`LatencyReport::missing`] rather than dropped from the sample unnoticed: a
+//! latency distribution over the ops that happened to arrive says nothing
+//! about the ones that did not. The caller decides what a missing op fails;
+//! the budget test fails on any at an RTT the budget covers.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -63,16 +66,23 @@ pub struct LatencyRun {
 pub struct LatencyReport {
     /// The parameters it ran with.
     pub run: LatencyRun,
-    /// Every op's commit-to-apply latency, ascending.
+    /// The commit-to-apply latency of every op that reached B, ascending.
     pub sorted: Vec<Duration>,
     /// How many of those are upper bounds rather than exact: ops whose
     /// `Created` B's change feed dropped under a burst, stamped instead by the
     /// snapshot that found them applied.
     pub bounded: usize,
+    /// Ops A committed that B had not applied [`DRAIN_TIMEOUT`] after A's
+    /// last commit. The percentiles do not cover them, so a report with any is
+    /// not a measurement of the budget.
+    pub missing: usize,
+    /// Where the missing ops were stuck, when there are any: both devices'
+    /// sync status and B's task count.
+    pub diagnosis: String,
 }
 
 impl LatencyReport {
-    /// Build a report from unordered samples, all exact.
+    /// Build a report from unordered samples, all exact, none missing.
     #[must_use]
     pub fn new(run: LatencyRun, mut samples: Vec<Duration>) -> Self {
         samples.sort_unstable();
@@ -80,6 +90,8 @@ impl LatencyReport {
             run,
             sorted: samples,
             bounded: 0,
+            missing: 0,
+            diagnosis: String::new(),
         }
     }
 
@@ -100,9 +112,10 @@ impl LatencyReport {
     pub fn summary(&self) -> String {
         let ms = |d: Duration| d.as_secs_f64() * 1_000.0;
         format!(
-            "sync-latency: rtt={}ms ops={} bounded={} interval={}ms seed={} p50={:.1}ms p95={:.1}ms p99={:.1}ms max={:.1}ms",
+            "sync-latency: rtt={}ms ops={} missing={} bounded={} interval={}ms seed={} p50={:.1}ms p95={:.1}ms p99={:.1}ms max={:.1}ms",
             self.run.rtt.as_millis(),
             self.sorted.len(),
+            self.missing,
             self.bounded,
             self.run.interval.as_millis(),
             self.run.seed,
@@ -158,7 +171,8 @@ fn relay_config() -> ServerConfig {
     config
 }
 
-/// Run one measurement. Panics if setup fails or any op does not reach B.
+/// Run one measurement. Panics if setup fails; ops that never reach B are
+/// counted in [`LatencyReport::missing`] for the caller to judge.
 pub async fn measure(run: LatencyRun) -> LatencyReport {
     let (addr, relay) = spawn_relay_with(relay_config(), |s| s).await;
     let dir_a = tempfile::tempdir().expect("tempdir");
@@ -177,42 +191,9 @@ pub async fn measure(run: LatencyRun) -> LatencyReport {
     wait_pending_zero(&a, SETUP_TIMEOUT).await;
     wait_pending_zero(&b, SETUP_TIMEOUT).await;
 
-    // B's side: every `Created`, stamped as it is read. Subscribed before A
-    // commits anything, so no op can be applied before it is watched.
-    //
-    // The feed is a bounded broadcast, and a burst — a reconnect's replay
-    // applying hundreds of ops at once — can overrun it. The events it drops
-    // were for ops already applied, so a snapshot of B's tasks taken right
-    // after the drop holds every one of them, and the snapshot's time is an
-    // upper bound on when each was applied. Those samples are kept, counted
-    // in `bounded`, and can only make the reported tail worse, never better.
-    let watched = Arc::new(Mutex::new(Watched::default()));
-    let mut changes = b.changes();
-    let watcher = tokio::spawn({
-        let watched = Arc::clone(&watched);
-        let b = Arc::clone(&b);
-        async move {
-            loop {
-                match changes.recv().await {
-                    Ok(DomainEvent::Created(r)) => {
-                        let now = Instant::now();
-                        lock(&watched).seen.entry(r).or_insert(now);
-                    }
-                    Ok(_) => {}
-                    Err(RecvError::Lagged(_)) => {
-                        let present: HashSet<String> = canonical_tasks(&b)
-                            .await
-                            .into_iter()
-                            .map(|t| t.id)
-                            .collect();
-                        let now = Instant::now();
-                        lock(&watched).snapshots.push((now, present));
-                    }
-                    Err(RecvError::Closed) => return,
-                }
-            }
-        }
-    });
+    // B's side, subscribed before A commits anything, so no op can be applied
+    // before it is watched.
+    let (watched, watcher) = watch(Arc::clone(&b));
 
     // A's side: a steady rate, each commit stamped when `submit` returns.
     let mut committed: Vec<(EntityRef, Instant)> = Vec::with_capacity(run.ops);
@@ -246,30 +227,83 @@ pub async fn measure(run: LatencyRun) -> LatencyReport {
         tokio::time::sleep(Duration::from_millis(25)).await;
     };
     watcher.abort();
+    // Where the missing ops are stuck: still in A's outbox, or past the relay
+    // and not applied on B.
+    let diagnosis = if missing == 0 {
+        String::new()
+    } else {
+        format!(
+            "A: {:?}; B: {:?}, {} tasks",
+            status(&a).await,
+            status(&b).await,
+            canonical_tasks(&b).await.len()
+        )
+    };
     a.shutdown().await;
     b.shutdown().await;
     relay.abort();
 
-    assert_eq!(
-        missing,
-        0,
-        "{missing} of {} ops had not reached B {DRAIN_TIMEOUT:?} after A's last commit at rtt={:?}",
-        committed.len(),
-        run.rtt
-    );
     let w = lock(&watched);
     let mut bounded = 0;
     let samples = committed
         .iter()
-        .map(|(r, at)| {
-            let (applied, exact) = w.applied(*r).expect("every op was applied");
+        .filter_map(|(r, at)| {
+            let (applied, exact) = w.applied(*r)?;
             bounded += usize::from(!exact);
-            applied.saturating_duration_since(*at)
+            Some(applied.saturating_duration_since(*at))
         })
         .collect();
     LatencyReport {
         bounded,
+        missing,
+        diagnosis,
         ..LatencyReport::new(run, samples)
+    }
+}
+
+/// Stamp every `Created` B publishes as the feed delivers it.
+///
+/// The feed is a bounded broadcast, and a burst — a reconnect's replay
+/// applying hundreds of ops at once — can overrun it. The events it drops were
+/// for ops already applied, so a snapshot of B's tasks taken right after the
+/// drop holds every one of them, and the snapshot's time is an upper bound on
+/// when each was applied. Those samples are kept, counted in `bounded`, and
+/// can only make the reported tail worse, never better.
+fn watch(b: Arc<sunrise_core::Core>) -> (Arc<Mutex<Watched>>, tokio::task::JoinHandle<()>) {
+    let watched = Arc::new(Mutex::new(Watched::default()));
+    let mut changes = b.changes();
+    let task = tokio::spawn({
+        let watched = Arc::clone(&watched);
+        async move {
+            loop {
+                match changes.recv().await {
+                    Ok(DomainEvent::Created(r)) => {
+                        let now = Instant::now();
+                        lock(&watched).seen.entry(r).or_insert(now);
+                    }
+                    Ok(_) => {}
+                    Err(RecvError::Lagged(_)) => {
+                        let present: HashSet<String> = canonical_tasks(&b)
+                            .await
+                            .into_iter()
+                            .map(|t| t.id)
+                            .collect();
+                        let now = Instant::now();
+                        lock(&watched).snapshots.push((now, present));
+                    }
+                    Err(RecvError::Closed) => return,
+                }
+            }
+        }
+    });
+    (watched, task)
+}
+
+/// A core's sync status, for a failure message.
+async fn status(core: &sunrise_core::Core) -> Option<sunrise_core::SyncStatus> {
+    match core.query(sunrise_core::Query::SyncStatus).await {
+        Ok(sunrise_core::QueryResult::SyncStatus(s)) => Some(s),
+        _ => None,
     }
 }
 

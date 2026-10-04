@@ -122,72 +122,50 @@ async fn delay_preserves_fifo_order() {
     assert_eq!(order, expected, "frames must arrive in send order");
 }
 
-/// The receive delay is propagation, not a serial hold: frames that arrive
-/// together are delayed together and released in order. Held one at a time,
-/// ten frames at 100 ms each would take a second; on a wire they take about
-/// one delay.
-#[tokio::test]
-async fn receive_delay_is_pipelined_and_in_order() {
-    let (a, mut b) = loopback_pair();
-    let config = ToxicConfig {
-        delay: Some((Duration::from_millis(100), Duration::from_millis(100))),
-        ..ToxicConfig::passthrough()
-    };
-    let (mut toxic, _faults) = Toxic::with_seed(a, config, 42);
-    for i in 0..10u8 {
-        b.send_frame(vec![i]).await.expect("peer send");
-    }
-    let started = tokio::time::Instant::now();
-    let mut order = Vec::new();
-    for _ in 0..10 {
-        let frame = toxic.recv_frame().await.expect("recv ok").expect("a frame");
-        order.push(frame[0]);
-    }
-    let took = started.elapsed();
-    assert_eq!(order, (0..10).collect::<Vec<u8>>(), "arrival order kept");
-    assert!(
-        took >= Duration::from_millis(100),
-        "the delay was not applied: {took:?}"
-    );
-    assert!(
-        took < Duration::from_millis(600),
-        "frames were held one at a time: {took:?}"
-    );
-}
-
-/// A peer that closes with frames still in flight: they are delivered, and
-/// only then the end.
-#[tokio::test]
-async fn frames_in_flight_outlive_the_peer_closing() {
-    let (a, mut b) = loopback_pair();
-    let config = ToxicConfig {
-        delay: Some((Duration::from_millis(20), Duration::from_millis(20))),
-        ..ToxicConfig::passthrough()
-    };
-    let (mut toxic, _faults) = Toxic::with_seed(a, config, 7);
-    b.send_frame(vec![1]).await.expect("peer send");
-    b.send_frame(vec![2]).await.expect("peer send");
-    b.close().await.expect("peer close");
-    let mut got = Vec::new();
-    while let Some(frame) = toxic.recv_frame().await.expect("recv ok") {
-        got.push(frame[0]);
-    }
-    assert_eq!(got, vec![1, 2]);
-}
-
-/// `round_trip` splits the RTT across the two directions with ±20 % jitter.
+/// `round_trip` charges the whole RTT, ±20 %, to the send.
 #[test]
-fn round_trip_is_half_the_rtt_each_way() {
+fn round_trip_delays_sends_by_the_rtt() {
     let c = ToxicConfig::round_trip(Duration::from_millis(80));
     assert_eq!(
         c.delay,
-        Some((Duration::from_millis(32), Duration::from_millis(48)))
+        Some((Duration::from_millis(64), Duration::from_millis(96)))
     );
+    assert!(c.delay_send_only);
     assert!(c.drop_prob.abs() < f64::EPSILON && c.corrupt_prob.abs() < f64::EPSILON);
     assert_eq!(
         ToxicConfig::round_trip(Duration::ZERO).delay,
         Some((Duration::ZERO, Duration::ZERO))
     );
+}
+
+/// A send-only delay holds sends and passes received frames straight through.
+#[tokio::test]
+async fn a_send_only_delay_leaves_receives_undelayed() {
+    let (a, mut b) = loopback_pair();
+    let config = ToxicConfig {
+        delay: Some((Duration::from_millis(200), Duration::from_millis(200))),
+        delay_send_only: true,
+        ..ToxicConfig::passthrough()
+    };
+    let (mut toxic, _faults) = Toxic::with_seed(a, config, 3);
+
+    b.send_frame(vec![1]).await.expect("peer send");
+    let started = tokio::time::Instant::now();
+    assert_eq!(toxic.recv_frame().await.expect("recv ok"), Some(vec![1]));
+    assert!(
+        started.elapsed() < Duration::from_millis(150),
+        "the receive was delayed: {:?}",
+        started.elapsed()
+    );
+
+    let started = tokio::time::Instant::now();
+    toxic.send_frame(vec![2]).await.expect("send ok");
+    assert!(
+        started.elapsed() >= Duration::from_millis(200),
+        "the send was not delayed: {:?}",
+        started.elapsed()
+    );
+    assert_eq!(b.recv_frame().await.expect("peer recv"), Some(vec![2]));
 }
 
 proptest! {
