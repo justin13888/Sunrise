@@ -490,6 +490,38 @@ mod tests {
         assert!(body.contains("\"kind\":\"ops\""), "no fan-out in: {body}");
     }
 
+    /// `sunrise_sync_fanout_latency_seconds` (#366): a batch fanned out to a
+    /// stream that is already open is timed once, and the histogram reaches
+    /// the scrape.
+    ///
+    /// The stream opens first and the publish lands inside its read window,
+    /// so the batch travels the live path; one published before the stream
+    /// opened would arrive by replay, which is not a fan-out and is not timed.
+    #[tokio::test]
+    async fn a_live_fanout_is_timed_and_scraped() {
+        const FANOUT: &str = "sunrise_sync_fanout_latency_seconds";
+        let client = Client::new(ServerConfig::default());
+        let reader = establish(&client).await;
+        let writer = establish(&client).await;
+        subscribe(&client, &reader, None).await;
+
+        let (body, published) = tokio::join!(read(&client, &reader, &[]), async {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            publish(&client, &writer, vec![], 1).await
+        });
+        assert_eq!(published, StatusCode::OK);
+        assert!(body.contains("\"kind\":\"ops\""), "no fan-out in: {body}");
+        assert_eq!(client.metrics.histogram_count(FANOUT, &[]), 1);
+
+        let scrape = client.send_as(Method::GET, "/metrics", None, None).await;
+        let text = String::from_utf8_lossy(&scrape.bytes);
+        assert!(
+            text.contains("# TYPE sunrise_sync_fanout_latency_seconds histogram")
+                && text.contains("sunrise_sync_fanout_latency_seconds_count 1"),
+            "the histogram is not on /metrics:\n{text}"
+        );
+    }
+
     /// Was `ws_malformed_op_batch_nacked_no_fanout`.
     ///
     /// Shape changed: a `Nack` frame becomes a refusal status, and the body is

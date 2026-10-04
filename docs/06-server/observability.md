@@ -147,7 +147,7 @@ extracted from the source and checked by a gate, so the catalogue's
      NOT the commit that last changed the set. Now that the gate runs, it is
      provenance rather than the reader's assurance: diff that ref against HEAD
      over the grepped path to see what a human last looked at.
-     Last extracted: f3ed6cb8 -->
+     Last extracted: 38a02c42 -->
 
 ```
 sunrise_account_create_total
@@ -180,6 +180,7 @@ sunrise_relay_batch_overlap_total
 sunrise_relay_cursor_gap_total
 sunrise_start_time_seconds
 sunrise_sync_batch_ops
+sunrise_sync_fanout_latency_seconds
 sunrise_sync_negotiate_refused_total      {reason}
 sunrise_sync_ops_received_total
 sunrise_sync_refresh_total
@@ -189,7 +190,7 @@ sunrise_sync_sessions_active
 sunrise_sync_stream_total
 ```
 
-37 metric names, and four that earlier revisions of this file listed and the
+38 metric names, and four that earlier revisions of this file listed and the
 tree does not define: `sunrise_sync_token_expired_total`,
 `sunrise_sync_token_refresh_rejected_total`, `sunrise_sync_token_refreshed_total`,
 `sunrise_sync_unauthenticated_total`. The token-lifecycle counters collapsed into

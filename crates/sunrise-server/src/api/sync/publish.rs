@@ -10,7 +10,7 @@ use crate::api::error::ApiError;
 use crate::api::ratelimit::policy::Budget;
 use crate::api::ratelimit::Throttled;
 use crate::api::signed::Signed;
-use crate::relay::{FrameHead, RelayFrame};
+use crate::relay::{FanoutClock, FrameHead, RelayFrame};
 use crate::relay_log::Appended;
 use crate::state::ServerState;
 use base64::Engine as _;
@@ -116,6 +116,12 @@ pub async fn ops(
         value: body,
     }: Signed<OpsRequest>,
 ) -> Result<Json<OpsResponse>, Throttled> {
+    // The start of `sunrise_sync_fanout_latency_seconds`: the batch has been
+    // read and its signature checked, and everything the relay does to it from
+    // here — the rate charge, the durable append, the broadcast — is the
+    // relay's leg of the end-to-end budget. A monotonic reading, not the
+    // injected wall clock, because it measures a duration.
+    let accepted = tokio::time::Instant::now();
     let now_ms = state.clock.now_ms();
     let (_, session) = resolve(&state, &header, &caller, now_ms)?;
     // A session opened before the deletion was confirmed must not keep
@@ -194,20 +200,7 @@ pub async fn ops(
 
     let first_seen_ms = match appended {
         Appended::Fresh { first_seen_ms } => {
-            tracing::debug!(
-                ev = "srv.relay.fanout",
-                stream_h = %crate::logging::id_h(&stream_id),
-                n_bytes = frame.len() as u64,
-                "op batch republished"
-            );
-            state.relay.publish(
-                (session.account, stream_id),
-                RelayFrame {
-                    from: session.conn,
-                    bytes: frame,
-                    heads,
-                },
-            );
+            fan_out(&state, &session, stream_id, (frame, heads), accepted);
             wake_offline_peers(&state, &session, stream_id);
             // Fresh by the whole-batch key, and yet carrying ops this channel
             // already holds: the re-partitioned re-send ADR-0033 accepted and
@@ -240,6 +233,32 @@ pub async fn ops(
         stream_id: body.stream_id,
         server_first_seen_ms: first_seen_ms,
     }))
+}
+
+/// Broadcast a freshly stored batch to the channel's live streams, timed from
+/// `accepted` by the frame's [`FanoutClock`].
+fn fan_out(
+    state: &ServerState,
+    session: &crate::sync_session::Session,
+    stream_id: [u8; 16],
+    (frame, heads): (Vec<u8>, Vec<FrameHead>),
+    accepted: tokio::time::Instant,
+) {
+    tracing::debug!(
+        ev = "srv.relay.fanout",
+        stream_h = %crate::logging::id_h(&stream_id),
+        n_bytes = frame.len() as u64,
+        "op batch republished"
+    );
+    state.relay.publish(
+        (session.account, stream_id),
+        RelayFrame {
+            from: session.conn,
+            bytes: frame,
+            heads,
+            fanout: Some(FanoutClock::start(accepted, state.metrics.clone())),
+        },
+    );
 }
 
 /// Whether this batch re-sends an op the channel already holds.
