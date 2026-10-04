@@ -39,6 +39,7 @@ pub mod person;
 pub mod phrase;
 pub mod planning;
 pub mod recur;
+pub mod registry;
 pub mod review;
 pub mod routine;
 pub mod routine_gen;

@@ -3299,3 +3299,98 @@ pub struct AccountBootstrap {
     /// that can, and it already did.
     pub recovery_code: Option<String>,
 }
+
+// ---------------------------------------------------------------------------
+// Registry coverage
+// ---------------------------------------------------------------------------
+
+/// A domain record's foreign mirror.
+///
+/// The exhaustive destructuring in each `From` impl above catches a new
+/// *field*; this catches a new *record*. Every record of every entity the
+/// registry ([`sunrise_id::for_each_entity!`]) syncs must name its mirror
+/// here, and the mirror must convert from it, or this crate does not build.
+/// The mirror itself stays hand-written for the reasons the module docs give.
+pub(crate) trait Mirrored {
+    /// The `UniFFI` record that mirrors this domain record.
+    type Dto: for<'a> From<&'a Self>;
+}
+
+impl Mirrored for Task {
+    type Dto = TaskItem;
+}
+impl Mirrored for Stream {
+    type Dto = StreamItem;
+}
+impl Mirrored for Context {
+    type Dto = ContextItem;
+}
+impl Mirrored for Routine {
+    type Dto = RoutineItem;
+}
+impl Mirrored for TaskTemplate {
+    type Dto = Template;
+}
+impl Mirrored for Block {
+    type Dto = BlockItem;
+}
+impl Mirrored for Attachment {
+    type Dto = AttachmentItem;
+}
+impl Mirrored for FocusStart {
+    type Dto = SessionStart;
+}
+impl Mirrored for FocusEnd {
+    type Dto = SessionEnd;
+}
+impl Mirrored for Interruption {
+    type Dto = InterruptionRow;
+}
+impl Mirrored for ReviewSnapshot {
+    type Dto = Snapshot;
+}
+
+/// Requires [`Mirrored`] of every record of every entity that syncs.
+/// `Unsynced` entities reach no foreign caller; `Control` ones have no record.
+macro_rules! require_mirrors {
+    (@merge Unsynced $($record:ident)*) => {};
+    (@merge $merge:ident $($record:ident)*) => {
+        $( mirrored::<$record>(); )*
+    };
+    (
+        $(
+            $(#[$kind_meta:meta])*
+            $kind:ident {
+                prefix: $prefix:literal,
+                tag: $tag:literal,
+                merge: $merge:ident,
+                owner: $owner:ident $(($owner_field:literal))?,
+                features: [$($feature:literal),* $(,)?],
+                ops: [
+                    $(
+                        $(#[$op_meta:meta])*
+                        $op:ident($payload:ty) = $inner_kind:literal, $class:ident, $target:ident;
+                    )*
+                ],
+                records: [
+                    $(
+                        $record:ident @ $storage:tt {
+                            $(
+                                $field:ident $(as $wire:literal)?: $field_ty:ty => $crdt:ident;
+                            )*
+                            $(..$unknown:ident)?
+                        }
+                    )*
+                ],
+            }
+        )*
+    ) => {
+        #[allow(dead_code)]
+        fn every_synced_record_is_mirrored() {
+            fn mirrored<T: Mirrored>() {}
+            $( require_mirrors!(@merge $merge $($record)*); )*
+        }
+    };
+}
+
+sunrise_id::for_each_entity!(require_mirrors);
