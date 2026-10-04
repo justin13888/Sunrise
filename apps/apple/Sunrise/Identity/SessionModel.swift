@@ -27,8 +27,8 @@ final class SessionModel {
         /// The Keychain refused, was locked, or returned something unusable.
         case keychainUnavailable(String)
         /// The vault is on disk and its key is not in this Keychain — the
-        /// state a restored-from-backup machine lands in. Recovering it means
-        /// pairing with a device that still has the key, not making one up.
+        /// state a restored-from-backup machine lands in. The way out is
+        /// pairing or the recovery code, never a key made up here.
         case keyMissingForExistingVault
         /// The user closed the vault. The key is where it was and the data is
         /// where it was; only this process let go. Reopening is one button.
@@ -41,8 +41,8 @@ final class SessionModel {
             case .keyMissingForExistingVault:
                 """
                 There is a vault on this device, but its key is not in this \
-                Keychain. Pair with a device that still has it — creating a \
-                new key would leave the existing data unreadable.
+                Keychain. Pair with a device that still has it, or restore \
+                from your recovery code. A new key would not open this data.
                 """
             case .lockedByUser:
                 """
@@ -88,17 +88,19 @@ final class SessionModel {
     let settingsDefaults: UserDefaults
     /// The account's renewal tick, owned for as long as a vault is open (#307).
     @ObservationIgnored let renewal = SessionRenewal()
+    /// The recovery-code restore on screen, if any (#349).
+    let restoration = SessionRestoration()
 
     /// Both `var`: switching vaults replaces them together, and replacing only
-    /// one would file a vault's key under another vault's name.
-    private var location: VaultLocation
-    private var rootStore: any VaultRootStore
+    /// one would file a vault's key under another vault's name. Readable from
+    /// `SessionModelRestore.swift`, which writes a recovered vault here.
+    private(set) var location: VaultLocation
+    private(set) var rootStore: any VaultRootStore
     /// The relay's id for this vault's device. Re-pointed with the two above
     /// and for the same reason: an id from one vault names a device row the
-    /// next vault's signing key does not open, and the relay reports that as a
-    /// bad bearer rather than as the mismatch it is.
-    private var relayDeviceStore: any RelayDeviceIDStore
-    private let appVersion: String
+    /// next vault's signing key does not open.
+    private(set) var relayDeviceStore: any RelayDeviceIDStore
+    let appVersion: String
     private let openBridge: @Sendable (URL, Data, String, Data?) async throws -> CoreBridge
     private let resolve: @Sendable (VaultDescriptor) throws -> VaultBinding
     /// Set when the app could not even work out where its vault goes. Checked
@@ -186,15 +188,12 @@ final class SessionModel {
     /// a first run.
     ///
     /// There is no memoized `shared` behind this and no `active` in front of
-    /// it. There used to be, so that `OnboardingView`, `LockedView` and
-    /// `AccountView` — which `RootView` built without passing the session down
-    /// — could reach one; they are handed it explicitly now, and a global that
-    /// nothing reads is a global that will eventually be read by mistake.
+    /// it: every view that once reached for one is handed the session, and a
+    /// global nothing reads is a global that will eventually be misread.
     ///
     /// `crates/sunrise-core/src/vault_lock.rs` still admits one open vault per
-    /// process, and that invariant does not depend on this being memoized: a
-    /// `SessionModel` opens nothing until ``start()`` is called, and the only
-    /// caller is the view built from the `@State` SwiftUI actually kept.
+    /// process, and that does not depend on memoizing: a `SessionModel` opens
+    /// nothing until ``start()``, called only from the `@State` SwiftUI kept.
     static func standard() -> SessionModel {
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString")
         let appVersion = (version as? String) ?? "0.0.0"
@@ -462,7 +461,8 @@ final class SessionModel {
         await switchTo(vaults.add(name: name))
     }
 
-    private func open(with root: Data, bundle: Data? = nil) async {
+    /// Open ``location`` under `root`. Internal for `SessionModelRestore.swift`.
+    func open(with root: Data, bundle: Data? = nil) async {
         do {
             let opened = try await openBridge(location.directory, root, appVersion, bundle)
             // Asked once, here, because it cannot be asked from a view body:

@@ -208,3 +208,222 @@ extension SessionModel {
         }
     }
 }
+
+/// The other end of the ceremony: spend a recovery code on a device that has
+/// nothing, and come back with the account (#349).
+///
+/// `docs/03-crypto/recovery.md` §Recovery flow, as a user walks it. They type
+/// the twenty-four words, and each word is checked against the BIP-39 list as
+/// it is typed, by the same Rust the restore spends it with. A typo is marked
+/// before any network call. The browser sign-in comes next, because the relay
+/// releases the blob only to a fresh one. The restore follows, and it reports
+/// progress until the history has replayed. The aftercare comes last, as
+/// §Recovery flow step 7 asks.
+///
+/// Closures rather than a `CoreBridge` and a `SunriseLogin`, so the whole
+/// sequence is testable against a stub relay with no network, as
+/// ``RecoveryCodeModel`` and `PairingModel` are.
+@MainActor
+@Observable
+final class RestoreFromCodeModel {
+    enum Phase: Equatable {
+        /// Typing the words.
+        case entering
+        /// The browser sign-in the relay requires before it releases the blob.
+        case signingIn
+        /// The restore is running.
+        case restoring(Progress)
+        /// The account is back and its history is read. The aftercare is on
+        /// screen.
+        case restored
+        /// The vault is restored and opened, and its history had not finished
+        /// replaying. It resumes when the vault syncs.
+        case incomplete(String)
+        /// Nothing was written. ``Failure`` says what to do next.
+        case failed(Failure)
+    }
+
+    enum Progress: Equatable {
+        case fetching
+        case identityOpened
+        case deviceRegistered
+        case replaying(applied: UInt64)
+    }
+
+    enum Failure: Equatable {
+        /// Mistyped, or another account's code. Back to the words.
+        case wrongCode(String)
+        /// The relay wants a fresh sign-in, or the sign-in did not complete.
+        case signInRequired(String)
+        /// Anything else: no relay, no blob, a relay that did not answer.
+        case other(String)
+
+        var message: String {
+            switch self {
+            case let .wrongCode(text), let .signInRequired(text), let .other(text): text
+            }
+        }
+    }
+
+    /// The restore itself: the code, a bearer carrying a fresh sign-in, and
+    /// where to report each step. Throws the seam's `BindingError`.
+    typealias Restore = (
+        _ code: String,
+        _ bearer: String,
+        _ onStep: @escaping @Sendable (RecoveryStep) -> Void
+    ) async throws -> Void
+
+    private(set) var phase: Phase = .entering
+
+    /// What is in the 24-word field. Each edit re-checks it.
+    var text = "" {
+        didSet { revalidate() }
+    }
+
+    /// How many words the field holds.
+    private(set) var wordCount = 0
+    /// The 1-based positions of words that are not on the list. Positions,
+    /// never the words: what is on screen next to a recovery code ends up in
+    /// screenshots.
+    private(set) var unknownWords: [Int] = []
+    /// Set when twenty-four listed words still fail the checksum.
+    private(set) var checksumProblem: String?
+    /// How many Stream keys the aftercare rotated, once it has.
+    private(set) var rotatedStreams: Int?
+    /// Why the aftercare's rotation failed, if it did.
+    private(set) var rotationProblem: String?
+
+    private let isWord: (String) -> Bool
+    private let checkCode: (String) throws -> Void
+    private let signIn: () async throws -> String
+    private let restore: Restore
+    private let rotateStreamKeys: () async throws -> Int
+
+    init(
+        signIn: @escaping () async throws -> String,
+        restore: @escaping Restore,
+        rotateStreamKeys: @escaping () async throws -> Int = { 0 },
+        isWord: @escaping (String) -> Bool = { isRecoveryWord(word: $0) },
+        checkCode: @escaping (String) throws -> Void = { try checkRecoveryCode(code: $0) }
+    ) {
+        self.signIn = signIn
+        self.restore = restore
+        self.rotateStreamKeys = rotateStreamKeys
+        self.isWord = isWord
+        self.checkCode = checkCode
+    }
+
+    /// Whether the words are worth a sign-in: twenty-four of them, all
+    /// listed, with a checksum that holds.
+    var canRestore: Bool {
+        guard wordCount == 24, unknownWords.isEmpty, checksumProblem == nil else { return false }
+        switch phase {
+        case .entering, .failed: return true
+        default: return false
+        }
+    }
+
+    /// Sign in, restore, and report. Idempotent against a double tap.
+    func restoreAccount() async {
+        guard canRestore else { return }
+        let code = RecoveryCodeModel.normalize(text).joined(separator: " ")
+        phase = .signingIn
+        let bearer: String
+        do {
+            bearer = try await signIn()
+        } catch {
+            phase = .failed(.signInRequired(error.localizedDescription))
+            return
+        }
+        phase = .restoring(.fetching)
+        do {
+            try await restore(code, bearer) { [weak self] step in
+                _Concurrency.Task { @MainActor in self?.advance(step) }
+            }
+            text = ""
+            phase = .restored
+        } catch {
+            phase = Self.outcome(of: error)
+            // A restore that wrote the vault has spent the words; they are
+            // not kept on screen for a retry that has nothing left to do.
+            if case .incomplete = phase { text = "" }
+        }
+    }
+
+    /// Rotate every Stream key: the second half of §Recovery flow step 7.
+    func rotateKeys() async {
+        rotationProblem = nil
+        do {
+            rotatedStreams = try await rotateStreamKeys()
+        } catch {
+            rotationProblem = error.localizedDescription
+        }
+    }
+
+    /// What a failed restore means for the next step, read off the seam's
+    /// error variant rather than its wording.
+    static func outcome(of error: any Error) -> Phase {
+        guard let binding = error as? BindingError else {
+            return .failed(.other(error.localizedDescription))
+        }
+        switch binding {
+        case let .RecoveryCode(message): return .failed(.wrongCode(message))
+        case let .StepUpRequired(message): return .failed(.signInRequired(message))
+        case let .RecoveryIncomplete(message): return .incomplete(message)
+        default: return .failed(.other(binding.localizedDescription))
+        }
+    }
+
+    /// Fold one step into the progress, but only while the restore is still
+    /// running: a step delivered after it returned must not pull the screen
+    /// back from its outcome.
+    private func advance(_ step: RecoveryStep) {
+        guard case .restoring = phase else { return }
+        switch step {
+        case .blobFetched: phase = .restoring(.fetching)
+        case .identityOpened: phase = .restoring(.identityOpened)
+        case .deviceRegistered: phase = .restoring(.deviceRegistered)
+        case let .replaying(applied): phase = .restoring(.replaying(applied: applied))
+        case .caughtUp: break
+        }
+    }
+
+    private func revalidate() {
+        let words = RecoveryCodeModel.normalize(text)
+        wordCount = words.count
+        unknownWords = words.indices.filter { !isWord(words[$0]) }.map { $0 + 1 }
+        checksumProblem = nil
+        if wordCount == 24, unknownWords.isEmpty {
+            do {
+                try checkCode(words.joined(separator: " "))
+            } catch {
+                checksumProblem = error.localizedDescription
+            }
+        }
+        // Editing the words is the answer to a wrong code.
+        if case .failed(.wrongCode) = phase { phase = .entering }
+    }
+}
+
+/// What a restore sends besides the vault: the relay, a bearer carrying a
+/// fresh sign-in, the words, and what the device list will call this device.
+struct RecoveryRequest: Sendable {
+    let relayURL: String
+    let bearer: String
+    let code: String
+    let nickname: String
+}
+
+/// Hands the seam's recovery steps to a Swift closure. Called on a Rust
+/// worker thread, never the main one.
+final class RecoveryStepForwarder: RecoveryListener {
+    private let forward: @Sendable (RecoveryStep) -> Void
+
+    init(onStep: @escaping @Sendable (RecoveryStep) -> Void) {
+        forward = onStep
+    }
+
+    func onStep(step: RecoveryStep) {
+        forward(step)
+    }
+}
