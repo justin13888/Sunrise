@@ -57,7 +57,7 @@ Devices with > 5 min skew display a `"Your clock is ≥ 5 minutes off; sync may 
 
 ## Digest ops
 
-Each device publishes a `StreamDigest` control op (`DOC_SCHEMA_V` 9) in a stream, sealed under that stream's key, when one is due: it has published none there yet and holds an op, 256 ops have entered the stream's log since its last, or 24 h have passed since its last and any op has entered. The sync driver checks on its anti-entropy timer. A device publishes only in a stream it holds a key for.
+Each device publishes a `StreamDigest` control op (`DOC_SCHEMA_V` 9) in a stream, sealed under that stream's key, when one is due: it has published none there yet and holds an op, 256 ops have entered the stream's log since its last, or 24 h have passed since its last and any op has entered. A `StreamDigest` op, from any device, counts toward none of the three, so idle devices do not answer each other's digests forever. The sync driver checks on its anti-entropy timer. A device publishes only in a stream it holds a key for.
 
 ```cddl
 stream-digest = {

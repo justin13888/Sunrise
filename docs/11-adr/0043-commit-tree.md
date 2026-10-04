@@ -232,9 +232,11 @@ digest(stream, F) = BLAKE3::derive_key("sunrise.stream_digest.v1",
   device has none yet and holds an op, where 256 ops have entered the log
   since its last one, or where a day has passed since its last one and any op
   has entered (`Engine::publish_due_stream_digests`, which the sync driver
-  calls on its anti-entropy timer). A device publishes only in a stream it
-  holds a key for; it never mints one for a digest. A payload whose `digest`
-  is not the digest of its own frontier, or whose frontier is not sorted by
+  calls on its anti-entropy timer). A `StreamDigest` op, from this device or
+  any other, counts toward none of the three: otherwise an idle account's
+  devices would answer each other's digests once a day per stream, forever.
+  A device publishes only in a stream it holds a key for; it never mints one
+  for a digest. A payload whose `digest` is not the digest of its own frontier, or whose frontier is not sorted by
   device id, is damaged and read for nothing.
 - **Reconciliation compares per-device entries, not the whole digest.** For
   each `(d, n, root)` in a peer's frontier:
