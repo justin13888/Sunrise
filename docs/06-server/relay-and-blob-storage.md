@@ -43,8 +43,10 @@ subscription impossible rather than merely discouraged.
 
 ### What the relay database actually holds (implemented)
 
-`Store::open` runs `PRAGMA foreign_keys = ON` and the schema, and **nothing
-else**. In particular it issues no `PRAGMA key`, so **the relay database is not
+`Store::open` sets the connection pragmas described under
+[Schema versions and pragmas](#schema-versions-and-pragmas-implemented), runs a
+bounded `PRAGMA quick_check`, and migrates the schema, and **nothing else**. In
+particular it issues no `PRAGMA key`, so **the relay database is not
 SQLCipher-encrypted** — `rusqlite` is built with the workspace's
 `bundled-sqlcipher` feature, but only the *client* vault applies a key
 (`sunrise_storage::db` derives it as
@@ -75,6 +77,54 @@ cleartext routing header via `sunrise_cbor::decode_envelope_header` and nothing
 more. It cannot do more — `sunrise-server` has **no `sunrise-crypto`
 dependency**, and `EnvelopeHeader` has no payload field, so the
 non-responsibility is enforced by the dependency graph.
+
+### Schema versions and pragmas (implemented)
+
+The schema is a numbered, append-only list of migrations in
+`crates/sunrise-server/src/store/migrations/mod.rs`, and the database records
+how far along it is in `PRAGMA user_version`. On open, `Store::open`:
+
+1. sets `busy_timeout` (`[storage] busy_timeout_ms`, default 5 s), so even the
+   next read waits out another process's lock rather than failing on it;
+2. reads `user_version` and refuses a database above the binary's newest
+   migration, or below zero, with `StoreError::SchemaTooNew`. Nothing has
+   written to the file at this point, and nothing does: the binary exits 78;
+3. sets `journal_mode = WAL`, then `synchronous = NORMAL` if WAL took, or
+   `FULL` if it did not (a filesystem without shared memory keeps its rollback
+   journal and logs `srv.store.wal_unavailable`), then `foreign_keys = ON`;
+4. runs `PRAGMA quick_check` under a 10 s watchdog and logs
+   `srv.store.quick_check`, starting regardless of the result;
+5. applies every migration above the database's version, each in its own
+   `BEGIN IMMEDIATE` transaction that also writes the new `user_version`, so a
+   crash leaves the old schema at the old version or the new schema at the new
+   one, and two processes opening one file cannot both apply a step.
+
+| Migration | What it does |
+|---|---|
+| 0001 `baseline` | The `accounts`, `devices`, `push_tokens` and `relay_*` tables, as every pre-versioning release created them. Still `CREATE … IF NOT EXISTS`, so a database those releases wrote, which is at version 0, adopts it without change. |
+| 0002 `devices_vault_device_id` | Adds `devices.vault_device_id` where a database predates it, then the `devices_by_vault_id` index. |
+
+A shipped migration is never edited: migration 0001 executes the tenants'
+`SCHEMA` constants, so those are frozen with it, and a test builds a database
+from a literal copy of the pre-versioning DDL, migrates it, and requires the
+same schema a fresh database gets. A schema change is a new entry with the next
+number. The list is `(id, name, step)` over one integer of state, which is what
+a Postgres backend would record in a one-row table to share the numbering.
+
+**The `synchronous = NORMAL` trade-off.** Under WAL, `NORMAL` syncs at
+checkpoints rather than at every commit. A crash of the server process loses
+nothing, and no crash can corrupt the database, but a power cut or a kernel
+crash can roll back the transactions committed just before it. For the relay
+that means a frame acknowledged in that window can be gone after a power cut,
+when its sender has already dropped it from its outbox. Rollback-journal mode
+uses `FULL` instead, because `NORMAL` there can corrupt the file on power loss.
+`wal_autocheckpoint` stays at SQLite's default of 1000 pages (about 4 MiB); the
+relay's writes are small frames, so the WAL never grows large enough to slow
+reads.
+
+All requests still share one connection behind a mutex. With WAL on, moving
+reads onto a pool of read-only connections is possible, and is deferred until
+the request-latency metrics show the shared connection is the bottleneck.
 
 ### Durable relay op log (implemented)
 
@@ -186,7 +236,10 @@ step 3b before any commit.
 ## Durability
 
 - SQLite durability on commit, for the frame and its retention eviction
-  together — one transaction, one file.
+  together — one transaction, one file. The database runs in WAL mode with
+  `synchronous = NORMAL`, so a commit survives a crash of the server process
+  but the last few may not survive a power cut; see
+  [Schema versions and pragmas](#schema-versions-and-pragmas-implemented).
 - Blob chunks are written to a `.bin.tmp`, `sync_all`'d, then renamed into
   place, and the manifest is written last (unsynced), so an interrupted
   finalize leaves an invisible partial rather than a short read.
@@ -212,9 +265,9 @@ no `gc_grace_days` setting the parser will accept.
 
 There is no Postgres, so there is no `fsync = on` to check, and the
 `sunrise-server doctor` subcommand that would check it does not exist (see
-[`self-hosting.md`](./self-hosting.md) §"Not yet wired"). SQLite's own default
-`synchronous` setting governs relay durability; the server sets no `PRAGMA
-synchronous` of its own.
+[`self-hosting.md`](./self-hosting.md) §"Not yet wired"). Relay durability is
+governed by the `synchronous = NORMAL` the server sets under WAL, described
+under [Schema versions and pragmas](#schema-versions-and-pragmas-implemented).
 
 ## Blob storage
 
@@ -258,6 +311,7 @@ account under a BLAKE3 of the account id:
 <data_dir>/
 ├── sunrise.db                        # SQLite: accounts, devices, push_tokens,
 │                                     #   relay_frames, relay_frame_heads, relay_evicted
+├── sunrise.db-wal, sunrise.db-shm    # WAL and its index, present while the server runs
 └── blobs/
     ├── pending/<acct_h>/<upload_id>/
     │   └── blobs/<xx>/<upload_hex>/<i>.bin
