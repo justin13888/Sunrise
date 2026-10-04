@@ -33,7 +33,14 @@ use sunrise_domain::INBOX_STREAM_BYTES;
 use sunrise_storage::Db;
 
 /// Task counts to sweep, from the environment or the default pair.
+///
+/// Under `cargo test --all-targets` this target runs as a smoke test, with
+/// no `--bench` argument, and seeding a hundred thousand tasks through the
+/// command path in a debug build takes hours. There it runs one small size.
 fn sizes() -> Vec<usize> {
+    if !std::env::args().any(|a| a == "--bench") {
+        return vec![100];
+    }
     std::env::var("SUNRISE_BENCH_COMPACT_TASKS").map_or_else(
         |_| vec![10_000, 100_000],
         |raw| {
@@ -82,7 +89,12 @@ fn bench_compaction(c: &mut Criterion) {
 
     for n in sizes() {
         let mut vault = open_vault(5);
+        let seeding = std::time::Instant::now();
         seed_tasks(&mut vault, n, 11);
+        eprintln!(
+            "compaction/{n} tasks: seeded in {:.1} s",
+            seeding.elapsed().as_secs_f64()
+        );
         // The relay has acknowledged every op: compaction never folds one
         // still waiting to be sent.
         vault
