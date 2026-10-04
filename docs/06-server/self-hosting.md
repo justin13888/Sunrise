@@ -98,14 +98,18 @@ and the `sunrise-server doctor` subcommand.
 **Stopping.** `SIGTERM` or `SIGINT` starts a drain, logged as
 `srv.stop.draining`:
 
-1. `GET /api/v1/health?deep=1` starts answering `503`, so a load balancer
-   stops sending traffic here.
+1. `GET /api/v1/health?deep=1` starts answering `503`, and in the same
+   instant the listener stops accepting and idle connections close. There is
+   no pause between the two, so a load balancer sees refused connections
+   rather than a `503`; only a probe already in flight when the signal lands
+   gets the `503`. A balancer that must stop routing before the listener goes
+   away needs the orchestrator to deregister the instance before it sends
+   `SIGTERM` (a Kubernetes `preStop` sleep, for one).
 2. Every open sync stream is sent a `closed` event with
    `SYNC_NETWORK_UNAVAILABLE`, which clients treat as retryable: they
    reconnect with backoff, to this relay once it is back or to another.
-3. The listener stops accepting, and requests already in flight — an ops
-   batch, a blob chunk — get `[server] shutdown_grace_secs` (default 25) to
-   finish.
+3. Requests already in flight — an ops batch, a blob chunk — get
+   `[server] shutdown_grace_secs` (default 25) to finish.
 4. The WAL is checkpointed into `sunrise.db`, `srv.stop` is logged with
    `result = "drained"`, and the process exits 0.
 

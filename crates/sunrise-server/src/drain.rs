@@ -4,9 +4,12 @@
 //! resolves it stops accepting and waits for in-flight requests. Two things it
 //! cannot know are the server's to do:
 //!
-//! - **Readiness.** `GET /api/v1/health?deep=1` must answer `503` from the
-//!   moment the drain begins, so a load balancer stops routing here before the
-//!   listener goes away.
+//! - **Readiness.** `GET /api/v1/health?deep=1` answers `503` from the moment
+//!   the drain begins, so no probe reports a draining server as ready. That
+//!   moment is also when kynos stops accepting and starts closing idle
+//!   connections, so only a probe already in flight can see the `503`; a load
+//!   balancer learns of the drain from refused connections, not from it. No
+//!   pause holds the listener open for probes to notice first.
 //! - **The SSE streams.** A sync stream is a response that never finishes on
 //!   its own, so kynos's drain would wait on every open one until the deadline
 //!   and then cut it with no terminal event. Each stream instead watches this
