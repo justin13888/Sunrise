@@ -108,12 +108,22 @@ pub struct ServerConfig {
     /// Maximum accepted request body, in bytes.
     #[serde(default = "default_max_body_bytes")]
     pub max_body_bytes: usize,
+    /// How long a shutdown waits for in-flight requests before cutting them,
+    /// in seconds. `0` cuts them at once.
+    #[serde(default = "default_shutdown_grace_secs")]
+    pub shutdown_grace_secs: u64,
 }
 
 /// 2 MiB: comfortably above the largest legitimate REST body (a device cert or
 /// a blob-finalize manifest) and far below anything that would pressure memory.
 pub(super) const fn default_max_body_bytes() -> usize {
     2 * 1024 * 1024
+}
+
+/// 25 s: kynos's own default, which leaves a margin under the 30 s that
+/// Docker, systemd and Kubernetes each wait between `SIGTERM` and `SIGKILL`.
+pub(super) const fn default_shutdown_grace_secs() -> u64 {
+    25
 }
 
 /// [`crate::store::DEFAULT_BUSY_TIMEOUT`], in the unit the config is written
@@ -286,11 +296,19 @@ impl Default for ServerConfig {
             blob_root: None,
             allowed_origins: Vec::new(),
             max_body_bytes: default_max_body_bytes(),
+            shutdown_grace_secs: default_shutdown_grace_secs(),
         }
     }
 }
 
 impl ServerConfig {
+    /// [`ServerConfig::shutdown_grace_secs`] as the `Duration` the server
+    /// takes.
+    #[must_use]
+    pub const fn shutdown_grace(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.shutdown_grace_secs)
+    }
+
     /// [`ServerConfig::sqlite_busy_timeout_ms`] as the `Duration` the store
     /// takes.
     #[must_use]

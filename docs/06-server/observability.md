@@ -12,8 +12,8 @@ Operate the server without violating the E2EE guarantee.
 > `api/observe.rs` and end-to-end in `crates/sunrise-server/tests/logging.rs` —
 > and an in-process counter registry
 > exposed at `/metrics` (`metrics.rs`). **Not built:** labelled metrics of any
-> kind, histograms, OTel tracing and sampling, the deep health check, alerting,
-> and the per-account audit log. Each section says which it is.
+> kind, histograms, OTel tracing and sampling, the deep health check's
+> disk-free-ratio probe, alerting, and the per-account audit log. Each section says which it is.
 
 ## What we log
 
@@ -31,7 +31,7 @@ connection counts, per-account op rates and slow-query logs have no
 implementation; error frequency is recoverable from the `err_code` field on
 rejection lines, not from a metric.
 
-The 31 `ev` names the server emits, complete:
+The 34 `ev` names the server emits, complete:
 
 <!-- Extracted from the tree; do not edit by hand. Re-run and reconcile:
      grep -rhoE 'ev = "srv\.[a-z0-9_.]+"' crates/sunrise-server/src | sort -u
@@ -44,7 +44,7 @@ The 31 `ev` names the server emits, complete:
      NOT the commit that last changed the set. Now that the gate runs, it is
      provenance rather than the reader's assurance: diff that ref against HEAD
      over the grepped path to see what a human last looked at.
-     Last extracted: 556ff2a -->
+     Last extracted: 8701ee2 -->
 
 ```
 srv.start                        srv.req.start
@@ -53,8 +53,10 @@ srv.start.refused                srv.store.failed
 srv.start.single_tenant          srv.auth.device_sig_rejected
 srv.start.metrics_withheld       srv.auth.step_up_required
 srv.stop                         srv.relay.fanout
-srv.stop.failed                  srv.relay.append_failed
-srv.store.migrated               srv.relay.replay_failed
+srv.stop.draining                srv.relay.append_failed
+srv.stop.failed                  srv.relay.replay_failed
+srv.health.unready
+srv.store.migrated
 srv.store.quick_check
 srv.store.wal_unavailable
 srv.sync.negotiate_refused       srv.relay.cursor_gap
@@ -62,7 +64,8 @@ srv.sync.session_open            srv.relay.batch_duplicate
 srv.sync.subscribe               srv.sync.refresh_rejected
 srv.sync.stream_open             srv.sync.refresh_identity_mismatch
 srv.sync.stream_closed           srv.sync.refreshed
-srv.sync.token_expired           srv.sync.resume_conflict
+srv.sync.stream_drained          srv.sync.resume_conflict
+srv.sync.token_expired
 srv.sync.device_revoked
 ```
 
@@ -372,11 +375,21 @@ and unbuilt.
 ## Health
 
 - `GET /api/v1/health` returns 200 + `{"status":"ok"}`, unconditionally: the
-  handler reads no state, so it is liveness only.
-- A deeper readiness check at `/api/v1/health?deep=1` verifies DB, object store,
-  and disk free ratio. **Not implemented** — the query parameter is ignored, so
-  wiring `?deep=1` as a readiness probe today yields an unconditional 200. See
-  [`api.md`](./api.md) for the contract it will have.
+  handler reads no state, so it is liveness only. It stays 200 while the server
+  drains, because a draining process is alive.
+- `GET /api/v1/health?deep=1` is the readiness probe. It answers 200 only when
+  the server is not draining, the store answers `SELECT 1` within 2 s, and the
+  blob root takes a probe write within 5 s; otherwise 503 with `failed` naming
+  the checks. A failed dependency check logs `srv.health.unready`; a drain does
+  not, since it is expected. The disk-free-ratio check `api.md` lists is not
+  built. See [`api.md`](./api.md) §Health / meta for the body.
+- On `SIGTERM` or `SIGINT` the server logs `srv.stop.draining`, flips readiness
+  to 503, ends every open SSE stream with a retryable `closed` event, and gives
+  in-flight requests `[server] shutdown_grace_secs` (default 25) to finish
+  before logging `srv.stop`. A second signal stops it at once.
+- `sunrise-server healthcheck` probes the configured listener's liveness route
+  from inside the container, so the image's `HEALTHCHECK` needs no `curl`; see
+  [`self-hosting.md`](./self-hosting.md).
 
 ## Alerts (managed) — NOT IMPLEMENTED
 
