@@ -177,8 +177,8 @@ class SelfTest(GateCase):
     # decision this change took, and exactly one self-test case asserts it, so
     # the failure below is attributable rather than a wall of them.
     IMPL_BACK = (
-        r'r"(?:fn|struct|enum|trait|type|static|union)[ \t]+"',
-        r'r"(?:fn|struct|enum|trait|type|static|union|impl)[ \t]+"',
+        r'r"(?P<kind>fn|struct|enum|trait|type|static|union|const)[ \t]+"',
+        r'r"(?P<kind>fn|struct|enum|trait|type|static|union|const|impl)[ \t]+"',
     )
 
     def test_a_broken_rule_makes_the_self_test_exit_one(self):
@@ -1685,6 +1685,126 @@ class Symbols(GateCase):
         self.write("docs/a.md", "See `crates/c/src/mod.rs`.\n")
         self.assert_code(
             self.run_gate(), CLEAN, "OK: citations clean.", "1 anchored citation(s)"
+        )
+
+
+class DocRunDrift(GateCase):
+    """A single cited line inside the named item's doc comment, below its summary.
+
+    Containment passes it, because the doc run is part of the span, and that is
+    exactly where a line written for the declaration lands once the doc above
+    it grows (#264's `upsert_sync_cursor`, and two live citations when this
+    rule was measured, #299). The half that must stay clean is as load-bearing
+    as the half that fails: of the eight citations in the tree that landed
+    inside a doc run, six were deliberate, and each of their shapes -- a range,
+    the summary line, an attribute -- is pinned clean here.
+    """
+
+    RUST = (
+        "/// Summary of the item.\n"          # 1
+        "///\n"                               # 2
+        "/// # A section heading\n"           # 3
+        "/// The sentence a document cites.\n"  # 4
+        "#[kynos::delete(\n"                  # 5
+        '    "/api/v1/route",\n'              # 6
+        ")]\n"                                # 7
+        "pub fn wanted(\n"                    # 8
+        "    start: i64,\n"                   # 9
+        ") -> i64 {\n"                        # 10
+        "    start\n"                         # 11
+        "}\n"                                 # 12
+    )
+
+    def rust(self) -> None:
+        self.write("crates/c/src/lib.rs", self.RUST)
+
+    def test_a_single_line_below_the_summary_fails(self):
+        self.rust()
+        for line in (2, 3, 4):
+            with self.subTest(line=line):
+                self.write("docs/a.md", f"See `crates/c/src/lib.rs:{line}#wanted`.\n")
+                self.assert_code(
+                    self.run_gate(),
+                    DANGLING,
+                    "::error file=docs/a.md,line=1",
+                    f"cites line {line}, inside `wanted`'s doc comment in "
+                    "`crates/c/src/lib.rs` rather than at its declaration (8)",
+                    f"(`:{line}-{line}` for one line)",
+                )
+
+    def test_the_summary_line_is_the_item(self):
+        self.rust()
+        self.write("docs/a.md", "See `crates/c/src/lib.rs:1#wanted`.\n")
+        self.assert_code(self.run_gate(), CLEAN, "OK: citations clean.")
+
+    def test_a_range_is_the_waiver_for_citing_the_doc_itself(self):
+        # `N-N` included: the deliberate one-line case is written in the
+        # citation rather than kept in a list keyed on a line number.
+        self.rust()
+        self.write(
+            "docs/a.md",
+            "See `crates/c/src/lib.rs:4-4#wanted`, `crates/c/src/lib.rs:3-4#wanted` "
+            "and `crates/c/src/lib.rs:1-12#wanted`.\n",
+        )
+        self.assert_code(
+            self.run_gate(), CLEAN, "OK: citations clean.", "3 anchored citation(s)"
+        )
+
+    def test_attribute_declaration_and_body_lines_are_clean(self):
+        self.rust()
+        self.write(
+            "docs/a.md",
+            "".join(f"`crates/c/src/lib.rs:{line}#wanted`\n" for line in (5, 6, 7, 8, 9, 11)),
+        )
+        self.assert_code(
+            self.run_gate(), CLEAN, "OK: citations clean.", "6 anchored citation(s)"
+        )
+
+    def test_a_citation_with_no_suffix_is_not_read_this_way(self):
+        # The rule is about the item a suffix names. A bare `path:line` names
+        # none, so a doc line is as good a line as any other.
+        self.rust()
+        self.write("docs/a.md", "See `crates/c/src/lib.rs:3`.\n")
+        self.assert_code(self.run_gate(), CLEAN, "OK: citations clean.")
+
+    def test_four_slashes_is_not_a_doc_line(self):
+        # `////` is an ordinary comment, as `MARKER` has it. The start walk
+        # still crosses it, so the line is inside the span, but it is not doc
+        # text for a declaration to have drifted onto.
+        self.write(
+            "crates/c/src/lib.rs",
+            "/// Summary.\n"          # 1
+            "//// Not a doc line.\n"  # 2
+            "pub fn wanted() {}\n",   # 3
+        )
+        self.write("docs/a.md", "See `crates/c/src/lib.rs:2#wanted`.\n")
+        self.assert_code(self.run_gate(), CLEAN, "OK: citations clean.")
+
+    def test_a_line_that_is_code_in_another_declaration_is_taken_as_code(self):
+        # A name declared twice is one target, for this rule as for
+        # containment. Line 3 is doc interior to the inner `wanted` and body
+        # to the outer one, and a verdict that took the inner declaration
+        # alone would fail a line that is inside the outer item's code. The
+        # interior of a declaration nothing else contains still fails.
+        self.write(
+            "crates/c/src/lib.rs",
+            "pub fn wanted() -> u8 {\n"           # 1
+            "    /// Summary.\n"                  # 2
+            "    /// Interior.\n"                 # 3
+            "    fn wanted() -> u8 { 0 }\n"       # 4
+            "    wanted()\n"                      # 5
+            "}\n"                                 # 6
+            "\n"                                  # 7
+            "/// Summary.\n"                      # 8
+            "/// Interior.\n"                     # 9
+            "pub fn other() {}\n",                # 10
+        )
+        self.write("docs/a.md", "See `crates/c/src/lib.rs:3#wanted`.\n")
+        self.assert_code(self.run_gate(), CLEAN, "OK: citations clean.")
+
+        self.write("docs/b.md", "See `crates/c/src/lib.rs:9#other`.\n")
+        self.assert_code(
+            self.run_gate(), DANGLING, "rather than at its declaration (10)"
         )
 
 

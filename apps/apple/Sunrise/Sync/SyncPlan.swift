@@ -61,4 +61,34 @@ enum SyncPlan: Equatable {
             relayDeviceID: (device?.isEmpty ?? true) ? nil : device
         )
     }
+
+    /// The plan for `relayDeviceID` as `SessionModel.relayDeviceID` answers
+    /// it: an id, no id, or a Keychain that was reached and refused (#284).
+    ///
+    /// The first two are the plan above. The refusal is **off**, and not the
+    /// unbound driver the default's reasoning covers: that reasoning holds for
+    /// a device that never registered, where the relay's refusal is the signal
+    /// and registering is the remedy. Here the id may exist and the store
+    /// would not say, so an unbound driver either drops the ADR-0022 binding
+    /// for the life of the process on a relay that tolerates it, or is refused
+    /// as `AUTH_DEVICE_SIG_INVALID` — a message about a signature — for a
+    /// condition an unlock fixes. The reason names the Keychain instead, and
+    /// the next sync start reads it again. A plan that is already off for a
+    /// relay reason keeps that reason: it is the one the user can act on first.
+    init(relayURL: String, accessToken: String?, relayDeviceID: Result<String?, any Error>) {
+        switch relayDeviceID {
+        case let .success(id):
+            self.init(relayURL: relayURL, accessToken: accessToken, relayDeviceID: id)
+        case let .failure(refusal):
+            let plan = SyncPlan(relayURL: relayURL, accessToken: accessToken)
+            guard case .connect = plan else {
+                self = plan
+                return
+            }
+            self = .off(
+                reason: "Sync is off because the Keychain would not read this device's relay id: "
+                    + refusal.localizedDescription
+            )
+        }
+    }
 }

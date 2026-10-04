@@ -191,6 +191,49 @@ struct SyncPlanTests {
         )
     }
 
+    /// What `SessionModel.relayDeviceID` answers reaches the plan unchanged:
+    /// an id binds the driver and no id leaves it unbound.
+    @Test
+    func aResolvedIDIsPlannedAsTheIDItself() {
+        let id = "dev_01J8ZQ7X9K3M5N7P9R1T3V5W7Y"
+        #expect(
+            SyncPlan(relayURL: "https://relay.example", accessToken: "tok", relayDeviceID: .success(id))
+                == .connect(url: "https://relay.example", bearer: "tok", relayDeviceID: id)
+        )
+        #expect(
+            SyncPlan(relayURL: "https://relay.example", accessToken: "tok", relayDeviceID: .success(nil))
+                == .connect(url: "https://relay.example", bearer: "tok", relayDeviceID: nil)
+        )
+    }
+
+    /// #284: a Keychain that would not read the id is not a device that never
+    /// registered, so it does not connect unbound. It stays off, and says why
+    /// in the Keychain's own words rather than as a relay's refusal of a
+    /// signature.
+    @Test
+    func aRefusedReadKeepsSyncOffAndNamesTheKeychain() {
+        let refusal = KeychainError.migrationUnverified
+        guard case let .off(reason) = SyncPlan(
+            relayURL: "https://relay.example",
+            accessToken: "tok",
+            relayDeviceID: .failure(refusal)
+        ) else {
+            Issue.record("a refused read must not connect")
+            return
+        }
+        #expect(reason.contains("Keychain would not read this device's relay id"))
+        #expect(reason.hasSuffix(refusal.localizedDescription))
+    }
+
+    /// No relay is the first thing to fix, whatever the Keychain said.
+    @Test
+    func aRelayReasonOutranksARefusedRead() {
+        #expect(
+            SyncPlan(relayURL: "", accessToken: "tok", relayDeviceID: .failure(KeychainError.malformedItem))
+                == .off(reason: "No relay is configured.")
+        )
+    }
+
     /// The scheme this test asserted was the *only* valid one until ADR-0023,
     /// and is now the only invalid one. Sync is an SSE stream over HTTP, so a
     /// relay is reached at its origin.

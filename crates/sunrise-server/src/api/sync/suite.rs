@@ -31,7 +31,7 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;
     use sunrise_cbor::magic::{write_prefix, MagicKind, MAGIC_LEN};
-    use sunrise_cbor::version::{ENVELOPE_FORMAT_V, WIRE_PROTO_V};
+    use sunrise_cbor::version::{ENVELOPE_FORMAT_FLOOR, ENVELOPE_FORMAT_V, WIRE_PROTO_V};
     use sunrise_wire_protocol::{Capability, CapabilityBits};
 
     const STREAM_BYTES: [u8; 16] = [0x11; 16];
@@ -154,6 +154,35 @@ mod tests {
         ];
         let mut out = vec![0u8; MAGIC_LEN];
         write_prefix(&mut out, MagicKind::OpEnvelope, ENVELOPE_FORMAT_V);
+        ciborium::ser::into_writer(&Value::Map(entries), &mut out).unwrap();
+        base64::engine::general_purpose::STANDARD.encode(out)
+    }
+
+    /// [`envelope`] as a writer one container newer would emit it (ADR-0045
+    /// §5): this build's floor in the prefix, `ENVELOPE_FORMAT_V + 1` in field
+    /// 1, and a field this build does not know.
+    fn newer_container_envelope(device: [u8; 16], seq: u64) -> String {
+        use base64::Engine as _;
+        use ciborium::value::Value;
+        let entries: Vec<(Value, Value)> = vec![
+            (
+                Value::Integer(1.into()),
+                Value::Integer((ENVELOPE_FORMAT_V + 1).into()),
+            ),
+            (
+                Value::Integer(2.into()),
+                Value::Bytes(STREAM_BYTES.to_vec()),
+            ),
+            (Value::Integer(3.into()), Value::Bytes(device.to_vec())),
+            (Value::Integer(4.into()), Value::Integer(seq.into())),
+            (
+                Value::Integer(10.into()),
+                Value::Bytes(vec![u8::try_from(seq & 0xff).unwrap(); 32]),
+            ),
+            (Value::Integer(23.into()), Value::Text("future".into())),
+        ];
+        let mut out = vec![0u8; MAGIC_LEN];
+        write_prefix(&mut out, MagicKind::OpEnvelope, ENVELOPE_FORMAT_FLOOR);
         ciborium::ser::into_writer(&Value::Map(entries), &mut out).unwrap();
         base64::engine::general_purpose::STANDARD.encode(out)
     }
@@ -439,6 +468,11 @@ mod tests {
                 serde_json::json!(expected),
                 "a refusal on {field} must carry {expected}, not a shared code"
             );
+            // The metric splits on the same code, so a dashboard can tell a
+            // stale app from a stale relay too.
+            let reason = [("reason", expected)];
+            let refused = "sunrise_sync_negotiate_refused_total";
+            assert_eq!(client.metrics.get_with(refused, &reason), 1, "{expected}");
         }
     }
 
@@ -544,6 +578,40 @@ mod tests {
             body.matches("\"kind\":\"ops\"").count(),
             1,
             "only what the cursor does not cover may replay: {body}"
+        );
+    }
+
+    /// ADR-0045 §5, issue #329: an envelope one container newer, at a floor
+    /// this relay implements, is routed by its header like any other. The
+    /// cursor narrows its replay, which it can only do if the relay read the
+    /// device and seq out of it.
+    #[tokio::test]
+    async fn a_newer_container_at_this_floor_is_routed_by_its_header() {
+        let client = Client::new(ServerConfig::default());
+        let writer = establish(&client).await;
+        let device = [9u8; 16];
+
+        for seq in 1..=3u64 {
+            assert_eq!(
+                publish(
+                    &client,
+                    &writer,
+                    vec![newer_container_envelope(device, seq)],
+                    seq
+                )
+                .await,
+                StatusCode::OK
+            );
+        }
+
+        let reader = establish(&client).await;
+        subscribe(&client, &reader, Some((hex::encode(device), 2))).await;
+
+        let body = read(&client, &reader, &[]).await;
+        assert_eq!(
+            body.matches("\"kind\":\"ops\"").count(),
+            1,
+            "the relay must read the newer container's header to narrow the replay: {body}"
         );
     }
 
@@ -916,6 +984,28 @@ mod tests {
         assert!(
             CapabilityBits(agreed).has(Capability::SrvTokenRefresh),
             "a client only asks for a refresh if it sees this bit come back"
+        );
+    }
+
+    /// ADR-0045 §5: bit 9 tells a client this relay routes a newer envelope
+    /// container. It is agreed by AND, so the client offers it here.
+    #[tokio::test]
+    async fn the_relay_advertises_the_envelope_floor_capability() {
+        let client = Client::new(ServerConfig::default());
+        let mut hello = hello();
+        hello["capabilities"] = serde_json::json!(
+            sunrise_wire_protocol::REQUIRED_CLIENT_BITS.0
+                | CapabilityBits::EMPTY.with(Capability::SrvEnvelopeFloor).0
+        );
+        let res = client
+            .send(Method::POST, "/api/v1/sync/session", Some(&hello))
+            .await;
+        res.assert_status(StatusCode::CREATED);
+
+        let agreed = res.json()["capabilities"].as_u64().expect("a bitfield");
+        assert!(
+            CapabilityBits(agreed).has(Capability::SrvEnvelopeFloor),
+            "a client writes a newer container only to a relay that agreed this bit"
         );
     }
 
@@ -1476,6 +1566,14 @@ mod tests {
             "a re-send is acked with the timestamp the first copy got"
         );
         assert_eq!(client.metrics.get("sunrise_relay_batch_duplicate_total"), 1);
+        // Received work counts the first copy only; the re-send is churn.
+        assert_eq!(client.metrics.get("sunrise_sync_ops_received_total"), 1);
+        assert_eq!(
+            client
+                .metrics
+                .histogram_count("sunrise_sync_batch_ops", &[]),
+            1
+        );
 
         let body = read(&client, &id, &[]).await;
         assert_eq!(
@@ -1716,5 +1814,265 @@ mod tests {
                 "for {id}"
             );
         }
+    }
+
+    // -- push wake-ups --------------------------------------------------------
+
+    /// A provider that hands every intent to the test.
+    #[derive(Debug)]
+    struct Recorder(tokio::sync::mpsc::UnboundedSender<crate::push::PushIntent>);
+
+    #[async_trait::async_trait]
+    impl crate::push::PushProvider for Recorder {
+        fn platform(&self) -> crate::push::PushPlatform {
+            crate::push::PushPlatform::Apns
+        }
+        async fn send(
+            &self,
+            intent: &crate::push::PushIntent,
+        ) -> Result<(), crate::push::PushError> {
+            let _ = self.0.send(intent.clone());
+            Ok(())
+        }
+    }
+
+    /// A provider that never answers, so every delivery holds its slot.
+    #[derive(Debug)]
+    struct Stalled;
+
+    #[async_trait::async_trait]
+    impl crate::push::PushProvider for Stalled {
+        fn platform(&self) -> crate::push::PushPlatform {
+            crate::push::PushPlatform::Apns
+        }
+        async fn send(&self, _: &crate::push::PushIntent) -> Result<(), crate::push::PushError> {
+            std::future::pending().await
+        }
+    }
+
+    /// A phone and a laptop on one account, both holding an APNs token, and a
+    /// session the phone established.
+    struct PushPair {
+        phone: (String, ed25519_dalek::SigningKey),
+        laptop: (String, ed25519_dalek::SigningKey),
+        phone_session: String,
+    }
+
+    async fn push_pair(client: &Client) -> PushPair {
+        let phone = register_device(client, 50, "phone", Some(SESSION_PHONE_VAULT_ID)).await;
+        let laptop = register_device(client, 51, "laptop", Some(SESSION_LAPTOP_VAULT_ID)).await;
+        for ((id, key), token) in [(&phone, "aa01"), (&laptop, "bb02")] {
+            send_signed(
+                client,
+                "POST",
+                "/api/v1/devices/push-tokens",
+                id,
+                key,
+                Some(&serde_json::json!({ "device_id": id, "platform": "apns", "token": token })),
+            )
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+        }
+        let phone_session = signed_session(client, &phone).await;
+        PushPair {
+            phone,
+            laptop,
+            phone_session,
+        }
+    }
+
+    async fn signed_session(
+        client: &Client,
+        (id, key): &(String, ed25519_dalek::SigningKey),
+    ) -> String {
+        let opened = send_signed(
+            client,
+            "POST",
+            "/api/v1/sync/session",
+            id,
+            key,
+            Some(&hello()),
+        )
+        .await;
+        opened.assert_status(StatusCode::CREATED);
+        opened.json()["session_id"].as_str().unwrap().to_owned()
+    }
+
+    /// The phone publishes one batch to `stream`, signed, on its session.
+    async fn phone_publishes(
+        client: &Client,
+        pair: &PushPair,
+        stream: [u8; 16],
+        seq: u64,
+    ) -> StatusCode {
+        let (id, key) = &pair.phone;
+        let batch = serde_json::json!({
+            "stream_id": hex::encode(stream),
+            "batch_id": seq,
+            "ops": [envelope([0xaa; 16], seq)],
+        });
+        send_signed_with(
+            client,
+            "POST",
+            "/api/v1/sync/ops",
+            id,
+            key,
+            Some(&batch),
+            &[("x-sunrise-session", pair.phone_session.as_str())],
+        )
+        .await
+        .status
+    }
+
+    /// Through the whole surface: a published batch wakes the peer that has no
+    /// stream open, once, and never the device that sent it.
+    #[tokio::test]
+    async fn a_published_batch_wakes_the_offline_peer_and_not_the_sender() {
+        let (tx, mut woken) = tokio::sync::mpsc::unbounded_channel();
+        let client = Client::from_state(
+            ServerState::new(ServerConfig::default()).with_push_provider(Arc::new(Recorder(tx))),
+        );
+        let pair = push_pair(&client).await;
+        assert_eq!(
+            phone_publishes(&client, &pair, STREAM_BYTES, 1).await,
+            StatusCode::OK
+        );
+
+        let push = tokio::time::timeout(std::time::Duration::from_secs(5), woken.recv())
+            .await
+            .expect("the offline laptop is woken")
+            .unwrap();
+        assert_eq!(push.registration.device_id, pair.laptop.0);
+        assert_eq!(push.registration.token, "bb02");
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(200), woken.recv())
+                .await
+                .is_err(),
+            "one batch is one push, and the phone is not woken by its own batch"
+        );
+    }
+
+    /// A re-sent batch the relay already holds wakes nobody: only a fresh
+    /// append queues a wake. The window is zero, so a second wake would be a
+    /// second push at once rather than coalescing into the first.
+    #[tokio::test]
+    async fn a_resent_duplicate_batch_wakes_nobody() {
+        let (tx, mut woken) = tokio::sync::mpsc::unbounded_channel();
+        let client = Client::from_state(ServerState::new(ServerConfig::default()).with_push(
+            crate::push::Dispatcher::with_tuning(
+                Arc::new(Recorder(tx)),
+                crate::push::Tuning {
+                    window_ms: 0,
+                    ..crate::push::Tuning::default()
+                },
+            ),
+        ));
+        let pair = push_pair(&client).await;
+        for _ in 0..2 {
+            assert_eq!(
+                phone_publishes(&client, &pair, STREAM_BYTES, 1).await,
+                StatusCode::OK
+            );
+        }
+        assert_eq!(client.metrics.get("sunrise_relay_batch_duplicate_total"), 1);
+
+        let push = tokio::time::timeout(std::time::Duration::from_secs(5), woken.recv())
+            .await
+            .expect("the fresh batch wakes the laptop")
+            .unwrap();
+        assert_eq!(push.registration.device_id, pair.laptop.0);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(200), woken.recv())
+                .await
+                .is_err(),
+            "the duplicate is one push in total, not two"
+        );
+        // The control: a fresh batch on the same stream is pushed at once
+        // under this window, so the silence above is the duplicate's.
+        assert_eq!(
+            phone_publishes(&client, &pair, STREAM_BYTES, 2).await,
+            StatusCode::OK
+        );
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(5), woken.recv())
+                .await
+                .is_ok(),
+            "a fresh batch after it is pushed"
+        );
+    }
+
+    /// A device reading its event stream is sent its ops there, not a push;
+    /// once the stream ends it is wakeable again.
+    #[tokio::test]
+    async fn a_peer_holding_an_event_stream_is_not_woken() {
+        let (tx, mut woken) = tokio::sync::mpsc::unbounded_channel();
+        let client = Client::from_state(
+            ServerState::new(ServerConfig::default()).with_push_provider(Arc::new(Recorder(tx))),
+        );
+        let pair = push_pair(&client).await;
+        let laptop_session = signed_session(&client, &pair.laptop).await;
+        subscribe(&client, &laptop_session, None).await;
+
+        let (body, published) = tokio::join!(read(&client, &laptop_session, &[]), async {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            phone_publishes(&client, &pair, STREAM_BYTES, 1).await
+        });
+        assert_eq!(published, StatusCode::OK);
+        assert!(
+            body.contains("\"kind\":\"ops\""),
+            "delivered on the stream: {body}"
+        );
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(200), woken.recv())
+                .await
+                .is_err(),
+            "a device with a stream open is not pushed"
+        );
+
+        assert_eq!(
+            phone_publishes(&client, &pair, STREAM_BYTES, 2).await,
+            StatusCode::OK
+        );
+        let push = tokio::time::timeout(std::time::Duration::from_secs(5), woken.recv())
+            .await
+            .expect("the stream ended, so the laptop is offline again")
+            .unwrap();
+        assert_eq!(push.registration.device_id, pair.laptop.0);
+    }
+
+    /// A dispatcher that cannot keep up drops wakes; the publish path neither
+    /// fails nor waits on it.
+    #[tokio::test]
+    async fn a_full_push_queue_never_fails_or_slows_a_publish() {
+        let state = ServerState::new(ServerConfig::default()).with_push(
+            crate::push::Dispatcher::with_tuning(
+                Arc::new(Stalled),
+                crate::push::Tuning {
+                    queue: 1,
+                    in_flight: 1,
+                    per_device_per_min: 1_000,
+                    ..crate::push::Tuning::default()
+                },
+            ),
+        );
+        let client = Client::from_state(state);
+        let pair = push_pair(&client).await;
+        // Distinct streams, so no wake coalesces into another and each one
+        // needs a delivery slot the stalled provider never gives back.
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            for s in 0..20u8 {
+                assert_eq!(
+                    phone_publishes(&client, &pair, [s; 16], u64::from(s) + 1).await,
+                    StatusCode::OK
+                );
+            }
+        })
+        .await
+        .expect("every publish returned while the push queue was full");
+        let dropped = client.metrics.get_with(
+            "sunrise_push_dispatch_total",
+            &[("provider", "apns"), ("result", "dropped")],
+        );
+        assert!(dropped >= 1, "the full queue dropped wakes: {dropped}");
     }
 }

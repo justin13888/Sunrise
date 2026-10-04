@@ -45,6 +45,11 @@ pub static ALLOWED: &[&str] = &[
     "blob_h",
     "block_h",
     "cause",
+    // A client address truncated to its `/24` (IPv4) or `/48` (IPv6), the
+    // finest §6.2 of logging.md permits. Written only by the relay's
+    // rate-limit refusal (`sunrise_server::api::ratelimit::policy::address_net`),
+    // which needs to say which client it refused and must not say who.
+    "client_net",
     "crypto_v",
     "delay_ms",
     "device_h",

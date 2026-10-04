@@ -212,15 +212,4 @@ extension NoteMark {
         case .code: "Code"
         }
     }
-
-    /// The letter that toggles it with Command held.
-    var shortcut: KeyEquivalent {
-        switch self {
-        case .bold: "b"
-        case .italic: "i"
-        case .underline: "u"
-        case .strike: "x"
-        case .code: "e"
-        }
-    }
 }

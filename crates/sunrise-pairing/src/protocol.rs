@@ -79,14 +79,17 @@
 //!   sign under, and the failure would not surface until the first op it tried
 //!   to publish was refused by every peer.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use subtle::ConstantTimeEq;
 use sunrise_crypto::keys::{DeviceDhKeyPair, DeviceSigningKeyPair};
 use sunrise_crypto::{device_id_from_pub, identity_id_from_pub, DeviceCert};
 use zeroize::Zeroize;
 
-use crate::payload::{arr16, arr32, int, PairingPayload, PairingPayloadError, MAX_PAIRING_PAYLOAD};
+use crate::payload::{
+    arr16, arr32, int, read_bounds_value, read_read_bounds, PairingPayload, PairingPayloadError,
+    MAX_PAIRING_PAYLOAD,
+};
 
 /// Message 1: what the sponsor offers, before it has been asked for anything.
 ///
@@ -174,6 +177,10 @@ pub struct PairingGrant {
     pub vault_root: [u8; 32],
     /// Every Stream key the sponsoring device holds: `stream_id -> epoch -> key`.
     pub stream_keys: BTreeMap<[u8; 16], BTreeMap<u32, [u8; 32]>>,
+    /// Every device the sponsor has read-bounded, which the joiner adopts.
+    /// See [`PairingPayload::read_bounds`] for why the bound travels and the
+    /// ledger does not.
+    pub read_bounds: BTreeSet<[u8; 16]>,
 }
 
 impl Zeroize for PairingGrant {
@@ -421,6 +428,7 @@ impl PairingGrant {
     ///     1: bstr,            ; DeviceCert, canonical CBOR
     ///     2: bstr .size 32,   ; vault_root
     ///     3: { * bstr .size 16 => { * uint => bstr .size 32 } },  ; stream_keys
+    ///   ? 4: [ * bstr .size 16 ],  ; read_bounds, omitted when empty
     /// }
     /// ```
     ///
@@ -442,11 +450,14 @@ impl PairingGrant {
             }
             streams.push((Value::Bytes(stream_id.to_vec()), Value::Map(per_epoch)));
         }
-        let map = vec![
+        let mut map = vec![
             (int(1), Value::Bytes(self.device_cert.clone())),
             (int(2), Value::Bytes(self.vault_root.to_vec())),
             (int(3), Value::Map(streams)),
         ];
+        if let Some(bounds) = read_bounds_value(&self.read_bounds) {
+            map.push((int(4), bounds));
+        }
         let mut out = Vec::with_capacity(512);
         ciborium::ser::into_writer(&Value::Map(map), &mut out)
             .map_err(|e| PairingPayloadError::Cbor(e.to_string()))?;
@@ -516,6 +527,7 @@ impl PairingGrant {
         let device_cert = std::mem::take(&mut grant.device_cert);
         let vault_root = grant.vault_root;
         let stream_keys = std::mem::take(&mut grant.stream_keys);
+        let read_bounds = std::mem::take(&mut grant.read_bounds);
         grant.vault_root.zeroize();
         Ok(PairingPayload {
             id_s_pub: offer.id_s_pub,
@@ -528,6 +540,7 @@ impl PairingGrant {
             device_cert,
             vault_root,
             stream_keys,
+            read_bounds,
         })
     }
 }
@@ -556,6 +569,7 @@ pub fn decode_pairing_grant(bytes: &[u8]) -> Result<PairingGrant, PairingPayload
     let mut device_cert: Option<Vec<u8>> = None;
     let mut vault_root: Option<[u8; 32]> = None;
     let mut stream_keys: BTreeMap<[u8; 16], BTreeMap<u32, [u8; 32]>> = BTreeMap::new();
+    let mut read_bounds: BTreeSet<[u8; 16]> = BTreeSet::new();
 
     for (k, v) in map {
         let Value::Integer(i) = k else {
@@ -567,7 +581,10 @@ pub fn decode_pairing_grant(bytes: &[u8]) -> Result<PairingGrant, PairingPayload
             (3, Value::Map(streams)) => {
                 crate::payload::read_stream_keys(streams, &mut stream_keys)?;
             }
-            (id, _) if (1..=3).contains(&id) => {
+            // Optional, and absent from a sponsor that predates it: the joiner
+            // then adopts no bound, which is where every joiner used to start.
+            (4, Value::Array(ids)) => read_read_bounds(ids, &mut read_bounds)?,
+            (id, _) if (1..=4).contains(&id) => {
                 return Err(PairingPayloadError::BadField("grant field shape"));
             }
             _ => {}
@@ -578,6 +595,7 @@ pub fn decode_pairing_grant(bytes: &[u8]) -> Result<PairingGrant, PairingPayload
         device_cert: device_cert.ok_or(PairingPayloadError::BadField("grant device_cert"))?,
         vault_root: vault_root.ok_or(PairingPayloadError::BadField("grant vault_root"))?,
         stream_keys,
+        read_bounds,
     })
 }
 
@@ -830,6 +848,7 @@ mod tests {
             device_cert: DeviceCert::issue(body, signing).unwrap().to_cbor().unwrap(),
             vault_root: [0x25; 32],
             stream_keys,
+            read_bounds: BTreeSet::from([[0xc1; 16]]),
         }
     }
 
@@ -910,6 +929,22 @@ mod tests {
             .expect("an honest grant is accepted");
         assert_eq!(payload.vault_root, [0x25; 32]);
         assert_eq!(payload.d_s_priv, d_s.secret_bytes());
+        assert_eq!(
+            payload.read_bounds,
+            BTreeSet::from([[0xc1; 16]]),
+            "the sponsor's read bound reaches the payload the joiner opens with"
+        );
+    }
+
+    /// A grant from a sponsor that predates field 4 carries no bound, and the
+    /// joiner accepts it with an empty one rather than refusing to pair.
+    #[test]
+    fn a_grant_without_read_bounds_decodes_with_none() {
+        let (_, _, request) = joiner();
+        let mut g = grant_for(&request, &sponsor_identity());
+        g.read_bounds.clear();
+        let bytes = g.encode().unwrap();
+        assert!(decode_pairing_grant(&bytes).unwrap().read_bounds.is_empty());
     }
 
     /// The check that makes a second sponsor useless. A request replayed at a

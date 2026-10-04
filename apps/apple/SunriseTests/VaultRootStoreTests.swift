@@ -123,11 +123,12 @@ private func storedAccessibility(of item: KeychainItem) -> String? {
 }
 
 // The expectations differ by platform, and the difference is the finding:
-// only the data-protection keychain has protection classes, and the Mac app
-// does not use it (no App Sandbox, no keychain-access-group entitlement — see
-// `project.yml`, where both are deferred to release work). A `SecItemAdd` with
-// `kSecUseDataProtectionKeychain` from this app returns `errSecMissingEntitlement`
-// (-34018) today. If the Mac ever gains that entitlement, these two lines
+// only the data-protection keychain has protection classes, and the Debug
+// test host does not reach it. `project.yml` puts `keychain-access-groups` on
+// the Release configuration only, and every scheme's `test` action is Debug,
+// so the build these tests run in carries no entitlement: a `SecItemAdd` with
+// `kSecUseDataProtectionKeychain` from it returns `errSecMissingEntitlement`
+// (-34018). On a test run hosted by an entitled build these two lines
 // collapse into one and macOS gains the guarantee with them.
 #if os(iOS)
 private let expectedThisDeviceOnly: String? = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly as String

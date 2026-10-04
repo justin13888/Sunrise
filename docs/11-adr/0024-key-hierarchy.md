@@ -11,6 +11,31 @@ stream-less content, under the same rules as a Stream key.
 [`recovery.md`](../03-crypto/recovery.md), which specify the target hierarchy this
 ADR adopts. **Bumps** `CRYPTO_SUITE_V` and `DOC_SCHEMA_V`.
 
+**Amended (2026-09, third):** the first 2026-09 amendment below ("Writes remain
+unbounded … it cannot be told today") and decision 5's scope note ("Writes are
+**not** bounded … peers do not refuse a revoked device's ops") describe the
+tree before [#80](https://github.com/justin13888/Sunrise/issues/80) and
+[#82](https://github.com/justin13888/Sunrise/issues/82) closed, and both are
+now false. **The relay is told.** `DELETE /api/v1/devices/by-vault-id/{id}`
+takes the vault-side device id a revoking device holds, `Command::RevokeDevice`
+queues a `relay_revocation_intents` row, and the sync driver drains it. That
+bounds writes only at the relay and only against a device-bound request: with
+`[auth] require_device_sig` at its default `false` a revoked device that stops
+signing keeps uploading, so there is no write bound at all, and
+[`key-rotation.md`](../03-crypto/key-rotation.md) §Implementation status states
+the other two conditions. **Peers refuse two control ops**, `device_revoke` and
+a read-bounded sender's claim that a third device was sent a key, because the
+register they feed is a fold the engine re-derives
+([ADR-0041](./0041-peer-side-revocation-is-a-fold.md), which closed #82). A
+revoked device's **entity** writes are still applied everywhere, and the
+non-convergence argument in decision 5 is now the reason for that narrower
+decision alone ([ADR-0034](./0034-revocation-bounds-reads-not-writes.md)). The
+read half of decision 5 stands in substance, with two corrections: the anti-join
+in `emit_key_envelopes` is now against `device_read_bounds` rather than the
+register (ADR-0041 §Decision 3, migration 0028), and the bound holds on a replica that applied
+the revocation while its sender was still ungated there, not on every replica
+that applied it (`key-rotation.md` §Implementation status).
+
 **Amended (2026-09, second):** decision 4 says the identity recipient class
 exists "so the recovery path can reach them", and §What this fixes in
 `recovery.md` below concludes that a pure recovery therefore restores readable
@@ -143,7 +168,9 @@ Alongside it, the hierarchy the documents already specify is made real:
    comes afterwards too: see the scope note below.
 
    **Scope, as amended: revocation bounds reads. It does not bound writes.**
-   Reads are bounded in the vault, on every replica that has
+   **Amended again (see the third amendment above): writes are now bounded at
+   the relay, conditionally, and peers refuse two control ops; only entity
+   writes are unrefused.** Reads are bounded in the vault, on every replica that has
    applied the revocation: `emit_key_envelopes` anti-joins the register, and
    there is no identity copy for a paired device to open instead. Writes are
    **not** bounded — an earlier slice of this work queued a relay request and

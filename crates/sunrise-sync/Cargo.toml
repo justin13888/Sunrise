@@ -60,4 +60,4 @@ sunrise-wire-protocol = { workspace = true, optional = true }
 # which needs a concrete key. The crate itself never holds one: it asks a
 # `DeviceSigner` for signatures.
 ed25519-dalek = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "net"] }

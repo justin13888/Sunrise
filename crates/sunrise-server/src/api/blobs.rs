@@ -36,6 +36,8 @@
 //! works where it should — across one account's devices.
 
 use crate::api::error::{codes, ApiError};
+use crate::api::ratelimit::policy::Budget;
+use crate::api::ratelimit::Throttled;
 use crate::api::signed::{Caller, Signed, SignedBinary, SignedParts};
 use crate::state::ServerState;
 use kynos::di::inject::Inject;
@@ -237,23 +239,29 @@ pub async fn init(
         caller,
         value: body,
     }: Signed<InitRequest>,
-) -> Result<Json<InitResponse>, ApiError> {
+) -> Result<Json<InitResponse>, Throttled> {
     if body.chunk_count == 0 || body.chunk_count > MAX_CHUNK_COUNT {
-        return Err(ApiError::validation(format!(
-            "chunk_count must be 1..={MAX_CHUNK_COUNT}"
-        )));
+        return Err(
+            ApiError::validation(format!("chunk_count must be 1..={MAX_CHUNK_COUNT}")).into(),
+        );
     }
     if body.size_bytes > MAX_BLOB_BYTES {
         return Err(ApiError::validation(format!(
             "size_bytes exceeds the {MAX_BLOB_BYTES}-byte per-attachment limit"
-        )));
+        ))
+        .into());
     }
     if body.stream_id.trim().is_empty() {
-        return Err(ApiError::validation("stream_id required"));
+        return Err(ApiError::validation("stream_id required").into());
     }
+    refuse_if_pending(&state, &caller)?;
 
     let mut raw = [0u8; 16];
     getrandom::getrandom(&mut raw).map_err(|_| ApiError::internal())?;
+    // Counted until `finalize`, or until it goes an hour untouched.
+    state
+        .limiter
+        .open_upload(&state, "/api/v1/blobs/init", &caller, raw)?;
     let upload_id = format!("up_{}", hex::encode(raw));
     // Create the pending area eagerly so a chunk PUT is a write, not a
     // mkdir-then-write race between two concurrent chunk uploads.
@@ -274,23 +282,40 @@ pub async fn put_chunk(
     Inject(state): Inject<ServerState>,
     Path(path): Path<ChunkPath>,
     SignedBinary { caller, bytes }: SignedBinary,
-) -> Result<NoContent, ApiError> {
+) -> Result<NoContent, Throttled> {
     let upload = parse_upload_id(&path.upload_id.0)?;
     if path.chunk_idx >= MAX_CHUNK_COUNT {
-        return Err(ApiError::validation(format!(
-            "chunk index must be < {MAX_CHUNK_COUNT}"
-        )));
+        return Err(
+            ApiError::validation(format!("chunk index must be < {MAX_CHUNK_COUNT}")).into(),
+        );
     }
     if bytes.is_empty() || bytes.len() > MAX_CHUNK_BYTES {
-        return Err(ApiError::validation(format!(
-            "chunk must be 1..={MAX_CHUNK_BYTES} bytes"
-        )));
+        return Err(
+            ApiError::validation(format!("chunk must be 1..={MAX_CHUNK_BYTES} bytes")).into(),
+        );
     }
+    refuse_if_pending(&state, &caller)?;
+    state
+        .limiter
+        .charge(
+            &state,
+            "/api/v1/blobs/{upload_id}/{chunk_idx}",
+            Budget::BlobUpload,
+            &caller,
+            bytes.len() as u64,
+        )
+        .await?;
+    state.limiter.touch_upload(&state, &caller, upload);
     let store = pending_store(&state, &caller, &upload)?;
     store
         .put_chunk(&upload, path.chunk_idx, &bytes)
         .map_err(|_| ApiError::internal())?;
     state.metrics.incr("sunrise_blob_chunk_total");
+    state.metrics.add_with(
+        "sunrise_blob_bytes_total",
+        &[("direction", "upload")],
+        bytes.len() as u64,
+    );
     Ok(NoContent)
 }
 
@@ -332,6 +357,7 @@ pub async fn finalize(
         .iter()
         .map(|h| parse_hash(&h.0, "chunk_hashes"))
         .collect::<Result<_, _>>()?;
+    refuse_if_pending(&state, &caller)?;
 
     let pending = pending_store(&state, &caller, &upload)?;
     // Re-hash what is actually on disk. The client's hashes are a claim; this
@@ -383,8 +409,21 @@ pub async fn finalize(
     }
     let chunk_count = u32::try_from(chunks.len()).map_err(|_| ApiError::internal())?;
     write_manifest(&state, &caller, &blob, chunk_count, size_bytes)?;
-    // Best effort: a leftover pending area costs disk, never correctness.
-    let _ = pending.delete_all(&upload);
+    // The same ciphertext uploaded again is the attachment coming back — a
+    // detach undone, or the same file attached elsewhere — so any tombstone
+    // on its content address no longer describes it.
+    state
+        .store
+        .clear_tombstone(&caller.principal.account.account_id, &blob)?;
+    // Best effort: a leftover pending area costs disk, never correctness, and
+    // the maintenance pass sweeps whatever this leaves. The whole upload
+    // directory rather than `delete_all`, which empties the chunk directory
+    // and left the upload's own directory behind on every finalize.
+    let _ = std::fs::remove_dir_all(pending_dir(
+        &account_root(&state, &caller, PENDING),
+        &upload,
+    ));
+    state.limiter.close_upload(&caller, upload);
 
     state.metrics.incr("sunrise_blob_finalize_total");
     Ok(Json(FinalizeResponse {
@@ -407,18 +446,111 @@ pub async fn fetch(
     Inject(state): Inject<ServerState>,
     Path(path): Path<BlobIdPath>,
     SignedParts(caller): SignedParts,
-) -> Result<BinaryStream<ChunkStream, OctetStream>, ApiError> {
+) -> Result<BinaryStream<ChunkStream, OctetStream>, Throttled> {
     let blob = parse_blob_id(&path.blob_id.0)?;
-    let (chunk_count, _) = read_manifest(&state, &caller, &blob)?.ok_or_else(not_found)?;
+    let (chunk_count, size_bytes) = read_manifest(&state, &caller, &blob)?.ok_or_else(not_found)?;
     let store = committed_store(&state, &caller)?;
     if !store
         .has_all(&blob, chunk_count)
         .map_err(|_| ApiError::internal())?
     {
-        return Err(not_found());
+        return Err(not_found().into());
     }
+    // The whole blob up front, from the manifest: once the status is sent
+    // the body cannot be refused part-way, and a fetch abandoned early is a
+    // client's to repeat.
+    state
+        .limiter
+        .charge(
+            &state,
+            "/api/v1/blobs/{blob_id}",
+            Budget::BlobDownload,
+            &caller,
+            size_bytes,
+        )
+        .await?;
     state.metrics.incr("sunrise_blob_fetch_total");
-    Ok(BinaryStream::new(chunk_stream(store, blob, chunk_count)))
+    Ok(BinaryStream::new(chunk_stream(
+        store,
+        blob,
+        chunk_count,
+        state.metrics.clone(),
+    )))
+}
+
+/// `DELETE /api/v1/blobs/{blob_id}` request body: the op that detached the
+/// blob, named by the cleartext routing head the relay already reads off
+/// every op.
+#[derive(Debug, Clone, Serialize, Deserialize, kynos::Schema)]
+#[serde(deny_unknown_fields)]
+pub struct BlobDeleteRequest {
+    /// The stream the detaching op was published in, 32 lowercase hex.
+    #[schema(pattern = "^[0-9a-f]{32}$")]
+    pub stream_id: String,
+    /// The device that published it — the op's routing `device_id`, as
+    /// subscribe cursors spell it: 32 lowercase hex.
+    #[schema(pattern = "^[0-9a-f]{32}$")]
+    pub device_id: String,
+    /// The op's `seq` from that device.
+    pub seq: u64,
+}
+
+/// `DELETE /api/v1/blobs/{blob_id}` response body.
+#[derive(Debug, Clone, Serialize, Deserialize, kynos::Schema)]
+#[serde(deny_unknown_fields)]
+pub struct BlobDeleteResponse {
+    /// The earliest the ciphertext may be reclaimed, ms since the epoch. It
+    /// is reclaimed on the first maintenance pass after this at which every
+    /// active device has acknowledged the op.
+    pub collect_after_ms: u64,
+}
+
+/// Tombstone a committed blob.
+///
+/// The ciphertext stays readable until it is collected: a device that has not
+/// yet applied the detach may still fetch it, which is the case the quorum in
+/// `docs/02-domain/attachments.md` §Deletion exists for. Tombstoning a blob
+/// already tombstoned keeps the first tombstone and its clock.
+#[kynos::delete("/api/v1/blobs/{blob_id}", operation_id = "deleteBlob")]
+pub async fn delete(
+    Inject(state): Inject<ServerState>,
+    Path(path): Path<BlobIdPath>,
+    Signed {
+        caller,
+        value: body,
+    }: Signed<BlobDeleteRequest>,
+) -> Result<kynos::response::status::Accepted<Json<BlobDeleteResponse>>, ApiError> {
+    let blob = parse_blob_id(&path.blob_id.0)?;
+    let stream_id = parse_hex16(&body.stream_id, "stream_id")?;
+    let origin_device = parse_hex16(&body.device_id, "device_id")?;
+    // The same `404` as a fetch, for the same reason: no oracle for whether
+    // another account holds this ciphertext.
+    read_manifest(&state, &caller, &blob)?.ok_or_else(not_found)?;
+
+    let now_ms = state.clock.now_ms();
+    let account_id = &caller.principal.account.account_id;
+    state.store.tombstone_blob(
+        account_id,
+        &crate::store::NewTombstone {
+            blob_key: blob,
+            stream_id,
+            origin_device,
+            seq: body.seq,
+            deleted_by: caller.device.as_ref().map(|d| d.device_id.clone()),
+        },
+        now_ms,
+    )?;
+    tracing::info!(
+        ev = "srv.blob.tombstoned",
+        account_h = %crate::logging::account_h(account_id),
+        blob_h = %crate::logging::id_h(&blob),
+        "blob tombstoned; collected once its grace period and quorum hold"
+    );
+    Ok(kynos::response::status::Accepted::new(Json(
+        BlobDeleteResponse {
+            collect_after_ms: now_ms.saturating_add(state.config.retention().gc_grace_ms),
+        },
+    )))
 }
 
 /// The stream [`fetch`] returns: one chunk per poll, read on demand.
@@ -430,16 +562,33 @@ type ChunkStream = futures_util::stream::BoxStream<'static, Result<bytes::Bytes,
 /// with an error rather than silently short-reading: the success status is
 /// already committed by then, so truncating quietly would hand the client a
 /// blob that fails its own content hash with nothing to say why.
-fn chunk_stream(store: BlobStore, blob: [u8; 16], chunk_count: u32) -> ChunkStream {
+///
+/// Each chunk is counted in `sunrise_blob_bytes_total{direction="download"}`
+/// as it is read, so a fetch abandoned part-way counts what was read for it
+/// rather than the whole blob.
+fn chunk_stream(
+    store: BlobStore,
+    blob: [u8; 16],
+    chunk_count: u32,
+    metrics: crate::Metrics,
+) -> ChunkStream {
     use futures_util::StreamExt as _;
     futures_util::stream::unfold(0u32, move |idx| {
         let store = store.clone();
+        let metrics = metrics.clone();
         async move {
             if idx >= chunk_count {
                 return None;
             }
             let item = match store.get_chunk(&blob, idx) {
-                Ok(Some(bytes)) => Ok(bytes::Bytes::from(bytes)),
+                Ok(Some(bytes)) => {
+                    metrics.add_with(
+                        "sunrise_blob_bytes_total",
+                        &[("direction", "download")],
+                        bytes.len() as u64,
+                    );
+                    Ok(bytes::Bytes::from(bytes))
+                }
                 Ok(None) => Err(std::io::Error::new(
                     std::io::ErrorKind::NotFound,
                     format!("chunk {idx} vanished mid-read"),
@@ -461,11 +610,43 @@ fn chunk_stream(store: BlobStore, blob: [u8; 16], chunk_count: u32) -> ChunkStre
 /// disk — the same reasoning as `logging::account_h`, at full width because
 /// this one has to be collision-free rather than merely correlatable.
 fn account_root(state: &ServerState, caller: &Caller, area: &str) -> PathBuf {
-    let digest = blake3::hash(caller.principal.account.account_id.as_bytes());
-    state
-        .blob_root
+    account_dir(&state.blob_root, area, &caller.principal.account.account_id)
+}
+
+/// The per-account directory under `blob_root/<area>`, where `area` is
+/// [`PENDING`] or [`COMMITTED`]: the first 16 bytes of `BLAKE3(account_id)`,
+/// hex — the same key the relay log files the account's frames under.
+pub(crate) fn account_dir(blob_root: &std::path::Path, area: &str, account_id: &str) -> PathBuf {
+    blob_root
         .join(area)
-        .join(hex::encode(&digest.as_bytes()[..16]))
+        .join(hex::encode(crate::relay_log::account_key(account_id)))
+}
+
+/// Where uploads wait between `init` and `finalize`.
+pub(crate) const PENDING: &str = "pending";
+
+/// Where finalized blobs live.
+pub(crate) const COMMITTED: &str = "committed";
+
+/// Remove one committed blob of `account_id`: its manifest first, so a reader
+/// stops seeing it before any chunk goes, then its chunks.
+///
+/// Absent pieces are not an error, so a pass interrupted half-way finishes on
+/// the next one.
+pub(crate) fn delete_committed(
+    blob_root: &std::path::Path,
+    account_id: &str,
+    blob: &[u8; 16],
+) -> std::io::Result<()> {
+    let root = account_dir(blob_root, COMMITTED, account_id);
+    match std::fs::remove_file(root.join("manifests").join(hex::encode(blob))) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+    }
+    BlobStore::new(&root)
+        .and_then(|s| s.delete_all(blob))
+        .map_err(|e| std::io::Error::other(e.to_string()))
 }
 
 fn pending_store(
@@ -473,7 +654,7 @@ fn pending_store(
     caller: &Caller,
     upload: &[u8; 16],
 ) -> Result<BlobStore, ApiError> {
-    let root = pending_dir(&account_root(state, caller, "pending"), upload);
+    let root = pending_dir(&account_root(state, caller, PENDING), upload);
     BlobStore::new(&root).map_err(|_| ApiError::internal())
 }
 
@@ -497,11 +678,11 @@ fn pending_dir(root: &std::path::Path, upload: &[u8; 16]) -> PathBuf {
 }
 
 fn committed_store(state: &ServerState, caller: &Caller) -> Result<BlobStore, ApiError> {
-    BlobStore::new(&account_root(state, caller, "committed")).map_err(|_| ApiError::internal())
+    BlobStore::new(&account_root(state, caller, COMMITTED)).map_err(|_| ApiError::internal())
 }
 
 fn manifest_path(state: &ServerState, caller: &Caller, blob: &[u8; 16]) -> PathBuf {
-    account_root(state, caller, "committed")
+    account_root(state, caller, COMMITTED)
         .join("manifests")
         .join(hex::encode(blob))
 }
@@ -637,6 +818,16 @@ fn not_found() -> ApiError {
     ApiError::not_found(codes::BLOB_NOT_FOUND, "blob not found")
 }
 
+/// `403 ACCOUNT_PENDING_DELETION` for every upload step of an account whose
+/// deletion is confirmed: an upload finished after the mark would write files
+/// the erasure then has to chase.
+fn refuse_if_pending(state: &ServerState, caller: &Caller) -> Result<(), ApiError> {
+    crate::api::account_deletion::refuse_if_pending_deletion(
+        state,
+        &caller.principal.account.account_id,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::pending_dir;
@@ -754,6 +945,15 @@ mod tests {
             .await;
         fetched.assert_status(StatusCode::OK);
         assert_eq!(fetched.bytes, whole, "the streamed body must reassemble");
+
+        // Both directions counted the ciphertext they moved, and nothing else.
+        let bytes = |direction| {
+            client
+                .metrics
+                .get_with("sunrise_blob_bytes_total", &[("direction", direction)])
+        };
+        assert_eq!(bytes("upload"), whole.len() as u64);
+        assert_eq!(bytes("download"), whole.len() as u64);
     }
 
     /// The client's hashes are a claim; finalize is the check.

@@ -61,7 +61,8 @@ impl Engine {
         // estimate: every fourth one is the long break.
         let (planned_ms, chunk) = match d.kind {
             FocusKind::Break => (Some(break_after(prior.max(1)).default_ms()), None),
-            FocusKind::Work => {
+            // An unknown kind is sized as work, its fallback.
+            FocusKind::Work | FocusKind::Unknown(_) => {
                 let p = plan_session(d.length, task.estimated_duration_s, prior, POMODORO_MS);
                 (p.planned_ms, p.chunk)
             }
@@ -155,7 +156,7 @@ impl Engine {
         let stream_bytes = *view.start.stream_id.bytes();
         let seq = self.next_seq(db, &stream_bytes)?;
         let lww = self.lww_stamp(seq);
-        let state = completion.as_ref().map(|c| c.task.state);
+        let state = completion.as_ref().map(|c| c.task.state.clone());
         db.with_tx(|tx| -> rusqlite::Result<()> {
             insert_focus_end_row(tx, &end, &lww)?;
             self.ops_insert(
@@ -277,7 +278,12 @@ impl Engine {
         let Some(mut task) = read_task(db.conn(), task_id.bytes())? else {
             return Ok(None);
         };
-        if task.deleted || !matches!(task.state, TaskState::Todo | TaskState::InProgress) {
+        if task.deleted
+            || !matches!(
+                task.state.effective(),
+                TaskState::Todo | TaskState::InProgress
+            )
+        {
             return Ok(None);
         }
         task.state = TaskState::Done;
@@ -313,7 +319,7 @@ impl Engine {
             at: sunrise_domain::epoch_ms::from_u64(now_ms),
             reason,
         };
-        let inner = encode_inner_op(&InnerOp::FocusInterrupt(interruption))?;
+        let inner = encode_inner_op(&InnerOp::FocusInterrupt(interruption.clone()))?;
         let op_id = self.fresh_op_id(now_ms);
         let stream_bytes = *start.stream_id.bytes();
         let seq = self.next_seq(db, &stream_bytes)?;
@@ -368,7 +374,7 @@ impl Engine {
             };
             candidates.push(PlanCandidate {
                 task: task.id,
-                energy: task.energy,
+                energy: task.energy.clone(),
                 unblocks,
                 open_blockers,
                 priority: task.priority,
@@ -384,7 +390,7 @@ impl Engine {
             });
             tasks.insert(task.id, task);
         }
-        let ranked = rank_focus_plan(candidates, energy);
+        let ranked = rank_focus_plan(candidates, energy.as_ref());
         let mut out = Vec::with_capacity(ranked.len().min(limit as usize));
         for r in ranked.into_iter().take(limit as usize) {
             let Some(task) = tasks.remove(&r.candidate.task) else {
@@ -495,8 +501,8 @@ impl Engine {
                     session,
                     task: ref_of(EntityKind::Task, &v.1),
                     stream: ref_of(EntityKind::Stream, &v.2),
-                    energy: v.3.as_deref().and_then(parse_energy),
-                    kind: FocusKind::from_str_opt(&v.4).unwrap_or(FocusKind::Work),
+                    energy: v.3.as_deref().map(parse_energy),
+                    kind: FocusKind::from_raw(&v.4),
                     started_at_ms: u64::try_from(v.5.max(0)).unwrap_or(0),
                     ended_at_ms: v.6.and_then(|m| u64::try_from(m.max(0)).ok()),
                     actual_focused_ms: v.7.and_then(|m| u64::try_from(m.max(0)).ok()),
@@ -583,7 +589,7 @@ pub(super) fn insert_focus_start_row(
             &f.stream_id.bytes()[..],
             f.started_at_ms() as i64,
             f.planned_ms.map(|v| v as i64),
-            f.energy.map(energy_str),
+            f.energy.as_ref().map(energy_str),
             f.kind.as_str(),
             f.chunk.map(|c| i64::from(c.index)),
             f.chunk.map(|c| i64::from(c.total)),
@@ -644,7 +650,8 @@ fn insert_interruption_row(tx: &Transaction<'_>, i: &Interruption) -> rusqlite::
 /// chunk marker read "3 of 4" instead of always "1 of 4".
 fn count_work_sessions(conn: &rusqlite::Connection, task: &[u8; 16]) -> Result<u32, EngineError> {
     let n: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM focus_sessions WHERE task_id = ? AND kind = 'work'",
+        // Work, spelled so an unknown kind reads as it (ADR-0045 §6).
+        "SELECT COUNT(*) FROM focus_sessions WHERE task_id = ? AND kind != 'break'",
         params![&task[..]],
         |r| r.get(0),
     )?;
@@ -656,7 +663,7 @@ fn work_session_counts(
     conn: &rusqlite::Connection,
 ) -> Result<BTreeMap<EntityRef, u32>, EngineError> {
     let mut stmt = conn.prepare(
-        "SELECT task_id, COUNT(*) FROM focus_sessions WHERE kind = 'work' GROUP BY task_id",
+        "SELECT task_id, COUNT(*) FROM focus_sessions WHERE kind != 'break' GROUP BY task_id",
     )?;
     let rows = stmt
         .query_map([], |r| Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, i64>(1)?)))?
@@ -695,7 +702,7 @@ fn read_all_interruptions(
         out.entry(session_id).or_default().push(Interruption {
             session_id,
             at: sunrise_domain::epoch_ms::from_u64(u64::try_from(at.max(0)).unwrap_or(0)),
-            reason: InterruptionReason::from_str_lossy(&reason),
+            reason: InterruptionReason::from_raw(&reason),
         });
     }
     Ok(out)
@@ -777,8 +784,8 @@ pub(super) fn read_focus_sessions(
             stream_id: ref_of(EntityKind::Stream, &v.2),
             started_at: sunrise_domain::epoch_ms::from_u64(u64::try_from(v.3.max(0)).unwrap_or(0)),
             planned_ms: v.4.and_then(|m| u64::try_from(m.max(0)).ok()),
-            energy: v.5.as_deref().and_then(parse_energy),
-            kind: FocusKind::from_str_opt(&v.6).unwrap_or(FocusKind::Work),
+            energy: v.5.as_deref().map(parse_energy),
+            kind: FocusKind::from_raw(&v.6),
             chunk,
             unknown: decode_unknowns(v.9),
         };

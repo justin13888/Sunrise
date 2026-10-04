@@ -60,11 +60,11 @@ struct NoteBodyEditor: View {
                 Button(mark.label, systemImage: mark.symbol) {
                     model.toggleMark(mark)
                 }
-                .keyboardShortcut(mark.shortcut, modifiers: .command)
+                .keyboardShortcut(Keymap.chord(for: mark))
                 .buttonStyle(.borderless)
                 .labelStyle(.iconOnly)
                 .foregroundStyle(model.isActive(mark) ? Color.accentColor : .primary)
-                .help(mark.label)
+                .help(Keymap.help(mark.label, chord: Keymap.chord(for: mark)))
             }
 
             Divider().frame(height: 14)

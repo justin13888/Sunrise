@@ -6,8 +6,8 @@ Two assertions, both about the same thing: what a CI run is allowed to be.
 ## 1. Every action is pinned to a commit
 
 A `uses:` ref that names a tag or a branch is a promise by somebody else that
-the code behind that name will not change. `ci.yml` has said so itself since
-the `changes` job was added — it declines a third-party action and names
+the code behind that name will not change. `ci.yml` said so itself for as long
+as it had a `changes` job — that job declined a third-party action and named
 CVE-2025-30066 while doing it, in which every tag of `tj-actions/changed-files`
 was retargeted in place to dump runner memory into build logs. Floating major
 tags are exactly the configuration that let that reach the repositories it

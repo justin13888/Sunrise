@@ -20,6 +20,7 @@
 //! Around those sit the pieces a subscriber needs and `tracing-subscriber`
 //! deliberately leaves to the application: [`init()`] assembles the stack,
 //! [`writer`] provides a size-capped file sink and an in-memory test sink,
+//! [`test_util`] lets other crates' tests assert which events fired,
 //! [`time`] stamps records RFC 3339 in UTC, and [`event`] validates the
 //! hierarchical `ev` names catalogued in
 //! `docs/10-cross-cutting/log-events.md`.
@@ -55,6 +56,7 @@ pub mod init;
 pub mod plain;
 pub mod proto;
 pub mod redact;
+pub mod test_util;
 pub mod time;
 pub mod writer;
 

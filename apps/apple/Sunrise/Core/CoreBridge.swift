@@ -195,16 +195,42 @@ actor CoreBridge {
     /// side, so the code that comes back is always the code the stored blob
     /// opens. `recoveryCode` is `nil` on a device admitted by pairing, which
     /// holds no key to seal with — not a failure.
+    ///
+    /// `termsAcceptedAtMs` is the caller's, never this bridge's clock: it
+    /// records when the account's holder accepted the relay operator's terms,
+    /// which `docs/06-server/api.md` §Terms acceptance defines. The returned
+    /// `deviceId` must be recorded — the relay never sends it again (#183).
     func bootstrapAccount(
         relayURL: String,
         bearer: String,
         email: String,
-        nickname: String
+        nickname: String,
+        termsAcceptedAtMs: UInt64
     ) async throws -> AccountBootstrap {
         try await core.bootstrapAccount(
             relayUrl: relayURL,
             bearer: bearer,
             email: email,
+            nickname: nickname,
+            termsAcceptedAtMs: termsAcceptedAtMs
+        )
+    }
+
+    /// Register this device on an account that already exists and return the
+    /// id the relay minted for it.
+    ///
+    /// The path for a device admitted by pairing, which joins an account its
+    /// sponsor published and so publishes nothing and asserts no terms — and
+    /// for a founding device whose id was never recorded. The id is the
+    /// caller's to record, exactly as ``bootstrapAccount`` returns it.
+    func registerRelayDevice(
+        relayURL: String,
+        bearer: String,
+        nickname: String
+    ) async throws -> String {
+        try await core.registerRelayDevice(
+            relayUrl: relayURL,
+            bearer: bearer,
             nickname: nickname
         )
     }

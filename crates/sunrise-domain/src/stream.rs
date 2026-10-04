@@ -1,15 +1,17 @@
 //! Stream entity per `docs/02-domain/streams.md`.
 
 use crate::common::NoteBody;
-use crate::unknown::Unknowns;
+use crate::unknown::{UnknownVariant, Unknowns};
 use crate::validation::{validate_title, ValidationError, MAX_STREAM_NAME_LEN};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use sunrise_id::EntityRef;
 
 /// Fixed Stream colors per the spec's palette. Currently 8 fixed values.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+///
+/// An unrecognised color reads as [`StreamColor::Slate`] and is written back
+/// verbatim, on the wire and in storage alike.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum StreamColor {
     /// Default neutral.
     Slate,
@@ -27,45 +29,27 @@ pub enum StreamColor {
     Violet,
     /// Pinks.
     Pink,
+    /// A color this build does not know, kept verbatim (ADR-0045 §6).
+    Unknown(UnknownVariant),
 }
 
-impl StreamColor {
-    /// Lowercase wire/storage string form (matches the serde representation).
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Slate => "slate",
-            Self::Rose => "rose",
-            Self::Amber => "amber",
-            Self::Emerald => "emerald",
-            Self::Sky => "sky",
-            Self::Indigo => "indigo",
-            Self::Violet => "violet",
-            Self::Pink => "pink",
-        }
-    }
-
-    /// Parse from the lowercase string form. Unknown strings fall back to
-    /// [`StreamColor::Slate`] so a forward-compatible DB never fails to load.
-    #[must_use]
-    pub fn from_str_lossy(s: &str) -> Self {
-        match s {
-            "rose" => Self::Rose,
-            "amber" => Self::Amber,
-            "emerald" => Self::Emerald,
-            "sky" => Self::Sky,
-            "indigo" => Self::Indigo,
-            "violet" => Self::Violet,
-            "pink" => Self::Pink,
-            // "slate" and any unknown value → Slate.
-            _ => Self::Slate,
-        }
-    }
-}
+crate::unknown::lossy_enum!(StreamColor, fallback = Slate, {
+    Slate => "slate",
+    Rose => "rose",
+    Amber => "amber",
+    Emerald => "emerald",
+    Sky => "sky",
+    Indigo => "indigo",
+    Violet => "violet",
+    Pink => "pink",
+});
 
 /// Review cadence for a Stream.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
+///
+/// An unrecognised cadence reads as [`StreamReviewCadence::Weekly`], the
+/// documented default, and is written back verbatim. Reading it as `None`
+/// would make a Stream silently stop appearing in reviews.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StreamReviewCadence {
     /// Weekly review.
     Weekly,
@@ -75,38 +59,16 @@ pub enum StreamReviewCadence {
     Monthly,
     /// No review reminders.
     None,
+    /// A cadence this build does not know, kept verbatim (ADR-0045 §6).
+    Unknown(UnknownVariant),
 }
 
-impl StreamReviewCadence {
-    /// The stable lowercase wire/storage string.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Weekly => "weekly",
-            Self::Biweekly => "biweekly",
-            Self::Monthly => "monthly",
-            Self::None => "none",
-        }
-    }
-
-    /// Parse from the wire/storage string. An unrecognised value degrades to
-    /// [`StreamReviewCadence::Weekly`] rather than failing.
-    ///
-    /// The documented default. Degrading to `None` would make a Stream silently
-    /// stop appearing in reviews.
-    #[must_use]
-    pub fn from_str_lossy(s: &str) -> Self {
-        match s {
-            "biweekly" => Self::Biweekly,
-            "monthly" => Self::Monthly,
-            "none" => Self::None,
-            // "weekly" and anything this build has never heard of.
-            _ => Self::Weekly,
-        }
-    }
-}
-
-crate::unknown::lossy_enum!(StreamReviewCadence);
+crate::unknown::lossy_enum!(StreamReviewCadence, fallback = Weekly, {
+    Weekly => "weekly",
+    Biweekly => "biweekly",
+    Monthly => "monthly",
+    None => "none",
+});
 
 /// Persisted Stream.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -81,9 +81,10 @@ final class CommandPaletteModel {
 
     /// Every command, in cheat-sheet order.
     ///
-    /// The palette itself is left out: it is already open.
+    /// The palette itself is left out: it is already open. So is anything this
+    /// platform cannot run — see ``AppAction/isOffered``.
     static let catalogue: [AppAction] = KeySection.allCases.flatMap { section in
-        AppAction.allCases.filter { $0.section == section && $0 != .commandPalette }
+        AppAction.allCases.filter { $0.section == section && $0 != .commandPalette && $0.isOffered }
     }
 
     var results: [PaletteEntry] {

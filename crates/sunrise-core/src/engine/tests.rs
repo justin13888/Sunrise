@@ -169,13 +169,14 @@ mod testutil {
 
     pub(super) fn sample_constraint() -> ScheduleConstraint {
         ScheduleConstraint {
-            time_of_day: Some(sunrise_domain::TimeOfDayRange {
-                start: jiff::civil::time(9, 0, 0, 0),
-                end: jiff::civil::time(17, 0, 0, 0),
-            }),
+            time_of_day: Some(sunrise_domain::TimeOfDayRange::new(
+                jiff::civil::time(9, 0, 0, 0),
+                jiff::civil::time(17, 0, 0, 0),
+            )),
             days_of_week: sunrise_domain::WeekdaySet::new(),
             date_range: None,
             severity: sunrise_domain::ConstraintSeverity::Hard,
+            unknown: Unknowns::new(),
         }
     }
 
@@ -203,6 +204,7 @@ mod testutil {
                 priority: None,
                 estimated_duration_s: None,
                 body: None,
+                unknown: Unknowns::new(),
             },
             rrule: RRule::parse(rrule).unwrap(),
             timezone: "UTC".into(),
@@ -906,95 +908,19 @@ mod testutil {
             .unwrap()
     }
 
+    /// The `ev` names of every event emitted while a closure runs, in order.
+    ///
+    /// Only the `ev` field is kept, which is the only part of a log line this
+    /// repository treats as a contract — `crates/sunrise-log/tests/event_catalog.rs`
+    /// is the gate on that name. The capture, and the tracing interest-cache
+    /// pin it needs to see anything at all, are `sunrise-log`'s.
+    pub(super) use sunrise_log::test_util::events_emitted_by;
+
     /// How many `device_revoke` ops this replica has kept, believed or not.
     ///
     /// The register is a fold over these, so "stored and skipped" and "never
     /// arrived" look identical in `device_revocations` and are told apart only
     /// here.
-    /// The `ev` names of every event emitted while `f` runs, in order.
-    ///
-    /// Hand-rolled rather than borrowed from `sunrise-log`'s capture target:
-    /// this crate depends on `tracing` and not on `tracing-subscriber`, and a
-    /// dev-dependency on either to read one field would be a workspace change
-    /// for a test. Only the `ev` field is kept, which is the only part of a
-    /// log line this repository treats as a contract —
-    /// `crates/sunrise-log/tests/event_catalog.rs` is the gate on that name.
-    ///
-    /// The inert dispatcher is not optional and not tidiness. `tracing` caches
-    /// an `Interest` per callsite, and while exactly one `Dispatch` is
-    /// registered process-wide the fast path computes it from *the registering
-    /// thread's* default subscriber, which in a test binary is whichever
-    /// neighbour reached the callsite first and usually has none. The interest
-    /// is then cached as `never`, the macro is skipped, and the capture sees
-    /// nothing at all. A second dispatcher that is never dropped keeps the
-    /// count above one so every rebuild reads the registry instead. The same
-    /// defect and the same remedy are documented at length on
-    /// `sunrise-log`'s `pin_interest_cache`.
-    pub(super) fn events_emitted_by(f: impl FnOnce()) -> Vec<String> {
-        use std::sync::OnceLock;
-        use tracing::field::{Field, Visit};
-
-        /// Registered once and never dropped; see above.
-        static INTEREST_PIN: OnceLock<tracing::Dispatch> = OnceLock::new();
-
-        struct Inert;
-        impl tracing::Subscriber for Inert {
-            fn enabled(&self, _m: &tracing::Metadata<'_>) -> bool {
-                false
-            }
-            fn new_span(&self, _s: &tracing::span::Attributes<'_>) -> tracing::Id {
-                tracing::Id::from_u64(1)
-            }
-            fn record(&self, _s: &tracing::Id, _v: &tracing::span::Record<'_>) {}
-            fn record_follows_from(&self, _s: &tracing::Id, _f: &tracing::Id) {}
-            fn event(&self, _e: &tracing::Event<'_>) {}
-            fn enter(&self, _s: &tracing::Id) {}
-            fn exit(&self, _s: &tracing::Id) {}
-        }
-
-        struct EvVisitor(Option<String>);
-        impl Visit for EvVisitor {
-            fn record_str(&mut self, field: &Field, value: &str) {
-                if field.name() == "ev" {
-                    self.0 = Some(value.to_owned());
-                }
-            }
-            fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
-                if field.name() == "ev" && self.0.is_none() {
-                    self.0 = Some(format!("{value:?}").trim_matches('"').to_owned());
-                }
-            }
-        }
-
-        struct EvCapture(Arc<PLMutex<Vec<String>>>);
-        impl tracing::Subscriber for EvCapture {
-            fn enabled(&self, _m: &tracing::Metadata<'_>) -> bool {
-                true
-            }
-            fn new_span(&self, _s: &tracing::span::Attributes<'_>) -> tracing::Id {
-                tracing::Id::from_u64(1)
-            }
-            fn record(&self, _s: &tracing::Id, _v: &tracing::span::Record<'_>) {}
-            fn record_follows_from(&self, _s: &tracing::Id, _f: &tracing::Id) {}
-            fn event(&self, event: &tracing::Event<'_>) {
-                let mut visitor = EvVisitor(None);
-                event.record(&mut visitor);
-                if let Some(ev) = visitor.0 {
-                    self.0.lock().push(ev);
-                }
-            }
-            fn enter(&self, _s: &tracing::Id) {}
-            fn exit(&self, _s: &tracing::Id) {}
-        }
-
-        INTEREST_PIN.get_or_init(|| tracing::Dispatch::new(Inert));
-        let seen = Arc::new(PLMutex::new(Vec::new()));
-        let dispatch = tracing::Dispatch::new(EvCapture(Arc::clone(&seen)));
-        tracing::dispatcher::with_default(&dispatch, f);
-        let taken = seen.lock().clone();
-        taken
-    }
-
     pub(super) fn ledger_rows(db: &Db) -> i64 {
         db.conn()
             .query_row("SELECT count(*) FROM device_revoke_ops", [], |r| r.get(0))
@@ -3420,7 +3346,7 @@ fn create_task_with_constraints_round_trips() {
             &mut db,
             Command::CreateTask(TaskDraft {
                 title: "with constraint".into(),
-                scheduling_constraints: vec![c],
+                scheduling_constraints: vec![c.clone()],
                 ..Default::default()
             }),
         )
@@ -3453,9 +3379,10 @@ fn update_task_replaces_whole_constraint_list() {
         days_of_week: sunrise_domain::WeekdaySet::from_days([sunrise_domain::Weekday::Sa]),
         date_range: None,
         severity: sunrise_domain::ConstraintSeverity::Soft,
+        unknown: Unknowns::new(),
     };
     let patch = TaskPatch {
-        scheduling_constraints: Some(vec![c2]),
+        scheduling_constraints: Some(vec![c2.clone()]),
         ..Default::default()
     };
     e.apply(
@@ -3540,12 +3467,13 @@ fn invalid_constraint_list_rejected_on_create_and_update() {
         days_of_week: sunrise_domain::WeekdaySet::new(),
         date_range: None,
         severity: sunrise_domain::ConstraintSeverity::Hard,
+        unknown: Unknowns::new(),
     };
     let create = e.apply(
         &mut db,
         Command::CreateTask(TaskDraft {
             title: "x".into(),
-            scheduling_constraints: vec![bad],
+            scheduling_constraints: vec![bad.clone()],
             ..Default::default()
         }),
     );
@@ -3624,7 +3552,7 @@ fn create_routine_materializes_future_tasks_with_linkage() {
         "FREQ=DAILY",
         NOW + 3_600_000,
         RoutineCatchupPolicy::Skip,
-        vec![c],
+        vec![c.clone()],
     );
     let res = e.apply(&mut db, Command::CreateRoutine(draft)).unwrap();
     let rid = res.entity;
@@ -3655,7 +3583,7 @@ fn create_routine_materializes_future_tasks_with_linkage() {
         assert_eq!(t.routine_id, Some(rid));
         assert_eq!(t.routine_occurrence, Some(o.at));
         assert_eq!(t.scheduled_at, Some(o.at.into()));
-        assert_eq!(t.scheduling_constraints, vec![c]);
+        assert_eq!(t.scheduling_constraints, vec![c.clone()]);
     }
 }
 
@@ -3698,6 +3626,7 @@ fn two_engines_produce_identical_task_ids() {
                 priority: None,
                 estimated_duration_s: None,
                 body: None,
+                unknown: Unknowns::new(),
             },
             rrule: RRule::parse("FREQ=DAILY").unwrap(),
             timezone: "UTC".into(),
@@ -6877,14 +6806,16 @@ fn the_register_is_the_same_whichever_order_the_two_revocations_arrive() {
     // Pinned as the **known current behaviour**, not as the behaviour anyone
     // wants: on `two` the bound holds C out of every recipient set, and on `one`
     // C is an ordinary member that will be sealed every epoch this replica
-    // mints. Closing
-    // [#282](https://github.com/justin13888/Sunrise/issues/282) means the two
+    // mints. #282 closed the systematic case, a joiner that paired with
+    // nothing (`a_joiner_keeps_its_sponsors_bound_on_c_whichever_order_it_meets_the_ops`
+    // below). These two replicas already exist, and closing
+    // [#411](https://github.com/justin13888/Sunrise/issues/411) means they
     // become equal and these assertions turn red — which is the point of
     // writing them down rather than leaving the gap undiscovered.
     assert_eq!(
         read_bound_row(&one, &c_id),
         None,
-        "known gap (#282): the replica that learned of A's own revocation first \
+        "known gap (#411): the replica that learned of A's own revocation first \
          never bounds C, so it goes on sealing C every epoch it mints"
     );
     assert!(
@@ -6896,6 +6827,170 @@ fn the_register_is_the_same_whichever_order_the_two_revocations_arrive() {
         read_bound_row(&one, &a_id).is_some() && read_bound_row(&two, &a_id).is_some(),
         "both replicas bound A, which is why the divergence is C's alone and not \
          a difference in what either replica believes about the ledger"
+    );
+}
+
+/// **A device paired from the replica that bounded C keeps C bounded, whatever
+/// order it then meets the ops in** (#282).
+///
+/// The test above leaves two existing replicas apart. What pairing can close is
+/// the systematic case: a joiner used to start with no bound and learn both ops
+/// from the relay later, so it met `A -> C` already gated and never bounded C —
+/// the weakest replica in the account by construction. `sponsor` here is `two`
+/// above, which bounded C; the joiner adopts its bound at vault creation, then
+/// meets `B -> A` first, the order that left `one` unbounded.
+///
+/// Asserted after `B -> A` alone as well as after both ops: at that point the
+/// joiner holds no cert for C and no ledger row naming it, which is exactly
+/// the row `release_orphan_read_bounds` deletes when this replica's own fold
+/// wrote it. An adopted row is exempt, or the bound would be gone before C's
+/// cert arrived.
+#[test]
+fn a_joiner_keeps_its_sponsors_bound_on_c_whichever_order_it_meets_the_ops() {
+    let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let ec = engine_seeded(ROOT, [3u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let er = engine_seeded(ROOT, [4u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let (a_id, c_id) = (ea.keychain.device_id(), ec.keychain.device_id());
+
+    let mut sponsor = db_root(ROOT);
+    revoke(&er, &mut sponsor, &ea, c_id, T0 + 60_000);
+    revoke(&er, &mut sponsor, &eb, a_id, T0);
+    let carried = super::read_bounds_for_pairing(sponsor.conn()).unwrap();
+    assert_eq!(carried, std::collections::BTreeSet::from([a_id, c_id]));
+
+    // What `Keychain::create` does with a pairing grant's bound.
+    let mut joiner = db_root(ROOT);
+    joiner
+        .with_tx(|tx| super::adopt_sponsor_read_bounds(tx, &carried, T0))
+        .unwrap();
+
+    revoke(&er, &mut joiner, &eb, a_id, T0);
+    assert!(
+        er.is_read_bounded(joiner.conn(), &c_id).unwrap(),
+        "an adopted bound survives the orphan release, though no cert or ledger \
+         row here names C yet"
+    );
+    revoke(&er, &mut joiner, &ea, c_id, T0 + 60_000);
+    assert!(
+        er.is_read_bounded(joiner.conn(), &c_id).unwrap(),
+        "and survives meeting A -> C already gated, which is where a joiner that \
+         paired with nothing lost it"
+    );
+    assert_eq!(
+        revocation_row(&joiner, &c_id),
+        revocation_row(&sponsor, &c_id),
+        "the register is untouched by the adoption: it is still the fold"
+    );
+
+    // The same arrival order without the adoption, which is every joiner
+    // before this change.
+    let mut bare = db_root(ROOT);
+    revoke(&er, &mut bare, &eb, a_id, T0);
+    revoke(&er, &mut bare, &ea, c_id, T0 + 60_000);
+    assert!(!er.is_read_bounded(bare.conn(), &c_id).unwrap());
+}
+
+/// **The orphan release still takes back what this replica's own fold wrote**
+/// (#315), with the adopted rows beside it.
+///
+/// The exemption is for rows a sponsor handed over, and it must not widen: a
+/// certless id only a capped sender named, whose bound this replica's fold
+/// wrote, is released exactly as before.
+#[test]
+fn the_orphan_release_spares_only_adopted_bounds() {
+    use super::revocation::REVOKE_TARGETS_PER_SENDER as CAP;
+    let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let er = engine_seeded(ROOT, [4u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let cap = u64::try_from(CAP).unwrap();
+    let adopted = made_up_device(9_999);
+    let mut db = db_root(ROOT);
+    db.with_tx(|tx| {
+        super::adopt_sponsor_read_bounds(tx, &std::collections::BTreeSet::from([adopted]), T0)
+    })
+    .unwrap();
+
+    for n in 0..=cap {
+        revoke(&er, &mut db, &eb, made_up_device(n), T0 + 1_000 + n);
+    }
+
+    assert!(
+        !er.is_read_bounded(db.conn(), &made_up_device(0)).unwrap(),
+        "the id B's own flood evicted gives its bound back, as before"
+    );
+    assert!(
+        er.is_read_bounded(db.conn(), &adopted).unwrap(),
+        "while a bound adopted from the sponsor, certless and unnamed here, stays"
+    );
+}
+
+/// **An adopted bound is not a revocation this replica applied, so it marks
+/// nobody as joined after one.**
+///
+/// A joiner adopts its sponsor's bound before it holds any cert but its own.
+/// If the readmission check counted those rows, the joiner's first sync would
+/// mark its sponsor and every device that paired before any revocation as
+/// `admitted_after_revocation`. No older replica marks them, and the #105 signal
+/// would become a badge every sibling wears. The joiner counts a revocation
+/// once its own fold applies it, which is the order an older replica met it
+/// in. A device that turns up after that is marked. That second half also
+/// checks that the fold clears `from_sponsor` on the adopted row it bounds
+/// again, because otherwise the joiner would count nothing.
+#[test]
+fn an_adopted_bound_marks_no_device_as_joined_after_a_revocation() {
+    let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let ec = engine_seeded(ROOT, [3u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let ed = engine_seeded(ROOT, [5u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let er = engine_seeded(ROOT, [4u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let (a_id, b_id, c_id, d_id) = (
+        ea.keychain.device_id(),
+        eb.keychain.device_id(),
+        ec.keychain.device_id(),
+        ed.keychain.device_id(),
+    );
+    let from_sponsor = |db: &Db| -> i64 {
+        db.conn()
+            .query_row(
+                "SELECT from_sponsor FROM device_read_bounds WHERE device_id = ?",
+                params![&c_id[..]],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+
+    let mut joiner = db_root(ROOT);
+    joiner
+        .with_tx(|tx| {
+            super::adopt_sponsor_read_bounds(tx, &std::collections::BTreeSet::from([c_id]), T0)
+        })
+        .unwrap();
+
+    // The sponsor and a sibling that were here before C was revoked.
+    trust(&er, &mut joiner, &ea);
+    trust(&er, &mut joiner, &eb);
+    assert!(
+        !device_list_row(&er, &joiner, &a_id).admitted_after_revocation,
+        "the sponsor did not join after anything this replica applied"
+    );
+    assert!(
+        !device_list_row(&er, &joiner, &b_id).admitted_after_revocation,
+        "nor did a sibling that paired before any revocation"
+    );
+
+    // The joiner now applies A -> C itself, from the relay.
+    revoke(&er, &mut joiner, &ea, c_id, T0);
+    assert_eq!(
+        from_sponsor(&joiner),
+        0,
+        "the fold bounding an adopted device makes the row this replica's own"
+    );
+    assert!(er.is_read_bounded(joiner.conn(), &c_id).unwrap());
+
+    trust_at(&er, &mut joiner, &ed, T0 + 1);
+    assert!(
+        device_list_row(&er, &joiner, &d_id).admitted_after_revocation,
+        "a device that turns up after a revocation this replica applied is marked"
     );
 }
 
@@ -7089,9 +7184,9 @@ fn a_revocation_written_before_the_senders_own_cut_is_unwound_when_the_sender_is
 /// for the takeover it prevents. Its cost is here. Once X and O have revoked
 /// each other, each one's revoker set holds exactly one entry and it is the
 /// other, so each is forgiven for revoking the other and gated for revoking
-/// anyone else — including the honest device of the pair, and permanently,
-/// because revocation has no inverse
-/// ([#241](https://github.com/justin13888/Sunrise/issues/241)).
+/// anyone else — including the honest device of the pair, until a third
+/// current device says which of the two it meant
+/// (`a_third_current_device_settles_which_half_of_a_mutual_pair_the_account_meant`).
 ///
 /// What it costs is *third-party* revocation, and it costs it to the two
 /// devices in the relationship and to nobody else. That bound was asserted
@@ -7177,6 +7272,63 @@ fn a_mutual_pair_locks_both_devices_out_of_third_party_revocation() {
     );
 }
 
+/// **A third current device already says which half of a mutual pair the
+/// account meant. That is why an un-revoke op is not what settles the
+/// lockout.**
+///
+/// ADR-0041 said an un-revoke op would let the account say which reading of
+/// a mutual pair it meant. ADR-0056
+/// (`docs/11-adr/0056-a-revocation-is-withdrawn-only-by-its-author.md`) §3
+/// rests on the claim that a revocation says it already. A current device T
+/// revokes X, the half it believes compromised:
+///
+/// - X's revoker set becomes `{O, T}`. Nobody revokes T, so T is not
+///   discounted, and X's revocation of O is gated.
+/// - T's row revokes X from a sender other than O, so X is discounted out of
+///   O's set. O's set is then empty, so O is current and ungated again.
+///
+/// The last assertion is the residual ADR-0056 §4 states. O's standing comes
+/// back and its read bound does not. This replica bounded O when the mutual
+/// pair landed, and the bound is a ratchet ([#411](https://github.com/justin13888/Sunrise/issues/411)).
+#[test]
+fn a_third_current_device_settles_which_half_of_a_mutual_pair_the_account_meant() {
+    let ex = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eo = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let ed = engine_seeded(ROOT, [3u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let et = engine_seeded(ROOT, [5u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let er = engine_seeded(ROOT, [4u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut db = db_root(ROOT);
+    let (x_id, o_id) = (ex.keychain.device_id(), eo.keychain.device_id());
+    let d_id = ed.keychain.device_id();
+
+    // The mutual pair: X gets its revocation of O in first, and O answers.
+    revoke(&er, &mut db, &ex, o_id, T0 + 10_000);
+    revoke(&er, &mut db, &eo, x_id, T0 + 20_000);
+    assert!(er.is_revoked(db.conn(), &x_id).unwrap());
+    assert!(er.is_revoked(db.conn(), &o_id).unwrap());
+
+    // T says X is the compromised half.
+    revoke(&er, &mut db, &et, x_id, T0 + 30_000);
+    assert!(er.is_revoked(db.conn(), &x_id).unwrap());
+    assert!(
+        !er.is_revoked(db.conn(), &o_id).unwrap(),
+        "a revoker of X other than O gates X's revocation of O"
+    );
+
+    // O is ungated as well as current: it revokes a third party again.
+    revoke(&er, &mut db, &eo, d_id, T0 + 40_000);
+    assert!(
+        er.is_revoked(db.conn(), &d_id).unwrap(),
+        "T's row discounts X out of O's revoker set, so O is no longer locked out"
+    );
+
+    // The residual: the standing comes back, the keys do not.
+    assert!(
+        er.is_read_bounded(db.conn(), &o_id).unwrap(),
+        "the read bound is a per-replica ratchet, and a revocation does not release it"
+    );
+}
+
 /// **A gated op must not seat its sender in the revoker set of the device it
 /// named.**
 ///
@@ -7254,8 +7406,9 @@ fn a_gated_revocation_does_not_seat_its_sender_in_its_targets_revoker_set() {
 /// It costs two revocations in one chain rather than the one ordinary op the
 /// defect above cost, and the device doing the second of them is by
 /// construction not the attacker.
-/// [#241](https://github.com/justin13888/Sunrise/issues/241)'s un-revoke is
-/// what would let the account say which of the two readings it meant.
+/// A current device that revokes X again says which of the two readings the
+/// account meant, and X is gated again. No un-revoke op is needed for that
+/// (ADR-0056 §3).
 #[test]
 fn the_discount_rehabilitates_a_device_whose_sole_revoker_a_third_party_revokes() {
     let ex = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
@@ -7307,8 +7460,10 @@ fn the_discount_rehabilitates_a_device_whose_sole_revoker_a_third_party_revokes(
 ///
 /// The remedy is the mutual pair's remedy and no better: a device X2 reaches
 /// may revoke X2 back, which re-gates X2 and leaves that device revoked as
-/// well, because the exception lands X2's op too. What the account needs is
-/// still a current device the attacker never reached.
+/// well, because the exception lands X2's op too. A current device the
+/// attacker never reached re-gates X2 only while X1 stays silent:
+/// `a_second_expelled_device_discounts_the_third_device_that_revoked_the_first`
+/// is the op that undoes it.
 ///
 /// Pinned separately from the general statement of shape (1) because the cost
 /// is one op from a device the account has already expelled, and the
@@ -7365,6 +7520,70 @@ fn the_discount_lets_one_of_two_devices_revoked_together_ungate_the_other() {
         Some(x1_id.to_vec()),
         "X2 is gated again, so its second attempt on O does not move the row"
     );
+}
+
+/// **What the discount gives up (1b): the attacker's first device undoes the
+/// third current device's remedy with one gated op.**
+///
+/// Shape (1a) above ends with T, a current device the attacker never reached,
+/// revoking X2, and X2 gated again. That holds only while X1 stays silent. The
+/// discount of `s` from `v`'s revoker set asks whether the ledger holds a row
+/// revoking `s` from a sender other than `v`, and it counts every stored row,
+/// gated or not. So X1 names T. The op is gated and revokes nobody. It is
+/// still a row revoking T from a sender other than X2, so it discounts T out
+/// of X2's set. O is already discounted by X1's first row, so X2's set is
+/// empty again. X2 then revokes a device nobody had touched, and then T
+/// itself.
+///
+/// So two devices one attacker holds, once the same revoker has expelled both,
+/// neutralise every revocation the account sends against either of them. Each
+/// honest revoker costs the attacker one op. No current device settles this
+/// through the ledger, because the answer is always another row the other
+/// attacker device can discount. Pinned so the residual stays deliberate for
+/// ordinary rows: ADR-0058's identity-signed revocations settle it, and
+/// [#454](https://github.com/justin13888/Sunrise/issues/454) builds them.
+#[test]
+fn a_second_expelled_device_discounts_the_third_device_that_revoked_the_first() {
+    let ex1 = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let ex2 = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eo = engine_seeded(ROOT, [3u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let et = engine_seeded(ROOT, [5u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let ed = engine_seeded(ROOT, [6u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let er = engine_seeded(ROOT, [4u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut db = db_root(ROOT);
+    let (x1_id, x2_id) = (ex1.keychain.device_id(), ex2.keychain.device_id());
+    let (o_id, t_id) = (eo.keychain.device_id(), et.keychain.device_id());
+    let d_id = ed.keychain.device_id();
+
+    // Shape (1a): O expels both, and one op from X1 ungates X2.
+    revoke(&er, &mut db, &eo, x1_id, T0);
+    revoke(&er, &mut db, &eo, x2_id, T0 + 10_000);
+    revoke(&er, &mut db, &ex1, o_id, T0 + 20_000);
+
+    // The documented remedy: T, which the attacker never reached, revokes X2.
+    revoke(&er, &mut db, &et, x2_id, T0 + 30_000);
+    assert!(er.is_revoked(db.conn(), &x2_id).unwrap());
+
+    // X1 names T. The op is gated, so T stays current...
+    revoke(&er, &mut db, &ex1, t_id, T0 + 40_000);
+    assert_eq!(
+        revocation_row(&db, &t_id),
+        None,
+        "X1 is gated, so its revocation of T does not land"
+    );
+
+    // ...and its stored row still discounts T out of X2's revoker set.
+    revoke(&er, &mut db, &ex2, d_id, T0 + 50_000);
+    assert!(
+        er.is_revoked(db.conn(), &d_id).unwrap(),
+        "the residual: X2 is on the revoked list and revokes an untouched device"
+    );
+    revoke(&er, &mut db, &ex2, t_id, T0 + 60_000);
+    assert!(
+        er.is_revoked(db.conn(), &t_id).unwrap(),
+        "and it revokes the device that tried to settle it"
+    );
+    assert!(er.is_revoked(db.conn(), &x2_id).unwrap());
 }
 
 /// **What the discount gives up (2): a device that is still on the revoked
@@ -7729,7 +7948,7 @@ fn a_self_refused_revoke_still_advances_the_cursor() {
 /// cursor counts the op anyway.**
 ///
 /// This is the delivery half of the gate at
-/// `crates/sunrise-core/src/engine/sync.rs:741#apply_control_op`. The two
+/// `crates/sunrise-core/src/engine/sync.rs:989#apply_control_op`. The two
 /// units that reach that gate today —
 /// `a_revoked_devices_third_party_envelope_claim_is_not_recorded` and
 /// `an_unwound_devices_third_party_envelope_claim_is_not_recorded` — call
@@ -10160,8 +10379,10 @@ fn an_op_sealed_at_the_derived_genesis_epoch_opens_but_outranks_nothing() {
 ///
 /// Parking is correct here and is not a weakness: from the receiver's side
 /// "I hold no key at epoch 3" is indistinguishable from an honest op that
-/// overtook its `key_envelope`, and refusing would lose that op for good —
-/// the relay does not redeliver. What matters is that parking is *inert*:
+/// overtook its `key_envelope`, and refusing would hold the device's cursor
+/// below that op until the relay replayed it, and lose it for good once the
+/// relay's retention window (30 days or 256 MiB per channel) evicted the frame.
+/// What matters is that parking is *inert*:
 /// the op never applies, the head never moves, and the row is swept at
 /// [`DEFERRED_TTL_MS`] rather than sitting there forever waiting for a key
 /// that cannot exist, because no honest device ever minted that epoch.
@@ -11393,13 +11614,114 @@ fn revoke_device_reports_that_the_fold_discarded_its_own_op() {
     );
 }
 
+/// **The relay half follows the register through an unwind, both ways (#257).**
+///
+/// `revoke_device` guards the intent insert so the two halves of a revocation
+/// cannot disagree about whether there is one. The fold then made the register
+/// retroactive and never touched the intent table, which reopened the same
+/// disagreement from the other side. The chain is the issue's own:
+///
+/// 1. X revokes C while offline: effective, so C's intent is queued.
+/// 2. O revokes X. The re-fold gates `X -> C`, and C unwinds to current.
+/// 3. X revokes C again. Gated, so nothing new is queued — but step 1's row is
+///    still there.
+///
+/// The intent must not be owed while the register calls C current, or the
+/// relay refuses a device every replica shows as a member. And it must not be
+/// lost either, which is what clearing it on the unwind would do:
+///
+/// 4. P revokes O. The discount takes O out of X's revoker set, `X -> C` lands
+///    again, and C is revoked — so the relay is owed that revocation, and the
+///    row step 1 queued is what carries it.
+#[test]
+fn a_relay_intent_is_owed_only_while_the_register_calls_its_device_revoked() {
+    // The intents the drain would send: `pending_relay_revocations` less every
+    // row the register no longer agrees with, read through the one definition
+    // `Core::pending_relay_revocations` reads.
+    fn owed_relay_revocations(db: &Db) -> Vec<[u8; 16]> {
+        let conn = db.conn();
+        let mut stmt = conn
+            .prepare(crate::relay_intents::OWED_RELAY_REVOCATIONS_SQL)
+            .unwrap();
+        let rows = stmt
+            .query_map([], |r| r.get::<_, Vec<u8>>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        rows.into_iter()
+            .filter_map(|id| <[u8; 16]>::try_from(id.as_slice()).ok())
+            .collect()
+    }
+
+    let ex = engine_random_keys(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eo = engine_random_keys(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let ec = engine_random_keys(ROOT, [3u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let ep = engine_random_keys(ROOT, [4u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut dbx = db_root(ROOT);
+    trust(&ex, &mut dbx, &eo);
+    trust(&ex, &mut dbx, &ec);
+    trust(&ex, &mut dbx, &ep);
+    let (x_id, o_id, c_id) = (
+        ex.keychain.device_id(),
+        eo.keychain.device_id(),
+        ec.keychain.device_id(),
+    );
+    let revoke_c = |dbx: &mut Db| {
+        ex.apply(
+            dbx,
+            Command::RevokeDevice {
+                device_id: EntityRef::new(EntityKind::Device, c_id),
+                reason: RevokeReason::Lost,
+            },
+        )
+        .expect("revoke C")
+    };
+
+    // 1.
+    let first = revoke_c(&mut dbx);
+    assert!(!first.revocation_gated);
+    assert_eq!(owed_relay_revocations(&dbx), vec![c_id]);
+
+    // 2.
+    revoke(&ex, &mut dbx, &eo, x_id, T0 + 10_000);
+    assert!(!ex.is_revoked(dbx.conn(), &c_id).unwrap(), "C unwound");
+    assert_eq!(
+        pending_relay_revocations(&dbx),
+        vec![c_id],
+        "the fold does not write the intent table"
+    );
+    assert!(
+        owed_relay_revocations(&dbx).is_empty(),
+        "an intent for a device the register calls current is not owed"
+    );
+
+    // 3.
+    let again = revoke_c(&mut dbx);
+    assert!(again.revocation_gated);
+    assert!(
+        owed_relay_revocations(&dbx).is_empty(),
+        "a gated revocation tells the relay nothing, even over an earlier row"
+    );
+
+    // 4.
+    revoke(&ex, &mut dbx, &ep, o_id, T0 + 20_000);
+    assert!(ex.is_revoked(dbx.conn(), &c_id).unwrap(), "C revoked again");
+    assert_eq!(
+        owed_relay_revocations(&dbx),
+        vec![c_id],
+        "the relay is owed the revocation the register now holds"
+    );
+}
+
 /// `Command::RotateStreamKey` is the one-stream form of the mint-and-distribute
 /// chain `revoke_device` keeps a revoked device out of, and it refuses the same
 /// device outright.
 ///
 /// Without the guard, a device its own register calls revoked mints a fresh
-/// epoch into its own `stream_keys` and seals it to every unbounded peer, whose
-/// `absorb_stream_key` takes it and whose next write is sealed under it. The
+/// epoch into its own `stream_keys` and seals it to every unbounded peer, and
+/// each peer that has not yet bounded it seals its next write under that key.
+/// A peer that has is covered by
+/// `a_key_a_revoked_device_seals_to_a_peer_is_absorbed_and_never_written_under`. The
 /// refusal is checked before anything can mint, so the failed command leaves
 /// no key, no op, and no envelope behind. The positive half — an unrevoked
 /// device rotates and every current peer is sealed the new epoch — is
@@ -11459,6 +11781,156 @@ fn a_revoked_device_cannot_rotate_a_stream_key() {
         to_b_before,
         "so no honest peer was sealed a key this device chose"
     );
+}
+
+/// **The peer-side half: a key a read-bounded device seals to this device is
+/// absorbed and never written under** (issue #280, ADR-0041 §Decision 4).
+///
+/// `a_revoked_device_cannot_rotate_a_stream_key` binds an unmodified build.
+/// This is the modified client that guard cannot reach: X seals a fresh epoch
+/// straight to A's public `D_D`, one above A's live one, through the ordinary
+/// `key_envelope` arm. The envelope lands *before* A learns X is revoked, so
+/// the test also pins that the standing is read when A chooses a key to write
+/// under, and not when the key arrived.
+///
+/// A does not fall back to its own `honest_epoch` either: X was trusted when
+/// A minted it, so X holds it. Pre-revocation keys stay live only while they
+/// are the highest epoch a replica holds, and the revoked device holds them
+/// until the rotation's envelope arrives.
+#[test]
+fn a_key_a_revoked_device_seals_to_a_peer_is_absorbed_and_never_written_under() {
+    let ea = engine_random_keys(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let ex = engine_random_keys(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eo = engine_random_keys(ROOT, [3u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut dba = db_root(ROOT);
+    trust(&ea, &mut dba, &ex);
+    trust(&ea, &mut dba, &eo);
+    let (a_id, x_id) = (ea.keychain.device_id(), ex.keychain.device_id());
+    let inbox = INBOX_STREAM_BYTES;
+
+    let (honest_epoch, honest_key) = dba
+        .with_tx(|tx| ea.ensure_stream_epoch(tx, &inbox, T0))
+        .unwrap();
+
+    // X, running a client that ignores its own revocation, mints the next
+    // epoch and seals it to A.
+    let planted = StreamKey::from_bytes([0x6b; 32]);
+    let planted_epoch = honest_epoch + 1;
+    let sealed = ex
+        .keychain
+        .seal_key_envelope(
+            &ea.keychain.device_dh_pub(),
+            &inbox,
+            planted_epoch,
+            &planted,
+            ex.rng.as_ref(),
+        )
+        .unwrap();
+    let inner = InnerOp::KeyEnvelope(KeyEnvelopePayload {
+        stream_id: inbox,
+        epoch: planted_epoch,
+        recipient: Recipient::Device(a_id),
+        key_id: stream_key_id(&planted),
+        hpke_ciphertext: sealed,
+    });
+    let learned = dba
+        .with_tx(|tx| ea.apply_control_op(tx, &inner, &x_id, Hlc::at(T0), T0, 1))
+        .unwrap();
+    assert_eq!(
+        learned,
+        vec![(inbox, planted_epoch)],
+        "the key is absorbed, so every op sealed under it opens here"
+    );
+    let live = |db: &mut Db| {
+        db.with_tx(|tx| ea.keychain.current_stream_key_tx(tx, &inbox))
+            .unwrap()
+            .expect("a live inbox key")
+    };
+    assert_eq!(
+        stream_key_id(&live(&mut dba).1),
+        stream_key_id(&planted),
+        "while X is a member here, its epoch is live like anybody's"
+    );
+
+    // O revokes X, and A applies it.
+    revoke(&ea, &mut dba, &eo, x_id, T0 + 1_000);
+    assert!(read_bound_row(&dba, &x_id).is_some(), "A bounded X");
+
+    // Not X's epoch, which X delivered. Nor `honest_epoch` below it: A minted
+    // that while X was trusted, so X was sealed it and holds it too.
+    assert!(
+        dba.with_tx(|tx| ea.keychain.current_stream_key_tx(tx, &inbox))
+            .unwrap()
+            .is_none(),
+        "A holds no inbox key it may write under"
+    );
+    assert!(
+        ea.keychain
+            .stream_keys_at(&inbox, planted_epoch)
+            .iter()
+            .any(|k| stream_key_id(k) == stream_key_id(&planted)),
+        "and still holds X's key, so what was sealed under it stays readable"
+    );
+    assert!(
+        ea.keychain
+            .stream_keys_at(&inbox, honest_epoch)
+            .iter()
+            .any(|k| stream_key_id(k) == stream_key_id(&honest_key)),
+        "as it does its own pre-revocation key"
+    );
+
+    // So A's next write mints above both, and the fresh epoch is delivered to
+    // O and not to X.
+    let task = new_task(&ea, &mut dba, "written after the revocation");
+    let env = create_env_for(&dba, task.bytes());
+    let sealed_at = sunrise_crypto::decode_envelope(&env)
+        .expect("the op this engine just wrote decodes")
+        .epoch;
+    assert_eq!(
+        sealed_at,
+        planted_epoch + 1,
+        "the task was sealed under epoch {sealed_at}; X holds epochs \
+         {honest_epoch} and {planted_epoch}"
+    );
+    let o_id = eo.keychain.device_id();
+    assert!(envelopes_to(&ea, &dba, &o_id).contains(&(inbox, sealed_at)));
+    assert!(
+        !envelopes_to(&ea, &dba, &x_id).contains(&(inbox, sealed_at)),
+        "X was not delivered the epoch A wrote under"
+    );
+    ea.keychain
+        .open_op(&env)
+        .expect("and A reads its own write");
+
+    // A stream X keyed alone — one it created after its revocation — has no
+    // key A may write under, so A mints its own above X's rather than
+    // writing under X's.
+    let lone = [0x5f; 16];
+    let lone_key = StreamKey::from_bytes([0x6c; 32]);
+    let sealed = ex
+        .keychain
+        .seal_key_envelope(
+            &ea.keychain.device_dh_pub(),
+            &lone,
+            1,
+            &lone_key,
+            ex.rng.as_ref(),
+        )
+        .unwrap();
+    let inner = InnerOp::KeyEnvelope(KeyEnvelopePayload {
+        stream_id: lone,
+        epoch: 1,
+        recipient: Recipient::Device(a_id),
+        key_id: stream_key_id(&lone_key),
+        hpke_ciphertext: sealed,
+    });
+    dba.with_tx(|tx| ea.apply_control_op(tx, &inner, &x_id, Hlc::at(T0), T0, 1))
+        .unwrap();
+    let (epoch, key) = dba
+        .with_tx(|tx| ea.ensure_stream_epoch(tx, &lone, T0 + 2_000))
+        .unwrap();
+    assert_eq!(epoch, 2, "minted above the epoch X holds");
+    assert_ne!(stream_key_id(&key), stream_key_id(&lone_key));
 }
 
 /// The epoch separation the ordering argument rests on, asserted against the
@@ -12848,6 +13320,101 @@ fn lww_earlier_remote_update_loses_to_later_local() {
     assert_eq!(op_count(&dbb), 3, "create + local update + remote update");
 }
 
+/// **A remote write that loses LWW keeps its op row, and the cursor counts it.**
+///
+/// `materialize_remote` refuses a losing write by returning `Ok(())` before it
+/// touches the entity row. That is the entity path's refusal below
+/// `apply_remote_all`'s idempotence gate, and `upsert_sync_cursor`'s doc says
+/// every refusal there declines a write and never the delivery: the op row
+/// went in first, so it stays, and step g counts it.
+///
+/// `lww_earlier_remote_update_loses_to_later_local` confirms the losing op
+/// only by a total row count, and reaches it through `apply_remote`. This
+/// holds the premise itself for the entity path, through `apply_remote_all`:
+/// the op row is at the losing op's own `(stream, device, seq)`, and the
+/// cursor for that sender covers it. The control path's two refusals are held
+/// the same way by `a_self_refused_revoke_still_advances_the_cursor` and
+/// `a_read_bounded_senders_recipient_claim_is_refused_and_the_cursor_counts_the_op`.
+///
+/// Turning the early return into an error -- the shape
+/// `.github/scripts/apply-refusal-gate.py` rejects statically (#298) -- rolls
+/// the transaction back, and this delivery then fails rather than applies.
+#[test]
+fn a_losing_lww_write_keeps_its_op_row_and_is_counted() {
+    let ca = Arc::new(FakeClock(PLMutex::new(T0)));
+    let cb = Arc::new(FakeClock(PLMutex::new(T0)));
+    let ea = engine_seeded(ROOT, [1u8; 32], ca.clone());
+    let eb = engine_seeded(ROOT, [2u8; 32], cb.clone());
+    let mut dba = db_root(ROOT);
+    let mut dbb = db_root(ROOT);
+    trust(&eb, &mut dbb, &ea);
+
+    let created = ea
+        .apply(
+            &mut dba,
+            Command::CreateTask(TaskDraft {
+                title: "orig".into(),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+    eb.apply_remote_all(&mut dbb, &env_bytes(&dba, &created.op_id))
+        .expect("the create applies");
+
+    // B's own later write is the one the remote op has to lose to.
+    set_clock(&cb, T0 + 10_000);
+    eb.apply(
+        &mut dbb,
+        Command::UpdateTask {
+            id: created.entity,
+            patch: TaskPatch {
+                title: Some("B-late".into()),
+                ..Default::default()
+            },
+        },
+    )
+    .unwrap();
+
+    set_clock(&ca, T0 + 5_000);
+    let loser = ea
+        .apply(
+            &mut dba,
+            Command::UpdateTask {
+                id: created.entity,
+                patch: TaskPatch {
+                    title: Some("A-early".into()),
+                    ..Default::default()
+                },
+            },
+        )
+        .unwrap();
+    let env = env_bytes(&dba, &loser.op_id);
+    let head = sunrise_cbor::decode_envelope_header(&env).unwrap();
+    assert_eq!(
+        cursor_for(&dbb, &head.stream_id, &head.device_id),
+        head.seq - 1,
+        "going in, B's cursor for A covers exactly the ops below the loser"
+    );
+
+    eb.apply_remote_all(&mut dbb, &env)
+        .expect("a write that loses LWW is still a well-formed delivery");
+
+    // The refusal: the entity row is B's.
+    assert_eq!(read_task_t(&eb, &dbb, created.entity).title, "B-late");
+    // What it did not take: the op row, and the cursor that counts it.
+    assert_eq!(
+        ops_at(dbb.conn(), &head.stream_id, &head.device_id, head.seq),
+        1,
+        "the refusal is the entity row's, not the delivery's: the op row is in"
+    );
+    assert_eq!(
+        cursor_for(&dbb, &head.stream_id, &head.device_id),
+        head.seq,
+        "`upsert_sync_cursor` runs at step g with that row in the log, so the \
+         contiguous prefix covers it"
+    );
+}
+
 #[test]
 fn lww_later_remote_update_wins_over_earlier_local() {
     let ca = Arc::new(FakeClock(PLMutex::new(T0)));
@@ -13244,6 +13811,82 @@ fn unknown_entity_fields_survive_the_materialized_row() {
     assert_eq!(decoded.unknown, future_fields());
 }
 
+/// ADR-0045 §6: an `extra` blob this build cannot parse is kept, not emptied.
+///
+/// It reads as "no unknowns", which is what used to make the next write of
+/// the row store `NULL` over it. Now the write keeps the bytes and says so;
+/// a write whose entity carries unknown fields of its own still replaces them.
+#[test]
+fn an_unparseable_extra_blob_survives_an_edit_and_is_logged() {
+    let clock = Arc::new(FakeClock(PLMutex::new(T0)));
+    let e = engine_seeded(ROOT, [1u8; 32], clock);
+    let mut db = db_root(ROOT);
+    let task = new_task(&e, &mut db, "holds bytes this build cannot read");
+    // A float: canonical CBOR a newer build could write, and a value
+    // `CborValue` refuses, so the whole map fails to decode here.
+    let opaque: Vec<u8> = vec![0xa1, 0x61, b'x', 0xf9, 0x3c, 0x00];
+    let extra = |db: &Db| -> Option<Vec<u8>> {
+        db.conn()
+            .query_row(
+                "SELECT extra FROM tasks WHERE id = ?",
+                [&task.bytes()[..]],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    db.conn()
+        .execute(
+            "UPDATE tasks SET extra = ? WHERE id = ?",
+            rusqlite::params![&opaque, &task.bytes()[..]],
+        )
+        .unwrap();
+    assert!(read_task_t(&e, &db, task).unknown.is_empty());
+
+    let logged = events_emitted_by(|| {
+        e.apply(
+            &mut db,
+            Command::UpdateTask {
+                id: task,
+                patch: TaskPatch {
+                    title: Some("renamed".into()),
+                    ..Default::default()
+                },
+            },
+        )
+        .unwrap();
+    });
+    assert_eq!(
+        extra(&db),
+        Some(opaque),
+        "the bytes are written back unchanged"
+    );
+    assert!(
+        logged
+            .iter()
+            .any(|ev| ev == "core.storage.extra_kept_opaque"),
+        "keeping them is announced; got {logged:?}"
+    );
+
+    // An entity with unknown fields of its own replaces them.
+    let mut t = read_task_t(&e, &db, task);
+    t.unknown = future_fields();
+    let lww = e.lww_stamp(9);
+    db.with_tx(|tx| update_task_row(tx, &t, &lww)).unwrap();
+    assert_eq!(read_task_t(&e, &db, task).unknown, future_fields());
+}
+
+/// Every table's `extra` lookup names a real key column: a query that does
+/// not prepare fails the write it guards, for every row of that table.
+#[test]
+fn every_extra_lookup_prepares_against_the_schema() {
+    let db = db_root(ROOT);
+    for table in ExtraTable::ALL {
+        db.conn()
+            .prepare(table.select_extra())
+            .unwrap_or_else(|e| panic!("{table:?}: {e}"));
+    }
+}
+
 /// `Stream.description` was accepted, carried in the op, and never stored.
 ///
 /// `create_stream` copied it onto the entity and `update_stream` applied
@@ -13548,11 +14191,12 @@ fn unknown_focus_fields_survive_the_materialized_row() {
     );
 }
 
-/// An enum value from a newer schema must degrade, not reject: rejecting
+/// An enum value from a newer schema must be kept, not rejected: rejecting
 /// one field's value rejects the whole op, and two replicas then diverge
-/// permanently over one string.
+/// permanently over one string. It reads as the safe fallback and is kept
+/// verbatim (ADR-0045 §6).
 #[test]
-fn an_unknown_enum_variant_degrades_instead_of_failing_the_op() {
+fn an_unknown_enum_variant_is_kept_instead_of_failing_the_op() {
     use ciborium::value::Value;
 
     let clock = Arc::new(FakeClock(PLMutex::new(T0)));
@@ -13578,7 +14222,12 @@ fn an_unknown_enum_variant_degrades_instead_of_failing_the_op() {
 
     let back = read_task_t(&e, &db, created.entity);
     assert_eq!(
-        back.state,
+        back.state.as_str(),
+        "delegated",
+        "the stored raw state is kept, not degraded"
+    );
+    assert_eq!(
+        back.state.effective(),
         TaskState::Todo,
         "an unrecognised state must read as OPEN, never as done"
     );
@@ -13596,7 +14245,12 @@ fn an_unknown_enum_variant_degrades_instead_of_failing_the_op() {
     let bytes = sunrise_cbor::encode_canonical(&v).unwrap();
     let decoded: sunrise_domain::Task =
         sunrise_cbor::decode_lenient(&bytes).expect("an unknown variant must not reject the op");
-    assert_eq!(decoded.state, TaskState::Todo);
+    assert_eq!(decoded.state, TaskState::from_raw("delegated"));
+    assert_eq!(
+        sunrise_cbor::encode_canonical(&decoded).unwrap(),
+        bytes,
+        "and it re-encodes byte for byte"
+    );
 }
 
 /// #6: the three zone-less kinds must survive being written on one device
@@ -14142,6 +14796,7 @@ fn deterministic_routine_task_converges() {
                 priority: None,
                 estimated_duration_s: None,
                 body: None,
+                unknown: Unknowns::new(),
             },
             rrule: RRule::parse("FREQ=DAILY").unwrap(),
             timezone: "UTC".into(),
@@ -14541,7 +15196,7 @@ fn a_soft_violation_is_surfaced_rather_than_blocking() {
             Command::CreateTask(TaskDraft {
                 title: "deploy at 10pm".into(),
                 scheduled_at: Some(ms_to_ts(OUTSIDE_WINDOW_MS).into()),
-                scheduling_constraints: vec![soft],
+                scheduling_constraints: vec![soft.clone()],
                 ..Default::default()
             }),
         )
@@ -16552,9 +17207,10 @@ fn the_discount_rehabilitates_the_gate_and_never_the_read_bound() {
 /// `sunrise devices revoke <anything>` drew a fresh key for every stream in
 /// the account, wrote it into its **own** `stream_keys`, and sealed it to every
 /// honest peer — whose next writes it could then read, because
-/// `Keychain::absorb_stream_key` checks no sender standing and
-/// `current_epoch_tx` is `MAX(epoch)`. It was told, correctly, that it had
-/// revoked nothing.
+/// `current_epoch_tx` was `MAX(epoch)`. It was told, correctly, that it had
+/// revoked nothing. A peer that has bounded it no longer writes under such a
+/// key (ADR-0041 §Decision 4); a peer that has not still does, and this guard
+/// is what protects it.
 ///
 /// Move the rotation loop back outside the `if effective` block in
 /// `revoke_device` and this goes red.
@@ -17124,3 +17780,1182 @@ fn a_gated_sender_flooding_past_the_cap_stays_gated() {
         "none of X's gated claims reached the register"
     );
 }
+
+/// Put bare `ops` rows for `(stream, device)` at each of `seqs`.
+///
+/// `ops_run_end` reads only `stream_id`, `device_id` and `seq`, so the rest of
+/// the row is filler that satisfies the schema's `NOT NULL` columns.
+fn put_op_rows(db: &Db, stream: &[u8; 16], device: &[u8; 16], seqs: &[u64]) {
+    for &seq in seqs {
+        db.conn()
+            .execute(
+                "INSERT INTO ops (op_id, stream_id, device_id, seq, ts_ms, envelope,
+                                  inner_kind, target_kind, received_at)
+                 VALUES (?, ?, ?, ?, 0, x'', 'test', 'test', 0)",
+                params![
+                    &remote_op_id(stream, device, seq)[..],
+                    &stream[..],
+                    &device[..],
+                    i64::try_from(seq).unwrap()
+                ],
+            )
+            .unwrap();
+    }
+}
+
+/// `ops_run_end` for `(stream, device)` from `start`, in a transaction of its
+/// own. An `Err` is returned rather than unwrapped, because one mutation of
+/// the SQL fails as `InvalidColumnType` and the test should say which.
+fn run_end(db: &mut Db, stream: &[u8; 16], device: &[u8; 16], start: i64) -> rusqlite::Result<i64> {
+    let tx = db.conn_mut().transaction().unwrap();
+    let end = ops_run_end(&tx, stream, device, start);
+    tx.rollback().unwrap();
+    end
+}
+
+const RUN_S: [u8; 16] = [0x51; 16];
+const RUN_S2: [u8; 16] = [0x52; 16];
+const RUN_D1: [u8; 16] = [0xd1; 16];
+const RUN_D2: [u8; 16] = [0xd2; 16];
+
+/// A run ends per `(stream_id, device_id)`, not per stream: another device's
+/// seqs on the same stream neither extend this device's run nor cut it short.
+///
+/// Issue #294. `ops_run_end` names `stream_id = ?1 AND device_id = ?2` three
+/// times — the `EXISTS` probe, the `o` scan, and the `n` successor anti-join —
+/// and every cursor assertion elsewhere in this file observes a stream fed by
+/// one device, so none of them could tell the difference. Each case below
+/// names the mutation it catches; each was established by making the mutation
+/// and watching the assertion fail.
+///
+/// The `o` scan's pair is the exception, and deliberately so: dropping it alone
+/// is an equivalent mutant. The probe has established that this device holds
+/// `start`, so its run `start..=e` exists. A foreign row at any `s` in
+/// `start..e` has this device's `s + 1` as a successor and is excluded; one at
+/// `e` is the same candidate as this device's own; one above `e` loses to it
+/// in `MIN`. The pair bounds the scan, not the answer. What an `o`-side test
+/// can catch is the `(stream)`-scoped run end — both pairs dropped together —
+/// and the first assertion here is that one.
+#[test]
+fn ops_run_end_is_scoped_per_device_on_a_shared_stream() {
+    let mut db = db();
+    put_op_rows(&db, &RUN_S, &RUN_D1, &[1, 2, 3]);
+    put_op_rows(&db, &RUN_S, &RUN_D2, &[4]);
+
+    // A stream-scoped run end reads 4 here; dropping only the anti-join's
+    // `device_id` excludes 3 (D2's 4 is its successor) and every other
+    // candidate, so `MIN` is NULL and the read fails as `InvalidColumnType`.
+    assert_eq!(
+        run_end(&mut db, &RUN_S, &RUN_D1, 1),
+        Ok(3),
+        "D1's run is 1..=3 whatever D2 holds on the same stream"
+    );
+    // Dropping the probe's `device_id` lets D1's seq 1 answer for D2, and the
+    // run is then read from D2's rows alone: 4, a cursor past three holes.
+    assert_eq!(
+        run_end(&mut db, &RUN_S, &RUN_D2, 1),
+        Ok(0),
+        "D2 holds no seq 1, so its run from 1 is empty"
+    );
+
+    // And the cursor `upsert_sync_cursor` writes carries the same answer.
+    let tx = db.conn_mut().transaction().unwrap();
+    upsert_sync_cursor(&tx, &RUN_S, &RUN_D1, 0).unwrap();
+    upsert_sync_cursor(&tx, &RUN_S, &RUN_D2, 0).unwrap();
+    tx.commit().unwrap();
+    assert_eq!(cursor_for(&db, &RUN_S, &RUN_D1), 3);
+    assert_eq!(cursor_row(&db, &RUN_S, &RUN_D2), Some(0));
+}
+
+/// The anti-join's mutation is not only a failed read: where this device holds
+/// a later seq past a hole, it is a cursor past the hole, which the relay's
+/// replay filter honours by never re-sending the missing op.
+#[test]
+fn ops_run_end_does_not_cross_a_hole_another_device_fills() {
+    let mut db = db();
+    put_op_rows(&db, &RUN_S, &RUN_D1, &[1, 2, 3, 5]);
+    put_op_rows(&db, &RUN_S, &RUN_D2, &[4]);
+
+    // With the anti-join unscoped by device, D2's 4 excludes D1's 3 and the
+    // next candidate is D1's 5: the run would claim D1's missing 4.
+    assert_eq!(
+        run_end(&mut db, &RUN_S, &RUN_D1, 1),
+        Ok(3),
+        "D1 is missing its own seq 4, and D2's seq 4 does not stand in for it"
+    );
+}
+
+/// The same scoping on the other axis: one device's seqs on another stream
+/// neither extend nor cut short its run on this one.
+#[test]
+fn ops_run_end_is_scoped_per_stream_for_one_device() {
+    let mut db = db();
+    put_op_rows(&db, &RUN_S, &RUN_D1, &[1, 2]);
+    put_op_rows(&db, &RUN_S2, &RUN_D1, &[3]);
+
+    // Dropping the anti-join's `stream_id` makes S2's 3 the successor of S's
+    // 2, and `MIN` over the empty remainder fails the read.
+    assert_eq!(
+        run_end(&mut db, &RUN_S, &RUN_D1, 1),
+        Ok(2),
+        "D1's run on S is 1..=2 whatever it holds on S2"
+    );
+    // Dropping the probe's `stream_id` lets S's seq 1 answer for S2.
+    assert_eq!(
+        run_end(&mut db, &RUN_S2, &RUN_D1, 1),
+        Ok(0),
+        "D1 holds no seq 1 on S2"
+    );
+}
+
+/// `start` other than 1, which `upsert_sync_cursor` never passes: the run is
+/// read from `start` upward, and an absent `start` is `start - 1` whatever
+/// lies above it.
+#[test]
+fn ops_run_end_reads_from_any_start() {
+    let mut db = db();
+    put_op_rows(&db, &RUN_S, &RUN_D1, &[1, 2, 3, 5, 6]);
+    put_op_rows(&db, &RUN_S, &RUN_D2, &[4, 7]);
+
+    assert_eq!(run_end(&mut db, &RUN_S, &RUN_D1, 1), Ok(3));
+    assert_eq!(run_end(&mut db, &RUN_S, &RUN_D1, 3), Ok(3), "a run of one");
+    assert_eq!(
+        run_end(&mut db, &RUN_S, &RUN_D1, 4),
+        Ok(3),
+        "D1 holds no seq 4, and D2's does not count"
+    );
+    assert_eq!(
+        run_end(&mut db, &RUN_S, &RUN_D1, 5),
+        Ok(6),
+        "the run above the hole ends at 6, not at D2's 7"
+    );
+    assert_eq!(run_end(&mut db, &RUN_S, &RUN_D2, 4), Ok(4));
+}
+
+// --- Parked ops (issue #320, ADR-0045 §4) ------------------------------------
+
+/// Emit, as `sender`, a genuine sealed and signed op on `stream` whose inner
+/// CBOR is `inner`, and return its envelope. This is how a newer build's op
+/// family looks to this one: every envelope check passes, and only the
+/// payload is foreign.
+fn emit_raw_inner(sender: &Engine, db: &mut Db, stream: &[u8; 16], inner: &[u8]) -> Vec<u8> {
+    let device = sender.keychain.device_id();
+    let op_id = db
+        .with_tx(|tx| {
+            let seq = sender.next_seq_tx(tx, stream)?;
+            let op_id = remote_op_id(stream, &device, seq);
+            sender.ops_insert(
+                tx,
+                &op_id,
+                stream,
+                seq,
+                sender.hlc.send(),
+                inner,
+                "future.kind",
+                "future",
+                None,
+                Some(T0),
+                None,
+                T0,
+                &[],
+            )?;
+            Ok(op_id)
+        })
+        .unwrap();
+    env_bytes(db, &op_id)
+}
+
+fn future_kind_inner(name: &str) -> Vec<u8> {
+    use ciborium::value::Value;
+    let mut buf = Vec::new();
+    ciborium::ser::into_writer(
+        &Value::Map(vec![(
+            Value::Text(name.into()),
+            Value::Map(vec![(Value::Text("title".into()), Value::Text("x".into()))]),
+        )]),
+        &mut buf,
+    )
+    .unwrap();
+    buf
+}
+
+/// `(reason, kind, parked_under_doc_schema_v)` of every parked row.
+fn parked_rows(db: &Db) -> Vec<(String, String, i64)> {
+    let mut stmt = db
+        .conn()
+        .prepare("SELECT reason, kind, parked_under_doc_schema_v FROM parked_ops")
+        .unwrap();
+    stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap()
+}
+
+/// `(inner_kind, applied_at)` of the `ops` row for `op_id`.
+fn op_row(db: &Db, op_id: &[u8; 16]) -> (String, Option<i64>) {
+    db.conn()
+        .query_row(
+            "SELECT inner_kind, applied_at FROM ops WHERE op_id = ?",
+            params![&op_id[..]],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap()
+}
+
+/// A verified op of a kind this build does not know is kept, not refused: it
+/// is in `ops` unapplied, marked in `parked_ops`, and the cursor counts it, so
+/// the relay stops re-sending it and the ops above it are not held behind it.
+/// A re-delivery adds nothing.
+#[test]
+fn an_op_of_a_kind_this_build_does_not_know_is_parked_and_counted() {
+    let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut dba = db_root(ROOT);
+    let mut dbb = db_root(ROOT);
+    trust(&eb, &mut dbb, &ea);
+    let a_id = ea.keychain.device_id();
+
+    let first = new_task(&ea, &mut dba, "first");
+    let first_env = create_env_for(&dba, first.bytes());
+    let first_op = decode_envelope(&first_env).unwrap();
+    let stream = first_op.stream_id;
+    assert!(eb.apply_remote(&mut dbb, &first_env).unwrap().is_some());
+    assert_eq!(cursor_for(&dbb, &stream, &a_id), 1);
+
+    let future = emit_raw_inner(&ea, &mut dba, &stream, &future_kind_inner("FutureKind"));
+    let future_op = decode_envelope(&future).unwrap();
+    let future_id = remote_op_id(&stream, &a_id, future_op.seq);
+    assert!(
+        eb.apply_remote_all(&mut dbb, &future).unwrap().is_empty(),
+        "parked, not refused, and nothing on screen changed"
+    );
+    assert_eq!(cursor_for(&dbb, &stream, &a_id), 2, "the parked op counts");
+    assert_eq!(op_row(&dbb, &future_id), ("unknown".into(), None));
+    assert_eq!(
+        parked_rows(&dbb),
+        vec![(
+            "unknown_kind".into(),
+            "FutureKind".into(),
+            i64::from(sunrise_cbor::version::DOC_SCHEMA_V)
+        )]
+    );
+
+    // The op above it applies and the cursor runs past both.
+    let second = new_task(&ea, &mut dba, "second");
+    assert!(eb
+        .apply_remote(&mut dbb, &create_env_for(&dba, second.bytes()))
+        .unwrap()
+        .is_some());
+    assert_eq!(cursor_for(&dbb, &stream, &a_id), 3);
+
+    // Re-delivery and a replay by the same build both change nothing.
+    let ops_before = op_count(&dbb);
+    assert!(eb.apply_remote_all(&mut dbb, &future).unwrap().is_empty());
+    assert!(eb.replay_parked_ops(&mut dbb).is_empty());
+    assert_eq!(op_count(&dbb), ops_before);
+    assert_eq!(parked_rows(&dbb).len(), 1);
+    assert_eq!(op_row(&dbb, &future_id), ("unknown".into(), None));
+}
+
+/// Parking observes the sender's stamp. The row is in `ops`, which
+/// `prime_hlc` restores the clock from, so a park that skipped the observe
+/// would leave the next open above a reading this session never took.
+#[test]
+fn parking_an_op_observes_the_senders_stamp() {
+    // A leads B by 200 s: inside `MAX_DRIFT_MS`, so the stamp is admitted and
+    // is above anything B's own clock has read.
+    const LEAD_MS: u64 = 200_000;
+    let ea = engine_seeded(
+        ROOT,
+        [1u8; 32],
+        Arc::new(FakeClock(PLMutex::new(T0 + LEAD_MS))),
+    );
+    let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut dba = db_root(ROOT);
+    let mut dbb = db_root(ROOT);
+    trust(&eb, &mut dbb, &ea);
+
+    let task = new_task(&ea, &mut dba, "stamped ahead");
+    let env = create_env_for(&dba, task.bytes());
+    let op = decode_envelope(&env).unwrap();
+    assert!(
+        eb.hlc.peek() < op.hlc,
+        "the premise: B's clock has not seen the stamp"
+    );
+
+    eb.park_op(
+        &mut dbb,
+        &env,
+        &op,
+        "TaskCreate",
+        sunrise_cbor::version::DOC_SCHEMA_V,
+    )
+    .unwrap();
+    assert!(
+        eb.hlc.peek() >= op.hlc,
+        "the park observed the sender's stamp"
+    );
+    assert_eq!(parked_rows(&dbb).len(), 1);
+}
+
+/// A stamp beyond the drift window is refused by the park as it is by the
+/// apply path, before anything is written: no `ops` row, no marker, and the
+/// cursor does not count it.
+#[test]
+fn parking_an_op_beyond_the_drift_window_is_refused_and_leaves_no_row() {
+    let ea = engine_seeded(
+        ROOT,
+        [1u8; 32],
+        Arc::new(FakeClock(PLMutex::new(
+            T0 + sunrise_cbor::hlc::MAX_DRIFT_MS + 1,
+        ))),
+    );
+    let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut dba = db_root(ROOT);
+    let mut dbb = db_root(ROOT);
+    trust(&eb, &mut dbb, &ea);
+    let a_id = ea.keychain.device_id();
+
+    let task = new_task(&ea, &mut dba, "from the future");
+    let env = create_env_for(&dba, task.bytes());
+    let op = decode_envelope(&env).unwrap();
+    let ops_before = op_count(&dbb);
+    let hlc_before = eb.hlc.peek();
+
+    let err = eb
+        .park_op(
+            &mut dbb,
+            &env,
+            &op,
+            "TaskCreate",
+            sunrise_cbor::version::DOC_SCHEMA_V,
+        )
+        .unwrap_err();
+    assert!(
+        matches!(&err, EngineError::RemoteOpInvalid(m) if m.contains("hlc")),
+        "expected an HLC drift rejection, got {err:?}"
+    );
+    assert_eq!(op_count(&dbb), ops_before, "no ops row");
+    let op_id = remote_op_id(&op.stream_id, &a_id, op.seq);
+    let rows: i64 = dbb
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM ops WHERE op_id = ?",
+            params![&op_id[..]],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(rows, 0, "no ops row for the refused op");
+    assert!(parked_rows(&dbb).is_empty(), "no parked_ops row");
+    assert_eq!(eb.hlc.peek(), hlc_before, "the clock was not dragged along");
+}
+
+/// The upgrade. A build that did not know `TaskCreate` parked one; this
+/// build knows it, and the replay `Core::open` runs materializes it through
+/// the full apply path, releases the marker, and is idempotent afterwards.
+///
+/// The parked row is written by `park_op` itself with the older build's
+/// `DOC_SCHEMA_V`, which is exactly the row that build's apply path would
+/// have left: one table, one writer.
+#[test]
+fn a_parked_op_is_materialized_once_a_build_that_knows_its_kind_replays_it() {
+    let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut dba = db_root(ROOT);
+    let mut dbb = db_root(ROOT);
+    trust(&eb, &mut dbb, &ea);
+    let a_id = ea.keychain.device_id();
+
+    let task = new_task(&ea, &mut dba, "from the future");
+    let env = create_env_for(&dba, task.bytes());
+    let op = decode_envelope(&env).unwrap();
+    let op_id = remote_op_id(&op.stream_id, &a_id, op.seq);
+    let older = sunrise_cbor::version::DOC_SCHEMA_V - 1;
+    eb.park_op(&mut dbb, &env, &op, "TaskCreate", older)
+        .unwrap();
+    assert!(
+        eb.query(&dbb, Query::EntityById(task)).is_err(),
+        "a parked op materializes nothing"
+    );
+    assert_eq!(cursor_for(&dbb, &op.stream_id, &a_id), 1);
+
+    let events = eb.replay_parked_ops(&mut dbb);
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, DomainEvent::Created(r) if *r == task)),
+        "the replay reports what it materialized"
+    );
+    assert_eq!(read_task_t(&eb, &dbb, task).title, "from the future");
+    assert!(parked_rows(&dbb).is_empty(), "the marker is released");
+    let (kind, applied) = op_row(&dbb, &op_id);
+    assert_eq!(kind, "task.create");
+    assert!(applied.is_some());
+    assert_eq!(op_count(&dbb), 1, "the same op row, now applied");
+
+    // Idempotent: a second replay and a relay re-send both stop at the gate.
+    assert!(eb.replay_parked_ops(&mut dbb).is_empty());
+    assert!(eb.apply_remote(&mut dbb, &env).unwrap().is_none());
+    assert_eq!(read_task_t(&eb, &dbb, task).title, "from the future");
+}
+
+/// A replay by a build that still cannot read the op leaves it parked and
+/// re-stamps it, so the next open does not try it again.
+#[test]
+fn a_parked_op_this_build_still_cannot_read_stays_parked_and_is_restamped() {
+    let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut dba = db_root(ROOT);
+    let mut dbb = db_root(ROOT);
+    trust(&eb, &mut dbb, &ea);
+
+    let anchor = new_task(&ea, &mut dba, "anchor");
+    let stream = decode_envelope(&create_env_for(&dba, anchor.bytes()))
+        .unwrap()
+        .stream_id;
+    let env = emit_raw_inner(&ea, &mut dba, &stream, &future_kind_inner("StillUnknown"));
+    let op = decode_envelope(&env).unwrap();
+    let current = sunrise_cbor::version::DOC_SCHEMA_V;
+    eb.park_op(&mut dbb, &env, &op, "StillUnknown", current - 1)
+        .unwrap();
+    assert_eq!(OpLog::parked_for_replay(&dbb, current).unwrap().len(), 1);
+
+    assert!(eb.replay_parked_ops(&mut dbb).is_empty());
+    assert_eq!(
+        parked_rows(&dbb),
+        vec![(
+            "unknown_kind".into(),
+            "StillUnknown".into(),
+            i64::from(current)
+        )]
+    );
+    assert!(
+        OpLog::parked_for_replay(&dbb, current).unwrap().is_empty(),
+        "tried by this build, so not tried again until the build changes"
+    );
+}
+
+/// A storage failure while replaying is neither a refusal nor fatal. The
+/// replay logs it, leaves the op's old stamp alone so the next try applies it
+/// (a re-stamp would keep an op this build can read parked until the next
+/// `DOC_SCHEMA_V` bump), and goes on to the next parked op.
+///
+/// The failure is a trigger on the release's `DELETE FROM parked_ops`, which
+/// runs inside the apply transaction and nowhere in the read or the re-stamp.
+/// It fires on every try, the fault that would lock the vault if a replay
+/// failure could fail `Core::open`.
+#[test]
+fn a_storage_failure_during_replay_leaves_the_op_unstamped_and_the_replay_goes_on() {
+    let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut dba = db_root(ROOT);
+    let mut dbb = db_root(ROOT);
+    trust(&eb, &mut dbb, &ea);
+
+    let task = new_task(&ea, &mut dba, "held up by the disk");
+    let env = create_env_for(&dba, task.bytes());
+    let op = decode_envelope(&env).unwrap();
+    let older = sunrise_cbor::version::DOC_SCHEMA_V - 1;
+    eb.park_op(&mut dbb, &env, &op, "TaskCreate", older)
+        .unwrap();
+    // A second parked op, behind the first in replay order, that this build
+    // still cannot read: the failure above it must not stop its re-stamp.
+    let later = emit_raw_inner(
+        &ea,
+        &mut dba,
+        &op.stream_id,
+        &future_kind_inner("StillUnknown"),
+    );
+    let later_op = decode_envelope(&later).unwrap();
+    eb.park_op(&mut dbb, &later, &later_op, "StillUnknown", older)
+        .unwrap();
+
+    dbb.conn()
+        .execute_batch(
+            "CREATE TEMP TRIGGER fail_release BEFORE DELETE ON parked_ops
+             BEGIN SELECT RAISE(ABORT, 'disk full'); END;",
+        )
+        .unwrap();
+    // The fault recurs on every try; each one returns, and neither stamps it.
+    for _ in 0..2 {
+        assert!(eb.replay_parked_ops(&mut dbb).is_empty());
+        assert_eq!(
+            parked_rows(&dbb),
+            vec![
+                ("unknown_kind".into(), "TaskCreate".into(), i64::from(older)),
+                (
+                    "unknown_kind".into(),
+                    "StillUnknown".into(),
+                    i64::from(sunrise_cbor::version::DOC_SCHEMA_V)
+                ),
+            ],
+            "the failed op keeps its stamp, and the replay went on to the next"
+        );
+        assert!(eb.query(&dbb, Query::EntityById(task)).is_err());
+    }
+
+    // The next open, with the disk healthy, applies it.
+    dbb.conn()
+        .execute_batch("DROP TRIGGER fail_release;")
+        .unwrap();
+    let events = eb.replay_parked_ops(&mut dbb);
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, DomainEvent::Created(r) if *r == task)));
+    assert_eq!(read_task_t(&eb, &dbb, task).title, "held up by the disk");
+    assert_eq!(
+        parked_rows(&dbb).len(),
+        1,
+        "only the still-unknown op is left"
+    );
+}
+
+/// An op whose kind this build now knows, but which the apply path refuses on
+/// replay, stays parked under this build's stamp, and its reason stops saying
+/// the kind is unknown (ADR-0045 §4, "stays parked with its reason updated").
+///
+/// The refusal is the sender's device being unknown to this replica: the
+/// parked row is written directly, and this replica never trusted the sender,
+/// so the replay's signer lookup refuses it.
+#[test]
+fn a_parked_op_refused_on_replay_stays_parked_with_its_reason_updated() {
+    let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut dba = db_root(ROOT);
+    let mut dbb = db_root(ROOT);
+
+    let task = new_task(&ea, &mut dba, "refused on replay");
+    let env = create_env_for(&dba, task.bytes());
+    let op = decode_envelope(&env).unwrap();
+    assert!(matches!(
+        eb.apply_remote_all(&mut db_root(ROOT), &env),
+        Err(EngineError::UnknownDevice)
+    ));
+    let older = sunrise_cbor::version::DOC_SCHEMA_V - 1;
+    eb.park_op(&mut dbb, &env, &op, "TaskCreate", older)
+        .unwrap();
+
+    assert!(eb.replay_parked_ops(&mut dbb).is_empty());
+    assert_eq!(
+        parked_rows(&dbb),
+        vec![(
+            "replay_refused".into(),
+            "TaskCreate".into(),
+            i64::from(sunrise_cbor::version::DOC_SCHEMA_V)
+        )]
+    );
+    assert!(eb.query(&dbb, Query::EntityById(task)).is_err());
+}
+
+/// Only an unknown *name* parks. A family this build reads, with a payload
+/// that does not decode, is still damage: refused, with no op row and no
+/// marker, exactly as before.
+#[test]
+fn a_known_kind_with_a_damaged_payload_is_still_refused() {
+    use ciborium::value::Value;
+    let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut dba = db_root(ROOT);
+    let mut dbb = db_root(ROOT);
+    trust(&eb, &mut dbb, &ea);
+
+    let anchor = new_task(&ea, &mut dba, "anchor");
+    let stream = decode_envelope(&create_env_for(&dba, anchor.bytes()))
+        .unwrap()
+        .stream_id;
+    let mut damaged = Vec::new();
+    ciborium::ser::into_writer(
+        &Value::Map(vec![(
+            Value::Text("TaskCreate".into()),
+            Value::Integer(7.into()),
+        )]),
+        &mut damaged,
+    )
+    .unwrap();
+    let env = emit_raw_inner(&ea, &mut dba, &stream, &damaged);
+    let ops_before = op_count(&dbb);
+    assert!(matches!(
+        eb.apply_remote_all(&mut dbb, &env),
+        Err(EngineError::RemoteOpInvalid(_))
+    ));
+    assert_eq!(op_count(&dbb), ops_before);
+    assert!(parked_rows(&dbb).is_empty());
+}
+
+/// ADR-0045 §6: a rule holding a `FREQ` and a `BYDAY` token this build does
+/// not know is kept — including raw values the RFC 5545 text cannot hold —
+/// generates no occurrences, and survives an unrelated edit byte for byte.
+#[test]
+fn a_routine_with_an_unknown_frequency_is_kept_and_generates_nothing() {
+    let mut db = db();
+    let e = engine();
+    let mut draft = routine_draft(
+        stream_ref(5),
+        "FREQ=WEEKLY",
+        NOW + 3_600_000,
+        RoutineCatchupPolicy::Skip,
+        Vec::new(),
+    );
+    // Separators the text form splits on, inside the raw values.
+    draft.rrule.freq = sunrise_domain::Frequency::from_raw("HOURLY;X=1");
+    draft.rrule.by_day = vec![
+        sunrise_domain::Weekday::Mo,
+        sunrise_domain::Weekday::from_raw("A,B"),
+    ];
+    let rule = draft.rrule.clone();
+    let rid = e
+        .apply(&mut db, Command::CreateRoutine(draft))
+        .unwrap()
+        .entity;
+
+    assert!(
+        past_task_count(&db, rid) == 0 && live_task_ids(&db).is_empty(),
+        "a rule this build cannot read materializes nothing"
+    );
+    let rows = match e.query(&db, Query::Routines).unwrap() {
+        QueryResult::Routines(v) => v,
+        _ => panic!(),
+    };
+    let stored = rows.iter().find(|r| r.id == rid).unwrap();
+    assert_eq!(stored.rrule, rule, "the stored rule reads back verbatim");
+    let row = sunrise_domain::routine_rows(std::slice::from_ref(stored), ms_to_ts(NOW))
+        .pop()
+        .unwrap();
+    assert!(
+        row.rrule.starts_with("unrecognised schedule"),
+        "{}",
+        row.rrule
+    );
+    assert_eq!(row.next, None);
+
+    e.apply(
+        &mut db,
+        Command::UpdateRoutine {
+            id: rid,
+            patch: RoutinePatch {
+                paused: Some(true),
+                ..Default::default()
+            },
+        },
+    )
+    .unwrap();
+    let env = env_for_kind(&db, rid.bytes(), "routine.update");
+    match decode_inner_op(&e.keychain.open_op(&env).unwrap()).unwrap() {
+        InnerOp::RoutineUpdate(r) => assert_eq!(r.rrule, rule, "carried through verbatim"),
+        other => panic!("expected a routine.update, got {}", other.inner_kind()),
+    }
+}
+
+/// The `Task` the most recent `task.update` op on `target` carries.
+fn last_task_update(e: &Engine, db: &Db, target: EntityRef) -> Task {
+    let env = env_for_kind(db, target.bytes(), "task.update");
+    match decode_inner_op(&e.keychain.open_op(&env).unwrap()).unwrap() {
+        InnerOp::TaskUpdate(t) => t,
+        other => panic!("expected a task.update, got {}", other.inner_kind()),
+    }
+}
+
+/// ADR-0045 §6: a value this build does not know is carried through every
+/// write it did not make. A newer peer (A) sets a task state and an energy
+/// this build's vocabulary lacks; B stores them, and B's own unrelated edit
+/// re-emits them byte for byte — where it used to write `todo` and no energy
+/// back to every replica.
+#[test]
+fn an_unknown_state_and_energy_survive_a_peers_unrelated_edit() {
+    let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0 + 1))));
+    let mut dba = db_root(ROOT);
+    let mut dbb = db_root(ROOT);
+    trust(&ea, &mut dba, &eb);
+    trust(&eb, &mut dbb, &ea);
+
+    let task = new_task(&ea, &mut dba, "from a newer build");
+    ea.apply(
+        &mut dba,
+        Command::UpdateTask {
+            id: task,
+            patch: TaskPatch {
+                state: Some(TaskState::from_raw("archived")),
+                energy: Some(Some(sunrise_domain::Energy::from_raw("frantic"))),
+                ..Default::default()
+            },
+        },
+    )
+    .unwrap();
+    eb.apply_remote_all(&mut dbb, &create_env_for(&dba, task.bytes()))
+        .unwrap();
+    for env in update_envs_for(&dba, task.bytes()) {
+        eb.apply_remote_all(&mut dbb, &env).unwrap();
+    }
+
+    // B's projection holds the raw values, not their fallbacks.
+    let stored = task_of(&eb, &dbb, task);
+    assert_eq!(stored.state.as_str(), "archived");
+    assert_eq!(stored.energy.as_ref().map(|e| e.as_str()), Some("frantic"));
+    // And reads them as the fallbacks where logic acts: the task is open.
+    assert_eq!(stored.state.effective(), TaskState::Todo);
+
+    // B renames it: the op B writes carries A's values through.
+    eb.apply(
+        &mut dbb,
+        Command::UpdateTask {
+            id: task,
+            patch: TaskPatch {
+                title: Some("renamed by an older build".into()),
+                ..Default::default()
+            },
+        },
+    )
+    .unwrap();
+    let emitted = last_task_update(&eb, &dbb, task);
+    assert_eq!(emitted.state, TaskState::from_raw("archived"));
+    assert_eq!(
+        emitted.energy,
+        Some(sunrise_domain::Energy::from_raw("frantic"))
+    );
+
+    // A command that sets the field explicitly replaces it.
+    eb.apply(&mut dbb, Command::CompleteTask(task)).unwrap();
+    assert_eq!(task_of(&eb, &dbb, task).state, TaskState::Done);
+}
+
+/// ADR-0045 §6, one level down: a time kind this build does not know, and a
+/// field a newer build added inside a nested constraint, both land, are
+/// stored, and are re-emitted unchanged by this build's unrelated edit.
+#[test]
+fn an_unknown_time_kind_and_nested_fields_survive_a_peers_unrelated_edit() {
+    let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0 + 1))));
+    let mut dba = db_root(ROOT);
+    let mut dbb = db_root(ROOT);
+    trust(&ea, &mut dba, &eb);
+    trust(&eb, &mut dbb, &ea);
+
+    let text = |s: &str| sunrise_domain::CborValue(ciborium::value::Value::Text(s.into()));
+    let mut raw = Unknowns::new();
+    raw.insert("phase".into(), text("waxing"));
+    let lunar = SunriseTime::Unknown {
+        kind: "lunar".into(),
+        raw,
+    };
+    let mut constraint = sample_constraint();
+    constraint.unknown.insert("place".into(), text("office"));
+    if let Some(w) = constraint.time_of_day.as_mut() {
+        w.unknown.insert("slack_m".into(), text("15"));
+    }
+
+    let task = new_task(&ea, &mut dba, "from a newer build");
+    ea.apply(
+        &mut dba,
+        Command::UpdateTask {
+            id: task,
+            patch: TaskPatch {
+                scheduled_at: Some(Some(lunar.clone())),
+                scheduling_constraints: Some(vec![constraint.clone()]),
+                ..Default::default()
+            },
+        },
+    )
+    .unwrap();
+    eb.apply_remote_all(&mut dbb, &create_env_for(&dba, task.bytes()))
+        .unwrap();
+    for env in update_envs_for(&dba, task.bytes()) {
+        eb.apply_remote_all(&mut dbb, &env).unwrap();
+    }
+
+    // B's projection holds both, not an instant and a truncated constraint.
+    let stored = task_of(&eb, &dbb, task);
+    assert_eq!(stored.scheduled_at.as_ref(), Some(&lunar));
+    assert_eq!(stored.scheduling_constraints, vec![constraint.clone()]);
+
+    eb.apply(
+        &mut dbb,
+        Command::UpdateTask {
+            id: task,
+            patch: TaskPatch {
+                title: Some("renamed by an older build".into()),
+                ..Default::default()
+            },
+        },
+    )
+    .unwrap();
+    let emitted = last_task_update(&eb, &dbb, task);
+    assert_eq!(emitted.scheduled_at, Some(lunar));
+    assert_eq!(emitted.scheduling_constraints, vec![constraint]);
+}
+
+/// An unknown state counts as open in the SQL that lists and counts open
+/// work, as `todo` does in Rust.
+#[test]
+fn an_unknown_state_counts_as_open_in_the_stream_list() {
+    let mut db = db();
+    let e = engine();
+    let task = new_task(&e, &mut db, "open, in a state this build lacks");
+    e.apply(
+        &mut db,
+        Command::UpdateTask {
+            id: task,
+            patch: TaskPatch {
+                state: Some(TaskState::from_raw("archived")),
+                ..Default::default()
+            },
+        },
+    )
+    .unwrap();
+    let rows = match e.query(&db, Query::StreamList).unwrap() {
+        QueryResult::Streams(r) => r,
+        _ => panic!(),
+    };
+    assert_eq!(rows[0].open_task_count, 1, "the Inbox counts it as open");
+}
+
+/// Set a task's state to one this build does not know.
+fn set_unknown_state(e: &Engine, db: &mut Db, task: EntityRef, raw: &str) {
+    e.apply(
+        db,
+        Command::UpdateTask {
+            id: task,
+            patch: TaskPatch {
+                state: Some(TaskState::from_raw(raw)),
+                ..Default::default()
+            },
+        },
+    )
+    .unwrap();
+}
+
+/// A stream's own open count (the non-Inbox rows of the stream list) counts
+/// an unknown state as open.
+#[test]
+fn an_unknown_state_counts_as_open_in_a_streams_own_count() {
+    let mut db = db();
+    let e = engine();
+    let s = e
+        .apply(
+            &mut db,
+            Command::CreateStream(StreamDraft {
+                name: "Work".into(),
+                ..Default::default()
+            }),
+        )
+        .unwrap()
+        .entity;
+    let task = task_with(
+        &e,
+        &mut db,
+        "in a state this build lacks",
+        TaskDraft {
+            stream_id: Some(s),
+            ..Default::default()
+        },
+    );
+    set_unknown_state(&e, &mut db, task, "archived");
+    let rows = match e.query(&db, Query::StreamList).unwrap() {
+        QueryResult::Streams(r) => r,
+        _ => panic!(),
+    };
+    let row = rows.iter().find(|r| r.id == s).unwrap();
+    assert_eq!(row.open_task_count, 1, "the stream counts it as open");
+}
+
+/// The actionable scan reads an unknown state as open in all three places it
+/// filters on state: the task itself, a blocker, and a dependent.
+#[test]
+fn the_actionable_scan_reads_an_unknown_state_as_open() {
+    let mut db = db();
+    let e = engine();
+    let blocker = new_task(&e, &mut db, "blocker");
+    let dependent = new_task(&e, &mut db, "dependent");
+    e.apply(
+        &mut db,
+        Command::UpdateTask {
+            id: dependent,
+            patch: TaskPatch {
+                blocked_by: Some(vec![blocker]),
+                ..Default::default()
+            },
+        },
+    )
+    .unwrap();
+    set_unknown_state(&e, &mut db, blocker, "archived");
+    set_unknown_state(&e, &mut db, dependent, "archived");
+
+    let rows = actionable_rows(&e, &db);
+    let b = row_for(&rows, blocker);
+    assert_eq!(
+        b.unblocks, 1,
+        "the unknown-state dependent is waiting on it"
+    );
+    assert_eq!(b.open_blockers, 0);
+    let d = row_for(&rows, dependent);
+    assert_eq!(
+        d.open_blockers, 1,
+        "the unknown-state blocker is still open"
+    );
+    assert_eq!(d.effective_state, EffectiveTaskState::Blocked);
+}
+
+/// Editing a routine's rule regenerates an untouched future task in an
+/// unknown state as it does a `todo` one, and keeps an in-progress one.
+#[test]
+fn update_routine_regenerates_a_future_task_in_an_unknown_state() {
+    let mut db = db();
+    let e = engine();
+    let d = routine_draft(
+        stream_ref(5),
+        "FREQ=DAILY",
+        NOW + 3_600_000,
+        RoutineCatchupPolicy::Skip,
+        Vec::new(),
+    );
+    let rid = e.apply(&mut db, Command::CreateRoutine(d)).unwrap().entity;
+    let routine = read_routine(db.conn(), rid.bytes()).unwrap().unwrap();
+    let window = (ms_to_ts(NOW), ms_to_ts(NOW + 20 * DAY_MS));
+    let daily = routine.occurrences_in(window).unwrap();
+    // occ[2] falls on a weekday a weekly rule drops.
+    let drop_id = occurrence_task_id(&rid, &daily[2].key);
+    set_unknown_state(&e, &mut db, drop_id, "snoozed");
+
+    let patch = RoutinePatch {
+        rrule: Some(RRule::parse("FREQ=WEEKLY").unwrap()),
+        ..Default::default()
+    };
+    e.apply(&mut db, Command::UpdateRoutine { id: rid, patch })
+        .unwrap();
+
+    let t = match e.query(&db, Query::EntityById(drop_id)).unwrap() {
+        QueryResult::Task(t) => *t,
+        _ => panic!(),
+    };
+    assert!(
+        t.deleted,
+        "an unknown state is regenerated away like `todo`"
+    );
+}
+
+/// A focus session of a kind this build does not know counts as work: it
+/// advances the next session's chunk and the planner's prior-session count.
+#[test]
+fn an_unknown_focus_kind_counts_as_a_work_session() {
+    let mut db = db();
+    let (e, clock) = focus_engine(0);
+    let task = task_with(
+        &e,
+        &mut db,
+        "75 minutes of work",
+        TaskDraft {
+            estimated_duration_s: Some(75 * 60),
+            ..Default::default()
+        },
+    );
+    let s = e
+        .apply(
+            &mut db,
+            Command::StartFocus(FocusStartDraft {
+                task_id: task,
+                kind: FocusKind::from_raw("deep_work"),
+                length: SessionLength::OnePomodoro,
+                energy: None,
+            }),
+        )
+        .unwrap()
+        .entity;
+    set_clock(&clock, POMODORO_MS);
+    e.apply(
+        &mut db,
+        Command::EndFocus {
+            session: s,
+            actual_focused_ms: None,
+            completed_task: false,
+        },
+    )
+    .unwrap();
+
+    let rows = plan(&e, &db, None);
+    let row = rows.iter().find(|r| r.task.id == task).unwrap();
+    assert_eq!(row.prior_sessions, 1, "the planner counts it as work");
+
+    set_clock(&clock, POMODORO_MS + 1);
+    let next = start_work(&e, &mut db, task, SessionLength::SizedToEstimate);
+    let row = sessions_for(&e, &db, task)
+        .into_iter()
+        .find(|r| r.session.start.id == next)
+        .unwrap();
+    assert_eq!(
+        row.session.start.chunk,
+        Some(Chunk { index: 2, total: 3 }),
+        "the next sitting counts it as a prior work session"
+    );
+}
+
+/// Storage keeps a stream's unknown colour and cadence verbatim through a
+/// rename, where it used to read them back as `slate` and `weekly`.
+#[test]
+fn an_unknown_stream_color_and_cadence_survive_a_rename() {
+    let mut db = db();
+    let e = engine();
+    let s = e
+        .apply(
+            &mut db,
+            Command::CreateStream(StreamDraft {
+                name: "Work".into(),
+                color: Some(StreamColor::from_raw("teal")),
+                review_cadence: Some(StreamReviewCadence::from_raw("quarterly")),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+    e.apply(
+        &mut db,
+        Command::UpdateStream {
+            id: s.entity,
+            patch: StreamPatch {
+                name: Some("Personal".into()),
+                ..Default::default()
+            },
+        },
+    )
+    .unwrap();
+
+    let st = match e.query(&db, Query::EntityById(s.entity)).unwrap() {
+        QueryResult::Stream(s) => *s,
+        _ => panic!(),
+    };
+    assert_eq!(st.color.as_str(), "teal");
+    assert_eq!(st.review_cadence.as_str(), "quarterly");
+    let listed = match e.query(&db, Query::StreamList).unwrap() {
+        QueryResult::Streams(r) => r,
+        _ => panic!(),
+    };
+    assert!(listed.iter().any(|r| r.color.as_str() == "teal"));
+
+    let env = env_for_kind(&db, s.entity.bytes(), "stream.update");
+    match decode_inner_op(&e.keychain.open_op(&env).unwrap()).unwrap() {
+        InnerOp::StreamUpdate(emitted) => {
+            assert_eq!(emitted.color, StreamColor::from_raw("teal"));
+            assert_eq!(
+                emitted.review_cadence,
+                StreamReviewCadence::from_raw("quarterly")
+            );
+        }
+        other => panic!("expected a stream.update, got {}", other.inner_kind()),
+    }
+}
+
+/// ADR-0045 §6: a catch-up policy this build does not know reads as `skip`,
+/// its fallback. Six missed daily occurrences materialize no backlog (`queue`
+/// would make six, `merge` one), and the future ones are still generated.
+#[test]
+fn an_unknown_catchup_policy_materializes_no_backlog() {
+    let mut db = db();
+    let e = engine();
+    let d = routine_draft(
+        stream_ref(5),
+        "FREQ=DAILY",
+        NOW - (5 * DAY_MS + 3_600_000),
+        RoutineCatchupPolicy::from_raw("backfill_weekends"),
+        Vec::new(),
+    );
+    let rid = e.apply(&mut db, Command::CreateRoutine(d)).unwrap().entity;
+    assert_eq!(past_task_count(&db, rid), 0, "an unknown policy skips");
+    assert!(
+        !live_task_ids(&db).is_empty(),
+        "future occurrences are still materialized"
+    );
+    assert_eq!(
+        routine_of(&e, &db, rid).catchup_policy.as_str(),
+        "backfill_weekends",
+        "the raw policy is kept"
+    );
+}
+
+/// Skipping an occurrence tombstones its untouched task when that task is in
+/// a state this build does not know, as it does a `todo` one.
+#[test]
+fn skipping_an_occurrence_tombstones_its_task_in_an_unknown_state() {
+    let mut db = db();
+    let e = engine();
+    let d = routine_draft(
+        stream_ref(5),
+        "FREQ=DAILY",
+        NOW + 3_600_000,
+        RoutineCatchupPolicy::Skip,
+        Vec::new(),
+    );
+    let rid = e.apply(&mut db, Command::CreateRoutine(d)).unwrap().entity;
+    let routine = read_routine(db.conn(), rid.bytes()).unwrap().unwrap();
+    let window = (ms_to_ts(NOW), ms_to_ts(NOW + 20 * DAY_MS));
+    let key = routine.occurrences_in(window).unwrap()[2].key.clone();
+    let tid = occurrence_task_id(&rid, &key);
+    set_unknown_state(&e, &mut db, tid, "snoozed");
+
+    e.apply(
+        &mut db,
+        Command::SkipRoutineOccurrence {
+            id: rid,
+            occurrence_key: key,
+        },
+    )
+    .unwrap();
+    let t = match e.query(&db, Query::EntityById(tid)).unwrap() {
+        QueryResult::Task(t) => *t,
+        _ => panic!(),
+    };
+    assert!(t.deleted, "an unknown state is tombstoned like `todo`");
+}
+
+/// A scheduled task in a state this build does not know is open, so it still
+/// produces a reminder.
+#[test]
+fn a_task_in_an_unknown_state_still_produces_a_reminder() {
+    let (e, mut db) = engine_at(NOTIFY_NOON);
+    let task = e
+        .apply(
+            &mut db,
+            Command::CreateTask(TaskDraft {
+                title: "Call the bank".into(),
+                scheduled_at: Some(SunriseTime::instant(ms_to_ts(NOTIFY_NOON + 3_600_000))),
+                ..Default::default()
+            }),
+        )
+        .unwrap()
+        .entity;
+    set_unknown_state(&e, &mut db, task, "snoozed");
+    let out = reminders(
+        &e,
+        &db,
+        NOTIFY_NOON,
+        NOTIFY_NOON + 86_400_000,
+        ReminderSettings::default(),
+    );
+    assert_eq!(
+        out.iter().map(|r| r.entity).collect::<Vec<_>>(),
+        vec![task],
+        "an unknown state reads as `todo`"
+    );
+}
+
+/// A session that says it finished its task completes a task in a state this
+/// build does not know, as it would a `todo` one.
+#[test]
+fn a_finished_session_completes_a_task_in_an_unknown_state() {
+    let mut db = db();
+    let e = engine();
+    let task = new_task(&e, &mut db, "Write the report");
+    let session = open_session(&e, &mut db, task);
+    set_unknown_state(&e, &mut db, task, "snoozed");
+    let res = end_session(&e, &mut db, session, true);
+
+    assert_eq!(task_of(&e, &db, task).state, TaskState::Done);
+    assert_eq!(res.state, Some(TaskState::Done));
+}
+
+/// Per-field merge (ADR-0044): `Patch` ops and their convergence.
+mod field_merge;
+
+/// Per-device op chains, fork evidence and the stream digest (ADR-0043).
+mod op_chain;
+
+/// Op-log compaction below an acknowledged floor, and stream snapshots
+/// (ADR-0059).
+mod compaction;

@@ -6,31 +6,34 @@ status: accepted
 
 A React (TS) PWA running the Sunrise core compiled to WebAssembly. Offline-capable; installable; runs without a browser session-by-session.
 
-> **Status — WASM core not built, ranked as [#52](https://github.com/justin13888/Sunrise/issues/52) (deploy: [#11](https://github.com/justin13888/Sunrise/issues/11)); the MSRV half of the blocker is cleared.**
-> The architecture below is the *target*. A gated spike (see
-> [ADR 0012](../11-adr/0012-web-wasm-deferred.md)) found that the only `rusqlite`
-> line integrating `sqlite-wasm-rs` (`0.40`, via `ffi-sqlite-wasm-rs`) requires
-> Rust ≥ 1.91 (`libsqlite3-sys 0.38.1`'s `cfg_select!`), which the then-pinned
-> MSRV of 1.88 could not compile — it failed on the **native**
-> `bundled-sqlcipher` build, before wasm was even attempted, which is the
-> spike's hard gate.
+> **Status — the WASM core runs, locally and unencrypted
+> ([ADR-0055](../11-adr/0055-web-wasm-core.md)); deployable to Cloudflare
+> Pages, and not yet deployed
+> ([#11](https://github.com/justin13888/Sunrise/issues/11)).**
+> `crates/sunrise-core-wasm` compiles `sunrise-core` to `wasm32-unknown-unknown`
+> and exposes it as JSON in, JSON out. `apps/web/src/core.worker.ts` runs it in a
+> dedicated worker over the OPFS `SyncAccessHandle` pool VFS, and
+> `apps/web/src/wasm.ts`'s `loadCore()` uses it where the browser has workers,
+> OPFS and `navigator.locks`, falling back to the `localStorage` stub elsewhere
+> or when no bundle was built (`mise run web-wasm`). The `web-pages` job in
+> `.github/workflows/release.yml` deploys it on a tag once the Pages project
+> and its secrets exist, and deploys nothing until then (§Self-host vs managed
+> cloud).
 >
-> [ADR-0026](../11-adr/0026-msrv-bump.md) has since moved the pin to **1.91.1**,
-> firing ADR-0012's own revisit trigger. That removes the reason the spike
-> stopped; it does not do the work the spike sized. What remains is the
-> `rusqlite` 0.31 → 0.40 swap across `sunrise-storage` and `sunrise-core` —
-> nine minor versions, 100+ call sites, and a wholesale change of the native
-> SQLite/SQLCipher stack — tracked as
-> [#52](https://github.com/justin13888/Sunrise/issues/52), still subject to the
-> same hard gate. **Until it lands, the web client ships the `localStorage` stub**
-> behind `apps/web/src/wasm.ts`'s `loadCore()` seam: in-tab, **unencrypted**, no
-> OPFS, no real `sunrise-core`. It exists so the PWA shell renders for UI
-> development.
+> What the architecture below describes and the build does not yet do:
 >
-> Note also that even once the WASM path lands, `sqlite-wasm-rs` yields
-> **plaintext SQLite in OPFS** (no SQLCipher key pragmas on wasm) — a
-> spec-accepted web gap — and multi-tab exclusivity moves to the JS layer's
-> `navigator.locks`.
+> - **Encryption at rest.** The vault is **plaintext SQLite in OPFS**, and its
+>   root is stored beside it; ADR-0055 §4 states the gap and what the product
+>   tells a user about it. Encryption waits on the passphrase unlock below.
+> - **Sync.** The worker opens a local vault only; the SSE transport is
+>   native-only. The server to sync with is already chosen
+>   (§Self-host vs managed cloud); nothing reads it yet.
+> - **Attachments.** The blob store is `std::fs`, which the wasm target lacks;
+>   adding one fails with an error.
+> - **Read-only tabs.** One tab holds the vault; another waits for it rather
+>   than showing a read-only view.
+> - **Unlock.** No passphrase, pairing or recovery flow: every web vault is its
+>   own account, and clearing the origin's storage loses it.
 
 ## Targets
 
@@ -64,7 +67,7 @@ React UI ──▶ Web Worker (sunrise-core WASM)
 
 ### SQLite in the browser
 
-- *Target state:* `wa-sqlite` (WASM SQLite with FTS5), async access only, via Web Worker. Nothing in the tree builds it — the WASM core is not built ([#52](https://github.com/justin13888/Sunrise/issues/52), [ADR-0012](../11-adr/0012-web-wasm-deferred.md)) and no `wa-sqlite` dependency is declared anywhere.
+- `sqlite-wasm-rs` (SQLite compiled for `wasm32-unknown-unknown`, FTS5 included), bound by `rusqlite`'s `ffi-sqlite-wasm-rs`, so the core's storage layer runs unchanged; persisted through `sqlite-wasm-vfs`'s OPFS `SyncAccessHandle` pool, which needs a dedicated worker ([ADR-0055](../11-adr/0055-web-wasm-core.md)). Synchronous inside the worker; the page reaches it by message only. Not `wa-sqlite`: a second SQLite would put the storage layer behind a different API on one platform.
 - We are not using the browser's built-in WebSQL or any other sync API.
 
 ### Service Worker
@@ -88,9 +91,9 @@ Argon2id runs in WASM. Tradeoff: slower than native, but consistent and side-cha
 
 Two open tabs sharing a vault would otherwise corrupt SQLite. Solution:
 
-- **Web Lock API** (`navigator.locks`) acquires an exclusive lock for the writer tab.
-- Other tabs become read-only views, listening via `BroadcastChannel` for change notifications.
-- The writer tab can transfer the lock if it closes.
+- **Web Lock API** (`navigator.locks`) acquires an exclusive lock for the writer tab. *Built:* the core worker takes `sunrise-vault` before it opens the vault and holds it for its lifetime.
+- Other tabs become read-only views, listening via `BroadcastChannel` for change notifications. *Not built:* another tab's worker waits on the lock instead.
+- The writer tab can transfer the lock if it closes. *Built:* a waiting tab opens the vault the moment the holder closes.
 
 ### Limitations vs native
 
@@ -135,7 +138,17 @@ Deep links arriving before the Service Worker is ready are queued in `localStora
 
 ### Self-host vs managed cloud
 
-*Target state.* The web client would connect to whatever sync server URL is configured, with the operator hosting the static assets or pointing the user at a hosted app configured against their server. A runtime server-URL setting is the web client's own deliverable and does not exist; there is no "settings handshake" protocol anywhere in the tree. Note also that there is one server shape, self-host ([ADR-0027](../11-adr/0027-v1-self-host-first.md)), so there is no managed alternative to choose between.
+The web client connects to whatever relay its browser has chosen, so one deployment of the static assets serves every self-hosted relay. There is one server shape, self-host ([ADR-0027](../11-adr/0027-v1-self-host-first.md)), so there is no managed alternative to choose between.
+
+*Built* (`apps/web/src/server-url.ts`). The relay is a run-time, per-browser setting, never baked into a deployment. It is an origin — `https`, no path; `http` only on loopback, since an `https` page cannot reach anything else over `http` — resolved in this order:
+
+1. **The stored choice**, in `localStorage`. A relay URL is not sensitive: the relay sees ciphertext only.
+2. **A link**, `?server=https://relay.example` on the app's address — how an operator points a user at their relay. Followed only while nothing is stored, then stored, and taken off the address. A link to a different relay than the stored one is ignored with a console warning: a link must not move a user onto another relay without anything on screen saying so.
+3. **The build default**, `SUNRISE_WEB_DEFAULT_SERVER_URL` at build time — for an operator hosting the app for their own relay. Not stored, so a rebuilt default reaches every browser that never chose. Only `SUNRISE_WEB_*` variables reach the bundle (`envPrefix`), and all of them are public.
+
+*Not built.* A settings screen to see, change or clear the relay; until one exists, changing it means clearing the site's data. Nothing reads the setting until the web core syncs. There is no "settings handshake" protocol beyond the link.
+
+*Deploy.* `apps/web/wrangler.toml` names the Cloudflare Pages project (`sunrise-web`) and its output directory. The `web-pages` job in `.github/workflows/release.yml` builds the core bundle and the client on a tag and deploys them — a prerelease to the `prerelease` preview alias — once the owner has created the project (`bunx wrangler pages project create sunrise-web --production-branch master`) and the `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` secrets. Until then it deploys nothing and says so in the job summary, which is the intended state while a deployed copy has no relay to reach. `ci.yml`'s `web-build` job builds the client on every push.
 
 ## What about the browser as a *capture* tool?
 

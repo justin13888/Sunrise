@@ -50,14 +50,16 @@ pub fn short_duration(secs: u64) -> String {
 }
 
 /// Human label for an energy budget; `None` reads as "any", the value that
-/// drops energy out of the planner ranking.
+/// drops energy out of the planner ranking. A level this build does not know
+/// reads as "unknown", not as the `med` the planner ranks it as.
 #[must_use]
-pub const fn energy_budget_label(e: Option<Energy>) -> &'static str {
+pub const fn energy_budget_label(e: Option<&Energy>) -> &'static str {
     match e {
         None => "any",
         Some(Energy::Low) => "low",
         Some(Energy::Med) => "med",
         Some(Energy::High) => "high",
+        Some(Energy::Unknown(_)) => "unknown",
     }
 }
 
@@ -252,13 +254,14 @@ mod tests {
 
     fn window() -> ScheduleConstraint {
         ScheduleConstraint {
-            time_of_day: Some(TimeOfDayRange {
-                start: jiff::civil::time(9, 0, 0, 0),
-                end: jiff::civil::time(17, 0, 0, 0),
-            }),
+            time_of_day: Some(TimeOfDayRange::new(
+                jiff::civil::time(9, 0, 0, 0),
+                jiff::civil::time(17, 0, 0, 0),
+            )),
             days_of_week: WeekdaySet::new(),
             date_range: None,
             severity: ConstraintSeverity::Soft,
+            unknown: crate::Unknowns::new(),
         }
     }
 
@@ -322,7 +325,11 @@ mod tests {
     #[test]
     fn the_labels_cover_every_variant() {
         assert_eq!(energy_budget_label(None), "any");
-        assert_eq!(energy_budget_label(Some(Energy::High)), "high");
+        assert_eq!(energy_budget_label(Some(&Energy::High)), "high");
+        assert_eq!(
+            energy_budget_label(Some(&Energy::from_raw("frantic"))),
+            "unknown"
+        );
         assert_eq!(length_label(SessionLength::UntilDone), "until done");
         assert_eq!(energy_fit_label(EnergyFit::Over), "over");
     }

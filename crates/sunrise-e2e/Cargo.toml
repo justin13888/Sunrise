@@ -24,7 +24,7 @@ sunrise-cbor = { workspace = true }
 sunrise-wire-protocol = { workspace = true }
 ciborium = { workspace = true }
 jiff = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "net"] }
 async-trait = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
@@ -34,6 +34,16 @@ rand_core = { workspace = true }
 # whole point of #119 is that this harness and the property tests read one
 # parser rather than two.
 sunrise-test-seed = { workspace = true }
+# The cross-version harness (`src/cross_version/`, #326). `serde_json` and
+# `hex` speak the baseline driver's stdin/stdout protocol; `tracing` and
+# `tracing-subscriber` capture what the `HEAD` cores log, because the sync
+# driver reports an op it classes as corruption only in its log; `tempfile`
+# holds each run's three vaults.
+serde_json = { workspace = true, features = ["std"] }
+hex = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tempfile = "3"
 
 [dev-dependencies]
 parking_lot = { workspace = true }
@@ -51,4 +61,3 @@ sunrise-onboarding = { workspace = true }
 # against a real server rather than against a mock of one (#181).
 sunrise-core-bindings = { workspace = true }
 proptest = { workspace = true }
-tempfile = "3"

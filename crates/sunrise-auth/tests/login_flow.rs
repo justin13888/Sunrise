@@ -48,8 +48,19 @@ struct FakeIdp {
     token_endpoint: String,
     /// JSON the token endpoint returns, or `None` to return `400`.
     token_response: Mutex<Option<String>>,
+    /// A failure the token endpoint gives instead of either, when set.
+    token_failure: Mutex<Option<TokenFailure>>,
     /// The last token request, for assertions.
     last_token_request: Mutex<TokenRequest>,
+}
+
+/// Ways a token endpoint fails without refusing the grant.
+#[derive(Debug, Clone)]
+enum TokenFailure {
+    /// No answer at all: what the HTTP stack reports for a dead network.
+    Unreachable,
+    /// An answer with this status and body.
+    Status(u16, &'static str),
 }
 
 impl FakeIdp {
@@ -67,6 +78,7 @@ impl FakeIdp {
                 })
                 .to_string(),
             )),
+            token_failure: Mutex::new(None),
             last_token_request: Mutex::new(TokenRequest::default()),
         }
     }
@@ -102,6 +114,25 @@ impl HttpClient for FakeIdp {
                 .map(|(k, v)| (k.into_owned(), v.into_owned()))
                 .collect();
             *self.last_token_request.lock().unwrap() = TokenRequest { params };
+            match self.token_failure.lock().unwrap().clone() {
+                Some(TokenFailure::Unreachable) => {
+                    return Box::pin(async {
+                        Err(LoginError::Transport(
+                            "https://idp.example/token: connection refused".into(),
+                        ))
+                    });
+                }
+                Some(TokenFailure::Status(status, body)) => {
+                    return Box::pin(async move {
+                        Ok(http::Response::builder()
+                            .status(status)
+                            .header("content-type", "application/json")
+                            .body(body.as_bytes().to_vec())
+                            .unwrap())
+                    });
+                }
+                None => {}
+            }
             return Box::pin(async move {
                 Ok(match token_response {
                     Some(json) => http::Response::builder()
@@ -510,5 +541,72 @@ async fn a_revoked_refresh_token_is_rejected() {
     let c = client(Arc::clone(&idp));
     let meta = c.discover().await.unwrap();
     let err = c.refresh(&meta, "revoked", NOW).await.unwrap_err();
-    assert!(matches!(err, LoginError::Rejected(_)), "{err:?}");
+    match err {
+        LoginError::Rejected(m) => assert!(m.contains("invalid_grant"), "{m}"),
+        other => panic!("{other:?}"),
+    }
+}
+
+/// The other side of the case above, and the reason `Rejected` has to mean
+/// exactly that: a client drops its refresh token on `Rejected`, so a token
+/// endpoint it could not reach must never arrive as one. Every offline launch
+/// would otherwise end in the browser.
+#[tokio::test]
+async fn an_unreachable_token_endpoint_is_transport_not_a_refusal() {
+    let idp = Arc::new(FakeIdp::new());
+    let c = client(Arc::clone(&idp));
+    let meta = c.discover().await.unwrap();
+    *idp.token_failure.lock().unwrap() = Some(TokenFailure::Unreachable);
+    let err = c.refresh(&meta, "still-good", NOW).await.unwrap_err();
+    assert!(matches!(err, LoginError::Transport(_)), "{err:?}");
+}
+
+/// An outage is not a verdict on the grant either, whatever shape it takes: a
+/// proxy's HTML page, a bare status, or an error body naming a code RFC 6749
+/// §5.2 does not define.
+#[tokio::test]
+async fn a_token_endpoint_outage_is_not_a_refusal() {
+    let outages = [
+        (503, "<html><body>Service Unavailable</body></html>"),
+        (502, ""),
+        (503, r#"{"error":"temporarily_unavailable"}"#),
+        (
+            500,
+            r#"{"error":"server_error","error_description":"try later"}"#,
+        ),
+    ];
+    for (status, body) in outages {
+        let idp = Arc::new(FakeIdp::new());
+        let c = client(Arc::clone(&idp));
+        let meta = c.discover().await.unwrap();
+        *idp.token_failure.lock().unwrap() = Some(TokenFailure::Status(status, body));
+        let err = c.refresh(&meta, "still-good", NOW).await.unwrap_err();
+        assert!(
+            matches!(err, LoginError::Transport(_) | LoginError::Malformed(_)),
+            "{status} {body:?} -> {err:?}"
+        );
+    }
+}
+
+/// Every §5.2 code is a refusal, not only `invalid_grant`: each is an answer
+/// that does not change on a retry, so asking again every tick is the defect
+/// this sorting exists to stop.
+#[tokio::test]
+async fn every_rfc_6749_token_error_code_is_a_refusal() {
+    let refusals = [
+        r#"{"error":"invalid_request"}"#,
+        r#"{"error":"invalid_client"}"#,
+        r#"{"error":"invalid_grant"}"#,
+        r#"{"error":"unauthorized_client"}"#,
+        r#"{"error":"unsupported_grant_type"}"#,
+        r#"{"error":"invalid_scope"}"#,
+    ];
+    for body in refusals {
+        let idp = Arc::new(FakeIdp::new());
+        let c = client(Arc::clone(&idp));
+        let meta = c.discover().await.unwrap();
+        *idp.token_failure.lock().unwrap() = Some(TokenFailure::Status(400, body));
+        let err = c.refresh(&meta, "dead", NOW).await.unwrap_err();
+        assert!(matches!(err, LoginError::Rejected(_)), "{body} -> {err:?}");
+    }
 }

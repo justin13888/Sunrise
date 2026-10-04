@@ -280,6 +280,26 @@ extension View {
         #endif
     }
 
+    /// Make every button in one form row its own tap target **on a phone**.
+    ///
+    /// iOS treats a `Form` row as a single control: a row holding two
+    /// default-styled `Button`s runs **both** actions on a tap anywhere in it.
+    /// `AccountView`'s vault row presented the Add-a-vault alert and the
+    /// pairing sheet from one tap, and SwiftUI showed neither — found by
+    /// `SunriseiOSUITests/AccountUITests` (#287), not inferred. Borderless
+    /// buttons are hit-tested one by one.
+    ///
+    /// iOS only: a macOS grouped form already hit-tests each button, and there
+    /// a borderless button would lose the bezel that marks it as one.
+    @ViewBuilder
+    func formRowButtons() -> some View {
+        #if os(iOS)
+        buttonStyle(.borderless)
+        #else
+        self
+        #endif
+    }
+
     /// Give a sheet somewhere for its `.toolbar` items to render, on the one
     /// platform where a sheet does not supply that itself.
     ///

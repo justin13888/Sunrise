@@ -274,7 +274,11 @@ static INTEREST_PIN: OnceLock<Dispatch> = OnceLock::new();
 /// capture — [`build_subscriber_with`] pins nothing for a stderr or file
 /// target, and an installed global default cannot hit the defect anyway
 /// because `get_default` returns it on every thread.
-fn pin_interest_cache() {
+///
+/// This is the workspace's one pin. [`crate::test_util::events_emitted_by`]
+/// calls it too, so other crates' tests capture events without re-deriving
+/// it, and retiring the workaround is a change to this function alone.
+pub(crate) fn pin_interest_cache() {
     INTEREST_PIN.get_or_init(|| Dispatch::new(Inert));
 }
 

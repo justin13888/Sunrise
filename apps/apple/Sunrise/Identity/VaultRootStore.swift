@@ -75,6 +75,35 @@ struct KeychainVaultRootStore: VaultRootStore {
         return data
     }
 
+    /// **Deliberately the plain `write`, not `writeAcrossDomains`** (#254),
+    /// although `load` reads across both domains and the relay device id and
+    /// the OIDC credential now write across both. The principle "whatever a
+    /// read can reach, a write reconciles" is right for those two and wrong
+    /// here, because the two ways of being wrong are not the same size.
+    ///
+    /// Left alone, a copy of a root in the other domain costs a refused load:
+    /// `KeychainMigration` finds two different roots under one name and raises
+    /// `.migrationUnverified`, and both keys are still on disk for whoever
+    /// works out which one opens the vault. Deleted, it costs the vault, if
+    /// that copy was the one the vault on disk was keyed under — there is no
+    /// second copy of a root anywhere, by design (`accessibility` above). A
+    /// stale token or relay binding is recovered by a sign-in or a
+    /// re-registration; a stale root is not stale, it is a different vault.
+    ///
+    /// Nor would it buy anything on today's writers. `createVault` stores only
+    /// after `load` answered `nil`, which means both domains answered
+    /// not-found, so the delete would find nothing. `adoptPairing` also runs
+    /// from `.locked(.keychainUnavailable)` — a `load` that *threw*, including
+    /// `.migrationUnverified` and `.otherDomainUnreadable` — which is exactly
+    /// where the other domain may hold a root nobody has read, and where a
+    /// write that removed it would be deciding which vault survives without
+    /// having looked.
+    ///
+    /// So a future second writer — a root rotation, a re-key — must not reach
+    /// for `writeAcrossDomains` to inherit reconciliation. It has to decide,
+    /// with both roots read, which one the vault on disk is keyed under.
+    /// `KeychainMigration` keeps the plain `write` for its own reason: its
+    /// source is this item in the other domain.
     func store(_ root: Data) throws {
         guard root.count == VaultRoot.byteCount else {
             throw VaultRootError.wrongLength(root.count)

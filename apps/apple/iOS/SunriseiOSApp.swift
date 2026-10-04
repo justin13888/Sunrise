@@ -27,6 +27,9 @@ struct SunriseiOSApp: App {
         WindowGroup {
             RootView(session: session, surfaces: surfaces)
         }
+        // An iPad with a hardware keyboard gets the Mac's ⌘ bindings, the
+        // palette and the cheat sheet (`docs/08-features/keyboard.md` Rule 3).
+        .commands { KeyCommandMenus(surfaces: surfaces) }
         // An iOS app is suspended in the background, so its change feed and
         // its timer stop with it. Coming back is the moment the snapshot is
         // most likely to be stale — a day that rolled over, a sync that

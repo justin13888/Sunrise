@@ -2,6 +2,20 @@
 
 **Status:** accepted
 
+**Amended by:** [ADR-0056](./0056-a-revocation-is-withdrawn-only-by-its-author.md)
+— this record said an un-revoke op is what would settle the residuals of
+§"What a user sees" item 4. It would not, and they do not need one: a revocation
+from a third current device already settles them, and the one inverse ADR-0056
+takes is a withdrawal by a revocation's own author. Item 4 and §Alternatives
+(i) now say so. The fold, the gate, the discount and the read bound are
+unchanged.
+
+**Amended by:** [ADR-0058](./0058-the-account-identity-is-the-membership-authority.md)
+— item 4's residual against two expelled devices one attacker holds is settled
+by an authority the ledger did not carry: a revocation signed by the identity
+in force, which the fold never gates and never discounts. Every row without
+that signature is folded as this record says.
+
 **Amends** [ADR-0034](./0034-revocation-bounds-reads-not-writes.md) §Decision
 corollary 3, which reserved peer-side enforcement for after the relay bound and
 required that it not reintroduce order dependence. This is that enforcement,
@@ -16,9 +30,12 @@ from the issue.
 
 **Storage:** `STORAGE_V` 26 → 28, migrations `0027_device_revoke_ops.sql` (the
 ledger the register folds from) and `0028_device_read_bounds.sql` (the monotone
-read bound the register can no longer be). No new op, no wire change, no
-primitive change: `DOC_SCHEMA_V`, `CRYPTO_SUITE_V` and `ENVELOPE_FORMAT_V` stay
-where they are.
+read bound the register can no longer be). §Decision 4 took `STORAGE_V` to 29
+with `0029_stream_key_senders.sql` (who delivered each absorbed Stream key).
+§Decision 5 took it to 30 with `0030_read_bounds_from_sponsor.sql` (which read
+bounds a paired device adopted), and added one optional field to the pairing
+grant and the pairing payload. No new op and no primitive change:
+`DOC_SCHEMA_V`, `CRYPTO_SUITE_V` and `ENVELOPE_FORMAT_V` stay where they are.
 
 ## Context
 
@@ -271,8 +288,10 @@ less. Two replicas disagreeing about one row cannot withhold a key from anybody.
   ordinary retirements in the other order and **never wrote the bound**, and
   says of the same code path that one `DeviceCertPublish` there "recovers
   every held epoch of every stream". The two passages describe one path at two
-  replicas, and they must be read together.
-  [#282](https://github.com/justin13888/Sunrise/issues/282) is the gap.
+  replicas, and they must be read together. A device freshly paired from a
+  sponsor that bounded the publisher is the first replica, not the second,
+  because it adopts that bound (§Decision 5).
+  [#411](https://github.com/justin13888/Sunrise/issues/411) is the gap.
 
   **This bullet's own opening sentence stands as written**, and the reason is
   worth stating rather than leaving as an omission: on that same replica the
@@ -291,6 +310,166 @@ less. Two replicas disagreeing about one row cannot withhold a key from anybody.
   recovery path when a compromised device gets its op in first. A local guard
   would close the recovery path to buy a clearer error for the case that does
   not matter.
+
+### 4. A key a read-bounded device delivered is absorbed and never written under
+
+Added by [#280](https://github.com/justin13888/Sunrise/issues/280).
+`emit_key_envelopes` keeps a read-bounded device from being *given* a key.
+Nothing kept an honest device from *taking* one from it. The `key_envelope` arm
+stored whatever key was sealed to this device, and the live epoch was
+`MAX(epoch)`. So a revoked device running a modified client could mint an epoch
+above the live one, seal it to an honest device's public `D_D` under the
+vault-meta epoch it was cut at, and read everything that device wrote on the
+stream afterwards. The two guards §Consequences names, `revoke_device`'s
+`effective` and `rotate_stream_key`'s refusal, bind an unmodified build and
+nothing else.
+
+**Refusing the key is not the answer.** A replica that declines it cannot open
+the ops sealed under it, including an honest peer's ops written before that peer
+applied the revocation. A replica that met the envelope first can open them. So
+what a replica can read would depend on delivery order, which ADR-0034
+corollary 3 forbids, and the cost would be honest user content that does not
+open. §Decision 2's argument does not transfer either. Declining a *recipient
+row* can only cause more key distribution. Declining a *key* causes less.
+
+**What is decided instead is which key this device writes under.** That choice
+was already per-replica.
+
+- **Every key is still absorbed**, so every op sealed under it still opens.
+  `KeySource::Envelope` carries the envelope's signer, and
+  `insert_stream_key_row` records each `(key, sender)` delivery in
+  `stream_key_senders` (`0029_stream_key_senders.sql`). A delivery proves
+  possession: the arm re-derives the `key_id` from the opened key before it
+  absorbs anything.
+- **`Keychain::current_epoch_tx` passes over a key any read-bounded device
+  delivered.** On an ordinary stream the live epoch is the highest epoch held,
+  and only if that epoch holds a key no device in `device_read_bounds`
+  delivered; the same-epoch tie-break prefers such a key. It never falls back
+  to an older epoch below a non-writable one, because the epoch above exists
+  to supersede those below and an earlier-revoked device holds them: with Q
+  revoked and R the sole sender of the rotation that cut Q, bounding R must
+  not return this device to an epoch Q was sealed. The test runs when the key is chosen, not when it arrived, so a
+  revocation applied after the envelope still takes effect. A later delivery
+  of the same key by a current device does not clear it, because the bounded
+  device still holds the key.
+- **The predicate is the read bound, not the register**, for §Decision 2's
+  reason: the class to keep out is the devices whose reads are bounded, and an
+  unwound device is in that class after the register has stopped naming it.
+- **Minting counts from the highest epoch held** (`Keychain::max_epoch_tx`), so
+  a rotation lands above every key a bounded device delivered, not beside one
+  of them. `MAX_EPOCH_LEAP` is measured from the same number, so an honest
+  epoch minted that way is not refused as a leap.
+
+**A stream whose highest epoch is not writable mints.** That is the case on a
+stream whose highest epoch the bounded device delivered here, by its own
+rotation or through `backfill_key_envelopes` when this peer's cert arrived. An
+ordinary stream then reads as keyless, and `ensure_stream_epoch` mints above
+every held key and seals the new key to every unbounded device. On the revoking
+device the rotation has already done this. Elsewhere, it is a mint that the
+rotation's own envelope would otherwise have supplied shortly after. The
+**vault-meta stream** never mints here: it reads as its highest writable epoch
+and, failing one, as its highest held epoch. The revocation is sealed there,
+under the epoch the cut device still holds, so that the cut device and every
+peer without the rotation can read it. A meta mint at that point would also
+seal its own `key_envelope`s under the epoch being minted, and no other device
+could open them.
+
+**Pre-revocation keys stay live.** Nothing records who holds a key minted here
+or delivered only by current devices, and the revoked device was sealed every
+epoch minted while it was trusted. So a stream whose highest epoch predates the
+cut, and which no bounded device delivered here, keeps it as the live epoch
+after the revocation is applied, and the revoked device can read what this
+device writes under it until the rotation's envelope arrives and moves the
+highest epoch past it. This decision bounds a key the revoked device *chose*;
+the rotation is what bounds the keys it was *given*.
+
+**What it does not cover.**
+
+- *A replica that has not bounded the device.* It adopts the key as before.
+  That is the propagation half of the read bound, and the two local guards are
+  what protect it from an unmodified build.
+- *The vault-meta window.* Take a replica that has bounded a device but has not
+  yet applied the rotation's meta key. On that replica, meta ops are written
+  under an epoch a revoked device holds: one the bounded device planted, or,
+  when the bounded device was the sole sender of the meta rotation that cut an
+  earlier device, the older writable epoch that earlier device was sealed. The rotation's envelopes follow the revocation in
+  the same stream, so the window closes as the rotation is applied.
+- *A key re-sealed by a current device.* `backfill_key_envelopes` hands a
+  newly certified device every held epoch under the backfilling device's own
+  signature. The new device records that sender and nothing about the key's
+  origin, so if the bounded device's planted epoch is the highest on that
+  stream, the new device writes under it until the next rotation. Carrying
+  provenance across a re-seal needs a field in the `key_envelope` payload. That
+  is a wire change, and it is left open rather than taken here.
+- *Keys absorbed before `STORAGE_V` 29.* No sender was recorded for them, and
+  none can be reconstructed. Each stops being live at its stream's next
+  rotation.
+
+### 5. A paired device adopts its sponsor's read bound
+
+The read bound is the account's property in intent and a replica's history in
+fact ([#282](https://github.com/justin13888/Sunrise/issues/282) asked which).
+Item 5 below is the gap: a replica that applied a revocation after its author
+had itself been revoked never bounds the device. A device that paired used to
+start with no revocation state and learn every op from the relay afterwards, so
+it was that replica by construction. Every freshly paired device was the
+weakest replica in the account and sealed keys to devices its sponsor had cut
+off.
+
+**The pairing grant carries the sponsor's whole `device_read_bounds`, and the
+joiner adopts it in the transaction that creates its vault.** The rules:
+
+- **The bound travels, not the ledger.** The joiner folding the ledger would
+  reach the account's final register. A replica that met the ops late computes
+  exactly that, and the relay delivers every op anyway. What only the sponsor
+  holds is its history.
+- **The joiner does not verify the claim.** The sponsor is the device holding
+  `ID_S_priv`, and the same message hands over every Stream key in the account.
+  A sponsor that lied about the bound could more simply hand the keys over
+  itself.
+- **An adopted row is not released while it is still only adopted.**
+  `release_orphan_read_bounds` deletes a bound whose id has no cert here and no
+  ledger row naming it. The joiner holds neither when it adopts, so without an
+  exemption its first `device_revoke` would release every adopted bound whose
+  cert had not arrived yet. `from_sponsor = 1` (migration 0030) marks the
+  adopted rows, and the release skips them. The cost is bounded: the exempt
+  rows are the sponsor's table at one moment, written once.
+- **An adopted row counts toward readmission only once the joiner's own fold
+  bounds it.** The `DeviceCertPublish` arm's readmission check
+  (`core.device.admitted_after_revocation`) counts `from_sponsor = 0` rows
+  only. Counting adopted rows would mark the sponsor and every device that
+  paired before any revocation as "joined after a device was removed" on the
+  joiner's first sync, which no older replica does. The fold's bound write is
+  therefore an upsert that sets `from_sponsor = 0` on an adopted row it bounds
+  itself. Without that flip, a joiner that adopted C and then applied `A -> C`
+  from the relay would count nothing, and would not mark a device that paired
+  after the revocation although older replicas mark it. With both, the joiner
+  counts a revocation when its own fold applies it, in the relay order an older
+  replica met it in. The cost is that the flipped row loses the exemption
+  above. It has no further need of it: the fold wrote it from a ledger row,
+  which is the premise the release is built on, so it stands where the
+  sponsor's own row for the device stands. A row the joiner's fold never
+  bounds, which is the #282 case, keeps the exemption.
+  `an_adopted_bound_marks_no_device_as_joined_after_a_revocation` pins both
+  halves.
+- **The field is optional on the wire.** Grant field 4 and payload field 15 are
+  omitted when empty. A sponsor that predates them pairs a joiner that adopts
+  nothing, which is where every joiner used to start. A joiner that predates
+  them ignores the field, because both decoders ignore unknown keys.
+
+What this does **not** close is two replicas that already exist and met the
+same ops in different orders. No rule over the ledger alone can close that.
+The honest sequence (A retires C, then B retires A) and the attack §Decision 1
+exists for (a revoked X back-dates `X -> V` below O's cut) are the same rows
+with the names changed, stamps included, because the stamp is the sender's to
+choose. A rule that bounds C therefore lets any revoked device bound any honest
+device, and a rule that bounds neither is the register that 0028 split the
+bound from. Closing it needs information the ledger does not carry: a
+replicated bound op, which waits on the same unknown-op-kind parking as
+ADR-0056 §7, or an authority for membership such as
+[ADR-0058](./0058-the-account-identity-is-the-membership-authority.md)'s, which
+converges the bound only for the devices it revokes.
+[#411](https://github.com/justin13888/Sunrise/issues/411) carries it.
 
 ## What a user sees when an op is refused
 
@@ -317,6 +496,20 @@ there are five visible consequences:
    `sunrise devices revoke`, and the Apple device list states the row's own
    condition. That is the same rule `log-events.md` already stated for
    `revoke_incomplete`, applied to a strictly larger consequence.
+
+   **The relay half follows the register only while it is still queued.** The
+   fold rewrites `device_revocations` and never `relay_revocation_intents`, so
+   an intent can outlive the row it was queued beside. The drain and
+   `Core::relay_revocation_pending` read only intents whose device the
+   register currently holds, and the rest are held rather than deleted, so a
+   later fold that revokes the device again owes the relay that revocation
+   after all ([#257](https://github.com/justin13888/Sunrise/issues/257)).
+   Clearing the intent on the unwind was rejected: it makes the fold write a
+   table it does not own, and it loses the intent for exactly that later fold,
+   leaving the relay behind the register. A revocation the relay has already
+   been told is not taken back — the relay has no inverse of the `DELETE` — so
+   under `require_device_sig` an unwound device stays refused there, in the
+   same direction as its read bound (item 5).
 3. **A cut correction does not recover a skipped revocation.** #82 offers two
    honest options — re-request the op, or accept the loss and say so where a
    user can see it — and this takes the second, because the first is not even
@@ -339,15 +532,28 @@ there are five visible consequences:
    anybody else.** The mutual exception's cost, stated here because a user can
    reach it: once X and O have revoked each other, each one's only revoker is
    the other, so each is forgiven for revoking the other and gated for
-   revoking a *third* party. That reaches the honest device of the pair too,
-   and it is permanent, because revocation has no inverse
-   ([#241](https://github.com/justin13888/Sunrise/issues/241)). One op from a
-   device the account has already expelled therefore costs the device that
-   expelled it its third-party administrative capability, for good.
+   revoking a *third* party. That reaches the honest device of the pair too.
+   One op from a device the account has already expelled therefore costs the
+   device that expelled it its third-party administrative capability, until a
+   third current device says which half of the pair the account meant.
 
-   **The remedy is a third current device**, and the bound that makes one
-   enough is the discount pass §Decision 1 carries. For one revision it was
-   not enough: the revoker map was built from every row while only the walk
+   **The remedy is a third current device revoking the compromised half.**
+   That row gives the compromised half a revoker other than the honest one, so
+   its revocation of the honest half is gated; and it revokes the compromised
+   half from a sender other than the honest one, so the discount drops the
+   compromised half out of the honest half's revoker set. The honest half is
+   current and ungated again.
+   `a_third_current_device_settles_which_half_of_a_mutual_pair_the_account_meant`
+   pins it. Its read bound stays on a replica that had taken it, which is item
+   5's ratchet and [#411](https://github.com/justin13888/Sunrise/issues/411)'s
+   to close. No withdrawal lifts the lockout
+   ([ADR-0056](./0056-a-revocation-is-withdrawn-only-by-its-author.md) §3): a
+   device withdraws only its own revocations, the row gating the honest half is
+   the compromised half's, and the honest half withdrawing its own revocation
+   reinstates the compromised half while leaving itself gated.
+
+   The bound that makes a third device enough is the discount pass §Decision 1
+   carries. For one revision it was not enough: the revoker map was built from every row while only the walk
    judged one, so a row the walk gated still seated its sender in its target's
    set, and a revoked device reached every current device with one ordinary op
    apiece. The claim in this paragraph was false for as long as that lasted,
@@ -390,13 +596,23 @@ there are five visible consequences:
    reaches this with a single op: O revoked X1 and X2; X1 revokes O; the mutual
    exception lands it; O goes out, which both unwinds O's revocation of X2 and
    discounts O out of X2's set; and X2 then revokes the rest of the account.
-   The remedy is the mutual pair's and no better — a device X2 reaches revokes
-   it back and is left revoked itself, so what the account needs is a current
-   device the attacker never reached.
+   A device X2 reaches revokes it back and is left revoked itself.
    `the_discount_lets_one_of_two_devices_revoked_together_ungate_the_other`
-   pins it. It is narrower than what the discount closes — that cost one op
-   from *one* revoked device and was permanent and account-wide — but it is
-   not nothing, and #241's un-revoke is what would settle it.
+   pins it. A current device T the attacker never reached then revokes X2,
+   and X2 is gated again: that test pins this too.
+
+   **That remedy lasts one op.** X1 names T. X1 is gated, so the op revokes
+   nobody. But the discount counts every stored row, gated or not, and this
+   one revokes T from a sender other than X2. So T is discounted out of X2's
+   set, X2's set is empty again, and X2 revokes the account, T included.
+   `a_second_expelled_device_discounts_the_third_device_that_revoked_the_first`
+   pins it. Each honest revoker costs the attacker one op, so no current
+   device settles this shape through the ledger. That is where it is worse
+   than the mutual pair, which a third current device does settle, because a
+   single expelled device can never discount a revoker out of its own set.
+   It is still narrower than what the discount closes: that cost one op from
+   *one* revoked device, and this needs two devices the same revoker
+   expelled.
 
    *The chain, which is the hole.* One link further — O revokes X, P revokes
    O, Q revokes P — and Q's row gates P's, so O's revocation of X stands and X
@@ -419,13 +635,36 @@ there are five visible consequences:
    `a_mutual_pair_locks_both_devices_out_of_third_party_revocation` pins the
    behaviour so that it stays deliberate.
 
+   Against two expelled devices one attacker holds, the ledger stays
+   symmetric however many rows the account adds, because each honest row is
+   answered by one gated row. Two rules that look like they close it do not:
+
+   - **Counting a discounting row only when its sender is ungated under the
+     first discount.** One more attacker op beats it: X2 revokes O, which
+     ungates X1 at that level. Every finite number of levels falls the same
+     way, and the limit is the fixpoint (f) declines.
+   - **Counting a discounting row only when its sender has no revoker but
+     the device it discounts.** This reopens §Alternatives (i)'s account-wide
+     lockout for two attackers: once X1 and X2 both name O, O discounts
+     neither of them out of anybody's set.
+
+   What settles it is an authority for membership that the ledger does not
+   hold.
+   [ADR-0058](./0058-the-account-identity-is-the-membership-authority.md)
+   takes it: a revocation signed by the `ID_S_priv` of the identity in force
+   is never gated and seats a revoker the discount never removes, so neither
+   expelled device can discount it. Until
+   [#454](https://github.com/justin13888/Sunrise/issues/454) builds it, and
+   in an account with no reachable holder of that key afterwards, the
+   residual above stands.
+
 5. **An unwound device shows as current and still receives nothing.** The keys
    are *not* given back, and that is the one place this design deliberately
    stops being a pure function of the op set. `device_revocations` answers "is
    this device currently called revoked?" and has to converge, so it is derived
    and reversible; all four key-distribution sites read `device_read_bounds`
-   instead, which is written by `INSERT OR IGNORE` and never deleted from
-   (migration 0028). Without the split an unwind released the read bound —
+   instead, which the fold only ever adds to and never deletes a certed device
+   from (migration 0028). Without the split an unwind released the read bound —
    the device re-entered `emit_key_envelopes`' recipient set for every
    subsequent epoch, and one `DeviceCertPublish` from it drove
    `backfill_key_envelopes` to hand back every held epoch of every stream.
@@ -434,8 +673,8 @@ there are five visible consequences:
    and **does not converge**. A replica that believed a revocation before
    learning it was unwound holds the row; one that met the two ops the other way
    round never held it and never will, because from then on both replicas
-   compute the same gated register and the `INSERT OR IGNORE` has nothing new to
-   write. Retire laptop C from desktop A, then months later retire A from phone
+   compute the same gated register and the fold's bound write has nothing new
+   to add. Retire laptop C from desktop A, then months later retire A from phone
    B: a replica applying `A -> C` first ends with the bound `{C, A}`, and a
    replica applying `B -> A` first ends with `{A}` — C is never bounded there, so
    it stays a recipient of every epoch that replica mints and one
@@ -447,13 +686,17 @@ there are five visible consequences:
    way: once a replica has bounded a device, no later fold on that replica gives
    the bound back, which is the whole of the unwind as a single replica can
    observe it. Making the bound a function of the op set — so that two replicas
-   converge — needs a derivation this ADR does not have: the naive ledger seed
-   lets a revoked device bound the whole account with N ordinary ops, and
-   ordering by the cut instead reintroduces the back-dating exposure §Decision 1
-   exists to close. [#282](https://github.com/justin13888/Sunrise/issues/282)
-   carries the counterexample, the `PairingPayload` consequence — a device that
-   pairs today inherits no revocation state and is the weakest replica in the
-   account — and the two questions the design turns on.
+   converge — needs information the ledger does not carry, because the honest
+   sequence above and a revoked device back-dating a revocation below its own
+   cut are the same rows with the names changed (§Decision 5). The naive ledger
+   seed lets a revoked device bound the whole account with N ordinary ops, and
+   ordering by the cut reintroduces the back-dating exposure §Decision 1 exists
+   to close. What §Decision 5 does close is the systematic case: a device that
+   pairs adopts its sponsor's bound, where it used to start with none and be the
+   weakest replica in the account
+   ([#282](https://github.com/justin13888/Sunrise/issues/282)). Two replicas
+   that already exist stay apart, and
+   [#411](https://github.com/justin13888/Sunrise/issues/411) carries it.
 
    The *register* still could not be made the ratchet instead, for the reason
    §"What would force revisiting this" trigger 4 gives: a ratcheted register
@@ -581,8 +824,15 @@ third parties anyway. Both are narrower than what it closes — that cost one op
 from one revoked device, was permanent, and reached the whole account — and
 neither is reachable by a revoked device out of its own rows. Neither is out of
 an attacker's reach either, where the attacker holds a second device the same
-revoker expelled. #241's un-revoke is still what would settle the question the
-discount has to guess at. Taken.
+revoker expelled. The question the discount has to guess at is settled by a
+revocation from a current device outside the relationship, which is a revoker
+nobody discounts; no un-revoke is needed for it
+([ADR-0056](./0056-a-revocation-is-withdrawn-only-by-its-author.md) §3). That
+holds against one expelled device. Against two that one attacker holds, it
+does not: the second device's gated row discounts that current device, and
+§"What a user sees" item 4 states it with its test, and
+[ADR-0058](./0058-the-account-identity-is-the-membership-authority.md) is the
+authority that settles it. Taken.
 
 ## Consequences
 
@@ -653,7 +903,7 @@ discount has to guess at. Taken.
 
   **The cap makes the read bound order-dependent a second way.** The ledger and
   the register converge; the read bound does not, and the cap adds a path to
-  that beside [#282](https://github.com/justin13888/Sunrise/issues/282)'s. Take
+  that beside [#411](https://github.com/justin13888/Sunrise/issues/411)'s. Take
   a pair naming a device this replica holds a cert for. On a replica where the
   pair lands before 256 newer pairs from the same sender, the fold writes the
   device's read bound, and the later eviction withdraws the revocation from the
@@ -666,8 +916,8 @@ discount has to guess at. Taken.
   readmission the read bound exists to prevent, and bounding every pair a
   sender ever named is the unbounded table the cap exists to remove. The cost
   falls only on a device a flooding sender revoked, and it is the same
-  per-replica shape #282 already leaves open, so closing #282 with a bound
-  derived from the op set would close this path too.
+  per-replica shape #411 already leaves open, so a bound derived from the op
+  set would close this path too.
 
   **Why not the relay.** A per-sender upload quota at the relay was the other
   way to settle #315, and it cannot bound this. Envelopes are opaque to the
@@ -677,9 +927,10 @@ discount has to guess at. Taken.
   throttles the honest devices along with the flooding one. And a rate is not a
   bound: at any rate a flood arrives in the end, and the ledger would still
   grow without limit on every replica.
-- **The read bound is a second table and is never rewritten**, only added to
-  (`0028_device_read_bounds.sql`), with one exception for ids no device here
-  has. `Engine::release_orphan_read_bounds` deletes a row whose id has no row
+- **The read bound is a second table and only gains devices**
+  (`0028_device_read_bounds.sql`). The one thing the fold changes on an
+  existing row is §Decision 5's `from_sponsor` mark. There is one exception
+  to "only gains", for ids no device here has. `Engine::release_orphan_read_bounds` deletes a row whose id has no row
   in `devices` and no ledger row naming it. Pair compaction keeps every pair,
   so only the cap above can remove the last ledger row naming an id. Without
   the release, a sender over the cap would still grow this table by one row
@@ -688,10 +939,17 @@ discount has to guess at. Taken.
   every key-distribution site seals only to such devices. So an unwind still
   cannot readmit any device a key could reach. A released id whose cert
   arrives later is current, as the capped ledger says. A replica that held the
-  cert first keeps its bound, which is the non-convergence #282 already
-  records, reached here only through a sender over the cap. One `INSERT OR IGNORE` per surviving row runs
-  immediately before the `DELETE` above, so no row passes through a window where
-  it is in neither. `Engine::is_read_bounded` is the read, and the four
+  cert first keeps its bound, which is the non-convergence #411 already
+  records, reached here only through a sender over the cap. A bound a paired
+  device adopted from its sponsor is exempt while it stays marked
+  (`from_sponsor = 1`, §Decision 5): the joiner holds no cert or ledger row for
+  it yet, and releasing it would readmit the device when its cert arrived. The
+  fold writes one row per surviving register row with
+  `INSERT ... ON CONFLICT(device_id) DO UPDATE SET from_sponsor = 0`, which
+  clears that mark on an adopted row it bounds itself, immediately before the
+  `DELETE` above, so no row passes through a window where it is in neither.
+  `adopt_sponsor_read_bounds` is the table's only other writer, once, when a
+  paired vault is created. `Engine::is_read_bounded` is the read, and the four
   key-distribution sites are **not** its only askers: a **fifth** asks it
   without distributing a key, a sender's authority to claim a third-party
   `key_envelope` recipient row (§Decision 2 above), which is the one this ADR
@@ -714,8 +972,10 @@ discount has to guess at. Taken.
   device revoked ([#279](https://github.com/justin13888/Sunrise/issues/279)) —
   the local "refuse if revoked" guard §Decision 3 declines for
   `RevokeDevice`, taken here because rotating a key is no recovery path. Both
-  guards are local, and `Keychain::absorb_stream_key` still checks no sender
-  standing, so a replica that has not applied the revocation is not covered.
+  guards are local, so they bind an unmodified build and cover the replicas
+  that have not yet bounded the device. On a replica that has bounded it,
+  §Decision 4 covers a modified build too: the key is absorbed and never
+  written under.
 - **An upgraded vault folds *from* what it already held, and not necessarily
   back to it.** 0027 seeds the ledger from the register, and what the seed
   preserves is the fold's **input**, not its output. It folds back to the same

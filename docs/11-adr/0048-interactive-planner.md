@@ -23,9 +23,9 @@ them together: `estimated_duration_s`
 (`crates/sunrise-domain/src/task.rs:114#Task`), `blocked_by`
 (`crates/sunrise-domain/src/task.rs:140#Task`), `scheduling_constraints`
 (`crates/sunrise-domain/src/task.rs:125#Task`, with a per-constraint severity in
-`crates/sunrise-domain/src/constraint.rs:199#ScheduleConstraint`) and block
-overlap detection (`crates/sunrise-domain/src/block.rs:197#overlaps`). Focus's
-ranked queue (`crates/sunrise-core/src/engine/focus.rs:350#query_focus_plan`)
+`crates/sunrise-domain/src/constraint.rs:273#ScheduleConstraint`) and block
+overlap detection (`crates/sunrise-domain/src/block/conflict.rs:44#overlaps`). Focus's
+ranked queue (`crates/sunrise-core/src/engine/focus.rs:356#query_focus_plan`)
 orders tasks and places none of them.
 
 Every calendar drag decides its outcome in Swift today. `BlockDrag`

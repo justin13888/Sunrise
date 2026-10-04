@@ -8,7 +8,10 @@
 //! materializes a remote entity into a Stream has to know the Stream row is
 //! there first — which is why it is `pub(super)` here rather than duplicated.
 
-use super::ids::{blob16, decode_unknowns, encode_unknowns, ms_to_ts, require_writable_stream};
+use super::ids::{
+    blob16, decode_unknowns, encode_unknowns, extra_over_opaque, ms_to_ts, require_writable_stream,
+    ExtraTable,
+};
 use super::lww::LwwStamp;
 use super::task::read_task;
 use super::{Engine, EngineError, META_STREAM};
@@ -271,7 +274,7 @@ impl Engine {
         let inbox_open: i64 = db.conn().query_row(
             "SELECT COUNT(*) FROM tasks
              WHERE stream_id = ? AND deleted = 0
-               AND state IN ('todo', 'in_progress')",
+               AND state NOT IN ('done', 'cancelled')",
             params![inbox_blob.clone()],
             |r| r.get(0),
         )?;
@@ -310,7 +313,7 @@ impl Engine {
             "SELECT s.stream_id, s.name, s.color, s.archived, s.paused, s.sort_order,
                     (SELECT COUNT(*) FROM tasks t
                      WHERE t.stream_id = s.stream_id AND t.deleted = 0
-                       AND t.state IN ('todo', 'in_progress')) AS open_count
+                       AND t.state NOT IN ('done', 'cancelled')) AS open_count
              FROM streams s
              WHERE s.deleted = 0 AND s.stream_id != ?
              ORDER BY s.sort_order ASC, s.name COLLATE NOCASE ASC, s.stream_id ASC",
@@ -329,7 +332,8 @@ impl Engine {
             Ok(StreamRow {
                 id: EntityRef::new(EntityKind::Stream, a),
                 name,
-                color: StreamColor::from_str_lossy(&color_str),
+                // Lossless: an unknown color stays itself (ADR-0045 §6).
+                color: StreamColor::from_raw(&color_str),
                 open_task_count: u64::try_from(open_count).unwrap_or(0),
                 archived: archived != 0,
                 paused: paused != 0,
@@ -433,7 +437,7 @@ pub(super) fn insert_stream_row(
             s.icon,
             s.paused as i64,
             s.paused_until.map(|t| t.as_millisecond()),
-            cadence_str(s.review_cadence),
+            cadence_str(&s.review_cadence),
             s.reminder_lead_s,
             s.sort_order,
             extra_blob,
@@ -455,7 +459,12 @@ pub(super) fn update_stream_row(
 ) -> rusqlite::Result<()> {
     let id_blob: Vec<u8> = s.id.bytes().to_vec();
     let parent_blob: Option<Vec<u8>> = s.parent_id.map(|p| p.bytes().to_vec());
-    let extra_blob = encode_unknowns(&s.unknown)?;
+    let extra_blob = extra_over_opaque(
+        tx,
+        ExtraTable::Streams,
+        &id_blob,
+        encode_unknowns(&s.unknown)?,
+    )?;
     let description_blob: Option<Vec<u8>> = s.description.as_ref().map(|b| b.0.clone());
     let default_ctx_blob: Option<Vec<u8>> = s.default_context.map(|c| c.bytes().to_vec());
     tx.execute(
@@ -476,7 +485,7 @@ pub(super) fn update_stream_row(
             s.icon,
             s.paused as i64,
             s.paused_until.map(|t| t.as_millisecond()),
-            cadence_str(s.review_cadence),
+            cadence_str(&s.review_cadence),
             s.reminder_lead_s,
             s.sort_order,
             extra_blob,
@@ -560,8 +569,9 @@ pub(super) fn read_stream(
         updated_at: ms_to_ts(updated_ms.max(0)),
         name,
         description: description_raw.map(sunrise_domain::NoteBody),
-        // Unknown/forward-compatible color strings fall back to Slate.
-        color: StreamColor::from_str_lossy(&color_str),
+        // Lossless: an unknown color is kept verbatim and written back as it
+        // arrived; it reads as Slate wherever it has to be drawn.
+        color: StreamColor::from_raw(&color_str),
         icon,
         parent_id: parent,
         sort_order,
@@ -583,24 +593,15 @@ pub(super) fn read_stream(
 
 /// A Stream's review cadence in its storage string form (matches the serde
 /// representation, so the column and the op agree).
-fn cadence_str(c: StreamReviewCadence) -> &'static str {
-    match c {
-        StreamReviewCadence::Weekly => "weekly",
-        StreamReviewCadence::Biweekly => "biweekly",
-        StreamReviewCadence::Monthly => "monthly",
-        StreamReviewCadence::None => "none",
-    }
+fn cadence_str(c: &StreamReviewCadence) -> &str {
+    c.as_str()
 }
 
-/// Parse a stored cadence. Unknown values fall back to `Weekly` so a vault
-/// written by a newer binary still loads.
+/// Parse a stored cadence. Lossless (ADR-0045 §6): an unknown value is kept
+/// and written back verbatim, and reads as `Weekly` wherever logic acts on it,
+/// so a vault written by a newer binary still loads.
 fn parse_cadence(s: &str) -> StreamReviewCadence {
-    match s {
-        "biweekly" => StreamReviewCadence::Biweekly,
-        "monthly" => StreamReviewCadence::Monthly,
-        "none" => StreamReviewCadence::None,
-        _ => StreamReviewCadence::Weekly,
-    }
+    StreamReviewCadence::from_raw(s)
 }
 
 /// Streams currently paused — the review skips them

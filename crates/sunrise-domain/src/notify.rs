@@ -444,7 +444,8 @@ pub fn build_end_of_day_plan(
 /// user already made, and re-offering it for triage every morning would be
 /// nagging rather than summarizing.
 fn is_open(t: &Task) -> bool {
-    !t.deleted && matches!(t.state, TaskState::Todo | TaskState::InProgress)
+    // An unknown state reads as `todo`: open.
+    !t.deleted && matches!(t.state.effective(), TaskState::Todo | TaskState::InProgress)
 }
 
 fn completion_ms(t: &Task) -> i64 {
@@ -1046,6 +1047,33 @@ mod tests {
             s.due_today.iter().map(|t| t.id).collect::<Vec<_>>(),
             expected_plan_order(&tasks),
             "the morning view uses the same comparator as the evening one"
+        );
+    }
+
+    /// ADR-0045 §6: a state this build does not know reads as `todo`, its
+    /// fallback, so the end-of-day plan keeps it open in every bucket.
+    #[test]
+    fn the_end_of_day_plan_reads_an_unknown_state_as_open() {
+        let day = 1_772_064_000_000i64;
+        let mut today = task(1);
+        today.state = TaskState::from_raw("snoozed");
+        today.scheduled_at = Some(SunriseTime::instant(ts(day + 3_600_000)));
+        let mut floating = task(2);
+        floating.state = TaskState::from_raw("snoozed");
+
+        let plan = build_end_of_day_plan(
+            &[today.clone(), floating.clone()],
+            ts(day),
+            ts(day + DAY_MS),
+            ts(day + 8 * DAY_MS),
+        );
+        assert_eq!(
+            plan.still_open.iter().map(|t| t.id).collect::<Vec<_>>(),
+            vec![today.id]
+        );
+        assert_eq!(
+            plan.unscheduled.iter().map(|t| t.id).collect::<Vec<_>>(),
+            vec![floating.id]
         );
     }
 

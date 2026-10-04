@@ -86,7 +86,7 @@ module's own tests — `a_refresh_extends_the_session`,
 `a_refresh_for_a_token_with_no_expiry_reports_zero` are the four cases the table
 above describes.
 
-A per-request Ed25519 device signature (`X-Sunrise-Device-Sig`) accompanies the bearer token. The mode is `header_sig_v2`, specified byte-for-byte under §Device binding below, and it is the only mode the server accepts. It is **optional by default** — `[auth] require_device_sig` is `false` — but a signature that is present is always verified.
+A per-request Ed25519 device signature (`X-Sunrise-Device-Sig`) accompanies the bearer token. The mode is `header_sig_v2`, specified byte-for-byte under §Device binding below, and it is the only mode the server accepts. It is **required by default wherever an OIDC issuer is configured** — `[auth] require_device_sig`, left unset, resolves on with an issuer and off without one (`ServerConfig::device_sig_required`) — and the single-tenant self-host verifier, which has no devices to tell apart, refuses the flag outright. An operator may still set `require_device_sig = false` beside an issuer; the server then logs `srv.start.device_sig_optional` at `warn` when it starts, because a request with no binding is then accepted on its bearer alone. A signature that is present is always verified, whatever the flag says.
 
 For sync: every operation carries `Authorization: Bearer <token>`, and kynos's
 `BearerToken` carrier reads the `Authorization` header and nothing else
@@ -350,7 +350,7 @@ The user's only "Sunrise password" is the recovery code, and the server never se
 
 ## Anti-abuse
 
-Delegated to the IdP (rate limits, brute-force lockout, captcha, IP throttling). The Sunrise server is *specified* to keep standard rate limits on its REST/sync endpoints (per [`../05-sync/backpressure-and-quotas.md`](../05-sync/backpressure-and-quotas.md)); **none are implemented** — there is no rate-limiting middleware in the relay at all. See [`api.md`](./api.md) §rate-limits.
+Login itself is delegated to the IdP (rate limits, brute-force lockout, captcha, IP throttling). The relay rate-limits its own REST and sync routes per client address and per device, and counts the `401`s each client address earns: past 20 in five minutes, that address's authenticated requests are refused with `429 RATE_LIMITED` before the bearer is verified, so guessing bearers costs the relay no signature checks. See [`api.md`](./api.md) §Rate limits.
 
 ## What we explicitly do not build
 

@@ -20,7 +20,10 @@ use super::ServerConfig;
 // these through its `use super::*`. The loader itself names none of them: it
 // overlays onto `ServerConfig::default`.
 #[cfg(test)]
-use super::model::{default_jwks_ttl_secs, default_max_body_bytes, default_token_leeway_secs};
+use super::model::{
+    default_jwks_ttl_secs, default_max_body_bytes, default_shutdown_grace_secs,
+    default_sqlite_busy_timeout_ms, default_token_leeway_secs,
+};
 #[cfg(test)]
 use super::ConfigError;
 
@@ -51,7 +54,10 @@ pub enum LoadError {
         cause: String,
     },
     /// An argument was passed that the server does not understand.
-    #[error("unrecognized argument {arg:?}; usage: sunrise-server [-c|--config <path>]")]
+    #[error(
+        "unrecognized argument {arg:?}; usage: sunrise-server [healthcheck [--deep]] \
+         [-c|--config <path>]"
+    )]
     BadArgument {
         /// The offending argument.
         arg: String,
@@ -71,6 +77,12 @@ pub struct ServerTable {
     pub allowed_origins: Option<Vec<String>>,
     /// Largest accepted request body, in bytes.
     pub max_body_bytes: Option<usize>,
+    /// How long a shutdown waits for in-flight requests, in seconds. Maps to
+    /// [`ServerConfig::shutdown_grace_secs`].
+    pub shutdown_grace_secs: Option<u64>,
+    /// Reverse proxies whose forwarding headers may be believed. Maps to
+    /// [`ServerConfig::trusted_proxies`].
+    pub trusted_proxies: Option<Vec<String>>,
 }
 
 /// The `[auth]` table.
@@ -103,6 +115,21 @@ pub struct StorageTable {
     /// Directory holding the SQLite database and the blob tree. Leaving it
     /// unset keeps the ephemeral in-memory store, which is for tests only.
     pub data_dir: Option<PathBuf>,
+    /// How long a SQLite statement waits on another connection's lock, in
+    /// milliseconds. Maps to [`ServerConfig::sqlite_busy_timeout_ms`].
+    pub busy_timeout_ms: Option<u64>,
+    /// [`ServerConfig::account_delete_grace_days`].
+    pub account_delete_grace_days: Option<u64>,
+    /// [`ServerConfig::gc_grace_days`].
+    pub gc_grace_days: Option<u64>,
+    /// [`ServerConfig::pending_upload_ttl_hours`].
+    pub pending_upload_ttl_hours: Option<u64>,
+    /// [`ServerConfig::maintenance_interval_secs`].
+    pub maintenance_interval_secs: Option<u64>,
+    /// [`ServerConfig::sqlite_encrypt`].
+    pub encrypt: Option<bool>,
+    /// [`ServerConfig::sqlite_key_file`].
+    pub key_file: Option<PathBuf>,
 }
 
 /// A parsed `sunrise.toml`.
@@ -124,6 +151,14 @@ pub struct FileConfig {
     /// The `[storage]` table.
     #[serde(default)]
     pub storage: StorageTable,
+    /// The `[limits]` table. Deserialized straight into the model's own type,
+    /// whose every key defaults, so a table that sets one limit changes one
+    /// limit — the same overlay rule as the tables above.
+    pub limits: Option<super::LimitsConfig>,
+    /// The `[push]` table, deserialized straight into the model's type. Its
+    /// `[push.apns]` sub-table has no defaults: written at all, it is written
+    /// whole.
+    pub push: Option<super::PushConfig>,
 }
 
 impl FileConfig {
@@ -151,6 +186,18 @@ impl FileConfig {
         if let Some(v) = self.server.max_body_bytes {
             base.max_body_bytes = v;
         }
+        if let Some(v) = self.server.shutdown_grace_secs {
+            base.shutdown_grace_secs = v;
+        }
+        if let Some(v) = self.server.trusted_proxies {
+            base.trusted_proxies = v;
+        }
+        if let Some(v) = self.limits {
+            base.limits = v;
+        }
+        if let Some(v) = self.push {
+            base.push = v;
+        }
         if let Some(v) = self.auth.oidc_issuer {
             base.oidc_issuer = Some(v);
         }
@@ -160,19 +207,12 @@ impl FileConfig {
         if let Some(v) = self.auth.allow_signup {
             base.allow_signup = v;
         }
-        match self.auth.require_device_sig {
-            Some(v) => base.require_device_sig = v,
-            // Unset means "decide from the deployment", not "off". A relay with
-            // a real issuer can tell devices apart, so binding is required
-            // there by default: leaving it off would mean a stolen bearer alone
-            // is enough, which is the property device binding exists to remove.
-            // Single-tenant self-host cannot tell devices apart at all -- every
-            // caller maps to one account -- and `validate` rejects the
-            // combination outright, so it stays off there.
-            //
-            // Applied after `oidc_issuer` above, so it reads the issuer this
-            // file actually resolved to rather than the default.
-            None => base.require_device_sig = base.oidc_issuer.is_some(),
+        // Unset leaves the base's own setting -- normally also unset, which
+        // `ServerConfig::device_sig_required` resolves from the issuer. The
+        // default is derived there, once, so it holds for configs that never
+        // pass through this file.
+        if let Some(v) = self.auth.require_device_sig {
+            base.require_device_sig = Some(v);
         }
         if let Some(v) = self.auth.token_leeway_secs {
             base.token_leeway_secs = v;
@@ -183,6 +223,27 @@ impl FileConfig {
         if let Some(dir) = self.storage.data_dir {
             base.sqlite_path = Some(dir.join("sunrise.db"));
             base.blob_root = Some(dir.join("blobs"));
+        }
+        if let Some(v) = self.storage.busy_timeout_ms {
+            base.sqlite_busy_timeout_ms = v;
+        }
+        if let Some(v) = self.storage.account_delete_grace_days {
+            base.account_delete_grace_days = v;
+        }
+        if let Some(v) = self.storage.gc_grace_days {
+            base.gc_grace_days = v;
+        }
+        if let Some(v) = self.storage.pending_upload_ttl_hours {
+            base.pending_upload_ttl_hours = v;
+        }
+        if let Some(v) = self.storage.maintenance_interval_secs {
+            base.maintenance_interval_secs = v;
+        }
+        if let Some(v) = self.storage.encrypt {
+            base.sqlite_encrypt = v;
+        }
+        if let Some(v) = self.storage.key_file {
+            base.sqlite_key_file = Some(v);
         }
         base
     }
@@ -332,12 +393,29 @@ mod file_tests {
         assert!(cfg.validate(true).is_ok(), "and still safe");
     }
 
+    /// The drain deadline is read from `[server]` and defaults to the 25 s that
+    /// leaves margin under a 30 s orchestrator termination window.
+    #[test]
+    fn shutdown_grace_secs_overlays_its_default() {
+        let unset = FileConfig::parse("", "t.toml")
+            .unwrap()
+            .apply(ServerConfig::default());
+        assert_eq!(unset.shutdown_grace_secs, default_shutdown_grace_secs());
+        assert_eq!(unset.shutdown_grace_secs, 25);
+
+        let set = FileConfig::parse("[server]\nshutdown_grace_secs = 7", "t.toml")
+            .unwrap()
+            .apply(ServerConfig::default());
+        assert_eq!(set.shutdown_grace_secs, 7);
+        assert_eq!(set.shutdown_grace(), std::time::Duration::from_secs(7));
+    }
+
     /// **Both directions of the one key whose default is computed rather than
     /// constant.** Unset means "decide from the deployment": a relay with a
     /// real issuer can tell devices apart, so binding is required there, and
-    /// leaving it off would mean a stolen bearer alone is enough. Nothing
-    /// asserted either direction, so collapsing the `match` to `false` — or to
-    /// `true` — failed no test.
+    /// leaving it off would mean a stolen bearer alone is enough. The overlay
+    /// must leave an unset key unset rather than resolve it, so the issuer it
+    /// is read against is the one the finished config holds.
     #[test]
     fn an_unset_device_sig_flag_follows_whether_an_issuer_is_configured() {
         let with_issuer = FileConfig::parse(
@@ -350,8 +428,9 @@ mod file_tests {
         )
         .unwrap()
         .apply(ServerConfig::default());
+        assert_eq!(with_issuer.require_device_sig, None);
         assert!(
-            with_issuer.require_device_sig,
+            with_issuer.device_sig_required(),
             "a multi-tenant relay must demand the binding unless told otherwise"
         );
 
@@ -359,7 +438,7 @@ mod file_tests {
             .unwrap()
             .apply(ServerConfig::default());
         assert!(
-            !without_issuer.require_device_sig,
+            !without_issuer.device_sig_required(),
             "single-tenant self-host cannot tell devices apart, and `validate` \
              rejects the combination outright"
         );
@@ -380,12 +459,14 @@ mod file_tests {
         )
         .unwrap()
         .apply(ServerConfig::default());
-        assert!(!off.require_device_sig);
+        assert_eq!(off.require_device_sig, Some(false));
+        assert!(!off.device_sig_required());
 
         let on = FileConfig::parse("[auth]\nrequire_device_sig = true", "t.toml")
             .unwrap()
             .apply(ServerConfig::default());
-        assert!(on.require_device_sig);
+        assert_eq!(on.require_device_sig, Some(true));
+        assert!(on.device_sig_required());
     }
 
     /// The one key whose file name differs from the field it lands on:
@@ -448,6 +529,85 @@ mod file_tests {
             Some(PathBuf::from("/var/lib/sunrise/sunrise.db"))
         );
         assert_eq!(cfg.blob_root, Some(PathBuf::from("/var/lib/sunrise/blobs")));
+        assert_eq!(
+            cfg.sqlite_busy_timeout_ms,
+            default_sqlite_busy_timeout_ms(),
+            "an unset busy timeout keeps the default"
+        );
+    }
+
+    /// The four maintenance keys overlay one by one, and an unset one keeps
+    /// its default; `gc_grace_days` is the name the storage doc has always
+    /// used, which the parser used to reject as unknown.
+    #[test]
+    fn the_maintenance_keys_overlay_when_set() {
+        let defaults = ServerConfig::default();
+        let cfg = FileConfig::parse(
+            "[storage]\ngc_grace_days = 7\naccount_delete_grace_days = 2\n\
+             pending_upload_ttl_hours = 6\nmaintenance_interval_secs = 60",
+            "t.toml",
+        )
+        .unwrap()
+        .apply(ServerConfig::default());
+        assert_eq!(
+            (
+                cfg.gc_grace_days,
+                cfg.account_delete_grace_days,
+                cfg.pending_upload_ttl_hours,
+                cfg.maintenance_interval_secs
+            ),
+            (7, 2, 6, 60)
+        );
+        assert_eq!(
+            (
+                defaults.gc_grace_days,
+                defaults.account_delete_grace_days,
+                defaults.pending_upload_ttl_hours,
+                defaults.maintenance_interval_secs
+            ),
+            (30, 30, 24, 3600)
+        );
+        let one = FileConfig::parse("[storage]\ngc_grace_days = 1", "t.toml")
+            .unwrap()
+            .apply(ServerConfig::default());
+        assert_eq!(one.account_delete_grace_days, 30);
+        assert_eq!(one.retention().gc_grace_ms, 24 * 60 * 60 * 1000);
+    }
+
+    /// Encryption is off unless the file turns it on, and both keys reach the
+    /// model.
+    #[test]
+    fn encrypt_and_key_file_overlay_and_default_off() {
+        let defaults = FileConfig::parse("", "t.toml")
+            .unwrap()
+            .apply(ServerConfig::default());
+        assert!(!defaults.sqlite_encrypt);
+        assert_eq!(defaults.sqlite_key_file, None);
+
+        let cfg = FileConfig::parse(
+            "[storage]\nencrypt = true\nkey_file = \"/etc/sunrise/db.key\"",
+            "t.toml",
+        )
+        .unwrap()
+        .apply(ServerConfig::default());
+        assert!(cfg.sqlite_encrypt);
+        assert_eq!(
+            cfg.sqlite_key_file.as_deref(),
+            Some(std::path::Path::new("/etc/sunrise/db.key"))
+        );
+    }
+
+    #[test]
+    fn busy_timeout_ms_overlays_when_set() {
+        let cfg = FileConfig::parse("[storage]\nbusy_timeout_ms = 250", "t.toml")
+            .unwrap()
+            .apply(ServerConfig::default());
+        assert_eq!(cfg.sqlite_busy_timeout_ms, 250);
+        assert_ne!(cfg.sqlite_busy_timeout_ms, default_sqlite_busy_timeout_ms());
+        assert_eq!(
+            cfg.sqlite_busy_timeout(),
+            std::time::Duration::from_millis(250)
+        );
     }
 
     /// **The property the whole feature must not break.** A config file is now
@@ -490,10 +650,77 @@ mod file_tests {
         assert!(msg.contains("tls"), "{msg}");
     }
 
+    /// `[push.apns]` is read whole into the model, and a table missing a key
+    /// or carrying an unknown one is refused rather than half-applied.
+    #[test]
+    fn the_apns_table_is_read_whole_or_refused() {
+        let cfg = FileConfig::parse(
+            r#"
+            [push.apns]
+            key_path = "/etc/sunrise/AuthKey_ABC123DEFG.p8"
+            key_id = "ABC123DEFG"
+            team_id = "DEF123GHIJ"
+            topic = "dev.sunrise.app"
+            environment = "sandbox"
+            "#,
+            "t.toml",
+        )
+        .unwrap()
+        .apply(ServerConfig::default());
+        let apns = cfg.push.apns.as_ref().expect("the table is applied");
+        assert_eq!(
+            apns.key_path,
+            PathBuf::from("/etc/sunrise/AuthKey_ABC123DEFG.p8")
+        );
+        assert_eq!(apns.environment, super::super::ApnsEnvironment::Sandbox);
+        assert!(cfg.validate(true).is_ok());
+
+        let missing = FileConfig::parse(
+            "[push.apns]\nkey_id = \"ABC123DEFG\"\nteam_id = \"DEF123GHIJ\"\n\
+             topic = \"t\"\nenvironment = \"production\"",
+            "t.toml",
+        )
+        .unwrap_err();
+        assert!(missing.to_string().contains("key_path"), "{missing}");
+
+        let unknown = FileConfig::parse("[push.fcm]\nproject = \"p\"", "t.toml").unwrap_err();
+        assert!(unknown.to_string().contains("fcm"), "{unknown}");
+
+        let bad_env = FileConfig::parse(
+            "[push.apns]\nkey_path = \"k\"\nkey_id = \"ABC123DEFG\"\n\
+             team_id = \"DEF123GHIJ\"\ntopic = \"t\"\nenvironment = \"staging\"",
+            "t.toml",
+        )
+        .unwrap_err();
+        assert!(bad_env.to_string().contains("staging"), "{bad_env}");
+    }
+
     #[test]
     fn a_misspelled_key_is_rejected() {
         let e = FileConfig::parse("[server]\nlisten_on = \"0.0.0.0:443\"", "t.toml").unwrap_err();
         assert!(e.to_string().contains("listen_on"), "{e}");
+    }
+
+    /// A `[limits]` table that sets one key changes one limit, and the proxy
+    /// list is read from `[server]`.
+    #[test]
+    fn the_limits_table_and_the_proxy_list_overlay_their_defaults() {
+        let cfg = FileConfig::parse(
+            "[server]\ntrusted_proxies = [\"127.0.0.1\"]\n[limits]\nmeta_per_min = 5",
+            "t.toml",
+        )
+        .unwrap()
+        .apply(ServerConfig::default());
+        assert_eq!(cfg.trusted_proxies, vec!["127.0.0.1".to_owned()]);
+        assert_eq!(cfg.limits.meta_per_min, 5);
+        assert_eq!(
+            cfg.limits.sync_per_min,
+            super::super::LimitsConfig::default().sync_per_min,
+            "an unset limit keeps its default"
+        );
+
+        let e = FileConfig::parse("[limits]\nmeta_per_minute = 5", "t.toml").unwrap_err();
+        assert!(e.to_string().contains("meta_per_minute"), "{e}");
     }
 
     #[test]

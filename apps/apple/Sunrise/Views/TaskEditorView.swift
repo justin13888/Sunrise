@@ -112,6 +112,11 @@ struct TaskEditorView: View {
                 Text(energyLabel(energy: .low)).tag(Energy.low as Energy?)
                 Text(energyLabel(energy: .med)).tag(Energy.med as Energy?)
                 Text(energyLabel(energy: .high)).tag(Energy.high as Energy?)
+                // An energy a newer client wrote: offered as itself, so saving
+                // without touching it keeps it.
+                if let held = task.energy, case .unknown = held {
+                    Text(energyLabel(energy: held)).tag(held as Energy?)
+                }
             }
 
             LabeledContent("Estimate") {

@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// ⌘⇧P: type a command's name, press Return.
+/// ⇧⌘P: type a command's name, press Return.
 ///
 /// Also the app's shortcut reference-of-record. Every row prints its binding,
 /// which is what `docs/08-features/keyboard.md` asks the palette to do and what
@@ -183,5 +183,7 @@ struct CheatSheetView: View {
             .padding(16)
         }
         .frame(width: 460, height: 560)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("cheatsheet")
     }
 }

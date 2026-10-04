@@ -23,7 +23,10 @@ rusqlite = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_bytes = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["sync", "macros", "rt-multi-thread", "time"] }
+# `rt`, not `rt-multi-thread`: `Core` spawns onto whatever runtime its caller
+# runs, and `rt-multi-thread` pulls `mio`, which refuses the wasm target
+# `crates/sunrise-core-wasm` builds this crate for (ADR-0055).
+tokio = { workspace = true, features = ["sync", "macros", "rt", "time"] }
 tracing = { workspace = true }
 sunrise-cbor = { workspace = true }
 sunrise-crypto = { workspace = true }
@@ -37,8 +40,16 @@ sunrise-wire-protocol = { workspace = true }
 zeroize = { workspace = true }
 
 [dev-dependencies]
+# The canonical document schema (`src/doc_schema.rs`, ADR-0045 §2): rendered as
+# JSON, canonicalized by JCS, fingerprinted with BLAKE3 `derive_key`.
+blake3 = { workspace = true }
+serde_jcs = { workspace = true }
+serde_json = { workspace = true }
 proptest = { workspace = true }
 sunrise-crypto-test-vectors = { workspace = true }
+# `test_util::events_emitted_by`, so an engine test that asserts an `ev` fired
+# shares the one tracing interest-cache pin instead of carrying its own.
+sunrise-log = { workspace = true }
 sunrise-test-seed = { workspace = true }
 # `test-util` gives paused-clock tests (`start_paused`, `time::advance`) so the
 # routine timer can be driven deterministically instead of slept through.

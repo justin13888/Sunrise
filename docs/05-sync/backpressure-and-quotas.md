@@ -9,17 +9,19 @@ status: proposed
 > quotas. This document is the design of record for that work, not a
 > description of anything that ships.
 >
-> **What exists in the tree:** nothing. No quota accounting, no `Throttle`
-> frame, no rate-limiting middleware
-> ([`../06-server/api.md`](../06-server/api.md) §Rate limits), and no
-> `AUTH_RATE_LIMITED` on the typed error surface —
-> [`wire-protocol.md`](./wire-protocol.md)`:233-238` lists it among the nine
-> names the enum does not contain.
+> **What exists in the tree:** rates, not quotas. The relay rate-limits every
+> route per client address and charges per-device budgets — the 50 ops/s below
+> among them — refusing with `429 RATE_LIMITED` and `Retry-After`
+> ([`../06-server/api.md`](../06-server/api.md) §Rate limits). There is no quota
+> accounting, no `Throttle` frame, and no `AUTH_RATE_LIMITED` on the typed
+> error surface — [`wire-protocol.md`](./wire-protocol.md)`:233-238` lists it
+> among the nine names the enum does not contain; the relay's code is
+> `RATE_LIMITED`.
 >
 > **Why it is not built:** quotas presuppose plan tiers, and plan tiers presuppose
 > billing; ADR-0027 defers all three. What the relay enforces instead is a small set of
 > fixed operator constants that need no per-account state: a 2 MiB request body
-> (`crates/sunrise-server/src/config/model.rs:104-105,110-112`), a 1 MiB ciphertext chunk /
+> (`crates/sunrise-server/src/config/model.rs:109-110,115-117`), a 1 MiB ciphertext chunk /
 > 4096 chunks / 100 MB blob (`api/blobs.rs:53,57,61`), and 30-day / 256 MiB
 > per-channel relay-log retention (`relay_log.rs:121,130`).
 >
@@ -56,7 +58,7 @@ If the server is sending more ops than the client can apply (rare but possible d
 ## Abuse handling
 
 - A misbehaving (or compromised) client that floods ops gets rate-limited at the connection level after thresholds.
-- Per-device signed op-rate would have a hard limit of **50 signed ops/sec per device** (averaged over a 10 s window), with the client backing off on refusal. The error code and the log event this rule used to name do not exist and are not reserved: the typed enum has no rate-limit code, and no source file emits a quota event. Whatever carries the refusal has to be chosen when the rule is built.
+- Per-device signed op-rate has a hard limit of **50 signed ops/sec per device** (averaged over a 10 s window), with the client backing off on refusal. **Built:** `POST /api/v1/sync/ops` charges each batch's op count to the device and refuses with `429 RATE_LIMITED` and `Retry-After` past it; the rate is `[limits] ops_per_sec`, and `srv.ratelimit.rejected` is the log event ([`../06-server/api.md`](../06-server/api.md) §Rate limits).
 
 ## Stream-level prioritization
 

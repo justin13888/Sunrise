@@ -77,7 +77,7 @@ struct TaskRows: View {
                 ContentUnavailableView(
                     model.kind.title,
                     systemImage: model.kind.symbol,
-                    description: Text(model.kind.emptyMessage)
+                    description: Text(model.kind.emptyDescription(hinted: KeyboardClass.isDesktopClass))
                 )
             } else {
                 list
@@ -236,11 +236,10 @@ struct TaskRows: View {
     ///
     /// `contextMenu` items cannot carry a `keyboardShortcut` — the keys here
     /// are bare letters bound on the list, not menu equivalents — so the label
-    /// is where the binding becomes visible. Read from `Keymap` so it cannot
-    /// claim a key the list does not answer.
+    /// is where the binding becomes visible. ``Keymap/menuTitle(_:for:)``
+    /// renders it, so it cannot claim a key the list does not answer.
     private func labelled(_ title: String, _ action: AppAction) -> String {
-        let keys = Keymap.shortcutLabel(for: action)
-        return keys.isEmpty ? title : "\(title)   \(keys)"
+        Keymap.menuTitle(title, for: action)
     }
 }
 

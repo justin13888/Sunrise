@@ -72,8 +72,8 @@ final class SessionModel {
     private(set) var canSponsorPairing = false
 
     /// The vaults this Mac knows about, or `nil` in the single-vault
-    /// configuration the tests and the UI-test harness use. Non-`nil` is what
-    /// puts the switcher on screen.
+    /// configuration the unit tests and the UI-test harness's default use.
+    /// Non-`nil` is what puts the switcher on screen.
     let vaults: VaultRegistry?
 
     /// The process's one signed-in account (#276). The Account screen, the
@@ -84,7 +84,10 @@ final class SessionModel {
     /// each time it is built rather than holding an ``AppSettings`` from
     /// launch: the Settings screen edits its own instance, and a relay or
     /// email entered there before the vault was created must reach the upload.
-    private let settingsDefaults: UserDefaults
+    /// The renewal tick reads it the same way, and for the same reason.
+    let settingsDefaults: UserDefaults
+    /// The account's renewal tick, owned for as long as a vault is open (#307).
+    @ObservationIgnored let renewal = SessionRenewal()
 
     /// Both `var`: switching vaults replaces them together, and replacing only
     /// one would file a vault's key under another vault's name.
@@ -103,7 +106,8 @@ final class SessionModel {
     /// falling through to a first-run screen against a nonsense path.
     private var configurationError: String?
 
-    /// The single-vault configuration: the unit tests and the UI-test harness.
+    /// The single-vault configuration: the unit tests and the UI-test
+    /// harness's default.
     ///
     /// `relayDeviceStore` defaults to the in-memory one because that is what
     /// both of its callers want — neither may write a device id into the
@@ -195,15 +199,9 @@ final class SessionModel {
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString")
         let appVersion = (version as? String) ?? "0.0.0"
         #if DEBUG
-        if let scratch = UITestHarness.scratchVault() {
-            // A UI test drives the real window, and the real window must not
-            // open the developer's vault or write to their login Keychain.
-            return SessionModel(
-                location: VaultLocation(directory: scratch),
-                rootStore: InMemoryVaultRootStore(),
-                appVersion: appVersion
-            )
-        }
+        // A UI test drives the real window, and the real window must not open
+        // the developer's vault or write to their login Keychain.
+        if let session = UITestHarness.session(appVersion: appVersion) { return session }
         #endif
         return SessionModel(
             vaults: VaultRegistry(),
@@ -316,14 +314,17 @@ final class SessionModel {
     /// a fresh one would re-read a credential this process's sign-out could
     /// not delete and upload under it (#276). It is read only on a first look.
     /// The settings, by contrast, are read fresh here, so edits made in
-    /// Settings since launch are the ones the ceremony uses.
+    /// Settings since launch are the ones the ceremony uses. The relay id is
+    /// recorded in the store read with the bridge, so both name one vault
+    /// (#183); terms are accepted at the issuer's sign-up, per
+    /// `docs/06-server/api.md` §Terms acceptance.
     private func makeRecoveryCeremony() -> RecoveryCodeModel {
         let settings = AppSettings(defaults: settingsDefaults)
         let account = self.account
         account.restoreIfUnread()
         let nickname = Platform.deviceName
         return RecoveryCodeModel { [weak self] in
-            guard let bridge = self?.bridge else {
+            guard let bridge = self?.bridge, let store = self?.relayDeviceStore else {
                 throw RecoverySetupError.vaultClosed
             }
             guard settings.canBootstrapAccount else {
@@ -332,44 +333,46 @@ final class SessionModel {
             guard let bearer = account.accessToken else {
                 throw RecoverySetupError.signedOut
             }
-            return try await bridge.bootstrapAccount(
-                relayURL: settings.relayURL.trimmed,
-                bearer: bearer,
-                email: settings.accountEmail.trimmed,
-                nickname: nickname
-            ).recoveryCode
-        }
-    }
-
-    /// Why a recovery blob could not be sealed and uploaded yet.
-    ///
-    /// Each case is something the user can fix, and each says what: none of
-    /// them means the vault is broken, and all of them mean the account key
-    /// still has no second copy.
-    enum RecoverySetupError: LocalizedError, Equatable {
-        case vaultClosed
-        case notConfigured
-        case signedOut
-
-        var errorDescription: String? {
-            switch self {
-            case .vaultClosed:
-                "The vault closed before recovery could be set up."
-            case .notConfigured:
-                """
-                Sunrise needs a relay address and your account email before it \
-                can store your recovery blob. Add them in Settings, then set \
-                recovery up again.
-                """
-            case .signedOut:
-                """
-                Sign in first. Your recovery blob is stored on the relay under \
-                your account, and the relay will not take it from a device it \
-                cannot identify.
-                """
+            let scope = RelayDeviceScope(relayURL: settings.relayURL, bearer: bearer)
+            return try await RelayDeviceRegistration.publish(store: store, scope: scope) {
+                try await bridge.bootstrapAccount(
+                    relayURL: settings.relayURL.trimmed,
+                    bearer: bearer,
+                    email: settings.accountEmail.trimmed,
+                    nickname: nickname,
+                    termsAcceptedAtMs: await bridge.nowMs()
+                )
             }
         }
     }
+
+    /// Register this device with the relay if it holds no relay id valid for
+    /// the configured relay and the signed-in account — the route a paired
+    /// device never had, and the recovery for an id minted on another relay or
+    /// for another account (#183). Each platform's sync start calls it before
+    /// reading ``relayDeviceID(relayURL:bearer:)``. Skipped while a recovery
+    /// ceremony, which registers the device itself, is outstanding. A failed
+    /// registration leaves the driver unbound and the next start tries again;
+    /// a refused Keychain read makes `bind` throw, and `SyncPlan` stays off (#284).
+    func bindRelayDevice() async {
+        guard recoveryCeremony == nil, !isBindingRelayDevice, let bridge else { return }
+        let settings = AppSettings(defaults: settingsDefaults)
+        guard settings.syncIsConfigured, let bearer = account.accessToken else { return }
+        let store = relayDeviceStore
+        let scope = RelayDeviceScope(relayURL: settings.relayURL, bearer: bearer)
+        isBindingRelayDevice = true
+        defer { isBindingRelayDevice = false }
+        _ = try? await RelayDeviceRegistration.bind(store: store, scope: scope) {
+            try await bridge.registerRelayDevice(
+                relayURL: settings.relayURL.trimmed,
+                bearer: bearer,
+                nickname: Platform.deviceName
+            )
+        }
+    }
+
+    /// So two sync starts (two Mac windows) do not register twice.
+    @ObservationIgnored private var isBindingRelayDevice = false
 
     /// Take what a completed pairing produced, and open with it.
     ///
@@ -432,6 +435,7 @@ final class SessionModel {
         }
 
         // 1. Let go. Nothing below can succeed until this returns.
+        renewal.stop()
         await bridge?.shutdown()
         bridge = nil
         canSponsorPairing = false
@@ -472,14 +476,24 @@ final class SessionModel {
         }
     }
 
-    /// The relay's id for this device against the open vault, or `nil` for an
-    /// unbound sync driver.
+    /// The relay's id for this device against the open vault, valid on
+    /// `relayURL` under `bearer`'s account, `nil` for an unbound sync driver,
+    /// or the Keychain's refusal to say which. Takes the same two values the
+    /// caller's `SyncPlan` does, so the id and the connection it is presented
+    /// on describe one relay and one account.
+    ///
+    /// A `Result`, not a throw: its one consumer, `SyncPlan`, turns a refusal
+    /// into a plan to stay off (#284), so each sync start passes it through.
     ///
     /// A read rather than stored state: the environment override
     /// `RelayDeviceID.resolve` consults is a launch-time fact, and the stored
-    /// half is written by registration, so re-reading is what makes a driver
-    /// restarted after registration pick the binding up.
-    var relayDeviceID: String? { RelayDeviceID.resolve(store: relayDeviceStore) }
+    /// half is written by registration — the recovery ceremony's or
+    /// ``bindRelayDevice()``'s — so re-reading is what makes a driver started
+    /// after registration pick the binding up.
+    func relayDeviceID(relayURL: String, bearer: String?) -> Result<String?, any Error> {
+        let scope = RelayDeviceScope(relayURL: relayURL, bearer: bearer)
+        return Result { try RelayDeviceID.resolve(store: relayDeviceStore, scope: scope) }
+    }
 
     /// Close the vault, releasing the core's lock on it.
     ///
@@ -497,23 +511,10 @@ final class SessionModel {
     /// the vault it was just asked to close, which is not a lock and would also
     /// make this useless as the release path the tests use for cleanup.
     func lock() async {
+        renewal.stop()
         await bridge?.shutdown()
         bridge = nil
         canSponsorPairing = false
         phase = .locked(.lockedByUser)
     }
-}
-
-/// Where one vault's data and one vault's key live, resolved together.
-///
-/// A pair rather than two values, because they are only ever correct together:
-/// see `SessionModel.switchTo`.
-struct VaultBinding: Sendable {
-    let location: VaultLocation
-    let rootStore: any VaultRootStore
-    /// Where the relay's id for this vault's device lives. Part of the pair
-    /// rather than resolved at the call site: it is keyed by the same vault id
-    /// as the other two, and a client that presents one vault's device id while
-    /// signing with another's key is refused in a way it cannot diagnose.
-    let relayDeviceStore: any RelayDeviceIDStore
 }

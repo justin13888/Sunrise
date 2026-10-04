@@ -10,13 +10,20 @@ status: accepted
 > PN-counter). Where this page and ADR-0044 disagree, ADR-0044 wins. The
 > comparison key and the HLC rules below are unchanged.
 >
-> **Today** the implementation still resolves *every* field by entity-level LWW
-> over `(hlc, device_id, seq)`, the "Register" row below applied to the whole
-> entity ([ADR-0014](../11-adr/0014-entity-level-lww-merge.md), superseded).
-> The per-field model is tracked by
-> [#319](https://github.com/justin13888/Sunrise/issues/319).
+> **Today** the merge implements every policy in the table below, field by
+> field ([#319](https://github.com/justin13888/Sunrise/issues/319)). It does
+> not yet derive streaks. What a device *writes* has not changed: no command
+> emits a `Patch` until the vault can require `core.field_ops` (ADR-0044 §9,
+> [#324](https://github.com/justin13888/Sunrise/issues/324)). Every local edit
+> is still a full-state op, which merges as a write to every field it carries
+> at its own stamp. Between two devices on this build, the later edit's whole
+> state therefore still wins, as entity-level LWW did
+> ([ADR-0014](../11-adr/0014-entity-level-lww-merge.md), superseded). A `Patch`
+> from a build that emits one merges per field.
+> [`crdt-design.md`](./crdt-design.md) §What exists in the tree has the
+> detail.
 
-The merge layer resolves every concurrent edit deterministically, with no user prompt. This spec documents the *deliberate* policy choices; today the single policy in force is the entity-level LWW described in the banner above.
+The merge layer resolves every concurrent edit deterministically, with no user prompt. This spec documents the *deliberate* policy choices. The banner above says which of them a device's own writes can exercise today.
 
 ## Default policies
 
@@ -26,13 +33,16 @@ The merge layer resolves every concurrent edit deterministically, with no user p
 | Map (entries edited independently, such as `Preferences.values` and day-schedule entries) | One LWW register per key; a key is removed by a tombstone, never forgotten |
 | Set membership (`Task.contexts`, `Task.blocked_by`, `Block.tasks`, a routine's `skipped_keys` and `streak_keys`) | Observed-remove OR-set: a concurrent add survives a remove that did not observe it. `Task.blocks` is derived from `Block.tasks`, not merged. |
 | Counter (`deferred_count`) | PN-counter (commutative add/sub) |
-| Streaks | Derived at read time from `streak_keys` and `skipped_keys`; never stored or merged |
+| Streaks | Derived at read time from `streak_keys` and `skipped_keys`; never stored or merged. Today they are still stored, and merge as registers ([#331](https://github.com/justin13888/Sunrise/issues/331)). |
+| Deletion (`deleted`) | An ordinary register. An edit that arrives after a delete stays inside the tombstoned entity and shows again on a restore; it never resurrects it. |
+| A full-state op | A write to every field it carries, at its own stamp. A register or map key written before the newest full-state op reads as that op left it, an OR-set add before it reads as removed unless the op re-adds it, and a counter is that op's value plus every increment after it ([`crdt-design.md`](./crdt-design.md) §Legacy full-state ops). |
 | Ordering (children of a Stream) | `sort_order` fractional key, one LWW register per entity |
 | Rich text (notes) | Not specified. A text CRDT would arrive as a new field-op kind under its own ADR (ADR-0044 §What would force revisiting this). No CRDT library is in the workspace. |
 
 ## The comparison key
 
-The winner of any two writes to one entity is the greater of
+The winner of any two writes to one register, or to one key of a map, is the
+greater of
 
 ```
 (hlc, device_id, seq)
@@ -45,6 +55,11 @@ compared left to right, where
 | `hlc` | `(physical_ms, logical)` — a hybrid logical clock, envelope field 5 | An unbounded device wall clock let one skewed device win every conflict it ever entered, permanently and silently (issue #21). It also could not order two writes inside one millisecond at all. |
 | `device_id` | the raw 16-byte id, memcmp, higher wins | Breaks *cross-device* ties deterministically, so every replica picks the same winner. |
 | `seq` | the writer's per-`(stream, device)` counter, envelope field 4 | Reached only when two ops from the SAME device carry an equal `hlc`. The HLC's send rule makes that impossible while a device's clock state lives; it becomes possible across a process restart, when the logical counter resets. |
+
+The newest-legacy-op floor of the table above, and the stamp an entity row
+carries, compare the same key with the op's stream appended last. `seq` counts
+per `(stream, device)`, so the stream is what tells apart two ops one device
+made in two streams with an otherwise equal key.
 
 ### The HLC rules
 
@@ -91,8 +106,10 @@ A and B both transition a task on the same op-window:
 
 Both set `hard_due_at`. Under ADR-0044 the `hard_due_at` register takes the
 later write, and a concurrent edit to any *other* field on either side
-survives. Today the later write wins on the whole entity. Nothing is logged:
-the merge journal that would have recorded it was removed (see below).
+survives. Today a command writes a full-state op, so the later write still
+wins on the whole entity; a `Patch` from a build that emits one keeps the other
+field. Nothing is logged: the merge journal that would have recorded it was
+removed (see below).
 
 ### Concurrent task moves across streams
 
@@ -103,7 +120,7 @@ task emits a single `InnerOp::TaskUpdate` carrying the whole task with its new
 `crates/sunrise-core/src/inner_op.rs`.
 
 So two concurrent moves are just two concurrent writes to one entity, and
-entity-level LWW settles them with the comparison key above: the later
+the `stream_id` register settles them with the comparison key above: the later
 `(hlc, device_id, seq)` wins, the task ends up in exactly one stream, and every
 replica picks the same one. **No duplicate is ever created, so nothing needs
 tombstoning.**
@@ -135,11 +152,11 @@ every remote replica while the originating replica kept it.
 Two devices complete occurrence O of a routine R at nearly the same time:
 
 - Both emit `complete(occurrence_id)` op with the same `occurrence_id` (deterministically derived from `routine_id || occurrence_date`).
-- Receivers see both, and both add the same occurrence key to the routine's `streak_keys` OR-set, which counts it once. The streak is derived at read time from `streak_keys` and `skipped_keys` (ADR-0044 §3), so it advances once rather than twice. Today the streak is an ordinary field on the Routine row and merges with it under entity-level LWW (banner above).
+- Receivers see both, and both add the same occurrence key to the routine's `streak_keys` OR-set, which counts it once. The streak is derived at read time from `streak_keys` and `skipped_keys` (ADR-0044 §3), so it advances once rather than twice. Today the streak counter is still stored, a register written with the routine's full state by the device that recorded the completion ([#331](https://github.com/justin13888/Sunrise/issues/331)).
 
 ### Concurrent list reorders
 
-Each entity's position is its own `sort_order` register (ADR-0044 §3), so concurrent moves of the same item produce one final position, the later write's, deterministic across replicas, and moves of different items both survive. Today the containing entity merges as a unit, so the later writer's whole row wins.
+Each entity's position is its own `sort_order` register (ADR-0044 §3), so concurrent moves of the same item produce one final position, the later write's, deterministic across replicas, and moves of different items both survive. Today a move is a full-state op, so the later writer's whole state wins on the moved entity; moves of different items already touch different entities.
 
 ### Concurrent share-then-revoke
 
@@ -178,8 +195,9 @@ its own ADR superseding 0018's removal, not a restore of the schema above.
 > (`crates/sunrise-core/src/sync_driver.rs`), so a batch **can** be half-applied
 > if the process dies mid-loop. `OpBatchPayload` itself is only exercised
 > end-to-end by the server's own tests. Convergence survives — every apply is
-> idempotent and entity-level LWW — but the all-or-nothing guarantee below is
-> not one the current implementation provides.
+> idempotent, and every field type merges independently of order — but the
+> all-or-nothing guarantee below is not one the current implementation
+> provides.
 
 `OpBatch` (see [`wire-protocol.md`](./wire-protocol.md)) carries multiple ops as one transactional unit. Intended receiver behavior:
 

@@ -1,0 +1,39 @@
+# The baseline half of the cross-version merge harness (#326, ADR-0057).
+#
+# Not a member of this workspace, and not buildable from here: every
+# dependency below is `workspace = true`, and the workspace it means is the
+# *baseline's*. `build-baseline.sh` extracts a pinned commit into
+# `target/sunrise-baseline/<ref>/src/`, copies this directory in as
+# `crates/sunrise-baseline-driver`, where the baseline's own
+# `members = ["crates/*"]` picks it up, and builds it against the baseline's
+# `Cargo.lock`. The binary is therefore `sunrise-core` exactly as that commit
+# had it, driven over stdin and stdout by `sunrise_e2e::cross_version` in a
+# `HEAD` test process.
+#
+# Its source is written against the oldest API in the CI matrix. A baseline
+# whose API it no longer compiles against is a driver change in the pull
+# request that adds that baseline, not a reason to drop it.
+
+[package]
+name = "sunrise-baseline-driver"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+description = "Drives one baseline Sunrise core for the cross-version merge harness."
+
+[dependencies]
+sunrise-core = { workspace = true }
+sunrise-sync = { workspace = true, features = ["sse"] }
+sunrise-domain = { workspace = true }
+sunrise-id = { workspace = true }
+sunrise-crypto = { workspace = true }
+sunrise-cbor = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+serde_json = { workspace = true, features = ["std"] }
+hex = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

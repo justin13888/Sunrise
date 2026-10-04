@@ -3,7 +3,7 @@
 use crate::common::{Energy, NoteBody};
 use crate::constraint::{validate_list as validate_constraint_list, ScheduleConstraint};
 use crate::time::SunriseTime;
-use crate::unknown::Unknowns;
+use crate::unknown::{UnknownVariant, Unknowns};
 use crate::validation::{validate_title, ValidationError, MAX_TASK_TITLE_LEN};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -13,8 +13,12 @@ use sunrise_id::EntityRef;
 /// User-visible Task state. `done` and `cancelled` are NOT terminal: a task
 /// can transition back to `todo`. `blocked` is **derived** at read time from
 /// `blocked_by` and the blockers' states; it is NOT persisted.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
+///
+/// An unrecognised state reads as [`TaskState::Todo`] (its
+/// [`TaskState::effective`]) and is written back verbatim. It is an OPEN item:
+/// reading it as `Done` would silently mark someone's work complete; reading
+/// it as `Todo` at worst shows a task that a newer client considers handled.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TaskState {
     /// Pending; not yet started.
     Todo,
@@ -24,52 +28,34 @@ pub enum TaskState {
     Done,
     /// User explicitly cancelled. Not terminal.
     Cancelled,
+    /// A state this build does not know, kept verbatim (ADR-0045 §6).
+    Unknown(UnknownVariant),
 }
 
-impl TaskState {
-    /// The stable lowercase wire/storage string.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Todo => "todo",
-            Self::InProgress => "in_progress",
-            Self::Done => "done",
-            Self::Cancelled => "cancelled",
-        }
-    }
-
-    /// Parse from the wire/storage string. An unrecognised value degrades to
-    /// [`TaskState::Todo`] rather than failing.
-    ///
-    /// An unrecognised state is an OPEN item. Degrading to `Done` would silently
-    /// mark someone's work complete; degrading to `Todo` at worst shows a task
-    /// that a newer client considers handled.
-    #[must_use]
-    pub fn from_str_lossy(s: &str) -> Self {
-        match s {
-            "in_progress" => Self::InProgress,
-            "done" => Self::Done,
-            "cancelled" => Self::Cancelled,
-            // "todo" and anything this build has never heard of.
-            _ => Self::Todo,
-        }
-    }
-}
-
-crate::unknown::lossy_enum!(TaskState);
+crate::unknown::lossy_enum!(TaskState, fallback = Todo, {
+    Todo => "todo",
+    InProgress => "in_progress",
+    Done => "done",
+    Cancelled => "cancelled",
+});
 
 impl TaskState {
     /// Allowed self-set transitions. (Note: `blocked` is derived, not
     /// persisted; it does not appear here.)
+    ///
+    /// An unknown current state transitions as its fallback, `todo`. An
+    /// unknown *target* is allowed: no picker offers one, so it only arrives
+    /// as a value restored verbatim — an undo putting back the state a newer
+    /// client wrote — and this build has no rule to judge it by.
     #[must_use]
-    pub fn can_transition_to(self, next: Self) -> bool {
+    pub fn can_transition_to(&self, next: &Self) -> bool {
         // todo ↔ in_progress, todo ↔ cancelled, in_progress ↔ done,
         // done → todo (resurrect), cancelled → todo. Same-state is a no-op.
-        if self == next {
+        if self == next || next.is_unknown() {
             return true;
         }
         matches!(
-            (self, next),
+            (self.effective(), next),
             (Self::Todo, Self::InProgress | Self::Cancelled | Self::Done)
                 | (Self::InProgress, Self::Todo | Self::Done | Self::Cancelled)
                 | (Self::Done | Self::Cancelled, Self::Todo | Self::InProgress)
@@ -79,9 +65,11 @@ impl TaskState {
 
 /// Persisted Task.
 ///
-/// CRDT mapping (per spec): scalars → LWW-register; `contexts`, `blocks`,
-/// `blocked_by` → OR-Sets; `deferred_count` → PN-counter; `body` → CRDT
-/// RichText. `blocks_others` is **derived**, not persisted.
+/// How each field merges (ADR-0044, declared in `sunrise_id::for_each_entity!`):
+/// scalars, optionals, `body` and `scheduling_constraints` are LWW registers;
+/// `contexts` and `blocked_by` are add-wins OR-sets; `deferred_count` is a
+/// PN-counter. `blocks` is derived from the bound blocks' `tasks` on read and
+/// is not merged, and neither is `blocks_others`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Task {
     /// Unique id (typed reference).
@@ -132,7 +120,8 @@ pub struct Task {
     /// PN-counter; system-incremented on defer.
     #[serde(default)]
     pub deferred_count: i64,
-    /// Block ids scheduling this task (OR-Set).
+    /// Block ids scheduling this task: derived on read from every live block
+    /// whose `tasks` names it, and not merged (ADR-0044 §3).
     #[serde(default)]
     pub blocks: BTreeSet<EntityRef>,
     /// Tasks this task depends on (OR-Set).
@@ -252,8 +241,10 @@ impl TaskDraft {
             // Compared on the storage index key, which is the same key SQL
             // orders on — so "the deadline is before the plan" means the same
             // thing to the validator and to a `WHERE due_at_ms < ?` query,
-            // whatever kinds the two values are.
-            if d.index_ms() < s.index_ms() {
+            // whatever kinds the two values are. A kind this build cannot
+            // place on the timeline is compared with nothing: its stand-in
+            // key would invent a violation.
+            if matches!((d.index_key(), s.index_key()), (Some(d), Some(s)) if d < s) {
                 return Err(ValidationError::DueBeforeScheduled);
             }
         }
@@ -282,8 +273,10 @@ impl Task {
             // Compared on the storage index key, which is the same key SQL
             // orders on — so "the deadline is before the plan" means the same
             // thing to the validator and to a `WHERE due_at_ms < ?` query,
-            // whatever kinds the two values are.
-            if d.index_ms() < s.index_ms() {
+            // whatever kinds the two values are. A kind this build cannot
+            // place on the timeline is compared with nothing: its stand-in
+            // key would invent a violation.
+            if matches!((d.index_key(), s.index_key()), (Some(d), Some(s)) if d < s) {
                 return Err(ValidationError::DueBeforeScheduled);
             }
         }
@@ -324,10 +317,21 @@ mod tests {
 
     #[test]
     fn task_state_transitions() {
-        assert!(TaskState::Todo.can_transition_to(TaskState::InProgress));
-        assert!(TaskState::InProgress.can_transition_to(TaskState::Done));
-        assert!(TaskState::Done.can_transition_to(TaskState::Todo));
-        assert!(TaskState::Cancelled.can_transition_to(TaskState::Todo));
+        assert!(TaskState::Todo.can_transition_to(&TaskState::InProgress));
+        assert!(TaskState::InProgress.can_transition_to(&TaskState::Done));
+        assert!(TaskState::Done.can_transition_to(&TaskState::Todo));
+        assert!(TaskState::Cancelled.can_transition_to(&TaskState::Todo));
+    }
+
+    #[test]
+    fn an_unknown_state_transitions_as_todo_and_can_be_restored() {
+        let unknown = TaskState::from_raw("archived");
+        // Out of it: as `todo` would.
+        assert!(unknown.can_transition_to(&TaskState::InProgress));
+        assert!(unknown.can_transition_to(&TaskState::Done));
+        // Back into it, as an undo restoring it verbatim does.
+        assert!(TaskState::Done.can_transition_to(&unknown));
+        assert!(unknown.can_transition_to(&unknown.clone()));
     }
 
     #[test]
@@ -353,6 +357,29 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(d.validate(), Err(ValidationError::DueBeforeScheduled));
+    }
+
+    /// A time kind this build cannot place is compared with nothing, on
+    /// either side.
+    #[test]
+    fn an_unplaceable_time_kind_never_violates_due_after_scheduled() {
+        let now = Timestamp::from_millisecond(1_700_000_000_000).unwrap();
+        let unknown = crate::SunriseTime::Unknown {
+            kind: "lunar".into(),
+            raw: crate::Unknowns::new(),
+        };
+        for (scheduled_at, due_at) in [
+            (Some(unknown.clone()), Some(now.into())),
+            (Some(now.into()), Some(unknown)),
+        ] {
+            let d = TaskDraft {
+                title: "x".into(),
+                scheduled_at,
+                due_at,
+                ..Default::default()
+            };
+            d.validate().unwrap();
+        }
     }
 
     #[test]

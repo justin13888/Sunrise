@@ -156,6 +156,7 @@ never be user-authored content. Broad shapes:
 | `status`, `method`, `endpoint` | HTTP | `endpoint` is the **matched route's own template**, spelled `:id` by the private `templated` in `crates/sunrise-server/src/api/observe.rs`. The request's concrete URI is never consulted, so there is no query string to drop and no segment to guess at. `sunrise_log::templatize_path` sanitises a *raw* path and nothing on this route calls it — see `docs/06-server/observability.md`. |
 | `wire_v`, `doc_v`, `crypto_v`, `storage_v`, `from_v`, `to_v`, `app_v` | versions | |
 | `bind`, `relay` | socket address / host | The server's own listen address, and the relay hostname §6.2 sanctions as the stand-in for a client IP. |
+| `client_net` | IPv4 `/24` or IPv6 `/48` prefix | A client address truncated to the finest prefix §6.2 permits. Written only by the relay's rate-limit refusal, `srv.ratelimit.rejected`. |
 | `err_code`, `err_kind`, `retryable`, `cause` | error envelope | §5 |
 | `ev`, `message` | envelope | §3 |
 
@@ -211,10 +212,14 @@ and the salt has to come back.
 
 ### 6.2 IP addresses
 
-- Server access logs: **no client address is logged at all** today. The request
-  span records method and templated endpoint and nothing else, which is
-  stricter than the `/24` / `/48` truncation this section allows. Truncated
-  prefixes become relevant when there is a rate limiter to explain.
+- Server access logs: the request span records method and templated endpoint
+  and **no client address**, which is stricter than the `/24` / `/48`
+  truncation this section allows. The one record that carries an address is
+  the rate limiter's refusal, `srv.ratelimit.rejected`, and it carries the
+  truncation as `client_net` and nothing finer — enough to tell two refused
+  clients apart, not enough to name one. The address it truncates is the one
+  the limiter keyed on: the socket peer, or the client a trusted proxy named
+  (`[server] trusted_proxies`).
 - Client logs: never log the device's own IP. Connection diagnostics use the
   relay hostname (`relay`), which `sunrise_cli::livesync::relay_host` reduces
   from the configured URL — dropping any credentials and query string with it.

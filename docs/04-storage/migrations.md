@@ -98,6 +98,8 @@ Migrations run in a single transaction; failure rolls back; the app refuses to l
 ### Failure recovery
 
 - Failure mid-migration leaves the previous schema intact (migrations run in a single transaction; ROLLBACK on error).
+- Before the batch starts, the vault has been copied to `<vault>.pre-v<from>.bak`
+  (§Migration rigor rule 2), and that copy stays until the next successful open.
 - The app refuses to launch with `STORAGE_MIGRATION_FAILED { from_v, to_v, error_code }`. Diagnostic-bundle export is allowed; vault data access is not.
 - Recovery options surfaced in UI:
   1. **Retry** — re-run the migration; useful for transient I/O errors.
@@ -107,9 +109,11 @@ Migrations run in a single transaction; failure rolls back; the app refuses to l
 
 ## Migration rigor
 
-> **Normative, and not yet built** ([#327](https://github.com/justin13888/Sunrise/issues/327)). Every rule in this section is a
-> MUST that the tree does not meet today. The *Today* notes say where it falls
-> short. The rules exist because the one invariant every versioned surface
+> **Normative, and partly built.** Every rule in this section is a MUST.
+> Rules 2 and 3 ship, and so does rule 1 except its rebuild-equivalence check
+> ([#327](https://github.com/justin13888/Sunrise/issues/327)). Rule 4 is not
+> built ([#441](https://github.com/justin13888/Sunrise/issues/441)). The
+> *Today* notes say where the tree falls short. The rules exist because the one invariant every versioned surface
 > serves ([ADR-0042](../11-adr/0042-v0-forever.md)) applies to a device's own
 > vault file as much as to the merge:
 >
@@ -140,10 +144,14 @@ goes wrong, and unable to destroy anything the op log cannot regenerate.
   one. A migration that transforms data differently from how the op log would
   re-derive it is a bug, whichever side is wrong.
 
-*Today:* two fixtures exist, `vault_storage_v13.db` and `vault_storage_v17.db`
-(`V13_FIXTURE` and `V17_FIXTURE` in
-`crates/sunrise-storage/src/vault_fixtures.rs`). They run as
-ordinary unit tests, and no gate ties a new migration to a fixture.
+*Today:* a fixture exists for every `STORAGE_V` from 13 to the one before the
+current version, which is wider than the rule: it does not wait for a version
+to ship in a tagged release. `every_fixture_keeps_every_row_through_every_later_migration`
+in `crates/sunrise-storage/src/vault_fixtures.rs` is the row-content check,
+and `every_migration_has_a_fixture_at_the_version_before_it` is the gate. They
+run in the `Storage migration fixtures` CI job and in the workspace suite. The
+rebuild-equivalence check waits for the rebuild
+([#441](https://github.com/justin13888/Sunrise/issues/441)).
 
 ### 2. A backup is taken before any migration
 
@@ -161,8 +169,14 @@ ordinary unit tests, and no gate ties a new migration to a fixture.
 - §Failure recovery's "Restore from backup" option restores this copy. The user
   does not need an external backup.
 
-*Today:* migrations run in place with no copy
-(`crates/sunrise-storage/src/db.rs#run_migrations`).
+*Today:* built. `Db::open` copies the vault with `VACUUM INTO`, which writes
+the copy under the connection's own SQLCipher key, to `Db::backup_path`. The
+copy is written under a temporary name, fsynced and renamed into place, and
+the directory is fsynced. A copy that cannot be written fails the open with
+`DbError::Backup`. The next open at the current version deletes every
+`<vault>.pre-v<N>.bak` beside the vault. An in-memory vault is not copied.
+Nothing in the apps offers the restore yet
+([#441](https://github.com/justin13888/Sunrise/issues/441)).
 
 ### 3. Integrity is checked on open
 
@@ -174,7 +188,15 @@ ordinary unit tests, and no gate ties a new migration to a fixture.
 - A failed check MUST NOT start a migration. Migrating a damaged file turns a
   recoverable page into an unrecoverable schema.
 
-*Today:* no `quick_check` or `integrity_check` call exists in `crates/`.
+*Today:* built, with one addition. A page whose SQLCipher HMAC no longer
+verifies is one SQLite cannot read at all, and `quick_check` meets it as a
+bare `SQLITE_ERROR`. When that happens on a file, the open runs SQLCipher's
+`PRAGMA cipher_integrity_check`, which reads every page and names each bad
+one. A `quick_check` finding, an `SQLITE_CORRUPT` error, or a page the HMAC
+check names all return `DbError::IntegrityCheckFailed`. A wrong key
+(`SQLITE_NOTADB`) stays a plain `DbError::Sqlite`, because it is not damage. Both errors map to
+`ErrorCode::FatalInternal` on the wire, and no app offers the rebuild or the
+restore yet ([#441](https://github.com/justin13888/Sunrise/issues/441)).
 
 ### 4. The projection can be rebuilt from the local op log
 
@@ -211,9 +233,10 @@ rule-3 failure and on a migration failure. It runs automatically, in the same
 open, after any migration that changes materialization semantics. Adopting
 per-field ops is the first such migration.
 
-*Today:* the rebuild does not exist (§Materialized state rebuild below).
-`rebuild_vault` is CLI-only, and it recovers an account from the relay into an
-empty vault. It is not a local rebuild.
+*Today:* the rebuild does not exist (§Materialized state rebuild below), and
+no table is classified yet. `rebuild_vault` is CLI-only, and it recovers an
+account from the relay into an empty vault. It is not a local rebuild. All of
+this rule is [#441](https://github.com/justin13888/Sunrise/issues/441).
 
 ### 5. Additive and destructive changes
 
@@ -323,8 +346,10 @@ with opposite consequences:
 > the full apply path after an upgrade. A new op family also carries a feature
 > id in `vault_requires`, so an older build goes read-only for that scope
 > rather than writing around data it cannot see. The op log is still never
-> migrated. Parking is what makes that safe. *Today:* not built ([#320](https://github.com/justin13888/Sunrise/issues/320),
-> [#324](https://github.com/justin13888/Sunrise/issues/324)).
+> migrated. Parking is what makes that safe. *Today:* parking is built for an
+> unknown op kind (migration `0031_parked_ops.sql`,
+> [#320](https://github.com/justin13888/Sunrise/issues/320)); the feature id
+> is not ([#324](https://github.com/justin13888/Sunrise/issues/324)).
 
 [ADR-0024](../11-adr/0024-key-hierarchy.md) has landed three of them —
 `key_envelope`, `device_revoke` and `device_cert`, at `DOC_SCHEMA_V = 5` — and
@@ -366,7 +391,11 @@ files the result at epoch 1 with `source = 'legacy'`. Everything else 0017 adds
   replaying up to 0016, writing a pre-hierarchy key row by hand, then applying
   0017, because the drop is the part a fresh-vault test cannot see;
 - migration ids strictly ascend, and `current_storage_v()` equals the
-  `STORAGE_V` constant, so the list and the constant cannot drift apart.
+  `STORAGE_V` constant, so the list and the constant cannot drift apart;
+- an upgrading open leaves an encrypted copy at the old version, the next open
+  deletes it, and a copy that cannot be written stops the migration;
+- a damaged page or a row that breaks its schema fails the open with
+  `IntegrityCheckFailed`.
 
 Every one of those replays SQL into a connection this build just created. None
 of them opens an *old vault*, and for a long time nothing did — which meant the
@@ -390,31 +419,37 @@ Three decisions are worth knowing before adding one.
   not go through the `PRAGMA key` path a real vault does. It guards invented
   rows and has never keyed anything else; `fixtures/README.md` says so where a
   reader who finds the binary first will see it.
-- **The fixtures are regenerable**, by `mise run storage-fixtures`, which runs
+- **A missing fixture is written by `mise run storage-fixtures`**, which runs
   an `#[ignore]`d test so an ordinary `cargo test` reads the committed files
-  rather than rewriting them. Regenerate rarely: a fixture rewritten at today's
-  schema is no longer old, and the chain it exists to exercise then runs over
-  nothing. One test asserts the v13 file is still stamped 13 for exactly that
-  reason.
-- **Not every version needs one** — superseded going forward by
-  §Migration rigor rule 1, which requires a fixture for every shipped
-  `STORAGE_V`. The historical rule was the oldest supported version,
-  plus any later version whose successor migrations move *data* the older
-  fixture cannot contain. That is 13 and 17 today. Of the appended migrations,
-  five move data rather than only schema — 0014's `sort_order` backfill,
-  0017's `stream_keys` drop / `device_revocations` carry / Inbox re-point,
-  0019's `minted_by_device_id` backfill and `id_d_priv_wrapped` blanking,
-  0022's `genesis_identity_id` backfill and 0023's `genesis_id_s_pub` backfill
-  — and the v13 fixture reaches the first two but structurally cannot reach the
-  last three, because `identity` does not exist before 0017 and 0017 creates it
-  empty. 0015, 0016, 0018, 0020 and 0021
-  are pure `ADD COLUMN` / `CREATE TABLE` / `CREATE INDEX` and earn no fixture
-  of their own.
+  rather than writing them. It writes only the fixtures that are missing and
+  never rewrites a committed one: a fixture rewritten at today's schema is no
+  longer old, and the chain it exists to exercise then runs over nothing. To
+  rewrite one deliberately, delete it first. A test asserts every file is
+  still stamped at the version its name says.
+- **Every version has one**, per §Migration rigor rule 1. The v13 and v17
+  files have curated seeds, because five migrations move data rather than only
+  schema — 0014's `sort_order` backfill, 0017's `stream_keys` drop /
+  `device_revocations` carry / Inbox re-point, 0019's `minted_by_device_id`
+  backfill and `id_d_priv_wrapped` blanking, 0022's `genesis_identity_id`
+  backfill and 0023's `genesis_id_s_pub` backfill — and the v13 fixture
+  reaches the first two but structurally cannot reach the last three, because
+  `identity` does not exist before 0017 and 0017 creates it empty. Every other
+  version is filled from one list, `src/vault_fixtures/seed.rs`, that puts a
+  row in every table the version has. A test fails when a migration adds a
+  table the list does not fill.
+- **Every row is checked, not only the curated ones.** The survival test reads
+  every row of every table of a fixture before the open and requires each one
+  afterwards with every value it had. The only differences it allows are the
+  four deliberate ones in `DELIBERATE_CHANGES`: 0017's `stream_keys` drop, its
+  `devices.revoked_at_ms` clear and its `tasks.stream_id` re-point, and 0019's
+  `identity.id_d_priv_wrapped` blanking. A new migration that changes existing
+  data on purpose adds its entry there, beside a test of its own that pins the
+  new values.
 
 What is still **specified and not implemented**:
 
-- CI runs every migration over every prior fixture. There is no such job; the
-  fixtures are ordinary `cargo test` unit tests, which is why they run at all.
+- The rebuild-equivalence half of §Migration rigor rule 1, which needs the
+  rebuild ([#441](https://github.com/justin13888/Sunrise/issues/441)).
 - A "fuzz" job randomly orders migrations against random data states. Nothing
   like it exists, and it is a doubtful fit — the runner applies ids in ascending
   order and a random order is not a state any vault can reach.

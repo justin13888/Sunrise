@@ -509,3 +509,45 @@ fn the_refusal_records_survive_redaction_and_carry_their_cause() {
         "the refused refresh token reached the log: {out}"
     );
 }
+
+/// A rate-limit refusal is logged once per run, through the redaction layer,
+/// with the client's network and nothing finer.
+///
+/// Through the real subscriber stack because `client_net` is a field this
+/// change added: a name off the allowlist vetoes the whole record (and panics
+/// in a debug build), which no unit test with a bare subscriber would see.
+#[test]
+fn a_rate_limit_refusal_is_logged_once_per_run_with_its_network() {
+    let config = ServerConfig {
+        limits: sunrise_server::config::LimitsConfig {
+            meta_per_min: 1,
+            ..sunrise_server::config::LimitsConfig::default()
+        },
+        ..ServerConfig::default()
+    };
+    let out = captured("info", config, |server| async move {
+        assert_eq!(
+            server.send(Method::GET, "/api/v1/meta", None, &[]).await.0,
+            StatusCode::OK
+        );
+        for _ in 0..3 {
+            assert_eq!(
+                server.send(Method::GET, "/api/v1/meta", None, &[]).await.0,
+                StatusCode::TOO_MANY_REQUESTS
+            );
+        }
+    });
+
+    assert_eq!(
+        out.matches("srv.ratelimit.rejected").count(),
+        1,
+        "one line per run of refusals, not per request: {out}"
+    );
+    let rec = record(&out, "srv.ratelimit.rejected");
+    assert_eq!(rec["endpoint"], "/api/v1/meta");
+    assert_eq!(rec["reason"], "meta");
+    // An in-process request arrived on no socket, so there is no network to
+    // name; a socket-borne one carries its /24 or /48
+    // (`api::ratelimit::policy::address_net`).
+    assert_eq!(rec["client_net"], "none");
+}

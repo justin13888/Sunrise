@@ -197,6 +197,23 @@ pub const STREAM_ROOT_1: [u8; 32] =
 pub const STREAM_ROOT_2: [u8; 32] =
     hex("53d7f37110ab645251f591091da6320770cfc0b80700e05aa77128fa39ccd145");
 
+/// `chain_root_init(&STREAM_ID, &DEVICE_ID)`: `root(d, 0)` of ADR-0043 §5.
+pub const CHAIN_ROOT_0: [u8; 32] =
+    hex("2f74c491fd2b47c8edb6faed4567282d361a1903ab1fafdc7ad8cb345458b4e3");
+
+/// The `op_hash` folded into [`CHAIN_ROOT_1`].
+pub const CHAIN_OP_HASH_1: [u8; 32] = [0xa1; 32];
+
+/// `chain_root_step(&CHAIN_ROOT_0, &CHAIN_OP_HASH_1)`.
+pub const CHAIN_ROOT_1: [u8; 32] =
+    hex("286b441062aece8199c33e871ab826ea2ec30901741652f5247b96c5eb82c563");
+
+/// `stream_digest(&STREAM_ID, &[(DEVICE_ID, 1, CHAIN_ROOT_1), ([0x01; 16],
+/// 0, chain_root_init(&STREAM_ID, &[0x01; 16]))])`: two devices, given out of
+/// device-id order, one of them with an empty prefix.
+pub const STREAM_DIGEST_2: [u8; 32] =
+    hex("d601145b8cc63fff7280cef816cf20da70b2e94cdce0aedf88ef922cb7016631");
+
 /// Ed25519 signing-key seed used by the envelope vectors. Ed25519 signing is
 /// deterministic, so a fixed seed pins the signature bytes exactly.
 pub const DEVICE_SIGNING_SECRET: [u8; 32] = [0x11; 32];
@@ -213,8 +230,9 @@ pub const ENVELOPE_INNER: &[u8] = b"inner-op-canonical-cbor";
 
 /// `aead_alg = 0` control envelope: plaintext payload, signature only.
 ///
-/// Frozen at `ENVELOPE_FORMAT_V = 3` / `DOC_SCHEMA_V = 6`: field 1 is `3`,
-/// field 5 is the HLC array `[physical_ms, logical]`, field 12 is `6`, and the
+/// Frozen at `ENVELOPE_FORMAT_V = 3` / `DOC_SCHEMA_V = 8`: field 1 is `3`,
+/// field 5 is the HLC array `[physical_ms, logical]`, field 12 is `8`, field
+/// 13 is the first 8 bytes of v8's registered schema fingerprint, and the
 /// magic prefix reads `5352 02 0003`.
 ///
 /// Field 12 carries the **document** schema, so the two envelope vectors are
@@ -233,6 +251,24 @@ pub const ENVELOPE_INNER: &[u8] = b"inner-op-canonical-cbor";
 /// would mean the container format had changed too, and that is a different
 /// constant.
 ///
+/// The 6 → 7 re-freeze (ADR-0045 §3, issue #323) is the first that also adds
+/// a field: v7 is the first fingerprinted document schema, so the writer
+/// stamps field 13. It moved the same 65 bytes for the same reason, plus the
+/// map header at `[5]` (`ac` → `ad`, twelve entries to thirteen), and
+/// appended ten bytes at `[185..194]`: `0d 48` and the 8-byte fingerprint
+/// prefix. Field 13 is inside the signature input, which is why the signature
+/// moved by more than the field-12 byte alone would explain; it is not a
+/// container change, because every build already preserves an unknown
+/// field 13.
+///
+/// The 7 → 8 re-freeze (ADR-0044, the `Patch` op family) moved the 64-byte
+/// signature, the field-12 byte and the 8-byte fingerprint prefix in field
+/// 13, and nothing else: no field was added this time.
+///
+/// The 8 → 9 re-freeze (ADR-0043, the `StreamDigest` op family) moved the
+/// same three regions and nothing else. `encode_envelope` writes no chain
+/// fields, so fields 14 and 15 are absent here, as on any legacy link.
+///
 /// `encode_envelope(ENVELOPE_INNER, STREAM_ID, DEVICE_ID, seq = 7,
 /// hlc = [1_700_000_000_000, 0], AeadAlgId::None, epoch = 0, nonce = [0; 24],
 /// stream_key = None, DEVICE_SIGNING_SECRET)`.
@@ -246,14 +282,14 @@ pub mod signed_only_envelope {
     /// `nonce` field (unused when `aead_alg = 0`).
     pub const NONCE: [u8; 24] = [0x00; 24];
     /// Expected wire bytes: magic prefix + canonical CBOR + Ed25519 sig.
-    pub const ENCODED: [u8; 185] = super::hex(concat!(
-        "5352020003ac010302502222222222222222222222222222222203503333",
+    pub const ENCODED: [u8; 195] = super::hex(concat!(
+        "5352020003ad010302502222222222222222222222222222222203503333",
         "3333333333333333333333333333040705821b0000018bcfe56800000600",
         "070108000958180000000000000000000000000000000000000000000000",
-        "000a57696e6e65722d6f702d63616e6f6e6963616c2d63626f720b5840d1",
-        "b49cf3eea75ea7b1133dc26d5a44dc1f836d19e5ee6b51f99d62874384fc",
-        "dc2be5953c82a51f5fd8abcd13055944dbbc38700769c36139ff61e8ff00",
-        "e310000c06",
+        "000a57696e6e65722d6f702d63616e6f6e6963616c2d63626f720b58402a",
+        "2a1c2397ae9f2159f76c322e88eb40f2c32ce409ba021103e34d755cd572",
+        "16b8412c8ecff071aedbd975e18546a46d6514653bd6ec6e10810c05746e",
+        "f9b50e0c090d48875fc9a8b8d426ff",
     ));
 }
 
@@ -274,6 +310,17 @@ pub mod signed_only_envelope {
 /// happen to equal the old ones. The ciphertext at `[94..117]` is again
 /// untouched.
 ///
+/// The 6 → 7 re-freeze (ADR-0045 §3) moved the same three regions plus the
+/// map header at `[5]`, and appended field 13 at `[202..211]`, exactly as the
+/// signed-only vector did. The ciphertext at `[94..117]` is again untouched.
+///
+/// The 7 → 8 re-freeze (ADR-0044) moved the AEAD tag, the signature, the
+/// field-12 byte and the fingerprint prefix in field 13. The ciphertext at
+/// `[94..117]` is again untouched.
+///
+/// The 8 → 9 re-freeze (ADR-0043) moved the same four regions. The
+/// ciphertext at `[94..117]` is again untouched.
+///
 /// `encode_envelope(ENVELOPE_INNER, STREAM_ID, DEVICE_ID, seq = 9,
 /// hlc = [1_700_000_000_001, 0], AeadAlgId::XChaCha20Poly1305, epoch = 3,
 /// nonce = [0x55; 24], stream_key = STREAM_KEY, DEVICE_SIGNING_SECRET)`.
@@ -289,14 +336,15 @@ pub mod sealed_envelope {
     /// Stream key the payload is sealed under.
     pub const STREAM_KEY: [u8; 32] = [0x44; 32];
     /// Expected wire bytes: magic prefix + canonical CBOR + Ed25519 sig.
-    pub const ENCODED: [u8; 202] = super::hex(concat!(
-        "5352020003ac010302502222222222222222222222222222222203503333",
+    pub const ENCODED: [u8; 212] = super::hex(concat!(
+        "5352020003ad010302502222222222222222222222222222222203503333",
         "3333333333333333333333333333040905821b0000018bcfe56801000601",
         "070108030958185555555555555555555555555555555555555555555555",
-        "550a58276416c4bb3e46b71d10c45af51e2462649e7331f6d5bbb89a912d",
-        "90db54412f9803227f842e37760b5840f66f92775acb0c7eb0b520c6b9ee",
-        "96aceac827cfba6c82ec2ef1f214c6c12cf3e339dedac6067e62481ddc0a",
-        "9c7f3d644981da4e3275b8373fbca880db8e1f0f0c06",
+        "550a58276416c4bb3e46b71d10c45af51e2462649e7331f6d5bbb87523f2",
+        "8d0bf26d07253a53293761a35d0b5840c4bee20d682609b6f1188c72b8b8",
+        "6ce877eb340443c8c1da874213db0d2a30ea65c4599054beadf3a514d559",
+        "9bd744b5a6aaf5069b348129eaef039b7f43b80c0c090d48875fc9a8b8d4",
+        "26ff",
     ));
 }
 

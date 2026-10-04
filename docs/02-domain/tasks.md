@@ -220,7 +220,7 @@ and the current state of the referenced blockers.
 - **Deferred** by moving `planned_at` later; `deferred_count` gains 1, and the
   UI shows the running count to nudge the user toward "drop it or do it".
 - **Archived** to leave default views without deleting.
-- **Deleted** sets `deleted = true`; the tombstone remains until compaction.
+- **Deleted** sets `deleted = true`; the tombstone remains. Compaction folds the ops that wrote it but keeps the `deleted` register ([`../04-storage/compaction.md`](../04-storage/compaction.md)).
 - **Restored** sets `deleted = false`. Edits made while the task was deleted
   are kept, and a restore shows them.
 

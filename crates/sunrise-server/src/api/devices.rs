@@ -175,7 +175,6 @@ pub async fn list(
     let devices = state
         .store
         .list_devices(&caller.principal.account.account_id)?;
-    state.metrics.incr("sunrise_devices_list_total");
     Ok(Json(devices.into_iter().map(DeviceMeta::from).collect()))
 }
 
@@ -385,14 +384,13 @@ pub async fn push_tokens(
             )
         })?;
 
-    let platform = match body.platform {
-        crate::push::PushPlatform::Apns => "apns",
-        crate::push::PushPlatform::Fcm => "fcm",
-        crate::push::PushPlatform::WebPush => "webpush",
-    };
-    state
-        .store
-        .upsert_push_token(&body.device_id, platform, &body.token, state.clock.now_ms())?;
+    // The same spelling the dispatcher looks tokens up by.
+    state.store.upsert_push_token(
+        &body.device_id,
+        body.platform.store_tag(),
+        &body.token,
+        state.clock.now_ms(),
+    )?;
     state.metrics.incr("sunrise_push_register_total");
     Ok(NoContent)
 }
@@ -584,11 +582,21 @@ mod tests {
             .await
             .assert_status(StatusCode::NO_CONTENT);
 
-        let rendered = client.metrics.render();
-        assert!(
-            rendered.contains("sunrise_devices_list_total"),
-            "listing devices must be counted; got:\n{rendered}"
+        // `sunrise_devices_list_total` folded into the HTTP family, which
+        // counts the same requests by route.
+        assert_eq!(
+            client.metrics.get_with(
+                "sunrise_http_requests_total",
+                &[
+                    ("endpoint", "/api/v1/devices"),
+                    ("method", "GET"),
+                    ("status", "200"),
+                ],
+            ),
+            1,
+            "listing devices must be counted"
         );
+        let rendered = client.metrics.render();
         assert!(
             rendered.contains("sunrise_push_register_total"),
             "filing a push token must be counted; got:\n{rendered}"
@@ -1009,7 +1017,9 @@ mod tests {
 
     /// The gap, pinned rather than left to be discovered.
     ///
-    /// `require_device_sig` defaults to false. With no `X-Sunrise-Device-Sig`,
+    /// This relay has no issuer, so `require_device_sig` resolves off — the
+    /// state a self-host relay, or an operator's explicit
+    /// `require_device_sig = false`, leaves it in. With no `X-Sunrise-Device-Sig`,
     /// `verify_bytes` returns `Ok(None)`: no device is resolved, so no
     /// revocation check runs at all. A revoked device that simply stops signing
     /// keeps working, and nothing in the relay notices.

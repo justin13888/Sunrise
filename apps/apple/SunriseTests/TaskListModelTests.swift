@@ -137,6 +137,18 @@ struct TaskListModelTests {
     /// A write made anywhere reaches the list through the change stream —
     /// which is what makes a completion from another device look the same as
     /// one made here.
+    ///
+    /// The write is made only once the list is provably following. The feed
+    /// has no replay, so a write issued while `follow()` was still on its way
+    /// to subscribing was announced to nobody; the prime then repainted it,
+    /// and the test passed without the change stream carrying anything. So
+    /// the list is seeded before it follows, and the seed row appearing is
+    /// the proof: `refresh()` above saw nothing, and `follow()` re-reads only
+    /// on a batch from its own subscription — the prime, since the seed's
+    /// notification went out before anyone subscribed — so the row cannot
+    /// appear until that subscription exists and its re-read is done. After
+    /// that, the second write can reach the list by one route only: its
+    /// notification.
     @Test
     func aWriteFromElsewhereRepaintsTheList() async throws {
         let vault = try await TestVault()
@@ -144,15 +156,20 @@ struct TaskListModelTests {
         await model.refresh()
         #expect(model.tasks.isEmpty)
 
+        _ = try await vault.bridge.submit(.createTask(draft: draft("Already there")))
+
         let following = Task { await model.follow() }
         defer { following.cancel() }
+
+        // Subscribed, and the prime's re-read finished, before the write.
+        try await until { model.tasks.count == 1 }
 
         // Straight to the bridge, bypassing the model, the way a sync arrival
         // reaches the vault.
         _ = try await vault.bridge.submit(.createTask(draft: draft("Arrived by sync")))
 
-        try await until { model.tasks.count == 1 }
-        #expect(model.tasks.first?.title == "Arrived by sync")
+        try await until { model.tasks.count == 2 }
+        #expect(model.tasks.contains { $0.title == "Arrived by sync" })
         await vault.bridge.shutdown()
     }
 

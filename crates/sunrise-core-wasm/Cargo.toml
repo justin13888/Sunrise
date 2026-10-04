@@ -1,0 +1,51 @@
+[package]
+name = "sunrise-core-wasm"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+description = "wasm-bindgen seam over sunrise-core for the web client (ADR-0055): JSON in, JSON out, SQLite in OPFS."
+
+[lib]
+# `cdylib` is what `wasm-bindgen` reads the exports out of; `rlib` is what this
+# crate's own native tests link.
+crate-type = ["cdylib", "rlib"]
+
+[lints]
+workspace = true
+
+[dependencies]
+serde_json = { workspace = true, features = ["std"] }
+thiserror = { workspace = true }
+sunrise-core = { workspace = true }
+sunrise-crypto = { workspace = true }
+
+# Everything below exists only in the browser build. On a native target this
+# crate is the JSON dispatch layer and nothing else, which is what lets its
+# tests run under `cargo test --workspace` against real SQLCipher.
+[target.'cfg(all(target_family = "wasm", target_os = "unknown"))'.dependencies]
+# SQLite for `wasm32-unknown-unknown`. `ffi-sqlite-wasm-rs` swaps
+# `libsqlite3-sys` (and with it SQLCipher, whose `bundled-sqlcipher` feature is
+# a no-op on this target) for `sqlite-wasm-rs`: plaintext SQLite, which is the
+# web gap ADR-0055 accepts.
+rusqlite = { workspace = true, features = ["ffi-sqlite-wasm-rs"] }
+# 0.5 is the line `rusqlite` 0.40 binds; `WasmOsCallback` is the clock, sleep
+# and randomness the SAHPool VFS asks its host for.
+sqlite-wasm-rs = { version = "0.5.3", default-features = false }
+# The OPFS `SyncAccessHandle` pool VFS. 0.2 is the line built against
+# `sqlite-wasm-rs` 0.5; 0.3 moved to 0.6, which `rusqlite` 0.40 does not bind.
+sqlite-wasm-vfs = { version = "0.2.0" }
+wasm-bindgen = { version = "0.2.104" }
+wasm-bindgen-futures = { version = "0.4.54" }
+js-sys = { version = "0.3.81" }
+# `rand`'s `OsRng` (the core's `SystemRng`) reaches the host CSPRNG through
+# `getrandom`, which refuses this target unless told to use
+# `crypto.getRandomValues`.
+getrandom = { workspace = true, features = ["js"] }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { workspace = true, features = ["macros", "rt"] }

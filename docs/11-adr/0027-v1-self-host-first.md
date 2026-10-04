@@ -91,7 +91,7 @@ Xiaomi 13T, OnePlus 11 — under the heading "Device used in CI / QA". There is
 no Android source, no Gradle or SDK configuration, no Android CI job and no
 device anywhere in the repository. The complete set of Android traces in the
 tree is: the string `"android"` in the device-platform allowlist
-(`crates/sunrise-server/src/api/devices.rs:19`, `store/devices.rs:90`,
+(`crates/sunrise-server/src/api/devices.rs:19`, `store/devices.rs:79`,
 `crates/sunrise-relay-client/src/bootstrap.rs:53`), two comments saying Kotlin
 bindings would be generated "when Android arrives"
 (`crates/sunrise-core-bindings/src/lib.rs:5`, `Cargo.toml:10`), and
@@ -139,7 +139,7 @@ enforces are fixed operator constants, not per-account accounting:
 
 | Limit | Value | Source |
 |---|---|---|
-| Request body | 2 MiB (`[server] max_body_bytes`) | `crates/sunrise-server/src/config/model.rs:104-105,110-112` |
+| Request body | 2 MiB (`[server] max_body_bytes`) | `crates/sunrise-server/src/config/model.rs:109-110,115-117` |
 | Blob chunk | 1 MiB ciphertext | `crates/sunrise-server/src/api/blobs.rs:53` |
 | Blob chunk count | 4096 | `api/blobs.rs:57` |
 | Blob size | 100 MB | `api/blobs.rs:61` |
@@ -178,7 +178,7 @@ therefore the root, which makes a divergent root deniable.
 
 `Ack.server_first_seen_ms` stays on the wire
 (`crates/sunrise-wire-protocol/src/payloads.rs:93`, stamped at
-`api/sync/publish.rs:111,223`) as an advisory clock-skew hint. It MUST NOT influence merge
+`api/sync/publish.rs:111,226`) as an advisory clock-skew hint. It MUST NOT influence merge
 order, fold order or acceptance.
 
 **7. The relay evaluates no role, no grant, no revocation and no expiry.** Every
@@ -308,7 +308,7 @@ is that dedup by key sharing does not exist at any scope.
 **`Attachment.blob_id` is symmetric, not server-assigned.** Both sides derive it
 as the first 16 bytes of BLAKE3 over the concatenated ciphertext chunks; the
 relay re-derives from disk rather than trusting the claim
-(`crates/sunrise-server/src/api/blobs.rs:239-264,433-442`). This reconciles
+(`crates/sunrise-server/src/api/blobs.rs:239-265,448-457`). This reconciles
 `crates/sunrise-domain/src/attachment.rs:42-44` ("assigned by the creating
 device") with the relay's content addressing, which had been read as two
 competing identities and specified as two.

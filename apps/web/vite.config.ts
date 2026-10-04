@@ -71,6 +71,13 @@ function themeColorMeta(): Plugin {
 }
 
 export default defineConfig({
+    /**
+     * Only `SUNRISE_WEB_*` reaches the bundle (#11). Vite's `VITE_` default
+     * would do, but a prefix naming the app keeps a variable meant for the Rust
+     * build, or for a deploy step's credentials, from being published to every
+     * browser by a name that happens to match. `src/vite-env.d.ts` lists them.
+     */
+    envPrefix: "SUNRISE_WEB_",
     plugins: [
         react(),
         themeColorMeta(),
@@ -80,6 +87,11 @@ export default defineConfig({
             workbox: {
                 navigateFallback: "/index.html",
                 globPatterns: ["**/*.{js,css,html,svg,wasm}"],
+                // The web core (`public/wasm/`, ADR-0055) is ~4.6 MB, over
+                // Workbox's 2 MiB default, and a PWA that cannot launch its
+                // core offline is not offline-capable. Workbox fails the build
+                // on an asset over the limit rather than skipping it.
+                maximumFileSizeToCacheInBytes: 8 * 1024 * 1024,
             },
             manifest: {
                 name: messages.common.productName(),

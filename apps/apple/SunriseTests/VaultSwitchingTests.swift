@@ -156,6 +156,43 @@ struct VaultSwitchingTests {
         await clean(fixture)
     }
 
+    /// A switch lets go of the old vault, so it ends that vault's renewal tick
+    /// (#307). Left running, the tick would keep handing renewed bearers to a
+    /// bridge the switch has already shut down. Checked against the old bridge
+    /// itself, because the new vault has a bridge of its own or none.
+    @Test
+    func switchingEndsTheOldVaultsRenewalTick() async throws {
+        let fixture = try fixture()
+        let session = fixture.session
+        await session.start()
+        await session.createVault()
+        let old = try #require(session.bridge)
+        let (asleep, sleeping) = AsyncStream.makeStream(of: Void.self)
+        let (ended, ending) = AsyncStream.makeStream(of: Void.self)
+
+        session.renewSessionWhileOpen(every: .seconds(3_600)) { interval in
+            sleeping.yield()
+            do {
+                try await _Concurrency.Task.sleep(for: interval)
+            } catch {
+                ending.yield()
+                throw error
+            }
+        }
+        for await _ in asleep { break }
+        #expect(session.renewal.isRunning(against: old))
+
+        await session.switchTo(fixture.second)
+
+        #expect(!session.renewal.isRunning(against: old), "the switch stopped the old vault's tick")
+        // Waited on only once stopped, so a regression fails here rather than
+        // hanging for the hour the tick would sleep.
+        if !session.renewal.isRunning(against: old) {
+            for await _ in ended { break }
+        }
+        await clean(fixture)
+    }
+
     @Test
     func addingAVaultRegistersItAndOpensItAsAFirstRun() async throws {
         let fixture = try fixture()

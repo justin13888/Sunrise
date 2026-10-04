@@ -35,13 +35,13 @@ struct MenuBarView: View {
             Divider()
 
             Button("Quick capture", action: openCapture)
-                .keyboardShortcut("n", modifiers: [.command, .shift])
+                .keyboardShortcut(for: .quickCaptureGlobal)
             if !hotkey.isActive {
                 Text(hotkey.explanation).font(.caption2).foregroundStyle(.secondary)
             }
             Button("Open Sunrise", action: openMain)
             Button("Quit Sunrise") { NSApplication.shared.terminate(nil) }
-                .keyboardShortcut("q")
+                .keyboardShortcut(Keymap.quit)
         }
         .padding(12)
         .frame(width: 260)

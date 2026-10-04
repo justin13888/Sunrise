@@ -27,6 +27,35 @@ impl Clock for SystemClock {
     }
 }
 
+/// The build's commit, when the build was given one.
+///
+/// Read from `SUNRISE_BUILD_COMMIT` at compile time. A build that does not set
+/// it reports `unknown`, which is honest and still one series.
+const BUILD_COMMIT: &str = match option_env!("SUNRISE_BUILD_COMMIT") {
+    Some(commit) => commit,
+    None => "unknown",
+};
+
+/// The process constants `docs/06-server/metrics.md` §Process and build lists:
+/// `sunrise_build_info` and `sunrise_start_time_seconds`.
+///
+/// Set once, here, because they are facts about the process rather than
+/// anything that moves; every other gauge is sampled at scrape time.
+fn process_metrics(metrics: &Metrics, now_ms: u64) {
+    metrics.set_gauge(
+        "sunrise_build_info",
+        &[
+            ("version", env!("CARGO_PKG_VERSION")),
+            ("commit", BUILD_COMMIT),
+        ],
+        1.0,
+    );
+    // Exact to the millisecond until 2^53 ms, some 285,000 years out.
+    #[allow(clippy::cast_precision_loss)]
+    let started = now_ms as f64 / 1000.0;
+    metrics.set_gauge("sunrise_start_time_seconds", &[], started);
+}
+
 /// The context `kynos` hands to every handler and observer on the built
 /// `Service<ServerState>`.
 #[derive(Debug, Clone)]
@@ -49,6 +78,28 @@ pub struct ServerState {
     pub durable_caps: crate::relay_log::DurableCaps,
     /// Live sync sessions. Empty until `POST /sync/session` files one.
     pub sessions: crate::sync_session::SessionStore,
+    /// Set once shutdown begins; readiness and the SSE streams watch it.
+    pub drain: crate::drain::Drain,
+    /// Rate-limit state: the per-address buckets the router's admission
+    /// interceptor charges, and the per-device budgets the handlers charge.
+    pub limiter: crate::api::ratelimit::Limiter,
+    /// Wake-up pushes: who is online, and the provider for who is not.
+    /// Disabled unless `[push]` configures a provider.
+    pub push: crate::push::Dispatcher,
+    /// The pairing rendezvous: live sessions keyed by `pair_id`, and the
+    /// pair-attempt ledgers. In memory only; a session lives five minutes.
+    pub pairing: crate::api::pairing::Rendezvous,
+}
+
+/// Why [`ServerState::try_new`] could not build a state.
+#[derive(Debug, thiserror::Error)]
+pub enum StartError {
+    /// The account store did not open.
+    #[error(transparent)]
+    Store(#[from] StoreError),
+    /// The configured push provider could not be built.
+    #[error(transparent)]
+    Push(#[from] crate::push::PushSetupError),
 }
 
 impl ServerState {
@@ -56,7 +107,8 @@ impl ServerState {
     ///
     /// # Panics
     ///
-    /// If the store at [`ServerConfig::sqlite_path`] cannot be opened. Use
+    /// If the store at [`ServerConfig::sqlite_path`] cannot be opened, or the
+    /// `[push]` provider cannot be built. Use
     /// [`ServerState::try_new`] where that is a condition to report rather than
     /// a reason to abort; the binary entrypoint does. An in-memory store — the
     /// `sqlite_path: None` case every test takes — has nothing to fail on.
@@ -65,32 +117,76 @@ impl ServerState {
         Self::try_new(config).expect("open account store")
     }
 
-    /// Wrap a [`ServerConfig`], reporting store-open failure.
-    pub fn try_new(config: ServerConfig) -> Result<Self, StoreError> {
-        let store = Store::open(config.sqlite_path.as_deref())?;
-        Ok(Self::assemble(
-            config,
-            Arc::new(SystemClock),
-            Arc::new(store),
-        ))
+    /// Wrap a [`ServerConfig`], reporting a store that will not open or a
+    /// push provider that cannot be built — an APNs key file group or others
+    /// can read, say.
+    pub fn try_new(config: ServerConfig) -> Result<Self, StartError> {
+        let key = config.sqlite_key()?;
+        let store = Store::open_keyed(
+            config.sqlite_path.as_deref(),
+            config.sqlite_busy_timeout(),
+            key.as_ref(),
+        )?;
+        let clock: Arc<dyn Clock> = Arc::new(SystemClock);
+        let push = crate::push::from_config(&config.push, Arc::clone(&clock))?;
+        Ok(Self::assemble(config, clock, Arc::new(store), push))
     }
 
-    fn assemble(config: ServerConfig, clock: Arc<dyn Clock>, store: Arc<Store>) -> Self {
+    fn assemble(
+        config: ServerConfig,
+        clock: Arc<dyn Clock>,
+        store: Arc<Store>,
+        push: crate::push::Dispatcher,
+    ) -> Self {
+        // An issuer beside an explicit `require_device_sig = false` is the one
+        // setting that leaves a multi-tenant relay accepting a bearer alone.
+        // Announced here because every constructor -- the binary's `try_new`
+        // and an embedding's alike -- passes through this function.
+        if config.device_sig_explicitly_optional() {
+            tracing::warn!(
+                ev = "srv.start.device_sig_optional",
+                "require_device_sig = false with an OIDC issuer: a request with no device \
+                 binding is accepted on its bearer alone, and a revoked device that stops \
+                 signing keeps writing"
+            );
+        }
         let blob_root = config
             .blob_root
             .clone()
             .unwrap_or_else(|| std::env::temp_dir().join("sunrise-self-host-blobs"));
+        let metrics = Metrics::new();
+        process_metrics(&metrics, clock.now_ms());
         Self {
             config: Arc::new(config),
             relay: RelayHub::new(),
             clock,
             token_verifier: Arc::new(NullVerifier),
             store,
-            metrics: Metrics::new(),
+            metrics,
             blob_root: Arc::new(blob_root),
             durable_caps: crate::relay_log::DurableCaps::default(),
             sessions: crate::sync_session::SessionStore::new(),
+            drain: crate::drain::Drain::new(),
+            limiter: crate::api::ratelimit::Limiter::default(),
+            push,
+            pairing: crate::api::pairing::Rendezvous::new(),
         }
+    }
+
+    /// Deliver wake-ups through `provider`, with the documented bounds.
+    ///
+    /// For an embedding that brings its own provider, and for tests.
+    #[must_use]
+    pub fn with_push_provider(mut self, provider: Arc<dyn crate::push::PushProvider>) -> Self {
+        self.push = crate::push::Dispatcher::new(provider);
+        self
+    }
+
+    /// Replace the push dispatcher whole — tuned bounds, in tests.
+    #[must_use]
+    pub fn with_push(mut self, push: crate::push::Dispatcher) -> Self {
+        self.push = push;
+        self
     }
 
     /// Replace the durable log's retention bounds.
@@ -140,7 +236,116 @@ impl ServerState {
     /// As [`ServerState::new`].
     #[must_use]
     pub fn with_clock(config: ServerConfig, clock: Arc<dyn Clock>) -> Self {
-        let store = Store::open(config.sqlite_path.as_deref()).expect("open account store");
-        Self::assemble(config, clock, Arc::new(store))
+        let key = config.sqlite_key().expect("read the database key");
+        let store = Store::open_keyed(
+            config.sqlite_path.as_deref(),
+            config.sqlite_busy_timeout(),
+            key.as_ref(),
+        )
+        .expect("open account store");
+        let push = crate::push::from_config(&config.push, Arc::clone(&clock))
+            .expect("build push provider");
+        Self::assemble(config, clock, Arc::new(store), push)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The configured busy timeout is the one the connection runs with, on
+    /// both constructors. Dropping it from either would fall back to the
+    /// store's default and ignore the operator's setting in silence.
+    #[test]
+    fn the_configured_busy_timeout_reaches_the_connection() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = || ServerConfig {
+            sqlite_path: Some(dir.path().join("sunrise.db")),
+            sqlite_busy_timeout_ms: 777,
+            ..ServerConfig::default()
+        };
+        let busy = |state: &ServerState| -> i64 {
+            state
+                .store
+                .conn
+                .lock()
+                .query_row("PRAGMA busy_timeout", [], |r| r.get(0))
+                .unwrap()
+        };
+
+        assert_eq!(busy(&ServerState::try_new(config()).unwrap()), 777);
+        assert_eq!(
+            busy(&ServerState::with_clock(config(), Arc::new(SystemClock))),
+            777
+        );
+    }
+
+    /// Turning the binding off beside an issuer is announced at startup, on
+    /// every constructor, and nothing else is: silence and an explicit `true`
+    /// are the default's own state, and `false` without an issuer restates the
+    /// self-host one.
+    #[test]
+    fn an_explicitly_optional_binding_beside_an_issuer_is_announced() {
+        let config = |issuer: bool, flag: Option<bool>| ServerConfig {
+            oidc_issuer: issuer.then(|| "https://idp.example".to_owned()),
+            oidc_client_id: issuer.then(|| "sunrise".to_owned()),
+            require_device_sig: flag,
+            ..ServerConfig::default()
+        };
+        let warned = |make: &dyn Fn() -> ServerState| {
+            sunrise_log::test_util::events_emitted_by(|| drop(make()))
+                .iter()
+                .any(|ev| ev == "srv.start.device_sig_optional")
+        };
+
+        assert!(warned(
+            &|| ServerState::try_new(config(true, Some(false))).unwrap()
+        ));
+        assert!(warned(&|| ServerState::with_clock(
+            config(true, Some(false)),
+            Arc::new(SystemClock)
+        )));
+        for (issuer, flag) in [
+            (true, None),
+            (true, Some(true)),
+            (false, Some(false)),
+            (false, None),
+        ] {
+            assert!(
+                !warned(&|| ServerState::try_new(config(issuer, flag)).unwrap()),
+                "issuer={issuer} flag={flag:?} weakens nothing"
+            );
+        }
+    }
+
+    /// A busy timeout SQLite cannot hold is refused by `try_new`, the path
+    /// `main` maps to exit 78, rather than panicking inside rusqlite; the
+    /// longest one SQLite can hold still opens.
+    #[test]
+    fn a_busy_timeout_sqlite_cannot_hold_is_refused_not_a_panic() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = |ms: u64| ServerConfig {
+            sqlite_path: Some(dir.path().join("sunrise.db")),
+            sqlite_busy_timeout_ms: ms,
+            ..ServerConfig::default()
+        };
+        let max = u64::from(i32::MAX.unsigned_abs());
+
+        let refused = ServerState::try_new(config(max + 1));
+        assert!(
+            matches!(
+                refused,
+                Err(StartError::Store(StoreError::BusyTimeoutTooLong { ms, max: i32::MAX }))
+                    if ms == u128::from(max + 1)
+            ),
+            "{:?}",
+            refused.err()
+        );
+        assert!(
+            !dir.path().join("sunrise.db").exists(),
+            "a refused timeout creates no database"
+        );
+        assert!(ServerState::try_new(config(u64::MAX)).is_err());
+        assert!(ServerState::try_new(config(max)).is_ok());
     }
 }

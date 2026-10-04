@@ -217,7 +217,7 @@ async fn attachment_bytes_travel_over_a_relay_that_requires_a_device_binding() {
     let mut captured: Option<Arc<Store>> = None;
     let (addr, relay) = spawn_relay_with(
         ServerConfig {
-            require_device_sig: true,
+            require_device_sig: Some(true),
             ..ServerConfig::default()
         },
         |state| {
@@ -239,21 +239,15 @@ async fn attachment_bytes_travel_over_a_relay_that_requires_a_device_binding() {
 
     let a = open_core_offline(dir_a.path(), ROOT, addr, Arc::clone(&clock)).await;
     let a_device = register(&store, &account.account_id, &a, "a", clock.now_ms());
-    a.start_sync(signed_ws_factory(
-        addr,
-        Some(BEARER.to_owned()),
-        a.device_signer(a_device),
-    ))
-    .expect("start sync");
+    a.sync_credential().set(Some(BEARER.to_owned()));
+    a.start_sync(signed_ws_factory(addr, a.device_signer(a_device)))
+        .expect("start sync");
 
     let b = open_paired_core_offline(dir_b.path(), &a, addr, Arc::clone(&clock)).await;
     let b_device = register(&store, &account.account_id, &b, "b", clock.now_ms());
-    b.start_sync(signed_ws_factory(
-        addr,
-        Some(BEARER.to_owned()),
-        b.device_signer(b_device),
-    ))
-    .expect("start sync");
+    b.sync_credential().set(Some(BEARER.to_owned()));
+    b.start_sync(signed_ws_factory(addr, b.device_signer(b_device)))
+        .expect("start sync");
 
     wait_live(&a, TIMEOUT).await;
     wait_live(&b, TIMEOUT).await;

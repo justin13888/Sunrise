@@ -25,7 +25,7 @@ on:
 # which a `contents: read` token already satisfies.
 #
 # `release.yml` states its scope as `permissions: {}` and re-grants per job,
-# which is right for that file because its seven jobs are not alike — one of
+# which is right for that file because its eight jobs are not alike — one of
 # them holds `packages: write`, `id-token: write` and `attestations: write`, and
 # a default-deny makes every grant a thing somebody had to write down. The jobs
 # here are alike: not one of them needs a scope another does not. So one line
@@ -54,144 +54,6 @@ env:
   RUSTFLAGS: "-D warnings"
 
 jobs:
-  # Which of the jobs below this push can possibly affect. Only the three
-  # Apple jobs consult it, because they are the only ones whose cost is worth
-  # a filter: they run on a runner class that bills at 10x and is capped at
-  # five concurrent jobs account-wide, and 13 of the 60 pull requests merged in
-  # the fortnight before this job was added touched neither Rust nor Apple
-  # sources and paid ~33 macOS-minutes each anyway.
-  #
-  # A job-level `if:` on the consumers, never a workflow-level `paths:` filter.
-  # The two are not interchangeable here: a job skipped by a conditional
-  # reports a check run GitHub counts as successful, whereas a workflow filtered
-  # out by `paths:` reports nothing at all — and `macOS app (…)` and
-  # `iOS app (…)` are required contexts in the `Protect master` ruleset, so
-  # that second shape would leave every docs-only pull request permanently
-  # unmergeable.
-  #
-  # `git diff` rather than `dorny/paths-filter` or `tj-actions/changed-files`.
-  # Fifteen lines of shell do not justify a third-party action running in the
-  # runner context at all. This used to carry a second reason — that the
-  # repository pinned by floating major tag, which is the configuration that
-  # let CVE-2025-30066 reach the repositories it reached, every tag of
-  # `tj-actions/changed-files` having been retargeted to dump runner memory
-  # into build logs. That reason is spent: every `uses:` here is a commit sha
-  # now, and a sha cannot be retargeted. What survives is the first reason and
-  # the blast radius behind it, which pinning reduces but does not remove — a
-  # pinned action is still third-party code with the runner's token and
-  # filesystem, and `dependabot` will move these pins forward on a schedule
-  # nobody reads line by line.
-  #
-  # `gh api .../compare` was the other candidate and is wrong for a different
-  # reason: its `files` array truncates at 300 entries with no error, so a
-  # large pull request would silently report that it changed nothing relevant.
-  changes:
-    name: Changed paths
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    outputs:
-      apple: ${{ steps.filter.outputs.apple }}
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
-        with:
-          # The diff below needs the merge base. The repository is ~43 MiB
-          # packed, so full history costs seconds.
-          fetch-depth: 0
-      - id: filter
-        name: Does this change reach the Apple apps?
-        # Fails open in every direction, which is the only safe bias for a job
-        # that decides whether a gate runs. Any event that is not a pull
-        # request answers `true`; a `git diff` that cannot resolve its endpoints
-        # — a force-pushed base on a stacked pull request is the realistic way —
-        # answers `true` rather than failing the step, because a red X here
-        # would be a worse signal than an Apple job that did not need to run.
-        #
-        # **Directory prefixes, not file extensions.** The tempting version of
-        # this matches `\.rs$` and the manifests, and it is wrong: the slices
-        # compile several things that are not Rust and not a manifest.
-        # `crates/sunrise-crypto/src/bip39-english.txt` is `include_str!`d by
-        # `bip39.rs`; `crates/sunrise-storage/src/migrations.rs` `include_str!`s
-        # twelve `.sql` files; and `crates/sunrise-relay-client/build.rs` reads
-        # `schemas/generated/openapi.v1.json` to generate the entire relay
-        # client. Each of those changes the bytes of the xcframework while an
-        # extension match says nothing happened. `crates/` is 348 tracked files
-        # of which two are markdown, so the prefix costs almost nothing over the
-        # extension it replaces and cannot miss an asset added later.
-        #
-        #   crates/**                the workspace, assets and fixtures included
-        #   tools/**                 `uniffi-bindgen`, built `--locked` from its
-        #                            own tracked lockfile to generate the Swift
-        #   schemas/**               `build.rs` input for the relay client
-        #   **/Cargo.{toml,lock}     the root and `fuzz/` manifests the two
-        #                            prefixes above do not reach
-        #   *.rs                     a Rust file added outside those trees
-        #   rust-toolchain*          selects the compiler for all three slices
-        #   .cargo/**                declares the three Apple target triples
-        #   apps/apple/**            the Swift, project.yml and .swiftlint.yml
-        #   mise.toml                defines every task the Apple jobs run
-        #   tokens.swift             generated, committed, compiled into both apps
-        #   Strings.swift,           the string catalog's Apple binding, likewise
-        #     Localizable.xcstrings  (ADR-0054)
-        #   .github/workflows/ci.yml a change to these jobs must run them
-        #   .github/actions/**       likewise for anything they call
-        #
-        # Known and deliberate omission: `.github/scripts/xcresult-failures.py`
-        # is called by both app tasks, but only on the failing path and under
-        # `|| true`, so it cannot turn a green run red or a red run green.
-        run: |
-          set -euo pipefail
-          if [ "${{ github.event_name }}" != "pull_request" ]; then
-            echo "apple=true" >> "$GITHUB_OUTPUT"
-            echo "not a pull request; running the Apple jobs"
-            exit 0
-          fi
-          base='${{ github.event.pull_request.base.sha }}'
-          head='${{ github.event.pull_request.head.sha }}'
-          # `--no-renames` is load-bearing, not tidiness. `--name-only` prints
-          # only a rename's *destination*, so `git mv apps/apple/Foo.swift
-          # scratch/Foo.txt` would report one path that matches nothing here,
-          # skip all three Apple jobs, report both required contexts green, and
-          # break master on merge. With `--no-renames` the same commit reports a
-          # delete and an add, and the delete matches.
-          if ! changed=$(git diff --no-renames --name-only "$base...$head"); then
-            echo "apple=true" >> "$GITHUB_OUTPUT"
-            echo "could not diff $base...$head; running the Apple jobs"
-            exit 0
-          fi
-          echo "changed paths:"
-          printf '%s\n' "$changed"
-          # A here-string, not `printf '%s\n' "$changed" | grep -qE`. That
-          # pipeline fails in the one direction the paragraph above says this
-          # job must never fail in. `grep -q` exits on its first match without
-          # draining stdin; `printf` then takes SIGPIPE; and `pipefail`
-          # promotes that 141 to the status of the whole pipeline — so the
-          # `else` branch runs, and a pull request that *did* touch `crates/`
-          # reports `apple=false`, skips all three Apple jobs, reports both
-          # required contexts green, and breaks master on merge. That is the
-          # same failure `--no-renames` above exists to prevent, arriving by a
-          # different route.
-          #
-          # It needs the payload to exceed the 64 KiB pipe buffer *and* a match
-          # to sort early — and since `git diff --name-only` emits sorted
-          # paths, `.github/`, `apps/apple/` and `crates/` are exactly the
-          # entries that sort early, so the early match is the likely case
-          # rather than the unlikely one. All 890 tracked files changing at
-          # once is 34 KiB today, so this is headroom and not a live bug; the
-          # point is that a job whose contract is "fail open in every
-          # direction" should not be relying on the tree staying small. A
-          # here-string redirects from a temporary file, so there is no reader
-          # to close the pipe and nothing to take a signal.
-          if grep -qE \
-            '(^crates/|^tools/|^schemas/|(^|/)Cargo\.(toml|lock)$|\.rs$|^rust-toolchain|^\.cargo/|^apps/apple/|^mise\.toml$|^packages/sunrise-ui-tokens/generated/tokens\.swift$|^packages/sunrise-i18n/generated/(Strings\.swift|Localizable\.xcstrings)$|^\.github/workflows/ci\.yml$|^\.github/actions/)' \
-            <<<"$changed"
-          then
-            echo "apple=true" >> "$GITHUB_OUTPUT"
-            echo "a path the Apple apps are built from changed; running them"
-          else
-            echo "apple=false" >> "$GITHUB_OUTPUT"
-            echo "nothing the Apple apps are built from changed; skipping them"
-          fi
-
   # The Rust gate runs twice, as two jobs naming one composite action, rather
   # than as the two-leg matrix this used to be. The names below are
   # byte-identical to the legs they replace because both are required status
@@ -241,6 +103,14 @@ jobs:
     # run GitHub counts as successful, so the required context is still
     # satisfied on every pull request. The cost of that is honest and worth
     # writing down — this required check can now only go red after a merge.
+    #
+    # The three Apple jobs below carry this same condition, for the same queue.
+    # Every macOS job in this file therefore runs on a push to master, nightly,
+    # and on a manual dispatch — `gh workflow run ci.yml --ref <branch>` runs
+    # them against a branch head, and their results appear on that branch's
+    # pull request. Before merge, the evidence is the local run: each Apple
+    # job is one `mise run` task, so `mise run apple-app` on a Mac runs exactly
+    # the same commands.
     if: >-
       github.event_name == 'schedule'
       || github.event_name == 'workflow_dispatch'
@@ -266,8 +136,11 @@ jobs:
     # knows a macOS job can need, not from the warm number, and tightened once
     # a cold run has been measured.
     timeout-minutes: 45
-    needs: changes
-    if: ${{ !cancelled() && needs.changes.outputs.apple != 'false' }}
+    # Off the pull-request path, as `rust-macos` is; see the note there.
+    if: >-
+      github.event_name == 'schedule'
+      || github.event_name == 'workflow_dispatch'
+      || (github.event_name == 'push' && github.ref == 'refs/heads/master')
     env:
       # Deliberately clears the workflow-level `-D warnings`, and this is now
       # the only job that needs to: it compiles `tools/uniffi-bindgen`, a
@@ -378,13 +251,16 @@ jobs:
     # on the runner class that bills at 10x.
     runs-on: macos-26
     timeout-minutes: 60
-    needs: [changes, apple-xcframework]
-    if: ${{ !cancelled() && needs.changes.outputs.apple != 'false' }}
+    needs: apple-xcframework
+    # The event condition is repeated here, not inherited: `!cancelled()`
+    # replaces the implicit `success()`, so on its own it would run this job
+    # after a *skipped* framework job and fail on the artefact that never came.
+    if: ${{ !cancelled() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/master')) }}
     env:
       # The framework and the bindings arrive from `apple-xcframework`. This is
       # what stops them being rebuilt here, and it is read in two places that
       # are both load-bearing: mise.toml's `apple-xcframework` task, which
-      # `macos-app` `depends` on, and the `SunriseFFI` aggregate target in
+      # `macos-app` runs first, and the `SunriseFFI` aggregate target in
       # apps/apple/project.yml, whose build script `xcodebuild` runs
       # *unconditionally* (`basedOnDependencyAnalysis: false`) and whose first
       # act would otherwise be an `rm -rf` over the artefact this job has just
@@ -401,8 +277,9 @@ jobs:
       # otherwise carry, so a *failed* `apple-xcframework` dispatches this job
       # rather than skipping it. That is deliberate: this job's name is a
       # required context and `apple-xcframework`'s is not, so skipping here
-      # would report success and let a broken framework build merge. Running
-      # and failing is the correct outcome — but without this step the failure
+      # would report a green required check on the master commit or dispatched
+      # branch head a broken framework build came from. Running and failing is
+      # the correct outcome — but without this step the failure
       # arrives minutes later as "Artifact not found", which names the symptom
       # and not the cause. This turns it into one line, in seconds, and gives
       # the macOS slot straight back.
@@ -476,8 +353,11 @@ jobs:
     # simulator is the thing that broke.
     runs-on: macos-26
     timeout-minutes: 60
-    needs: [changes, apple-xcframework]
-    if: ${{ !cancelled() && needs.changes.outputs.apple != 'false' }}
+    needs: apple-xcframework
+    # The event condition is repeated here, not inherited: `!cancelled()`
+    # replaces the implicit `success()`, so on its own it would run this job
+    # after a *skipped* framework job and fail on the artefact that never came.
+    if: ${{ !cancelled() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/master')) }}
     env:
       # As in `macos-app`, and for the reason spelled out there.
       SUNRISE_FFI_PREBUILT: "1"
@@ -487,8 +367,9 @@ jobs:
       # otherwise carry, so a *failed* `apple-xcframework` dispatches this job
       # rather than skipping it. That is deliberate: this job's name is a
       # required context and `apple-xcframework`'s is not, so skipping here
-      # would report success and let a broken framework build merge. Running
-      # and failing is the correct outcome — but without this step the failure
+      # would report a green required check on the master commit or dispatched
+      # branch head a broken framework build came from. Running and failing is
+      # the correct outcome — but without this step the failure
       # arrives minutes later as "Artifact not found", which names the symptom
       # and not the cause. This turns it into one line, in seconds, and gives
       # the macOS slot straight back.
@@ -635,6 +516,147 @@ jobs:
           command: check
           arguments: --all-features
 
+  # The web core (ADR-0055): `sunrise-core` built and linted for
+  # `wasm32-unknown-unknown`. The `rust` job compiles for the host only, and
+  # everything that breaks the web build — `std::fs`, `std::process::id`, a
+  # tokio socket feature reaching the core through the workspace root — is
+  # fine on the host. This is `mise run web-wasm-check`, spelled out because no
+  # job here installs mise.
+  #
+  # Not a required check. Its own cache key: the target differs, so nothing in
+  # the `rust` entry would be reused.
+  wasm-core:
+    name: WASM core (wasm32-unknown-unknown)
+    runs-on: ubuntu-latest
+    # A cold build of the core's graph for one target, check-only. No
+    # observation yet; sized from the local cold build (~3 minutes) with the
+    # margin the other Rust jobs carry.
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # v1
+        with:
+          toolchain: stable
+      - name: Add the wasm target to the pinned toolchain
+        # Inside the checkout, so `rust-toolchain.toml` selects the toolchain
+        # the target is added to.
+        run: rustup target add wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+        with:
+          shared-key: wasm-core
+      - name: Lint the web core for wasm32 (warnings denied)
+        # SQLite and zstd are C, which `cc` compiles for wasm32 with the
+        # runner's `clang`; Ubuntu's is built with the WebAssembly backend.
+        env:
+          CC_wasm32_unknown_unknown: clang
+        run: cargo clippy -p sunrise-core-wasm --target wasm32-unknown-unknown -- -D warnings
+
+  # Every committed old-vault fixture through every later migration (#327,
+  # docs/04-storage/migrations.md §Migration rigor rule 1). The tests are the
+  # `vault_fixtures` module in `sunrise-storage`, so `Rust (ubuntu-latest)`
+  # runs them too, inside a workspace suite whose failure names nothing. This
+  # job runs only them, so a migration that loses a row or arrives without its
+  # fixture fails a check that says so: the gate test
+  # `every_migration_has_a_fixture_at_the_version_before_it` names the missing
+  # file and the command that writes it.
+  #
+  # Not a required check. One crate and its dependencies, so it is small, and
+  # its own cache key keeps it from contending with the workspace entry.
+  storage-fixtures:
+    name: Storage migration fixtures
+    runs-on: ubuntu-latest
+    # No observation yet; a cold build of `sunrise-storage`'s graph (SQLCipher
+    # compiled from source) is about two minutes locally.
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+        with:
+          shared-key: storage-fixtures
+      - name: Run every fixture through every later migration
+        run: cargo test -p sunrise-storage --lib vault_fixtures
+
+  # The invariant that merging a vault across client versions never breaks and
+  # never loses data (#326, ADR-0057). Replica A is `sunrise-core` as a pinned
+  # baseline commit had it, built by `build-baseline.sh` from an extracted copy
+  # of that commit; replica B is the vault the baseline created, opened by this
+  # checkout. `cross_version_convergence.rs` drives both through the relay and
+  # compares them with what a `HEAD`-only run would hold.
+  #
+  # The `HEAD`-against-`HEAD` control of the same property is not here: it
+  # needs no second build, so it runs in `Rust (ubuntu-latest)` on every pull
+  # request with the rest of the workspace suite. This job adds only the half
+  # that needs the baseline built.
+  #
+  # Off the pull-request path, like the macOS jobs and for the same reason:
+  # a second cold cargo build of a whole workspace is the most expensive thing
+  # a pull request could be asked to wait for, and it measures builds other
+  # than the one under review. It runs on every merge to master, nightly, and
+  # on `gh workflow run ci.yml --ref <branch>`. A change to what a baseline can
+  # read is caught on the merge that makes it.
+  #
+  # The matrix is every baseline the invariant binds. A build older than the
+  # ADR-0042 floor is outside it: `v0.1.0-rc.1` predates three CRYPTO_SUITE_V
+  # bumps that ADR-0042's withdrawn licence allowed, and `HEAD` does not open
+  # a vault it wrote at all. A release cut at or after the floor joins the
+  # matrix, with whatever change to the driver its API needs.
+  cross-version:
+    name: Cross-version merge (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    # Two cold cargo builds, one of them of a whole second workspace, plus the
+    # property. No CI observation yet; sized from the local cold builds with
+    # the margin the other Rust jobs carry.
+    timeout-minutes: 60
+    if: >-
+      github.event_name == 'schedule'
+      || github.event_name == 'workflow_dispatch'
+      || (github.event_name == 'push' && github.ref == 'refs/heads/master')
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: ADR-0042 floor
+            # The merge of #371. Keep in step with `FLOOR` in
+            # crates/sunrise-e2e/src/cross_version/gaps.rs, which scopes the
+            # expected failures to it.
+            ref: d9566ade714bf49714ea1b034625a5b6a1792984
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+        with:
+          shared-key: cross-version
+      - name: Fetch the baseline commit
+        # The checkout is shallow, and `git archive` needs the commit's tree.
+        run: git fetch --depth=1 origin "${{ matrix.ref }}"
+      - name: Build the baseline driver
+        run: |
+          set -euo pipefail
+          driver=$(crates/sunrise-e2e/baseline-driver/build-baseline.sh "${{ matrix.ref }}" | tail -n1)
+          echo "SUNRISE_BASELINE_DRIVER=$driver" >> "$GITHUB_ENV"
+      - name: Merge the baseline and HEAD under the property
+        env:
+          # Sixteen times the local default: every case boots a relay and
+          # three vaults, and the minutes are spent here rather than on a
+          # pull request.
+          SUNRISE_CROSS_VERSION_CASES: "64"
+        run: cargo test -p sunrise-e2e --test cross_version_convergence -- --ignored
+      - name: Keep the shrunken counterexample
+        # `FileFailurePersistence::Direct` writes it where the
+        # proptest-persistence gate expects it to be committed; this is how it
+        # leaves the runner.
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: cross-version-regressions-${{ strategy.job-index }}-${{ github.run_attempt }}
+          path: crates/sunrise-e2e/proptest-regressions/
+          if-no-files-found: ignore
+
   bun-lint:
     name: Bun lint & format
     runs-on: ubuntu-latest
@@ -692,6 +714,34 @@ jobs:
           name: coverage-report
           path: coverage/
           retention-days: 30
+
+  # The Vite build `release.yml`'s `web-pages` job deploys to Cloudflare
+  # Pages (#11), without the web core bundle: a build that fails here would
+  # fail on a tag, after the binaries and the image had already published.
+  # Typecheck does not reach it — the PWA plugin, the Workbox size limit and
+  # the `envPrefix` are Vite's, not `tsc`'s. The default server URL is set so
+  # the check below proves the variable still reaches the bundle.
+  web-build:
+    name: Web build
+    runs-on: ubuntu-latest
+    # A Vite build of a few hundred lines, `bun install` included; under a
+    # minute locally. No observation yet; the other Bun jobs' floor.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6  # v2.2.0
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          restore-keys: ${{ runner.os }}-bun-
+      - run: bun install --frozen-lockfile
+      - name: Build the web client
+        env:
+          SUNRISE_WEB_DEFAULT_SERVER_URL: https://relay.invalid
+        run: bun run --filter @sunrise/web build
+      - name: The build default reaches the bundle
+        run: grep -rqF 'https://relay.invalid' apps/web/dist/assets
 
   bench-regression:
     name: Bench regression (informational)
@@ -809,8 +859,11 @@ jobs:
     # fewer.
     #
     # The third term is `15.4` itself, and it is the one that decides which
-    # way the bound points. `sunrise-core` has no completed pass and no
-    # recorded wall clock, and nothing in this repository says whether 15.4
+    # way the bound points. `sunrise-core`'s only completed pass is nightly
+    # 35978884844's four shards at d9566ad (54-90 min each), and 812 of its
+    # 1313 mutants failed to build under this workflow's `-D warnings` (#403),
+    # so those wall clocks do not price a mutant that builds and runs its
+    # tests. Nothing in this repository says whether 15.4
     # is that same full-pass average taken over its first 76 mutants or a
     # marginal rate off cargo-mutants' own output. If it is the average, it
     # carries 1/76th of a baseline build and `315 x 15.4` charges that build
@@ -820,21 +873,24 @@ jobs:
     #
     # So ~1.5x is not a measured break-even, and it is not established as a
     # bound in either direction: the second term pushes it down, the third
-    # pushes it up if 15.4 is an average, and no shard has completed at any
-    # revision to settle which dominates. No corrected figure is offered: a
+    # pushes it up if 15.4 is an average, and no completed shard settles
+    # which dominates, for the reason above. No corrected figure is offered: a
     # second number derived from the same missing measurement is exactly what
     # this comment exists to stop. What would settle it is one completed
-    # `sunrise-core` pass with its wall clock recorded — the same pass #246 is
-    # waiting on for that crate's floor.
+    # `sunrise-core` pass with its wall clock recorded, built the way the
+    # local task builds it: the first run after #403 aligns the two builds,
+    # which is also the run that re-records the crate's floor.
     #
     # The lever if it turns out to be wrong is `sunrise-core`'s shard count,
     # not this number: the longest shard is the only one near the ceiling, and
     # raising `timeout-minutes` only lets a bad ratio cost more. Splitting
     # core further does shorten the longest shard, but **sub**-proportionally
     # — each new shard pays another baseline build — and total runner minutes
-    # rise with every split. And the failure is cheap while it lasts —
-    # `sunrise-core` has no recorded floor, so a shard that times out spends
-    # runner minutes and gates nothing.
+    # rise with every split. And the failure is no longer cheap. Until #272
+    # recorded `sunrise-core`'s floor, the gate failed that crate as unfloored
+    # whatever its shards did, so a timed-out shard cost runner minutes and
+    # nothing else. Now the crate is compared against a floor, and a shard
+    # that times out puts that comparison at stake.
     #
     # If core's shard count rises, this can come down with it.
     timeout-minutes: 120
@@ -1125,7 +1181,7 @@ jobs:
   file-size:
     name: File size gate
     runs-on: ubuntu-latest
-    # Checkout plus one pass over the Rust files in three packages.
+    # Checkout plus one pass over the Rust files in the packages it measures.
     timeout-minutes: 5
     # Its own job rather than a step inside `Determinism gate`, which is where
     # it first landed. File length has nothing to do with determinism: the four
@@ -1141,12 +1197,18 @@ jobs:
         # lines -- six impl blocks, ninety free functions and a ten-thousand-line
         # test module in one file. It got there one reasonable commit at a time.
         #
-        # Thresholds are each package's own p90, not a number from a style
-        # guide, and the baseline in the script names every file over one today
-        # with what it is. That list may shrink and may not grow.
+        # Every crate is in exactly one of the script's THRESHOLDS (measured)
+        # and UNGATED (not measured, with the reason). A threshold is the
+        # package's own p90, or for a package with fewer than ten Rust files
+        # (sunrise-sync) the pooled p90 of the UNGATED packages -- never a
+        # number from a style guide. The baseline names every file over its
+        # threshold today with what it is. That list may shrink and may not grow.
         #
-        # Exit 1 is "a file grew"; exit 2 is "the baseline needs a line
-        # deleted". Both are red, and the output says which it is.
+        # Exit 1 is "a file grew", or the gate refused to measure: a crate in
+        # neither table or in both, or a THRESHOLDS package that is missing.
+        # Exit 2 is bookkeeping: a BASELINE entry for a file now under its
+        # threshold or gone, or an UNGATED entry for a crate that is gone, each
+        # a one-line deletion. Both are red, and the output says which it is.
         run: python3 .github/scripts/file-size-gate.py
 
   file-size-gate-contract:
@@ -1227,6 +1289,38 @@ jobs:
             crates/sunrise-http-sig/src \
             crates/sunrise-relay-client/src \
             crates/*/src/telemetry crates/*/src/logging crates/*/src/observability
+
+  constant-time:
+    name: Constant-time comparison gate
+    runs-on: ubuntu-latest
+    # Checkout plus one grep over four source trees, like the two gates above.
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - name: Reject a variable-time comparison over a secret-named value
+        # ADR-0061. `subtle::ConstantTimeEq` is how sunrise-crypto,
+        # sunrise-pairing, sunrise-http-sig and sunrise-server::auth compare a
+        # MAC, tag, key or digest, and until this nothing enforced it: clippy
+        # cannot see the `==` operator, so `clippy.toml` has no entry that
+        # could. Every hit is either rewritten to `ct_eq` or entered in
+        # `.github/scripts/constant-time-allowlist.tsv` with its reason; an
+        # entry whose line has gone fails the gate too.
+        run: .github/scripts/constant-time-gate.sh
+
+  constant-time-gate-contract:
+    name: Constant-time gate contract
+    runs-on: ubuntu-latest
+    # One Python script over source trees it synthesises in a temp directory,
+    # plus one run over this checkout. No toolchain. Seconds.
+    timeout-minutes: 5
+    # No `if:`, like the other gate contracts. It plants the `==` over a
+    # `[u8; 32]` tag in sunrise-crypto that #365 names and asserts exit 1, and
+    # pins the allowlist's refusals: a stale entry, an entry with no reason, a
+    # missing file, and an empty one.
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - name: Exit-code contract
+        run: python3 .github/scripts/test_constant_time_gate.py
 
   kynos-waiver:
     name: Kynos waiver gate
@@ -1316,6 +1410,38 @@ jobs:
           cargo run -q -p sunrise-server --bin openapi -- schemas/generated/openapi.v1.json
           git diff --exit-code -- schemas/generated/openapi.v1.json \
             || { echo "::error::openapi: the description is stale; run \`mise run openapi\` and commit the result."; exit 1; }
+
+  deploy-test:
+    name: Deploy test (Caddy, nginx)
+    runs-on: ubuntu-latest
+    # One debug build of `sunrise-server` on the shared warm cache (the
+    # `openapi-current` job's figures: under a minute warm, ~4m cold), three
+    # image pulls, then two passes of the checks at about 40 s each — the
+    # event-stream check holds a stream open for 20 s on purpose.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+        with:
+          # A reader of the `rust` gate's entry, for the reason
+          # `openapi-current` gives: this job builds one package, and an entry
+          # shaped by it would be a poor inheritance for the workspace build.
+          shared-key: rust
+          save-if: false
+      - name: Build the relay
+        run: cargo build -q -p sunrise-server --bin sunrise-server
+      - name: Boot the relay behind each shipped proxy configuration and check it
+        # `deploy/caddy/Caddyfile` and `deploy/nginx/sunrise.conf.template`
+        # each claim what they enforce: per-client limits keyed on the real
+        # client address and immune to a forged forwarding header, an
+        # unbuffered event stream that outlives the keep-alive, an oversize
+        # body refused at the proxy with the relay's own 413, and no public
+        # `/metrics`. This boots each one unchanged in its official image and
+        # asserts every claim from client containers with their own addresses.
+        run: python3 deploy/test/run.py --server target/debug/sunrise-server
 
   tokens-current:
     name: Design token gate
@@ -1612,7 +1738,7 @@ jobs:
         # while the gate stayed green. `path#symbol` with no line checks only
         # that the item is still declared.
         #
-        # Three behaviours to know before writing one. A suffix that is not a
+        # Four behaviours to know before writing one. A suffix that is not a
         # bare Rust item name (`#Engine::f`, `#f()`) is a FAILURE, reported
         # after the path and line checks have run on the same span, so it can
         # never subtract a check the citation already had. A github.com
@@ -1627,7 +1753,13 @@ jobs:
         # always failed on. Neither an
         # `impl` block nor a `mod` is a legal target, because `#Engine`
         # spanned 97.7% of `sync.rs` and `mod tests` in `api/sync/suite.rs`
-        # spans 99.5% of it, so neither checked anything.
+        # spans 99.5% of it, so neither checked anything. A single-line
+        # `path:LINE#symbol` whose line is a `///` line of the item's doc
+        # comment below its summary line FAILS, in every declaration of the
+        # name that contains it: that is where a line written for the
+        # declaration lands once the doc comment above it grows. The summary,
+        # attribute, declaration and body lines stay clean, and a range —
+        # `N-N` included — is how a doc passage is cited on purpose.
         #
         # The full rule lives in the script's own module docstring, and
         # `mise.toml`'s `citations` task carries the same summary. All three
@@ -1661,7 +1793,7 @@ jobs:
     # toolchain, no cargo, no network past the checkout. Seconds of work.
     timeout-minutes: 5
     # Deliberately without an `if:`, like the other gate contracts, so it runs
-    # on pull requests. The gate's own `--self-test` runs `scan_text` over six
+    # on pull requests. The gate's own `--self-test` runs `scan_text` over seven
     # string literals and reaches nothing else: not the `git ls-files` listing,
     # not the 50-file floor that says "the scan is broken" rather than "the tree
     # is clean", not the exit codes those produce. It also pins the
@@ -1725,6 +1857,36 @@ jobs:
       - name: Exit-code contract
         run: python3 .github/scripts/test_proptest_persistence_gate.py
 
+  apply-refusal:
+    name: Apply-path refusal gate
+    runs-on: ubuntu-latest
+    # `actions/checkout` and one standard-library Python script over three
+    # files in `crates/sunrise-core/src/engine`. No toolchain, nothing to cache.
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - name: Reject a refusal below the idempotence gate that raises
+        # #298. `upsert_sync_cursor`'s doc says a refusal below
+        # `apply_remote_all`'s op-row insert declines a register write, a hint
+        # row or a payload and never the delivery, so the cursor counts the op.
+        # That holds only while every such refusal returns Ok. A `?` or a
+        # `return Err` on a policy branch rolls the transaction back and deletes
+        # the op row, and every unit and doc gate stays green when it does.
+        run: .github/scripts/apply-refusal-gate.py
+
+  apply-refusal-gate-contract:
+    name: Apply-path refusal gate contract
+    runs-on: ubuntu-latest
+    # One Python script over engine files it synthesises in a temp directory.
+    timeout-minutes: 5
+    # Deliberately without an `if:`, like the other gate contracts. The gate
+    # exits 0 on the real tree, which a gate that reads nothing also does; this
+    # plants the refusal it exists for and asserts it can still say 1.
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - name: Exit-code contract
+        run: python3 .github/scripts/test_apply_refusal_gate.py
+
   workflow-hardening:
     name: Workflow hardening gate
     runs-on: ubuntu-latest
@@ -1772,6 +1934,23 @@ jobs:
       - name: Exit-code contract
         run: python3 .github/scripts/test_workflow_hardening_gate.py
 
+  reverses-gate-contract:
+    name: Reverses gate contract
+    runs-on: ubuntu-latest
+    # One Python script over bodies and event payloads it synthesises in a
+    # temp directory: no toolchain, no network past the checkout. Seconds.
+    timeout-minutes: 5
+    # The gate itself runs in pr-body.yml, which fires on a body edit as well
+    # as a push. This contract reads no body, so it sits here with the other
+    # gate contracts and without an `if:`. It plants the two `Reverses:` lines
+    # that closed #282 and #297 (#300) and asserts exit 1, and keeps the shapes
+    # #300 names as safe - a fenced record, a markdown link, an intended
+    # `Closes #N` on its own line - at 0.
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - name: Exit-code contract
+        run: python3 .github/scripts/test_reverses_gate.py
+
 
   fuzz:
     name: Fuzz (${{ matrix.target }})
@@ -1784,28 +1963,19 @@ jobs:
     # laptop from a warm registry. Sixty is double the sum on that machine and
     # wants replacing with a real figure the first time a nightly completes.
     timeout-minutes: 60
-    # Nightly and on demand, never on a pull request — the same gate the
-    # `mutants` job carries, for two reasons rather than one:
+    # Nightly and on demand — the same gate the `mutants` job carries. Half an
+    # hour a target and nine targets is four and a half hours of runner time,
+    # which is a nightly's shape, not a pull request's. A pull request that
+    # touches a decoder gets the short, path-filtered `fuzz-pr` job below
+    # instead (ADR-0061).
     #
-    # 1. Cost. Half an hour a target and six targets is three hours of runner
-    #    time, and every one of those hours is spent re-deriving what the
-    #    committed corpus in `fuzz/seeds/` already covers unless the run is
-    #    long enough to explore past it. That is a nightly's shape, not a pull
-    #    request's.
-    # 2. Toolchain. `cargo-fuzz` needs a nightly rustc for
-    #    `-Zsanitizer=address`, and this repository pins 1.91.1 in four places
-    #    with the `rust` job asserting they agree. Putting a nightly on the
-    #    critical path of every pull request would mean a pull request can go
-    #    red because a nightly rustc regressed, which is not a fact about the
-    #    change under review.
-    #
-    # `docs/10-cross-cutting/testing.md` §Continuous fuzz targets records that
-    # the short per-commit budget the original specification asked for is
-    # deliberately not wired, and why.
+    # This job keeps the floating `nightly` while `fuzz-pr` pins one. That is
+    # deliberate: a nightly rustc regression reds this job, where nobody's
+    # change is under review, before anyone moves the pin `fuzz-pr` reads.
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     strategy:
       # Not fail-fast: a finding in one parser must not hide whether the other
-      # five ran clean. Each target is an independent search.
+      # eight ran clean. Each target is an independent search.
       fail-fast: false
       matrix:
         target:
@@ -1815,6 +1985,9 @@ jobs:
           - ical
           - oauth_state
           - recovery_blob
+          - identity_transition
+          - device_cert
+          - key_envelope
     env:
       # This workflow sets `RUSTFLAGS: -D warnings` globally. `cargo-fuzz`
       # composes its own `RUSTFLAGS` (the sanitizer and `sancov` passes) on top
@@ -1881,5 +2054,132 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
           name: fuzz-artifacts-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}
+          if-no-files-found: ignore
+
+  # The pull-request half of fuzzing (ADR-0061): two minutes a target, only
+  # for the targets a pull request's changed paths reach. Two jobs, because a
+  # matrix cannot be computed inside the job it expands: `fuzz-pr-plan` reads
+  # the diff and names the targets, and `fuzz-pr` runs one leg per name, or no
+  # legs at all.
+  fuzz-pr-plan:
+    name: Fuzz plan (pull request)
+    runs-on: ubuntu-latest
+    # A depth-2 checkout and one `git diff`. Seconds.
+    timeout-minutes: 5
+    if: github.event_name == 'pull_request'
+    outputs:
+      targets: ${{ steps.plan.outputs.targets }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          # A pull_request run checks out GitHub's merge commit, whose first
+          # parent is the base it would merge into. Depth 2 reaches that parent,
+          # so `HEAD^1..HEAD` is exactly what merging the pull request changes,
+          # whatever the base has done since the branch was cut.
+          fetch-depth: 2
+      - name: Name the targets the changed paths reach
+        id: plan
+        # The path list is #365's; each maps to the targets that drive that
+        # code through its public API. `sunrise-http-sig` triggers the plan and
+        # maps to nothing: no harness drives it yet, and testing.md says so.
+        # A name is only ever emitted from the fixed list `all`, so a file name
+        # in the diff never reaches a shell command in the job below.
+        run: |
+          set -euo pipefail
+          all="op_envelope wire_frame rrule ical oauth_state recovery_blob identity_transition device_cert key_envelope"
+          crypto="op_envelope recovery_blob identity_transition device_cert key_envelope"
+          picked=""
+          while IFS= read -r path; do
+            case "$path" in
+              crates/sunrise-crypto/*)          picked="$picked $crypto" ;;
+              crates/sunrise-wire-protocol/*)   picked="$picked wire_frame" ;;
+              crates/sunrise-server/src/auth/*) picked="$picked oauth_state" ;;
+              fuzz/Cargo.toml|fuzz/Cargo.lock)  picked="$picked $all" ;;
+              fuzz/fuzz_targets/*.rs)           t="${path#fuzz/fuzz_targets/}"; picked="$picked ${t%.rs}" ;;
+              fuzz/seeds/*/*)                   t="${path#fuzz/seeds/}"; picked="$picked ${t%%/*}" ;;
+            esac
+          done < <(git diff --name-only HEAD^1 HEAD)
+          selected=""
+          for t in $all; do
+            case " $picked " in *" $t "*) selected="$selected $t" ;; esac
+          done
+          # Unquoted on purpose: `selected` holds only names from `all`.
+          # shellcheck disable=SC2086
+          json=$(printf '%s\n' $selected | jq -Rsc 'split("\n") | map(select(length > 0))')
+          echo "Targets: $json"
+          echo "targets=$json" >> "$GITHUB_OUTPUT"
+
+  fuzz-pr:
+    name: Fuzz pull request (${{ matrix.target }})
+    needs: fuzz-pr-plan
+    if: needs.fuzz-pr-plan.outputs.targets != '[]'
+    runs-on: ubuntu-latest
+    # Derived, not measured: a cold `cargo install cargo-fuzz` (about two
+    # minutes), a cold Address Sanitizer build of `fuzz/` and its dependency
+    # graph (about four on an M-series laptop, so allow ten here), and the
+    # 120-second budget. Thirty is more than double that; replace it with a
+    # real figure once one run has completed. No rust-cache: this job runs
+    # only on pull requests, and this file writes caches only from `master`.
+    timeout-minutes: 30
+    strategy:
+      # Not fail-fast, for the nightly job's reason: one target's finding must
+      # not hide whether the others ran clean.
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.fuzz-pr-plan.outputs.targets) }}
+    env:
+      # As in the nightly job: `cargo-fuzz` composes its own flags.
+      RUSTFLAGS: ""
+      # The pinned nightly. A floating `nightly` would let a rustc regression
+      # red a pull request that changed nothing about it. Moving the pin is a
+      # one-line edit here; the nightly `fuzz` job, on the floating toolchain,
+      # is what shows whether the next date builds. `RUSTUP_TOOLCHAIN`
+      # overrides `rust-toolchain.toml`'s 1.91.1 for every step.
+      RUSTUP_TOOLCHAIN: nightly-2026-10-01
+      TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      # The next three steps can fail for reasons that are facts about the
+      # toolchain rather than about the change: a nightly that no longer
+      # installs, a `cargo-fuzz` that no longer builds on it, a sanitizer build
+      # that broke upstream. Each continues on error, and the step after them
+      # turns any such failure into a warning annotation rather than a red
+      # check. A harness that genuinely does not compile is still caught: the
+      # `rust` job lints `fuzz/` with clippy on the pinned stable.
+      - name: Install the pinned nightly
+        id: toolchain
+        continue-on-error: true
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component rust-src
+      - name: Install cargo-fuzz
+        id: cargo-fuzz
+        if: steps.toolchain.outcome == 'success'
+        continue-on-error: true
+        run: cargo install cargo-fuzz --locked
+      - name: Build ${{ matrix.target }}
+        id: build
+        if: steps.cargo-fuzz.outcome == 'success'
+        continue-on-error: true
+        run: cargo fuzz build --fuzz-dir fuzz "$TARGET"
+      - name: Record why the target did not run
+        if: steps.build.outcome != 'success'
+        run: |
+          echo "::warning title=Fuzz pull request ($TARGET) did not run::The pinned toolchain $RUSTUP_TOOLCHAIN could not install, install cargo-fuzz, or build this target (toolchain: ${{ steps.toolchain.outcome }}, cargo-fuzz: ${{ steps.cargo-fuzz.outcome }}, build: ${{ steps.build.outcome }}). That is a toolchain fact, not a finding, so this check is not red. Move RUSTUP_TOOLCHAIN in the fuzz-pr job of ci.yml."
+      - name: Fuzz ${{ matrix.target }} for 120 seconds
+        # The committed seeds are the second, read-only corpus, as in the
+        # nightly job. A finding's reproducer is uploaded below, and it joins
+        # `fuzz/seeds/<target>/` in the commit that fixes it.
+        if: steps.build.outcome == 'success'
+        run: |
+          set -euo pipefail
+          mkdir -p "fuzz/corpus/$TARGET"
+          cargo fuzz run --fuzz-dir fuzz "$TARGET" \
+            "fuzz/corpus/$TARGET" "fuzz/seeds/$TARGET" \
+            -- -max_total_time=120
+      - name: Upload the input a finding left behind
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: fuzz-pr-artifacts-${{ matrix.target }}
           path: fuzz/artifacts/${{ matrix.target }}
           if-no-files-found: ignore

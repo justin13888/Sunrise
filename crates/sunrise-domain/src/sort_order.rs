@@ -197,8 +197,16 @@ pub fn between(after: Option<&str>, before: Option<&str>) -> Result<String, Sort
             above_tail(&mut out, lo, i + 1);
             return Ok(finish(out));
         }
+        // The walk ends only by finding a differing digit further on, so a
+        // cursor that stops advancing, or a pair of bounds with no difference
+        // for it to find, would push digits forever. The check above promises
+        // a difference inside `width`; both halves are asserted rather than
+        // assumed, so a break in either fails fast instead of timing out.
+        debug_assert!(i < width, "between: no differing digit within the bounds");
         out.push(ZERO + a);
+        let start = i;
         i += 1;
+        debug_assert!(i > start, "between: digit cursor did not advance");
     }
 }
 
@@ -216,8 +224,15 @@ fn above_tail(out: &mut Vec<u8>, lo: &str, mut i: usize) {
             out.push(ZERO + a + (BASE - a) / 2);
             return;
         }
+        // Termination rests on running off the end of `lo`: only a real `LAST`
+        // digit continues the walk, and the padding past the end is zero. So
+        // a continuing turn is always inside `lo`, and the cursor advances.
+        // Asserted, as in `between`.
+        debug_assert!(i < lo.len(), "above_tail: walked past the end of lo");
         out.push(ZERO + a);
+        let start = i;
         i += 1;
+        debug_assert!(i > start, "above_tail: digit cursor did not advance");
     }
 }
 

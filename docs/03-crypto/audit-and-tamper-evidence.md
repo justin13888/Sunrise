@@ -6,121 +6,103 @@ status: accepted
 
 The relay is untrusted but is in the message path. We need to detect: dropped ops, replayed ops, reordered ops, and fork attacks (different views of history served to different devices).
 
-## Implementation status: two hash functions, and nothing else
+[ADR-0043](../11-adr/0043-commit-tree.md) is the design of record for detecting omission, reordering and forks. This document describes what it built and what is still a target.
 
-**Everything in this document is a target.** What exists in `crates/` is `sunrise-crypto/src/merkle.rs`: `stream_root_init` and `stream_root_step`, byte-exact to the formulas under §Per-Stream Merkle root and covered by frozen vectors in `crates/sunrise-crypto/tests/frozen_vectors.rs`. **Those tests are their only callers.** Nothing in the engine, the sync layer, or either client folds an applied op into a root.
+## Implementation status
 
-Concretely, none of the following exists:
+Built ([#325](https://github.com/justin13888/Sunrise/issues/325)):
 
-* **No root is persisted.** There is no column, no table, and no "highest-seen root per Stream", so §Rollback detection has nothing to compare against on reconnect.
-* **No checkpoint op.** Of the 24 `InnerOp` variants (`crates/sunrise-core/src/inner_op.rs`), 21 are domain CRUD and the three [ADR-0024](../11-adr/0024-key-hierarchy.md) added carry keys and trust (`key_envelope`, `device_revoke`, `device_cert`). `CheckpointPayload` has no encoder, and the 256-op / 24 h emission rule has no timer.
-* **`server_first_seen_ms` feeds no ordering rule.** The annotation does exist, but only per batch and only as advice: `Ack.server_first_seen_ms` (`crates/sunrise-wire-protocol/src/payloads.rs:93`) is stamped at `crates/sunrise-server/src/api/sync/publish.rs:111,223` and parsed back onto the synthesized `Ack` frame at `crates/sunrise-sync/src/sse.rs:435`. Nothing persists it and nothing orders by it. Per *op* it does not exist at all — the relay stores `relay_frames(account_h, stream_id, bytes, n_bytes, created_ms)`, parses only `EnvelopeHeader` (`{stream_id, device_id, seq}`) for routing, and emits no unsigned addendum. Since the amendment below removes the clamp, no ordering rule wants one.
-* **No fork or rollback detection, and no integrity indicator.** §Verifying checkpoints from peers, §Fork detection and §Per-vault Integrity indicator describe no code and no UI.
+* **Per-device hash chains.** Every op a current build writes carries envelope field 14, the `op_hash` of the same device's previous op in the stream, and field 15, the tips of other devices' prefixes its writer had seen since it last listed them (`crates/sunrise-crypto/src/op_envelope.rs#OpEnvelope`, written by `crates/sunrise-core/src/engine/chain.rs#writer_links`).
+* **Link checks on receipt.** A receiver checks both fields, and what earlier ops said this one would be, against the ops it holds. A gap is recorded as an expected op, a mismatch as fork evidence, and the op is applied either way (`crates/sunrise-core/src/engine/chain.rs#check_links`).
+* **A running chain root per `(stream, device)`**, stored on each op inside the contiguous prefix and extended where the sync cursor moves (`crates/sunrise-core/src/engine/chain.rs#fold_chain`).
+* **A per-stream digest exchanged between replicas** as a `StreamDigest` control op, and compared entry by entry on receipt (`crates/sunrise-core/src/engine/chain.rs#reconcile`).
+* **Fork evidence retention.** A second envelope at a held `(stream, device, seq)` is kept verbatim in `fork_evidence`.
 
-What *is* enforced today is the replay invariant in §Identity and replay invariants: `0013_baseline.sql` declares `UNIQUE (stream_id, device_id, seq)` on `ops`, so `Engine::apply_remote` drops a re-delivered op idempotently, and `sync_cursors.last_applied_seq` is the per-`(stream_id, device_id)` high-water mark. Tampering with any single stored op is caught by the `OpEnvelope` AEAD. Detecting *omission and reordering across* ops — which is what the rest of this document is for — is not built.
+Still a target:
+
+* **No rollback detection.** §Rollback detection has its input now, the chain roots, but no reconnect handshake compares them with the relay.
+* **No integrity indicator in any client.** `Engine::chain_integrity` counts fork evidence, divergences and known missing ops; nothing renders them.
+* **No peer-served backfill and no bisection.** A missing op is requested from the relay; a divergence names the device and a seq at or below which two replicas differ, not the first differing op.
+* **`server_first_seen_ms` feeds no ordering rule.** The annotation does exist, but only per batch and only as advice: `Ack.server_first_seen_ms` (`crates/sunrise-wire-protocol/src/payloads.rs:93`) is stamped at `crates/sunrise-server/src/api/sync/publish.rs:111,226` and parsed back onto the synthesized `Ack` frame at `crates/sunrise-sync/src/sse.rs:962#send_frame`. Nothing persists it and nothing orders by it, and nothing here wants it.
+
+Tampering with any single stored op is caught by the `OpEnvelope` AEAD and signature, which cover fields 14 and 15 like every other header field.
 
 ## Identity and replay invariants
 
-The op envelope's `(stream_id, device_id, seq)` triple is the canonical replay-detection key. The inner-Op `op_id` (a ULID) is the canonical merge identity used for idempotent application — duplicate `op_id` arrivals are dropped silently.
+The op envelope's `(stream_id, device_id, seq)` triple is the canonical replay-detection key. `0013_baseline.sql` declares `UNIQUE (stream_id, device_id, seq)` on `ops`, so a re-delivered op is dropped idempotently, and `sync_cursors.last_applied_seq` is the end of the contiguous prefix per `(stream_id, device_id)`.
 
 Receivers enforce:
 
-- `seq` strictly monotonic per `(stream_id, device_id)`, starting at 1, no gaps.
-- A gap is a sync warning: surfaced as "received op #(N+2); op #(N+1) missing" with a "request resync" affordance.
-- A repeated `(stream_id, device_id, seq)` whose envelope bytes don't match the previously stored one is treated as integrity-fatal: sync stops, the user sees an integrity warning.
-- A repeated `(stream_id, device_id, seq)` whose bytes do match is silently dropped (idempotent re-delivery).
+- `seq` starts at 1 per `(stream_id, device_id)`. An op above a gap is stored and applied, and sits outside the prefix until the gap fills; the relay replays from the cursor.
+- Below a compaction floor ([ADR-0059](../11-adr/0059-client-op-log-compaction.md) §2) the prefix starts above the floor instead. Every seq at or below it is covered by the merge state and the floor's chain root, whether or not its row is still held, so it is neither a gap nor a missing op, and a delivery there is a duplicate. A different op at the floor's own seq is fork evidence like any other.
+- A repeated `(stream_id, device_id, seq)` whose envelope is the same op (equal `op_hash`) is silently dropped (idempotent re-delivery).
+- A repeated `(stream_id, device_id, seq)` whose envelope is a **different** verified op is **fork evidence**: the second envelope is kept in `fork_evidence`, the first stays the applied one, and a `core.chain.fork` warning is logged. Sync does not stop.
 
-## Per-Stream Merkle root
+> **Amended ([ADR-0043](../11-adr/0043-commit-tree.md) §4).** A mismatched repeat used to be integrity-fatal: sync stopped. That is the "break" the merge invariant forbids, and it let a single stolen device key take a whole vault offline. It is now evidence, kept and surfaced.
 
-For each Stream, every device maintains a running root computed in causal-order applied:
+## Per-device chains and the stream digest
 
 ```
-root_0     = BLAKE3("sunrise.stream_root.init.v1" || stream_id, 32)
-root_n     = BLAKE3("sunrise.stream_root.step.v1" || root_{n-1} || env_hash_n, 32)
-env_hash_n = BLAKE3(canonical_cbor_envelope_bytes_n, 32)
+op_hash(env)  = BLAKE3(canonical_cbor_envelope_bytes(env), 32)        ; field 11 included, magic prefix excluded
+root(d, 0)    = BLAKE3::derive_key("sunrise.op_chain.init.v1", stream_id || device_id)
+root(d, n)    = BLAKE3::derive_key("sunrise.op_chain.step.v1", root(d, n-1) || op_hash(op(d, n)))
+digest(S, F)  = BLAKE3::derive_key("sunrise.stream_digest.v1",
+                  stream_id || for each (d, n_d) in F sorted by d: d || u64be(n_d) || root(d, n_d))
 ```
 
-Concurrent ops apply in `(hlc, device_id, seq)` order before being folded into
-the root — the hybrid logical clock, then the raw 16-byte device id (memcmp,
-higher wins), then the writer's per-`(stream, device)` sequence number. This is
-byte-identical to the entity-level LWW comparison key
-([ADR-0016](../11-adr/0016-hlc-timestamps.md),
-[`../05-sync/conflict-resolution.md`](../05-sync/conflict-resolution.md) §The comparison key,
-`crates/sunrise-storage/migrations/0013_baseline.sql:97-99`), which is the point:
-one ordering key for the whole system, and no second one to keep in agreement
-with it.
+`op_hash` is computed from a re-encoding of the envelope, so two replicas agree on it whatever encoding reached them. Each device's ops are folded in its own seq order, so a late op from one device changes nothing already folded for another, and no ordering key is shared with the merge. The frontier `F` is the replica's `sync_cursors`: each device with a non-empty contiguous prefix and that prefix's end. The chain root covers ops written before chaining existed, because it is computed from the bytes the replica holds.
 
-> **Amended ([ADR-0027](../11-adr/0027-v1-self-host-first.md)).** This section
-> previously folded concurrent ops in `(hlc_clamped, device_id_lex, seq)`, where
-> `hlc_clamped` clamped the signed HLC to ±5 min around the relay's
-> `server_first_seen_ms`. The clamp is removed.
->
-> **Why:** the clamp gave the relay an input into the ordering of the one
-> structure whose whole purpose is detecting what the relay did. An adversary who
-> can shift `server_first_seen_ms` can shift the fold and therefore the root,
-> which makes a divergent root deniable — the failure the Merkle root exists to
-> make undeniable.
->
-> **What this gives up:** a device with a badly wrong clock can now push an op
-> far up or down the fold order. That was already the honest state. The clamp
-> bounded the *ordering* effect without bounding *acceptance*, and a receiver
-> refuses an op more than `MAX_DRIFT_MS` out anyway
-> ([`../05-sync/conflict-resolution.md`](../05-sync/conflict-resolution.md)).
-> The skew warning below stays.
+> **Amended ([ADR-0043](../11-adr/0043-commit-tree.md)).** This section specified one root per Stream, folding every device's ops in the global `(hlc, device_id, seq)` order ([ADR-0027](../11-adr/0027-v1-self-host-first.md) removed the relay's clamp from that order). It was never called by a product path: an op arriving late with an earlier key forced a re-fold from that point, and a differing root could not say which device's ops differed. Its functions, `stream_root_init` and `stream_root_step` in `crates/sunrise-crypto/src/merkle.rs`, stay pinned by their frozen vectors. Compaction ([ADR-0059](../11-adr/0059-client-op-log-compaction.md) §7) did not adopt them: a snapshot commits to its frontier's per-device chain roots instead.
 
 Devices with > 5 min skew display a `"Your clock is ≥ 5 minutes off; sync may produce unexpected ordering"` warning.
 
-## Checkpoint ops
+## Digest ops
 
-Each device emits **one checkpoint per Stream per (256-op-window OR 24 h-elapsed), whichever comes first**. The 24 h timer resets on each emitted checkpoint.
-
-- During a batch apply that crosses multiple thresholds, the device emits **exactly one** checkpoint at the end of the batch (debounced).
-- "Immediately before disconnect": a device emits a final checkpoint on graceful shutdown if the most recent applied op is past the last checkpoint.
-- Crash recovery re-emits the missed checkpoint on next startup.
-
-The checkpoint payload (encrypted under the Stream key, like normal ops) is:
+Each device publishes a `StreamDigest` control op (`DOC_SCHEMA_V` 9) in a stream, sealed under that stream's key, when one is due: it has published none there yet and holds an op, 256 ops have entered the stream's log since its last, or 24 h have passed since its last and any op has entered. A `StreamDigest` op, from any device, counts toward none of the three, so idle devices do not answer each other's digests forever. The sync driver checks on its anti-entropy timer. A device publishes only in a stream it holds a key for.
 
 ```cddl
-CheckpointPayload = {
-    1: bstr .size 32,            ; root after applying the most recent op
-    2: { bstr .size 16 => uint } ; covers: the (device_id => max applied seq) snapshot at this root
+stream-digest = {
+  "frontier": [* [bstr .size 16, uint, bstr .size 32]],   ; [device_id, n_d, root(d, n_d)], sorted by device_id
+  "digest":   bstr .size 32,                              ; digest(stream, frontier)
+  unknown-fields
 }
 ```
 
-## Verifying checkpoints from peers
+The frontier is the writer's before the digest op itself.
 
-When device A receives a checkpoint from device B for Stream S:
+> **Amended ([ADR-0043](../11-adr/0043-commit-tree.md) §5).** This section specified a `CheckpointPayload` of one root and a `covers` map, emitted at the end of a debounced batch, on graceful shutdown and after a crash. None of that was built. The digest op carries a root per device instead, and the cadence above is the whole rule.
 
-1. Look up A's local applied set restricted to the same `covers`.
-2. Compute the root A would have for that restricted set.
-3. If A's restricted-root equals B's `root`: confirmed; A advances its peer-trust state for B's view of S.
-4. If they differ but A is missing some op B claims to have applied (i.e. B's `covers[d_i] > A's max applied seq for d_i`): A re-requests the missing ops and retries.
-5. If they differ for a covers set A has fully applied: this is a **fork detected** — A surfaces an integrity-red warning, stops accepting more ops on S until the user inspects and acknowledges, and writes a forensic record (B's checkpoint envelope, A's restricted-root) to the vault.
+## Verifying digests from peers
+
+When device A applies a digest from device B for Stream S, a payload whose `digest` is not the digest of its own frontier, or whose frontier is not sorted by device id, is damaged and ignored (`core.chain.digest_invalid`). Otherwise, for each `(d, n, root)`:
+
+1. A holds `d` through `n`: it compares its own `root(d, n)`. Equal confirms the two hold the same ops of `d` through `n`, and clears an earlier disagreement at or below `n`. Different is a **divergence**: A records it in `chain_divergence`, naming S, `d`, B and `n`, and logs `core.chain.divergence`. A keeps applying ops.
+2. A holds fewer than `n`: A is missing `(its n_d, n]` of `d`. It keeps the claim in `chain_claims`, re-subscribes from its cursor at once, and checks the claim when its prefix reaches `n`.
+3. A holds more: B is behind. Nothing is recorded.
+
+A known missing op from field 14 or 15 is handled like case 2: it is recorded in `chain_expected`, the sync driver re-subscribes, and the op is checked against the named hash when it arrives.
 
 ## Rollback detection
 
 A simpler attack: the relay serves a known-old snapshot to a device after that device was offline.
 
-Mitigation: every device persists its **highest-seen `root` per Stream** durably. On reconnect:
-
-1. Device sends its persisted `(root, covers)` to the relay.
-2. Relay's reply is expected to either echo the same root (no new ops) or extend it (compute the new root over A's set ∪ new ops). If the relay's first delivery cannot extend A's stored root, A refuses to apply and surfaces a "rollback detected" warning.
+Target mitigation: every device already persists its chain roots per `(stream, device)`. On reconnect, a delivery that cannot extend a stored root is a rollback. Not built: no handshake compares them, and the relay serves from the cursor, which a rollback below the cursor cannot reach.
 
 ## Fork detection (server view divergence)
 
-A hostile relay could serve different op sets to different devices and avoid consistency forever, but in practice as devices reconnect to each other their checkpoints converge or diverge. The checkpoint mechanism above will eventually detect a fork once two formerly-divergent devices have a checkpoint comparison.
+A hostile relay could serve different op sets to different devices. Each replica's own chain then looks consistent, and only a comparison between replicas shows the split: a digest from one replica disagrees with another's root for the same device and seq, which is case 1 above. A relay that withholds a digest delays the comparison; it cannot fake agreement, because every digest is signed by its writer and sealed under the stream key.
 
 This is *eventual* tamper evidence, not real-time prevention. We accept the residual risk and document it.
 
 ## Per-vault Integrity indicator
 
-A persistent UI element in advanced settings:
+Target: a persistent UI element in advanced settings, fed by `Engine::chain_integrity`:
 
-- **Green** — all checkpoints within the last 7 days verified across all paired devices.
-- **Yellow** — gap detected once, recovered after resync.
-- **Red** — fork or rollback detected; sync paused until the user acknowledges.
+- **Green** — no fork evidence, no divergence, nothing known missing.
+- **Yellow** — ops known missing (`wanted` > 0), which a resync is expected to clear.
+- **Red** — fork evidence or a divergence. The vault keeps syncing; the indicator names the device so the user can revoke it.
 
-A `red` state offers a "save forensic bundle" affordance that exports the relevant envelopes, checkpoints, and roots in a sealed encrypted file the user can share with support or with peers for cross-verification.
+A `red` state offers a "save forensic bundle" affordance that exports the relevant envelopes and roots. The envelopes in `fork_evidence` are signed by the device they implicate, so anyone can re-verify them.
 
 ## Out of scope
 

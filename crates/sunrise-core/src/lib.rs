@@ -53,6 +53,10 @@ pub mod commands;
 pub mod config;
 pub mod control_op;
 pub mod core;
+// Test-only: the generator and its pins. The build's registry, which the
+// writer reads, is `sunrise_cbor::version::DOC_SCHEMA_FINGERPRINTS`.
+#[cfg(test)]
+mod doc_schema;
 pub mod engine;
 pub mod events;
 pub mod inner_op;
@@ -72,7 +76,10 @@ pub use control_op::{
     RevokeReason, RosterEntry,
 };
 pub use core::{Core, CoreError};
-pub use engine::{Engine, EngineError};
+pub use engine::{
+    ChainIntegrity, CompactionPolicy, CompactionReport, Engine, EngineError, SnapshotApplied,
+    SNAPSHOT_FORMAT_V,
+};
 pub use events::{
     AttachmentFetch, AttachmentFetchOutcome, AttachmentFetchState, DomainEvent, SyncStatus,
 };
@@ -81,6 +88,8 @@ pub use queries::{
     ActionableTask, ContextRow, DeviceRow, FocusPlanRow, FocusSessionRow, Query, QueryResult,
     StreamRow,
 };
-pub use sync_driver::{BoxTransport, ConnectFuture, SyncConfig, TokenSource, TransportFactory};
+pub use sync_driver::{
+    BoxTransport, ConnectFuture, CredentialRead, SyncConfig, TokenSource, TransportFactory,
+};
 pub use unlock::{IdentitySeed, Unlock};
 pub use vault_lock::{VaultLock, VaultLockError};

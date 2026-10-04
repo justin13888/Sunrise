@@ -62,6 +62,7 @@ pub mod dto;
 pub mod ical;
 pub mod notes;
 pub mod pairing;
+pub mod pairing_relay;
 pub mod query;
 pub mod types;
 pub mod vocab;
@@ -78,6 +79,7 @@ pub use notes::{
     NoteListItem, NoteMark,
 };
 pub use pairing::{DevicePairing, PairingRole, PairingStep};
+pub use pairing_relay::RelayPairing;
 pub use query::{CoreQuery, CoreQueryResult};
 pub use vocab::RelativeDay;
 
@@ -119,9 +121,22 @@ pub enum BindingError {
         /// How many bytes arrived.
         len: u32,
     },
-    /// The OIDC login flow failed.
+    /// The OIDC login flow failed, for any reason but
+    /// [`BindingError::LoginRefused`]'s.
     #[error("login: {0}")]
     Login(String),
+    /// The issuer refused the grant in OAuth's own words
+    /// (`sunrise_auth::LoginError::Rejected`): a revoked or expired refresh
+    /// token, or a login the user declined.
+    ///
+    /// Its own variant because a client does something different with it. A
+    /// refused refresh token will be refused again, so the client drops it and
+    /// asks the user to sign in; any other [`BindingError::Login`], an
+    /// unreachable issuer above all, says nothing about the token, and dropping
+    /// it there turns every offline launch into a browser sign-in. The message
+    /// reads the same as [`BindingError::Login`]'s.
+    #[error("login: {0}")]
+    LoginRefused(String),
     /// A recurrence phrase could not be read.
     ///
     /// Carries the phrase back so a routine editor can leave what was typed in
@@ -151,8 +166,9 @@ pub enum BindingError {
     ///
     /// Kept apart from [`BindingError::Core`] because the two need different
     /// things from the user: a core failure is a bug or a broken vault, and
-    /// this is a network, a token, or a relay saying no. `bootstrap_account` is
-    /// the only route that raises it.
+    /// this is a network, a token, or a relay saying no. Raised by
+    /// `bootstrap_account`, `register_relay_device` and
+    /// [`pairing_relay::RelayPairing`].
     #[error("relay: {0}")]
     Relay(String),
     /// An attachment's metadata is on this device and its bytes are not.
@@ -231,7 +247,10 @@ impl From<sunrise_core::AttachError> for BindingError {
 
 impl From<sunrise_auth::LoginError> for BindingError {
     fn from(e: sunrise_auth::LoginError) -> Self {
-        Self::Login(e.to_string())
+        match e {
+            sunrise_auth::LoginError::Rejected(_) => Self::LoginRefused(e.to_string()),
+            other => Self::Login(other.to_string()),
+        }
     }
 }
 
@@ -907,6 +926,22 @@ impl SunriseCore {
     /// pairing, which holds no `ID_D_priv`. That is not an error and the app
     /// must not present it as one: the device that created the account is the
     /// one that can produce a code, and this device's account already has one.
+    /// A paired device that only needs its relay device id should call
+    /// [`Self::register_relay_device`] instead, which publishes nothing about
+    /// the account and asserts no terms.
+    ///
+    /// `terms_accepted_at_ms` is the `terms_at_ms` the relay records, and it is
+    /// the **caller's** to supply because it is a product fact, not a clock
+    /// reading: the moment this account's holder accepted the relay operator's
+    /// terms. `docs/06-server/api.md` §Terms acceptance defines it. This method
+    /// used to fill it with its own `now_ms()`, which decided on every caller's
+    /// behalf that an acceptance had happened
+    /// ([#183](https://github.com/justin13888/Sunrise/issues/183)). The relay
+    /// keeps the first value it is sent, so a retry does not move it.
+    ///
+    /// The relay device id comes back in [`dto::AccountBootstrap::device_id`],
+    /// and the caller must record it: the relay never sends it again, and it is
+    /// what [`Self::start_sync`]'s `relay_device_id` names.
     ///
     /// # Errors
     ///
@@ -918,6 +953,7 @@ impl SunriseCore {
         bearer: String,
         email: String,
         nickname: String,
+        terms_accepted_at_ms: u64,
     ) -> Result<dto::AccountBootstrap, BindingError> {
         use sunrise_core::Rng as _;
 
@@ -941,24 +977,9 @@ impl SunriseCore {
                 identity_signing_pub: self.inner.identity_signing_pub(),
                 identity_dh_pub: self.inner.identity_dh_pub(),
                 recovery_blob,
-                terms_at_ms: self.inner.now_ms(),
+                terms_at_ms: terms_accepted_at_ms,
             },
-            sunrise_relay_client::DeviceIdentity {
-                device_pub_s: self.inner.device_signing_pub(),
-                device_pub_d: None,
-                device_cert: None,
-                // The only name a sibling can revoke this device by: the relay
-                // mints its own id and never sends it back through the op
-                // stream. A device that omits it cannot be revoked at all.
-                vault_device_id: Some(sunrise_id::crockford::encode_bytes(&self.inner.device_id())),
-                nickname,
-                platform: if cfg!(target_os = "ios") {
-                    "ios".to_owned()
-                } else {
-                    "macos".to_owned()
-                },
-                app_version: Some(env!("CARGO_PKG_VERSION").to_owned()),
-            },
+            self.relay_device_identity(nickname),
         )
         .await
         .map_err(|e| BindingError::Relay(e.to_string()))?;
@@ -971,6 +992,45 @@ impl SunriseCore {
             // ever returns is a code the stored blob opens.
             recovery_code: code.map(|c| c.reveal().to_owned()),
         })
+    }
+
+    /// Register this device on an account that already exists, and return the
+    /// id the relay minted for it.
+    ///
+    /// The second half of [`Self::bootstrap_account`] on its own — exactly what
+    /// `sunrise recover` does with `sunrise_relay_client::register_device`, and
+    /// for the same reason. A device admitted by pairing joins an account its
+    /// sponsor already published: it holds no `ID_D_priv` to seal, has no
+    /// identity keys to add that the relay does not already hold, and has no
+    /// business asserting a terms acceptance on the account holder's behalf.
+    /// Before this existed such a device could reach the relay only through
+    /// `bootstrap_account`, which the Apple app never called for it, so it held
+    /// no relay device id and a relay with `require_device_sig` refused it
+    /// ([#183](https://github.com/justin13888/Sunrise/issues/183)).
+    ///
+    /// Also the path a founding device takes when its id was never recorded:
+    /// the relay treats a second registration of the same key as a second row
+    /// rather than an error, so this cannot fail for having run before.
+    ///
+    /// The returned id is the caller's to record, for the reason
+    /// [`dto::AccountBootstrap::device_id`] gives.
+    ///
+    /// # Errors
+    ///
+    /// [`BindingError::Relay`] with what the relay said.
+    pub async fn register_relay_device(
+        &self,
+        relay_url: String,
+        bearer: String,
+        nickname: String,
+    ) -> Result<String, BindingError> {
+        sunrise_relay_client::register_device(
+            &relay_url,
+            &bearer,
+            self.relay_device_identity(nickname),
+        )
+        .await
+        .map_err(|e| BindingError::Relay(e.to_string()))
     }
 
     /// Start the live-sync driver against `url` (a relay `/sync` endpoint:
@@ -1007,8 +1067,7 @@ impl SunriseCore {
         relay_device_id: Option<String>,
     ) -> Result<(), BindingError> {
         let _guard = self.rt.enter();
-        let credential = self.inner.sync_credential();
-        credential.set(bearer);
+        self.inner.sync_credential().set(bearer);
         // An empty string is not an id. A foreign caller reading a missing
         // value out of a store that answers with `""` would otherwise start a
         // driver that presents an `X-Sunrise-Device` naming no row, and the
@@ -1016,8 +1075,7 @@ impl SunriseCore {
         let signer = relay_device_id
             .filter(|id| !id.trim().is_empty())
             .map(|id| self.inner.device_signer(id.trim()));
-        self.inner
-            .start_sync(ws_factory(&url, credential, signer))?;
+        self.inner.start_sync(ws_factory(&url, signer))?;
         Ok(())
     }
 
@@ -1077,31 +1135,54 @@ impl SunriseCore {
         }
         Ok(touched)
     }
+
+    /// What this device tells `POST /api/v1/devices` about itself.
+    ///
+    /// One builder for both registration paths, so a founding device and a
+    /// paired one cannot come to describe themselves differently.
+    fn relay_device_identity(&self, nickname: String) -> sunrise_relay_client::DeviceIdentity {
+        sunrise_relay_client::DeviceIdentity {
+            device_pub_s: self.inner.device_signing_pub(),
+            device_pub_d: None,
+            device_cert: None,
+            // The only name a sibling can revoke this device by: the relay
+            // mints its own id and never sends it back through the op
+            // stream. A device that omits it cannot be revoked at all.
+            vault_device_id: Some(sunrise_id::crockford::encode_bytes(&self.inner.device_id())),
+            nickname,
+            platform: if cfg!(target_os = "ios") {
+                "ios".to_owned()
+            } else {
+                "macos".to_owned()
+            },
+            app_version: Some(env!("CARGO_PKG_VERSION").to_owned()),
+        }
+    }
 }
 
 /// Build the transport factory the sync driver dials with, once per connection
 /// attempt (initial connect and every reconnect).
 ///
-/// The bearer is read from `credential` on every attempt rather than captured,
-/// so a reconnect after a renewal presents the *current* token. `signer` — the
-/// ADR-0022 device binding — is cloned per attempt for the same reason: the
-/// route where that matters most is the revocation `DELETE`, which runs on
-/// whatever connection the driver holds at the time.
+/// The factory holds no bearer: the driver reads the core's sync credential on
+/// every attempt and hands the read over, so a reconnect after a renewal
+/// presents the *current* token and the driver knows which version each
+/// attempt carried. `signer` — the ADR-0022 device binding — is cloned per
+/// attempt for the same reason: the route where that matters most is the
+/// revocation `DELETE`, which runs on whatever connection the driver holds at
+/// the time.
 ///
 /// The same shape as `sunrise_cli::livesync::ws_factory`; the driver is
 /// transport-agnostic and calls this once per connection attempt.
 fn ws_factory(
     url: &str,
-    credential: sunrise_core::TokenSource,
     signer: Option<Arc<dyn sunrise_sync::DeviceSigner>>,
 ) -> sunrise_core::TransportFactory {
     let url = url.to_string();
-    Arc::new(move || {
+    Arc::new(move |read: sunrise_core::CredentialRead| {
         let url = url.clone();
-        let bearer = credential.get();
         let signer = signer.clone();
         Box::pin(async move {
-            let t = sunrise_sync::SseTransport::connect_with_bearer(&url, bearer.as_deref());
+            let t = sunrise_sync::SseTransport::connect_with_bearer(&url, read.bearer());
             let t = match signer {
                 Some(s) => t.with_device_signer(s),
                 None => t,
@@ -1353,6 +1434,12 @@ impl SunriseLogin {
 
     /// Exchange a refresh token for a fresh access token, without user
     /// interaction. Drive it from [`LoginCredentials::renew_at_ms`].
+    ///
+    /// # Errors
+    /// [`BindingError::LoginRefused`] when the issuer refused the refresh
+    /// token, which it will do again: drop it. [`BindingError::Login`] for
+    /// everything else, an unreachable issuer included, which says nothing
+    /// about the token.
     pub async fn refresh(
         &self,
         refresh_token: String,
@@ -1364,5 +1451,43 @@ impl SunriseLogin {
             .refresh(&metadata, &refresh_token, now_ms)
             .await?
             .into())
+    }
+}
+
+#[cfg(test)]
+mod login_error_tests {
+    use super::BindingError;
+    use sunrise_auth::LoginError;
+
+    /// The one variant a client drops a refresh token on crosses the seam as
+    /// its own, and nothing else does: an unreachable issuer arriving as a
+    /// refusal is what would turn every offline launch into a browser sign-in.
+    #[test]
+    fn only_an_issuer_refusal_crosses_as_login_refused() {
+        let refused = BindingError::from(LoginError::Rejected("refresh: invalid_grant".into()));
+        assert!(
+            matches!(&refused, BindingError::LoginRefused(m) if m.contains("invalid_grant")),
+            "{refused:?}"
+        );
+
+        for other in [
+            LoginError::Transport("connection refused".into()),
+            LoginError::Malformed("not json".into()),
+            LoginError::Provider("no token_endpoint".into()),
+            LoginError::TimedOut,
+        ] {
+            let crossed = BindingError::from(other);
+            assert!(matches!(crossed, BindingError::Login(_)), "{crossed:?}");
+        }
+    }
+
+    /// The split changes what a client branches on, not what it shows.
+    #[test]
+    fn a_refusal_reads_the_same_as_any_other_login_failure() {
+        let refused = BindingError::from(LoginError::Rejected("refresh: invalid_grant".into()));
+        assert_eq!(
+            refused.to_string(),
+            "login: issuer declined: refresh: invalid_grant"
+        );
     }
 }

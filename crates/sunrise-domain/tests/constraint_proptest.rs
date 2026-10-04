@@ -36,7 +36,7 @@ const ALL_WEEKDAYS: [Weekday; 7] = [
 
 fn weekday_set_strategy() -> impl Strategy<Value = WeekdaySet> {
     proptest::collection::vec(0usize..7, 0..7)
-        .prop_map(|idxs| WeekdaySet::from_days(idxs.into_iter().map(|i| ALL_WEEKDAYS[i])))
+        .prop_map(|idxs| WeekdaySet::from_days(idxs.into_iter().map(|i| ALL_WEEKDAYS[i].clone())))
 }
 
 /// Build an always-*valid* constraint: at least one dimension populated,
@@ -62,17 +62,20 @@ fn valid_constraint_strategy() -> impl Strategy<Value = ScheduleConstraint> {
                 } else {
                     start
                 };
-                TimeOfDayRange { start, end }
+                TimeOfDayRange::new(start, end)
             });
-            let date_range = dr.map(|(start, add)| DateRange {
-                start,
-                end: add.map(|days| start.saturating_add(jiff::Span::new().days(days))),
+            let date_range = dr.map(|(start, add)| {
+                DateRange::new(
+                    start,
+                    add.map(|days| start.saturating_add(jiff::Span::new().days(days))),
+                )
             });
             ScheduleConstraint {
                 time_of_day,
                 days_of_week: days,
                 date_range,
                 severity,
+                unknown: sunrise_domain::Unknowns::new(),
             }
         })
         // Guarantee at least one dimension is populated.

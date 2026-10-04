@@ -205,7 +205,7 @@ schema version the payload was written against, and field 12 already reveals
 that.
 
 **Consequence for a committed fixture.** Once field 13 is assigned,
-`FUTURE_SMALL_FIELD` (`crates/sunrise-crypto/tests/forward_compat.rs:23`) stops
+`FUTURE_SMALL_FIELD` (`crates/sunrise-crypto/tests/forward_compat.rs#FUTURE_SMALL_FIELD`) stops
 naming an unknown field. The `forward-compat/v1-reads-v2.cbor` fixture is
 regenerated with an unassigned single-byte id (23) in its place, in the same
 change that assigns 13.
@@ -314,12 +314,12 @@ decoder and the relay's header decoder share one function for this rule.
   enclosing op. Storage keeps the raw value rather than degrading it to
   `Instant`.
 - **An `extra` blob that cannot be parsed MUST be kept opaque, not emptied.**
-  This is the target, not today's behaviour:
-  `crates/sunrise-core/src/engine/ids.rs#decode_unknowns` currently decodes
-  the blob with `decode_lenient(..).ok().unwrap_or_default()`, so an
-  undecodable blob reads as an empty map and the next write of the row drops
-  it. The fix keeps the blob as bytes, writes it back unchanged, and logs the
-  event ([#322](https://github.com/justin13888/Sunrise/issues/322)).
+  `crates/sunrise-core/src/engine/ids.rs#decode_unknowns` still reads an
+  undecodable blob as an empty map, so the read does not fail; the blob stays
+  in the row, and `crates/sunrise-core/src/engine/ids.rs#extra_over_opaque`
+  writes it back unchanged when the entity being written carries no unknown
+  fields, and logs `core.storage.extra_kept_opaque`
+  ([#322](https://github.com/justin13888/Sunrise/issues/322)).
 
 Under [ADR-0044](./0044-per-field-ops.md), an older build no longer re-emits
 fields it did not edit. That reduces how often these rules are exercised. It

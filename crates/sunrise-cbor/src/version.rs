@@ -22,7 +22,32 @@ pub const WIRE_PROTO_V: u16 = 1;
 /// (field 12); `3` changed field 5 from a bare wall-clock millisecond count to
 /// a hybrid logical clock `[physical_ms, logical]`. Neither number ever
 /// shipped: v1 opens at `3`. See ADR-0015 and ADR-0016.
+///
+/// A writer stamps this in envelope field 1, and stamps
+/// [`ENVELOPE_FORMAT_FLOOR`] in the magic prefix (ADR-0045 §5). A reader takes
+/// any container whose floor it implements, so an *additive* change — a new
+/// field whose absence has a defined meaning — bumps this constant alone.
+///
+/// Every build before the floor compares both numbers for equality, so this
+/// MUST stay equal to [`ENVELOPE_FORMAT_FLOOR`] until `core.envelope_floor` is
+/// in `vault_requires` and the relay agrees server capability bit 9
+/// (`SrvEnvelopeFloor`). A test in `sunrise-crypto` pins that.
 pub const ENVELOPE_FORMAT_V: u16 = 3;
+
+/// Lowest envelope **container format** that still reads this build's
+/// envelopes correctly, and the lowest one this build reads (ADR-0045 §5).
+///
+/// It rides in the envelope's magic prefix. A reader accepts an envelope when
+/// `ENVELOPE_FORMAT_FLOOR <= prefix.version <= ENVELOPE_FORMAT_V` and field 1
+/// is at least `prefix.version`; the rule is
+/// [`crate::envelope_header::envelope_format_readable`], which the client
+/// decoder and the relay's header decoder both call.
+///
+/// The floor MUST be raised by any container change that alters the meaning of
+/// fields 1–12, the AAD construction (the `Omit` set), or the signature input
+/// (`SIG_DOMAIN`). `sunrise-crypto` pins all three to the floor they were
+/// frozen at, so changing one without moving the floor fails the build.
+pub const ENVELOPE_FORMAT_FLOOR: u16 = 3;
 
 /// Document schema version constant (per-entity field shapes).
 ///
@@ -63,7 +88,126 @@ pub const ENVELOPE_FORMAT_V: u16 = 3;
 /// build that skipped a transition would go on verifying every later op
 /// against an identity the account has retired. Every v1..v5 payload shape is
 /// unchanged, so the floor still does not move.
-pub const DOC_SCHEMA_V: u16 = 6;
+///
+/// Those refusals describe the builds that shipped them. A build with
+/// `STORAGE_V` 31 or later no longer refuses a variant it does not know: it
+/// parks the verified op in `ops` and `parked_ops`, counts it toward the sync
+/// cursor, and replays it through the full apply path once a build with a
+/// different `DOC_SCHEMA_V` opens the vault (issue #320, ADR-0045 §4). That
+/// replay is keyed on this constant, so a new variant MUST move it, or a
+/// parked op of that kind is not retried until something else does.
+///
+/// `7` is the first version with a fingerprint (issue #323, ADR-0045 §2–§3):
+/// [`DOC_SCHEMA_FP_FIRST`]. Its shapes are the ones v6 had plus what landed
+/// since without a bump, all of it additive: the `Unknown` arm of every
+/// lossless enum (#321), unknown maps on every nested record and
+/// `SunriseTime`'s unknown kind (#322). A writer at 7 stamps envelope field
+/// 13 with the first 8 bytes of the fingerprint registered here, and every
+/// later version MUST be registered in [`DOC_SCHEMA_FINGERPRINTS`] in the
+/// change that bumps it. A test in `sunrise-core` fails while the generated
+/// schema's fingerprint differs from this version's entry, so a shape cannot
+/// change without the bump.
+///
+/// `8` adds the `Patch` op family (ADR-0044, issue #319): some fields of one
+/// entity, each written as a self-describing field op and merged by the
+/// field's own CRDT type. Every v7 shape is unchanged, so the floor does not
+/// move. A v7 build parks a `Patch` and replays it after an upgrade. This
+/// build applies one and never emits one: ADR-0044 §9 gates the first `Patch`
+/// on the vault's `vault_requires`, which does not exist yet (#324).
+///
+/// `9` adds the `StreamDigest` control family (ADR-0043, issue #325): a
+/// replica's frontier in one stream and its digest, which a receiver compares
+/// with its own chain roots. Every v8 shape is unchanged, so the floor does
+/// not move. A v8 build parks a `StreamDigest` and replays it after an
+/// upgrade. Envelope fields 14 and 15 land with it, but they are container
+/// fields, not document schema, and move nothing here.
+pub const DOC_SCHEMA_V: u16 = 9;
+
+/// The first [`DOC_SCHEMA_V`] that has a fingerprint (ADR-0045 §3, `N_fp`).
+///
+/// An envelope below it carries no field 13 and is read under the legacy
+/// rules. A writer at or above it MUST emit field 13.
+pub const DOC_SCHEMA_FP_FIRST: u16 = 7;
+
+// The build's own version is fingerprinted, so its writer can stamp field 13.
+const _: () = assert!(DOC_SCHEMA_V >= DOC_SCHEMA_FP_FIRST);
+
+/// BLAKE3 `derive_key` context for the document-schema fingerprint
+/// (ADR-0045 §2): `fp = BLAKE3::derive_key(this, JCS(schema))`.
+pub const DOC_SCHEMA_FP_DOMAIN: &str = "sunrise.doc_schema.fingerprint.v1";
+
+/// How many leading bytes of the fingerprint envelope field 13 carries.
+pub const DOC_SCHEMA_FP_PREFIX_LEN: usize = 8;
+
+/// Every document-schema version that has a fingerprint, to that fingerprint,
+/// in version order. **Append-only.**
+///
+/// This is the build's registry: the writer stamps envelope field 13 from it,
+/// and a receiver compares field 13 against it. It is committed as
+/// `schemas/doc-schema/registry.json`, and each entry is frozen as a literal
+/// in `sunrise-crypto-test-vectors` (`protocol::DOC_SCHEMA_REGISTRY`), so an
+/// entry that is edited or removed fails a test. An entry is what every build
+/// that shipped it believes its version means; changing one makes two builds
+/// disagree while their version numbers say they agree, which is the failure
+/// the fingerprint exists to catch.
+pub const DOC_SCHEMA_FINGERPRINTS: &[(u16, [u8; 32])] = &[
+    (
+        7,
+        hex32("fb893b62bb2f9bf7d9adf7ba95d5bee20498a63aa0e03c4f14a7a28a7d0d6fcb"),
+    ),
+    (
+        8,
+        hex32("69a555bc13a1b05143608bf16370bb6fcdb0268e514efdbc30df070049dbf58d"),
+    ),
+    (
+        9,
+        hex32("875fc9a8b8d426ff9c52dd6fa5ce2da8685903353fc58f98446c4825c2d7de01"),
+    ),
+];
+
+/// The registered fingerprint of document schema `v`, or `None` for a version
+/// this build has no entry for: one before [`DOC_SCHEMA_FP_FIRST`], or one
+/// newer than this build.
+#[must_use]
+pub fn doc_schema_fingerprint(v: u32) -> Option<[u8; 32]> {
+    DOC_SCHEMA_FINGERPRINTS
+        .iter()
+        .find(|(known, _)| u32::from(*known) == v)
+        .map(|(_, fp)| *fp)
+}
+
+/// What envelope field 13 carries for document schema `v`: the first
+/// [`DOC_SCHEMA_FP_PREFIX_LEN`] bytes of its registered fingerprint, or `None`
+/// where [`doc_schema_fingerprint`] has no entry.
+#[must_use]
+pub fn doc_schema_fp_prefix(v: u32) -> Option<[u8; DOC_SCHEMA_FP_PREFIX_LEN]> {
+    doc_schema_fingerprint(v).map(|fp| {
+        let mut prefix = [0u8; DOC_SCHEMA_FP_PREFIX_LEN];
+        prefix.copy_from_slice(&fp[..DOC_SCHEMA_FP_PREFIX_LEN]);
+        prefix
+    })
+}
+
+/// Decode 64 lowercase hex digits at compile time. A wrong length or digit in
+/// a registry entry is a compile error.
+const fn hex32(s: &str) -> [u8; 32] {
+    const fn nibble(c: u8) -> u8 {
+        match c {
+            b'0'..=b'9' => c - b'0',
+            b'a'..=b'f' => c - b'a' + 10,
+            _ => panic!("registry fingerprints are lowercase hex"),
+        }
+    }
+    let b = s.as_bytes();
+    assert!(b.len() == 64, "a fingerprint is 64 hex digits");
+    let mut out = [0u8; 32];
+    let mut i = 0;
+    while i < 32 {
+        out[i] = (nibble(b[2 * i]) << 4) | nibble(b[2 * i + 1]);
+        i += 1;
+    }
+    out
+}
 
 /// Lowest [`DOC_SCHEMA_V`] this build can still interpret.
 ///
@@ -225,7 +369,57 @@ pub const CRYPTO_SUITE_V: u16 = 5;
 /// to be a fold that can take a row back out; the four key-distribution sites
 /// ask "is this device read-bounded?", which has to be monotone or it is not a
 /// bound. One table could not be both, so the second question gets its own
-/// ratchet — written only by `INSERT OR IGNORE`, never deleted — and an
+/// ratchet — never deleted for a device this replica holds a cert for — and an
 /// unwound revocation stops handing the device back every epoch the vault
 /// mints (ADR-0041 §Decision 1 records the unwind; this is its read half).
-pub const STORAGE_V: u16 = 28;
+///
+/// `29` is migration `0029_stream_key_senders.sql`, which records which devices
+/// delivered each Stream key this vault absorbed (issue #280, ADR-0041
+/// §Decision 4). A key a read-bounded device delivered is still stored, so
+/// every op sealed under it stays readable, and it is never the key this
+/// device writes under.
+///
+/// `30` is migration `0030_read_bounds_from_sponsor.sql`, which marks the read
+/// bounds a paired device adopted from its sponsor's pairing grant (issue
+/// #282). A device that paired used to start with no bound and learn the
+/// revocations from the relay in whatever order it had them, which left it the
+/// weakest replica in the account; it now starts with its sponsor's bound, and
+/// the mark keeps the orphan release from taking an adopted bound back before
+/// the device's cert arrives.
+///
+/// `31` is migration `0031_parked_ops.sql`, which parks a verified op whose
+/// inner kind this build does not know instead of dropping it as corruption
+/// (issue #320, ADR-0045 §4). The op is kept in `ops`, unapplied, and counts
+/// toward the sync cursor; `parked_ops` marks it and orders its replay after
+/// an upgrade. Unlike `deferred_ops` it has no TTL and no cap, because what it
+/// holds has been verified and cannot be fetched again.
+///
+/// `32` is migration `0032_routine_rrule_blob.sql`, which stores a routine's
+/// recurrence rule as canonical CBOR beside its RFC 5545 text (issue #321,
+/// ADR-0045 §6). A `FREQ`, `BYDAY` or `WKST` value this build does not know is
+/// now kept verbatim, and a raw value holding `;`, `,` or `=` cannot survive
+/// the text form; the blob holds any string. Schema-only: rows written before
+/// it read their text, which only ever held known values.
+///
+/// `33` is migration `0033_field_merge_state.sql`, which adds the per-field
+/// merge state of ADR-0044 (issue #319): one register per field, the per-key
+/// registers of a map field, an add-wins observed-remove set per set field,
+/// and the deltas of a counter. The entity rows become its read projection.
+/// Schema-only: an entity the vault already held is seeded from its row the
+/// first time an op touches it.
+///
+/// `34` is migration `0034_op_chain.sql`, which adds the per-device op chains
+/// of ADR-0043 (issue #325): each op's `op_hash` and running chain root on
+/// `ops`, what the writer has listed in envelope field 15, the ops a later op
+/// named that this replica does not hold, the peer frontier entries it could
+/// not check yet, fork evidence, and digest disagreements. Schema-only: the
+/// hashes and roots of rows already held are computed from their envelopes
+/// the first time each device's prefix is folded.
+///
+/// `35` is migration `0035_op_log_compaction.sql`, which adds client op-log
+/// compaction (issue #330, ADR-0059): a per-`(stream, device)` floor below
+/// which ops are covered by the merge state and the floor's chain root, the
+/// last frontier each peer published in its stream digest, and the latest
+/// snapshot record per stream. Schema-only: a vault without a floor reads its
+/// prefix from seq 1, exactly as before.
+pub const STORAGE_V: u16 = 35;

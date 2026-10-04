@@ -78,7 +78,7 @@ impl Engine {
         let mut candidates = Vec::new();
 
         for t in read_live_tasks(db.conn())? {
-            if !matches!(t.state, TaskState::Todo | TaskState::InProgress) {
+            if !matches!(t.state.effective(), TaskState::Todo | TaskState::InProgress) {
                 continue;
             }
             let Some(at) = t.scheduled_at.clone() else {
