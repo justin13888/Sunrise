@@ -35,9 +35,9 @@
 //!   of them projects exactly as entity-level last-writer-wins did. A delete
 //!   carries its entity with `deleted` set, never a bare id: see
 //!   `InnerOp::TaskDelete` and ADR-0014.
-//! - [`InnerOp::Patch`] carries only the fields its command wrote, each as a
+//! - `InnerOp::Patch` carries only the fields its command wrote, each as a
 //!   self-describing field op, and every field merges by its own CRDT type.
-//!   See [`PatchPayload`] and [`crate::engine`]'s `merge` module.
+//!   See `PatchPayload` and [`crate::engine`]'s `merge` module.
 //!
 //! This build applies both and emits only the first. ADR-0044 §9 forbids a
 //! build from emitting its first `Patch` into a vault until the vault's
