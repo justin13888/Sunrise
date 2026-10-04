@@ -376,4 +376,11 @@ pub const CRYPTO_SUITE_V: u16 = 5;
 /// now kept verbatim, and a raw value holding `;`, `,` or `=` cannot survive
 /// the text form; the blob holds any string. Schema-only: rows written before
 /// it read their text, which only ever held known values.
-pub const STORAGE_V: u16 = 32;
+///
+/// `33` is migration `0033_field_merge_state.sql`, which adds the per-field
+/// merge state of ADR-0044 (issue #319): one register per field, the per-key
+/// registers of a map field, an add-wins observed-remove set per set field,
+/// and the deltas of a counter. The entity rows become its read projection.
+/// Schema-only: an entity the vault already held is seeded from its row the
+/// first time an op touches it.
+pub const STORAGE_V: u16 = 33;
