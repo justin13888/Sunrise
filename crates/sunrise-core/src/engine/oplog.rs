@@ -17,6 +17,7 @@ use sunrise_domain::INBOX_STREAM_BYTES;
 use sunrise_storage::{Db, OpLog, Outbox};
 // `open_op_row` is the only user and is `#[cfg(test)]`.
 use super::chain::{fold_chain, hash_of_stored, set_op_hash, writer_links};
+use super::compaction::floor_seq;
 #[cfg(test)]
 use super::ids::hex_short;
 use super::lww::LwwStamp;
@@ -576,9 +577,14 @@ impl Engine {
     }
 
     /// Next `seq` for `(stream_id, this device)`, read from the committed DB.
+    ///
+    /// Never at or below this device's own compaction floor, whose rows may
+    /// be gone (ADR-0059): reusing a seq there would sign a second op at a
+    /// position peers already hold.
     pub(super) fn next_seq(&self, db: &Db, stream_id: &[u8; 16]) -> Result<u64, EngineError> {
         let stream_blob: Vec<u8> = stream_id.to_vec();
-        let device_blob: Vec<u8> = self.keychain.device_id().to_vec();
+        let device = self.keychain.device_id();
+        let device_blob: Vec<u8> = device.to_vec();
         let max: Option<i64> = db
             .conn()
             .query_row(
@@ -588,25 +594,30 @@ impl Engine {
             )
             .optional()?
             .flatten();
-        let next = max.map_or(1, |v| v.saturating_add(1));
-        Ok(u64::try_from(next).unwrap_or(1))
+        let held = max.and_then(|v| u64::try_from(v).ok()).unwrap_or(0);
+        let floor = floor_seq(db.conn(), stream_id, &device)?;
+        Ok(held.max(floor).saturating_add(1))
     }
 
     /// Next `seq` for `(stream_id, this device)`, read inside a transaction so it
-    /// sees uncommitted inserts from earlier in the same transaction.
+    /// sees uncommitted inserts from earlier in the same transaction. Never at
+    /// or below this device's own compaction floor, as [`Self::next_seq`].
     pub(super) fn next_seq_tx(
         &self,
         tx: &Transaction<'_>,
         stream_id: &[u8; 16],
     ) -> rusqlite::Result<u64> {
         let stream_blob: Vec<u8> = stream_id.to_vec();
-        let device_blob: Vec<u8> = self.keychain.device_id().to_vec();
+        let device = self.keychain.device_id();
+        let device_blob: Vec<u8> = device.to_vec();
         let max: i64 = tx.query_row(
             "SELECT COALESCE(MAX(seq), 0) FROM ops WHERE stream_id = ? AND device_id = ?",
             params![stream_blob, device_blob],
             |row| row.get(0),
         )?;
-        Ok(u64::try_from(max.saturating_add(1)).unwrap_or(1))
+        let held = u64::try_from(max).unwrap_or(0);
+        let floor = floor_seq(tx, stream_id, &device)?;
+        Ok(held.max(floor).saturating_add(1))
     }
 
     /// Decode + verify + open the stored envelope for `op_id` back to its
@@ -759,7 +770,7 @@ pub(super) fn ops_run_end(
 /// *not* decide is whether the op applies. The op row went in at the
 /// idempotence gate before the control op was dispatched, the `devices` row is
 /// written before the backfill is attempted, and a backfill error is logged rather than
-/// raised (`crates/sunrise-core/src/engine/sync.rs:1305#apply_control_op`). Not one of
+/// raised (`crates/sunrise-core/src/engine/sync.rs:1312#apply_control_op`). Not one of
 /// those answers skips this function: it runs on the delivery like any other,
 /// and the op row it left behind counts toward the prefix like any other.
 /// Whether the number this writes actually moves is a question about the seqs
@@ -797,7 +808,7 @@ pub(super) fn ops_run_end(
 /// changed no row and released no parked op;
 /// `crates/sunrise-core/src/engine/oplog.rs:159#ops_insert_at` at the tail of
 /// this device's own emit, after the op-log insert and the outbox enqueue; and
-/// `crates/sunrise-core/src/engine/sync.rs:750#park_op`, after inserting the
+/// `crates/sunrise-core/src/engine/sync.rs:762#park_op`, after inserting the
 /// unapplied row of an op whose kind this build does not know. That last one
 /// is why a parked op counts toward the prefix: its row is in `ops` like any
 /// other, and this function reads nothing else (issue #320).
@@ -819,7 +830,7 @@ pub(super) fn ops_run_end(
 ///
 /// Two of them belong to revocation, and neither is an op's.
 ///
-/// The first. `crates/sunrise-core/src/engine/sync.rs:1054#apply_control_op` hands a
+/// The first. `crates/sunrise-core/src/engine/sync.rs:1061#apply_control_op` hands a
 /// `device_revoke` to
 /// `crates/sunrise-core/src/engine/revocation.rs:1349#apply_device_revoke`,
 /// which refuses one naming its own sender — logging
@@ -841,7 +852,7 @@ pub(super) fn ops_run_end(
 ///
 /// The second, and it is the one keyed on the *sender's* standing that the
 /// premise at the top of this comment turns on.
-/// `crates/sunrise-core/src/engine/sync.rs:982#apply_control_op` refuses a
+/// `crates/sunrise-core/src/engine/sync.rs:989#apply_control_op` refuses a
 /// read-bounded sender's claim that some third device already holds the key at
 /// a `(stream, epoch)`, logging `core.key.recipient_claim_refused`. What it
 /// declines is a `key_envelope_recipients` **hint** row and nothing else: the
@@ -869,7 +880,7 @@ pub(super) fn ops_run_end(
 /// at this `(stream, epoch)` opens the envelope,
 /// `crates/sunrise-core/src/engine/sync.rs:338#apply_remote_all` when the
 /// sender's clock is outside the drift window, and
-/// `crates/sunrise-core/src/engine/sync.rs:937#apply_control_op` when a key
+/// `crates/sunrise-core/src/engine/sync.rs:944#apply_control_op` when a key
 /// envelope names an epoch above `MAX_EPOCH_LEAP`. The first two return an
 /// error before the transaction opens, so no op row and no cursor; the third
 /// drops a payload with the op row already in, so the op counts toward the
@@ -916,12 +927,14 @@ pub(super) fn ops_run_end(
 /// is also how `CursorEntry.last_applied_seq` is read on the wire.
 ///
 /// That meaning is what bounds every "the cursor advances" above. The run
-/// starts at seq 1 because this function asks for it there —
-/// `crates/sunrise-core/src/engine/oplog.rs:938#upsert_sync_cursor` is where
-/// the literal lives;
-/// `crates/sunrise-core/src/engine/oplog.rs:681#ops_run_end` is parameterised
+/// starts at seq 1, or just above a compaction floor (see below), or just above
+/// the cursor already stored, which only ever rises, because this function
+/// asks for it there —
+/// `crates/sunrise-core/src/engine/oplog.rs#upsert_sync_cursor` is where the
+/// start is computed;
+/// `crates/sunrise-core/src/engine/oplog.rs:692#ops_run_end` is parameterised
 /// on `start` at
-/// `crates/sunrise-core/src/engine/oplog.rs:685#ops_run_end` and hard-codes
+/// `crates/sunrise-core/src/engine/oplog.rs:696#ops_run_end` and hard-codes
 /// nothing. So an op delivered with a gap below it is in the log and outside
 /// the prefix: with the log holding `{2}` the `ELSE ?3 - 1` arm writes 0, and with
 /// it holding `{1, 3}` the run ends at 1. Refused or applied makes no
@@ -935,13 +948,35 @@ pub(super) fn ops_run_end(
 /// where `ops.chain_root` is extended over it, one step per op, and where a
 /// peer's digest claim the prefix has just reached is checked (see
 /// [`super::chain::fold_chain`]). `now_ms` stamps a disagreement found there.
+///
+/// # Below a compaction floor
+///
+/// A device's prefix with a compaction floor starts above it rather than at
+/// seq 1 (ADR-0059): every seq at or below the floor is covered by the merge
+/// state and the floor's chain root, whether or not its row is still in
+/// `ops`. With no row above the floor the run ends at the floor itself.
 pub(super) fn upsert_sync_cursor(
     tx: &Transaction<'_>,
     stream_id: &[u8; 16],
     device_id: &[u8; 16],
     now_ms: u64,
 ) -> rusqlite::Result<()> {
-    let prefix = ops_run_end(tx, stream_id, device_id, 1)?;
+    // The run resumes where the stored cursor ends rather than at the floor:
+    // the cursor only ever rises (the `MAX` below), so a run that started
+    // lower could only end at or below it. Starting at seq 1 every time made
+    // each insert walk the device's whole prefix, quadratic in the log.
+    let held: Option<i64> = tx
+        .query_row(
+            "SELECT last_applied_seq FROM sync_cursors WHERE stream_id = ?1 AND device_id = ?2",
+            params![&stream_id[..], &device_id[..]],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let held = held.and_then(|n| u64::try_from(n).ok()).unwrap_or(0);
+    let start = floor_seq(tx, stream_id, device_id)?
+        .max(held)
+        .saturating_add(1);
+    let prefix = ops_run_end(tx, stream_id, device_id, i64::try_from(start).unwrap_or(1))?;
     tx.execute(
         "INSERT INTO sync_cursors (stream_id, device_id, last_applied_seq)
          VALUES (?, ?, ?)

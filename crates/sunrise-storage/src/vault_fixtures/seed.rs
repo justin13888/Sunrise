@@ -705,6 +705,38 @@ pub(super) const SEED: &[SeedRow] = &[
             ("recorded_at_ms", I(262)),
         ],
     },
+    SeedRow {
+        table: "compaction_floor",
+        values: &[
+            ("stream_id", B(&STREAM_ALPHA)),
+            ("device_id", B(&DEVICE_RETIRED)),
+            ("seq", I(263)),
+            ("op_hash", B(&[0x67; 32])),
+            ("root", B(&[0x68; 32])),
+            ("hlc_ms", I(HLC_MS + 50)),
+            ("hlc_logical", I(267)),
+        ],
+    },
+    SeedRow {
+        table: "peer_frontiers",
+        values: &[
+            ("stream_id", B(&STREAM_ALPHA)),
+            ("peer_device_id", B(&DEVICE_RETIRED)),
+            ("device_id", B(&DEVICE_LAPTOP)),
+            ("seq", I(264)),
+            ("recorded_at_ms", I(265)),
+        ],
+    },
+    SeedRow {
+        table: "stream_snapshots",
+        values: &[
+            ("stream_id", B(&STREAM_ALPHA)),
+            ("generated_by", B(&DEVICE_LAPTOP)),
+            ("generated_at_ms", I(266)),
+            ("digest", B(&[0x69; 32])),
+            ("record", B(b"SR\x04\x00\x01snapshot-record")),
+        ],
+    },
 ];
 
 /// The columns `table` has in `conn`'s schema, or `None` if it has no such

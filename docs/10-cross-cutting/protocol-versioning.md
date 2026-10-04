@@ -229,7 +229,7 @@ magic prefix (`crates/sunrise-cbor/src/magic.rs#MagicKind`):
 | 1 | `0x01` | Wire frame | `WIRE_PROTO_V` | 1 |
 | 2 | `0x02` | Op envelope | The writer's `ENVELOPE_FORMAT_FLOOR`, i.e. the oldest container a reader may implement (ADR-0045 §5). It equals `ENVELOPE_FORMAT_V` until the transition in §2.1 completes. It is **not** `DOC_SCHEMA_V`, which is in field 12. | 3 |
 | 3 | `0x03` | Recovery blob | recovery format version | 1 |
-| 4 | `0x04` | Snapshot blob | snapshot format version (reserved; nothing writes one, see [04-storage/compaction.md](../04-storage/compaction.md)) | 1 |
+| 4 | `0x04` | Snapshot record | snapshot format version (`SNAPSHOT_FORMAT_V`; see [04-storage/compaction.md](../04-storage/compaction.md) §Snapshot record) | 1 |
 | 5 | `0x05` | Vault meta record | vault meta version | 1 |
 | 6 | `0x06` | Diagnostic bundle | bundle version | 1 |
 | 7 | `0x07` | Pairing payload (QR contents, base64url JSON inside) | pairing version | 1 |

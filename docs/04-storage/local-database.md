@@ -213,6 +213,5 @@ The vault DB is suitable for binary backup (file copy while not actively writing
 
 ## Vacuum / maintenance
 
-- `PRAGMA auto_vacuum = INCREMENTAL` set at vault creation.
-- Background incremental vacuum runs after compaction (see [`compaction.md`](./compaction.md)).
+- `PRAGMA auto_vacuum = INCREMENTAL` is issued on every open, but a vault opened by `Db::open` reports `auto_vacuum = 0`, so it does not take effect and no incremental vacuum runs ([#461](https://github.com/justin13888/Sunrise/issues/461)). The pages a compaction run frees ([`compaction.md`](./compaction.md)) stay on SQLite's free list, where later writes reuse them.
 - WAL checkpointing is automatic.

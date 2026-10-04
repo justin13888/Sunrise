@@ -373,6 +373,54 @@ async fn a_failing_replay_never_fails_the_open(
     healed.close().await.unwrap();
 }
 
+/// The sync driver's anti-entropy tick runs op-log compaction at most once a
+/// day, under the policy the caller set, and a record that is not a snapshot
+/// is refused rather than applied (ADR-0059).
+#[tokio::test]
+async fn the_sync_tick_compacts_at_most_once_a_day() {
+    const T: u64 = 1_700_000_000_000;
+    let dir = tempfile::tempdir().unwrap();
+    let clock = Arc::new(FakeClock(PLMutex::new(T)));
+    let core = Core::open(
+        CoreConfig::with_clock(
+            dir.path().to_path_buf(),
+            "0.1.0+test",
+            Arc::clone(&clock) as Arc<dyn crate::config::Clock>,
+            Arc::new(SystemRng),
+        ),
+        unlock(),
+    )
+    .await
+    .unwrap();
+    let policy = crate::engine::CompactionPolicy {
+        retention_ms: 1,
+        ..Default::default()
+    };
+    core.set_compaction_policy(policy);
+    assert_eq!(core.compaction_policy(), policy);
+
+    core.sync_publish_due_digests();
+    assert_eq!(*core.last_compaction_ms.lock(), Some(T));
+    *clock.0.lock() = T + 1_000;
+    core.sync_publish_due_digests();
+    assert_eq!(
+        *core.last_compaction_ms.lock(),
+        Some(T),
+        "not again within the day"
+    );
+    *clock.0.lock() = T + COMPACT_EVERY_MS;
+    core.sync_publish_due_digests();
+    assert_eq!(*core.last_compaction_ms.lock(), Some(T + COMPACT_EVERY_MS));
+
+    assert!(core.compact_op_log().is_ok());
+    assert!(matches!(
+        core.apply_stream_snapshot(b"SR\x04\x00\x01junk"),
+        Err(CoreError::Engine(EngineError::Invalid(_)))
+    ));
+    assert_eq!(core.stream_snapshot([0x11; 16]).unwrap(), None);
+    core.close().await.unwrap();
+}
+
 #[tokio::test]
 async fn open_and_close() {
     let dir = tempfile::tempdir().unwrap();
