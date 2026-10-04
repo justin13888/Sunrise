@@ -489,7 +489,7 @@ a binding that is supplied is still verified.
 
 | Method | Path | Body | Returns |
 |---|---|---|---|
-| POST | `/api/v1/pairing/send` | `{ pair_id, role, message }` | `200 { sent, expires_at_ms }` |
+| POST | `/api/v1/pairing/send` | `{ pair_id, role, index, message }` | `200 { sent, expires_at_ms }` |
 | POST | `/api/v1/pairing/receive` | `{ pair_id, role, after }` | `200 { messages, expires_at_ms }`: the other role's messages from index `after` on |
 | POST | `/api/v1/pairing/abort` | `{ pair_id, role }` | `204`, whether or not a session was dropped |
 
@@ -502,6 +502,12 @@ decoded. The relay never reads it.
   against the limits in §Rate limits.
 - **Three messages per role**, which is what the protocol sends. A fourth drops
   the session.
+- **`index` is the count of this role's earlier messages**, so a retry after a
+  lost answer is acknowledged rather than buffered twice. An index that names a
+  slot holding a different message, or skips past the next free slot, drops the
+  session.
+- **At most 4096 live sessions per relay.** Past that, opening one is `429`
+  until the oldest expires.
 - **300 s from the opening message**, then the session is dropped whatever its
   state. Sessions live in memory and do not survive a restart.
 - A session that is not live **for the caller's account** — never opened,

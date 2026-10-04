@@ -294,6 +294,8 @@ struct Rendezvous {
     role: api::types::PairRole,
     /// How many of the other side's messages this side has consumed.
     read: AtomicU32,
+    /// How many messages this side has had accepted.
+    written: AtomicU32,
     cancelled: AtomicBool,
 }
 
@@ -329,22 +331,32 @@ impl Rendezvous {
                 PairingRole::ExistingDevice => api::types::PairRole::ExistingDevice,
             },
             read: AtomicU32::new(0),
+            written: AtomicU32::new(0),
             cancelled: AtomicBool::new(false),
         })
     }
 
     /// Buffer one message for the other side.
+    ///
+    /// Each message carries its index, and a retry carries the same one: when
+    /// the relay accepted a message and its answer was lost, the resend is
+    /// acknowledged rather than buffered twice, which would hand the other side
+    /// a duplicate it reads as the protocol's next message.
     async fn send(&self, message: String) -> Result<(), BindingError> {
         let body = api::types::PairSendRequest {
             pair_id: self.pair_id.clone(),
             role: self.role.clone(),
+            index: i64::from(self.written.load(Ordering::SeqCst)),
             message,
         };
         let deadline = tokio::time::Instant::now() + WAIT_CAP;
         loop {
             self.check_cancelled()?;
             match self.client.send_pairing_message(None, &body).await {
-                Ok(_) => return Ok(()),
+                Ok(_) => {
+                    self.written.fetch_add(1, Ordering::SeqCst);
+                    return Ok(());
+                }
                 Err(e) => self.settle(classify(&e), deadline).await?,
             }
         }

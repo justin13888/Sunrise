@@ -9470,6 +9470,13 @@
             "$ref": "#/components/schemas/PairRole",
             "description": "The side sending."
           },
+          "index": {
+            "type": "integer",
+            "maximum": 4294967295.0,
+            "minimum": 0.0,
+            "format": "uint32",
+            "description": "How many messages this role sent before this one: 0, 1 or 2.\n\nWhat makes a retry safe. A send whose answer was lost is resent with\nthe same index and the same message, and is acknowledged without being\nbuffered twice — a duplicate would otherwise reach the other side as the\nprotocol's next message and fail its decryption."
+          },
           "message": {
             "type": "string",
             "description": "One Noise message, base64url without padding; at most 64 KiB decoded."
@@ -9479,6 +9486,7 @@
         "required": [
           "pair_id",
           "role",
+          "index",
           "message"
         ],
         "description": "`POST /api/v1/pairing/send` request body."

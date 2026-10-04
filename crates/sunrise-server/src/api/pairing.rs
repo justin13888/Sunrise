@@ -45,6 +45,10 @@
 //!   the new device writes handshake messages 1 and 3 and the cert request,
 //!   the existing device handshake message 2, the offer and the grant. A
 //!   fourth drops the session.
+//! - **Each send names its index**, so a retry after a lost answer is
+//!   acknowledged rather than buffered twice. An index that skips ahead or
+//!   names a slot holding a different message drops the session: the two
+//!   sides no longer agree on where the exchange is.
 //! - **[`SESSION_TTL_MS`], 300 s from the first message**, which is the QR's
 //!   lifetime. The spec's separate 60 s handshake window is folded into it:
 //!   the SAS screen alone may take 90 s, so a window that started when the
@@ -130,6 +134,13 @@ pub struct PairSendRequest {
     pub pair_id: String,
     /// The side sending.
     pub role: PairRole,
+    /// How many messages this role sent before this one: 0, 1 or 2.
+    ///
+    /// What makes a retry safe. A send whose answer was lost is resent with
+    /// the same index and the same message, and is acknowledged without being
+    /// buffered twice — a duplicate would otherwise reach the other side as the
+    /// protocol's next message and fail its decryption.
+    pub index: u32,
     /// One Noise message, base64url without padding; at most 64 KiB decoded.
     pub message: String,
 }
@@ -209,6 +220,7 @@ pub async fn send(
         limits.as_deref(),
         pair_id,
         body.role,
+        usize::try_from(body.index).unwrap_or(usize::MAX),
         message,
         state.clock.now_ms(),
     );
@@ -307,6 +319,10 @@ fn record(state: &ServerState, outcome: &Result<Sent, Refusal>) {
     let result = match outcome {
         Ok(sent) => {
             record_expiries(state, sent.expired);
+            if sent.replayed {
+                // Counted when it was first accepted.
+                return;
+            }
             if sent.opened {
                 "opened"
             } else {
@@ -389,6 +405,9 @@ pub struct Sent {
     pub count: u32,
     /// Whether this message opened the session.
     pub opened: bool,
+    /// Whether this was a resend of a message already held, and so changed
+    /// nothing.
+    pub replayed: bool,
     /// When the session is dropped.
     pub expires_at_ms: u64,
     /// Sessions the call found expired and dropped.
@@ -441,23 +460,28 @@ impl Rendezvous {
         Self::default()
     }
 
-    /// Buffer `message` from `role`.
+    /// Buffer `message` as `role`'s message number `index`.
     ///
     /// `address` is the client's rate-limit key, or `None` where limits are
-    /// off; with `None` neither attempt limit is charged.
+    /// off; with `None` neither attempt limit is charged. Resending the message
+    /// already held at `index` is acknowledged and changes nothing.
     ///
     /// # Errors
     ///
-    /// [`Refusal::Gone`] when the existing device names no live session of its
-    /// account, when the new device names another account's, and when a role
-    /// sends a fourth message — which also drops the session.
-    /// [`Refusal::Limited`] when opening a session is over an attempt limit.
+    /// [`Refusal::Gone`] when no live session of this account is named and the
+    /// message cannot open one — it is not the new device's first — and when
+    /// `index` is past the next free slot, past the protocol's three, or holds
+    /// a different message; those three also drop the session.
+    /// [`Refusal::Limited`] when opening a session is over an attempt limit or
+    /// the session table is full.
+    #[allow(clippy::too_many_arguments)]
     pub fn send(
         &self,
         account_id: &str,
         address: Option<&str>,
         pair_id: [u8; 16],
         role: PairRole,
+        index: usize,
         message: Vec<u8>,
         now_ms: u64,
     ) -> Result<Sent, Refusal> {
@@ -465,7 +489,11 @@ impl Rendezvous {
         let expired = inner.reap(now_ms);
         let opened = !inner.sessions.contains_key(&pair_id);
         if opened {
-            if role != PairRole::NewDevice {
+            // Only the new device's first message opens a session. A later
+            // message naming a session that is gone — expired, say — must not
+            // open a fresh one and leave the sender waiting on a peer that
+            // will never come.
+            if role != PairRole::NewDevice || index != 0 {
                 return Err(Refusal::Gone);
             }
             if inner.sessions.len() >= MAX_SESSIONS {
@@ -493,14 +521,30 @@ impl Rendezvous {
             return Err(Refusal::Gone);
         };
         let mine = &mut session.sent[role.index()];
-        if mine.len() >= MESSAGES_PER_ROLE {
-            inner.sessions.remove(&pair_id);
-            return Err(Refusal::Gone);
+        let replayed = mine.get(index).map(|held| *held == message);
+        match replayed {
+            // A retry of a send whose answer was lost: acknowledged, not
+            // buffered twice.
+            Some(true) => {}
+            // The index is taken by a different message, or is past the next
+            // free one, or past the protocol's three: the two sides no longer
+            // agree on where the exchange is, and nothing either sends now
+            // could decrypt. The spec drops the session on overflow; the same
+            // answer serves the rest.
+            Some(false) => {
+                inner.sessions.remove(&pair_id);
+                return Err(Refusal::Gone);
+            }
+            None if index != mine.len() || index >= MESSAGES_PER_ROLE => {
+                inner.sessions.remove(&pair_id);
+                return Err(Refusal::Gone);
+            }
+            None => mine.push(message),
         }
-        mine.push(message);
         Ok(Sent {
             count: u32::try_from(mine.len()).unwrap_or(u32::MAX),
             opened,
+            replayed: replayed == Some(true),
             expires_at_ms: session.expires_at_ms,
             expired,
         })

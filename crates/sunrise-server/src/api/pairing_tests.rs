@@ -49,7 +49,18 @@ fn b64(bytes: &[u8]) -> String {
     URL_SAFE_NO_PAD.encode(bytes)
 }
 
-async fn send_as(client: &Client, bearer: &str, pair: &str, role: &str, message: &[u8]) -> Res {
+/// The new device, and the existing one.
+const NEW: &str = "new_device";
+const EXISTING: &str = "existing_device";
+
+async fn send_as(
+    client: &Client,
+    bearer: &str,
+    pair: &str,
+    role: &str,
+    index: u32,
+    message: &[u8],
+) -> Res {
     client
         .send_as(
             Method::POST,
@@ -58,14 +69,16 @@ async fn send_as(client: &Client, bearer: &str, pair: &str, role: &str, message:
             Some(&serde_json::json!({
                 "pair_id": pair,
                 "role": role,
+                "index": index,
                 "message": b64(message),
             })),
         )
         .await
 }
 
-async fn send(client: &Client, pair: &str, role: &str, message: &[u8]) -> Res {
-    send_as(client, BEARER, pair, role, message).await
+/// Send `message` as `role`'s message number `index`, as [`BEARER`].
+async fn send(client: &Client, pair: &str, role: &str, index: u32, message: &[u8]) -> Res {
+    send_as(client, BEARER, pair, role, index, message).await
 }
 
 async fn receive_as(client: &Client, bearer: &str, pair: &str, role: &str, after: u32) -> Res {
@@ -104,53 +117,111 @@ async fn a_pairing_crosses_the_relay_in_both_directions() {
     let (client, _) = rendezvous();
     let pair = pair_id(1);
 
-    let opened = send(&client, &pair, "new_device", b"noise-1").await;
+    let opened = send(&client, &pair, NEW, 0, b"noise-1").await;
     opened.assert_status(StatusCode::OK);
     assert_eq!(opened.json()["sent"], 1);
     assert_eq!(opened.json()["expires_at_ms"], T0_MS + SESSION_TTL_MS);
 
     assert_eq!(
-        receive(&client, &pair, "existing_device", 0).await,
+        receive(&client, &pair, EXISTING, 0).await,
         vec![b"noise-1".to_vec()]
     );
     assert!(
-        receive(&client, &pair, "new_device", 0).await.is_empty(),
+        receive(&client, &pair, NEW, 0).await.is_empty(),
         "a side never reads its own messages back"
     );
 
-    send(&client, &pair, "existing_device", b"noise-2")
+    send(&client, &pair, EXISTING, 0, b"noise-2")
         .await
         .assert_status(StatusCode::OK);
     assert_eq!(
-        receive(&client, &pair, "new_device", 0).await,
+        receive(&client, &pair, NEW, 0).await,
         vec![b"noise-2".to_vec()]
     );
-    send(&client, &pair, "new_device", b"noise-3")
+    send(&client, &pair, NEW, 1, b"noise-3")
         .await
         .assert_status(StatusCode::OK);
-    send(&client, &pair, "existing_device", b"offer")
+    send(&client, &pair, EXISTING, 1, b"offer")
         .await
         .assert_status(StatusCode::OK);
-    send(&client, &pair, "new_device", b"request")
+    send(&client, &pair, NEW, 2, b"request")
         .await
         .assert_status(StatusCode::OK);
-    let last = send(&client, &pair, "existing_device", b"grant").await;
+    let last = send(&client, &pair, EXISTING, 2, b"grant").await;
     last.assert_status(StatusCode::OK);
     assert_eq!(last.json()["sent"], 3);
 
     assert_eq!(
-        receive(&client, &pair, "existing_device", 1).await,
+        receive(&client, &pair, EXISTING, 1).await,
         vec![b"noise-3".to_vec(), b"request".to_vec()],
         "the cursor skips what the caller already holds"
     );
     assert_eq!(
-        receive(&client, &pair, "new_device", 1).await,
+        receive(&client, &pair, NEW, 1).await,
         vec![b"offer".to_vec(), b"grant".to_vec()]
     );
-    assert!(receive(&client, &pair, "new_device", 9).await.is_empty());
+    assert!(receive(&client, &pair, NEW, 9).await.is_empty());
 
     assert_eq!(outcomes(&client, "opened"), 1);
     assert_eq!(outcomes(&client, "relayed"), 5);
+}
+
+/// A send whose answer was lost is retried with the same index and message,
+/// and the other side still reads it once.
+#[tokio::test]
+async fn a_resent_message_is_acknowledged_and_not_buffered_twice() {
+    let (client, _) = rendezvous();
+    let pair = pair_id(8);
+    send(&client, &pair, NEW, 0, b"noise-1")
+        .await
+        .assert_status(StatusCode::OK);
+    let again = send(&client, &pair, NEW, 0, b"noise-1").await;
+    again.assert_status(StatusCode::OK);
+    assert_eq!(again.json()["sent"], 1);
+
+    assert_eq!(
+        receive(&client, &pair, EXISTING, 0).await,
+        vec![b"noise-1".to_vec()]
+    );
+    assert_eq!(outcomes(&client, "opened"), 1, "a resend is not an attempt");
+    assert_eq!(outcomes(&client, "relayed"), 0);
+}
+
+/// An index whose slot holds a different message, or that skips past the next
+/// free slot, means the two sides disagree about the exchange, and the session
+/// is dropped.
+#[tokio::test]
+async fn a_conflicting_or_skipping_index_drops_the_session() {
+    let (client, _) = rendezvous();
+
+    let pair = pair_id(9);
+    send(&client, &pair, NEW, 0, b"noise-1")
+        .await
+        .assert_status(StatusCode::OK);
+    let conflict = send(&client, &pair, NEW, 0, b"something else").await;
+    conflict.assert_status(StatusCode::NOT_FOUND);
+    assert_eq!(code_of(&conflict), codes::RELAY_PAIR_SESSION_GONE);
+    receive_as(&client, BEARER, &pair, EXISTING, 0)
+        .await
+        .assert_status(StatusCode::NOT_FOUND);
+
+    let pair = pair_id(10);
+    send(&client, &pair, NEW, 0, b"noise-1")
+        .await
+        .assert_status(StatusCode::OK);
+    send(&client, &pair, EXISTING, 1, b"offer")
+        .await
+        .assert_status(StatusCode::NOT_FOUND);
+    receive_as(&client, BEARER, &pair, NEW, 0)
+        .await
+        .assert_status(StatusCode::NOT_FOUND);
+
+    // And a later message cannot open a session: the one it belonged to is
+    // gone, and a fresh one would leave its sender waiting for nobody.
+    send(&client, &pair_id(11), NEW, 1, b"noise-3")
+        .await
+        .assert_status(StatusCode::NOT_FOUND);
+    assert_eq!(outcomes(&client, "opened"), 2);
 }
 
 /// The existing device joins a session; it cannot open one. Its message to a
@@ -160,11 +231,11 @@ async fn the_existing_device_cannot_open_a_session() {
     let (client, _) = rendezvous();
     let pair = pair_id(2);
 
-    let res = send(&client, &pair, "existing_device", b"noise-2").await;
+    let res = send(&client, &pair, EXISTING, 0, b"noise-2").await;
     res.assert_status(StatusCode::NOT_FOUND);
     assert_eq!(code_of(&res), codes::RELAY_PAIR_SESSION_GONE);
 
-    let res = receive_as(&client, BEARER, &pair, "new_device", 0).await;
+    let res = receive_as(&client, BEARER, &pair, NEW, 0).await;
     res.assert_status(StatusCode::NOT_FOUND);
     assert_eq!(outcomes(&client, "gone"), 2);
 }
@@ -175,16 +246,16 @@ async fn the_existing_device_cannot_open_a_session() {
 async fn a_fourth_message_from_one_role_drops_the_session() {
     let (client, _) = rendezvous();
     let pair = pair_id(3);
-    for m in [b"a", b"b", b"c"] {
-        send(&client, &pair, "new_device", m)
+    for (i, m) in [b"a", b"b", b"c"].into_iter().enumerate() {
+        send(&client, &pair, NEW, u32::try_from(i).unwrap(), m)
             .await
             .assert_status(StatusCode::OK);
     }
-    let res = send(&client, &pair, "new_device", b"d").await;
+    let res = send(&client, &pair, NEW, 3, b"d").await;
     res.assert_status(StatusCode::NOT_FOUND);
     assert_eq!(code_of(&res), codes::RELAY_PAIR_SESSION_GONE);
 
-    receive_as(&client, BEARER, &pair, "existing_device", 0)
+    receive_as(&client, BEARER, &pair, EXISTING, 0)
         .await
         .assert_status(StatusCode::NOT_FOUND);
 }
@@ -195,20 +266,20 @@ async fn a_fourth_message_from_one_role_drops_the_session() {
 async fn a_session_expires_three_hundred_seconds_after_it_opened() {
     let (client, clock) = rendezvous();
     let pair = pair_id(4);
-    send(&client, &pair, "new_device", b"noise-1")
+    send(&client, &pair, NEW, 0, b"noise-1")
         .await
         .assert_status(StatusCode::OK);
 
     clock.advance(SESSION_TTL_MS - 1);
-    assert_eq!(receive(&client, &pair, "existing_device", 0).await.len(), 1);
+    assert_eq!(receive(&client, &pair, EXISTING, 0).await.len(), 1);
 
     clock.advance(1);
-    let res = receive_as(&client, BEARER, &pair, "existing_device", 0).await;
+    let res = receive_as(&client, BEARER, &pair, EXISTING, 0).await;
     res.assert_status(StatusCode::NOT_FOUND);
     assert_eq!(code_of(&res), codes::RELAY_PAIR_SESSION_GONE);
     assert_eq!(outcomes(&client, "expired"), 1);
 
-    let res = send(&client, &pair, "existing_device", b"noise-2").await;
+    let res = send(&client, &pair, EXISTING, 0, b"noise-2").await;
     res.assert_status(StatusCode::NOT_FOUND);
     assert_eq!(outcomes(&client, "expired"), 1, "counted once");
 }
@@ -219,26 +290,31 @@ async fn a_session_expires_three_hundred_seconds_after_it_opened() {
 async fn another_account_cannot_reach_a_session() {
     let (client, _) = rendezvous();
     let pair = pair_id(5);
-    send(&client, &pair, "new_device", b"noise-1")
+    send(&client, &pair, NEW, 0, b"noise-1")
         .await
         .assert_status(StatusCode::OK);
 
-    let read = receive_as(&client, SECOND_BEARER, &pair, "existing_device", 0).await;
+    let read = receive_as(&client, SECOND_BEARER, &pair, EXISTING, 0).await;
     read.assert_status(StatusCode::NOT_FOUND);
     assert_eq!(code_of(&read), codes::RELAY_PAIR_SESSION_GONE);
 
-    let never = receive_as(&client, SECOND_BEARER, &pair_id(99), "existing_device", 0).await;
+    let never = receive_as(&client, SECOND_BEARER, &pair_id(99), EXISTING, 0).await;
     assert_eq!(read.status, never.status);
     assert_eq!(code_of(&read), code_of(&never));
 
-    let write = send_as(&client, SECOND_BEARER, &pair, "existing_device", b"x").await;
+    let write = send_as(&client, SECOND_BEARER, &pair, EXISTING, 0, b"x").await;
     write.assert_status(StatusCode::NOT_FOUND);
-    let write = send_as(&client, SECOND_BEARER, &pair, "new_device", b"x").await;
+    let write = send_as(&client, SECOND_BEARER, &pair, NEW, 1, b"x").await;
     write.assert_status(StatusCode::NOT_FOUND);
 
     assert!(
-        receive(&client, &pair, "new_device", 0).await.is_empty(),
+        receive(&client, &pair, NEW, 0).await.is_empty(),
         "nothing the other account sent was buffered"
+    );
+    assert_eq!(
+        receive(&client, &pair, EXISTING, 0).await,
+        vec![b"noise-1".to_vec()],
+        "and the session survived it"
     );
 }
 
@@ -248,12 +324,12 @@ async fn another_account_cannot_reach_a_session() {
 async fn the_eleventh_pair_attempt_in_an_hour_is_refused() {
     let (client, clock) = rendezvous();
     for seed in 0..10u8 {
-        send(&client, &pair_id(100 + seed), "new_device", b"noise-1")
+        send(&client, &pair_id(100 + seed), NEW, 0, b"noise-1")
             .await
             .assert_status(StatusCode::OK);
         clock.advance(1000);
     }
-    let refused = send(&client, &pair_id(110), "new_device", b"noise-1").await;
+    let refused = send(&client, &pair_id(110), NEW, 0, b"noise-1").await;
     refused.assert_status(StatusCode::TOO_MANY_REQUESTS);
     assert_eq!(code_of(&refused), codes::RATE_LIMITED);
     assert_eq!(
@@ -261,22 +337,22 @@ async fn the_eleventh_pair_attempt_in_an_hour_is_refused() {
         (3600 - 10).to_string()
     );
     assert_eq!(outcomes(&client, "rate_limited"), 1);
-    receive_as(&client, BEARER, &pair_id(110), "existing_device", 0)
+    receive_as(&client, BEARER, &pair_id(110), EXISTING, 0)
         .await
         .assert_status(StatusCode::NOT_FOUND);
 
     // Messages inside an open session are not attempts.
-    send(&client, &pair_id(100), "new_device", b"noise-3")
+    send(&client, &pair_id(100), NEW, 1, b"noise-3")
         .await
         .assert_status(StatusCode::OK);
 
     // Another account has its own budget.
-    send_as(&client, SECOND_BEARER, &pair_id(111), "new_device", b"n")
+    send_as(&client, SECOND_BEARER, &pair_id(111), NEW, 0, b"n")
         .await
         .assert_status(StatusCode::OK);
 
     clock.advance(3600 * 1000);
-    send(&client, &pair_id(112), "new_device", b"noise-1")
+    send(&client, &pair_id(112), NEW, 0, b"noise-1")
         .await
         .assert_status(StatusCode::OK);
 }
@@ -287,7 +363,7 @@ async fn the_eleventh_pair_attempt_in_an_hour_is_refused() {
 async fn an_abort_drops_the_session_and_reveals_nothing() {
     let (client, _) = rendezvous();
     let pair = pair_id(6);
-    send(&client, &pair, "new_device", b"noise-1")
+    send(&client, &pair, NEW, 0, b"noise-1")
         .await
         .assert_status(StatusCode::OK);
 
@@ -299,7 +375,7 @@ async fn an_abort_drops_the_session_and_reveals_nothing() {
                     Method::POST,
                     "/api/v1/pairing/abort",
                     Some(bearer),
-                    Some(&serde_json::json!({ "pair_id": pair, "role": "existing_device" })),
+                    Some(&serde_json::json!({ "pair_id": pair, "role": EXISTING })),
                 )
                 .await
         }
@@ -308,7 +384,7 @@ async fn an_abort_drops_the_session_and_reveals_nothing() {
         .await
         .assert_status(StatusCode::NO_CONTENT);
     assert_eq!(
-        receive(&client, &pair, "existing_device", 0).await.len(),
+        receive(&client, &pair, EXISTING, 0).await.len(),
         1,
         "another account's abort touches nothing"
     );
@@ -316,7 +392,7 @@ async fn an_abort_drops_the_session_and_reveals_nothing() {
     abort(BEARER, pair.clone())
         .await
         .assert_status(StatusCode::NO_CONTENT);
-    receive_as(&client, BEARER, &pair, "new_device", 0)
+    receive_as(&client, BEARER, &pair, NEW, 0)
         .await
         .assert_status(StatusCode::NOT_FOUND);
     abort(BEARER, pair_id(77))
@@ -331,7 +407,7 @@ async fn an_abort_drops_the_session_and_reveals_nothing() {
 async fn malformed_requests_are_refused_without_opening_anything() {
     let (client, _) = rendezvous();
     let short = URL_SAFE_NO_PAD.encode([1u8; 8]);
-    send(&client, &short, "new_device", b"x")
+    send(&client, &short, NEW, 0, b"x")
         .await
         .assert_status(StatusCode::BAD_REQUEST);
 
@@ -341,33 +417,30 @@ async fn malformed_requests_are_refused_without_opening_anything() {
             "/api/v1/pairing/send",
             Some(&serde_json::json!({
                 "pair_id": pair_id(7),
-                "role": "new_device",
+                "role": NEW,
+                "index": 0,
                 "message": "not base64!",
             })),
         )
         .await;
     not_b64.assert_status(StatusCode::BAD_REQUEST);
 
-    send(&client, &pair_id(7), "new_device", b"")
+    send(&client, &pair_id(7), NEW, 0, b"")
         .await
         .assert_status(StatusCode::BAD_REQUEST);
     send(
         &client,
         &pair_id(7),
-        "new_device",
+        NEW,
+        0,
         &vec![0u8; MAX_PAIR_MESSAGE + 1],
     )
     .await
     .assert_status(StatusCode::BAD_REQUEST);
 
-    send(
-        &client,
-        &pair_id(7),
-        "new_device",
-        &vec![0u8; MAX_PAIR_MESSAGE],
-    )
-    .await
-    .assert_status(StatusCode::OK);
+    send(&client, &pair_id(7), NEW, 0, &vec![0u8; MAX_PAIR_MESSAGE])
+        .await
+        .assert_status(StatusCode::OK);
     assert_eq!(outcomes(&client, "opened"), 1);
 }
 
@@ -376,37 +449,30 @@ async fn malformed_requests_are_refused_without_opening_anything() {
 #[test]
 fn a_full_session_table_refuses_until_a_session_expires() {
     let r = super::Rendezvous::new();
+    let open = |id: [u8; 16], now_ms: u64| {
+        r.send(
+            "acct",
+            None,
+            id,
+            super::PairRole::NewDevice,
+            0,
+            vec![1],
+            now_ms,
+        )
+    };
     for i in 0..super::MAX_SESSIONS {
         let mut id = [0u8; 16];
-        id[..8].copy_from_slice(&(i as u64).to_be_bytes());
-        r.send("acct", None, id, super::PairRole::NewDevice, vec![1], T0_MS)
-            .unwrap();
+        id[..8].copy_from_slice(&u64::try_from(i).unwrap().to_be_bytes());
+        open(id, T0_MS).unwrap();
     }
     assert_eq!(r.len(), super::MAX_SESSIONS);
-    let refused = r.send(
-        "acct",
-        None,
-        [0xff; 16],
-        super::PairRole::NewDevice,
-        vec![1],
-        T0_MS + 1000,
-    );
     assert_eq!(
-        refused,
+        open([0xff; 16], T0_MS + 1000),
         Err(super::Refusal::Limited {
             retry_after_ms: SESSION_TTL_MS - 1000
         })
     );
-    let admitted = r
-        .send(
-            "acct",
-            None,
-            [0xff; 16],
-            super::PairRole::NewDevice,
-            vec![1],
-            T0_MS + SESSION_TTL_MS,
-        )
-        .unwrap();
+    let admitted = open([0xff; 16], T0_MS + SESSION_TTL_MS).unwrap();
     assert_eq!(admitted.expired, super::MAX_SESSIONS);
     assert_eq!(r.len(), 1);
 }
