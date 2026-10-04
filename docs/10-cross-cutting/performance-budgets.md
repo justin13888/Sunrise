@@ -59,15 +59,40 @@ because the UI repaints from that feed.
 
 | Leg | Budget (p99) | Measured by |
 |---|---|---|
-| Author: commit → batch on the wire | 50 ms | client sync-driver span ([#366](https://github.com/justin13888/Sunrise/issues/366)) |
-| Relay: batch accepted → flushed to the last subscriber | 100 ms | `sunrise_sync_fanout_latency_seconds` ([`metrics.md`](../06-server/metrics.md)) |
+| Author: commit → batch on the wire | 50 ms | not measured on its own; inside the harness total |
+| Relay: batch accepted → handed to the last subscriber's stream | 100 ms | `sunrise_sync_fanout_latency_seconds` ([`metrics.md`](../06-server/metrics.md)) |
 | Network, both hops | 2 × RTT (≤ 100 ms at the stated RTT) | harness-injected |
-| Receiver: frame read → applied and published | 50 ms | client engine span |
+| Receiver: frame read → applied and published | 50 ms | not measured on its own; inside the harness total |
 | Headroom | 200 ms | — |
 
-The budget is enforced by the two-client harness [#366](https://github.com/justin13888/Sunrise/issues/366) specifies: two engines and a real relay on
-loopback, with injected RTT and a steady op rate, asserting the p99 over at least 10 000 ops. The
-wider-network rows in [`../05-sync/overview.md`](../05-sync/overview.md) §Latency targets (LTE, a
+**How it is measured.** `crates/sunrise-e2e/src/latency.rs` boots the real relay and two paired
+cores on loopback. Each device reaches the relay through a fault-injecting link that holds every
+send for the stated RTT, ±20 % from a seeded RNG: on the SSE transport a send is a `POST` whose reply
+is its ack, and an op's trip up to the relay and down to the peer adds to one round trip. Device A
+commits 10 000 tasks, ten a second. Each sample runs from A's `submit` returning to B publishing that
+task's `Created`, both timestamps read from one monotonic clock, and the p99 is nearest-rank over
+every op. An op that never arrives is reported, not dropped from the sample.
+`crates/sunrise-e2e/tests/sync_latency.rs` runs that at 0, 20 and 80 ms RTT in the nightly
+`Sync latency` CI job, and fails if, at 0 or 20 ms, any op is missing or the p99 reaches 500 ms. The
+80 ms leg falls outside the budget's conditions and is reported only.
+
+Measured on an Apple M3 Pro, release build, at this revision:
+
+| RTT | Ops arrived | p50 | p95 | p99 | max |
+|---|---|---|---|---|---|
+| 0 ms | 10 000 of 10 000 | 12.3 ms | 23.9 ms | 31.0 ms | 60.2 ms |
+| 20 ms | 10 000 of 10 000 | 36.3 ms | 62.0 ms | 74.3 ms | 111.3 ms |
+| 80 ms | 1 910 of 10 000 | — | — | — | — |
+
+At 80 ms the author's session collapsed partway through ([#475](https://github.com/justin13888/Sunrise/issues/475)),
+so that row has no distribution to report.
+
+Ten commits a second is not an arbitrary ceiling. At 40 a second and 20 ms, or 10 a second and
+80 ms, the author's sync driver stops reading its acks and tears its session down
+([#475](https://github.com/justin13888/Sunrise/issues/475)). Until that is fixed, a faster harness
+would measure that collapse and not propagation.
+
+The wider-network rows in [`../05-sync/overview.md`](../05-sync/overview.md) §Latency targets (LTE, a
 phone woken by push) are budgets for those conditions, not relaxations of this one.
 
 ## Planner preview

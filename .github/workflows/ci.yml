@@ -839,14 +839,15 @@ jobs:
   # (docs/10-cross-cutting/performance-budgets.md section Sync propagation).
   # Unlike the job above it gates: the budget is absolute and the measured p99
   # sits far below it, so a red run is a regression rather than a noisy
-  # neighbour. Nightly and on demand, because it commits 30 000 ops at 40 a
-  # second, about 13 minutes of measurement on its own.
+  # neighbour. Nightly and on demand, because it commits 10 000 ops per RTT at
+  # 10 a second, about 17 minutes of measurement with the three legs running
+  # side by side.
   sync-latency:
     name: Sync latency
     runs-on: ubuntu-latest
-    # Not observed on a runner yet. 13 minutes of measurement (12m30s at
-    # 40 ops a second, plus setup), a cold release build of `sunrise-e2e`'s
-    # graph, and the same again in hand.
+    # Not observed on a runner yet. About 17 minutes of measurement (1 000 s
+    # per leg, legs concurrent, plus setup), a cold release build of
+    # `sunrise-e2e`'s graph, and room for both to run slower than a laptop.
     timeout-minutes: 45
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     steps:

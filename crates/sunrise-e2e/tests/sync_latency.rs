@@ -44,8 +44,9 @@ const DEFAULT_OPS: usize = 10_000;
 /// sends block for the RTT, and the 100 ms retransmit deadline fires before
 /// the ack is read, which sends again and blocks again, until the retry
 /// policy gives up and the session is torn down. That collapse is the
-/// driver's, tracked on its own; here it is what an 80 ms leg reports as
-/// `missing`.
+/// driver's, tracked in
+/// [#475](https://github.com/justin13888/Sunrise/issues/475); here it is
+/// what an 80 ms leg reports as `missing`.
 const INTERVAL: Duration = Duration::from_millis(100);
 
 /// `SUNRISE_SYNC_LATENCY_INTERVAL_MS` overrides the commit spacing.
