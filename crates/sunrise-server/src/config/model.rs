@@ -109,7 +109,9 @@ pub struct ServerConfig {
     #[serde(default = "default_max_body_bytes")]
     pub max_body_bytes: usize,
     /// How long a shutdown waits for in-flight requests before cutting them,
-    /// in seconds. `0` cuts them at once.
+    /// in seconds. [`ServerConfig::validate`] refuses `0`: kynos ends a
+    /// zero-length drain as timed out without looking at what is in flight, so
+    /// every stop would report work cut and exit 1.
     #[serde(default = "default_shutdown_grace_secs")]
     pub shutdown_grace_secs: u64,
 }
@@ -181,6 +183,12 @@ pub enum ConfigError {
     /// Nonsensical body cap.
     #[error("max_body_bytes must be greater than zero")]
     ZeroBodyLimit,
+    /// A drain deadline no drain can meet.
+    #[error(
+        "shutdown_grace_secs is zero: a drain of no length is always reported as timed out, so \
+         every stop would log result = \"timed_out\" and exit 1 even with nothing in flight"
+    )]
+    ZeroShutdownGrace,
     /// An OIDC issuer without the client id that tokens must be audienced to.
     #[error(
         "oidc_issuer is set but oidc_client_id is not: without it there is no `aud` to check, \
@@ -230,6 +238,9 @@ impl ServerConfig {
         }
         if self.max_body_bytes == 0 {
             return Err(ConfigError::ZeroBodyLimit);
+        }
+        if self.shutdown_grace_secs == 0 {
+            return Err(ConfigError::ZeroShutdownGrace);
         }
         if let Some(issuer) = &self.oidc_issuer {
             if self.oidc_client_id.is_none() {
@@ -385,6 +396,17 @@ mod tests {
         let mut c = cfg("127.0.0.1:8443");
         c.max_body_bytes = 0;
         assert_eq!(c.validate(true), Err(ConfigError::ZeroBodyLimit));
+    }
+
+    /// kynos turns a zero drain deadline into `ShutdownTimeout` without
+    /// waiting on anything, so `0` would make every stop exit 1.
+    #[test]
+    fn zero_shutdown_grace_is_rejected() {
+        let mut c = cfg("127.0.0.1:8443");
+        c.shutdown_grace_secs = 0;
+        assert_eq!(c.validate(true), Err(ConfigError::ZeroShutdownGrace));
+        c.shutdown_grace_secs = 1;
+        assert!(c.validate(true).is_ok());
     }
 
     /// An issuer with no client id means no `aud` to check, which means every

@@ -44,7 +44,7 @@ listen           = "0.0.0.0:443"          # default "127.0.0.1:8443"
 allowed_origins  = ["https://app.example.com"]   # browser origins; must be scheme-qualified
 max_body_bytes   = 2097152                # default 2 MiB
 shutdown_grace_secs = 25                  # default 25; how long SIGTERM waits for
-                                          # in-flight requests; 0 cuts them at once
+                                          # in-flight requests; at least 1 (0 is refused)
 
 [auth]
 oidc_issuer        = "https://auth.example.com"  # must be https
