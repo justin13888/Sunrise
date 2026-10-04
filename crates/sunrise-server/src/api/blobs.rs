@@ -35,7 +35,6 @@
 //! construction rather than by a check someone can forget, and dedup still
 //! works where it should — across one account's devices.
 
-use crate::api::account_deletion::refuse_if_pending_deletion;
 use crate::api::error::{codes, ApiError};
 use crate::api::ratelimit::policy::Budget;
 use crate::api::ratelimit::Throttled;
@@ -255,7 +254,7 @@ pub async fn init(
     if body.stream_id.trim().is_empty() {
         return Err(ApiError::validation("stream_id required").into());
     }
-    refuse_if_pending_deletion(&state, &caller.principal.account.account_id)?;
+    refuse_if_pending(&state, &caller)?;
 
     let mut raw = [0u8; 16];
     getrandom::getrandom(&mut raw).map_err(|_| ApiError::internal())?;
@@ -295,7 +294,7 @@ pub async fn put_chunk(
             ApiError::validation(format!("chunk must be 1..={MAX_CHUNK_BYTES} bytes")).into(),
         );
     }
-    refuse_if_pending_deletion(&state, &caller.principal.account.account_id)?;
+    refuse_if_pending(&state, &caller)?;
     state
         .limiter
         .charge(
@@ -358,7 +357,7 @@ pub async fn finalize(
         .iter()
         .map(|h| parse_hash(&h.0, "chunk_hashes"))
         .collect::<Result<_, _>>()?;
-    refuse_if_pending_deletion(&state, &caller.principal.account.account_id)?;
+    refuse_if_pending(&state, &caller)?;
 
     let pending = pending_store(&state, &caller, &upload)?;
     // Re-hash what is actually on disk. The client's hashes are a claim; this
@@ -818,6 +817,16 @@ fn hash_mismatch(message: impl Into<String>) -> ApiError {
 /// whether another account holds that ciphertext.
 fn not_found() -> ApiError {
     ApiError::not_found(codes::BLOB_NOT_FOUND, "blob not found")
+}
+
+/// `403 ACCOUNT_PENDING_DELETION` for every upload step of an account whose
+/// deletion is confirmed: an upload finished after the mark would write files
+/// the erasure then has to chase.
+fn refuse_if_pending(state: &ServerState, caller: &Caller) -> Result<(), ApiError> {
+    crate::api::account_deletion::refuse_if_pending_deletion(
+        state,
+        &caller.principal.account.account_id,
+    )
 }
 
 #[cfg(test)]

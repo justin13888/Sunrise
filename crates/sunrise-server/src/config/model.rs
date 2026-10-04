@@ -100,23 +100,6 @@ pub struct ServerConfig {
     pub sqlite_busy_timeout_ms: u64,
     /// Self-host blob root (None = `<sqlite_dir>/blobs`).
     pub blob_root: Option<PathBuf>,
-    /// Days between `DELETE /api/v1/accounts/me` and the maintenance pass
-    /// that erases the account. `[storage] account_delete_grace_days`.
-    #[serde(default = "default_thirty_days")]
-    pub account_delete_grace_days: u64,
-    /// Days a tombstoned blob is kept before it may be collected, quorum
-    /// permitting. `[storage] gc_grace_days`, the name
-    /// `docs/06-server/relay-and-blob-storage.md` §Retention gives it.
-    #[serde(default = "default_thirty_days")]
-    pub gc_grace_days: u64,
-    /// Hours an upload may sit untouched between `init` and `finalize` before
-    /// its pending chunks are swept. `[storage] pending_upload_ttl_hours`.
-    #[serde(default = "default_pending_upload_ttl_hours")]
-    pub pending_upload_ttl_hours: u64,
-    /// Seconds between maintenance passes — account erasure, blob GC and the
-    /// pending-upload sweep. `[storage] maintenance_interval_secs`.
-    #[serde(default = "default_maintenance_interval_secs")]
-    pub maintenance_interval_secs: u64,
     /// Exact-match CORS allowlist for browser clients. Empty = no browser
     /// origin is permitted, which is the correct default for a relay whose
     /// only client today is native.
@@ -149,6 +132,23 @@ pub struct ServerConfig {
     /// no push at all; see `docs/06-server/push-notifications.md`.
     #[serde(default)]
     pub push: PushConfig,
+    /// Days between `DELETE /api/v1/accounts/me` and the maintenance pass
+    /// that erases the account. `[storage] account_delete_grace_days`.
+    #[serde(default = "default_thirty_days")]
+    pub account_delete_grace_days: u64,
+    /// Days a tombstoned blob is kept before it may be collected, quorum
+    /// permitting. `[storage] gc_grace_days`, the name
+    /// `docs/06-server/relay-and-blob-storage.md` §Retention gives it.
+    #[serde(default = "default_thirty_days")]
+    pub gc_grace_days: u64,
+    /// Hours an upload may sit untouched between `init` and `finalize` before
+    /// its pending chunks are swept. `[storage] pending_upload_ttl_hours`.
+    #[serde(default = "default_pending_upload_ttl_hours")]
+    pub pending_upload_ttl_hours: u64,
+    /// Seconds between maintenance passes — account erasure, blob GC and the
+    /// pending-upload sweep. `[storage] maintenance_interval_secs`.
+    #[serde(default = "default_maintenance_interval_secs")]
+    pub maintenance_interval_secs: u64,
 }
 
 /// The `[push]` table.
