@@ -185,7 +185,7 @@ fn verify_binding(
 ) -> Result<Option<Device>, ApiError> {
     let (Some(device_id), Some(signature)) = (sig.device.as_deref(), sig.signature.as_deref())
     else {
-        if state.config.require_device_sig {
+        if state.config.device_sig_required() {
             // The one pre-lookup case that names the signature, and it covers a
             // *partial* binding too: the `let else` above wants both headers,
             // so one without the other lands here. Nothing about the *account*

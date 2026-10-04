@@ -40,9 +40,16 @@ The mode is `header_sig_v2` ([ADR-0022](../11-adr/0022-device-signature-canonica
 and its byte layout is specified in [`auth.md`](./auth.md) §Device binding
 rather than left to an implementation. Two live qualifications:
 
-- The binding is **optional by default**. `[auth] require_device_sig` defaults
-  to `false`, so a request with no `X-Sunrise-Device` is accepted with no
-  device resolved. A binding that *is* present is always verified in full,
+- The binding is **required by default on a relay with an OIDC issuer**:
+  `[auth] require_device_sig`, left unset, is on wherever an issuer is
+  configured, and a request with no complete binding is refused with
+  `401 AUTH_DEVICE_SIG_INVALID` before any device lookup. It is off on the
+  single-tenant self-host verifier, which has no devices to tell apart and
+  refuses the flag outright; there, and on a multi-tenant relay whose
+  operator sets `require_device_sig = false` (which logs
+  `srv.start.device_sig_optional`), a request with no `X-Sunrise-Device` is
+  accepted with no device resolved. `GET /meta` publishes the policy in force
+  as `device_binding_required`. A binding that *is* present is always verified in full,
   whatever the flag says — a signature that fails verification is never an
   ignored header. `POST /accounts` and `POST /devices` take a bootstrap
   exemption: a device cannot sign before it exists.

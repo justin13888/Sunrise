@@ -137,7 +137,7 @@ async fn an_unknown_device_is_still_indistinguishable_from_a_bad_bearer() {
 #[tokio::test]
 async fn an_absent_binding_where_one_is_required_names_the_signature() {
     let client = Client::new(ServerConfig {
-        require_device_sig: true,
+        require_device_sig: Some(true),
         ..ServerConfig::default()
     });
 
@@ -152,7 +152,7 @@ async fn an_absent_binding_where_one_is_required_names_the_signature() {
 #[tokio::test]
 async fn a_half_present_binding_is_the_same_pre_lookup_refusal() {
     let client = Client::new(ServerConfig {
-        require_device_sig: true,
+        require_device_sig: Some(true),
         ..ServerConfig::default()
     });
     let (device_id, _) = paired(&client, 23).await;

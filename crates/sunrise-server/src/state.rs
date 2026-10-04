@@ -143,6 +143,18 @@ impl ServerState {
         store: Arc<Store>,
         push: crate::push::Dispatcher,
     ) -> Self {
+        // An issuer beside an explicit `require_device_sig = false` is the one
+        // setting that leaves a multi-tenant relay accepting a bearer alone.
+        // Announced here because every constructor -- the binary's `try_new`
+        // and an embedding's alike -- passes through this function.
+        if config.device_sig_explicitly_optional() {
+            tracing::warn!(
+                ev = "srv.start.device_sig_optional",
+                "require_device_sig = false with an OIDC issuer: a request with no device \
+                 binding is accepted on its bearer alone, and a revoked device that stops \
+                 signing keeps writing"
+            );
+        }
         let blob_root = config
             .blob_root
             .clone()
@@ -282,6 +294,44 @@ mod tests {
             busy(&ServerState::with_clock(config(), Arc::new(SystemClock))),
             777
         );
+    }
+
+    /// Turning the binding off beside an issuer is announced at startup, on
+    /// every constructor, and nothing else is: silence and an explicit `true`
+    /// are the default's own state, and `false` without an issuer restates the
+    /// self-host one.
+    #[test]
+    fn an_explicitly_optional_binding_beside_an_issuer_is_announced() {
+        let config = |issuer: bool, flag: Option<bool>| ServerConfig {
+            oidc_issuer: issuer.then(|| "https://idp.example".to_owned()),
+            oidc_client_id: issuer.then(|| "sunrise".to_owned()),
+            require_device_sig: flag,
+            ..ServerConfig::default()
+        };
+        let warned = |make: &dyn Fn() -> ServerState| {
+            sunrise_log::test_util::events_emitted_by(|| drop(make()))
+                .iter()
+                .any(|ev| ev == "srv.start.device_sig_optional")
+        };
+
+        assert!(warned(
+            &|| ServerState::try_new(config(true, Some(false))).unwrap()
+        ));
+        assert!(warned(&|| ServerState::with_clock(
+            config(true, Some(false)),
+            Arc::new(SystemClock)
+        )));
+        for (issuer, flag) in [
+            (true, None),
+            (true, Some(true)),
+            (false, Some(false)),
+            (false, None),
+        ] {
+            assert!(
+                !warned(&|| ServerState::try_new(config(issuer, flag)).unwrap()),
+                "issuer={issuer} flag={flag:?} weakens nothing"
+            );
+        }
     }
 
     /// A busy timeout SQLite cannot hold is refused by `try_new`, the path

@@ -53,7 +53,9 @@ trusted_proxies  = ["127.0.0.1"]          # default []; reverse proxies whose X-
 oidc_issuer        = "https://auth.example.com"  # must be https
 oidc_client_id     = "sunrise"                   # tokens must carry it in `aud`
 allow_signup       = false                # default true
-require_device_sig = true                 # default false; requires an issuer
+require_device_sig = true                 # default: on with an issuer, off without one;
+                                          # true without an issuer is refused, and false
+                                          # with one logs srv.start.device_sig_optional
 token_leeway_secs  = 60                   # clock-skew allowance on exp/nbf
 jwks_ttl_secs      = 300                  # cache TTL for a JWKS with no cache headers
 
