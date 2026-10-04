@@ -53,6 +53,10 @@ pub mod commands;
 pub mod config;
 pub mod control_op;
 pub mod core;
+// Test-only: the generator and its pins. The build's registry, which the
+// writer reads, is `sunrise_cbor::version::DOC_SCHEMA_FINGERPRINTS`.
+#[cfg(test)]
+mod doc_schema;
 pub mod engine;
 pub mod events;
 pub mod inner_op;

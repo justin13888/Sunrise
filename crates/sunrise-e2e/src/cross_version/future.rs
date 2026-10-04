@@ -19,7 +19,7 @@ use std::collections::BTreeMap;
 use ciborium::value::Value;
 use rand_chacha::rand_core::{RngCore, SeedableRng};
 use rand_chacha::ChaCha20Rng;
-use sunrise_cbor::version::{DOC_SCHEMA_V, ENVELOPE_FORMAT_V};
+use sunrise_cbor::version::{doc_schema_fp_prefix, DOC_SCHEMA_V, ENVELOPE_FORMAT_V};
 use sunrise_cbor::{CborValue, Hlc};
 use sunrise_crypto::keys::{DeviceSigningKeyPair, StreamKey};
 use sunrise_crypto::op_envelope::{seal_envelope, OpEnvelope};
@@ -170,6 +170,7 @@ impl FutureWriter {
             payload: inner,
             sig: [0u8; 64],
             doc_schema_v: u32::from(DOC_SCHEMA_V),
+            schema_fp: doc_schema_fp_prefix(u32::from(DOC_SCHEMA_V)),
             unknown: BTreeMap::new(),
         };
         seal_envelope(

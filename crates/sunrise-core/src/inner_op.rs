@@ -295,7 +295,10 @@ fn unknown_kind(bytes: &[u8]) -> Option<String> {
 /// the decoder actually uses. A hand-kept list would drift the first time a
 /// family was added without it, and the op of that family would then be
 /// parked by the very build that knows how to apply it.
-fn known_kinds() -> &'static [&'static str] {
+///
+/// The canonical document schema (`crate::doc_schema`) reads it for the same
+/// reason.
+pub(crate) fn known_kinds() -> &'static [&'static str] {
     use serde::de::{self, Deserializer, Visitor};
     use std::sync::OnceLock;
 

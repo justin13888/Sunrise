@@ -40,6 +40,11 @@ sunrise-wire-protocol = { workspace = true }
 zeroize = { workspace = true }
 
 [dev-dependencies]
+# The canonical document schema (`src/doc_schema.rs`, ADR-0045 §2): rendered as
+# JSON, canonicalized by JCS, fingerprinted with BLAKE3 `derive_key`.
+blake3 = { workspace = true }
+serde_jcs = { workspace = true }
+serde_json = { workspace = true }
 proptest = { workspace = true }
 sunrise-crypto-test-vectors = { workspace = true }
 # `test_util::events_emitted_by`, so an engine test that asserts an `ev` fired

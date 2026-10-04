@@ -213,8 +213,9 @@ pub const ENVELOPE_INNER: &[u8] = b"inner-op-canonical-cbor";
 
 /// `aead_alg = 0` control envelope: plaintext payload, signature only.
 ///
-/// Frozen at `ENVELOPE_FORMAT_V = 3` / `DOC_SCHEMA_V = 6`: field 1 is `3`,
-/// field 5 is the HLC array `[physical_ms, logical]`, field 12 is `6`, and the
+/// Frozen at `ENVELOPE_FORMAT_V = 3` / `DOC_SCHEMA_V = 7`: field 1 is `3`,
+/// field 5 is the HLC array `[physical_ms, logical]`, field 12 is `7`, field
+/// 13 is the first 8 bytes of v7's registered schema fingerprint, and the
 /// magic prefix reads `5352 02 0003`.
 ///
 /// Field 12 carries the **document** schema, so the two envelope vectors are
@@ -233,6 +234,16 @@ pub const ENVELOPE_INNER: &[u8] = b"inner-op-canonical-cbor";
 /// would mean the container format had changed too, and that is a different
 /// constant.
 ///
+/// The 6 → 7 re-freeze (ADR-0045 §3, issue #323) is the first that also adds
+/// a field: v7 is the first fingerprinted document schema, so the writer
+/// stamps field 13. It moved the same 65 bytes for the same reason, plus the
+/// map header at `[5]` (`ac` → `ad`, twelve entries to thirteen), and
+/// appended ten bytes at `[185..194]`: `0d 48` and the 8-byte fingerprint
+/// prefix. Field 13 is inside the signature input, which is why the signature
+/// moved by more than the field-12 byte alone would explain; it is not a
+/// container change, because every build already preserves an unknown
+/// field 13.
+///
 /// `encode_envelope(ENVELOPE_INNER, STREAM_ID, DEVICE_ID, seq = 7,
 /// hlc = [1_700_000_000_000, 0], AeadAlgId::None, epoch = 0, nonce = [0; 24],
 /// stream_key = None, DEVICE_SIGNING_SECRET)`.
@@ -246,14 +257,14 @@ pub mod signed_only_envelope {
     /// `nonce` field (unused when `aead_alg = 0`).
     pub const NONCE: [u8; 24] = [0x00; 24];
     /// Expected wire bytes: magic prefix + canonical CBOR + Ed25519 sig.
-    pub const ENCODED: [u8; 185] = super::hex(concat!(
-        "5352020003ac010302502222222222222222222222222222222203503333",
+    pub const ENCODED: [u8; 195] = super::hex(concat!(
+        "5352020003ad010302502222222222222222222222222222222203503333",
         "3333333333333333333333333333040705821b0000018bcfe56800000600",
         "070108000958180000000000000000000000000000000000000000000000",
-        "000a57696e6e65722d6f702d63616e6f6e6963616c2d63626f720b5840d1",
-        "b49cf3eea75ea7b1133dc26d5a44dc1f836d19e5ee6b51f99d62874384fc",
-        "dc2be5953c82a51f5fd8abcd13055944dbbc38700769c36139ff61e8ff00",
-        "e310000c06",
+        "000a57696e6e65722d6f702d63616e6f6e6963616c2d63626f720b5840a6",
+        "9dd215a399490d4066de6f7bb5e5d662a1d28fe0a14d1e2f1e43066bb626",
+        "9f94df0d060052b9bbe105def950c295a09814a67c17d729ca75e4bac256",
+        "70ce020c070d48c47fe295602d6e78",
     ));
 }
 
@@ -274,6 +285,10 @@ pub mod signed_only_envelope {
 /// happen to equal the old ones. The ciphertext at `[94..117]` is again
 /// untouched.
 ///
+/// The 6 → 7 re-freeze (ADR-0045 §3) moved the same three regions plus the
+/// map header at `[5]`, and appended field 13 at `[202..211]`, exactly as the
+/// signed-only vector did. The ciphertext at `[94..117]` is again untouched.
+///
 /// `encode_envelope(ENVELOPE_INNER, STREAM_ID, DEVICE_ID, seq = 9,
 /// hlc = [1_700_000_000_001, 0], AeadAlgId::XChaCha20Poly1305, epoch = 3,
 /// nonce = [0x55; 24], stream_key = STREAM_KEY, DEVICE_SIGNING_SECRET)`.
@@ -289,14 +304,15 @@ pub mod sealed_envelope {
     /// Stream key the payload is sealed under.
     pub const STREAM_KEY: [u8; 32] = [0x44; 32];
     /// Expected wire bytes: magic prefix + canonical CBOR + Ed25519 sig.
-    pub const ENCODED: [u8; 202] = super::hex(concat!(
-        "5352020003ac010302502222222222222222222222222222222203503333",
+    pub const ENCODED: [u8; 212] = super::hex(concat!(
+        "5352020003ad010302502222222222222222222222222222222203503333",
         "3333333333333333333333333333040905821b0000018bcfe56801000601",
         "070108030958185555555555555555555555555555555555555555555555",
-        "550a58276416c4bb3e46b71d10c45af51e2462649e7331f6d5bbb89a912d",
-        "90db54412f9803227f842e37760b5840f66f92775acb0c7eb0b520c6b9ee",
-        "96aceac827cfba6c82ec2ef1f214c6c12cf3e339dedac6067e62481ddc0a",
-        "9c7f3d644981da4e3275b8373fbca880db8e1f0f0c06",
+        "550a58276416c4bb3e46b71d10c45af51e2462649e7331f6d5bbb8fd3ce6",
+        "2ab267f14386f771488e2bff780b58403b11672e7c040e91f5153de0be5d",
+        "0c5224be3416b6972a227ce9ebb00408bc96f3bac99eb8df9fc761e876a0",
+        "b112bb000ac2120f7bf2cf2c2bbebd4c5573ea090c070d48c47fe295602d",
+        "6e78",
     ));
 }
 
