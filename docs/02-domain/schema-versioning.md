@@ -93,9 +93,54 @@ BLAKE3::derive_key("sunrise.doc_schema.fingerprint.v1", JCS(schema))
 The details are in
 [ADR-0045](../11-adr/0045-schema-identity-and-feature-gating.md) §2–§3.
 
-*Today:* there is no canonical schema, no fingerprint and no field 13. The
-integer is bound under the signature but means only what the doc comment on
-`DOC_SCHEMA_V` in `crates/sunrise-cbor/src/version.rs` says ([#323](https://github.com/justin13888/Sunrise/issues/323)).
+### Where each piece lives
+
+| Piece | Where |
+|---|---|
+| The generator | `crates/sunrise-core/src/doc_schema.rs#canonical_schema`, test-only |
+| The canonical schema | `schemas/doc-schema/current.json` |
+| The build's registry, which the writer reads | `DOC_SCHEMA_FINGERPRINTS` in `crates/sunrise-cbor/src/version.rs` |
+| The committed registry | `schemas/doc-schema/registry.json`, version (as a decimal string) to lowercase hex |
+| The frozen entries | `DOC_SCHEMA_REGISTRY` in `crates/sunrise-crypto-test-vectors/src/protocol.rs` |
+| The writer | `crates/sunrise-crypto/src/op_envelope.rs#encode_envelope` stamps field 13 |
+
+`DOC_SCHEMA_V` 7 is the first fingerprinted version (`DOC_SCHEMA_FP_FIRST`).
+Versions 1 through 6 have no entry. Their envelopes carry no field 13 and are
+read under the legacy rules.
+
+The tests in `doc_schema.rs` fail when:
+
+- the fingerprint of the generated schema differs from the build's entry for
+  `DOC_SCHEMA_V`;
+- `DOC_SCHEMA_FINGERPRINTS` differs from the frozen list, so an entry changed,
+  disappeared or was appended to one list only;
+- either committed file differs from what the build generates.
+
+The committed files are compared as parsed JSON. They sit outside a
+`generated/` directory, so Biome lays them out, and the fingerprint is over
+their JCS form anyway. When a shape changes, the failure prints the new
+fingerprint. Bump `DOC_SCHEMA_V`, append the new entry to both lists, then
+regenerate the two files:
+
+```
+SUNRISE_REGEN_FIXTURES=1 cargo test -p sunrise-core --lib doc_schema
+mise run fix
+```
+
+*Today:* two parts of the design are not built yet.
+
+- **No receiver compares field 13 with its registry**
+  ([#438](https://github.com/justin13888/Sunrise/issues/438)). The decoder
+  reads field 13 and keeps it under the signature, but a mismatch is applied
+  rather than parked.
+- **The schema does not yet cover every shape**
+  ([#439](https://github.com/justin13888/Sunrise/issues/439)). Value types that
+  are not registry records appear only as a type name. These are
+  `ScheduleConstraint`, `RRule`, `SunriseTime`, `NoteBody`, `Chunk` and the
+  review rows. The control-op payloads are not described either. A field added
+  to one of them does not move the fingerprint. Field defaults wait for
+  [#319](https://github.com/justin13888/Sunrise/issues/319), and feature ids for
+  [#324](https://github.com/justin13888/Sunrise/issues/324).
 
 ## How fields merge
 
@@ -367,6 +412,7 @@ Version history, for reading old ops:
 | 4 | The six delete ops changed shape to full-state. |
 | 5 | Added the control families `KeyEnvelope`, `DeviceRevoke` and `DeviceCertPublish` ([ADR-0024](../11-adr/0024-key-hierarchy.md)). |
 | 6 | Added the control family `IdentityTransition`. |
+| 7 | The first fingerprinted version ([#323](https://github.com/justin13888/Sunrise/issues/323)), so envelopes gained field 13. It also records the additive shapes that landed after 6 without a bump: the `Unknown` arm of every lossless enum ([#321](https://github.com/justin13888/Sunrise/issues/321)), and unknown maps on nested records with `SunriseTime`'s unknown kind ([#322](https://github.com/justin13888/Sunrise/issues/322)). Every v6 payload still decodes. |
 
 Versions 3, 4, 5 and 6 each shipped a change an older build could not decode.
 Each relied on a pre-release licence that

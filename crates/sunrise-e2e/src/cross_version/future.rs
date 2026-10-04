@@ -2,7 +2,9 @@
 //!
 //! The property needs ops carrying kinds, fields and enum values that only a
 //! newer build has. `HEAD` has none of those relative to the ADR-0042 floor
-//! (both are at `DOC_SCHEMA_V` 6), and none relative to itself, so the harness
+//! (the floor is at `DOC_SCHEMA_V` 6; `HEAD`'s 7 is the first fingerprinted
+//! version and adds no field, enum value or op kind), and none relative to
+//! itself, so the harness
 //! supplies them: it
 //! takes a real device of the account (paired by `HEAD`, holding a real cert
 //! and the Stream's key), and seals ops that device's build could not have
