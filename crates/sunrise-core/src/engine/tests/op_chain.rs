@@ -10,7 +10,7 @@ use super::testutil::*;
 use super::*;
 use crate::engine::chain::{digest_payload, ForkKind};
 use crate::ChainIntegrity;
-use sunrise_crypto::{decode_envelope, op_hash, verify_envelope};
+use sunrise_crypto::{decode_envelope, op_hash, verify_envelope, FrontierEntry};
 use sunrise_domain::INBOX_STREAM_BYTES;
 
 const INBOX: [u8; 16] = INBOX_STREAM_BYTES;
@@ -456,6 +456,39 @@ fn digests_are_published_on_their_cadence() {
     );
 }
 
+/// The count rule: with the clock held still, the 256th op since this
+/// device's last digest makes one due, and the 255th does not.
+#[test]
+fn a_digest_is_due_after_256_ops_without_waiting_a_day() {
+    use crate::engine::chain::DIGEST_EVERY_OPS;
+    let ea = engine_seeded(ROOT, [1; 32], clock());
+    let mut dba = db_root(ROOT);
+    new_task(&ea, &mut dba, "first");
+    assert!(ea.publish_due_stream_digests(&mut dba).unwrap() >= 1);
+    let a = ea.keychain.device_id();
+    let held = envs(&dba, &INBOX, &a).len();
+
+    for i in 1..DIGEST_EVERY_OPS {
+        new_task(&ea, &mut dba, &format!("task {i}"));
+    }
+    assert_eq!(
+        envs(&dba, &INBOX, &a).len() - held,
+        usize::try_from(DIGEST_EVERY_OPS - 1).unwrap(),
+        "one inbox op per task"
+    );
+    assert_eq!(
+        ea.publish_due_stream_digests(&mut dba).unwrap(),
+        0,
+        "255 ops are not enough"
+    );
+    new_task(&ea, &mut dba, "the 256th");
+    assert_eq!(
+        ea.publish_due_stream_digests(&mut dba).unwrap(),
+        1,
+        "256 ops are, the same instant"
+    );
+}
+
 /// A peer's digest is not activity: two idle replicas do not answer each
 /// other's digests once a day forever.
 #[test]
@@ -490,4 +523,226 @@ fn a_peer_digest_does_not_make_a_digest_due() {
         0,
         "B's digest alone is not"
     );
+}
+
+/// A fresh replica that trusts every engine in `senders`.
+fn trusting(seed: u8, senders: &[&Engine]) -> (Engine, Db) {
+    let e = engine_seeded(ROOT, [seed; 32], clock());
+    let mut db = db_root(ROOT);
+    for s in senders {
+        trust(&e, &mut db, s);
+    }
+    (e, db)
+}
+
+/// Field 15 checked three ways (ADR-0043 §3). C applied one branch of A's
+/// fork and lists it as A's head. A replica holding the other branch keeps
+/// C's op as `head` evidence; one holding nothing of A expects the hash C
+/// named, and the branch that arrives later either meets it or becomes
+/// `head` evidence in its turn.
+#[test]
+fn a_listed_head_is_checked_against_the_held_op_or_expected() {
+    let ea = engine_seeded(ROOT, [1; 32], clock());
+    let mut dba = db_root(ROOT);
+    let ea2 = engine_seeded(ROOT, [1; 32], clock());
+    let mut dba2 = db_root(ROOT);
+    let a = ea.keychain.device_id();
+    new_task(&ea, &mut dba, "branch X");
+    new_task(&ea2, &mut dba2, "branch Y");
+    let x = envs(&dba, &INBOX, &a).remove(0);
+    let y = envs(&dba2, &INBOX, &a).remove(0);
+    assert_ne!(hash(&x), hash(&y));
+
+    let (ec, mut dbc) = trusting(3, &[&ea]);
+    let c = ec.keychain.device_id();
+    ec.apply_remote(&mut dbc, &y).unwrap();
+    new_task(&ec, &mut dbc, "C saw Y");
+    let c_op = envs(&dbc, &INBOX, &c).remove(0);
+    assert_eq!(
+        decode_envelope(&c_op).unwrap().heads,
+        vec![sunrise_crypto::ChainHead {
+            device_id: a,
+            seq: 1,
+            op_hash: hash(&y),
+        }]
+    );
+
+    // Holds X, then reads C's claim that A's seq 1 is Y.
+    let (eb, mut dbb) = trusting(2, &[&ea, &ec]);
+    eb.apply_remote(&mut dbb, &x).unwrap();
+    eb.apply_remote(&mut dbb, &c_op)
+        .unwrap()
+        .expect("an op whose head disagrees is still applied");
+    assert_eq!(
+        evidence_kinds(&dbb),
+        vec![(1, ForkKind::Head.as_str().to_owned())]
+    );
+    assert_eq!(integrity(&eb, &dbb).wanted, 0);
+
+    // Holds nothing of A: C's head is an expectation, reason `head`.
+    let (ed, mut dbd) = trusting(4, &[&ea, &ec]);
+    ed.apply_remote(&mut dbd, &c_op).unwrap();
+    let (device, seq, expected): (Vec<u8>, i64, Vec<u8>) = dbd
+        .conn()
+        .query_row(
+            "SELECT device_id, seq, op_hash FROM chain_expected",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!((device, seq, expected), (a.to_vec(), 1, hash(&y).to_vec()));
+    assert_eq!(
+        integrity(&ed, &dbd),
+        ChainIntegrity {
+            wanted: 1,
+            ..Default::default()
+        }
+    );
+    // X arrives where Y was expected, named by an op of another device.
+    ed.apply_remote(&mut dbd, &x).unwrap();
+    assert_eq!(
+        evidence_kinds(&dbd),
+        vec![(1, ForkKind::Head.as_str().to_owned())]
+    );
+    assert_eq!(
+        integrity(&ed, &dbd),
+        ChainIntegrity {
+            forks: 1,
+            ..Default::default()
+        }
+    );
+
+    // Y arrives where Y was expected: nothing to record.
+    let (ee, mut dbe) = trusting(5, &[&ea, &ec]);
+    ee.apply_remote(&mut dbe, &c_op).unwrap();
+    ee.apply_remote(&mut dbe, &y).unwrap();
+    assert_eq!(integrity(&ee, &dbe), ChainIntegrity::default());
+}
+
+/// `sealer`'s `StreamDigest` op in the inbox at `seq`, over `frontier`,
+/// whatever `sealer` holds. A peer's claim is only as good as its frontier;
+/// this is how a test makes one that disagrees.
+fn digest_op(sealer: &Engine, db: &mut Db, seq: u64, frontier: &[FrontierEntry]) -> Vec<u8> {
+    let payload = crate::inner_op::StreamDigestPayload {
+        digest: sunrise_crypto::stream_digest(&INBOX, frontier),
+        frontier: frontier
+            .iter()
+            .map(|e| crate::inner_op::FrontierWire(e.device_id, e.seq, e.root))
+            .collect(),
+        unknown: sunrise_domain::Unknowns::new(),
+    };
+    let key = db
+        .with_tx(|tx| sealer.keychain.current_stream_key_tx(tx, &INBOX))
+        .unwrap()
+        .expect("the sealer holds an inbox key");
+    sealer
+        .keychain
+        .seal_op_at(
+            INBOX,
+            seq,
+            sealer.hlc.send(),
+            &encode_inner_op(&InnerOp::StreamDigest(payload)).unwrap(),
+            sealer.rng.as_ref(),
+            key.0,
+            &key.1,
+        )
+        .unwrap()
+}
+
+fn root_through(device: &[u8; 16], envelopes: &[Vec<u8>]) -> [u8; 32] {
+    envelopes
+        .iter()
+        .fold(sunrise_crypto::chain_root_init(&INBOX, device), |r, e| {
+            sunrise_crypto::chain_root_step(&r, &hash(e))
+        })
+}
+
+/// A recorded divergence is cleared by a later digest from the same peer
+/// that agrees at the same seq, because roots chain.
+#[test]
+fn an_agreeing_digest_clears_a_recorded_divergence() {
+    let (ea, mut dba, eb, mut dbb) = pair(1, 2);
+    let a = ea.keychain.device_id();
+    new_task(&ea, &mut dba, "one");
+    let a_envs = envs(&dba, &INBOX, &a);
+    eb.apply_remote(&mut dbb, &a_envs[0]).unwrap();
+
+    let (ec, mut dbc) = trusting(3, &[&ea]);
+    ec.apply_remote(&mut dbc, &a_envs[0]).unwrap();
+    trust(&eb, &mut dbb, &ec);
+    let agreeing = FrontierEntry {
+        device_id: a,
+        seq: 1,
+        root: root_through(&a, &a_envs),
+    };
+    let disagreeing = FrontierEntry {
+        root: [0xd1; 32],
+        ..agreeing
+    };
+    let good = digest_op(&ec, &mut dbc, 1, &[agreeing]);
+    let bad = digest_op(&ec, &mut dbc, 2, &[disagreeing]);
+
+    eb.apply_remote(&mut dbb, &bad).unwrap();
+    assert_eq!(integrity(&eb, &dbb).divergences, 1);
+    eb.apply_remote(&mut dbb, &good).unwrap();
+    assert_eq!(
+        integrity(&eb, &dbb).divergences,
+        0,
+        "an agreement at the recorded seq clears it"
+    );
+}
+
+/// A claim this replica cannot check yet waits as a `chain_claims` row, and
+/// becomes a divergence once the prefix reaches it with a different root.
+#[test]
+fn a_deferred_claim_becomes_a_divergence_when_the_prefix_reaches_it() {
+    let (ea, mut dba, eb, mut dbb) = pair(1, 2);
+    let a = ea.keychain.device_id();
+    new_task(&ea, &mut dba, "one");
+    new_task(&ea, &mut dba, "two");
+    let a_envs = envs(&dba, &INBOX, &a);
+    eb.apply_remote(&mut dbb, &a_envs[0]).unwrap();
+
+    let (ec, mut dbc) = trusting(3, &[&ea]);
+    ec.apply_remote(&mut dbc, &a_envs[0]).unwrap();
+    trust(&eb, &mut dbb, &ec);
+    let c = ec.keychain.device_id();
+    let claim = digest_op(
+        &ec,
+        &mut dbc,
+        1,
+        &[FrontierEntry {
+            device_id: a,
+            seq: 2,
+            root: [0xd2; 32],
+        }],
+    );
+    eb.apply_remote(&mut dbb, &claim).unwrap();
+    assert_eq!(
+        integrity(&eb, &dbb),
+        ChainIntegrity {
+            wanted: 1,
+            ..Default::default()
+        },
+        "B holds A through 1 and cannot check a claim at 2"
+    );
+
+    eb.apply_remote(&mut dbb, &a_envs[1]).unwrap();
+    assert_eq!(
+        integrity(&eb, &dbb),
+        ChainIntegrity {
+            divergences: 1,
+            ..Default::default()
+        },
+        "the claim was checked and dropped, and it disagreed"
+    );
+    let (device, peer, seq): (Vec<u8>, Vec<u8>, i64) = dbb
+        .conn()
+        .query_row(
+            "SELECT device_id, peer_device_id, seq FROM chain_divergence",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!((device, peer, seq), (a.to_vec(), c.to_vec(), 2));
 }
