@@ -741,8 +741,8 @@ pub(super) fn ops_run_end(
 /// # What the apply path consults, and what that read decides
 ///
 /// The read bound, and not the revocation register. A `DeviceCertPublish`
-/// dispatched out of `crates/sunrise-core/src/engine/sync.rs:394#apply_remote_all`
-/// reaches `crates/sunrise-core/src/engine/oplog.rs:418#backfill_key_envelopes`,
+/// dispatched out of `crates/sunrise-core/src/engine/sync.rs:403#apply_remote_all`
+/// reaches `crates/sunrise-core/src/engine/oplog.rs:424#backfill_key_envelopes`,
 /// which returns early on a device
 /// `crates/sunrise-core/src/engine/revocation.rs:650#is_read_bounded` names —
 /// a presence test over `device_read_bounds`, inside the apply transaction, on
@@ -759,7 +759,7 @@ pub(super) fn ops_run_end(
 /// *not* decide is whether the op applies. The op row went in at the
 /// idempotence gate before the control op was dispatched, the `devices` row is
 /// written before the backfill is attempted, and a backfill error is logged rather than
-/// raised (`crates/sunrise-core/src/engine/sync.rs:1278#apply_control_op`). Not one of
+/// raised (`crates/sunrise-core/src/engine/sync.rs:1305#apply_control_op`). Not one of
 /// those answers skips this function: it runs on the delivery like any other,
 /// and the op row it left behind counts toward the prefix like any other.
 /// Whether the number this writes actually moves is a question about the seqs
@@ -772,10 +772,10 @@ pub(super) fn ops_run_end(
 /// this still runs.
 ///
 /// Admission is settled at step b — by the `devices` lookup at
-/// `crates/sunrise-core/src/engine/sync.rs:265#apply_remote_all`, or, for the
+/// `crates/sunrise-core/src/engine/sync.rs:274#apply_remote_all`, or, for the
 /// `DeviceCertPublish` family that trace delivers, by
 /// [`Engine::self_authenticating_signer`] at
-/// `crates/sunrise-core/src/engine/sync.rs:270#apply_remote_all`, which checks
+/// `crates/sunrise-core/src/engine/sync.rs:279#apply_remote_all`, which checks
 /// the envelope against the cert it carries because that op is what *creates*
 /// the row the lookup reads. In neither case is it settled by the register or
 /// by the bound: a revoked device's row is found there like any other and its
@@ -792,23 +792,23 @@ pub(super) fn ops_run_end(
 ///
 /// This function decides nothing and refuses nothing: it writes the end of the
 /// run already in the log, and all three of its call sites reach it having put
-/// the op row in first — `crates/sunrise-core/src/engine/sync.rs:400#apply_remote_all`
+/// the op row in first — `crates/sunrise-core/src/engine/sync.rs:409#apply_remote_all`
 /// at its step g, past an idempotence gate that returns early when the insert
 /// changed no row and released no parked op;
-/// `crates/sunrise-core/src/engine/oplog.rs:153#ops_insert_at` at the tail of
+/// `crates/sunrise-core/src/engine/oplog.rs:159#ops_insert_at` at the tail of
 /// this device's own emit, after the op-log insert and the outbox enqueue; and
-/// `crates/sunrise-core/src/engine/sync.rs:728#park_op`, after inserting the
+/// `crates/sunrise-core/src/engine/sync.rs:750#park_op`, after inserting the
 /// unapplied row of an op whose kind this build does not know. That last one
 /// is why a parked op counts toward the prefix: its row is in `ops` like any
 /// other, and this function reads nothing else (issue #320).
 ///
 /// A local emit that fails never reaches this. Three statements before it can
 /// fail — the seal at
-/// `crates/sunrise-core/src/engine/oplog.rs:123#ops_insert_at`, the
+/// `crates/sunrise-core/src/engine/oplog.rs:128#ops_insert_at`, the
 /// `OpLog::insert` error arm at
-/// `crates/sunrise-core/src/engine/oplog.rs:124#ops_insert_at`, and the
+/// `crates/sunrise-core/src/engine/oplog.rs:129#ops_insert_at`, and the
 /// `Outbox::enqueue` at
-/// `crates/sunrise-core/src/engine/oplog.rs:146#ops_insert_at` — and
+/// `crates/sunrise-core/src/engine/oplog.rs:152#ops_insert_at` — and
 /// `crates/sunrise-core/src/engine/tests.rs:8513#a_failed_local_emit_leaves_the_cursor_where_it_was`
 /// walks the second and the third, inside the transaction rather than after
 /// the rollback. The seal is the one it does not walk. Nor could any of them
@@ -819,7 +819,7 @@ pub(super) fn ops_run_end(
 ///
 /// Two of them belong to revocation, and neither is an op's.
 ///
-/// The first. `crates/sunrise-core/src/engine/sync.rs:1027#apply_control_op` hands a
+/// The first. `crates/sunrise-core/src/engine/sync.rs:1054#apply_control_op` hands a
 /// `device_revoke` to
 /// `crates/sunrise-core/src/engine/revocation.rs:1349#apply_device_revoke`,
 /// which refuses one naming its own sender — logging
@@ -841,7 +841,7 @@ pub(super) fn ops_run_end(
 ///
 /// The second, and it is the one keyed on the *sender's* standing that the
 /// premise at the top of this comment turns on.
-/// `crates/sunrise-core/src/engine/sync.rs:955#apply_control_op` refuses a
+/// `crates/sunrise-core/src/engine/sync.rs:982#apply_control_op` refuses a
 /// read-bounded sender's claim that some third device already holds the key at
 /// a `(stream, epoch)`, logging `core.key.recipient_claim_refused`. What it
 /// declines is a `key_envelope_recipients` **hint** row and nothing else: the
@@ -865,11 +865,11 @@ pub(super) fn ops_run_end(
 ///
 /// **Refusals outside revocation are a different count, and this paragraph
 /// does not bound them.** At least three live on the apply path above:
-/// `crates/sunrise-core/src/engine/sync.rs:305#apply_remote_all` when no key
+/// `crates/sunrise-core/src/engine/sync.rs:314#apply_remote_all` when no key
 /// at this `(stream, epoch)` opens the envelope,
-/// `crates/sunrise-core/src/engine/sync.rs:329#apply_remote_all` when the
+/// `crates/sunrise-core/src/engine/sync.rs:338#apply_remote_all` when the
 /// sender's clock is outside the drift window, and
-/// `crates/sunrise-core/src/engine/sync.rs:910#apply_control_op` when a key
+/// `crates/sunrise-core/src/engine/sync.rs:937#apply_control_op` when a key
 /// envelope names an epoch above `MAX_EPOCH_LEAP`. The first two return an
 /// error before the transaction opens, so no op row and no cursor; the third
 /// drops a payload with the op row already in, so the op counts toward the
@@ -917,11 +917,11 @@ pub(super) fn ops_run_end(
 ///
 /// That meaning is what bounds every "the cursor advances" above. The run
 /// starts at seq 1 because this function asks for it there —
-/// `crates/sunrise-core/src/engine/oplog.rs:925#upsert_sync_cursor` is where
+/// `crates/sunrise-core/src/engine/oplog.rs:938#upsert_sync_cursor` is where
 /// the literal lives;
-/// `crates/sunrise-core/src/engine/oplog.rs:675#ops_run_end` is parameterised
+/// `crates/sunrise-core/src/engine/oplog.rs:681#ops_run_end` is parameterised
 /// on `start` at
-/// `crates/sunrise-core/src/engine/oplog.rs:679#ops_run_end` and hard-codes
+/// `crates/sunrise-core/src/engine/oplog.rs:685#ops_run_end` and hard-codes
 /// nothing. So an op delivered with a gap below it is in the log and outside
 /// the prefix: with the log holding `{2}` the `ELSE ?3 - 1` arm writes 0, and with
 /// it holding `{1, 3}` the run ends at 1. Refused or applied makes no
