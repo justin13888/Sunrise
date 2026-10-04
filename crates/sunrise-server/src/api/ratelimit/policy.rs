@@ -27,7 +27,7 @@ pub enum RouteGroup {
     Account,
     /// The four blob routes.
     Blob,
-    /// The five sync routes.
+    /// The five sync routes, and the three pairing rendezvous routes.
     Sync,
 }
 
@@ -104,7 +104,12 @@ pub fn route_group(method: &str, path: &str) -> Option<RouteGroup> {
             "/api/v1/sync/session"
             | "/api/v1/sync/session/refresh"
             | "/api/v1/sync/subscribe"
-            | "/api/v1/sync/ops",
+            | "/api/v1/sync/ops"
+            // Polled for the few seconds a pairing runs; the pair-attempt
+            // limits in `api/pairing.rs` are what bound pairing itself.
+            | "/api/v1/pairing/send"
+            | "/api/v1/pairing/receive"
+            | "/api/v1/pairing/abort",
         )
         | ("GET", "/api/v1/sync/events") => Sync,
         _ => return None,

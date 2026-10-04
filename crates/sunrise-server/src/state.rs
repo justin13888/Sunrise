@@ -86,6 +86,9 @@ pub struct ServerState {
     /// Wake-up pushes: who is online, and the provider for who is not.
     /// Disabled unless `[push]` configures a provider.
     pub push: crate::push::Dispatcher,
+    /// The pairing rendezvous: live sessions keyed by `pair_id`, and the
+    /// pair-attempt ledgers. In memory only; a session lives five minutes.
+    pub pairing: crate::api::pairing::Rendezvous,
 }
 
 /// Why [`ServerState::try_new`] could not build a state.
@@ -149,6 +152,7 @@ impl ServerState {
             drain: crate::drain::Drain::new(),
             limiter: crate::api::ratelimit::Limiter::default(),
             push,
+            pairing: crate::api::pairing::Rendezvous::new(),
         }
     }
 

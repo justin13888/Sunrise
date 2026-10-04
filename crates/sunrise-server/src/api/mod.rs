@@ -37,6 +37,7 @@ pub mod health;
 pub mod meta;
 pub mod metrics;
 pub mod observe;
+pub mod pairing;
 pub mod ratelimit;
 pub mod signed;
 pub mod sync;
@@ -126,6 +127,11 @@ pub fn router(config: &crate::ServerConfig, metrics: &crate::Metrics) -> ApiRout
             sync::ops,
             sync::refresh,
             sync::events
+        ])
+        .mount(kynos::routes![
+            pairing::send,
+            pairing::receive,
+            pairing::abort
         ])
         .merge(operator_surface(config))
         // Who the client is. Empty, nothing a request says about its own
@@ -386,6 +392,9 @@ mod tests {
             "/api/v1/devices",
             "/api/v1/devices/{device_id}",
             "/api/v1/devices/push-tokens",
+            "/api/v1/pairing/send",
+            "/api/v1/pairing/receive",
+            "/api/v1/pairing/abort",
         ] {
             assert!(
                 v["paths"].get(path).is_some(),
