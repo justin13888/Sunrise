@@ -184,8 +184,9 @@ forever, as writes to every field they carry (ADR-0044 §7).
 
 Every field type is a pure function of the set of applied ops, so a projection
 is rebuildable from `ops` in any order. A compaction snapshot carries that
-state; its format is [`../04-storage/compaction.md`](../04-storage/compaction.md)'s
-to define ([#330](https://github.com/justin13888/Sunrise/issues/330)).
+state, and applying one is a join of it into the local state
+([`../04-storage/compaction.md`](../04-storage/compaction.md) §Snapshot record,
+[ADR-0059](../11-adr/0059-client-op-log-compaction.md) §1).
 
 ## Properties tested
 

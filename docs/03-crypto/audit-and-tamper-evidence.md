@@ -34,6 +34,7 @@ The op envelope's `(stream_id, device_id, seq)` triple is the canonical replay-d
 Receivers enforce:
 
 - `seq` starts at 1 per `(stream_id, device_id)`. An op above a gap is stored and applied, and sits outside the prefix until the gap fills; the relay replays from the cursor.
+- Below a compaction floor ([ADR-0059](../11-adr/0059-client-op-log-compaction.md) §2) the prefix starts above the floor instead. Every seq at or below it is covered by the merge state and the floor's chain root, whether or not its row is still held, so it is neither a gap nor a missing op, and a delivery there is a duplicate. A different op at the floor's own seq is fork evidence like any other.
 - A repeated `(stream_id, device_id, seq)` whose envelope is the same op (equal `op_hash`) is silently dropped (idempotent re-delivery).
 - A repeated `(stream_id, device_id, seq)` whose envelope is a **different** verified op is **fork evidence**: the second envelope is kept in `fork_evidence`, the first stays the applied one, and a `core.chain.fork` warning is logged. Sync does not stop.
 
@@ -51,7 +52,7 @@ digest(S, F)  = BLAKE3::derive_key("sunrise.stream_digest.v1",
 
 `op_hash` is computed from a re-encoding of the envelope, so two replicas agree on it whatever encoding reached them. Each device's ops are folded in its own seq order, so a late op from one device changes nothing already folded for another, and no ordering key is shared with the merge. The frontier `F` is the replica's `sync_cursors`: each device with a non-empty contiguous prefix and that prefix's end. The chain root covers ops written before chaining existed, because it is computed from the bytes the replica holds.
 
-> **Amended ([ADR-0043](../11-adr/0043-commit-tree.md)).** This section specified one root per Stream, folding every device's ops in the global `(hlc, device_id, seq)` order ([ADR-0027](../11-adr/0027-v1-self-host-first.md) removed the relay's clamp from that order). It was never called by a product path: an op arriving late with an earlier key forced a re-fold from that point, and a differing root could not say which device's ops differed. Its functions, `stream_root_init` and `stream_root_step` in `crates/sunrise-crypto/src/merkle.rs`, stay pinned by their frozen vectors until compaction ([#330](https://github.com/justin13888/Sunrise/issues/330)) chooses the snapshot's commitment format.
+> **Amended ([ADR-0043](../11-adr/0043-commit-tree.md)).** This section specified one root per Stream, folding every device's ops in the global `(hlc, device_id, seq)` order ([ADR-0027](../11-adr/0027-v1-self-host-first.md) removed the relay's clamp from that order). It was never called by a product path: an op arriving late with an earlier key forced a re-fold from that point, and a differing root could not say which device's ops differed. Its functions, `stream_root_init` and `stream_root_step` in `crates/sunrise-crypto/src/merkle.rs`, stay pinned by their frozen vectors. Compaction ([ADR-0059](../11-adr/0059-client-op-log-compaction.md) §7) did not adopt them: a snapshot commits to its frontier's per-device chain roots instead.
 
 Devices with > 5 min skew display a `"Your clock is ≥ 5 minutes off; sync may produce unexpected ordering"` warning.
 

@@ -261,8 +261,8 @@ step 3b before any commit.
 
 All retention numbers are unified to **30 days** (or shorter):
 
-- Op envelopes: the relay keeps a frame for at most **30 days** from arrival, or less when the channel's count bound evicts it first. This is the current relay retention, set in code by `DEFAULT_MAX_AGE_MS` (`crates/sunrise-server/src/relay_log.rs:123`) and applied on every append; it does not wait on compaction, which is proposed and not built ([`../04-storage/compaction.md`](../04-storage/compaction.md)).
-- Op metadata rows: retained at least **30 days** regardless of compaction state, providing a recovery window if compaction logic produces a defective snapshot.
+- Op envelopes: the relay keeps a frame for at most **30 days** from arrival, or less when the channel's count bound evicts it first. This is the current relay retention, set in code by `DEFAULT_MAX_AGE_MS` (`crates/sunrise-server/src/relay_log.rs:123`) and applied on every append; it does not wait on compaction, which is a client-side fold the relay takes no part in ([`../04-storage/compaction.md`](../04-storage/compaction.md) §Server side).
+- Op metadata rows: retained at least **30 days**, as above. The relay holds no snapshot: a client keeps its stream's latest snapshot record locally, and no transport carries one between devices yet ([#462](https://github.com/justin13888/Sunrise/issues/462)).
 - Blob GC grace: `[storage] gc_grace_days`, default 30. A tombstoned blob is reclaimed by the first maintenance pass after its grace period at which every active device has acknowledged the tombstone. This is independent of post-compaction retention.
 - Abandoned uploads: `[storage] pending_upload_ttl_hours`, default 24, measured from the newest file in the upload.
 - Deleted accounts: `[storage] account_delete_grace_days`, default 30, from the confirmed deletion to the erasure.

@@ -4,7 +4,7 @@ status: accepted
 
 # Op Log
 
-The op log is the canonical history. Materialized state is derivable from the log. The log is append-only (today; compaction is a controlled rewrite, see [`compaction.md`](./compaction.md)).
+The op log is the canonical history. Materialized state is derivable from the log. The log is append-only, except that compaction deletes acknowledged entity writes below a per-device floor (see [`compaction.md`](./compaction.md)); after that, materialized state is derivable from the merge state and the ops above the floors.
 
 > **`deps` are specified, not implemented — and every section below that rests
 > on them describes the target.** `OpLog::insert` in
@@ -182,4 +182,4 @@ A move emits two ops: `delete_in(src_stream)` and `create_in(dst_stream)`. Both 
 
 ## Compaction interaction
 
-See [`compaction.md`](./compaction.md). Briefly: after retention window + ack from all known devices, ranges of ops are folded into a "snapshot op" that supersedes them. Other devices apply the snapshot directly without needing the folded history.
+See [`compaction.md`](./compaction.md). Briefly: once ops are older than the retention window and every known device has acknowledged them in its stream digest, the entity writes among them are deleted below a per-device floor whose chain root stands for them. Their effect is already in the merge state. A device that never held them joins from a signed snapshot of that state instead of the folded history.
