@@ -396,4 +396,12 @@ pub const CRYPTO_SUITE_V: u16 = 5;
 /// and the deltas of a counter. The entity rows become its read projection.
 /// Schema-only: an entity the vault already held is seeded from its row the
 /// first time an op touches it.
-pub const STORAGE_V: u16 = 33;
+///
+/// `34` is migration `0034_op_chain.sql`, which adds the per-device op chains
+/// of ADR-0043 (issue #325): each op's `op_hash` and running chain root on
+/// `ops`, what the writer has listed in envelope field 15, the ops a later op
+/// named that this replica does not hold, the peer frontier entries it could
+/// not check yet, fork evidence, and digest disagreements. Schema-only: the
+/// hashes and roots of rows already held are computed from their envelopes
+/// the first time each device's prefix is folded.
+pub const STORAGE_V: u16 = 34;
