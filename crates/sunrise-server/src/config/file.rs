@@ -126,6 +126,10 @@ pub struct StorageTable {
     pub pending_upload_ttl_hours: Option<u64>,
     /// [`ServerConfig::maintenance_interval_secs`].
     pub maintenance_interval_secs: Option<u64>,
+    /// [`ServerConfig::sqlite_encrypt`].
+    pub encrypt: Option<bool>,
+    /// [`ServerConfig::sqlite_key_file`].
+    pub key_file: Option<PathBuf>,
 }
 
 /// A parsed `sunrise.toml`.
@@ -241,6 +245,12 @@ impl FileConfig {
         }
         if let Some(v) = self.storage.maintenance_interval_secs {
             base.maintenance_interval_secs = v;
+        }
+        if let Some(v) = self.storage.encrypt {
+            base.sqlite_encrypt = v;
+        }
+        if let Some(v) = self.storage.key_file {
+            base.sqlite_key_file = Some(v);
         }
         base
     }

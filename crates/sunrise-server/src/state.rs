@@ -118,7 +118,12 @@ impl ServerState {
     /// push provider that cannot be built — an APNs key file group or others
     /// can read, say.
     pub fn try_new(config: ServerConfig) -> Result<Self, StartError> {
-        let store = Store::open_with(config.sqlite_path.as_deref(), config.sqlite_busy_timeout())?;
+        let key = config.sqlite_key()?;
+        let store = Store::open_keyed(
+            config.sqlite_path.as_deref(),
+            config.sqlite_busy_timeout(),
+            key.as_ref(),
+        )?;
         let clock: Arc<dyn Clock> = Arc::new(SystemClock);
         let push = crate::push::from_config(&config.push, Arc::clone(&clock))?;
         Ok(Self::assemble(config, clock, Arc::new(store), push))
@@ -215,8 +220,13 @@ impl ServerState {
     /// As [`ServerState::new`].
     #[must_use]
     pub fn with_clock(config: ServerConfig, clock: Arc<dyn Clock>) -> Self {
-        let store = Store::open_with(config.sqlite_path.as_deref(), config.sqlite_busy_timeout())
-            .expect("open account store");
+        let key = config.sqlite_key().expect("read the database key");
+        let store = Store::open_keyed(
+            config.sqlite_path.as_deref(),
+            config.sqlite_busy_timeout(),
+            key.as_ref(),
+        )
+        .expect("open account store");
         let push = crate::push::from_config(&config.push, Arc::clone(&clock))
             .expect("build push provider");
         Self::assemble(config, clock, Arc::new(store), push)

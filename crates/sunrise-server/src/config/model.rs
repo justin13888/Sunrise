@@ -12,7 +12,9 @@
 //! from.
 
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+use crate::store::{DbKey, StoreError};
 
 /// Server configuration. Read from `sunrise.toml` (production) or built
 /// programmatically (tests).
@@ -98,6 +100,15 @@ pub struct ServerConfig {
     /// [`crate::store::DEFAULT_BUSY_TIMEOUT`] for what it waits out.
     #[serde(default = "default_sqlite_busy_timeout_ms")]
     pub sqlite_busy_timeout_ms: u64,
+    /// Whether the SQLite file is SQLCipher-encrypted under the key in
+    /// [`ServerConfig::sqlite_key_file`]. `[storage] encrypt`, default off;
+    /// ADR-0060 records why.
+    #[serde(default)]
+    pub sqlite_encrypt: bool,
+    /// The file holding the database key: 64 hex digits, mode `0600`, outside
+    /// the data dir. `[storage] key_file`.
+    #[serde(default)]
+    pub sqlite_key_file: Option<PathBuf>,
     /// Self-host blob root (None = `<sqlite_dir>/blobs`).
     pub blob_root: Option<PathBuf>,
     /// Exact-match CORS allowlist for browser clients. Empty = no browser
@@ -525,6 +536,8 @@ impl Default for ServerConfig {
             recovery_amr_values: Vec::new(),
             sqlite_path: None,
             sqlite_busy_timeout_ms: default_sqlite_busy_timeout_ms(),
+            sqlite_encrypt: false,
+            sqlite_key_file: None,
             blob_root: None,
             account_delete_grace_days: default_thirty_days(),
             gc_grace_days: default_thirty_days(),
@@ -553,6 +566,53 @@ impl ServerConfig {
     #[must_use]
     pub const fn sqlite_busy_timeout(&self) -> std::time::Duration {
         std::time::Duration::from_millis(self.sqlite_busy_timeout_ms)
+    }
+
+    /// The database key `[storage]` names, or `None` with encryption off.
+    ///
+    /// # Errors
+    /// `encrypt` without a `key_file`, or a `key_file` without `encrypt` —
+    /// the second because an operator who wrote a key file believes the
+    /// database is encrypted, and it would not be. A key file inside the data
+    /// dir, and each refusal [`DbKey::from_file`] makes.
+    pub fn sqlite_key(&self) -> Result<Option<DbKey>, StoreError> {
+        let key_file =
+            match (self.sqlite_encrypt, &self.sqlite_key_file) {
+                (false, None) => return Ok(None),
+                (false, Some(_)) => {
+                    return Err(StoreError::KeyConfig(
+                        "[storage] key_file is set but encrypt is not: set encrypt = true to \
+                     encrypt the database, or remove key_file",
+                    ))
+                }
+                (true, None) => return Err(StoreError::KeyConfig(
+                    "[storage] encrypt = true needs key_file: a file of 64 hex digits, mode 0600, \
+                     outside the data dir (openssl rand -hex 32)",
+                )),
+                (true, Some(p)) => p,
+            };
+        let data_dir = self.sqlite_path.as_deref().and_then(Path::parent);
+        // A bare `sunrise.db` has the empty path as its parent, which every
+        // path "starts with"; the data dir is then the working directory.
+        let data_dir = data_dir.map(|d| {
+            if d.as_os_str().is_empty() {
+                Path::new(".")
+            } else {
+                d
+            }
+        });
+        if let Some(data_dir) = data_dir {
+            // Canonical where the path exists, so `..` and a symlinked data dir
+            // cannot hide the key inside it.
+            let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_owned());
+            if canon(key_file).starts_with(canon(data_dir)) {
+                return Err(StoreError::KeyInDataDir {
+                    key_file: key_file.clone(),
+                    data_dir: data_dir.to_owned(),
+                });
+            }
+        }
+        DbKey::from_file(key_file).map(Some)
     }
 }
 
