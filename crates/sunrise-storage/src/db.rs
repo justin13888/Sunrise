@@ -243,8 +243,8 @@ impl Db {
         const REPORTED: usize = 5;
         tracing::error!(
             ev = "db.integrity.failed",
-            err_code = "STORAGE_INTEGRITY_FAILED",
-            err_kind = "permanent",
+            err_code = %ErrorCode::FatalInternal,
+            err_kind = "internal",
             retryable = false,
             "the vault failed its integrity check"
         );
@@ -277,8 +277,8 @@ impl Db {
             tracing::error!(
                 ev = "db.backup.failed",
                 from_v = u64::from(from_v),
-                err_code = "STORAGE_BACKUP_FAILED",
-                err_kind = "permanent",
+                err_code = %ErrorCode::FatalInternal,
+                err_kind = "internal",
                 retryable = false,
                 cause = %source,
                 "could not back up the vault; it was not migrated"
@@ -1374,6 +1374,45 @@ mod tests {
         assert!(
             matches!(err, DbError::IntegrityCheckFailed { .. }),
             "expected an integrity failure, got {err:?}"
+        );
+    }
+
+    /// `quick_check` failing with an error other than `SQLITE_NOTADB` on a
+    /// keyed file runs the page check, and when every page verifies the
+    /// original error comes back as it was: the file is not damaged, so it
+    /// must not be reported as damaged.
+    ///
+    /// The error here is a `CHECK` constraint naming a function this build
+    /// does not have, which `quick_check` evaluates and cannot resolve.
+    #[test]
+    fn a_check_failure_on_sound_pages_stays_the_sqlite_error_it_was() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vault.db");
+        drop(Db::open(&path, &vault_key()).unwrap());
+        let conn = Connection::open(&path).unwrap();
+        Db::apply_sqlcipher_key(&conn, &vault_key()).unwrap();
+        Db::apply_pragmas(&conn).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE t (a INTEGER);
+             INSERT INTO t VALUES (1);
+             PRAGMA writable_schema = ON;
+             UPDATE sqlite_schema
+               SET sql = 'CREATE TABLE t (a INTEGER CHECK (no_such_function(a)))'
+               WHERE name = 't';
+             PRAGMA writable_schema = RESET;",
+        )
+        .unwrap();
+
+        let err = Db::quick_check(&conn, true).unwrap_err();
+        let DbError::Sqlite(rusqlite::Error::SqliteFailure(e, msg)) = &err else {
+            panic!("expected the original SQLite error, got {err:?}");
+        };
+        assert_ne!(e.code, rusqlite::ErrorCode::NotADatabase);
+        assert_ne!(e.code, rusqlite::ErrorCode::DatabaseCorrupt);
+        assert!(
+            msg.as_deref()
+                .is_some_and(|m| m.contains("no_such_function")),
+            "expected the unresolved function to be named, got {err:?}"
         );
     }
 }
