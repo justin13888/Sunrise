@@ -291,7 +291,10 @@ can reach. What is narrower than the row's prose, recorded rather than smoothed
 over:
 
 - **macOS.** No camera QR scanner exists — the *Pairing — scan QR* row's "camera
-  or paste" is satisfied by paste alone. Drag-and-drop is missing the Calendar
+  or paste" is satisfied by paste alone. The relay's pairing rendezvous and
+  the `RelayPairing` seam that drives it exist, and would take every other
+  paste away. Neither Apple client calls them yet
+  ([#464](https://github.com/justin13888/Sunrise/issues/464)). Drag-and-drop is missing the Calendar
   block → Task gesture — unbuilt rather than inexpressible: the block chip is
   not a drag source and the task row's drop only reorders. iCal is windowed on
   the way out and lossy on the way in: export offers Today and This Week and no
