@@ -1,0 +1,17 @@
+# The relay the deploy test runs behind each shipped proxy configuration.
+#
+# Single-tenant on its default loopback bind, which is the posture the shipped
+# configurations proxy to; `run.py` points `[storage] data_dir` at a fresh
+# temporary directory by substituting `@DATA_DIR@` below.
+
+[server]
+listen          = "127.0.0.1:8443"
+# The proxy connects from loopback, so loopback is the one hop believed.
+trusted_proxies = ["127.0.0.1"]
+
+[storage]
+data_dir = "@DATA_DIR@"
+
+[limits]
+# Low enough that the test trips it in a handful of requests from each client.
+meta_per_min = 5

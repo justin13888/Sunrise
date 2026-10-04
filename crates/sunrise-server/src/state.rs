@@ -80,6 +80,9 @@ pub struct ServerState {
     pub sessions: crate::sync_session::SessionStore,
     /// Set once shutdown begins; readiness and the SSE streams watch it.
     pub drain: crate::drain::Drain,
+    /// Rate-limit state: the per-address buckets the router's admission
+    /// interceptor charges, and the per-device budgets the handlers charge.
+    pub limiter: crate::api::ratelimit::Limiter,
 }
 
 impl ServerState {
@@ -124,6 +127,7 @@ impl ServerState {
             durable_caps: crate::relay_log::DurableCaps::default(),
             sessions: crate::sync_session::SessionStore::new(),
             drain: crate::drain::Drain::new(),
+            limiter: crate::api::ratelimit::Limiter::default(),
         }
     }
 

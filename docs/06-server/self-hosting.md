@@ -18,7 +18,8 @@ A first-class deployment topology, not a charity afterthought.
 - **TLS terminates at a reverse proxy.** The binary has no ACME client and no
   certificate loading of any kind; a `[tls]` block is rejected by the config
   parser rather than silently ignored, precisely so nobody believes they are
-  serving HTTPS when they are not.
+  serving HTTPS when they are not. "Reverse proxy" below walks through the two
+  tested configurations that ship in `deploy/`.
 - Outbound network for the OIDC issuer's discovery and JWKS documents (HTTPS
   only — `HttpsFetch` refuses a plaintext URL before dialling).
 
@@ -45,6 +46,8 @@ allowed_origins  = ["https://app.example.com"]   # browser origins; must be sche
 max_body_bytes   = 2097152                # default 2 MiB
 shutdown_grace_secs = 25                  # default 25; how long SIGTERM waits for
                                           # in-flight requests; at least 1 (0 is refused)
+trusted_proxies  = ["127.0.0.1"]          # default []; reverse proxies whose X-Forwarded-For /
+                                          # Forwarded is believed; addresses or CIDRs
 
 [auth]
 oidc_issuer        = "https://auth.example.com"  # must be https
@@ -59,6 +62,23 @@ data_dir = "/var/lib/sunrise"             # expands to <dir>/sunrise.db and <dir
                                           # unset = ephemeral in-memory (tests only)
 busy_timeout_ms = 5000                    # default 5000; how long SQLite waits on another
                                           # process's lock before failing; 0 fails at once
+
+[limits]                                  # api.md §Rate limits; every key defaults
+enabled              = true               # false turns every limit off (load tests only)
+probe_per_min        = 120                # per client address: /health, /metrics
+meta_per_min         = 60                 #   /meta
+bootstrap_per_min    = 10                 #   POST /accounts, POST /devices
+account_per_min      = 60                 #   account and device management
+blob_per_min         = 600                #   /blobs/*
+sync_per_min         = 600                #   /sync/*
+failed_auth_per_5min = 20                 # 401s per address before its credentials are
+                                          # refused unverified
+ops_per_sec          = 50                 # per device; bursts to ten seconds' worth
+blob_upload_bytes_per_min   = 67108864    # per device (64 MiB)
+blob_download_bytes_per_min = 268435456   # per device (256 MiB)
+open_uploads         = 16                 # per account, between init and finalize
+sessions_per_5min    = 10                 # per device
+streams              = 4                  # event streams per device at once
 ```
 
 Setting **both** `oidc_issuer` and `oidc_client_id` is what installs the JWKS
@@ -77,12 +97,89 @@ The server exits 78 rather than starting, when:
 | `require_device_sig` without an issuer | Device signatures are meaningless under the self-host verifier |
 | An origin is `*` or not scheme-qualified | Ambiguous CORS |
 | `max_body_bytes = 0` | Rejects every request |
+| A `[limits]` value is `0` (the error names the key) | Refuses everything that limit covers; `enabled = false` is how limits are turned off |
+| A `trusted_proxies` entry is not an address or CIDR network | Hostnames are not resolved; the socket reports an address |
 | `busy_timeout_ms` above 2147483647 | SQLite holds the timeout in a 32-bit signed integer of milliseconds (about 24 days) |
 | `sunrise.db` is at a schema version newer than this binary's | A newer release migrated it; writing to it could corrupt what that release relies on (see "Upgrade") |
 
 Unknown keys and unknown tables are **rejected**, not ignored. Writing a
 `[tls]` block and having it silently dropped would serve plaintext while the
 operator believed otherwise, so the parser names the offending key instead.
+
+## Reverse proxy
+
+The relay serves plain HTTP and nothing else, so a public relay always sits
+behind a reverse proxy that terminates TLS. Two tested configurations ship in
+[`deploy/`](../../deploy/): [`deploy/caddy/Caddyfile`](../../deploy/caddy/Caddyfile)
+and [`deploy/nginx/sunrise.conf.template`](../../deploy/nginx/sunrise.conf.template).
+The `Deploy test` CI job boots each one unchanged in its official image, in
+front of a real relay, and checks every property listed below from client
+containers with addresses of their own (`deploy/test/run.py`). Start from one of
+them rather than from a blank file.
+
+### 1. Run the relay on loopback
+
+Leave `[server] listen` at its default, `127.0.0.1:8443`, on the same host as
+the proxy. Nothing but the proxy can then reach the relay, and loopback is the
+only bind on which a single-tenant relay will start. A multi-tenant relay (an
+OIDC issuer configured) may bind elsewhere — a private interface the proxy
+reaches over a container network, say — but keep it off any public interface:
+the proxy is where TLS, the body limit and `/metrics` are handled.
+
+### 2. Tell the relay which proxy to believe
+
+```toml
+[server]
+trusted_proxies = ["127.0.0.1"]   # the address the proxy connects from
+```
+
+The per-address rate limits key on the client's address. Behind a proxy the
+socket peer is the proxy, so without this line **every user counts against the
+proxy's one bucket**, and the relay's logs see one client. With it, the relay
+reads `X-Forwarded-For` (or RFC 7239 `Forwarded`, which it prefers when both
+are present) from that peer and takes the right-most address that is not a
+listed proxy. A header from any other peer is ignored, so a client talking to
+the relay directly cannot pick its own bucket.
+
+List every hop you operate: a CDN or load balancer in front of the proxy goes
+in too, as CIDRs (`["127.0.0.1", "10.0.0.0/8"]`), and each hop must append to
+`X-Forwarded-For` rather than replace it. A proxy you did not write the config
+for must also drop a client's own `Forwarded` header: both shipped files do,
+because neither Caddy nor nginx touches it by default, and the relay would
+otherwise believe a client naming itself.
+
+### 3. Point the proxy at the relay
+
+**Caddy.** Copy `deploy/caddy/Caddyfile` to `/etc/caddy/Caddyfile` and set
+three environment variables for the Caddy service:
+
+```sh
+SUNRISE_DOMAIN=relay.example.com
+SUNRISE_TLS=admin@example.com     # ACME account email; certificates are automatic
+SUNRISE_UPSTREAM=127.0.0.1:8443   # optional; this is the default
+```
+
+**nginx.** With the official image, mount
+`deploy/nginx/sunrise.conf.template` at
+`/etc/nginx/templates/sunrise.conf.template` and set `SUNRISE_DOMAIN`,
+`SUNRISE_UPSTREAM` and `SUNRISE_TLS_DIR` (the directory holding
+`fullchain.pem` and `privkey.pem`, e.g. certbot's
+`/etc/letsencrypt/live/relay.example.com`). Elsewhere, substitute the three
+names by hand and include the file in your `http {}` block.
+
+### What both configurations do, and why
+
+| Property | Why |
+|---|---|
+| TLS terminates at the proxy; port 80 only redirects | Bearers never cross a network in plaintext |
+| The client address goes upstream in `X-Forwarded-For`; a client's `Forwarded` is dropped | Step 2: the rate limits and the refusal log key on the real client |
+| Body limit 2 MiB, the relay's `max_body_bytes` (which covers the 1 MiB blob chunk) | An oversize body is refused at the edge with the same `413` the relay would send. Change both together |
+| `/api/v1/sync/events` is unbuffered | Sync events must reach the client as they happen; a buffering proxy holds them until its buffer fills |
+| No timeout below an hour on a response in progress, idle connections closed after 5 min | The event stream is quiet between keep-alive comments every 15 s (`api::sync::KEEP_ALIVE_SECS`); a 30 s or 60 s proxy timeout would cut it |
+| `/metrics` answers `404` at the proxy | The relay mounts `/metrics` on a loopback bind — exactly the bind behind the proxy — so the proxy is what keeps it private |
+
+To scrape metrics, run the scraper on the relay's host against
+`http://127.0.0.1:8443/metrics`, never through the proxy.
 
 ### Not yet wired
 
@@ -157,8 +254,10 @@ operator authentication.** `build_service` enforces it through
 route is mounted only when `bind` is a loopback address, and a non-loopback bind
 logs `srv.start.metrics_withheld` and serves `404` there instead. Read those two
 symbols rather than the constructor alone — the check is in
-`operator_surface`, and `build_service` is where it is wired in. Put a reverse
-proxy in front of the loopback bind if you need to scrape it remotely.
+`operator_surface`, and `build_service` is where it is wired in. A relay behind
+the shipped proxy configurations binds loopback, so it *does* mount `/metrics`;
+the proxy answers `404` for it, and scraping happens on the host (see "Reverse
+proxy").
 
 Logs go to **stderr**, not stdout: `main.rs` installs `sunrise_log::init_stderr()`
 as its first statement, tuned by `SUNRISE_LOG` and `SUNRISE_LOG_FORMAT`.

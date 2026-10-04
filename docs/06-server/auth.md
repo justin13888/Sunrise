@@ -350,7 +350,7 @@ The user's only "Sunrise password" is the recovery code, and the server never se
 
 ## Anti-abuse
 
-Delegated to the IdP (rate limits, brute-force lockout, captcha, IP throttling). The Sunrise server is *specified* to keep standard rate limits on its REST/sync endpoints (per [`../05-sync/backpressure-and-quotas.md`](../05-sync/backpressure-and-quotas.md)); **none are implemented** — there is no rate-limiting middleware in the relay at all. See [`api.md`](./api.md) §rate-limits.
+Login itself is delegated to the IdP (rate limits, brute-force lockout, captcha, IP throttling). The relay rate-limits its own REST and sync routes per client address and per device, and counts the `401`s each client address earns: past 20 in five minutes, that address's authenticated requests are refused with `429 RATE_LIMITED` before the bearer is verified, so guessing bearers costs the relay no signature checks. See [`api.md`](./api.md) §Rate limits.
 
 ## What we explicitly do not build
 

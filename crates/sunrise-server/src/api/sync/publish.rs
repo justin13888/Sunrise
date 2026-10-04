@@ -7,6 +7,8 @@
 //! [`frame_floors`] is the measurement ADR-0033's revisit trigger asks for.
 
 use crate::api::error::ApiError;
+use crate::api::ratelimit::policy::Budget;
+use crate::api::ratelimit::Throttled;
 use crate::api::signed::Signed;
 use crate::relay::{FrameHead, RelayFrame};
 use crate::relay_log::Appended;
@@ -22,6 +24,9 @@ use sunrise_wire_protocol::{encode_frame, FrameFlags, MsgKind, OpBatchPayload};
 
 use super::credential::{resolve, SessionHeader};
 use super::cursors::parse_id;
+
+/// The route's description path, as the rate-limit metric labels it.
+const OPS: &str = "/api/v1/sync/ops";
 
 /// `POST /api/v1/sync/ops` request body — one `OpBatch`.
 #[derive(Debug, Clone, Serialize, Deserialize, kynos::Schema)]
@@ -110,10 +115,15 @@ pub async fn ops(
         caller,
         value: body,
     }: Signed<OpsRequest>,
-) -> Result<Json<OpsResponse>, ApiError> {
+) -> Result<Json<OpsResponse>, Throttled> {
     let now_ms = state.clock.now_ms();
     let (_, session) = resolve(&state, &header, &caller, now_ms)?;
     let stream_id = parse_id(&body.stream_id, "stream_id")?;
+    // Per op, before anything is stored: a refused batch stays in the outbox.
+    let (limiter, n_ops) = (&state.limiter, body.ops.len() as u64);
+    limiter
+        .charge(&state, OPS, Budget::Ops, &caller, n_ops)
+        .await?;
 
     let ops = body
         .ops

@@ -1379,6 +1379,38 @@ jobs:
           git diff --exit-code -- schemas/generated/openapi.v1.json \
             || { echo "::error::openapi: the description is stale; run \`mise run openapi\` and commit the result."; exit 1; }
 
+  deploy-test:
+    name: Deploy test (Caddy, nginx)
+    runs-on: ubuntu-latest
+    # One debug build of `sunrise-server` on the shared warm cache (the
+    # `openapi-current` job's figures: under a minute warm, ~4m cold), three
+    # image pulls, then two passes of the checks at about 40 s each — the
+    # event-stream check holds a stream open for 20 s on purpose.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de  # v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+        with:
+          # A reader of the `rust` gate's entry, for the reason
+          # `openapi-current` gives: this job builds one package, and an entry
+          # shaped by it would be a poor inheritance for the workspace build.
+          shared-key: rust
+          save-if: false
+      - name: Build the relay
+        run: cargo build -q -p sunrise-server --bin sunrise-server
+      - name: Boot the relay behind each shipped proxy configuration and check it
+        # `deploy/caddy/Caddyfile` and `deploy/nginx/sunrise.conf.template`
+        # each claim what they enforce: per-client limits keyed on the real
+        # client address and immune to a forged forwarding header, an
+        # unbuffered event stream that outlives the keep-alive, an oversize
+        # body refused at the proxy with the relay's own 413, and no public
+        # `/metrics`. This boots each one unchanged in its official image and
+        # asserts every claim from client containers with their own addresses.
+        run: python3 deploy/test/run.py --server target/debug/sunrise-server
+
   tokens-current:
     name: Design token gate
     runs-on: ubuntu-latest

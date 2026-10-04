@@ -301,6 +301,16 @@ kind = "transient"
 retryable = true
 since = "v1"
 
+# --- Admission --------------------------------------------------------------
+
+[[code]]
+id = 800
+name = "RATE_LIMITED"
+kind = "transient"
+retryable = true
+since = "v1"
+docs = "The relay refused the request under its rate-limit policy (docs/06-server/api.md §Rate limits). Sent as 429 with a Retry-After header; wait at least that long before retrying. Distinct from INTEGRATION_RATE_LIMITED, which is a third-party provider's 429."
+
 # --- Internal -------------------------------------------------------------
 
 [[code]]
