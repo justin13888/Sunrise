@@ -80,6 +80,9 @@ pub struct ServerTable {
     /// How long a shutdown waits for in-flight requests, in seconds. Maps to
     /// [`ServerConfig::shutdown_grace_secs`].
     pub shutdown_grace_secs: Option<u64>,
+    /// Reverse proxies whose forwarding headers may be believed. Maps to
+    /// [`ServerConfig::trusted_proxies`].
+    pub trusted_proxies: Option<Vec<String>>,
 }
 
 /// The `[auth]` table.
@@ -136,6 +139,10 @@ pub struct FileConfig {
     /// The `[storage]` table.
     #[serde(default)]
     pub storage: StorageTable,
+    /// The `[limits]` table. Deserialized straight into the model's own type,
+    /// whose every key defaults, so a table that sets one limit changes one
+    /// limit — the same overlay rule as the tables above.
+    pub limits: Option<super::LimitsConfig>,
 }
 
 impl FileConfig {
@@ -165,6 +172,12 @@ impl FileConfig {
         }
         if let Some(v) = self.server.shutdown_grace_secs {
             base.shutdown_grace_secs = v;
+        }
+        if let Some(v) = self.server.trusted_proxies {
+            base.trusted_proxies = v;
+        }
+        if let Some(v) = self.limits {
+            base.limits = v;
         }
         if let Some(v) = self.auth.oidc_issuer {
             base.oidc_issuer = Some(v);
@@ -547,6 +560,28 @@ mod file_tests {
     fn a_misspelled_key_is_rejected() {
         let e = FileConfig::parse("[server]\nlisten_on = \"0.0.0.0:443\"", "t.toml").unwrap_err();
         assert!(e.to_string().contains("listen_on"), "{e}");
+    }
+
+    /// A `[limits]` table that sets one key changes one limit, and the proxy
+    /// list is read from `[server]`.
+    #[test]
+    fn the_limits_table_and_the_proxy_list_overlay_their_defaults() {
+        let cfg = FileConfig::parse(
+            "[server]\ntrusted_proxies = [\"127.0.0.1\"]\n[limits]\nmeta_per_min = 5",
+            "t.toml",
+        )
+        .unwrap()
+        .apply(ServerConfig::default());
+        assert_eq!(cfg.trusted_proxies, vec!["127.0.0.1".to_owned()]);
+        assert_eq!(cfg.limits.meta_per_min, 5);
+        assert_eq!(
+            cfg.limits.sync_per_min,
+            super::super::LimitsConfig::default().sync_per_min,
+            "an unset limit keeps its default"
+        );
+
+        let e = FileConfig::parse("[limits]\nmeta_per_minute = 5", "t.toml").unwrap_err();
+        assert!(e.to_string().contains("meta_per_minute"), "{e}");
     }
 
     #[test]

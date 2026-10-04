@@ -75,6 +75,13 @@ pub mod codes {
     /// operator's `acr_values`) and retries; refreshing the token does not
     /// help, because a refresh does not move `auth_time`.
     pub const AUTH_STEP_UP_REQUIRED: &str = "AUTH_STEP_UP_REQUIRED";
+    /// The request was refused under the rate-limit policy
+    /// (`docs/06-server/api.md` §Rate limits). Always a `429` with a
+    /// `Retry-After` header, built only by
+    /// [`crate::api::ratelimit::RateLimited`].
+    ///
+    /// Mirrors [`sunrise_error::ErrorCode::RateLimited`] (registry id 800).
+    pub const RATE_LIMITED: &str = "RATE_LIMITED";
 
     /// Server-side failure.
     pub const FATAL_INTERNAL: &str = "FATAL_INTERNAL";

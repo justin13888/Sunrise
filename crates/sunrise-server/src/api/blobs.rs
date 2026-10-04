@@ -36,6 +36,8 @@
 //! works where it should — across one account's devices.
 
 use crate::api::error::{codes, ApiError};
+use crate::api::ratelimit::policy::Budget;
+use crate::api::ratelimit::Throttled;
 use crate::api::signed::{Caller, Signed, SignedBinary, SignedParts};
 use crate::state::ServerState;
 use kynos::di::inject::Inject;
@@ -237,23 +239,28 @@ pub async fn init(
         caller,
         value: body,
     }: Signed<InitRequest>,
-) -> Result<Json<InitResponse>, ApiError> {
+) -> Result<Json<InitResponse>, Throttled> {
     if body.chunk_count == 0 || body.chunk_count > MAX_CHUNK_COUNT {
-        return Err(ApiError::validation(format!(
-            "chunk_count must be 1..={MAX_CHUNK_COUNT}"
-        )));
+        return Err(
+            ApiError::validation(format!("chunk_count must be 1..={MAX_CHUNK_COUNT}")).into(),
+        );
     }
     if body.size_bytes > MAX_BLOB_BYTES {
         return Err(ApiError::validation(format!(
             "size_bytes exceeds the {MAX_BLOB_BYTES}-byte per-attachment limit"
-        )));
+        ))
+        .into());
     }
     if body.stream_id.trim().is_empty() {
-        return Err(ApiError::validation("stream_id required"));
+        return Err(ApiError::validation("stream_id required").into());
     }
 
     let mut raw = [0u8; 16];
     getrandom::getrandom(&mut raw).map_err(|_| ApiError::internal())?;
+    // Counted until `finalize`, or until it goes an hour untouched.
+    state
+        .limiter
+        .open_upload(&state, "/api/v1/blobs/init", &caller, raw)?;
     let upload_id = format!("up_{}", hex::encode(raw));
     // Create the pending area eagerly so a chunk PUT is a write, not a
     // mkdir-then-write race between two concurrent chunk uploads.
@@ -274,18 +281,29 @@ pub async fn put_chunk(
     Inject(state): Inject<ServerState>,
     Path(path): Path<ChunkPath>,
     SignedBinary { caller, bytes }: SignedBinary,
-) -> Result<NoContent, ApiError> {
+) -> Result<NoContent, Throttled> {
     let upload = parse_upload_id(&path.upload_id.0)?;
     if path.chunk_idx >= MAX_CHUNK_COUNT {
-        return Err(ApiError::validation(format!(
-            "chunk index must be < {MAX_CHUNK_COUNT}"
-        )));
+        return Err(
+            ApiError::validation(format!("chunk index must be < {MAX_CHUNK_COUNT}")).into(),
+        );
     }
     if bytes.is_empty() || bytes.len() > MAX_CHUNK_BYTES {
-        return Err(ApiError::validation(format!(
-            "chunk must be 1..={MAX_CHUNK_BYTES} bytes"
-        )));
+        return Err(
+            ApiError::validation(format!("chunk must be 1..={MAX_CHUNK_BYTES} bytes")).into(),
+        );
     }
+    state
+        .limiter
+        .charge(
+            &state,
+            "/api/v1/blobs/{upload_id}/{chunk_idx}",
+            Budget::BlobUpload,
+            &caller,
+            bytes.len() as u64,
+        )
+        .await?;
+    state.limiter.touch_upload(&state, &caller, upload);
     let store = pending_store(&state, &caller, &upload)?;
     store
         .put_chunk(&upload, path.chunk_idx, &bytes)
@@ -390,6 +408,7 @@ pub async fn finalize(
     write_manifest(&state, &caller, &blob, chunk_count, size_bytes)?;
     // Best effort: a leftover pending area costs disk, never correctness.
     let _ = pending.delete_all(&upload);
+    state.limiter.close_upload(&caller, upload);
 
     state.metrics.incr("sunrise_blob_finalize_total");
     Ok(Json(FinalizeResponse {
@@ -412,16 +431,29 @@ pub async fn fetch(
     Inject(state): Inject<ServerState>,
     Path(path): Path<BlobIdPath>,
     SignedParts(caller): SignedParts,
-) -> Result<BinaryStream<ChunkStream, OctetStream>, ApiError> {
+) -> Result<BinaryStream<ChunkStream, OctetStream>, Throttled> {
     let blob = parse_blob_id(&path.blob_id.0)?;
-    let (chunk_count, _) = read_manifest(&state, &caller, &blob)?.ok_or_else(not_found)?;
+    let (chunk_count, size_bytes) = read_manifest(&state, &caller, &blob)?.ok_or_else(not_found)?;
     let store = committed_store(&state, &caller)?;
     if !store
         .has_all(&blob, chunk_count)
         .map_err(|_| ApiError::internal())?
     {
-        return Err(not_found());
+        return Err(not_found().into());
     }
+    // The whole blob up front, from the manifest: once the status is sent
+    // the body cannot be refused part-way, and a fetch abandoned early is a
+    // client's to repeat.
+    state
+        .limiter
+        .charge(
+            &state,
+            "/api/v1/blobs/{blob_id}",
+            Budget::BlobDownload,
+            &caller,
+            size_bytes,
+        )
+        .await?;
     state.metrics.incr("sunrise_blob_fetch_total");
     Ok(BinaryStream::new(chunk_stream(
         store,

@@ -29,7 +29,8 @@ emits it.
    `crates/sunrise-server/tests/metric-label-safety.rs` holds the rest (see §Enforcement).
 4. **Exposure.** `/metrics` stays loopback-only (`srv.start.metrics_withheld` otherwise). An
    operator who wants remote scraping puts an authenticated scraper on the host. The reverse-proxy
-   configurations shipped by [#355](https://github.com/justin13888/Sunrise/issues/355) MUST NOT route `/metrics`.
+   configurations shipped in [`deploy/`](../../deploy/) MUST NOT route `/metrics`: each answers it
+   with its own `404`, and the `Deploy test` CI job asserts that from outside.
 5. **Cost.** Recording a metric on a hot path MUST NOT take a lock. The registry
    (`crates/sunrise-server/src/metrics.rs#Metrics`) is a fixed table of `OnceLock` slots probed from
    a hash of the name and labels: a series is written once, on first touch, and every later
@@ -96,7 +97,7 @@ in the description, so it is driven without anyone adding it to the test.
 | `sunrise_http_requests_total` | counter | `endpoint`, `method`, `status` | current | Every request that produced a response head, recorded by `api::observe::HttpMetrics`. |
 | `sunrise_http_request_duration_seconds` | histogram (latency buckets) | `endpoint`, `method` | current | Time to the response head. For a buffered response that is the whole request; for the SSE `events` endpoint it is time to the first byte, because the stream is long-lived by design. |
 | `sunrise_http_in_flight_requests` | gauge | — | target ([#435](https://github.com/justin13888/Sunrise/issues/435)) | Requests currently being handled. Not built from the observer: a client that leaves mid-handler reaches no observer hook, so an increment there has no guaranteed decrement (Rule 2). |
-| `sunrise_ratelimit_rejected_total` | counter | `endpoint`, `scope` | target ([#355](https://github.com/justin13888/Sunrise/issues/355)) | Requests refused with 429 by the policy #355 defines. |
+| `sunrise_ratelimit_rejected_total` | counter | `endpoint`, `scope` | current | Requests refused with `429 RATE_LIMITED` under [`api.md`](./api.md) §Rate limits, by the matched route's template and by what the refusal counted against: `ip` for a route group or the failed-auth budget, `device` or `account` for a per-device or per-account budget (`account` also where a caller signed with no device). Recorded by `api::ratelimit`. |
 
 ### Authentication
 
