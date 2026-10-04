@@ -37,6 +37,10 @@ UPDATE accounts
  WHERE account_id = ?1";
 
 /// The `accounts` table.
+///
+/// Part of migration 0001, and therefore frozen: a change to this table is a
+/// new migration in [`super::migrations`], never an edit here, because a
+/// database that already ran 0001 never runs it again.
 pub(super) const SCHEMA: &str = r"
 CREATE TABLE IF NOT EXISTS accounts (
     account_id     TEXT PRIMARY KEY,

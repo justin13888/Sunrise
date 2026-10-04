@@ -378,7 +378,9 @@ impl From<crate::store::StoreError> for ApiError {
                 codes::DEVICE_NOT_FOUND,
                 "no such record on this account".to_owned(),
             ),
-            crate::store::StoreError::Sqlite(_) => {
+            // `SchemaTooNew` is raised only by `Store::open`, before there is a
+            // route to answer, so a request reaching it would be a defect.
+            crate::store::StoreError::Sqlite(_) | crate::store::StoreError::SchemaTooNew { .. } => {
                 tracing::error!(
                     ev = "srv.store.failed",
                     err_kind = "internal",

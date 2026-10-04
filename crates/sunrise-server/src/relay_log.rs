@@ -55,8 +55,8 @@ use crate::store::{Store, StoreError};
 ///
 /// Declared here rather than with the account and device DDL because the
 /// statements over them are here: a table whose schema lives in one file and
-/// whose only queries live in another is a seam nothing enforces.
-/// [`Store::open`] applies it, because one `Connection` opens one database.
+/// whose only queries live in another is a seam nothing enforces. Migration
+/// 0001 applies it, so it is frozen: change these tables by a new migration.
 ///
 /// `bytes` is the verbatim wire frame: ciphertext the relay forwards and never
 /// opens.

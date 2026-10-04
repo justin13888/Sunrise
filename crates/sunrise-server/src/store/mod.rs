@@ -1,7 +1,8 @@
 //! The SQLite substrate the self-host server keeps its state in.
 //!
 //! This module owns the handle: one `Connection`, and a [`Store::open`] that
-//! applies each tenant's tables to it in dependency order.
+//! sets its pragmas and brings its schema to the newest version through the
+//! numbered history in `store/migrations`.
 //!
 //! **Accounts and devices** are the tenant implemented here, and each half
 //! declares its own tables beside the statements that write them.
@@ -13,7 +14,7 @@
 //!
 //! **The durable relay log** is the other tenant, and it is entirely
 //! [`crate::relay_log`]'s: its tables are declared there, beside the only
-//! methods that read or write them. [`Store::open`] applies that DDL, because
+//! methods that read or write them. Migration 0001 applies that DDL, because
 //! one `Connection` opens one database — which is the only reason the relay is
 //! named in this module at all.
 //!
@@ -38,8 +39,10 @@
 
 mod accounts;
 mod devices;
+mod migrations;
 
 use std::path::Path;
+use std::time::Duration;
 
 use parking_lot::Mutex;
 use rusqlite::Connection;
@@ -76,13 +79,30 @@ pub enum StoreError {
     /// re-sending the *same* bytes is still idempotent and still succeeds.
     #[error("this account already holds a different recovery blob")]
     RecoveryBlobExists,
+    /// The database's schema version is one this binary does not know.
+    ///
+    /// A newer release migrated the file, or something other than this relay
+    /// stamped it. The store refuses it before writing anything, the journal
+    /// mode included, and the binary exits 78 (`EX_CONFIG`) so a supervisor
+    /// does not restart it into the same refusal.
+    #[error(
+        "the database is at schema version {found}, and this binary supports up to {supported}: \
+         run the release that wrote it, or restore a backup taken before that upgrade"
+    )]
+    SchemaTooNew {
+        /// The database's `PRAGMA user_version`.
+        found: i64,
+        /// The newest version this binary migrates to.
+        supported: u32,
+    },
 }
 
 /// SQLite-backed account/device store.
 pub struct Store {
     /// Shared with [`crate::relay_log`], which puts the durable relay op log
-    /// in this same database so one file is the whole server's state and a
-    /// `tar` of it is a consistent backup.
+    /// in this same database so one file — with its `-wal` beside it while the
+    /// relay runs — is the whole server's state, and a `tar` of the stopped
+    /// data dir is a consistent backup.
     pub(crate) conn: Mutex<Connection>,
 }
 
@@ -92,29 +112,185 @@ impl std::fmt::Debug for Store {
     }
 }
 
+/// How long a statement waits on a lock another connection holds before it
+/// fails with `SQLITE_BUSY`, when the config does not say.
+///
+/// The relay's own statements share one connection and never contend with
+/// each other; what this waits out is a second process on the same file — the
+/// `sqlite3` shell, a backup tool, a relay started twice — and the moment a WAL
+/// checkpoint holds the file. Five seconds rides out any of those without
+/// letting a wedged peer stall a request indefinitely.
+pub const DEFAULT_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// The most time the startup integrity check may take before it is cut off.
+///
+/// `PRAGMA quick_check` reads every page, so its cost grows with the
+/// database. Ten seconds covers a self-host database of several gigabytes on
+/// ordinary disk; past that the check is interrupted and reported as
+/// unfinished, because a relay that will not start until a scan of an
+/// arbitrarily large file finishes is an outage the check was meant to
+/// prevent.
+const QUICK_CHECK_BUDGET: Duration = Duration::from_secs(10);
+
 impl Store {
-    /// Open the store. `None` opens a private in-memory database.
-    ///
-    /// Each tenant's DDL is applied in dependency order: accounts first,
-    /// because a device row references one, then devices, then the relay log's
-    /// own tables, which reference neither.
+    /// Open the store with [`DEFAULT_BUSY_TIMEOUT`]. `None` opens a private
+    /// in-memory database.
     pub fn open(path: Option<&Path>) -> Result<Self, StoreError> {
-        let conn = match path {
+        Self::open_with(path, DEFAULT_BUSY_TIMEOUT)
+    }
+
+    /// Open the store, migrating it to the newest schema this binary knows.
+    ///
+    /// The order is what keeps a refused database untouched: the version is
+    /// read before anything writes, and a database from a newer release is
+    /// refused with [`StoreError::SchemaTooNew`] there. Only then are the
+    /// journal and durability pragmas set — `journal_mode = WAL` rewrites the
+    /// file header — the integrity check run and logged, and the migrations in
+    /// `store/migrations` applied.
+    pub fn open_with(path: Option<&Path>, busy_timeout: Duration) -> Result<Self, StoreError> {
+        let mut conn = match path {
             Some(p) => Connection::open(p)?,
             None => Connection::open_in_memory()?,
         };
+        // Set first, so that even the version read below waits out a peer's
+        // lock rather than failing on it.
+        conn.busy_timeout(busy_timeout)?;
+        migrations::refuse_newer(&conn)?;
+        set_durability(&conn, path.is_some())?;
         // The `ON DELETE CASCADE` each tenant declares is inert unless foreign
         // keys are on, and a revoked device leaving its push tokens behind
         // would keep waking a device its owner believes is gone.
         conn.execute_batch("PRAGMA foreign_keys = ON;")?;
-        conn.execute_batch(accounts::SCHEMA)?;
-        conn.execute_batch(devices::SCHEMA)?;
-        conn.execute_batch(crate::relay_log::SCHEMA)?;
-        devices::add_missing_columns(&conn)?;
-        conn.execute_batch(devices::LATE_INDEXES)?;
+        log_quick_check(&quick_check(&conn, QUICK_CHECK_BUDGET));
+        migrations::migrate(&mut conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
+    }
+}
+
+/// Put the database in WAL mode, with the `synchronous` level that is safe
+/// for whichever journal it actually got.
+///
+/// **WAL** lets the readers of a checkpoint and a second process proceed
+/// while the relay writes, and turns each commit into one sequential append
+/// instead of a journal file written, synced and deleted.
+///
+/// **`synchronous = NORMAL`** under WAL syncs at checkpoints rather than at
+/// every commit. The trade-off, stated plainly: a power cut or kernel crash
+/// can roll back the last transactions committed before it, but cannot
+/// corrupt the database; a crash of the relay process alone loses nothing.
+/// For the relay that window means a frame acknowledged just before the power
+/// cut can be gone after it, when its sender has already dropped it from its
+/// outbox on the ack. The window is real, and it is the one every WAL
+/// deployment of SQLite accepts. Rollback-journal mode gets `FULL`, because
+/// `NORMAL` there can corrupt the file on power loss.
+///
+/// `wal_autocheckpoint` keeps SQLite's default of 1000 pages (about 4 MiB):
+/// the relay's writes are small frames, so the WAL is checkpointed every few
+/// thousand appends and never grows large enough to slow reads.
+///
+/// A file that cannot be put in WAL mode — a filesystem without shared
+/// memory, such as some network mounts — keeps working in the journal it has,
+/// and says so in the log. An in-memory database reports `memory` and is not
+/// worth a warning.
+fn set_durability(conn: &Connection, file_backed: bool) -> rusqlite::Result<()> {
+    let mode: String = conn.query_row("PRAGMA journal_mode = WAL", [], |r| r.get(0))?;
+    if mode.eq_ignore_ascii_case("wal") {
+        conn.execute_batch("PRAGMA synchronous = NORMAL;")
+    } else {
+        if file_backed {
+            tracing::warn!(
+                ev = "srv.store.wal_unavailable",
+                mode = %mode,
+                "the relay database could not be put in WAL mode; running with synchronous = FULL"
+            );
+        }
+        conn.execute_batch("PRAGMA synchronous = FULL;")
+    }
+}
+
+/// What the startup integrity check found.
+#[derive(Debug, PartialEq, Eq)]
+enum QuickCheck {
+    /// SQLite reported `ok`.
+    Ok,
+    /// SQLite reported problems; the first few, verbatim.
+    Problems(Vec<String>),
+    /// The budget ran out before the check finished.
+    Unfinished,
+    /// The check could not run at all.
+    Failed(String),
+}
+
+/// Run `PRAGMA quick_check`, interrupted if it outlasts `budget`.
+///
+/// The bound is a watchdog thread holding the connection's interrupt handle:
+/// it waits on a channel for at most `budget`, and interrupts the check if
+/// nothing arrived. Waiting on a channel rather than reading a clock keeps the
+/// workspace's ban on ambient `Instant::now` intact. The watchdog is joined
+/// before this returns, so an interrupt can only land on the check itself —
+/// SQLite treats one issued with no statement running as a no-op.
+fn quick_check(conn: &Connection, budget: Duration) -> QuickCheck {
+    /// Enough rows to say what is wrong without logging a page per row.
+    const MAX_PROBLEMS: usize = 10;
+
+    let interrupt = conn.get_interrupt_handle();
+    let (done, finished) = std::sync::mpsc::channel::<()>();
+    let watchdog = std::thread::spawn(move || {
+        if finished.recv_timeout(budget) == Err(std::sync::mpsc::RecvTimeoutError::Timeout) {
+            interrupt.interrupt();
+        }
+    });
+    let rows = conn
+        .prepare(&format!("PRAGMA quick_check({MAX_PROBLEMS})"))
+        .and_then(|mut stmt| {
+            stmt.query_map([], |r| r.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()
+        });
+    // A send can only fail once the watchdog has stopped listening, which is
+    // the timeout it already acted on.
+    let _ = done.send(());
+    let _ = watchdog.join();
+    match rows {
+        Ok(rows) if rows.len() == 1 && rows[0] == "ok" => QuickCheck::Ok,
+        Ok(rows) => QuickCheck::Problems(rows),
+        Err(rusqlite::Error::SqliteFailure(e, _))
+            if e.code == rusqlite::ErrorCode::OperationInterrupted =>
+        {
+            QuickCheck::Unfinished
+        }
+        Err(e) => QuickCheck::Failed(e.to_string()),
+    }
+}
+
+/// Report the integrity check. A failed check does not stop the relay: the
+/// operator decides between restoring a backup and serving what is readable,
+/// and a relay that refuses to start cannot even serve the readable part.
+fn log_quick_check(result: &QuickCheck) {
+    match result {
+        QuickCheck::Ok => tracing::info!(
+            ev = "srv.store.quick_check",
+            result = "ok",
+            "relay database integrity check passed"
+        ),
+        QuickCheck::Problems(rows) => tracing::warn!(
+            ev = "srv.store.quick_check",
+            result = "problems",
+            cause = %rows.join("; "),
+            "relay database integrity check found problems; restore a backup or export what is readable"
+        ),
+        QuickCheck::Unfinished => tracing::warn!(
+            ev = "srv.store.quick_check",
+            result = "unfinished",
+            "relay database integrity check outlasted its budget and was stopped"
+        ),
+        QuickCheck::Failed(cause) => tracing::warn!(
+            ev = "srv.store.quick_check",
+            result = "failed",
+            cause = %cause,
+            "relay database integrity check could not run"
+        ),
     }
 }
 
@@ -373,20 +549,20 @@ mod tests {
 
     /// **What [`Store::open`] composes, and in what order.**
     ///
-    /// `open` runs six things: `PRAGMA foreign_keys`, then `accounts::SCHEMA`,
-    /// `devices::SCHEMA`, `relay_log::SCHEMA`, `devices::add_missing_columns`
-    /// and `devices::LATE_INDEXES`. Splitting the store turned that from one
-    /// `execute_batch` over one literal into five names that can be reordered
-    /// or dropped independently, and only one of the orderings was constrained:
+    /// Migration 0001 runs `accounts::SCHEMA`, `devices::SCHEMA` and
+    /// `relay_log::SCHEMA`; migration 0002 adds `vault_device_id` where it is
+    /// missing and then the index over it. Those are names that can be
+    /// reordered or dropped independently, and only one of the orderings is
+    /// constrained by a failure:
     /// `a_column_added_after_release_reaches_a_database_that_predates_it` below
-    /// fails if `add_missing_columns` runs after `LATE_INDEXES`.
+    /// fails if 0002 creates its index before its column.
     ///
     /// The rest were free. Swapping `accounts::SCHEMA` and `devices::SCHEMA`
     /// left the whole suite green, because SQLite resolves a `REFERENCES
     /// accounts(account_id)` inside a `CREATE TABLE` lazily — the constraint is
     /// enforced at DML time, not at declaration — so `open`'s own claim that
     /// accounts come "first, because a device row references one" was a claim
-    /// nothing could falsify. Deleting the `LATE_INDEXES` line left it green
+    /// nothing could falsify. Deleting the index statement left it green
     /// too: no test named `devices_by_vault_id`, and an absent index changes a
     /// query's plan rather than its answer.
     ///
@@ -438,8 +614,8 @@ mod tests {
                 "relay_evicted",
                 "relay_batches",
                 "relay_batches_by_frame",
-                // devices::LATE_INDEXES — after add_missing_columns, which is
-                // what puts the column this index names on an upgraded database
+                // migration 0002 — after its column, which is what puts the
+                // column this index names on an upgraded database
                 "devices_by_vault_id",
             ],
             "the DDL `open` composes, in the order it ran"
@@ -453,8 +629,8 @@ mod tests {
     /// A column added to a table an earlier release created.
     ///
     /// `SCHEMA` is `CREATE TABLE IF NOT EXISTS`, so it is inert against an
-    /// existing database: without `add_missing_columns` a relay upgraded in
-    /// place would answer every query touching `vault_device_id` with "no such
+    /// existing database: without migration 0002 a relay upgraded in place
+    /// would answer every query touching `vault_device_id` with "no such
     /// column", which is every device query there is.
     #[test]
     fn a_column_added_after_release_reaches_a_database_that_predates_it() {
@@ -643,5 +819,324 @@ mod tests {
         let b = mint_id(NOW);
         assert_ne!(a, b);
         assert_eq!(a.len(), sunrise_id::crockford::ENCODED_LEN);
+    }
+
+    /// The DDL every relay before the migration runner executed on each start,
+    /// copied as it stood and frozen here, so the fixtures below are what an
+    /// operator's file actually holds rather than whatever the constants say
+    /// today. `{VAULT_COLUMN}` is where the one later column went.
+    const PRE_RUNNER_DDL: &str = "
+        CREATE TABLE IF NOT EXISTS accounts (
+            account_id     TEXT PRIMARY KEY,
+            oidc_iss       TEXT NOT NULL,
+            oidc_sub       TEXT NOT NULL,
+            email          TEXT,
+            identity_pub_s TEXT,
+            identity_pub_d TEXT,
+            recovery_blob  TEXT,
+            tier           TEXT NOT NULL DEFAULT 'free',
+            terms_at_ms    INTEGER,
+            created_at_ms  INTEGER NOT NULL,
+            UNIQUE (oidc_iss, oidc_sub)
+        );
+        CREATE TABLE IF NOT EXISTS devices (
+            device_id       TEXT PRIMARY KEY,
+            account_id      TEXT NOT NULL REFERENCES accounts(account_id) ON DELETE CASCADE,
+            device_pub_s    TEXT NOT NULL,
+            device_pub_d    TEXT,
+            device_cert     TEXT,
+            {VAULT_COLUMN}
+            nickname        TEXT NOT NULL,
+            platform        TEXT NOT NULL,
+            app_version     TEXT,
+            created_at_ms   INTEGER NOT NULL,
+            last_seen_at_ms INTEGER NOT NULL,
+            revoked         INTEGER NOT NULL DEFAULT 0,
+            revoked_at_ms   INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS devices_by_account ON devices(account_id);
+        CREATE TABLE IF NOT EXISTS push_tokens (
+            device_id     TEXT NOT NULL REFERENCES devices(device_id) ON DELETE CASCADE,
+            platform      TEXT NOT NULL,
+            token         TEXT NOT NULL,
+            updated_at_ms INTEGER NOT NULL,
+            PRIMARY KEY (device_id, platform)
+        );
+        CREATE TABLE IF NOT EXISTS relay_frames (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            account_h  BLOB NOT NULL,
+            stream_id  BLOB NOT NULL,
+            bytes      BLOB NOT NULL,
+            n_bytes    INTEGER NOT NULL,
+            created_ms INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS relay_frames_by_channel
+            ON relay_frames(account_h, stream_id, id);
+        CREATE TABLE IF NOT EXISTS relay_frame_heads (
+            frame_id  INTEGER NOT NULL REFERENCES relay_frames(id) ON DELETE CASCADE,
+            device_id BLOB NOT NULL,
+            max_seq   INTEGER NOT NULL,
+            PRIMARY KEY (frame_id, device_id)
+        );
+        CREATE TABLE IF NOT EXISTS relay_evicted (
+            account_h       BLOB NOT NULL,
+            stream_id       BLOB NOT NULL,
+            device_id       BLOB NOT NULL,
+            evicted_through INTEGER NOT NULL,
+            PRIMARY KEY (account_h, stream_id, device_id)
+        );
+        CREATE TABLE IF NOT EXISTS relay_batches (
+            account_h     BLOB NOT NULL,
+            stream_id     BLOB NOT NULL,
+            ops_h         BLOB NOT NULL,
+            frame_id      INTEGER NOT NULL REFERENCES relay_frames(id) ON DELETE CASCADE,
+            batch_id      INTEGER NOT NULL,
+            first_seen_ms INTEGER NOT NULL,
+            PRIMARY KEY (account_h, stream_id, ops_h)
+        );
+        CREATE INDEX IF NOT EXISTS relay_batches_by_frame ON relay_batches(frame_id);";
+
+    /// One row in every table, so a migration that drops or rewrites one is
+    /// caught by a count.
+    const FIXTURE_ROWS: &str = "
+        INSERT INTO accounts (account_id, oidc_iss, oidc_sub, email, created_at_ms)
+            VALUES ('A1', 'https://idp.example', 'alice', 'a@example.com', 1);
+        INSERT INTO devices (device_id, account_id, device_pub_s, nickname, platform,
+                             created_at_ms, last_seen_at_ms)
+            VALUES ('D1', 'A1', 'k', 'laptop', 'linux', 1, 2);
+        INSERT INTO push_tokens VALUES ('D1', 'fcm', 'tok', 3);
+        INSERT INTO relay_frames (account_h, stream_id, bytes, n_bytes, created_ms)
+            VALUES (x'01', x'02', x'0304', 2, 4);
+        INSERT INTO relay_frame_heads VALUES (1, x'05', 7);
+        INSERT INTO relay_evicted VALUES (x'01', x'02', x'05', 6);
+        INSERT INTO relay_batches VALUES (x'01', x'02', x'06', 1, 1, 4);";
+
+    const TABLES: [&str; 7] = [
+        "accounts",
+        "devices",
+        "push_tokens",
+        "relay_frames",
+        "relay_frame_heads",
+        "relay_evicted",
+        "relay_batches",
+    ];
+
+    /// A database as a pre-runner release left it: `user_version = 0`, the
+    /// frozen DDL, one row per table.
+    fn pre_runner_fixture(path: &Path, with_vault_column: bool) {
+        let conn = Connection::open(path).unwrap();
+        let column = if with_vault_column {
+            "vault_device_id TEXT,"
+        } else {
+            ""
+        };
+        conn.execute_batch(&PRE_RUNNER_DDL.replace("{VAULT_COLUMN}", column))
+            .unwrap();
+        if with_vault_column {
+            conn.execute_batch(
+                "CREATE INDEX IF NOT EXISTS devices_by_vault_id
+                     ON devices(account_id, vault_device_id);",
+            )
+            .unwrap();
+        }
+        conn.execute_batch(FIXTURE_ROWS).unwrap();
+    }
+
+    fn version_of(s: &Store) -> i64 {
+        migrations::version(&s.conn.lock()).unwrap()
+    }
+
+    fn assert_every_row_kept(s: &Store) {
+        let conn = s.conn.lock();
+        for table in TABLES {
+            let n: i64 = conn
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(n, 1, "{table} lost or gained rows in the upgrade");
+        }
+        let (email, token): (String, String) = conn
+            .query_row(
+                "SELECT a.email, p.token FROM accounts a
+                 JOIN devices d ON d.account_id = a.account_id
+                 JOIN push_tokens p ON p.device_id = d.device_id",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((email.as_str(), token.as_str()), ("a@example.com", "tok"));
+    }
+
+    /// **Both shapes of database a released relay can have left behind** open
+    /// under the runner, reach the newest version, and keep every row: the one
+    /// from the last release, whose `devices` has `vault_device_id`, and the one
+    /// from before that column existed.
+    #[test]
+    fn pre_runner_databases_adopt_the_history_and_keep_every_row() {
+        for with_vault_column in [true, false] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("sunrise.db");
+            pre_runner_fixture(&path, with_vault_column);
+
+            let s = Store::open(Some(&path)).unwrap();
+
+            assert_eq!(version_of(&s), i64::from(migrations::LATEST));
+            assert_every_row_kept(&s);
+            let d = s.active_device("A1", "D1").unwrap().unwrap();
+            assert_eq!(d.vault_device_id, None);
+        }
+    }
+
+    /// **Every migration runs forward from every earlier version**, and every
+    /// path ends at the schema a fresh database gets.
+    ///
+    /// The second half is what freezes migration 0001: its DDL is the tenants'
+    /// `SCHEMA` constants, and an edit to one changes what a fresh database
+    /// holds without changing what an upgraded one does. That divergence is a
+    /// relay whose behaviour depends on the date it was installed, and it fails
+    /// here — the pre-runner fixtures are built from the frozen copy above, not
+    /// from the constants.
+    #[test]
+    fn fresh_and_upgraded_databases_reach_the_same_schema() {
+        let fresh = Store::open(None).unwrap();
+        let fresh_schema = migrations::schema_of(&fresh.conn.lock());
+
+        for with_vault_column in [true, false] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("sunrise.db");
+            pre_runner_fixture(&path, with_vault_column);
+            let s = Store::open(Some(&path)).unwrap();
+            assert_eq!(
+                migrations::schema_of(&s.conn.lock()),
+                fresh_schema,
+                "a pre-runner database (vault column: {with_vault_column}) upgraded \
+                 to a different schema than a fresh one"
+            );
+        }
+
+        for start in 0..migrations::LATEST {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("sunrise.db");
+            {
+                let mut conn = Connection::open(&path).unwrap();
+                migrations::migrate_to(&mut conn, start).unwrap();
+                if start >= 1 {
+                    conn.execute_batch(FIXTURE_ROWS).unwrap();
+                }
+            }
+            let s = Store::open(Some(&path)).unwrap();
+            assert_eq!(version_of(&s), i64::from(migrations::LATEST));
+            assert_eq!(
+                migrations::schema_of(&s.conn.lock()),
+                fresh_schema,
+                "migrating forward from version {start}"
+            );
+            if start >= 1 {
+                assert_every_row_kept(&s);
+            }
+        }
+    }
+
+    /// **A database from a newer release is refused, and not one byte of it
+    /// changes.** Not even the journal mode: switching to WAL rewrites the
+    /// header, which is why the version is read first.
+    #[test]
+    fn a_database_from_a_newer_release_is_refused_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sunrise.db");
+        let future = i64::from(migrations::LATEST) + 1;
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(&format!(
+                "CREATE TABLE from_the_future (x); PRAGMA user_version = {future};"
+            ))
+            .unwrap();
+        }
+        let before = std::fs::read(&path).unwrap();
+
+        let refused = Store::open(Some(&path));
+
+        assert!(
+            matches!(
+                refused,
+                Err(StoreError::SchemaTooNew { found, supported })
+                    if found == future && supported == migrations::LATEST
+            ),
+            "{refused:?}"
+        );
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            before,
+            "a refused database must be left byte-for-byte as it was"
+        );
+        assert!(
+            !dir.path().join("sunrise.db-wal").exists(),
+            "and no WAL beside it either"
+        );
+    }
+
+    /// A negative version is no version this relay ever wrote.
+    #[test]
+    fn a_negative_schema_version_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sunrise.db");
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch("PRAGMA user_version = -1;")
+            .unwrap();
+        assert!(matches!(
+            Store::open(Some(&path)),
+            Err(StoreError::SchemaTooNew { found: -1, .. })
+        ));
+    }
+
+    /// **The pragmas a file-backed relay runs under.** Every one of them is a
+    /// per-connection setting except the journal mode, so a regression here is
+    /// silent: the relay works, just slower or less safely.
+    #[test]
+    fn a_file_backed_store_runs_in_wal_with_normal_sync_and_a_busy_timeout() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sunrise.db");
+        let s = Store::open_with(Some(&path), Duration::from_millis(1234)).unwrap();
+        let conn = s.conn.lock();
+        let pragma = |name: &str| -> rusqlite::types::Value {
+            conn.query_row(&format!("PRAGMA {name}"), [], |r| r.get(0))
+                .unwrap()
+        };
+
+        assert_eq!(
+            pragma("journal_mode"),
+            rusqlite::types::Value::Text("wal".into())
+        );
+        // 1 is NORMAL; FULL is 2.
+        assert_eq!(pragma("synchronous"), rusqlite::types::Value::Integer(1));
+        assert_eq!(
+            pragma("busy_timeout"),
+            rusqlite::types::Value::Integer(1234)
+        );
+        assert_eq!(pragma("foreign_keys"), rusqlite::types::Value::Integer(1));
+    }
+
+    /// The default timeout is non-zero: zero would turn every moment a backup
+    /// tool holds the file into a failed request.
+    #[test]
+    fn the_default_busy_timeout_waits() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(Some(&dir.path().join("sunrise.db"))).unwrap();
+        let ms: i64 = s
+            .conn
+            .lock()
+            .query_row("PRAGMA busy_timeout", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(ms, i64::try_from(DEFAULT_BUSY_TIMEOUT.as_millis()).unwrap());
+        assert!(ms > 0);
+    }
+
+    #[test]
+    fn the_integrity_check_passes_on_a_sound_database() {
+        let s = store();
+        assert_eq!(
+            quick_check(&s.conn.lock(), QUICK_CHECK_BUDGET),
+            QuickCheck::Ok
+        );
     }
 }

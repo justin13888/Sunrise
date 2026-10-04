@@ -20,7 +20,10 @@ use super::ServerConfig;
 // these through its `use super::*`. The loader itself names none of them: it
 // overlays onto `ServerConfig::default`.
 #[cfg(test)]
-use super::model::{default_jwks_ttl_secs, default_max_body_bytes, default_token_leeway_secs};
+use super::model::{
+    default_jwks_ttl_secs, default_max_body_bytes, default_sqlite_busy_timeout_ms,
+    default_token_leeway_secs,
+};
 #[cfg(test)]
 use super::ConfigError;
 
@@ -103,6 +106,9 @@ pub struct StorageTable {
     /// Directory holding the SQLite database and the blob tree. Leaving it
     /// unset keeps the ephemeral in-memory store, which is for tests only.
     pub data_dir: Option<PathBuf>,
+    /// How long a SQLite statement waits on another connection's lock, in
+    /// milliseconds. Maps to [`ServerConfig::sqlite_busy_timeout_ms`].
+    pub busy_timeout_ms: Option<u64>,
 }
 
 /// A parsed `sunrise.toml`.
@@ -183,6 +189,9 @@ impl FileConfig {
         if let Some(dir) = self.storage.data_dir {
             base.sqlite_path = Some(dir.join("sunrise.db"));
             base.blob_root = Some(dir.join("blobs"));
+        }
+        if let Some(v) = self.storage.busy_timeout_ms {
+            base.sqlite_busy_timeout_ms = v;
         }
         base
     }
@@ -448,6 +457,24 @@ mod file_tests {
             Some(PathBuf::from("/var/lib/sunrise/sunrise.db"))
         );
         assert_eq!(cfg.blob_root, Some(PathBuf::from("/var/lib/sunrise/blobs")));
+        assert_eq!(
+            cfg.sqlite_busy_timeout_ms,
+            default_sqlite_busy_timeout_ms(),
+            "an unset busy timeout keeps the default"
+        );
+    }
+
+    #[test]
+    fn busy_timeout_ms_overlays_when_set() {
+        let cfg = FileConfig::parse("[storage]\nbusy_timeout_ms = 250", "t.toml")
+            .unwrap()
+            .apply(ServerConfig::default());
+        assert_eq!(cfg.sqlite_busy_timeout_ms, 250);
+        assert_ne!(cfg.sqlite_busy_timeout_ms, default_sqlite_busy_timeout_ms());
+        assert_eq!(
+            cfg.sqlite_busy_timeout(),
+            std::time::Duration::from_millis(250)
+        );
     }
 
     /// **The property the whole feature must not break.** A config file is now

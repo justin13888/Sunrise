@@ -91,7 +91,7 @@ Xiaomi 13T, OnePlus 11 — under the heading "Device used in CI / QA". There is
 no Android source, no Gradle or SDK configuration, no Android CI job and no
 device anywhere in the repository. The complete set of Android traces in the
 tree is: the string `"android"` in the device-platform allowlist
-(`crates/sunrise-server/src/api/devices.rs:19`, `store/devices.rs:90`,
+(`crates/sunrise-server/src/api/devices.rs:19`, `store/devices.rs:79`,
 `crates/sunrise-relay-client/src/bootstrap.rs:53`), two comments saying Kotlin
 bindings would be generated "when Android arrives"
 (`crates/sunrise-core-bindings/src/lib.rs:5`, `Cargo.toml:10`), and

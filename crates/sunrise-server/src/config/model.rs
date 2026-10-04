@@ -93,6 +93,11 @@ pub struct ServerConfig {
     /// Self-host SQLite path (None = ephemeral in-memory, suitable for
     /// tests).
     pub sqlite_path: Option<PathBuf>,
+    /// How long a SQLite statement waits on another connection's lock before
+    /// failing, in milliseconds. `0` fails at once. See
+    /// [`crate::store::DEFAULT_BUSY_TIMEOUT`] for what it waits out.
+    #[serde(default = "default_sqlite_busy_timeout_ms")]
+    pub sqlite_busy_timeout_ms: u64,
     /// Self-host blob root (None = `<sqlite_dir>/blobs`).
     pub blob_root: Option<PathBuf>,
     /// Exact-match CORS allowlist for browser clients. Empty = no browser
@@ -109,6 +114,12 @@ pub struct ServerConfig {
 /// a blob-finalize manifest) and far below anything that would pressure memory.
 pub(super) const fn default_max_body_bytes() -> usize {
     2 * 1024 * 1024
+}
+
+/// [`crate::store::DEFAULT_BUSY_TIMEOUT`], in the unit the config is written
+/// in, so the two cannot disagree.
+pub(super) fn default_sqlite_busy_timeout_ms() -> u64 {
+    u64::try_from(crate::store::DEFAULT_BUSY_TIMEOUT.as_millis()).unwrap_or(u64::MAX)
 }
 
 const fn default_allow_signup() -> bool {
@@ -271,10 +282,20 @@ impl Default for ServerConfig {
             recovery_acr_values: Vec::new(),
             recovery_amr_values: Vec::new(),
             sqlite_path: None,
+            sqlite_busy_timeout_ms: default_sqlite_busy_timeout_ms(),
             blob_root: None,
             allowed_origins: Vec::new(),
             max_body_bytes: default_max_body_bytes(),
         }
+    }
+}
+
+impl ServerConfig {
+    /// [`ServerConfig::sqlite_busy_timeout_ms`] as the `Duration` the store
+    /// takes.
+    #[must_use]
+    pub const fn sqlite_busy_timeout(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(self.sqlite_busy_timeout_ms)
     }
 }
 
