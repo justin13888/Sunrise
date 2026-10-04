@@ -47,6 +47,33 @@ final class PadKeyboardUITests: SunriseUITestCase {
         )
     }
 
+    /// ⌘K from Search itself — the empty state's own advice — starts a fresh
+    /// query in the field, rather than leaving the old one standing because
+    /// the tab was already on screen.
+    func testCommandKOnSearchClearsTheQueryAndFocusesTheField() throws {
+        createVault()
+
+        app.typeKey("k", modifierFlags: .command)
+        let field = app.textFields["search.field"]
+        XCTAssertTrue(field.waitForExistence(timeout: 10), "⌘K showed Search")
+        field.tap()
+        field.typeText("ferry")
+        app.typeKey(.return, modifierFlags: []) // the field hands the keyboard to the results
+
+        app.typeKey("k", modifierFlags: .command)
+
+        let cleared = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value != %@", "ferry"),
+            object: field
+        )
+        wait(for: [cleared], timeout: 10)
+        XCTAssertEqual(
+            field.value(forKey: "hasKeyboardFocus") as? Bool,
+            true,
+            "⌘K put the keyboard in the field"
+        )
+    }
+
     /// ⌘/ is the menu's way to the same sheet, from anywhere.
     func testCommandSlashOpensTheCheatSheet() throws {
         createVault()
