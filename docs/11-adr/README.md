@@ -78,6 +78,7 @@ ADRs are numbered sequentially (`0001`, `0002`, …) and never renumbered.
 | 0058 | [The account identity is the authority for membership, and its revocations are never gated and never discounted](./0058-the-account-identity-is-the-membership-authority.md) | accepted (amends 0041 §"What a user sees" item 4; answers 0056's revisit item 4; depends on 0045 §4 and §7; answers #394) |
 | 0059 | [The client op log is folded below an acknowledged floor, and a stream is bootstrapped from a signed snapshot of its merge state](./0059-client-op-log-compaction.md) | accepted (answers 0043's resolved question 8; depends on 0043, 0044 and 0045 §4; built by #330) |
 | 0060 | [The relay database is SQLCipher-encrypted under an operator's key file, and backed up online through SQLite's backup API](./0060-relay-database-encryption-at-rest.md) | accepted (supersedes the push-token scheme in `push-notifications.md`; built by #360) |
+| 0061 | [An external review audits the key hierarchy, the identity chain and the revocation fold; constant-time comparison is a CI gate; and a pull request that touches the crypto is fuzzed](./0061-crypto-audit-scope.md) | accepted (amends `testing.md` §CI shape; scopes a review of 0022, 0024, 0037 and 0041; built by #365) |
 
 ## When to write a new ADR
 
