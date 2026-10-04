@@ -116,7 +116,7 @@ in the description, so it is driven without anyone adding it to the test.
 | `sunrise_accounts` | gauge | — | target ([#435](https://github.com/justin13888/Sunrise/issues/435)) | Account rows. |
 | `sunrise_devices` | gauge | `state` | target ([#435](https://github.com/justin13888/Sunrise/issues/435)) | Device rows by state. |
 | `sunrise_account_create_total` | counter | — | current | |
-| `sunrise_account_delete_total` | counter | — | target ([#359](https://github.com/justin13888/Sunrise/issues/359)) | Account deletion. |
+| `sunrise_account_delete_total` | counter | — | current | Accounts erased, by the maintenance pass once their grace period has run or by `admin account delete --immediately`. A confirmed request that has not been erased yet is not counted; `admin stats` reports those as `accounts_pending_deletion`. |
 | `sunrise_devices_register_total` | counter | — | current | |
 | `sunrise_devices_revoke_total` | counter | — | current | |
 
@@ -151,7 +151,7 @@ in the description, so it is driven without anyone adding it to the test.
 | `sunrise_blob_bytes_total` | counter | `direction` | current | Ciphertext bytes moved: `upload` as each chunk is stored, `download` as each chunk is read for a fetch, so an abandoned fetch counts what was read for it. |
 | `sunrise_blob_storage_bytes` | gauge | — | target ([#435](https://github.com/justin13888/Sunrise/issues/435)) | Ciphertext bytes at rest. |
 | `sunrise_blob_upload_duration_seconds` | histogram (transfer buckets) | — | target ([#435](https://github.com/justin13888/Sunrise/issues/435)) | From init to finalize. |
-| `sunrise_blob_gc_deleted_total` | counter | — | target ([#359](https://github.com/justin13888/Sunrise/issues/359)) | Blobs reclaimed by GC. |
+| `sunrise_blob_gc_deleted_total` | counter | — | current | Tombstoned blobs reclaimed by the maintenance pass, once `[storage] gc_grace_days` had passed and every active device had acknowledged the tombstone. Blobs removed with an erased account are not counted here. |
 
 ### Push
 

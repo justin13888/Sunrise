@@ -19,13 +19,13 @@ what an `Ack` means.
 
 ### What the relay actually keys on
 
-`batch_ops_hash` (`crates/sunrise-server/src/api/sync/publish.rs:293#batch_ops_hash`) is a
+`batch_ops_hash` (`crates/sunrise-server/src/api/sync/publish.rs:296#batch_ops_hash`) is a
 domain-separated BLAKE3 over the op count and each op's length-prefixed bytes.
 `Store::relay_append` (`crates/sunrise-server/src/relay_log.rs:207#relay_append`) looks that
 hash up in `relay_batches` inside the append transaction and returns
 `Appended::Duplicate` on a hit, which the handler answers with the **first**
 copy's `server_first_seen_ms` and no fan-out
-(`crates/sunrise-server/src/api/sync/publish.rs:207-220#ops`).
+(`crates/sunrise-server/src/api/sync/publish.rs:210-223#ops`).
 
 `relay_batches` (`crates/sunrise-server/src/relay_log.rs:110-118#SCHEMA`) is keyed
 `(account_h, stream_id, ops_h)` and holds `frame_id` as a
@@ -74,7 +74,7 @@ retention — 30 days and 256 MiB per channel
 `relay_batches` row are evicted together.
 
 There is no measurement of how often it happens.
-`sunrise_relay_batch_duplicate_total` (`crates/sunrise-server/src/api/sync/publish.rs:211#ops`)
+`sunrise_relay_batch_duplicate_total` (`crates/sunrise-server/src/api/sync/publish.rs:214#ops`)
 counts the re-sends the batch key *did* catch, and nothing counts the ones it did
 not — a re-partitioned re-send is indistinguishable, at the relay, from ordinary
 new work.
@@ -107,7 +107,7 @@ anything: a batch `[O1, O2]` with `O1` already seen still has to be stored and
 fanned out for `O2`'s sake, so the disk this was meant to save is still spent.
 To actually save it the relay would have to **filter `O1` out and re-encode the
 frame** — which it is technically able to do, since the REST path already
-rebuilds the frame server-side (`crates/sunrise-server/src/api/sync/publish.rs:128-140#ops`)
+rebuilds the frame server-side (`crates/sunrise-server/src/api/sync/publish.rs:131-143#ops`)
 — and that is where the cost lands:
 
 - `Appended` becomes three-valued, because "partly fresh" is now a real answer,

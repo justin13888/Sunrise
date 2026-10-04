@@ -47,7 +47,7 @@ on the authenticated account deliberately stays `AUTH_TOKEN_INVALID`
 
 ### The argument currently on the record is the wrong argument
 
-Both the doc comment (`crates/sunrise-server/src/api/error.rs:244`) and
+Both the doc comment (`crates/sunrise-server/src/api/error.rs:252`) and
 `auth.md` justify the pre-lookup case by pointing at `GET /meta`'s
 `device_binding_required` (`crates/sunrise-server/src/api/meta.rs:59`). That
 answers a different question. `device_binding_required` tells every caller that
@@ -179,7 +179,7 @@ question — which is what happened.
   record; nothing further is owed.
 - **No new configuration key.** `require_device_sig` keeps its single meaning and
   its derivation from `oidc_issuer`
-  (`crates/sunrise-server/src/config/file.rs:181`).
+  (`crates/sunrise-server/src/config/file.rs:189`).
 
 ## What would force revisiting this
 

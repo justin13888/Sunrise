@@ -67,6 +67,9 @@ What that file exposes, stated plainly rather than left to inference:
 | `relay_frames.account_h` | BLAKE3-truncated | first 16 bytes of `BLAKE3(account_id)`, derived server-side from the verified token — never from the client |
 | `relay_frames.stream_id` | **raw 16-byte id** | as the subscriber named it |
 | `relay_frame_heads.device_id` | **raw 16-byte id** | read from the envelope's cleartext routing header |
+| `account_delete_tokens.token_h` | BLAKE3 | of a pending deletion phrase; the phrase itself is never stored |
+| `blob_tombstones` | **raw ids** | blob key, stream id, publishing device and `seq` of the detaching op, as `DELETE /blobs/{blob_id}` named them |
+| `device_cursors` | **raw ids** | per device, stream and originating device, the `seq` it declared applied on `POST /sync/subscribe` |
 
 So the channel namespace is hashed and the routing ids inside it are not. The
 `id_h` truncation in `logging/mod.rs` is applied to **log output**, not to
@@ -103,6 +106,7 @@ how far along it is in `PRAGMA user_version`. On open, `Store::open`:
 |---|---|
 | 0001 `baseline` | The `accounts`, `devices`, `push_tokens` and `relay_*` tables, as every pre-versioning release created them. Still `CREATE … IF NOT EXISTS`, so a database those releases wrote, which is at version 0, adopts it without change. |
 | 0002 `devices_vault_device_id` | Adds `devices.vault_device_id` where a database predates it, then the `devices_by_vault_id` index. |
+| 0003 `account_and_blob_deletion` | Adds `accounts.delete_requested_at_ms` and the tables deletion keeps: `account_delete_tokens`, `blob_tombstones`, and `device_cursors` (the cursors each device declared on subscribe, which a tombstone's quorum reads). Each cascades from its account or device row. |
 
 A shipped migration is never edited: migration 0001 executes the tenants'
 `SCHEMA` constants, so those are frozen with it, and a test builds a database
@@ -200,7 +204,8 @@ What `api/blobs.rs` does:
         a chunk that was never uploaded → 409 BLOB_CHUNK_MISSING;
      b. hash the concatenation and compare to content_hash → 400 on mismatch;
      c. write the chunks under the content address, then the manifest LAST;
-     d. best-effort delete of the pending area.
+     d. lift any tombstone on that content address, and best-effort delete
+        of the upload's pending directory.
      → 200 { blob_id = "blb_" + first 16 bytes of content_hash hex,
              size_bytes, chunk_count }
 ```
@@ -213,8 +218,10 @@ a cross-tenant read primitive.
 
 Writing the manifest last is what makes a crash safe: `fetch` reads the manifest
 first, so a half-committed blob is invisible rather than short. There is no
-`pending` status row and no cron job; an abandoned upload leaves a pending
-directory that costs disk and never correctness.
+`pending` status row. An abandoned upload leaves a pending directory that costs
+disk and never correctness, and the maintenance pass (below) removes it once
+nothing in it has been touched for `[storage] pending_upload_ttl_hours`
+(default 24).
 
 ### Concurrent same-`blob_id` (implemented)
 
@@ -256,19 +263,36 @@ All retention numbers are unified to **30 days** (or shorter):
 
 - Op envelopes: the relay keeps a frame for at most **30 days** from arrival, or less when the channel's count bound evicts it first. This is the current relay retention, set in code by `DEFAULT_MAX_AGE_MS` (`crates/sunrise-server/src/relay_log.rs:123`) and applied on every append; it does not wait on compaction, which is proposed and not built ([`../04-storage/compaction.md`](../04-storage/compaction.md)).
 - Op metadata rows: retained at least **30 days** regardless of compaction state, providing a recovery window if compaction logic produces a defective snapshot.
-- Blob GC grace: `gc_grace_days = 30` (configurable). Tombstoned blobs are deleted from the object store on day 31. This is independent of post-compaction retention.
-- Pending-blob outbox rows: 24 h (described above).
+- Blob GC grace: `[storage] gc_grace_days`, default 30. A tombstoned blob is reclaimed by the first maintenance pass after its grace period at which every active device has acknowledged the tombstone. This is independent of post-compaction retention.
+- Abandoned uploads: `[storage] pending_upload_ttl_hours`, default 24, measured from the newest file in the upload.
+- Deleted accounts: `[storage] account_delete_grace_days`, default 30, from the confirmed deletion to the erasure.
 - Cursors: retained for the life of the device.
 - Audit (managed): **30 days** (see [`observability.md`](./observability.md)). Self-host default: also 30 days, configurable.
 
-Retention **enforcement** is implemented for the relay op log only: `relay_log.rs`
-applies both bounds on every append. Blob GC, compaction retention, op-metadata
-retention and audit retention have no implementation — no GC job, no cron, and
-no `gc_grace_days` setting the parser will accept.
+Retention **enforcement** is implemented for the relay op log, the blob store and
+deleted accounts. `relay_log.rs` applies the log's two bounds on every append.
+The rest is the **maintenance pass**
+(`crates/sunrise-server/src/admin/maintenance.rs`). The serving binary runs it
+at startup and then every `[storage] maintenance_interval_secs` (default 3600),
+and `sunrise-server admin gc --now` runs it on demand. In order, it:
 
-There is no Postgres, so there is no `fsync = on` to check, and the
-`sunrise-server doctor` subcommand that would check it does not exist (see
-[`self-hosting.md`](./self-hosting.md) §"Not yet wired"). Relay durability is
+1. Erases accounts whose deletion was confirmed more than
+   `account_delete_grace_days` ago (see [`api.md`](./api.md) §Account deletion).
+2. Collects tombstoned blobs whose grace period has passed and whose quorum
+   holds. It removes the manifest first, so a reader stops seeing the blob
+   before any chunk goes.
+3. Sweeps abandoned uploads.
+4. Under a blob root the operator configured, sweeps per-account directories
+   whose account no longer exists and which have been untouched for the upload
+   TTL. A crash between an erasure's commit and its file deletion leaves those.
+
+An item that fails is logged as `srv.maintenance.failed` and retried on the next
+pass. The rest of the pass continues. Compaction retention, op-metadata retention
+and audit retention have no implementation.
+
+There is no Postgres, so there is no `fsync = on` to check;
+`sunrise-server admin doctor` checks what applies instead (see
+[`self-hosting.md`](./self-hosting.md) §Testing the install). Relay durability is
 governed by the `synchronous = NORMAL` the server sets under WAL, described
 under [Schema versions and pragmas](#schema-versions-and-pragmas-implemented).
 
@@ -280,7 +304,7 @@ under [Schema versions and pragmas](#schema-versions-and-pragmas-implemented).
 | Upload chunks | **As built:** `PUT` to the relay, 1..=1 MiB per chunk, at most 4096 chunks, 100 MB per blob. |
 | Finalize | Client posts `chunk_hashes` — one `BLAKE3(ciphertext_chunk)` per entry, lowercase hex, **64 characters** (32 bytes), plus a `content_hash` over the concatenation. The server re-reads every stored chunk and re-hashes it; a mismatch on any chunk or on the concatenation is `400 BLOB_HASH_MISMATCH`, and a chunk that never arrived is `409 BLOB_CHUNK_MISSING` (see [`api.md`](./api.md)). No ETag shortcut is taken — the check is always a real re-hash. There is no `plaintext_hash` server-side; that's a client-only concept. |
 | Download | **As built:** `GET /api/v1/blobs/<blob_id>` reassembles the chunks and returns `application/octet-stream` from the relay. Presigned GET URLs and their 24-hour expiry are the unbuilt managed shape. |
-| Delete | **Not implemented.** No `DELETE` route, no tombstone, and no GC job. See [`api.md`](./api.md) §Blobs. |
+| Delete | **As built:** `DELETE /api/v1/blobs/<blob_id>` writes a tombstone naming the op that detached the blob. The ciphertext stays readable until the maintenance pass collects it, after `gc_grace_days` and once every active device has acknowledged that op through its subscribe cursors. See [`api.md`](./api.md) §Blobs. |
 
 Persisted blob payloads carry the uniform 5-byte magic prefix from [`../10-cross-cutting/protocol-versioning.md`](../10-cross-cutting/protocol-versioning.md) §3, but the server stores opaque bytes and does not introspect.
 
@@ -313,7 +337,8 @@ account under a BLAKE3 of the account id:
 ```
 <data_dir>/
 ├── sunrise.db                        # SQLite: accounts, devices, push_tokens,
-│                                     #   relay_frames, relay_frame_heads, relay_evicted
+│                                     #   relay_frames, relay_frame_heads, relay_evicted,
+│                                     #   account_delete_tokens, blob_tombstones, device_cursors
 ├── sunrise.db-wal, sunrise.db-shm    # WAL and its index, present while the server runs
 └── blobs/
     ├── pending/<acct_h>/<upload_id>/
