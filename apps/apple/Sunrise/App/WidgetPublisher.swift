@@ -31,8 +31,8 @@ final class WidgetPublisher {
     /// A snapshot can go stale without a single write: at midnight a task due
     /// today becomes overdue, and one scheduled for tomorrow arrives. Fifteen
     /// minutes is the cadence `docs/07-clients/mobile-ios.md` gives the
-    /// background refresh, and a re-read that finds nothing new costs two
-    /// queries and no redraw.
+    /// background refresh, and a re-read that finds nothing new costs one
+    /// query and no redraw.
     static let tickInterval: Duration = .seconds(15 * 60)
 
     private let bridge: CoreBridge
@@ -61,7 +61,7 @@ final class WidgetPublisher {
         self.reload = reload
     }
 
-    /// Project Today and the Inbox into what the widgets draw.
+    /// Project Today into what the widgets draw.
     ///
     /// Pure: `today_section`, the one seam function it calls, reads nothing
     /// but its arguments, and neither does `DeepLink.url`.
@@ -71,19 +71,16 @@ final class WidgetPublisher {
     /// methods), not a copy of it, so the two surfaces cannot disagree.
     static func snapshot(
         today: [TaskItem],
-        inbox: [TaskItem],
         nowMs: UInt64,
         timeZone: String
     ) -> WidgetSnapshot {
         let open = DailySnapshot.openToday(today, nowMs: nowMs, timeZone: timeZone)
         var counts = DailySnapshot()
         counts.count(today: open)
-        counts.count(inbox: inbox)
         return WidgetSnapshot(
             writtenAtMs: Int64(clamping: nowMs),
             outstanding: counts.outstanding,
             overdue: counts.overdue,
-            inbox: counts.inbox,
             rows: open.prefix(WidgetSnapshot.rowLimit).map { task, section in
                 WidgetSnapshot.Row(
                     id: task.id,
@@ -99,14 +96,12 @@ final class WidgetPublisher {
     func publish() async {
         let now = await bridge.nowMs()
         do {
-            guard case let .tasks(today) = try await bridge.query(.today(nowMs: now, contexts: [])),
-                  case let .tasks(inbox) = try await bridge.query(.inbox) else {
+            guard case let .tasks(today) = try await bridge.query(.today(nowMs: now, contexts: [])) else {
                 errorMessage = "The core answered a task query with something else."
                 return
             }
             let next = Self.snapshot(
                 today: today,
-                inbox: inbox,
                 nowMs: now,
                 timeZone: TimeZone.current.identifier
             )

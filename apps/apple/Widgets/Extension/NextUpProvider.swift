@@ -43,7 +43,6 @@ extension WidgetSnapshot {
         writtenAtMs: Int64(Date.now.timeIntervalSince1970 * 1000),
         outstanding: 4,
         overdue: 1,
-        inbox: 2,
         rows: [
             Row(id: "sample-1", title: "Send the quarterly report", section: .overdue, link: nil),
             Row(id: "sample-2", title: "Review Maya's draft", section: .due, link: nil),

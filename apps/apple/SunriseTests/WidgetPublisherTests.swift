@@ -53,7 +53,6 @@ struct WidgetPublisherTests {
             writtenAtMs: 1_700_000_000_000,
             outstanding: 2,
             overdue: 1,
-            inbox: 3,
             rows: [.init(id: "tsk_1", title: "One", section: .overdue, link: URL(string: "sunrise://x"))]
         )
 
@@ -68,7 +67,7 @@ struct WidgetPublisherTests {
     func aSnapshotFromAnotherVersionReadsAsAbsent() throws {
         let store = scratchStore()
         defer { try? FileManager.default.removeItem(at: store.directory) }
-        var snapshot = WidgetSnapshot(writtenAtMs: 0, outstanding: 0, overdue: 0, inbox: 0, rows: [])
+        var snapshot = WidgetSnapshot(writtenAtMs: 0, outstanding: 0, overdue: 0, rows: [])
         snapshot.version = WidgetSnapshot.currentVersion + 1
 
         try store.write(snapshot)
@@ -80,7 +79,7 @@ struct WidgetPublisherTests {
     func erasingIsIdempotent() throws {
         let store = scratchStore()
         defer { try? FileManager.default.removeItem(at: store.directory) }
-        try store.write(WidgetSnapshot(writtenAtMs: 0, outstanding: 0, overdue: 0, inbox: 0, rows: []))
+        try store.write(WidgetSnapshot(writtenAtMs: 0, outstanding: 0, overdue: 0, rows: []))
 
         try store.erase()
         try store.erase()
@@ -91,11 +90,11 @@ struct WidgetPublisherTests {
 
     @Test
     func theStampAloneDoesNotMakeADifferentWidget() {
-        let base = WidgetSnapshot(writtenAtMs: 1, outstanding: 1, overdue: 0, inbox: 0, rows: [])
+        let base = WidgetSnapshot(writtenAtMs: 1, outstanding: 1, overdue: 0, rows: [])
         var later = base
         later.writtenAtMs = 2
         var different = base
-        different.inbox = 1
+        different.overdue = 1
 
         #expect(base.drawsTheSameAs(later))
         #expect(!base.drawsTheSameAs(different))

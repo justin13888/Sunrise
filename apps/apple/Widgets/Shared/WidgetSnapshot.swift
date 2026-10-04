@@ -60,13 +60,15 @@ struct WidgetSnapshot: Codable, Equatable, Sendable {
     /// Every open task in Today, not just the rows carried.
     var outstanding: Int
     var overdue: Int
-    var inbox: Int
     /// At most ``rowLimit``.
     var rows: [Row]
 
     /// Whether two snapshots draw the same widget.
     ///
-    /// Everything but the stamp. The app writes — and asks WidgetKit to
+    /// Everything but the stamp, which is why every field here is one some
+    /// size draws: a field no view reads would spend a reload on a change
+    /// nobody sees, and carry one more thing out of the vault for nothing.
+    /// That is why there is no Inbox count. The app writes — and asks WidgetKit to
     /// reload, which iOS budgets — only when this is false, so a burst of
     /// changes that leaves Today as it was costs nothing.
     func drawsTheSameAs(_ other: WidgetSnapshot) -> Bool {

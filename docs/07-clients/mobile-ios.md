@@ -166,8 +166,8 @@ These rules are normative for any client that adds a widget.
   data, so the widget never re-derives the start-of-day boundary. The app only
   chooses which fields to project and how many rows.
 - **What leaves the vault is bounded.** The file holds, for at most 8 tasks,
-  the task's id, its title, its section and its link. It also holds three
-  counts (open, overdue and Inbox) and a timestamp. It holds no notes,
+  the task's id, its title, its section and its link. It also holds two
+  counts (open and overdue) and a timestamp. It holds no notes,
   streams, contexts or dates. This is a deliberate plaintext copy outside
   SQLCipher, the same trade a reminder notification's title makes. On iOS the
   file is written with `completeUntilFirstUserAuthentication`, because a Lock
