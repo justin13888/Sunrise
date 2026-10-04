@@ -75,6 +75,7 @@ struct AttachmentsView: View {
                 }
                 .labelStyle(.iconOnly)
                 .buttonStyle(.plain)
+                .disabledUnlessEditable(.attachment)
             }
             .tag(row.id)
             .contentShape(.rect)

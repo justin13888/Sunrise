@@ -114,17 +114,19 @@ extension EnvironmentValues {
 }
 
 extension View {
-    /// Disable this control while the vault's edit gate locks `entity`.
-    func disabledUnlessEditable(_ entity: EditedEntity) -> some View {
-        modifier(EditableGate(entity: entity))
+    /// Disable this control while the vault's edit gate locks any of
+    /// `entities`: an action that writes two kinds (a routine and the tasks
+    /// it materializes) names both.
+    func disabledUnlessEditable(_ entities: EditedEntity...) -> some View {
+        modifier(EditableGate(entities: entities))
     }
 }
 
 private struct EditableGate: ViewModifier {
-    let entity: EditedEntity
+    let entities: [EditedEntity]
     @Environment(\.editGate) private var gate
 
     func body(content: Content) -> some View {
-        content.disabled(gate.map { !$0.allows(entity) } ?? false)
+        content.disabled(gate.map { g in !entities.allSatisfy { g.allows($0) } } ?? false)
     }
 }

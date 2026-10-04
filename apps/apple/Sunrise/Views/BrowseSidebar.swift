@@ -275,8 +275,10 @@ struct BrowseSidebar: View {
                 // so every one of these would be rejected by the core.
                 Text("The Inbox cannot be edited")
             } else {
+                // Edit… stays open so a locked stream can still be read; its
+                // sheet's Save is gated instead.
+                Button("Edit…") { editingStream = row }
                 Group {
-                    Button("Edit…") { editingStream = row }
                     Button(row.paused ? "Resume" : "Pause") {
                         Task { await model.setStreamPaused(row, !row.paused) }
                     }
@@ -316,8 +318,8 @@ struct BrowseSidebar: View {
         } isTargeted: { isTargeted = $0 ? row.id : (isTargeted == row.id ? nil : isTargeted) }
         .dropHighlight(isActive: isTargeted == row.id)
         .contextMenu {
+            Button("Edit…") { editingContext = row }
             Group {
-                Button("Edit…") { editingContext = row }
                 Button(row.archived ? "Unarchive" : "Archive") {
                     Task { await model.setContextArchived(row, !row.archived) }
                 }

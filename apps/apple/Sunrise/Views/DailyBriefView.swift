@@ -94,11 +94,13 @@ struct DailyBriefBody: View {
             // a year when it is not 24 hours away are the reason.
             ForEach(SnoozeSpan.offered, id: \.self) { span in
                 Button(span.buttonTitle) { Task { await snooze(task, span) } }
+                    .disabledUnlessEditable(.task)
             }
         }
         .swipeActions(edge: .trailing) {
             Button("Tomorrow") { Task { await snooze(task, .tomorrow) } }
                 .tint(.orange)
+                .disabledUnlessEditable(.task)
         }
     }
 }
@@ -165,6 +167,7 @@ struct EndOfDayPlanView: View {
                     confirmingMove = true
                 }
                 .disabled(model.plan?.stillOpen.isEmpty ?? true)
+                .disabledUnlessEditable(.task)
             }
         }
         .confirmationDialog(

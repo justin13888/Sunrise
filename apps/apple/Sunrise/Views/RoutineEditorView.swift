@@ -139,7 +139,7 @@ struct RoutineEditorView: View {
                     Button(isCreating ? "Create" : "Save", action: save)
                         .keyboardShortcut(.defaultAction)
                         .disabled(!canSave)
-                        .disabledUnlessEditable(.routine)
+                        .disabledUnlessEditable(.routine, .task)
                 }
             }
         }
