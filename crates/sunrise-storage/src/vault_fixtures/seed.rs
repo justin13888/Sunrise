@@ -554,6 +554,25 @@ pub(super) const SEED: &[SeedRow] = &[
             ("parked_at_ms", I(234)),
         ],
     },
+    SeedRow {
+        table: "vault_required_features",
+        values: &[
+            ("feature", T(b"focus_session.breaks")),
+            ("recorded_at_ms", I(241)),
+        ],
+    },
+    // Two ids, newline-joined and sorted, as the fold writes them, so a
+    // migration that split or trimmed the list would change the row.
+    SeedRow {
+        table: "device_features",
+        values: &[
+            ("device_id", B(&DEVICE_LAPTOP)),
+            ("features", T(b"core.field_ops\nfocus_session.breaks")),
+            ("hlc_ms", I(HLC_MS + 10)),
+            ("hlc_logical", I(243)),
+            ("recorded_at_ms", I(244)),
+        ],
+    },
 ];
 
 /// The columns `table` has in `conn`'s schema, or `None` if it has no such
