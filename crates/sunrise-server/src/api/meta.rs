@@ -56,7 +56,7 @@ pub async fn meta(Inject(state): Inject<ServerState>) -> Json<MetaResponse> {
         oidc_issuer: state.config.oidc_issuer.clone(),
         oidc_client_id: state.config.oidc_client_id.clone(),
         device_binding_mode: DEVICE_BINDING_MODE.to_owned(),
-        device_binding_required: state.config.require_device_sig,
+        device_binding_required: state.config.device_sig_required(),
     })
 }
 
@@ -139,7 +139,7 @@ mod tests {
     async fn meta_reports_the_device_binding_policy_in_force() {
         for required in [false, true] {
             let client = Client::new(ServerConfig {
-                require_device_sig: required,
+                require_device_sig: Some(required),
                 ..ServerConfig::default()
             });
             let res = client.send(Method::GET, "/api/v1/meta", None).await;
