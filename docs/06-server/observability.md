@@ -31,7 +31,7 @@ connection counts, per-account op rates and slow-query logs have no
 implementation; error frequency is recoverable from the `err_code` field on
 rejection lines, not from a metric.
 
-The 46 `ev` names the server emits, complete:
+The 47 `ev` names the server emits, complete:
 
 <!-- Extracted from the tree; do not edit by hand. Re-run and reconcile:
      grep -rhoE 'ev = "srv\.[a-z0-9_.]+"' crates/sunrise-server/src | sort -u
@@ -44,7 +44,7 @@ The 46 `ev` names the server emits, complete:
      NOT the commit that last changed the set. Now that the gate runs, it is
      provenance rather than the reader's assurance: diff that ref against HEAD
      over the grepped path to see what a human last looked at.
-     Last extracted: f3ed6cb8 -->
+     Last extracted: 32da94d4 -->
 
 ```
 srv.start                        srv.req.start
@@ -56,6 +56,7 @@ srv.stop                         srv.relay.fanout
 srv.stop.draining                srv.relay.append_failed
 srv.stop.failed                  srv.relay.replay_failed
 srv.health.unready               srv.ratelimit.rejected
+srv.store.encrypted
 srv.store.migrated
 srv.store.quick_check
 srv.store.wal_unavailable

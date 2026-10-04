@@ -275,12 +275,13 @@ impl Store {
         if let Some(p) = path {
             match (cipher::file_state(p)?, key) {
                 (cipher::FileState::Plaintext, Some(k)) => {
-                    let kept = cipher::encrypt_in_place(p, k, busy_timeout)?;
+                    cipher::encrypt_in_place(p, k, busy_timeout)?;
+                    // No path field: a path is not on the log allowlist, and
+                    // the copy's name is fixed beside the configured database.
                     tracing::warn!(
                         ev = "srv.store.encrypted",
-                        kept = %kept.display(),
                         "the relay database was encrypted; its plaintext original is kept beside \
-                         it until the operator deletes it"
+                         it as sunrise.db.pre-encryption until the operator deletes it"
                     );
                 }
                 (cipher::FileState::Opaque, None) => {
