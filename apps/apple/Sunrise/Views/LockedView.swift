@@ -86,10 +86,12 @@ struct LockedView: View {
         }
     }
 
+    /// As ``OnboardingView``'s: the relay and the process's account bearer
+    /// when both are here, copy and paste with the reason shown when not.
     private func makePairing() -> PairingModel {
-        PairingModel(
-            intent: .addThisMac,
+        .joining(
             relayURL: settings.relayURL.trimmed,
+            bearer: session?.account.accessToken,
             adopt: { [session] root, bundle in
                 await session?.adoptPairing(root: root, bundle: bundle)
             }

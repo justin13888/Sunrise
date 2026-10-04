@@ -2,19 +2,26 @@ import Foundation
 
 /// One device's half of a pairing, as a screen the user can walk.
 ///
-/// # Why the user carries the bytes
+/// # Two transports, one model
 ///
-/// `crates/sunrise-core-bindings/src/pairing.rs` says it plainly: the relay's
-/// pairing rendezvous does not exist yet, so the transport for the three Noise
-/// messages and the three pairing messages **is the user**. Every one of them
-/// crosses as base64url text, and the crypto does not care how it travelled —
-/// the SAS binds the transcript either way. So this model is an eight-leg
-/// script: at each leg one device is showing text and the other is pasting it,
-/// and the model's job is to make it obvious which of those this device is
-/// doing right now.
+/// The three Noise messages and the three pairing messages cross either
+/// through the relay's rendezvous or by the user's hand, and the crypto does
+/// not care which — the SAS binds the transcript either way.
 ///
-/// When the rendezvous lands, the same seam calls drive it in the same order.
-/// Only who moves the bytes changes.
+/// - **Over the relay** (``Transport/relay``, the default whenever this device
+///   has a relay and a signed-in account): three phases. The device being
+///   added shows a QR, the other scans it, both compare six digits, done.
+///   `RelayPairing` moves every message; this model never sees one. That half
+///   is in `PairingRelay.swift`.
+/// - **By copy and paste** (``Transport/manual``): an eight-leg script over
+///   `DevicePairing`. At each leg one device is showing text and the other is
+///   pasting it, and the model's job is to make it obvious which of those this
+///   device is doing right now. It is the fallback for a device with no relay,
+///   no account, or a relay that does not answer, and the screen says which.
+///
+/// The code leg is the same in both: the existing device scans it with the
+/// camera or pastes the text under it, and the scanned string goes to the seam
+/// exactly as read. Swift never parses a pairing QR.
 ///
 /// # Why eight legs and not six
 ///
@@ -75,24 +82,6 @@ final class PairingModel {
         case grant
     }
 
-    /// Text this device has produced that the other one needs.
-    struct HandOff: Equatable {
-        let leg: Leg
-        let title: String
-        let instruction: String
-        let text: String
-        /// Only the QR payload is drawn as a code. Every other message is
-        /// bigger than a screen-readable symbol and is copied, not scanned.
-        let drawsCode: Bool
-    }
-
-    /// Text the other device is showing that this one needs.
-    struct Prompt: Equatable {
-        let leg: Leg
-        let title: String
-        let instruction: String
-    }
-
     enum Phase: Equatable {
         /// Collecting what `begin` needs; nothing has been generated.
         case idle
@@ -101,9 +90,10 @@ final class PairingModel {
         /// Both devices are showing `sas`. Nothing advances from here without
         /// an explicit answer — see `confirm(matched:)`.
         case comparing(sas: String)
-        /// The seam is doing the one slow thing on this screen: sealing a
-        /// message, or writing the vault and opening it.
-        case working
+        /// The seam is doing something slow, which the string names: reaching
+        /// the relay, waiting for the other device, sealing a message, or
+        /// writing the vault and opening it.
+        case working(String)
         case done(String)
         /// The user said the digits differed. Kept apart from `failed` because
         /// it is not a thing that went wrong — it is the check working, and
@@ -114,7 +104,8 @@ final class PairingModel {
     }
 
     let intent: Intent
-    private(set) var phase: Phase = .idle
+    /// Internal so `PairingRelay.swift` can write it; views only read it.
+    var phase: Phase = .idle
 
     /// The seam's own answers, snapshotted.
     ///
@@ -132,8 +123,35 @@ final class PairingModel {
     /// the QR — the payload names an account without naming a person.
     var accountEmail = ""
 
+    /// Fixed at construction from what the caller could supply, and changed
+    /// only toward ``Transport/manual``: by a relay that does not answer, or
+    /// by the user choosing it (``useManualInstead()``).
+    var transport: Transport
+
+    /// Why this pairing is not running over the relay, when that was not the
+    /// user's choice. Shown on the screen, because a fallback nobody explains
+    /// reads as the app being slower than it should be.
+    var notice: String?
+
     private var pairing: DevicePairing?
     private let relayURL: String
+
+    /// How this device reaches the relay, or `nil` when it cannot: no relay
+    /// configured, or no account signed in to present a bearer for.
+    let relay: RelayTransport?
+
+    /// Runs `RelayPairing.sponsor` against the open vault. The vault's
+    /// `SunriseCore` stays behind `CoreBridge`; the cert is signed inside it.
+    /// Absent on a device taking `.addThisMac`, as `sealOffer` is.
+    let sponsorRelay: ((any RelayPairingProtocol) async throws -> Void)?
+
+    /// The rendezvous in progress, once one is open.
+    var relaySession: (any RelayPairingProtocol)?
+    /// Which of the relay's three steps is on screen; `.working` spans two.
+    var relayStep = 1
+    /// Bumped by every start and every cancel, so a relay wait that returns
+    /// after the user moved on cannot write over the screen they moved to.
+    var attempt = 0
 
     /// Seals the open vault's account identity for a confirmed pairing. Absent
     /// on a device with no open vault, which is every device taking
@@ -155,7 +173,7 @@ final class PairingModel {
     /// account: since ADR-0024 the Stream keys are random, and they travel in
     /// the bundle — along, now, with this device's own keys and the certificate
     /// the other one signed for them.
-    private let adopt: ((Data, Data) async -> Void)?
+    let adopt: ((Data, Data) async -> Void)?
 
     /// Text a submit produced for the *next* leg to show.
     ///
@@ -167,18 +185,35 @@ final class PairingModel {
     /// never be shown twice.
     private var pendingHandOff: String?
 
+    /// `relay` is what the relay needs — its URL and this account's bearer —
+    /// or `nil` to pair by copy and paste. `signedIn` only words the notice
+    /// when `relay` is `nil`: a device with a relay and no account is told to
+    /// sign in, one with no relay is told it has none.
     init(
         intent: Intent,
         relayURL: String = "",
+        relay: RelayTransport? = nil,
+        signedIn: Bool = false,
         sealOffer: ((DevicePairing) async throws -> String)? = nil,
         sealGrant: ((DevicePairing, String) async throws -> String)? = nil,
+        sponsorRelay: ((any RelayPairingProtocol) async throws -> Void)? = nil,
         adopt: ((Data, Data) async -> Void)? = nil
     ) {
         self.intent = intent
         self.relayURL = relayURL
+        self.relay = relay
         self.sealOffer = sealOffer
         self.sealGrant = sealGrant
+        self.sponsorRelay = sponsorRelay
         self.adopt = adopt
+        if relay != nil {
+            transport = .relay
+        } else {
+            transport = .manual
+            notice = relayURL.trimmed.isEmpty
+                ? Self.noRelayConfigured
+                : (signedIn ? nil : Self.notSignedIn)
+        }
         if intent == .addAnotherDevice {
             phase = .awaiting(Self.prompt(for: .code))
         }
@@ -194,6 +229,7 @@ final class PairingModel {
 
     /// Where in the script this device is, for a progress line.
     var progress: (leg: Int, of: Int)? {
+        if transport == .relay { return relayProgress }
         guard let leg = currentLeg else { return nil }
         return (leg.rawValue + 1, Leg.allCases.count)
     }
@@ -212,8 +248,22 @@ final class PairingModel {
 
     /// Start as the device being added: mint the throwaway keypair and publish
     /// the QR. Valid only for `.addThisMac`.
-    func begin() {
-        guard intent == .addThisMac, pairing == nil else { return }
+    ///
+    /// Over the relay this returns only once the other device has scanned the
+    /// code and the digits are on screen, or the pairing has stopped; the
+    /// screen calls it from a task and shows each phase as it is entered.
+    func begin() async {
+        guard intent == .addThisMac, pairing == nil, relaySession == nil else { return }
+        if transport == .relay, let relay {
+            await beginOverRelay(relay)
+        } else {
+            beginManually()
+        }
+    }
+
+    /// The copy-and-paste start: mint the code and show it, with nothing
+    /// opened anywhere else.
+    func beginManually() {
         do {
             let session = try DevicePairing.offer(
                 relayUrl: relayURL,
@@ -246,8 +296,17 @@ final class PairingModel {
         guard case let .awaiting(prompt) = phase else { return }
         let text = pasted.trimmed
         guard !text.isEmpty else { return }
+        if prompt.leg == .code, transport == .relay, let relay {
+            await acceptOverRelay(text, relay: relay)
+        } else {
+            await submitManually(text, at: prompt.leg)
+        }
+    }
+
+    /// One leg of the copy-and-paste script, from what was pasted into it.
+    private func submitManually(_ text: String, at leg: Leg) async {
         do {
-            switch prompt.leg {
+            switch leg {
             case .code:
                 pairing = try DevicePairing.accept(qrPayload: text)
             case .first, .second, .third:
@@ -266,14 +325,14 @@ final class PairingModel {
                 )
             case .request:
                 pasted = ""
-                phase = .working
+                phase = .working(finishingLabel)
                 syncSeamState()
                 guard let sealGrant else { throw PairingUIError.noOpenVault }
                 pendingHandOff = try await sealGrant(require(), text)
             case .grant:
                 let bundle = try require().openPairingGrant(sealed: text)
                 pasted = ""
-                phase = .working
+                phase = .working(finishingLabel)
                 syncSeamState()
                 await adopt?(bundle.vaultRoot, bundle.payloadBytes)
                 pairing = nil
@@ -289,7 +348,7 @@ final class PairingModel {
             return
         }
         pasted = ""
-        step(after: prompt.leg)
+        step(after: leg)
         syncSeamState()
     }
 
@@ -304,7 +363,12 @@ final class PairingModel {
     /// send anything before the SAS was answered, so the two belong in one
     /// call.
     func confirm(matched: Bool) async {
-        guard case .comparing = phase, let session = pairing else { return }
+        guard case .comparing = phase else { return }
+        if let relaySession {
+            await confirmOverRelay(matched: matched, session: relaySession)
+            return
+        }
+        guard let session = pairing else { return }
         guard matched else {
             try? session.confirm(matched: false)
             pairing = nil
@@ -332,7 +396,17 @@ final class PairingModel {
     /// trip, this device's minted `D_S`/`D_D` with them. Its error is the
     /// expected outcome, not a problem, which is why it is swallowed here and
     /// nowhere else.
+    ///
+    /// Over the relay, the seam's own `cancel` ends any wait in progress and
+    /// tells the other device, which then stops at its next poll rather than
+    /// at the session's five-minute expiry.
     func cancel() {
+        attempt += 1
+        if let relaySession {
+            Task { await relaySession.cancel() }
+        }
+        relaySession = nil
+        relayStep = 1
         try? pairing?.confirm(matched: false)
         pairing = nil
         pasted = ""
@@ -386,7 +460,7 @@ extension PairingModel {
             case .offer:
                 // The device that seals passes through `.working` while it
                 // does; the one being added waits to be handed the ciphertext.
-                phase = shows(.offer) ? .working : .awaiting(Self.prompt(for: .offer))
+                phase = shows(.offer) ? .working(finishingLabel) : .awaiting(Self.prompt(for: .offer))
             case .request, .grant:
                 // Both were computed by the submit that just ran — a request is
                 // built from the offer, a grant is signed over the request — so
@@ -432,18 +506,15 @@ extension PairingModel {
         return pairing
     }
 
-    private func fail(with error: any Error) {
+    func fail(with error: any Error) {
         phase = .failed(error.localizedDescription)
     }
 
-    private func syncSeamState() {
-        role = pairing?.role()
+    func syncSeamState() {
+        role = pairing?.role() ?? relaySession?.role()
+        // `RelayPairing` keeps its `DevicePairing` inside, so over the relay
+        // there is no step to show — and nothing to disagree with, since the
+        // seam runs the order itself.
         handshakeStep = pairing?.step()
-    }
-
-    private var doneSummary: String {
-        intent == .addThisMac
-            ? "This \(Platform.deviceName) is paired. Your vault is open here."
-            : "The other device has a certificate from your account and a copy of your vault key."
     }
 }

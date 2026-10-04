@@ -88,6 +88,10 @@ settings:
     # reads a permission. Anything that later needs an exception adds a
     # `com.apple.security.cs.*` entitlement here, not a `NO`.
     #
+    # The one resource it gates that the app uses is the camera, for scanning
+    # a pairing code (#464): `com.apple.security.device.camera`, on the macOS
+    # target below, in every configuration.
+    #
     # Unrelated to the App Sandbox, which stays off — see the note on the
     # macOS target below and ADR-0031.
     ENABLE_HARDENED_RUNTIME: YES
@@ -254,6 +258,19 @@ targets:
         # No App Sandbox (ADR-0031). The hardened runtime is a different
         # setting and is on; it lives in `settings.base` above, where its note
         # explains why.
+        #
+        # The camera, for scanning a pairing code. The hardened runtime denies
+        # it to a process without `com.apple.security.device.camera`, and
+        # `macOS/Sunrise.entitlements` is Release-only, so the entitlement is
+        # also asked for here — Xcode merges it into whatever it signs, which
+        # is what lets an ad-hoc-signed Debug run scan. Release carries it in
+        # the file as well, where a reviewer reading the shipped entitlements
+        # finds it. The purpose string is what the system's prompt shows, and
+        # without one the process is killed the moment it asks.
+        ENABLE_RESOURCE_ACCESS_CAMERA: YES
+        INFOPLIST_KEY_NSCameraUsageDescription: >-
+          Sunrise uses the camera only to scan the pairing code another of
+          your devices shows. Nothing it sees is stored or sent.
       # `keychain-access-groups`, which is what the data-protection keychain
       # needs — the one that makes the vault root's `ThisDeviceOnly` class mean
       # something on the Mac — on **Release only**.
@@ -418,6 +435,11 @@ targets:
           UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown
           UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
         TARGETED_DEVICE_FAMILY: "1,2"
+        # VisionKit's scanner, for a pairing code; asked for only when the
+        # user chooses Scan. The macOS target carries the same words.
+        INFOPLIST_KEY_NSCameraUsageDescription: >-
+          Sunrise uses the camera only to scan the pairing code another of
+          your devices shows. Nothing it sees is stored or sent.
     info:
       path: Generated/Info-iOS.plist
       properties:

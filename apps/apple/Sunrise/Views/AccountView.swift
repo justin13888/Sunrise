@@ -226,18 +226,13 @@ struct AccountView: View {
         session.bridge != nil && session.canSponsorPairing
     }
 
+    /// Over the relay when it and this account's bearer are both here, by
+    /// copy and paste when not; the open vault signs through the bridge.
     private func makePairing(_ session: SessionModel) -> PairingModel {
-        PairingModel(
-            intent: .addAnotherDevice,
+        .sponsoring(
+            through: session.bridge,
             relayURL: settings.relayURL.trimmed,
-            sealOffer: { [bridge = session.bridge] pairing in
-                guard let bridge else { throw PairingUIError.noOpenVault }
-                return try await bridge.sendPairingOffer(to: pairing)
-            },
-            sealGrant: { [bridge = session.bridge] pairing, request in
-                guard let bridge else { throw PairingUIError.noOpenVault }
-                return try await bridge.sendPairingGrant(to: pairing, request: request)
-            }
+            bearer: account.accessToken
         )
     }
 
