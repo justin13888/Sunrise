@@ -312,6 +312,24 @@ fn a_key_file_is_64_hex_digits_readable_by_its_owner_alone() {
     assert!(!format!("{:?}", DbKey::from_bytes([0xab; 32])).contains("ab"));
 }
 
+/// The key's text is built in buffers sized exactly, so none of them ever
+/// reallocates and frees an unwiped copy of it.
+#[test]
+fn the_key_literal_and_statement_never_outgrow_their_buffers() {
+    let key = DbKey::from_bytes([0xab; 32]);
+    let literal = key.literal();
+    assert_eq!(literal.as_str(), format!("\"x'{}'\"", "ab".repeat(32)));
+    assert_eq!(literal.len(), literal.capacity());
+    for pragma in ["key", "rekey", "backup.key"] {
+        let statement = key.statement(pragma);
+        assert_eq!(
+            statement.as_str(),
+            format!("PRAGMA {pragma} = {};", literal.as_str())
+        );
+        assert_eq!(statement.len(), statement.capacity(), "{pragma}");
+    }
+}
+
 /// **Backup under load.** A writer appends to the relay log the whole time
 /// the backup runs, through its own connection as the relay would; the copy
 /// must be whole, open under the same key, and hold an unbroken prefix of

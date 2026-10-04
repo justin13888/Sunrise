@@ -41,6 +41,12 @@ const PRE_ENCRYPTION_SUFFIX: &str = "pre-encryption";
 /// itself untouched.
 const ENCRYPTING_SUFFIX: &str = "encrypting";
 
+/// The most of a key file read: a little more than a key's worth.
+const KEY_FILE_MAX: usize = 256;
+
+/// The length of SQLCipher's quoted raw-key literal, `"x'<64 hex>'"`.
+const LITERAL_LEN: usize = 3 + 64 + 2;
+
 /// A relay database key: 32 bytes, wiped when dropped.
 ///
 /// `Debug` prints nothing of the key, so a store or config that derives it
@@ -99,14 +105,24 @@ impl DbKey {
         }
         // Read at most a little more than a key's worth, so a key file
         // pointed at something huge by mistake is refused rather than read.
-        let mut text = Zeroizing::new(String::new());
-        std::fs::File::open(path)
-            .and_then(|f| f.take(256).read_to_string(&mut text))
-            .map_err(|e| bad(e.to_string()))?;
+        // Into one fixed, wiped buffer: a growing `String` would free an
+        // unwiped copy of the key's text each time it reallocated.
+        let mut buf = Zeroizing::new([0u8; KEY_FILE_MAX]);
+        let mut len = 0;
+        let mut file = std::fs::File::open(path).map_err(|e| bad(e.to_string()))?;
+        while len < buf.len() {
+            match file.read(&mut buf[len..]) {
+                Ok(0) => break,
+                Ok(n) => len += n,
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(e) => return Err(bad(e.to_string())),
+            }
+        }
+        let not_hex =
+            || bad("not 64 hex digits; generate one with `openssl rand -hex 32`".to_owned());
+        let text = std::str::from_utf8(&buf[..len]).map_err(|_| not_hex())?;
         let mut key = Zeroizing::new([0u8; 32]);
-        hex::decode_to_slice(text.trim(), &mut key[..]).map_err(|_| {
-            bad("not 64 hex digits; generate one with `openssl rand -hex 32`".to_owned())
-        })?;
+        hex::decode_to_slice(text.trim(), &mut key[..]).map_err(|_| not_hex())?;
         Ok(Self(key))
     }
 
@@ -168,8 +184,9 @@ impl DbKey {
     fn literal(&self) -> Zeroizing<String> {
         use std::fmt::Write as _;
         // Written into the zeroized buffer directly: `hex::encode` would
-        // leave an unwiped copy of the key behind.
-        let mut out = Zeroizing::new(String::with_capacity(4 + 64));
+        // leave an unwiped copy of the key behind. Sized exactly, since a
+        // reallocation would free one too.
+        let mut out = Zeroizing::new(String::with_capacity(LITERAL_LEN));
         out.push_str("\"x'");
         for b in self.0.iter() {
             let _ = write!(out, "{b:02x}");
@@ -180,7 +197,15 @@ impl DbKey {
 
     /// `PRAGMA <pragma> = <literal>;`, in a zeroized buffer.
     fn statement(&self, pragma: &str) -> Zeroizing<String> {
-        let mut out = Zeroizing::new(format!("PRAGMA {pragma} = "));
+        const HEAD: &str = "PRAGMA ";
+        const EQ: &str = " = ";
+        // Sized exactly, like the literal, so it never reallocates.
+        let mut out = Zeroizing::new(String::with_capacity(
+            HEAD.len() + pragma.len() + EQ.len() + LITERAL_LEN + 1,
+        ));
+        out.push_str(HEAD);
+        out.push_str(pragma);
+        out.push_str(EQ);
         out.push_str(&self.literal());
         out.push(';');
         out
