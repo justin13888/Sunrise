@@ -415,4 +415,11 @@ pub const CRYPTO_SUITE_V: u16 = 5;
 /// not check yet, fork evidence, and digest disagreements. Schema-only: the
 /// hashes and roots of rows already held are computed from their envelopes
 /// the first time each device's prefix is folded.
-pub const STORAGE_V: u16 = 34;
+///
+/// `35` is migration `0035_op_log_compaction.sql`, which adds client op-log
+/// compaction (issue #330, ADR-0059): a per-`(stream, device)` floor below
+/// which ops are covered by the merge state and the floor's chain root, the
+/// last frontier each peer published in its stream digest, and the latest
+/// snapshot record per stream. Schema-only: a vault without a floor reads its
+/// prefix from seq 1, exactly as before.
+pub const STORAGE_V: u16 = 35;
