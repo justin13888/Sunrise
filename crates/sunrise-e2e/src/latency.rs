@@ -21,8 +21,7 @@
 //! rather than shrinking the sample, because a latency distribution over the
 //! ops that happened to arrive says nothing about the ones that did not.
 
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -34,8 +33,8 @@ use tokio::time::Instant;
 
 use crate::chaos::ToxicConfig;
 use crate::{
-    open_core_with_factory, open_paired_core_with_factory, spawn_relay_with, toxic_ws_factory,
-    wait_live, wait_pending_zero,
+    canonical_tasks, open_core_with_factory, open_paired_core_with_factory, spawn_relay_with,
+    toxic_ws_factory, wait_live, wait_pending_zero,
 };
 use sunrise_server::ServerConfig;
 
@@ -66,16 +65,21 @@ pub struct LatencyReport {
     pub run: LatencyRun,
     /// Every op's commit-to-apply latency, ascending.
     pub sorted: Vec<Duration>,
+    /// How many of those are upper bounds rather than exact: ops whose
+    /// `Created` B's change feed dropped under a burst, stamped instead by the
+    /// snapshot that found them applied.
+    pub bounded: usize,
 }
 
 impl LatencyReport {
-    /// Build a report from unordered samples.
+    /// Build a report from unordered samples, all exact.
     #[must_use]
     pub fn new(run: LatencyRun, mut samples: Vec<Duration>) -> Self {
         samples.sort_unstable();
         Self {
             run,
             sorted: samples,
+            bounded: 0,
         }
     }
 
@@ -96,9 +100,10 @@ impl LatencyReport {
     pub fn summary(&self) -> String {
         let ms = |d: Duration| d.as_secs_f64() * 1_000.0;
         format!(
-            "sync-latency: rtt={}ms ops={} interval={}ms seed={} p50={:.1}ms p95={:.1}ms p99={:.1}ms max={:.1}ms",
+            "sync-latency: rtt={}ms ops={} bounded={} interval={}ms seed={} p50={:.1}ms p95={:.1}ms p99={:.1}ms max={:.1}ms",
             self.run.rtt.as_millis(),
             self.sorted.len(),
+            self.bounded,
             self.run.interval.as_millis(),
             self.run.seed,
             ms(self.percentile(50.0)),
@@ -174,22 +179,34 @@ pub async fn measure(run: LatencyRun) -> LatencyReport {
 
     // B's side: every `Created`, stamped as it is read. Subscribed before A
     // commits anything, so no op can be applied before it is watched.
-    let seen: Arc<Mutex<HashMap<EntityRef, Instant>>> = Arc::default();
-    let lagged = Arc::new(AtomicU64::new(0));
+    //
+    // The feed is a bounded broadcast, and a burst — a reconnect's replay
+    // applying hundreds of ops at once — can overrun it. The events it drops
+    // were for ops already applied, so a snapshot of B's tasks taken right
+    // after the drop holds every one of them, and the snapshot's time is an
+    // upper bound on when each was applied. Those samples are kept, counted
+    // in `bounded`, and can only make the reported tail worse, never better.
+    let watched = Arc::new(Mutex::new(Watched::default()));
     let mut changes = b.changes();
     let watcher = tokio::spawn({
-        let seen = Arc::clone(&seen);
-        let lagged = Arc::clone(&lagged);
+        let watched = Arc::clone(&watched);
+        let b = Arc::clone(&b);
         async move {
             loop {
                 match changes.recv().await {
                     Ok(DomainEvent::Created(r)) => {
                         let now = Instant::now();
-                        lock(&seen).entry(r).or_insert(now);
+                        lock(&watched).seen.entry(r).or_insert(now);
                     }
                     Ok(_) => {}
-                    Err(RecvError::Lagged(n)) => {
-                        lagged.fetch_add(n, Ordering::Relaxed);
+                    Err(RecvError::Lagged(_)) => {
+                        let present: HashSet<String> = canonical_tasks(&b)
+                            .await
+                            .into_iter()
+                            .map(|t| t.id)
+                            .collect();
+                        let now = Instant::now();
+                        lock(&watched).snapshots.push((now, present));
                     }
                     Err(RecvError::Closed) => return,
                 }
@@ -213,14 +230,14 @@ pub async fn measure(run: LatencyRun) -> LatencyReport {
         committed.push((res.entity, Instant::now()));
     }
 
-    // Wait until B has published every op A committed, or the deadline.
+    // Wait until B has applied every op A committed, or the deadline.
     let deadline = Instant::now() + DRAIN_TIMEOUT;
     let missing = loop {
         let missing = {
-            let seen = lock(&seen);
+            let w = lock(&watched);
             committed
                 .iter()
-                .filter(|(r, _)| !seen.contains_key(r))
+                .filter(|(r, _)| w.applied(*r).is_none())
                 .count()
         };
         if missing == 0 || Instant::now() >= deadline {
@@ -233,13 +250,6 @@ pub async fn measure(run: LatencyRun) -> LatencyReport {
     b.shutdown().await;
     relay.abort();
 
-    // A lagged feed lost events, so some op's stamp may be a later event's,
-    // or absent. Neither is a measurement.
-    assert_eq!(
-        lagged.load(Ordering::Relaxed),
-        0,
-        "B's change feed lagged; samples were lost"
-    );
     assert_eq!(
         missing,
         0,
@@ -247,12 +257,45 @@ pub async fn measure(run: LatencyRun) -> LatencyReport {
         committed.len(),
         run.rtt
     );
-    let seen = lock(&seen);
+    let w = lock(&watched);
+    let mut bounded = 0;
     let samples = committed
         .iter()
-        .map(|(r, at)| seen[r].saturating_duration_since(*at))
+        .map(|(r, at)| {
+            let (applied, exact) = w.applied(*r).expect("every op was applied");
+            bounded += usize::from(!exact);
+            applied.saturating_duration_since(*at)
+        })
         .collect();
-    LatencyReport::new(run, samples)
+    LatencyReport {
+        bounded,
+        ..LatencyReport::new(run, samples)
+    }
+}
+
+/// What B's watcher has recorded.
+#[derive(Debug, Default)]
+struct Watched {
+    /// Each task's `Created`, stamped when the feed delivered it.
+    seen: HashMap<EntityRef, Instant>,
+    /// After each overrun of the feed: when, and every task id B held then.
+    snapshots: Vec<(Instant, HashSet<String>)>,
+}
+
+impl Watched {
+    /// When `r` was applied on B, and whether that time is exact. A task the
+    /// feed delivered is exact; one only a snapshot found is bounded above by
+    /// the first snapshot that held it.
+    fn applied(&self, r: EntityRef) -> Option<(Instant, bool)> {
+        if let Some(at) = self.seen.get(&r) {
+            return Some((*at, true));
+        }
+        let id = r.to_str();
+        self.snapshots
+            .iter()
+            .find(|(_, present)| present.contains(id.as_str()))
+            .map(|(at, _)| (*at, false))
+    }
 }
 
 /// The watcher never panics while holding the lock, so a poisoned lock still
@@ -293,6 +336,23 @@ mod tests {
         assert_eq!(r.percentile(99.0), ms(30));
         assert!(r.in_budget_conditions());
         assert!(r.summary().contains("p99=30.0ms"), "{}", r.summary());
+    }
+
+    /// The feed's stamp wins; a dropped event falls back to the first
+    /// snapshot that held the task, marked inexact; neither means unapplied.
+    #[test]
+    fn an_op_is_stamped_by_the_feed_or_bounded_by_a_snapshot() {
+        let r = |b: u8| EntityRef::new(sunrise_id::EntityKind::Task, [b; 16]);
+        let t0 = Instant::now();
+        let mut w = Watched::default();
+        w.seen.insert(r(1), t0);
+        w.snapshots
+            .push((t0 + ms(5), [r(1).to_str(), r(2).to_str()].into()));
+        w.snapshots.push((t0 + ms(9), [r(2).to_str()].into()));
+
+        assert_eq!(w.applied(r(1)), Some((t0, true)));
+        assert_eq!(w.applied(r(2)), Some((t0 + ms(5), false)));
+        assert_eq!(w.applied(r(3)), None);
     }
 
     #[test]
