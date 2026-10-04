@@ -1354,6 +1354,7 @@ class FlagsGateContract(unittest.TestCase):
             derived,
             {
                 "mise.toml": 47,
+                ".github/scripts/grep-gate.sh": 4,
                 ".github/scripts/sparkle-tools.sh": 3,
                 ".github/workflows/ci.yml": 2,
                 ".github/workflows/release.yml": 1,
