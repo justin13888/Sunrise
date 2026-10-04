@@ -14,6 +14,7 @@
 use super::identity::{SiblingRank, MAX_ROSTER_ENTRIES};
 use super::ids::hex_short;
 use super::lww::{materialize_remote, remap_legacy_inbox, LwwStamp};
+use super::merge::{check_patch, PatchProblem};
 use super::oplog::{record_envelope_recipient, remote_op_id, upsert_sync_cursor};
 use super::{
     Engine, EngineError, DEFERRED_PER_EPOCH_CAP, DEFERRED_TOTAL_CAP, DEFERRED_TTL_MS,
@@ -347,6 +348,22 @@ impl Engine {
             Err(e) => return Err(EngineError::RemoteOpInvalid(format!("inner op: {e}"))),
         };
         remap_legacy_inbox(&mut inner);
+        //    A `Patch` is checked against the registry before anything is
+        //    written. One that uses a field-op kind this build cannot merge is
+        //    parked whole, never applied in part (ADR-0044 §8); one that is
+        //    malformed or ill-typed is refused like any other damaged op.
+        if let InnerOp::Patch(p) = &inner {
+            match check_patch(p) {
+                Ok(_) => {}
+                Err(PatchProblem::Park(kind)) => {
+                    self.park_op(db, envelope_bytes, &env, &kind, DOC_SCHEMA_V)?;
+                    return Ok(Vec::new());
+                }
+                Err(PatchProblem::Invalid(why)) => {
+                    return Err(EngineError::RemoteOpInvalid(format!("patch: {why}")));
+                }
+            }
+        }
 
         // e. Clock gate. A reading far in OUR future is a broken or hostile
         //    clock; absorbing it would drag this device's HLC forward with the
@@ -422,8 +439,9 @@ impl Engine {
                 absorbed =
                     self.apply_control_op(tx, &inner, &env.device_id, env.hlc, now_ms, env.epoch)?;
             } else {
-                // f. LWW materialization.
-                materialize_remote(tx, &inner, &lww)?;
+                // f. Merge the op into its entity's field state, or write its
+                //    append-only record.
+                materialize_remote(tx, &inner, &lww, &env.stream_id)?;
             }
             // g. Advance the sync cursor to the end of the contiguous prefix.
             upsert_sync_cursor(tx, &env.stream_id, &env.device_id)?;
