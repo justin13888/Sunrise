@@ -239,27 +239,6 @@ pub async fn ops(
     }))
 }
 
-/// Tell the push dispatcher a fresh batch landed, so the account's devices
-/// with no stream open learn of it by a wake-up.
-///
-/// A queue push and nothing more: the token lookup and the send happen on the
-/// dispatcher's own task, so the append is neither slowed nor failed by them.
-fn wake_offline_peers(
-    state: &ServerState,
-    session: &crate::sync_session::Session,
-    stream_id: [u8; 16],
-) {
-    state.push.notify(
-        state,
-        crate::push::Wake {
-            account_id: session.account_id.clone(),
-            stream_id,
-            origin: session.device_id.clone(),
-            kind: crate::push::PushKind::Sync,
-        },
-    );
-}
-
 /// Whether this batch re-sends an op the channel already holds.
 ///
 /// The question ADR-0033's revisit trigger asks, and the one the whole-batch
@@ -357,6 +336,27 @@ fn count_received(metrics: &crate::Metrics, n_ops: usize) {
         &[],
         crate::metrics::COUNT_BUCKETS,
         n_ops as f64,
+    );
+}
+
+/// Tell the push dispatcher a fresh batch landed, so the account's devices
+/// with no stream open learn of it by a wake-up.
+///
+/// A queue push and nothing more: the token lookup and the send happen on the
+/// dispatcher's own task, so the append is neither slowed nor failed by them.
+fn wake_offline_peers(
+    state: &ServerState,
+    session: &crate::sync_session::Session,
+    stream_id: [u8; 16],
+) {
+    state.push.notify(
+        state,
+        crate::push::Wake {
+            account_id: session.account_id.clone(),
+            stream_id,
+            origin: session.device_id.clone(),
+            kind: crate::push::PushKind::Sync,
+        },
     );
 }
 
