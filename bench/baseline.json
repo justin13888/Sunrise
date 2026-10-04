@@ -1,18 +1,22 @@
 {
-    "_comment": "Per-platform performance baselines, compared by `cargo run -p sunrise-bench --bin baseline -- --check target/criterion bench/baseline.json 60`. Nothing enforces them and nothing updates them automatically. The bench-regression job in .github/workflows/ci.yml runs on schedule and workflow_dispatch only \u2014 never on a pull request \u2014 carries continue-on-error: true, and passes a 60% tolerance rather than the 5% docs/10-cross-cutting/performance-budgets.md specifies, because on the shared runner the same binary swings +270% (ws_handshake) and \u221239% (submit_create_task) against its own recorded baseline. So this file is edited by hand, in a commit that says what changed and why. A null is a metric never measured on that platform. See performance-budgets.md \u00a7Regression policy and https://github.com/justin13888/Sunrise/issues/33.",
+    "_comment": "Per-platform performance baselines, compared by `cargo run -p sunrise-bench --bin baseline -- --check target/criterion bench/baseline.json 60`. The keys are the rows of BENCHES in crates/sunrise-bench/src/bin/baseline.rs, and a unit test there holds this file to them on every platform. Nothing enforces the values and nothing updates them automatically. The bench-regression job in .github/workflows/ci.yml runs on schedule and workflow_dispatch only — never on a pull request — on ubuntu-latest and macos-15, carries continue-on-error: true, and passes a 60% tolerance rather than the 5% docs/10-cross-cutting/performance-budgets.md specifies, because on the shared runner the same binary swings +270% (ws_handshake, since renamed sync_session) and −39% (submit_create_task) against its own recorded baseline. So this file is edited by hand, from the values `baseline` prints, in a commit that says what changed and why, and _provenance says where each platform's values were taken. A null is a metric never measured on that platform. See performance-budgets.md §Regression policy and https://github.com/justin13888/Sunrise/issues/33.",
+    "_provenance": {
+        "darwin-aarch64": "Apple M3 Pro (12 cores, 36 GB), macOS 26.6.1, rustc 1.91.1, at the commit that added these values (#473): `SUNRISE_BENCH_COMPACT_TASKS=10000 cargo bench -p sunrise-bench --benches -- --warm-up-time 2 --measurement-time 5`, then `cargo run -p sunrise-bench --bin baseline`. A laptop, not the macos-15 runner the nightly leg compares on; #474 re-records from that runner.",
+        "linux-x86_64": "The four pre-existing values are carried from earlier hand edits. The keys added in #473 are null until the nightly ubuntu-latest leg reports them (#474)."
+    },
     "platforms": {
         "darwin-aarch64": {
-            "compaction_fold_10k_tasks_p99_ms": null,
-            "compaction_snapshot_10k_tasks_p99_ms": null,
-            "fts_query_10k_p99_ms": null,
-            "query_today_10k_tasks_p99_ms": null,
-            "submit_create_task_p50_us": null,
-            "submit_create_task_p99_us": null,
-            "sync_session_p99_ms": null,
-            "vault_open_prime_hlc_indexed_100k_ops_p99_ms": null,
-            "vault_open_prime_hlc_indexed_10k_ops_p99_ms": null,
-            "vault_open_prime_hlc_scan_100k_ops_p99_ms": null,
-            "vault_open_prime_hlc_scan_10k_ops_p99_ms": null
+            "compaction_fold_10k_tasks_p99_ms": 3293.38,
+            "compaction_snapshot_10k_tasks_p99_ms": 443.08,
+            "fts_query_10k_p99_ms": 2.06,
+            "query_today_10k_tasks_p99_ms": 64.34,
+            "submit_create_task_p50_us": 1197.7,
+            "submit_create_task_p99_us": 2092.49,
+            "sync_session_p99_ms": 1.57,
+            "vault_open_prime_hlc_indexed_100k_ops_p99_ms": 0.14,
+            "vault_open_prime_hlc_indexed_10k_ops_p99_ms": 0.12,
+            "vault_open_prime_hlc_scan_100k_ops_p99_ms": 187.31,
+            "vault_open_prime_hlc_scan_10k_ops_p99_ms": 18.91
         },
         "linux-x86_64": {
             "compaction_fold_10k_tasks_p99_ms": null,
