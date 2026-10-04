@@ -75,6 +75,14 @@ pub mod codes {
     /// operator's `acr_values`) and retries; refreshing the token does not
     /// help, because a refresh does not move `auth_time`.
     pub const AUTH_STEP_UP_REQUIRED: &str = "AUTH_STEP_UP_REQUIRED";
+    /// `DELETE /accounts/me` presented a `confirm_phrase` that was consumed,
+    /// expired, or never issued. The client re-runs
+    /// `POST /accounts/me/delete/initiate`.
+    pub const ACCOUNT_DELETE_PHRASE_INVALID: &str = "ACCOUNT_DELETE_PHRASE_INVALID";
+    /// The account is pending deletion, so it may open no sync session,
+    /// publish no op and start or finish no upload. Not retryable: nothing
+    /// undoes a confirmed deletion.
+    pub const ACCOUNT_PENDING_DELETION: &str = "ACCOUNT_PENDING_DELETION";
     /// The request was refused under the rate-limit policy
     /// (`docs/06-server/api.md` §Rate limits). Always a `429` with a
     /// `Retry-After` header, built only by

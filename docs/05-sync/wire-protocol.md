@@ -291,7 +291,7 @@ consequential:
 ### Server timestamp annotation
 
 When the server first sees a batch it stamps `server_first_seen_ms =
-relay_clock` (`crates/sunrise-server/src/api/sync/publish.rs:111,223`). This is **not** part
+relay_clock` (`crates/sunrise-server/src/api/sync/publish.rs:111,226`). This is **not** part
 of the signed envelope, and it rides on the `Ack` — **once per batch**, not once
 per op.
 

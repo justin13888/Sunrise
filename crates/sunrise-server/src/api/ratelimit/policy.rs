@@ -89,12 +89,16 @@ pub fn route_group(method: &str, path: &str) -> Option<RouteGroup> {
         )
         | (
             "DELETE",
-            "/api/v1/devices/{device_id}" | "/api/v1/devices/by-vault-id/{vault_device_id}",
+            "/api/v1/accounts/me"
+            | "/api/v1/devices/{device_id}"
+            | "/api/v1/devices/by-vault-id/{vault_device_id}",
         )
-        | ("POST", "/api/v1/devices/push-tokens") => Account,
+        | ("POST", "/api/v1/devices/push-tokens" | "/api/v1/accounts/me/delete/initiate") => {
+            Account
+        }
         ("POST", "/api/v1/blobs/init" | "/api/v1/blobs/finalize")
         | ("PUT", "/api/v1/blobs/{upload_id}/{chunk_idx}")
-        | ("GET", "/api/v1/blobs/{blob_id}") => Blob,
+        | ("GET" | "DELETE", "/api/v1/blobs/{blob_id}") => Blob,
         (
             "POST",
             "/api/v1/sync/session"

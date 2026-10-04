@@ -549,6 +549,56 @@ fn evict(
     Ok(())
 }
 
+/// The relay's namespace for an account: the first 16 bytes of
+/// `BLAKE3(account_id)`, which keys `relay_frames.account_h` and the blob
+/// tree's per-account directories alike.
+#[must_use]
+pub fn account_key(account_id: &str) -> [u8; 16] {
+    let mut out = [0u8; 16];
+    out.copy_from_slice(&blake3::hash(account_id.as_bytes()).as_bytes()[..16]);
+    out
+}
+
+/// Delete every row this module holds for one account, inside the caller's
+/// transaction, returning the frames removed.
+///
+/// No foreign key reaches these tables from `accounts` — they are keyed by the
+/// hash, not the id — so account erasure has to name them. Heads and batches go
+/// with their frames by cascade; the batches are deleted explicitly as well so
+/// the erasure does not lean on `PRAGMA foreign_keys` alone.
+pub(crate) fn erase_account(
+    tx: &rusqlite::Transaction<'_>,
+    account_h: [u8; 16],
+) -> rusqlite::Result<u64> {
+    tx.execute(
+        "DELETE FROM relay_batches WHERE account_h = ?1",
+        params![&account_h[..]],
+    )?;
+    tx.execute(
+        "DELETE FROM relay_evicted WHERE account_h = ?1",
+        params![&account_h[..]],
+    )?;
+    let frames = tx.execute(
+        "DELETE FROM relay_frames WHERE account_h = ?1",
+        params![&account_h[..]],
+    )?;
+    Ok(frames as u64)
+}
+
+/// Frames and ciphertext bytes the durable log holds, for `admin stats`.
+pub(crate) fn totals(conn: &rusqlite::Connection) -> rusqlite::Result<(u64, u64)> {
+    conn.query_row(
+        "SELECT COUNT(*), IFNULL(SUM(n_bytes), 0) FROM relay_frames",
+        [],
+        |r| {
+            Ok((
+                u64::try_from(r.get::<_, i64>(0)?).unwrap_or(0),
+                u64::try_from(r.get::<_, i64>(1)?).unwrap_or(0),
+            ))
+        },
+    )
+}
+
 /// The ring's filtering rule, applied to rows read back from SQLite.
 fn covered(heads: &[(Vec<u8>, i64)], cursors: &HashMap<[u8; 16], u64>) -> bool {
     if heads.is_empty() {

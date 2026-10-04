@@ -218,32 +218,9 @@ pub async fn recovery_blob(
 ) -> Result<Json<RecoveryBlobResponse>, ApiError> {
     let principal = &caller.principal;
 
-    // Keyed on the verifier rather than on configuration. Self-host has no IdP
-    // to ask for a step-up, maps every caller to one synthetic account, and
-    // `ServerConfig::validate` refuses to bind it anywhere but loopback — so
-    // there is nothing here for a step-up to distinguish. No configuration of a
-    // real OIDC deployment can reach this branch, which is why it is a property
-    // of the verifier and not a setting an operator can turn on.
-    if !state.token_verifier.is_single_tenant() {
-        if let Err(failure) = crate::auth::step_up::check(
-            &state.config.recovery_step_up(),
-            &principal.step_up,
-            state.clock.now_ms(),
-        ) {
-            state.metrics.incr("sunrise_recovery_step_up_refused_total");
-            tracing::warn!(
-                ev = "srv.auth.step_up_required",
-                account_h = %crate::logging::account_h(&principal.account.account_id),
-                reason = failure.reason(),
-                "recovery blob withheld: the token does not carry a fresh enough authentication"
-            );
-            return Err(ApiError::forbidden(
-                crate::api::error::codes::AUTH_STEP_UP_REQUIRED,
-                "this operation needs a fresh authentication: sign in again through your \
-                 identity provider and retry"
-                    .to_owned(),
-            ));
-        }
+    if let Err(refused) = require_step_up(&state, principal, "the recovery blob") {
+        state.metrics.incr("sunrise_recovery_step_up_refused_total");
+        return Err(refused);
     }
 
     let blob = state
@@ -260,6 +237,47 @@ pub async fn recovery_blob(
     Ok(Json(RecoveryBlobResponse {
         recovery_blob: blob,
     }))
+}
+
+/// Refuse a caller whose token does not carry a fresh enough authentication,
+/// for an operation that is the account itself: the recovery blob, and the
+/// account's deletion.
+///
+/// Keyed on the verifier rather than on configuration. Self-host has no IdP to
+/// ask for a step-up, maps every caller to one synthetic account, and
+/// `ServerConfig::validate` refuses to bind it anywhere but loopback — so there
+/// is nothing here for a step-up to distinguish. No configuration of a real
+/// OIDC deployment can reach that exemption, which is why it is a property of
+/// the verifier and not a setting an operator can turn on.
+///
+/// `what` names the operation in the log line, never in the response.
+pub(crate) fn require_step_up(
+    state: &ServerState,
+    principal: &crate::api::auth::Principal,
+    what: &str,
+) -> Result<(), ApiError> {
+    if state.token_verifier.is_single_tenant() {
+        return Ok(());
+    }
+    let Err(failure) = crate::auth::step_up::check(
+        &state.config.recovery_step_up(),
+        &principal.step_up,
+        state.clock.now_ms(),
+    ) else {
+        return Ok(());
+    };
+    tracing::warn!(
+        ev = "srv.auth.step_up_required",
+        account_h = %crate::logging::account_h(&principal.account.account_id),
+        reason = failure.reason(),
+        "{what} withheld: the token does not carry a fresh enough authentication"
+    );
+    Err(ApiError::forbidden(
+        crate::api::error::codes::AUTH_STEP_UP_REQUIRED,
+        "this operation needs a fresh authentication: sign in again through your identity \
+         provider and retry"
+            .to_owned(),
+    ))
 }
 
 #[cfg(test)]

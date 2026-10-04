@@ -31,7 +31,7 @@ connection counts, per-account op rates and slow-query logs have no
 implementation; error frequency is recoverable from the `err_code` field on
 rejection lines, not from a metric.
 
-The 39 `ev` names the server emits, complete:
+The 46 `ev` names the server emits, complete:
 
 <!-- Extracted from the tree; do not edit by hand. Re-run and reconcile:
      grep -rhoE 'ev = "srv\.[a-z0-9_.]+"' crates/sunrise-server/src | sort -u
@@ -44,7 +44,7 @@ The 39 `ev` names the server emits, complete:
      NOT the commit that last changed the set. Now that the gate runs, it is
      provenance rather than the reader's assurance: diff that ref against HEAD
      over the grepped path to see what a human last looked at.
-     Last extracted: 5a61ca6 -->
+     Last extracted: 46eb40c -->
 
 ```
 srv.start                        srv.req.start
@@ -69,6 +69,10 @@ srv.sync.token_expired
 srv.sync.device_revoked
 srv.push.disabled                srv.push.lookup_failed
 srv.push.token_unregistered      srv.push.delivery_failed
+srv.account.delete_initiated     srv.blob.tombstoned
+srv.account.delete_requested     srv.blob.gc_deleted
+srv.account.delete_completed     srv.blob.upload_swept
+srv.maintenance.failed
 ```
 
 Four names earlier revisions of this file listed are **not emitted by anything**
@@ -142,14 +146,16 @@ extracted from the source and checked by a gate, so the catalogue's
      NOT the commit that last changed the set. Now that the gate runs, it is
      provenance rather than the reader's assurance: diff that ref against HEAD
      over the grepped path to see what a human last looked at.
-     Last extracted: 5a61ca6 -->
+     Last extracted: 46eb40c -->
 
 ```
 sunrise_account_create_total
+sunrise_account_delete_total
 sunrise_blob_bytes_total                  {direction}
 sunrise_blob_chunk_total
 sunrise_blob_fetch_total
 sunrise_blob_finalize_total
+sunrise_blob_gc_deleted_total
 sunrise_blob_hash_mismatch_total
 sunrise_blob_init_total
 sunrise_build_info                        {version, commit}
@@ -181,7 +187,7 @@ sunrise_sync_sessions_active
 sunrise_sync_stream_total
 ```
 
-34 metric names, and four that earlier revisions of this file listed and the
+36 metric names, and four that earlier revisions of this file listed and the
 tree does not define: `sunrise_sync_token_expired_total`,
 `sunrise_sync_token_refresh_rejected_total`, `sunrise_sync_token_refreshed_total`,
 `sunrise_sync_unauthenticated_total`. The token-lifecycle counters collapsed into
