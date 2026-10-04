@@ -794,8 +794,8 @@ impl Engine {
     }
 
     /// Publish a digest in every stream where one is due: no digest from this
-    /// device yet and at least one op held, [`DIGEST_EVERY_OPS`] ops since
-    /// the last, or [`DIGEST_EVERY_MS`] since the last with at least one op
+    /// device yet and at least one op held, `DIGEST_EVERY_OPS` ops since
+    /// the last, or `DIGEST_EVERY_MS` since the last with at least one op
     /// in between. Digest ops are not counted, so an idle account publishes
     /// nothing. Returns how many were written.
     ///
