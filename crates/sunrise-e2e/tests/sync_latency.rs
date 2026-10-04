@@ -33,8 +33,10 @@ const RTTS_MS: [u64; 3] = [0, 20, 80];
 /// The budget asks for a p99 over at least this many ops.
 const DEFAULT_OPS: usize = 10_000;
 
-/// A hundred commits a second: a burst of typing, sustained.
-const INTERVAL: Duration = Duration::from_millis(10);
+/// Forty commits a second: far above anything a person types, and inside the
+/// 50 ops a second the relay's `ops_per_sec` lets one device sustain. A rate
+/// over that quota measures the quota's backoff, not propagation.
+const INTERVAL: Duration = Duration::from_millis(25);
 
 fn ops_from_env() -> usize {
     std::env::var("SUNRISE_SYNC_LATENCY_OPS").map_or(DEFAULT_OPS, |raw| {

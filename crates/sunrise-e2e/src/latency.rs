@@ -34,9 +34,10 @@ use tokio::time::Instant;
 
 use crate::chaos::ToxicConfig;
 use crate::{
-    open_core_with_factory, open_paired_core_with_factory, spawn_relay, toxic_ws_factory,
+    open_core_with_factory, open_paired_core_with_factory, spawn_relay_with, toxic_ws_factory,
     wait_live, wait_pending_zero,
 };
+use sunrise_server::ServerConfig;
 
 /// The end-to-end budget: p99 strictly below this.
 pub const P99_BUDGET: Duration = Duration::from_millis(500);
@@ -137,9 +138,24 @@ const DRAIN_TIMEOUT: Duration = Duration::from_secs(60);
 /// Shared vault root of the paired devices.
 const ROOT: [u8; 32] = [0x66; 32];
 
+/// The relay the harness measures: the default configuration, with one limit
+/// raised.
+///
+/// `sync_per_min` counts the sync routes per client *address*, and both
+/// devices here share `127.0.0.1`. Two phones on a real network do not, so
+/// the default of 600 a minute would throttle a pair that, deployed, never
+/// shares one bucket. Every per-device limit — the 50 ops a second
+/// `ops_per_sec` allows each device among them — stays as shipped, and
+/// [`LatencyRun::interval`] has to keep A under it.
+fn relay_config() -> ServerConfig {
+    let mut config = ServerConfig::default();
+    config.limits.sync_per_min = 1_000_000;
+    config
+}
+
 /// Run one measurement. Panics if setup fails or any op does not reach B.
 pub async fn measure(run: LatencyRun) -> LatencyReport {
-    let (addr, relay) = spawn_relay().await;
+    let (addr, relay) = spawn_relay_with(relay_config(), |s| s).await;
     let dir_a = tempfile::tempdir().expect("tempdir");
     let dir_b = tempfile::tempdir().expect("tempdir");
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);
