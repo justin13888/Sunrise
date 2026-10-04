@@ -774,6 +774,13 @@ impl Engine {
         let now_ms = self.clock.now_ms();
         let mut parked = false;
         db.with_tx(|tx| {
+            // A position a compaction floor covers is an op this replica
+            // folded, so an op there is a duplicate, or fork evidence at the
+            // floor itself, whatever its kind: parking it would put a row below
+            // the floor for an upgrade to replay (ADR-0059 §2).
+            if check_covered(tx, env, envelope_bytes, now_ms)? {
+                return Ok(());
+            }
             OpLog::insert(
                 tx,
                 &op_id,

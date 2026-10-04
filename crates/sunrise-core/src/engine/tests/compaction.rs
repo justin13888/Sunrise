@@ -427,6 +427,175 @@ fn a_delivery_below_the_floor_is_a_duplicate_and_a_different_one_at_it_is_a_fork
     assert_eq!((projection(&dba), ops_in(&dba, &INBOX)), before);
 }
 
+/// An op of a kind this build does not know, delivered at a covered
+/// position, is a duplicate like any other: it is not parked below the floor
+/// for an upgrade to replay, and a different one at the floor itself is fork
+/// evidence (ADR-0059 §2).
+#[test]
+fn an_unknown_kind_at_a_covered_position_is_dropped_not_parked() {
+    let c = clock();
+    let mut r = replicas(2, &c);
+    let (eb, mut dbb) = r.pop().unwrap();
+    let (ea, mut dba) = r.pop().unwrap();
+    let b = eb.keychain.device_id();
+    for t in ["one", "two", "three"] {
+        new_task(&eb, &mut dbb, t);
+    }
+    sync(&dbb, &ea, &mut dba);
+    set_clock(&c, T0 + 2 * DAY);
+    let ack = digest_op(&eb, &mut dbb, &INBOX);
+    ea.apply_remote_all(&mut dba, &ack).unwrap();
+    ea.compact_op_log(&mut dba, &policy()).unwrap();
+    assert_eq!(
+        floor_of(dba.conn(), &INBOX, &b).unwrap().map(|f| f.seq),
+        Some(3)
+    );
+    let before = (projection(&dba), ops_in(&dba, &INBOX));
+
+    // B's key, a second log whose seqs 2 and 3 are of a future kind.
+    let eb2 = engine_seeded(ROOT, [2; 32], Arc::clone(&c));
+    let mut dbb2 = db_root(ROOT);
+    new_task(&eb2, &mut dbb2, "other one");
+    let below = super::emit_raw_inner(&eb2, &mut dbb2, &INBOX, &super::future_kind_inner("F"));
+    let at = super::emit_raw_inner(&eb2, &mut dbb2, &INBOX, &super::future_kind_inner("F"));
+    assert_eq!(decode_envelope(&at).unwrap().seq, 3);
+
+    ea.apply_remote_all(&mut dba, &below).unwrap();
+    assert_eq!(ea.chain_integrity(&dba).unwrap().forks, 0);
+    ea.apply_remote_all(&mut dba, &at).unwrap();
+    assert_eq!(
+        ea.chain_integrity(&dba).unwrap().forks,
+        1,
+        "at the floor the folded op's hash is known, whatever the kind"
+    );
+    assert!(super::parked_rows(&dba).is_empty(), "nothing was parked");
+    assert_eq!((projection(&dba), ops_in(&dba, &INBOX)), before);
+}
+
+/// A snapshot that raises a floor settles what was wanted at it as if the op
+/// had arrived: an expectation of a different hash at the floor is fork
+/// evidence, a peer's claim at the floor is judged against the floor's root,
+/// and nothing at or below the floor is left wanted.
+#[test]
+fn a_snapshot_floor_judges_expectations_and_claims_at_it() {
+    let c = clock();
+    let mut r = replicas(4, &c);
+    let (ed, mut dbd) = r.pop().unwrap();
+    let (ec, mut dbc) = r.pop().unwrap();
+    let (eb, mut dbb) = r.pop().unwrap();
+    let (ea, mut dba) = r.pop().unwrap();
+    let a = ea.keychain.device_id();
+    new_task(&ea, &mut dba, "one");
+    new_task(&ea, &mut dba, "two");
+    let record = ea.write_stream_snapshot(&mut dba, &INBOX).unwrap().unwrap();
+
+    // A's key, a second log: a different seq 2, and a seq 3 linking to it.
+    let ea2 = engine_seeded(ROOT, [1; 32], Arc::clone(&c));
+    let mut dba2 = db_root(ROOT);
+    for t in ["one", "not two", "three"] {
+        new_task(&ea2, &mut dba2, t);
+    }
+    let forged = envs_after(&dba2, &INBOX, &a, 0);
+
+    // C holds only the forged seq 3, which expects the forged seq 2.
+    ec.apply_remote_all(&mut dbc, &forged[2]).unwrap();
+    let wanted_at = |db: &Db, table: &str| -> i64 {
+        db.conn()
+            .query_row(
+                &format!("SELECT COUNT(*) FROM {table} WHERE device_id = ? AND seq <= 2"),
+                params![&a[..]],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    assert_eq!(wanted_at(&dbc, "chain_expected"), 1);
+    assert_eq!(ec.chain_integrity(&dbc).unwrap().forks, 0);
+    let (outcome, _) = ec.apply_snapshot(&mut dbc, &record).unwrap();
+    assert!(
+        matches!(outcome, SnapshotApplied::Applied { .. }),
+        "{outcome:?}"
+    );
+    let integrity = ec.chain_integrity(&dbc).unwrap();
+    assert_eq!(
+        integrity.forks, 1,
+        "the forged seq 3 named a seq 2 other than the floor's"
+    );
+    assert_eq!(wanted_at(&dbc, "chain_expected"), 0);
+
+    // D holds the forged prefix through 2, so its digest claims a root at
+    // A's seq 2 that is not the floor's; B holds the real one.
+    for env in &forged[..2] {
+        ed.apply_remote_all(&mut dbd, env).unwrap();
+    }
+    sync(&dba, &eb, &mut dbb);
+    let mut dbe = db_root(ROOT);
+    let ee = engine_seeded(ROOT, [5; 32], Arc::clone(&c));
+    for other in [&ea, &eb, &ed] {
+        trust(&ee, &mut dbe, other);
+    }
+    for (e, db) in [(&eb, &mut dbb), (&ed, &mut dbd)] {
+        let claim = digest_op(e, db, &INBOX);
+        ee.apply_remote_all(&mut dbe, &claim).unwrap();
+    }
+    assert_eq!(wanted_at(&dbe, "chain_claims"), 2);
+    assert_eq!(ee.chain_integrity(&dbe).unwrap().divergences, 0);
+    let (outcome, _) = ee.apply_snapshot(&mut dbe, &record).unwrap();
+    assert!(
+        matches!(outcome, SnapshotApplied::Applied { .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(
+        ee.chain_integrity(&dbe).unwrap().divergences,
+        1,
+        "D's claim disagrees with the floor's root, and B's agrees"
+    );
+    assert_eq!(wanted_at(&dbe, "chain_claims"), 0);
+}
+
+/// A relay can deliver a peer's older digest after its newer one. The older
+/// one never lowers what the newer one acknowledged.
+#[test]
+fn an_older_digest_never_lowers_a_peers_acknowledgement() {
+    let c = clock();
+    let mut r = replicas(2, &c);
+    let (eb, mut dbb) = r.pop().unwrap();
+    let (ea, mut dba) = r.pop().unwrap();
+    let a = ea.keychain.device_id();
+    let b = eb.keychain.device_id();
+    new_task(&ea, &mut dba, "one");
+    sync(&dba, &eb, &mut dbb);
+    let older = digest_op(&eb, &mut dbb, &INBOX);
+    for t in ["two", "three"] {
+        new_task(&ea, &mut dba, t);
+    }
+    sync(&dba, &eb, &mut dbb);
+    let newer = digest_op(&eb, &mut dbb, &INBOX);
+    ack_outbox(&mut dba);
+
+    let acked = |db: &Db| -> i64 {
+        db.conn()
+            .query_row(
+                "SELECT seq FROM peer_frontiers
+                 WHERE stream_id = ? AND peer_device_id = ? AND device_id = ?",
+                params![&INBOX[..], &b[..], &a[..]],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    ea.apply_remote_all(&mut dba, &newer).unwrap();
+    assert_eq!(acked(&dba), 3);
+    ea.apply_remote_all(&mut dba, &older).unwrap();
+    assert_eq!(acked(&dba), 3, "the older digest said 1, and is ignored");
+
+    set_clock(&c, T0 + 2 * DAY);
+    ea.compact_op_log(&mut dba, &policy()).unwrap();
+    assert_eq!(
+        floor_of(dba.conn(), &INBOX, &a).unwrap().map(|f| f.seq),
+        Some(2),
+        "A folds through what the newer digest acknowledged, below its tip"
+    );
+}
+
 /// What compaction never deletes: an op parked for a kind this build does
 /// not know, a focus record, and an op still waiting in the outbox.
 #[test]

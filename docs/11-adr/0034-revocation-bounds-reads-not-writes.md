@@ -100,7 +100,7 @@ the code rather than from the issue:
   control op into `apply_control_op`
   (`crates/sunrise-core/src/engine/sync.rs:403#apply_remote_all`), and a
   published device cert carries it on into `backfill_key_envelopes`
-  (`crates/sunrise-core/src/engine/sync.rs:1305#apply_control_op`). What no
+  (`crates/sunrise-core/src/engine/sync.rs:1312#apply_control_op`). What no
   read of either table decides is whether an op **applies**; it decides which
   device is sealed key material, and that is this whole decision in one
   sentence. An earlier draft of this bullet said nothing in the apply path
@@ -189,7 +189,7 @@ Revocation today is a **register plus a read bound**:
   one naming its own sender is refused at ingest
   (`crates/sunrise-core/src/engine/revocation.rs:1349#apply_device_revoke`), and
   a read-bounded sender's third-party `key_envelope` recipient claim is not
-  recorded (`crates/sunrise-core/src/engine/sync.rs:982#apply_control_op`). That
+  recorded (`crates/sunrise-core/src/engine/sync.rs:989#apply_control_op`). That
   is [ADR-0041](./0041-peer-side-revocation-is-a-fold.md), and it reaches no
   entity write.
 
