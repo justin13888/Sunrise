@@ -152,9 +152,11 @@ authority revocation always has a revoker other than the device its own row
 names. **The mutual exception therefore never reaches it**, and every row it
 writes is gated.
 
-**It discounts like any row.** An authority revocation of `s` is a row
-revoking `s` from a sender other than `v`, for every `v`. So it discounts `s`
-out of every set `s` sits in.
+**It discounts from every set.** The discount reads an authority row's sender
+as `IDENTITY`, not as the device that carried it. So an authority revocation
+of `s` is a row revoking `s` from a sender other than `v` for every `v`,
+including the carrying device, and it discounts `s` out of every set `s` sits
+in.
 
 The five steps of §Context, with O holding the key and signing its two
 revocations:
@@ -167,10 +169,10 @@ revocations:
    nobody. They can discount ordinary revokers, but never `IDENTITY`, so
    X2 keeps a revoker nothing removes.
 
-The holder can also close the shape after the fact. O is a paired device in
-the original sequence and cannot sign, but the holder H revokes X1 and X2 by
-authority at any later point. Nothing X1 or X2 writes can take `IDENTITY`
-out of either set.
+Where O is a paired device and cannot sign, as in #394's own sequence, the
+holder H closes the shape after the fact by revoking X1 and X2 by authority.
+X1's revocation of O is then gated too, so O is current again, and nothing X1
+or X2 writes can take `IDENTITY` out of either set.
 
 **It lands in the register like any ungated row.** The register still takes
 each target's greatest ungated row in the canonical order, so the cut and
