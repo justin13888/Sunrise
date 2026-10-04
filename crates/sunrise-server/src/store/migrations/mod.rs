@@ -239,7 +239,10 @@ pub(super) fn schema_of(conn: &Connection) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::*;
+    use crate::store::Store;
 
     /// The ids are the versions, so a gap or a reordering would stamp a
     /// database with a version whose step never ran.
@@ -295,5 +298,273 @@ mod tests {
             )
             .unwrap();
         assert_eq!(column, 0, "the step's ALTER TABLE must have rolled back");
+    }
+
+    /// The DDL every relay before the migration runner executed on each start,
+    /// copied as it stood and frozen here, so the fixtures below are what an
+    /// operator's file actually holds rather than whatever the constants say
+    /// today. `{VAULT_COLUMN}` is where the one later column went.
+    const PRE_RUNNER_DDL: &str = "
+        CREATE TABLE IF NOT EXISTS accounts (
+            account_id     TEXT PRIMARY KEY,
+            oidc_iss       TEXT NOT NULL,
+            oidc_sub       TEXT NOT NULL,
+            email          TEXT,
+            identity_pub_s TEXT,
+            identity_pub_d TEXT,
+            recovery_blob  TEXT,
+            tier           TEXT NOT NULL DEFAULT 'free',
+            terms_at_ms    INTEGER,
+            created_at_ms  INTEGER NOT NULL,
+            UNIQUE (oidc_iss, oidc_sub)
+        );
+        CREATE TABLE IF NOT EXISTS devices (
+            device_id       TEXT PRIMARY KEY,
+            account_id      TEXT NOT NULL REFERENCES accounts(account_id) ON DELETE CASCADE,
+            device_pub_s    TEXT NOT NULL,
+            device_pub_d    TEXT,
+            device_cert     TEXT,
+            {VAULT_COLUMN}
+            nickname        TEXT NOT NULL,
+            platform        TEXT NOT NULL,
+            app_version     TEXT,
+            created_at_ms   INTEGER NOT NULL,
+            last_seen_at_ms INTEGER NOT NULL,
+            revoked         INTEGER NOT NULL DEFAULT 0,
+            revoked_at_ms   INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS devices_by_account ON devices(account_id);
+        CREATE TABLE IF NOT EXISTS push_tokens (
+            device_id     TEXT NOT NULL REFERENCES devices(device_id) ON DELETE CASCADE,
+            platform      TEXT NOT NULL,
+            token         TEXT NOT NULL,
+            updated_at_ms INTEGER NOT NULL,
+            PRIMARY KEY (device_id, platform)
+        );
+        CREATE TABLE IF NOT EXISTS relay_frames (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            account_h  BLOB NOT NULL,
+            stream_id  BLOB NOT NULL,
+            bytes      BLOB NOT NULL,
+            n_bytes    INTEGER NOT NULL,
+            created_ms INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS relay_frames_by_channel
+            ON relay_frames(account_h, stream_id, id);
+        CREATE TABLE IF NOT EXISTS relay_frame_heads (
+            frame_id  INTEGER NOT NULL REFERENCES relay_frames(id) ON DELETE CASCADE,
+            device_id BLOB NOT NULL,
+            max_seq   INTEGER NOT NULL,
+            PRIMARY KEY (frame_id, device_id)
+        );
+        CREATE TABLE IF NOT EXISTS relay_evicted (
+            account_h       BLOB NOT NULL,
+            stream_id       BLOB NOT NULL,
+            device_id       BLOB NOT NULL,
+            evicted_through INTEGER NOT NULL,
+            PRIMARY KEY (account_h, stream_id, device_id)
+        );
+        CREATE TABLE IF NOT EXISTS relay_batches (
+            account_h     BLOB NOT NULL,
+            stream_id     BLOB NOT NULL,
+            ops_h         BLOB NOT NULL,
+            frame_id      INTEGER NOT NULL REFERENCES relay_frames(id) ON DELETE CASCADE,
+            batch_id      INTEGER NOT NULL,
+            first_seen_ms INTEGER NOT NULL,
+            PRIMARY KEY (account_h, stream_id, ops_h)
+        );
+        CREATE INDEX IF NOT EXISTS relay_batches_by_frame ON relay_batches(frame_id);";
+
+    /// One row in every table, so a migration that drops or rewrites one is
+    /// caught by a count.
+    const FIXTURE_ROWS: &str = "
+        INSERT INTO accounts (account_id, oidc_iss, oidc_sub, email, created_at_ms)
+            VALUES ('A1', 'https://idp.example', 'alice', 'a@example.com', 1);
+        INSERT INTO devices (device_id, account_id, device_pub_s, nickname, platform,
+                             created_at_ms, last_seen_at_ms)
+            VALUES ('D1', 'A1', 'k', 'laptop', 'linux', 1, 2);
+        INSERT INTO push_tokens VALUES ('D1', 'fcm', 'tok', 3);
+        INSERT INTO relay_frames (account_h, stream_id, bytes, n_bytes, created_ms)
+            VALUES (x'01', x'02', x'0304', 2, 4);
+        INSERT INTO relay_frame_heads VALUES (1, x'05', 7);
+        INSERT INTO relay_evicted VALUES (x'01', x'02', x'05', 6);
+        INSERT INTO relay_batches VALUES (x'01', x'02', x'06', 1, 1, 4);";
+
+    const TABLES: [&str; 7] = [
+        "accounts",
+        "devices",
+        "push_tokens",
+        "relay_frames",
+        "relay_frame_heads",
+        "relay_evicted",
+        "relay_batches",
+    ];
+
+    /// A database as a pre-runner release left it: `user_version = 0`, the
+    /// frozen DDL, one row per table.
+    fn pre_runner_fixture(path: &Path, with_vault_column: bool) {
+        let conn = Connection::open(path).unwrap();
+        let column = if with_vault_column {
+            "vault_device_id TEXT,"
+        } else {
+            ""
+        };
+        conn.execute_batch(&PRE_RUNNER_DDL.replace("{VAULT_COLUMN}", column))
+            .unwrap();
+        if with_vault_column {
+            conn.execute_batch(
+                "CREATE INDEX IF NOT EXISTS devices_by_vault_id
+                     ON devices(account_id, vault_device_id);",
+            )
+            .unwrap();
+        }
+        conn.execute_batch(FIXTURE_ROWS).unwrap();
+    }
+
+    fn version_of(s: &Store) -> i64 {
+        version(&s.conn.lock()).unwrap()
+    }
+
+    fn assert_every_row_kept(s: &Store) {
+        let conn = s.conn.lock();
+        for table in TABLES {
+            let n: i64 = conn
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(n, 1, "{table} lost or gained rows in the upgrade");
+        }
+        let (email, token): (String, String) = conn
+            .query_row(
+                "SELECT a.email, p.token FROM accounts a
+                 JOIN devices d ON d.account_id = a.account_id
+                 JOIN push_tokens p ON p.device_id = d.device_id",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((email.as_str(), token.as_str()), ("a@example.com", "tok"));
+    }
+
+    /// **Both shapes of database a released relay can have left behind** open
+    /// under the runner, reach the newest version, and keep every row: the one
+    /// from the last release, whose `devices` has `vault_device_id`, and the one
+    /// from before that column existed.
+    #[test]
+    fn pre_runner_databases_adopt_the_history_and_keep_every_row() {
+        for with_vault_column in [true, false] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("sunrise.db");
+            pre_runner_fixture(&path, with_vault_column);
+
+            let s = Store::open(Some(&path)).unwrap();
+
+            assert_eq!(version_of(&s), i64::from(LATEST));
+            assert_every_row_kept(&s);
+            let d = s.active_device("A1", "D1").unwrap().unwrap();
+            assert_eq!(d.vault_device_id, None);
+        }
+    }
+
+    /// **Every migration runs forward from every earlier version**, and every
+    /// path ends at the schema a fresh database gets.
+    ///
+    /// The second half is what freezes migration 0001: its DDL is the tenants'
+    /// `SCHEMA` constants, and an edit to one changes what a fresh database
+    /// holds without changing what an upgraded one does. That divergence is a
+    /// relay whose behaviour depends on the date it was installed, and it fails
+    /// here — the pre-runner fixtures are built from the frozen copy above, not
+    /// from the constants.
+    #[test]
+    fn fresh_and_upgraded_databases_reach_the_same_schema() {
+        let fresh = Store::open(None).unwrap();
+        let fresh_schema = schema_of(&fresh.conn.lock());
+
+        for with_vault_column in [true, false] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("sunrise.db");
+            pre_runner_fixture(&path, with_vault_column);
+            let s = Store::open(Some(&path)).unwrap();
+            assert_eq!(
+                schema_of(&s.conn.lock()),
+                fresh_schema,
+                "a pre-runner database (vault column: {with_vault_column}) upgraded \
+                 to a different schema than a fresh one"
+            );
+        }
+
+        for start in 0..LATEST {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("sunrise.db");
+            {
+                let mut conn = Connection::open(&path).unwrap();
+                migrate_to(&mut conn, start).unwrap();
+                if start >= 1 {
+                    conn.execute_batch(FIXTURE_ROWS).unwrap();
+                }
+            }
+            let s = Store::open(Some(&path)).unwrap();
+            assert_eq!(version_of(&s), i64::from(LATEST));
+            assert_eq!(
+                schema_of(&s.conn.lock()),
+                fresh_schema,
+                "migrating forward from version {start}"
+            );
+            if start >= 1 {
+                assert_every_row_kept(&s);
+            }
+        }
+    }
+
+    /// **A database from a newer release is refused, and not one byte of it
+    /// changes.** Not even the journal mode: switching to WAL rewrites the
+    /// header, which is why the version is read first.
+    #[test]
+    fn a_database_from_a_newer_release_is_refused_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sunrise.db");
+        let future = i64::from(LATEST) + 1;
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(&format!(
+                "CREATE TABLE from_the_future (x); PRAGMA user_version = {future};"
+            ))
+            .unwrap();
+        }
+        let before = std::fs::read(&path).unwrap();
+
+        let refused = Store::open(Some(&path));
+
+        assert!(
+            matches!(
+                refused,
+                Err(StoreError::SchemaTooNew { found, supported })
+                    if found == future && supported == LATEST
+            ),
+            "{refused:?}"
+        );
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            before,
+            "a refused database must be left byte-for-byte as it was"
+        );
+        assert!(
+            !dir.path().join("sunrise.db-wal").exists(),
+            "and no WAL beside it either"
+        );
+    }
+
+    /// A negative version is no version this relay ever wrote.
+    #[test]
+    fn a_negative_schema_version_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sunrise.db");
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch("PRAGMA user_version = -1;")
+            .unwrap();
+        assert!(matches!(
+            Store::open(Some(&path)),
+            Err(StoreError::SchemaTooNew { found: -1, .. })
+        ));
     }
 }
