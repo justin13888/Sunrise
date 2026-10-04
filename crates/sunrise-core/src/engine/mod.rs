@@ -79,6 +79,7 @@ use thiserror::Error;
 
 mod attachment;
 mod block;
+mod chain;
 mod context;
 mod focus;
 mod identity;
@@ -102,6 +103,7 @@ mod tests;
 // resolving across this split. `META_STREAM` stays defined below; `hex_short`
 // moved to `ids` and is re-exported here at its old name.
 pub(crate) use self::attachment::read_attachment;
+pub use self::chain::ChainIntegrity;
 pub(crate) use self::ids::hex_short;
 use self::lww::LwwStamp;
 pub(crate) use self::revocation::{adopt_sponsor_read_bounds, read_bounds_for_pairing};

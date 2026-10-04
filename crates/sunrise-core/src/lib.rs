@@ -76,7 +76,7 @@ pub use control_op::{
     RevokeReason, RosterEntry,
 };
 pub use core::{Core, CoreError};
-pub use engine::{Engine, EngineError};
+pub use engine::{ChainIntegrity, Engine, EngineError};
 pub use events::{
     AttachmentFetch, AttachmentFetchOutcome, AttachmentFetchState, DomainEvent, SyncStatus,
 };

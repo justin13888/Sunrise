@@ -16,6 +16,7 @@ use sunrise_crypto::{stream_key_id, StreamKey};
 use sunrise_domain::INBOX_STREAM_BYTES;
 use sunrise_storage::{Db, OpLog, Outbox};
 // `open_op_row` is the only user and is `#[cfg(test)]`.
+use super::chain::{fold_chain, hash_of_stored, set_op_hash, writer_links};
 #[cfg(test)]
 use super::ids::hex_short;
 use super::lww::LwwStamp;
@@ -109,9 +110,12 @@ impl Engine {
     ) -> rusqlite::Result<()> {
         let device_id = self.keychain.device_id();
         let ts_ms = hlc.physical_ms;
+        // Fields 14 and 15 (ADR-0043 §1–§2), from this op log, inside this
+        // transaction.
+        let chain = writer_links(tx, stream_id, &device_id, seq)?;
         let envelope = self
             .keychain
-            .seal_op_at(
+            .seal_chained_op_at(
                 *stream_id,
                 seq,
                 hlc,
@@ -119,6 +123,7 @@ impl Engine {
                 self.rng.as_ref(),
                 epoch,
                 stream_key,
+                chain,
             )
             .map_err(|_| rusqlite::Error::ExecuteReturnedResults)?;
         if let Err(e) = OpLog::insert(
@@ -142,6 +147,7 @@ impl Engine {
                 sunrise_storage::OpLogError::Db(_) => Err(rusqlite::Error::ExecuteReturnedResults),
             };
         }
+        set_op_hash(tx, op_id, &hash_of_stored(&envelope))?;
         // Same-transaction outbox enqueue: the pending marker commits with the op.
         Outbox::enqueue(tx, op_id, stream_id, ts_ms)
             .map_err(|_| rusqlite::Error::ExecuteReturnedResults)?;
@@ -150,7 +156,7 @@ impl Engine {
         // frame claims nothing about this device, and the relay — which filters
         // replay by those cursors — hands the device its entire own history
         // back on every reconnect for it to re-dedupe.
-        upsert_sync_cursor(tx, stream_id, &device_id)?;
+        upsert_sync_cursor(tx, stream_id, &device_id, received_at_ms)?;
         Ok(())
     }
 
@@ -922,10 +928,18 @@ pub(super) fn ops_run_end(
 /// difference to either, which is what
 /// `crates/sunrise-core/src/engine/tests.rs:8258#a_self_refused_revoke_out_of_order_leaves_the_cursor_short`
 /// pins.
+///
+/// # The chain root moves with it
+///
+/// The same prefix is what ADR-0043's chain root covers, so this is also
+/// where `ops.chain_root` is extended over it, one step per op, and where a
+/// peer's digest claim the prefix has just reached is checked (see
+/// [`super::chain::fold_chain`]). `now_ms` stamps a disagreement found there.
 pub(super) fn upsert_sync_cursor(
     tx: &Transaction<'_>,
     stream_id: &[u8; 16],
     device_id: &[u8; 16],
+    now_ms: u64,
 ) -> rusqlite::Result<()> {
     let prefix = ops_run_end(tx, stream_id, device_id, 1)?;
     tx.execute(
@@ -935,7 +949,13 @@ pub(super) fn upsert_sync_cursor(
             last_applied_seq = MAX(last_applied_seq, excluded.last_applied_seq)",
         params![&stream_id[..], &device_id[..], prefix],
     )?;
-    Ok(())
+    fold_chain(
+        tx,
+        stream_id,
+        device_id,
+        u64::try_from(prefix).unwrap_or(0),
+        now_ms,
+    )
 }
 
 #[cfg(test)]

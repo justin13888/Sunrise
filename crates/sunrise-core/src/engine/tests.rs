@@ -17860,8 +17860,8 @@ fn ops_run_end_is_scoped_per_device_on_a_shared_stream() {
 
     // And the cursor `upsert_sync_cursor` writes carries the same answer.
     let tx = db.conn_mut().transaction().unwrap();
-    upsert_sync_cursor(&tx, &RUN_S, &RUN_D1).unwrap();
-    upsert_sync_cursor(&tx, &RUN_S, &RUN_D2).unwrap();
+    upsert_sync_cursor(&tx, &RUN_S, &RUN_D1, 0).unwrap();
+    upsert_sync_cursor(&tx, &RUN_S, &RUN_D2, 0).unwrap();
     tx.commit().unwrap();
     assert_eq!(cursor_for(&db, &RUN_S, &RUN_D1), 3);
     assert_eq!(cursor_row(&db, &RUN_S, &RUN_D2), Some(0));
