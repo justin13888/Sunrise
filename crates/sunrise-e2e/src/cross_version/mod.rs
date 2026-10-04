@@ -545,7 +545,15 @@ impl Run {
         loop {
             let a_ok = self.a.knows(&others_of_a).await;
             let b_ok = self.b.knows(&others_of_b).await;
-            if a_ok && b_ok && self.pending_zero().await {
+            let c_ok = matches!(HeadReplica(Arc::clone(&self.c)).status().await, Ok((_, 0)));
+            if a_ok && b_ok && c_ok && self.pending_zero().await {
+                // From here on C is the newer build, whose ops only the
+                // `FutureWriter` seals, and it owns C's Inbox sequence from 1.
+                // C's own `HEAD` core would otherwise publish a `StreamDigest`
+                // into the Inbox once it had applied a task (ADR-0043 §5), at
+                // a seq the writer also uses: a fork, after which a replica
+                // that held the digest first keeps it and drops the newer op.
+                self.c.shutdown().await;
                 return true;
             }
             if tokio::time::Instant::now() >= deadline {
@@ -566,8 +574,7 @@ impl Run {
     async fn pending_zero(&mut self) -> bool {
         let a = matches!(self.a.status().await, Ok((_, 0)));
         let b = matches!(self.b.status().await, Ok((_, 0)));
-        let c = matches!(HeadReplica(Arc::clone(&self.c)).status().await, Ok((_, 0)));
-        a && b && c
+        a && b
     }
 
     fn pick(&self, index: usize) -> Option<EntityRef> {
