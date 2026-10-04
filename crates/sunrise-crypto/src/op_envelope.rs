@@ -17,9 +17,19 @@
 //!     11: bstr .size 64,  ; sig           (Ed25519)
 //!     12: uint,           ; doc_schema_v  (schema of the *payload*, >= DOC_SCHEMA_FLOOR)
 //!     ? 13: bstr .size 8, ; schema_fp     (first 8 bytes of fingerprint(doc_schema_v))
+//!     ? 14: bstr .size 32,; prev_hash     (op_hash of this device's op at seq - 1)
+//!     ? 15: [+ head],     ; heads         (other devices' tips seen since the last op)
 //!     * uint => any       ; later fields, preserved verbatim
 //! }
+//! head = [bstr .size 16, uint, bstr .size 32]   ; [device_id, seq, op_hash]
 //! ```
+//!
+//! Fields 14 and 15 chain each device's ops and name what its writer had
+//! seen (ADR-0043 §1–§2, issue #325). Both are optional and additive under
+//! ADR-0045 §5: an envelope without them is a *legacy link* that asserts
+//! nothing about its predecessor, every build before them keeps them verbatim
+//! as unknowns, and they sit inside the AAD and the signature by the same
+//! exclusion rule as field 13. [`op_hash`] is the hash both fields carry.
 //!
 //! Field 13 binds the document schema's *identity* to its number (ADR-0045
 //! §3, issue #323). Field 12 says which version the payload was written
@@ -180,6 +190,16 @@ pub struct OpEnvelope {
     /// decision, and the bytes have to survive a hop through this build either
     /// way, because the signature covers them.
     pub schema_fp: Option<[u8; DOC_SCHEMA_FP_PREFIX_LEN]>,
+    /// Field 14: the [`op_hash`] of the same device's op at
+    /// `(stream_id, seq - 1)` (ADR-0043 §1), or `None` for a *legacy link*:
+    /// the first op of a sequence, an op written before chaining existed, or
+    /// an op whose writer could not find its own predecessor.
+    pub prev_hash: Option<[u8; 32]>,
+    /// Field 15: for each other device whose contiguous prefix in this stream
+    /// advanced since the writer's previous op here, the tip of that prefix
+    /// (ADR-0043 §2). Sorted by device id, each device at most once, and at
+    /// most [`MAX_CHAIN_HEADS`] long. Empty means the field is absent.
+    pub heads: Vec<ChainHead>,
     /// Envelope fields this build does not know, kept verbatim and re-emitted
     /// in their canonical position.
     ///
@@ -189,6 +209,48 @@ pub struct OpEnvelope {
     /// no longer verifies. Preserving them is what makes an envelope from a
     /// newer container format survive a hop through this build.
     pub unknown: BTreeMap<u64, sunrise_cbor::CborValue>,
+}
+
+/// One entry of envelope field 15: the tip of another device's contiguous
+/// prefix in the same stream, as the writer held it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ChainHead {
+    /// The device whose prefix this is.
+    pub device_id: [u8; 16],
+    /// The last seq of that prefix.
+    pub seq: u64,
+    /// [`op_hash`] of that device's op at `seq`.
+    pub op_hash: [u8; 32],
+}
+
+/// The most entries field 15 may carry. A writer lists one per other device
+/// writing to the stream, so a real list is a handful long; the bound is what
+/// stops a malformed envelope from making a receiver allocate without limit.
+pub const MAX_CHAIN_HEADS: usize = 256;
+
+/// The chain fields a writer stamps into an envelope (fields 14 and 15).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ChainLinks {
+    /// Field 14. See [`OpEnvelope::prev_hash`].
+    pub prev_hash: Option<[u8; 32]>,
+    /// Field 15. See [`OpEnvelope::heads`].
+    pub heads: Vec<ChainHead>,
+}
+
+/// The one hash of an op in the system (ADR-0043 §1): BLAKE3 over the
+/// envelope's full canonical CBOR, **including** field 11, the signature, and
+/// excluding the 5-byte magic prefix.
+///
+/// It is computed from a re-encoding rather than from the bytes a peer sent,
+/// so two replicas holding the same envelope agree on its hash whatever
+/// encoding reached them. It is the `env_hash` of
+/// `docs/03-crypto/audit-and-tamper-evidence.md`.
+///
+/// # Errors
+/// CBOR encode failure (essentially impossible).
+pub fn op_hash(env: &OpEnvelope) -> Result<[u8; 32], OpEnvelopeError> {
+    let cbor = encode_cbor(env, Omit::Nothing)?;
+    Ok(*blake3::hash(&cbor).as_bytes())
 }
 
 // CBOR ground form. We build the canonical map explicitly, in ascending
@@ -255,6 +317,26 @@ fn encode_cbor(env: &OpEnvelope, omit: Omit) -> Result<Vec<u8>, OpEnvelopeError>
     put(12, Value::Integer(Integer::from(env.doc_schema_v)));
     if let Some(fp) = env.schema_fp {
         put(13, Value::Bytes(fp.to_vec()));
+    }
+    if let Some(prev) = env.prev_hash {
+        put(14, Value::Bytes(prev.to_vec()));
+    }
+    if !env.heads.is_empty() {
+        put(
+            15,
+            Value::Array(
+                env.heads
+                    .iter()
+                    .map(|h| {
+                        Value::Array(vec![
+                            Value::Bytes(h.device_id.to_vec()),
+                            Value::Integer(h.seq.into()),
+                            Value::Bytes(h.op_hash.to_vec()),
+                        ])
+                    })
+                    .collect(),
+            ),
+        );
     }
 
     // Preserved unknowns sit at their own field ids. Sorting the whole map by
@@ -333,7 +415,44 @@ pub fn encode_envelope(
     stream_key: Option<&StreamKey>,
     device_signing: &DeviceSigningKeyPair,
 ) -> Result<Vec<u8>, OpEnvelopeError> {
+    encode_chained_envelope(
+        inner,
+        stream_id,
+        device_id,
+        seq,
+        hlc,
+        aead_alg,
+        epoch,
+        nonce,
+        ChainLinks::default(),
+        stream_key,
+        device_signing,
+    )
+}
+
+/// [`encode_envelope`], stamping the chain fields `chain` carries (fields 14
+/// and 15, ADR-0043). An empty `chain` writes neither, which is exactly what
+/// [`encode_envelope`] produces.
+///
+/// # Errors
+/// CBOR/AEAD failures.
+#[allow(clippy::too_many_arguments)]
+pub fn encode_chained_envelope(
+    inner: &[u8],
+    stream_id: [u8; 16],
+    device_id: [u8; 16],
+    seq: u64,
+    hlc: Hlc,
+    aead_alg: AeadAlgId,
+    epoch: u32,
+    nonce: [u8; AEAD_NONCE_LEN],
+    chain: ChainLinks,
+    stream_key: Option<&StreamKey>,
+    device_signing: &DeviceSigningKeyPair,
+) -> Result<Vec<u8>, OpEnvelopeError> {
     let env = OpEnvelope {
+        prev_hash: chain.prev_hash,
+        heads: chain.heads,
         v: u32::from(ENVELOPE_FORMAT_V),
         doc_schema_v: u32::from(DOC_SCHEMA_V),
         // Field 13 is required from the first fingerprinted version on, and
@@ -375,6 +494,9 @@ pub fn seal_envelope(
     if env.aead_alg == AeadAlgId::XChaCha20Poly1305 && stream_key.is_none() {
         return Err(OpEnvelopeError::InconsistentAead);
     }
+    // The decoder refuses a field 15 out of shape, so the writer must not
+    // emit one: an envelope nobody can read is worse than a refused write.
+    check_heads(&env.heads)?;
 
     if env.aead_alg == AeadAlgId::XChaCha20Poly1305 {
         let inner = std::mem::take(&mut env.payload);
@@ -429,6 +551,8 @@ pub fn decode_envelope(bytes: &[u8]) -> Result<OpEnvelope, OpEnvelopeError> {
         v: 0,
         doc_schema_v: 0,
         schema_fp: None,
+        prev_hash: None,
+        heads: Vec::new(),
         stream_id: [0u8; 16],
         device_id: [0u8; 16],
         seq: 0,
@@ -478,6 +602,13 @@ pub fn decode_envelope(bytes: &[u8]) -> Result<OpEnvelope, OpEnvelopeError> {
             // is the receiver's job (ADR-0045 §3), not the codec's.
             13 => {
                 env.schema_fp = Some(bytes_n_from(&v, "schema_fp", DOC_SCHEMA_FP_PREFIX_LEN)?);
+            }
+            // Taken as written, like field 13: whether a link holds is a
+            // question about the receiver's op log, not about these bytes.
+            14 => env.prev_hash = Some(bytes_n_from(&v, "prev_hash", 32)?),
+            15 => {
+                env.heads = heads_from(&v)?;
+                check_heads(&env.heads)?;
             }
             other => {
                 // Forward compat, for real this time. A field from a newer
@@ -657,6 +788,39 @@ fn hlc_from(v: &ciborium::value::Value) -> Result<Hlc, OpEnvelopeError> {
         physical_ms: u64_from(&arr[0], "hlc.physical_ms")?,
         logical: u32_from(&arr[1], "hlc.logical")?,
     })
+}
+
+/// Field 15: a non-empty array of `[device_id, seq, op_hash]`. An empty array
+/// is refused rather than read as "no heads": the writer omits the field in
+/// that case, so re-emitting an empty one would change the signed bytes.
+fn heads_from(v: &ciborium::value::Value) -> Result<Vec<ChainHead>, OpEnvelopeError> {
+    let ciborium::value::Value::Array(items) = v else {
+        return Err(OpEnvelopeError::BadField("heads"));
+    };
+    if items.is_empty() || items.len() > MAX_CHAIN_HEADS {
+        return Err(OpEnvelopeError::BadField("heads"));
+    }
+    items
+        .iter()
+        .map(|item| match item {
+            ciborium::value::Value::Array(h) if h.len() == 3 => Ok(ChainHead {
+                device_id: bytes16_from(&h[0], "heads")?,
+                seq: u64_from(&h[1], "heads")?,
+                op_hash: bytes_n_from(&h[2], "heads", 32)?,
+            }),
+            _ => Err(OpEnvelopeError::BadField("heads")),
+        })
+        .collect()
+}
+
+/// Field 15's shape rule, shared by the writer and the reader: at most
+/// [`MAX_CHAIN_HEADS`] entries, strictly ascending by device id, so a device
+/// appears once and the encoding of a set is unique.
+fn check_heads(heads: &[ChainHead]) -> Result<(), OpEnvelopeError> {
+    if heads.len() > MAX_CHAIN_HEADS || heads.windows(2).any(|w| w[0].device_id >= w[1].device_id) {
+        return Err(OpEnvelopeError::BadField("heads"));
+    }
+    Ok(())
 }
 
 fn bytes16_from(
@@ -897,6 +1061,8 @@ mod tests {
                 nonce: [0u8; AEAD_NONCE_LEN],
                 payload: b"inner".to_vec(),
                 sig: [0u8; 64],
+                prev_hash: None,
+                heads: Vec::new(),
                 unknown: BTreeMap::new(),
             },
             None,
@@ -1031,6 +1197,8 @@ mod tests {
             sig: [0x0b; 64],
             doc_schema_v: 12,
             schema_fp: None,
+            prev_hash: None,
+            heads: Vec::new(),
             unknown: BTreeMap::new(),
         };
         let cbor = encode_cbor(&env, Omit::Nothing).unwrap();
@@ -1113,6 +1281,8 @@ mod tests {
                 nonce: [0u8; AEAD_NONCE_LEN],
                 payload: b"secret".to_vec(),
                 sig: [0u8; 64],
+                prev_hash: None,
+                heads: Vec::new(),
                 unknown: BTreeMap::new(),
             },
             Some(&stream_key),
@@ -1216,6 +1386,8 @@ mod tests {
                 nonce: [0u8; AEAD_NONCE_LEN],
                 payload: b"secret".to_vec(),
                 sig: [0u8; 64],
+                prev_hash: None,
+                heads: Vec::new(),
                 unknown: BTreeMap::new(),
             },
             Some(&stream_key),
@@ -1273,6 +1445,202 @@ mod tests {
                 Err(OpEnvelopeError::BadField("schema_fp"))
             ));
         }
+    }
+
+    fn chained(chain: ChainLinks, signing: &DeviceSigningKeyPair) -> Vec<u8> {
+        encode_chained_envelope(
+            b"x",
+            [2u8; 16],
+            [3u8; 16],
+            2,
+            Hlc::at(1),
+            AeadAlgId::XChaCha20Poly1305,
+            1,
+            [0u8; AEAD_NONCE_LEN],
+            chain,
+            Some(&fixed_stream_key()),
+            signing,
+        )
+        .unwrap()
+    }
+
+    fn head(device: u8, seq: u64) -> ChainHead {
+        ChainHead {
+            device_id: [device; 16],
+            seq,
+            op_hash: [device ^ 0xff; 32],
+        }
+    }
+
+    /// ADR-0043 §1–§2: fields 14 and 15 round-trip, sit after field 13, and
+    /// are known fields rather than preserved unknowns.
+    #[test]
+    fn chain_fields_round_trip_as_known_fields() {
+        let signing = fixed_signing();
+        let chain = ChainLinks {
+            prev_hash: Some([0x14; 32]),
+            heads: vec![head(1, 4), head(9, 2)],
+        };
+        let bytes = chained(chain.clone(), &signing);
+        let env = decode_envelope(&bytes).unwrap();
+        assert_eq!(env.prev_hash, chain.prev_hash);
+        assert_eq!(env.heads, chain.heads);
+        assert!(env.unknown.is_empty());
+        open_envelope(&env, &signing.public_bytes(), Some(&fixed_stream_key())).unwrap();
+
+        // `0e 58 20 <32 bytes>`: field 14 as a 32-byte byte string.
+        let mut f14 = vec![0x0e, 0x58, 0x20];
+        f14.extend_from_slice(&[0x14; 32]);
+        assert!(contains_subseq(&bytes, &f14));
+    }
+
+    /// An envelope with no chain fields is the legacy link, and the chained
+    /// writer with an empty chain is byte-identical to the plain one.
+    #[test]
+    fn an_empty_chain_writes_neither_field() {
+        let signing = fixed_signing();
+        let env = decode_envelope(&chained(ChainLinks::default(), &signing)).unwrap();
+        assert_eq!(env.prev_hash, None);
+        assert!(env.heads.is_empty());
+        let plain = encode_envelope(
+            b"x",
+            [2u8; 16],
+            [3u8; 16],
+            2,
+            Hlc::at(1),
+            AeadAlgId::XChaCha20Poly1305,
+            1,
+            [0u8; AEAD_NONCE_LEN],
+            Some(&fixed_stream_key()),
+            &signing,
+        )
+        .unwrap();
+        assert_eq!(plain, chained(ChainLinks::default(), &signing));
+    }
+
+    /// Both fields are inside the signature input and the AAD by the
+    /// exclusion rule: a relay can neither strip nor forge a link.
+    #[test]
+    fn chain_fields_are_covered_by_the_signature_and_the_aad() {
+        let signing = fixed_signing();
+        let pub_bytes = signing.public_bytes();
+        let key = fixed_stream_key();
+        let env = decode_envelope(&chained(
+            ChainLinks {
+                prev_hash: Some([0x14; 32]),
+                heads: vec![head(1, 4)],
+            },
+            &signing,
+        ))
+        .unwrap();
+        let tampers: [fn(&mut OpEnvelope); 4] = [
+            |e| e.prev_hash = None,
+            |e| e.prev_hash = Some([0x15; 32]),
+            |e| e.heads.clear(),
+            |e| e.heads[0].seq += 1,
+        ];
+        for (i, tamper) in tampers.iter().enumerate() {
+            let mut t = env.clone();
+            tamper(&mut t);
+            assert!(
+                matches!(
+                    verify_envelope(&t, &pub_bytes),
+                    Err(OpEnvelopeError::SigVerify)
+                ),
+                "tamper {i} passed the signature"
+            );
+            sign_envelope(&mut t, &signing).unwrap();
+            assert!(
+                matches!(
+                    open_envelope(&t, &pub_bytes, Some(&key)),
+                    Err(OpEnvelopeError::AeadAuth)
+                ),
+                "tamper {i} passed the AAD"
+            );
+        }
+    }
+
+    /// Field 15 has one encoding per set: unsorted, duplicated, empty or
+    /// oversized lists are refused by the writer and by the reader alike.
+    #[test]
+    fn heads_out_of_shape_are_refused_both_ways() {
+        let signing = fixed_signing();
+        let too_many: Vec<ChainHead> = (0..=MAX_CHAIN_HEADS)
+            .map(|i| {
+                let mut id = [0u8; 16];
+                id[..8].copy_from_slice(&(i as u64).to_be_bytes());
+                ChainHead {
+                    device_id: id,
+                    seq: 1,
+                    op_hash: [0; 32],
+                }
+            })
+            .collect();
+        for heads in [
+            vec![head(9, 1), head(1, 1)],
+            vec![head(1, 1), head(1, 2)],
+            too_many,
+        ] {
+            let env = OpEnvelope {
+                heads: heads.clone(),
+                ..decode_envelope(&chained(ChainLinks::default(), &signing)).unwrap()
+            };
+            assert!(matches!(
+                seal_envelope(env.clone(), Some(&fixed_stream_key()), &signing),
+                Err(OpEnvelopeError::BadField("heads"))
+            ));
+            // The reader, fed the same list by hand.
+            let mut cbor = encode_cbor(&env, Omit::Nothing).unwrap();
+            let mut framed = vec![0u8; MAGIC_LEN];
+            write_prefix(&mut framed, MagicKind::OpEnvelope, ENVELOPE_FORMAT_FLOOR);
+            framed.append(&mut cbor);
+            assert!(matches!(
+                decode_envelope(&framed),
+                Err(OpEnvelopeError::BadField("heads"))
+            ));
+        }
+
+        // An empty array on the wire, and a malformed entry.
+        let base = chained(ChainLinks::default(), &signing);
+        let mut value: ciborium::value::Value =
+            ciborium::de::from_reader(&base[MAGIC_LEN..]).unwrap();
+        for wrong in [
+            ciborium::value::Value::Array(vec![]),
+            ciborium::value::Value::Array(vec![ciborium::value::Value::Integer(1.into())]),
+            ciborium::value::Value::Bytes(vec![0; 32]),
+        ] {
+            if let ciborium::value::Value::Map(m) = &mut value {
+                m.retain(
+                    |(k, _)| !matches!(k, ciborium::value::Value::Integer(i) if i128::from(*i) == 15),
+                );
+                m.push((ciborium::value::Value::Integer(15.into()), wrong));
+            }
+            let mut out = base[..MAGIC_LEN].to_vec();
+            ciborium::ser::into_writer(&value, &mut out).unwrap();
+            assert!(matches!(
+                decode_envelope(&out),
+                Err(OpEnvelopeError::BadField("heads"))
+            ));
+        }
+    }
+
+    /// `op_hash` covers the signature (field 11) and every header field, and
+    /// is the hash of the canonical encoding without the magic prefix.
+    #[test]
+    fn op_hash_is_the_hash_of_the_full_canonical_encoding() {
+        let signing = fixed_signing();
+        let bytes = chained(ChainLinks::default(), &signing);
+        let env = decode_envelope(&bytes).unwrap();
+        assert_eq!(
+            op_hash(&env).unwrap(),
+            *blake3::hash(&bytes[MAGIC_LEN..]).as_bytes()
+        );
+        let mut resigned = env.clone();
+        resigned.sig[0] ^= 1;
+        assert_ne!(op_hash(&env).unwrap(), op_hash(&resigned).unwrap());
+        let mut relinked = env.clone();
+        relinked.prev_hash = Some([1; 32]);
+        assert_ne!(op_hash(&env).unwrap(), op_hash(&relinked).unwrap());
     }
 
     fn contains_subseq(haystack: &[u8], needle: &[u8]) -> bool {

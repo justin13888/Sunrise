@@ -197,6 +197,23 @@ pub const STREAM_ROOT_1: [u8; 32] =
 pub const STREAM_ROOT_2: [u8; 32] =
     hex("53d7f37110ab645251f591091da6320770cfc0b80700e05aa77128fa39ccd145");
 
+/// `chain_root_init(&STREAM_ID, &DEVICE_ID)`: `root(d, 0)` of ADR-0043 §5.
+pub const CHAIN_ROOT_0: [u8; 32] =
+    hex("2f74c491fd2b47c8edb6faed4567282d361a1903ab1fafdc7ad8cb345458b4e3");
+
+/// The `op_hash` folded into [`CHAIN_ROOT_1`].
+pub const CHAIN_OP_HASH_1: [u8; 32] = [0xa1; 32];
+
+/// `chain_root_step(&CHAIN_ROOT_0, &CHAIN_OP_HASH_1)`.
+pub const CHAIN_ROOT_1: [u8; 32] =
+    hex("286b441062aece8199c33e871ab826ea2ec30901741652f5247b96c5eb82c563");
+
+/// `stream_digest(&STREAM_ID, &[(DEVICE_ID, 1, CHAIN_ROOT_1), ([0x01; 16],
+/// 0, chain_root_init(&STREAM_ID, &[0x01; 16]))])`: two devices, given out of
+/// device-id order, one of them with an empty prefix.
+pub const STREAM_DIGEST_2: [u8; 32] =
+    hex("d601145b8cc63fff7280cef816cf20da70b2e94cdce0aedf88ef922cb7016631");
+
 /// Ed25519 signing-key seed used by the envelope vectors. Ed25519 signing is
 /// deterministic, so a fixed seed pins the signature bytes exactly.
 pub const DEVICE_SIGNING_SECRET: [u8; 32] = [0x11; 32];
