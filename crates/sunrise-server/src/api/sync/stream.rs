@@ -28,7 +28,11 @@ use super::credential::{resolve, SessionHeader};
 /// The `Ping`/`Pong` exchange this replaces existed to keep an idle socket from
 /// being reaped by an intermediary. A comment does the same job with no frame
 /// type and nothing for the client to answer.
-const KEEP_ALIVE_SECS: u64 = 15;
+///
+/// The shipped reverse-proxy configurations (`deploy/`) set their read and
+/// idle timeouts well above this, so a quiet stream is never cut between two
+/// comments.
+pub const KEEP_ALIVE_SECS: u64 = 15;
 
 /// How many events may queue for a slow reader before the stream is dropped.
 ///

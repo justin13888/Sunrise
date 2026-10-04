@@ -114,6 +114,20 @@ pub struct ServerConfig {
     /// every stop would report work cut and exit 1.
     #[serde(default = "default_shutdown_grace_secs")]
     pub shutdown_grace_secs: u64,
+    /// The reverse proxies whose `Forwarded` / `X-Forwarded-For` may be
+    /// believed, as addresses or CIDR networks.
+    ///
+    /// Empty — the default — believes nobody: the socket peer is the client,
+    /// and every forwarding header is ignored, because a client can write
+    /// those headers itself. With proxies listed, the client is the right-most
+    /// address in the chain that is not one of them. The per-address rate
+    /// limits key on that client, so behind a proxy this list is what keeps
+    /// every user from sharing the proxy's one bucket.
+    #[serde(default)]
+    pub trusted_proxies: Vec<String>,
+    /// The `[limits]` table: every rate limit the relay enforces.
+    #[serde(default)]
+    pub limits: super::limits::LimitsConfig,
 }
 
 /// 2 MiB: comfortably above the largest legitimate REST body (a device cert or
@@ -213,6 +227,18 @@ pub enum ConfigError {
          caller maps to one account, so a device signature binds nothing"
     )]
     DeviceSigWithoutOidc,
+    /// A rate limit of zero, which refuses everything it covers.
+    #[error(
+        "[limits] {0} is zero, which refuses every request it covers; raise it, or set \
+         `enabled = false` to turn the limits off"
+    )]
+    ZeroLimit(&'static str),
+    /// A `trusted_proxies` entry that is not an address or a CIDR network.
+    #[error(
+        "trusted_proxies entry {0:?} is not an IP address or CIDR network (e.g. 10.0.0.0/8); \
+         hostnames are not resolved, because a proxy's address is what the socket reports"
+    )]
+    BadTrustedProxy(String),
 }
 
 impl ServerConfig {
@@ -259,7 +285,32 @@ impl ServerConfig {
         if self.recovery_max_auth_age_secs == 0 {
             return Err(ConfigError::ZeroRecoveryAuthAge);
         }
+        if let Some(bad) = self
+            .trusted_proxies
+            .iter()
+            .find(|entry| super::limits::parse_cidr(entry).is_none())
+        {
+            return Err(ConfigError::BadTrustedProxy(bad.clone()));
+        }
+        // Checked even with the limits off, so turning them back on cannot
+        // be what reveals a value that never worked.
+        if let Some(key) = self.limits.first_zero() {
+            return Err(ConfigError::ZeroLimit(key));
+        }
         Ok(())
+    }
+
+    /// [`ServerConfig::trusted_proxies`] as the networks the router trusts.
+    ///
+    /// Entries that do not parse are skipped: [`ServerConfig::validate`]
+    /// refuses them before a server starts, so only a config that skipped
+    /// validation — a test — can reach this with one.
+    #[must_use]
+    pub fn trusted_proxy_networks(&self) -> Vec<(std::net::IpAddr, u8)> {
+        self.trusted_proxies
+            .iter()
+            .filter_map(|entry| super::limits::parse_cidr(entry))
+            .collect()
     }
 
     /// The step-up this deployment demands in front of the recovery blob.
@@ -308,6 +359,8 @@ impl Default for ServerConfig {
             allowed_origins: Vec::new(),
             max_body_bytes: default_max_body_bytes(),
             shutdown_grace_secs: default_shutdown_grace_secs(),
+            trusted_proxies: Vec::new(),
+            limits: super::limits::LimitsConfig::default(),
         }
     }
 }
@@ -447,6 +500,48 @@ mod tests {
     #[test]
     fn signup_is_allowed_by_default() {
         assert!(ServerConfig::default().allow_signup);
+    }
+
+    /// A limit of zero refuses everything it covers, so it is refused at
+    /// startup by name rather than discovered as a relay that serves nothing.
+    #[test]
+    fn a_zero_limit_is_refused_by_name() {
+        let mut c = cfg("127.0.0.1:8443");
+        c.limits.sessions_per_5min = 0;
+        assert_eq!(
+            c.validate(true),
+            Err(ConfigError::ZeroLimit("sessions_per_5min"))
+        );
+        // Even with the limits off: turning them back on must not be what
+        // reveals the value never worked.
+        c.limits.enabled = false;
+        assert!(c.validate(true).is_err());
+    }
+
+    /// A proxy entry is an address or a network. A hostname would have to be
+    /// resolved, and the address the socket reports is the only one that
+    /// means anything here.
+    #[test]
+    fn trusted_proxies_must_be_addresses_or_networks() {
+        let mut c = cfg("127.0.0.1:8443");
+        c.trusted_proxies = vec!["127.0.0.1".into(), "10.0.0.0/8".into()];
+        assert!(c.validate(true).is_ok());
+        assert_eq!(c.trusted_proxy_networks().len(), 2);
+
+        c.trusted_proxies.push("proxy.internal".into());
+        assert_eq!(
+            c.validate(true),
+            Err(ConfigError::BadTrustedProxy("proxy.internal".into()))
+        );
+    }
+
+    /// The safe default is to believe no forwarding header and to enforce
+    /// the documented policy.
+    #[test]
+    fn by_default_no_proxy_is_trusted_and_the_limits_are_on() {
+        let d = ServerConfig::default();
+        assert!(d.trusted_proxies.is_empty());
+        assert!(d.limits.enabled);
     }
 
     #[test]

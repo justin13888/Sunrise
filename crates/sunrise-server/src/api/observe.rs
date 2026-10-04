@@ -58,7 +58,7 @@ const UNMATCHED: &str = "unmatched";
 /// `/api/v1/devices/{device_id}`. Translating keeps one endpoint spelling in
 /// the logs across the port, so a dashboard grouping by it does not split into
 /// two series on the day the server changed.
-fn templated(path: &str) -> String {
+pub(crate) fn templated(path: &str) -> String {
     let mut out = String::with_capacity(path.len());
     let mut in_param = false;
     for ch in path.chars() {

@@ -202,6 +202,7 @@ impl Client {
 
         let response = self.service.call(request).await;
         let status = response.status();
+        let headers = response.headers().clone();
         let bytes = response
             .into_body()
             .collect()
@@ -209,7 +210,11 @@ impl Client {
             .expect("the response body must collect")
             .to_bytes()
             .to_vec();
-        Res { status, bytes }
+        Res {
+            status,
+            bytes,
+            headers,
+        }
     }
 
     /// Send a request carrying [`BEARER`].
@@ -236,6 +241,25 @@ impl Client {
     /// Send a request carrying extra headers — the device binding, chiefly.
     pub(crate) async fn send_with(
         &self,
+        method: Method,
+        path: &str,
+        bearer: Option<&str>,
+        body: Option<&serde_json::Value>,
+        headers: &[(&str, &str)],
+    ) -> Res {
+        self.send_from(None, method, path, bearer, body, headers)
+            .await
+    }
+
+    /// [`Client::send_with`], arriving on a socket from `peer`.
+    ///
+    /// The server reads the same connection extension a real accept loop
+    /// inserts, so this is how a test speaks as a particular client address —
+    /// or as a proxy forwarding for one. With `None` the request arrived on no
+    /// socket at all, as every other helper's does.
+    pub(crate) async fn send_from(
+        &self,
+        peer: Option<std::net::SocketAddr>,
         method: Method,
         path: &str,
         bearer: Option<&str>,
@@ -270,9 +294,18 @@ impl Client {
                 HeaderValue::from_str(value).expect("a header value"),
             );
         }
+        if let Some(peer) = peer {
+            request
+                .extensions_mut()
+                .insert(kynos::extract::connection::Connection::from_peer(
+                    peer,
+                    std::net::SocketAddr::from(([127, 0, 0, 1], 8443)),
+                ));
+        }
 
         let response = self.service.call(request).await;
         let status = response.status();
+        let response_headers = response.headers().clone();
         let bytes = response
             .into_body()
             .collect()
@@ -280,7 +313,11 @@ impl Client {
             .expect("the response body must collect")
             .to_bytes()
             .to_vec();
-        Res { status, bytes }
+        Res {
+            status,
+            bytes,
+            headers: response_headers,
+        }
     }
 }
 
@@ -298,6 +335,8 @@ pub(crate) struct Res {
     pub(crate) status: StatusCode,
     /// The whole body.
     pub(crate) bytes: Vec<u8>,
+    /// The response headers — `Retry-After`, chiefly.
+    pub(crate) headers: kynos::http::HeaderMap,
 }
 
 impl Res {

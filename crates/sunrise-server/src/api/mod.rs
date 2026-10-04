@@ -36,6 +36,7 @@ pub mod health;
 pub mod meta;
 pub mod metrics;
 pub mod observe;
+pub mod ratelimit;
 pub mod signed;
 pub mod sync;
 #[cfg(test)]
@@ -69,7 +70,10 @@ pub type ApiRouter = kynos::Router<
     kynos::middleware::catch_panic::Propagate,
     kynos::middleware::stack::Cons<
         kynos::middleware::cors::Cors,
-        kynos::middleware::stack::Cons<kynos::middleware::limits::BodySize, ()>,
+        kynos::middleware::stack::Cons<
+            kynos::middleware::limits::BodySize,
+            kynos::middleware::stack::Cons<ratelimit::Admission, ()>,
+        >,
     >,
 >;
 
@@ -120,6 +124,16 @@ pub fn router(config: &crate::ServerConfig, metrics: &crate::Metrics) -> ApiRout
             sync::events
         ])
         .merge(operator_surface(config))
+        // Who the client is. Empty, nothing a request says about its own
+        // origin is believed and the socket peer is the client; the rate
+        // limiter below keys on whatever this resolves.
+        .trusted_proxies(kynos::http::forwarded::TrustedProxies::networks(
+            config.trusted_proxy_networks(),
+        ))
+        // First, so outermost: a flood is refused before `BodySize` reads a
+        // chunked body into memory to measure it. Covering every operation is
+        // also what puts `429` in every operation's description.
+        .intercept(ratelimit::Admission)
         // Configuring the limit and documenting that a limit exists are one
         // action here: `BodySize` contributes 413 to every operation it covers,
         // so an API cannot quietly reject payloads it claims to accept.
