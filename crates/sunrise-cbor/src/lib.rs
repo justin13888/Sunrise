@@ -27,9 +27,13 @@ pub use canonical::{
     decode_canonical, decode_lenient, encode_canonical, CanonicalEncoding, CanonicalError,
 };
 pub use cbor_value::CborValue;
-pub use envelope_header::{decode_envelope_header, EnvelopeHeader, EnvelopeHeaderError};
+pub use envelope_header::{
+    decode_envelope_header, envelope_floor_readable, envelope_format_readable, EnvelopeHeader,
+    EnvelopeHeaderError,
+};
 pub use hlc::{Hlc, HlcError, MAX_DRIFT_MS};
 pub use magic::{decode_prefix, write_prefix, MagicError, MagicKind, MagicPrefix, MAGIC_LEN};
 pub use version::{
-    CRYPTO_SUITE_V, DOC_SCHEMA_FLOOR, DOC_SCHEMA_V, ENVELOPE_FORMAT_V, STORAGE_V, WIRE_PROTO_V,
+    CRYPTO_SUITE_V, DOC_SCHEMA_FLOOR, DOC_SCHEMA_V, ENVELOPE_FORMAT_FLOOR, ENVELOPE_FORMAT_V,
+    STORAGE_V, WIRE_PROTO_V,
 };

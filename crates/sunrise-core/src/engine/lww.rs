@@ -1,11 +1,13 @@
 //! Remote materialization and the entity-level LWW rule (ADR-0014).
 //!
 //! One decision rule — `lww_wins` over a `(ts_ms, device_id)` stamp — and the
-//! one dispatcher that applies it. `materialize_remote`'s `(table, id_col)`
-//! match is the single point in the engine that knows every entity's storage
-//! shape, which is exactly why it earns its own module rather than being
-//! smeared across seven: a new entity adds one arm here, and a reader checking
-//! that the merge is uniform across entities reads one function.
+//! one dispatcher that applies it. `materialize_remote` reads each entity's
+//! merge class and its stamp's table and key column from the entity registry
+//! ([`sunrise_id::for_each_entity!`]), and is the single point in the engine
+//! that writes every entity's rows, which is exactly why it earns its own
+//! module rather than being smeared across seven: a new entity adds one
+//! registry entry and one arm here, and a reader checking that the merge is
+//! uniform across entities reads one function.
 
 use super::attachment::upsert_attachment_row;
 use super::block::{replace_block_tasks, upsert_block_row};
@@ -23,6 +25,7 @@ use crate::inner_op::InnerOp;
 use rusqlite::{params, OptionalExtension, Transaction};
 use sunrise_cbor::hlc::Hlc;
 use sunrise_domain::INBOX_STREAM_BYTES;
+use sunrise_id::registry::Merge;
 use sunrise_id::{EntityKind, EntityRef};
 
 /// The stamp that decides which of two writers to a materialized row survives.
@@ -128,10 +131,10 @@ pub(super) fn lww_wins(incoming: &LwwStamp, row: &RowLww) -> bool {
 /// that overtakes its own create still materializes the tombstone (see
 /// [`crate::inner_op`] docs and ADR-0014).
 //
-// Two arms below have empty bodies and are deliberately not merged: the
-// append-only families and the control families are handled by different
-// guards earlier in the function, and spelling both out is what makes adding a
-// fifth family a compile-time decision rather than a silent fall-through.
+// The control arm below has an empty body and is spelled out rather than
+// caught by `_ =>`: control ops are turned away by the guard at the top of the
+// function, and naming each family is what makes adding a fifth a
+// compile-time decision rather than a silent fall-through.
 /// Re-point a pre-0017 Inbox reference — the sixteen zero bytes the Inbox once
 /// shared with the vault-meta stream — at [`INBOX_STREAM_BYTES`].
 ///
@@ -183,55 +186,40 @@ pub(super) fn materialize_remote(
     inner: &InnerOp,
     lww: &LwwStamp,
 ) -> rusqlite::Result<()> {
-    // A control op has no entity and must never reach the kind table below,
-    // whose `_ =>` arm would file anything it does not recognise under
-    // `tasks`. `apply_remote` routes them away before this is called; this is
-    // the belt to that braces, and it is a `debug_assert` rather than a silent
-    // return so a routing mistake surfaces in a test run instead of as a
-    // mysterious task row in production.
+    // A control op has no entity and must never reach the registry lookup
+    // below: its `entity_kind` names what it is *about* — a KeyEnvelope says
+    // Stream — so it would be read as a write to that kind's row.
+    // `apply_remote` routes them away before this is called; this is the belt
+    // to that braces, and it is a `debug_assert` rather than a silent return
+    // so a routing mistake surfaces in a test run instead of as a mysterious
+    // row in production.
     if inner.is_control() {
         debug_assert!(false, "a control op reached the entity materializer");
         return Ok(());
     }
     let ts_ms = lww.hlc.physical_ms;
-    // Focus ops never enter the LWW contest. Each writes one immutable record
-    // keyed by the session's own id (start, end, and interruption in three
-    // distinct tables), so there is nothing for a later op to overwrite and
-    // nothing for an earlier one to lose — including when an `end` overtakes
-    // its own `start`. Running an LWW comparison here would be actively wrong:
-    // a `start` stamped later than its `end` would suppress the `end`.
-    if matches!(
-        inner,
-        InnerOp::FocusStart(_) | InnerOp::FocusEnd(_) | InnerOp::FocusInterrupt(_)
-    ) {
-        return materialize_focus_remote(tx, inner, lww);
-    }
-    // A review snapshot is append-only for the same reason: it is keyed by its
-    // own `rvw_` id, written once, and never edited. Running LWW here would let
-    // one device's review of a week suppress another device's, which is exactly
-    // the loss the representation exists to prevent. It also deliberately does
-    // NOT `ensure_stream_row` for the Streams it names — the counts live inside
-    // an opaque blob, so a snapshot that overtakes a `stream.create` still
-    // lands intact.
-    if let InnerOp::ReviewSnapshotCreate(snapshot) = inner {
-        return insert_review_snapshot_row(tx, snapshot, lww);
-    }
-    let (table, id_col) = match inner.entity_kind() {
-        EntityKind::Stream => ("streams", "stream_id"),
-        EntityKind::Context => ("contexts", "id"),
-        EntityKind::Routine => ("routines", "id"),
-        EntityKind::Block => ("blocks", "id"),
-        EntityKind::Attachment => ("attachments", "id"),
-        // Task (and any future kind) key on `id`.
-        _ => ("tasks", "id"),
-    };
     let target = inner.target_ref();
-    let existing = read_row_lww(tx, table, id_col, target.bytes())?;
-    let wins = existing.as_ref().is_none_or(|row| lww_wins(lww, row));
-    if !wins {
-        return Ok(());
-    }
-    let present = existing.is_some();
+    // The entity's registry entry decides whether the op enters the LWW
+    // contest and, if it does, which row holds the stamp it contests. There
+    // is no default table: an entity the registry does not project cannot
+    // reach here, because its kind has no op variant.
+    let spec = inner.entity_kind().spec();
+    let present = match (spec.merge, spec.storage()) {
+        (Merge::Lww, Some(storage)) => {
+            let existing = read_row_lww(tx, storage.table, storage.key, target.bytes())?;
+            if !existing.as_ref().is_none_or(|row| lww_wins(lww, row)) {
+                return Ok(());
+            }
+            existing.is_some()
+        }
+        // Append-only records never enter the LWW contest; their arms below
+        // say why for each family.
+        (Merge::AppendOnly, Some(_)) => false,
+        _ => {
+            debug_assert!(false, "{:?} has no materialized row", spec.kind);
+            return Ok(());
+        }
+    };
     match inner {
         InnerOp::TaskCreate(t) | InnerOp::TaskUpdate(t) => {
             // The owning stream must exist before the task (FK).
@@ -349,13 +337,25 @@ pub(super) fn materialize_remote(
         InnerOp::AttachmentCreate(a) | InnerOp::AttachmentDelete(a) => {
             upsert_attachment_row(tx, a, lww)?;
         }
-        // Handled by the append-only branch at the top of this function; the
-        // arm exists so a new append-only op cannot be added without deciding
-        // here.
-        InnerOp::FocusStart(_)
-        | InnerOp::FocusEnd(_)
-        | InnerOp::FocusInterrupt(_)
-        | InnerOp::ReviewSnapshotCreate(_) => {}
+        // Focus ops never enter the LWW contest. Each writes one immutable record
+        // keyed by the session's own id (start, end, and interruption in three
+        // distinct tables), so there is nothing for a later op to overwrite and
+        // nothing for an earlier one to lose — including when an `end` overtakes
+        // its own `start`. Running an LWW comparison here would be actively wrong:
+        // a `start` stamped later than its `end` would suppress the `end`.
+        InnerOp::FocusStart(_) | InnerOp::FocusEnd(_) | InnerOp::FocusInterrupt(_) => {
+            return materialize_focus_remote(tx, inner, lww);
+        }
+        // A review snapshot is append-only for the same reason: it is keyed by its
+        // own `rvw_` id, written once, and never edited. Running LWW here would let
+        // one device's review of a week suppress another device's, which is exactly
+        // the loss the representation exists to prevent. It also deliberately does
+        // NOT `ensure_stream_row` for the Streams it names — the counts live inside
+        // an opaque blob, so a snapshot that overtakes a `stream.create` still
+        // lands intact.
+        InnerOp::ReviewSnapshotCreate(snapshot) => {
+            return insert_review_snapshot_row(tx, snapshot, lww);
+        }
         // Unreachable: the guard at the top of this function returns before
         // the LWW read. Spelled out rather than caught by a `_ =>` arm so a
         // fifth control family cannot be added without being considered here.
