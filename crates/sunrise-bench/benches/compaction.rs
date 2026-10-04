@@ -16,8 +16,9 @@
 //! issue #461); the free pages are what the next writes reuse.
 //!
 //! Sizes come from `SUNRISE_BENCH_COMPACT_TASKS` (comma-separated task
-//! counts) and default to `10000,100000`. Seeding 100k tasks takes about a
-//! minute.
+//! counts) and default to `10000,100000`. Seeding is the slow part: 100k
+//! tasks through the command path took about 24 minutes on an M-series Mac,
+//! and the fold itself about 43 s, snapshot write included.
 
 // The size report is the point of this bench, and it goes to stderr beside
 // Criterion's own output.
