@@ -73,7 +73,9 @@ A `DOC_SCHEMA_V` names exactly one schema. The canonical schema covers:
 - every feature id
 
 It is generated from the entity registry ([#328](https://github.com/justin13888/Sunrise/issues/328)), not written by hand. It is
-committed under `schemas/doc-schema/`. Its fingerprint is:
+committed under `schemas/doc-schema/`. Every list in it is sorted before it
+is hashed, because no declaration order reaches the wire: reordering source
+never forces a bump. Its fingerprint is:
 
 ```
 BLAKE3::derive_key("sunrise.doc_schema.fingerprint.v1", JCS(schema))

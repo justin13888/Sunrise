@@ -20,7 +20,11 @@
 //!   `lossy_enum!` table holds and the arm an unknown value reads as.
 //!
 //! What it does not hold is what is not part of the document's shape: storage
-//! tables and columns, Rust field names, declaration comments.
+//! tables and columns, Rust field names, declaration comments, and the order
+//! anything is declared in. Every list is sorted before it is hashed: an
+//! entity is found by its tag, an op by its kind, a field by its name in a
+//! canonical CBOR map that sorts its keys, and an enum value by its spelling,
+//! so no declaration order reaches the wire.
 //!
 //! It is committed as `schemas/doc-schema/current.json`.
 //!
@@ -157,8 +161,61 @@ fn type_name(written: &str) -> String {
         .map_or_else(|| compact.clone(), str::to_owned)
 }
 
+/// `items` sorted by the string each holds at `key`, so the order they were
+/// declared in does not reach the hash.
+fn sorted_by(mut items: Vec<Value>, key: &str) -> Vec<Value> {
+    items.sort_by(|a, b| a[key].as_str().cmp(&b[key].as_str()));
+    items
+}
+
 /// The canonical document schema of this build. See the module docs.
 pub(crate) fn canonical_schema() -> Value {
+    canonical_order(raw_schema())
+}
+
+/// Sort every list in a schema by its key: entities by tag, ops by variant,
+/// records and fields and enums by name, and the string lists themselves.
+fn canonical_order(mut schema: Value) -> Value {
+    fn sort_strings(list: &mut Value) {
+        if let Value::Array(items) = list {
+            let mut names: Vec<String> = items
+                .iter()
+                .map(|v| v.as_str().expect("a list of names").to_owned())
+                .collect();
+            names.sort_unstable();
+            *items = names.into_iter().map(Value::String).collect();
+        }
+    }
+    fn take_sorted(list: &mut Value, key: &str) -> Vec<Value> {
+        let items = match list.take() {
+            Value::Array(items) => items,
+            _ => Vec::new(),
+        };
+        sorted_by(items, key)
+    }
+
+    let mut entities = take_sorted(&mut schema["entities"], "tag");
+    for entity in &mut entities {
+        sort_strings(&mut entity["features"]);
+        entity["ops"] = Value::Array(take_sorted(&mut entity["ops"], "variant"));
+        let mut records = take_sorted(&mut entity["records"], "name");
+        for record in &mut records {
+            record["fields"] = Value::Array(take_sorted(&mut record["fields"], "name"));
+        }
+        entity["records"] = Value::Array(records);
+    }
+    schema["entities"] = Value::Array(entities);
+    sort_strings(&mut schema["op_kinds"]);
+    let mut enums = take_sorted(&mut schema["enums"], "name");
+    for e in &mut enums {
+        sort_strings(&mut e["variants"]);
+    }
+    schema["enums"] = Value::Array(enums);
+    schema
+}
+
+/// The schema in the order the code declares it, before [`canonical_order`].
+fn raw_schema() -> Value {
     let entities: Vec<Value> = ENTITIES
         .iter()
         .map(|e| {
@@ -384,6 +441,38 @@ mod tests {
         let mut renamed = schema.clone();
         renamed["entities"][0]["records"][0]["fields"][0]["name"] = json!("renamed");
         assert_ne!(fingerprint(&schema), fingerprint(&renamed));
+    }
+
+    /// Declaration order is not on the wire, so reversing every list the
+    /// code declares leaves the fingerprint where it was: reordering source
+    /// never forces a `DOC_SCHEMA_V` bump.
+    #[test]
+    fn declaration_order_does_not_reach_the_fingerprint() {
+        fn reverse(list: &mut Value) {
+            if let Value::Array(items) = list {
+                items.reverse();
+            }
+        }
+        let mut raw = raw_schema();
+        reverse(&mut raw["entities"]);
+        for entity in raw["entities"].as_array_mut().expect("entities") {
+            reverse(&mut entity["features"]);
+            reverse(&mut entity["ops"]);
+            reverse(&mut entity["records"]);
+            for record in entity["records"].as_array_mut().expect("records") {
+                reverse(&mut record["fields"]);
+            }
+        }
+        reverse(&mut raw["op_kinds"]);
+        reverse(&mut raw["enums"]);
+        for e in raw["enums"].as_array_mut().expect("enums") {
+            reverse(&mut e["variants"]);
+        }
+        assert_ne!(raw, raw_schema(), "the reversal changed the declared order");
+        assert_eq!(
+            fingerprint(&canonical_order(raw)),
+            fingerprint(&canonical_schema())
+        );
     }
 
     #[test]

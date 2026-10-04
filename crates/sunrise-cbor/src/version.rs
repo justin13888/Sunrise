@@ -138,7 +138,7 @@ pub const DOC_SCHEMA_FP_PREFIX_LEN: usize = 8;
 /// the fingerprint exists to catch.
 pub const DOC_SCHEMA_FINGERPRINTS: &[(u16, [u8; 32])] = &[(
     7,
-    hex32("c47fe295602d6e78ff23d7a79f368ed99e37e4b62ca95530f4262daf3874b97f"),
+    hex32("fb893b62bb2f9bf7d9adf7ba95d5bee20498a63aa0e03c4f14a7a28a7d0d6fcb"),
 )];
 
 /// The registered fingerprint of document schema `v`, or `None` for a version

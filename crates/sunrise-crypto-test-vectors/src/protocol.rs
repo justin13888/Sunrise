@@ -226,5 +226,5 @@ pub const DOC_SCHEMA_FP_DOMAIN: &str = "sunrise.doc_schema.fingerprint.v1";
 /// so an edit here is never a test fix.
 pub const DOC_SCHEMA_REGISTRY: &[(u16, [u8; 32])] = &[(
     7,
-    crate::hex("c47fe295602d6e78ff23d7a79f368ed99e37e4b62ca95530f4262daf3874b97f"),
+    crate::hex("fb893b62bb2f9bf7d9adf7ba95d5bee20498a63aa0e03c4f14a7a28a7d0d6fcb"),
 )];
