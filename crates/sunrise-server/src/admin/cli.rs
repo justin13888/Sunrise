@@ -379,14 +379,17 @@ fn tree_size(root: &Path) -> (u64, u64) {
 /// 2. Every other file is copied: chunks are renamed into place whole, and
 ///    temporaries are skipped.
 /// 3. The listed manifests are copied last, each one only if it still exists.
-///    Collection removes a manifest before its chunks, so a blob collected
-///    during step 2 is left without one.
+///    Every removal takes a manifest before its chunks — blob collection,
+///    account erasure, and the orphan sweep alike — so a blob removed during
+///    step 2 is left without one.
 ///
 /// A blob with no manifest in the backup reads as never uploaded. The only
 /// such blobs are ones finalized after the database copy was taken, which no
-/// op in it can name, and ones collected during it, whose tombstones are in
-/// it. Blobs come after the database for that reason: a client finalizes a
-/// blob before it publishes the op naming it.
+/// op in it can name; ones collected during it, whose tombstones are in it;
+/// and ones of an account erased during it, which the backup still holds and
+/// a restore brings back with those blobs missing. Blobs come after the
+/// database for that reason: a client finalizes a blob before it publishes
+/// the op naming it.
 fn backup(state: &ServerState, dest: &Path) -> Outcome {
     if dest.exists() {
         return Err((

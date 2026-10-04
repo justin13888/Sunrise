@@ -420,6 +420,38 @@ async fn an_orphaned_account_directory_is_swept() {
     assert!(h.area("committed").exists());
 }
 
+/// An account tree goes manifests first, so a removal that stops part-way
+/// never leaves a manifest naming chunks already gone: a chunk directory that
+/// cannot be emptied stops it, and the manifests are already removed.
+#[cfg(unix)]
+#[tokio::test]
+async fn an_account_tree_loses_its_manifests_before_its_chunks() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let h = Harness::new();
+    let orphan = h.dir.path().join("committed").join("cd".repeat(16));
+    std::fs::create_dir_all(orphan.join("manifests")).unwrap();
+    std::fs::write(orphan.join("manifests").join("ab".repeat(16)), "1 7").unwrap();
+    // Sorted before and after `manifests`, so a listing order cannot help.
+    let mut locked = Vec::new();
+    for name in ["aa", "zz"] {
+        let dir = orphan.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("0"), "chunk").unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+        locked.push(dir);
+    }
+    let newest = newest_ms(&orphan);
+
+    let report = maintenance::run(&h.state, newest + 25 * 60 * 60 * 1000, false).unwrap();
+    for dir in &locked {
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    assert_eq!(report.orphans_swept, 0);
+    assert_eq!(report.failures, 1);
+    assert!(!orphan.join("manifests").exists());
+    assert!(locked.iter().all(|d| d.join("0").exists()));
+}
+
 /// Under the default blob root, a temp directory other processes share, a
 /// stale orphan-shaped directory is left in place: the sweep only runs under
 /// a root the operator named. The state's root is redirected to a private

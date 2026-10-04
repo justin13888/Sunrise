@@ -151,9 +151,13 @@ copy's duration, since a checkpoint cannot pass a snapshot still being read.
 The blob tree follows the database, manifests last: the manifests present are
 listed first, every other file is copied, then the listed manifests are copied
 if they still exist. A manifest is written after its chunks and removed before
-them, so every manifest in the backup names chunks that are in it. The blobs a
-backup omits were finalized after its database copy, so no op in it names
-them, or collected during it, so their tombstones are in it.
+them — by blob collection, account erasure, and the orphan sweep alike, each
+of which removes an account's `manifests/` before the rest of its tree — so
+every manifest in the backup names chunks that are in it. The blobs a backup
+omits were finalized after its database copy, so no op in it names them;
+collected during it, so their tombstones are in it; or belong to an account
+erased during it, which the backup still holds and a restore brings back with
+those blobs missing, reading as never uploaded.
 
 Restore is the reverse: stop the relay, replace `sunrise.db` and `blobs/` with
 the backup's, keep the same `key_file`, start. A client whose cursor the

@@ -147,11 +147,8 @@ pub fn erase_account(state: &ServerState, account_id: &str) -> Result<(), String
         .relay
         .forget_account(crate::relay_log::account_key(account_id));
     for area in [PENDING, COMMITTED] {
-        match std::fs::remove_dir_all(account_dir(&state.blob_root, area, account_id)) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e.to_string()),
-        }
+        remove_account_tree(&account_dir(&state.blob_root, area, account_id))
+            .map_err(|e| e.to_string())?;
     }
     state.metrics.incr("sunrise_account_delete_total");
     tracing::info!(
@@ -159,6 +156,24 @@ pub fn erase_account(state: &ServerState, account_id: &str) -> Result<(), String
         account_h = %crate::logging::account_h(account_id),
         "account erased"
     );
+    Ok(())
+}
+
+/// Remove one account's blob tree, its `manifests/` directory first.
+///
+/// `remove_dir_all` alone removes entries in whatever order the directory
+/// lists them, so chunks could go while their manifests remain. Removing the
+/// manifests first keeps the order blob collection keeps, which an online
+/// backup relies on: a manifest it copies names chunks it copied too. An
+/// absent tree is not an error, so an interrupted removal finishes later.
+fn remove_account_tree(dir: &Path) -> std::io::Result<()> {
+    for target in [dir.join("manifests"), dir.to_path_buf()] {
+        match std::fs::remove_dir_all(&target) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        }
+    }
     Ok(())
 }
 
@@ -201,7 +216,7 @@ fn sweep_orphans(
             }
             report.orphans_swept += 1;
             if !dry_run {
-                if let Err(e) = std::fs::remove_dir_all(&dir) {
+                if let Err(e) = remove_account_tree(&dir) {
                     report.orphans_swept -= 1;
                     failed(report, "orphan_sweep", &e.to_string());
                 }
