@@ -61,5 +61,8 @@ pub use protocol::{
     PairingJoiner, PairingOffer, PairingRequest,
 };
 pub use qr::{decode_qr_payload, encode_qr_payload, QrPayload, QrPayloadError, MAGIC_V1_HEX};
-pub use rate_limit::{account_email_hash, RATE_LIMIT_DAILY, RATE_LIMIT_HOURLY};
+pub use rate_limit::{
+    account_email_hash, AttemptLimit, AttemptWindow, RATE_LIMIT_DAILY, RATE_LIMIT_HOURLY,
+    RATE_LIMIT_PER_ADDRESS_HOURLY,
+};
 pub use sas::{compute_sas, SAS_LEN};
