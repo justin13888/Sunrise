@@ -41,6 +41,9 @@ final class VaultModels {
     let account: AccountModel
     let sync = SyncStatusModel()
     let savedViews = SavedViewsModel()
+    /// What this build may edit here: the read-only banner and the edit
+    /// actions it disables (ADR-0045 §8). Built here so both shells read one.
+    let editGate = EditGateModel()
 
     private let bridge: CoreBridge
 

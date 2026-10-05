@@ -147,6 +147,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "op_log_compaction",
         sql: include_str!("../migrations/0035_op_log_compaction.sql"),
     },
+    Migration {
+        id: 36,
+        name: "vault_features",
+        sql: include_str!("../migrations/0036_vault_features.sql"),
+    },
 ];
 
 /// Current storage version (= last migration id).

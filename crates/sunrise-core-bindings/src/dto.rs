@@ -3301,6 +3301,111 @@ pub struct AccountBootstrap {
 }
 
 // ---------------------------------------------------------------------------
+// Feature gate
+// ---------------------------------------------------------------------------
+
+/// What a missing feature locks on this build (ADR-0045 §8).
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum FeatureLock {
+    /// A `core.*` feature: every entity edit in the vault.
+    Everything,
+    /// Edits to one entity kind, by its registry tag (`"task"`,
+    /// `"focus_session"`, …).
+    Entity {
+        /// The entity tag.
+        tag: String,
+    },
+    /// A feature of an entity kind this build does not have. Nothing here
+    /// writes that kind, so nothing is locked; the feature is still missing,
+    /// and the banner still shows.
+    Nothing {
+        /// The prefix of the feature id, which names that entity.
+        entity: String,
+    },
+}
+
+/// A feature the vault requires that this build does not have.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct MissingFeatureItem {
+    /// The feature id, as the vault names it.
+    pub feature: String,
+    /// What it locks here.
+    pub lock: FeatureLock,
+}
+
+impl From<&sunrise_core::MissingFeature> for MissingFeatureItem {
+    fn from(m: &sunrise_core::MissingFeature) -> Self {
+        use sunrise_core::FeatureScope;
+        let lock = match &m.scope {
+            FeatureScope::Structural => FeatureLock::Everything,
+            FeatureScope::Entity(kind) => FeatureLock::Entity {
+                tag: kind.tag().to_owned(),
+            },
+            FeatureScope::UnknownEntity(prefix) => FeatureLock::Nothing {
+                entity: prefix.clone(),
+            },
+        };
+        Self {
+            feature: m.id.clone(),
+            lock,
+        }
+    }
+}
+
+/// What this build may edit in this vault, decided once in Rust so every
+/// client disables the same actions.
+///
+/// `read_only` is the banner: "Update Sunrise to edit" shows whenever any
+/// required feature is missing, including one that locks nothing here,
+/// because the user is still missing data this build cannot show. `locks_all`
+/// and `locked_tags` say which edit actions to disable. A command on a locked
+/// kind is refused with [`crate::BindingError::FeatureMissing`] whether or not
+/// the client disabled it first.
+#[derive(Debug, Clone, Default, PartialEq, Eq, uniffi::Record)]
+pub struct EditGate {
+    /// Whether to show the read-only banner.
+    pub read_only: bool,
+    /// Whether every entity edit is locked.
+    pub locks_all: bool,
+    /// The entity tags whose edits are locked, sorted. Empty when
+    /// `locks_all` is set, which already covers every one.
+    pub locked_tags: Vec<String>,
+    /// Every missing feature, sorted by id, for a details view.
+    pub missing: Vec<MissingFeatureItem>,
+}
+
+impl EditGate {
+    /// The gate for `missing`, as [`sunrise_core::Core::missing_features`]
+    /// returns it.
+    #[must_use]
+    pub fn from_missing(missing: &[sunrise_core::MissingFeature]) -> Self {
+        let missing: Vec<MissingFeatureItem> = missing.iter().map(Into::into).collect();
+        let locks_all = missing
+            .iter()
+            .any(|m| matches!(m.lock, FeatureLock::Everything));
+        let mut locked_tags: Vec<String> = if locks_all {
+            Vec::new()
+        } else {
+            missing
+                .iter()
+                .filter_map(|m| match &m.lock {
+                    FeatureLock::Entity { tag } => Some(tag.clone()),
+                    _ => None,
+                })
+                .collect()
+        };
+        locked_tags.sort_unstable();
+        locked_tags.dedup();
+        Self {
+            read_only: !missing.is_empty(),
+            locks_all,
+            locked_tags,
+            missing,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Registry coverage
 // ---------------------------------------------------------------------------
 

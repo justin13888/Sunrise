@@ -142,6 +142,9 @@ struct TaskEditorView: View {
                             dismiss()
                         }
                     }
+                    // Both writes wait while the vault locks tasks on this
+                    // build (ADR-0045 §8); Cancel never writes, so it stays.
+                    .disabledUnlessEditable(.task)
                     Spacer()
                     Button("Cancel") { dismiss() }
                     Button("Save") {
@@ -152,6 +155,7 @@ struct TaskEditorView: View {
                     }
                     .keyboardShortcut(.defaultAction)
                     .disabled(title.trimmed.isEmpty)
+                    .disabledUnlessEditable(.task)
                 }
             }
         }

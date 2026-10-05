@@ -269,6 +269,12 @@ pub const ENVELOPE_INNER: &[u8] = b"inner-op-canonical-cbor";
 /// same three regions and nothing else. `encode_envelope` writes no chain
 /// fields, so fields 14 and 15 are absent here, as on any legacy link.
 ///
+/// The 9 → 10 re-freeze (ADR-0045 §7, issue #324, the `VaultRequires` and
+/// `DeviceFeatures` op families) moved the signature at `[119..182]`, the
+/// field-12 byte at `[184]` and the fingerprint prefix at `[187..194]`, and
+/// nothing else: the map header and every byte before the signature are
+/// unchanged.
+///
 /// `encode_envelope(ENVELOPE_INNER, STREAM_ID, DEVICE_ID, seq = 7,
 /// hlc = [1_700_000_000_000, 0], AeadAlgId::None, epoch = 0, nonce = [0; 24],
 /// stream_key = None, DEVICE_SIGNING_SECRET)`.
@@ -286,10 +292,10 @@ pub mod signed_only_envelope {
         "5352020003ad010302502222222222222222222222222222222203503333",
         "3333333333333333333333333333040705821b0000018bcfe56800000600",
         "070108000958180000000000000000000000000000000000000000000000",
-        "000a57696e6e65722d6f702d63616e6f6e6963616c2d63626f720b58402a",
-        "2a1c2397ae9f2159f76c322e88eb40f2c32ce409ba021103e34d755cd572",
-        "16b8412c8ecff071aedbd975e18546a46d6514653bd6ec6e10810c05746e",
-        "f9b50e0c090d48875fc9a8b8d426ff",
+        "000a57696e6e65722d6f702d63616e6f6e6963616c2d63626f720b584041",
+        "4f04533142f7fe4644f49a17d0d3fc57c0137a7a21319c25f0b081a0eb56",
+        "0d23f2b2d077cd2de4b3c81096a522b02e6bdb302654c78379e0ece22d07",
+        "6131010c0a0d48e9a6d82f484ef86b",
     ));
 }
 
@@ -321,6 +327,9 @@ pub mod signed_only_envelope {
 /// The 8 → 9 re-freeze (ADR-0043) moved the same four regions. The
 /// ciphertext at `[94..117]` is again untouched.
 ///
+/// The 9 → 10 re-freeze (ADR-0045 §7) moved the same four regions. The
+/// ciphertext at `[94..117]` is again untouched.
+///
 /// `encode_envelope(ENVELOPE_INNER, STREAM_ID, DEVICE_ID, seq = 9,
 /// hlc = [1_700_000_000_001, 0], AeadAlgId::XChaCha20Poly1305, epoch = 3,
 /// nonce = [0x55; 24], stream_key = STREAM_KEY, DEVICE_SIGNING_SECRET)`.
@@ -340,11 +349,11 @@ pub mod sealed_envelope {
         "5352020003ad010302502222222222222222222222222222222203503333",
         "3333333333333333333333333333040905821b0000018bcfe56801000601",
         "070108030958185555555555555555555555555555555555555555555555",
-        "550a58276416c4bb3e46b71d10c45af51e2462649e7331f6d5bbb87523f2",
-        "8d0bf26d07253a53293761a35d0b5840c4bee20d682609b6f1188c72b8b8",
-        "6ce877eb340443c8c1da874213db0d2a30ea65c4599054beadf3a514d559",
-        "9bd744b5a6aaf5069b348129eaef039b7f43b80c0c090d48875fc9a8b8d4",
-        "26ff",
+        "550a58276416c4bb3e46b71d10c45af51e2462649e7331f6d5bbb864d34d",
+        "f89e916d7a948d0dc2bf6a6b950b584027ad91c9ee374e7b6dc1ff9ee7c4",
+        "72b958d32e39a375e87b73579df16364e87733870b1063ad5a42b6e7ce06",
+        "b9fe906e95b1aa82e530b6e0d4a994f925a044060c0a0d48e9a6d82f484e",
+        "f86b",
     ));
 }
 

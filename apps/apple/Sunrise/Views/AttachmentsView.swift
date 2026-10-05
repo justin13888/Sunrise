@@ -49,6 +49,7 @@ struct AttachmentsView: View {
             Spacer()
             if model.isBusy { ProgressView().controlSize(.small) }
             Button("Attach…", systemImage: "paperclip") { picking = true }
+                .disabledUnlessEditable(.attachment)
                 .accessibilityIdentifier("attach-file")
         }
     }
@@ -74,6 +75,7 @@ struct AttachmentsView: View {
                 }
                 .labelStyle(.iconOnly)
                 .buttonStyle(.plain)
+                .disabledUnlessEditable(.attachment)
             }
             .tag(row.id)
             .contentShape(.rect)

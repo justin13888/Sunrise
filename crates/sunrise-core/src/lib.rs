@@ -59,6 +59,7 @@ pub mod core;
 mod doc_schema;
 pub mod engine;
 pub mod events;
+pub mod feature;
 pub mod inner_op;
 pub mod keychain;
 pub mod queries;
@@ -72,8 +73,8 @@ pub use blob_sync::AUTO_FETCH_MAX_BYTES;
 pub use commands::{Command, CommandResult, FocusStartDraft};
 pub use config::{Clock, CoreConfig, HlcClock, MonotonicHlc, Rng, SystemClock, SystemRng};
 pub use control_op::{
-    DeviceRevokePayload, IdentityTransitionPayload, KeyEnvelopePayload, KeyShare, Recipient,
-    RevokeReason, RosterEntry,
+    DeviceFeaturesPayload, DeviceRevokePayload, IdentityTransitionPayload, KeyEnvelopePayload,
+    KeyShare, Recipient, RevokeReason, RosterEntry, VaultRequiresPayload,
 };
 pub use core::{Core, CoreError};
 pub use engine::{
@@ -83,6 +84,7 @@ pub use engine::{
 pub use events::{
     AttachmentFetch, AttachmentFetchOutcome, AttachmentFetchState, DomainEvent, SyncStatus,
 };
+pub use feature::{FeatureScope, MissingFeature};
 pub use keychain::{IdentitySigningKey, KeySource, Keychain, KeychainError, SuccessorPublics};
 pub use queries::{
     ActionableTask, ContextRow, DeviceRow, FocusPlanRow, FocusSessionRow, Query, QueryResult,
