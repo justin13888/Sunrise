@@ -19,7 +19,9 @@ struct SunriseApp: App {
     /// so a menu bar item with a vault of its own would not merely be
     /// wasteful, it would fail to start.
     @State private var session = SessionModel.standard()
-    @State private var surfaces = AppSurfaces()
+    /// Publishing into the App Group container, which is what the
+    /// Notification Centre widget reads. `project.yml` names the group.
+    @State private var surfaces = AppSurfaces(widgets: .appGroup())
 
     /// Starts the updater, and that is the whole reason this initialiser
     /// exists.

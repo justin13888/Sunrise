@@ -63,6 +63,13 @@ struct RootView: View {
             }
         }
         .task { await session.start() }
+        // The widgets are drawn by another process that has no lock of its
+        // own. Whenever this window stops showing an open vault — a lock, a
+        // sign-out, a failure, the first beat of a switch — they stop showing
+        // one too.
+        .onChange(of: session.phase) { _, phase in
+            if phase != .unlocked { surfaces.widgets?.withdraw() }
+        }
         // The recovery ceremony, over whatever the window is showing.
         //
         // Presented here rather than inside `VaultShell` for the reason
@@ -76,6 +83,15 @@ struct RootView: View {
             set: { if $0 == nil { session.endRecoveryCeremony() } }
         )) { model in
             RecoveryCodeView(model: model) { session.endRecoveryCeremony() }
+        }
+        // The recovery-code restore, over whatever the window is showing, for
+        // the same reason: a restore that succeeds opens the vault, which
+        // replaces the screen it started from, and its aftercare must stay.
+        .sheet(item: Binding(
+            get: { session.restoration.model },
+            set: { if $0 == nil { session.endRestore() } }
+        )) { model in
+            RestoreFromCodeView(model: model, bridge: session.bridge) { session.endRestore() }
         }
         // Every `sunrise://` link the OS hands this process arrives here.
         // Attached to the window's root rather than to a scene that may not

@@ -32,6 +32,9 @@ futures-core = "0.3.32"
 
 sunrise-error = { workspace = true }
 sunrise-http-sig = { workspace = true }
+# The vault's device id goes on the wire in Crockford base32, the name a
+# sibling revokes a device by (`RelayRecovery::register_device`).
+sunrise-id = { workspace = true }
 sunrise-onboarding = { workspace = true }
 thiserror = { workspace = true }
 

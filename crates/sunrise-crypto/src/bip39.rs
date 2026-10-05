@@ -252,6 +252,18 @@ pub fn decode(mnemonic: &str) -> Result<Zeroizing<Vec<u8>>, Bip39Error> {
     Ok(entropy)
 }
 
+/// Whether `word` is on the English wordlist, matched as [`decode`] matches it:
+/// case-insensitively, surrounding whitespace ignored.
+///
+/// What a 24-word entry field checks per word, so a typo is pointed at as it
+/// is typed. A list of valid words can still fail the checksum, which only
+/// [`decode`] can say.
+#[must_use]
+pub fn is_english_word(word: &str) -> bool {
+    let lower = word.trim().to_ascii_lowercase();
+    wordlist().binary_search(&lower.as_str()).is_ok()
+}
+
 /// Encode a 32-byte recovery seed as the 24-word Sunrise recovery code.
 ///
 /// This is the product path: `docs/03-crypto/recovery.md` fixes the length, so
