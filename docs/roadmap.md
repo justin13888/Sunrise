@@ -138,7 +138,7 @@ the metric catalogue.
 ## P5 — Phone parity
 
 1. [#367](https://github.com/justin13888/Sunrise/issues/367) Background sync on iOS: `BGAppRefreshTask` and silent push.
-2. [#14](https://github.com/justin13888/Sunrise/issues/14) Widgets.
+2. [#376](https://github.com/justin13888/Sunrise/issues/376) The rest of the widgets: Lock Screen capture, the Stream tile, and macOS reach measured on a signed build. ([#14](https://github.com/justin13888/Sunrise/issues/14) shipped Next Up.)
 3. [#368](https://github.com/justin13888/Sunrise/issues/368) iOS system surfaces.
 4. [#12](https://github.com/justin13888/Sunrise/issues/12) Internationalisation.
 

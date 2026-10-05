@@ -40,6 +40,7 @@ Evening, plus a row per Stream and per Context.
 | Settings | Vault switcher, relay URL, notification prefs, hotkey status, the vim toggle |
 | Pairing | A six-leg copy/paste handshake with SAS confirmation |
 | Menu bar | Quick capture, today's counts, sync status |
+| Widget | **Next Up** in Notification Centre and on the desktop: what is left on Today, first things first |
 | File menu | Import Calendar… (⌘⇧I) and Export Calendar ▸ Today \| This Week, over the seam's iCal pair; Print… (⌘P) and Export as PDF… |
 | Import report | A sheet over the window listing what an `.ics` created and updated, and every notice **grouped by code** — an importer whose losses nobody sees is the failure the report exists to prevent |
 
@@ -59,8 +60,12 @@ the parity matrix, ranked as [#133](https://github.com/justin13888/Sunrise/issue
 That list used to carry a fourth entry — **iCal import/export**, the one
 MUST this client did not meet — and it no longer does: File → Import Calendar…
 (⌘⇧I) and Export Calendar ▸ Today | This Week now call the seam's
-`import_ical` / `export_ical` through `IcalModel`. **Every one of the 23 macOS
-MUSTs is met.** See the status audit in
+`import_ical` / `export_ical` through `IcalModel`. The audit now grades 24
+macOS MUSTs, and **23 are met**. The 24th is the widget row. The widget is
+built, but no build this repository makes has the team the Mac's grant is keyed
+to, so nobody has watched a Mac offer it
+([#376](https://github.com/justin13888/Sunrise/issues/376)). See the status
+audit in
 [`parity-matrix.md`](./parity-matrix.md#status-audit).
 
 ## Architecture
@@ -178,6 +183,28 @@ document's intent, not yet implemented).
   sync status. Refresh on launch, every 60 s while visible, and immediately on a
   relevant change event (debounced 500 ms) — all three are implemented, and the
   60 s poll runs only while the menu is open.
+- **built — Notification Centre / desktop widget** (`SunriseWidgets`, a
+  WidgetKit extension embedded in the app). This is **Next Up** in its small,
+  medium and large sizes. It is the same widget, built from the same
+  `apps/apple/Widgets/` sources, as the iOS one, so
+  [`mobile-ios.md`](./mobile-ios.md#widgets) is its specification: the
+  snapshot contract, what leaves the vault, the refresh cadence, and the
+  erasure whenever the vault is not open. The Mac's refresh is the change
+  feed plus the 15-minute re-read. A Mac app is not suspended, so no
+  foreground trigger is needed.
+
+  Two things differ from iOS. The extension is **sandboxed**, because macOS
+  loads no widget that is not (see [Sandboxing](#sandboxing)). And its App
+  Group is **`$(TeamIdentifierPrefix)dev.sunrise`**, not iOS's
+  `group.dev.sunrise`: a Developer ID build is granted a group prefixed with
+  its own team without a provisioning profile, and `release.yml` exports
+  with none. On a Mac, `containerURL` returns a path whether or not the
+  group was granted. So the app first reads the grant off its own signature
+  (`WidgetSnapshotStore.isGranted`), and a build with no entitlements, such
+  as the one `mise run macos-app` makes, writes nothing. No build this
+  repository makes today has a team, so whether
+  the Mac offers the widget and grants its container has **not been
+  observed** ([#376](https://github.com/justin13888/Sunrise/issues/376)).
 - **built — Quick capture** — a borderless window on a global hotkey (⌘⇧N).
   It does **not** need the Accessibility permission. The hotkey is registered
   with Carbon's `RegisterEventHotKey`, which *reserves* one combination with
@@ -308,6 +335,12 @@ uses most. A Mac App Store build would have to trade that away, and
 Store is **not** a distribution channel, and the direct `.dmg` ships alone. The
 sandbox stays off.
 
+The one sandboxed binary inside the bundle is the widget extension,
+`Contents/PlugIns/SunriseWidgets.appex`. macOS loads no widget that is not
+sandboxed. The extension needs nothing but read access to its App Group
+container, so the sandbox costs it nothing. It has no network entitlement,
+and it opens no Keychain item and no vault.
+
 ### The data-protection keychain is not a one-line entitlement
 
 The Mac's missing protection class (§Platform integration, and
@@ -343,9 +376,10 @@ Mac app buildable by a contributor with no Apple account, the same thing
 
 It is therefore on **Release only**: `apps/apple/macOS/Sunrise.entitlements`
 carries `keychain-access-groups` with the one group
-`$(AppIdentifierPrefix)dev.sunrise.Sunrise`, and `apps/apple/project.yml` sets
-`CODE_SIGN_ENTITLEMENTS` on the `Sunrise` target's Release configuration and
-nowhere else. Release is the configuration the team signs: `release.yml`
+`$(AppIdentifierPrefix)dev.sunrise.Sunrise`, and `apps/apple/project.yml`
+points the `Sunrise` target's Release configuration at it. Debug signs with
+`apps/apple/macOS/SunriseDebug.entitlements` instead, which carries only the
+widgets' App Group, and the Release file carries that group too. Release is the configuration the team signs: `release.yml`
 archives Release with the Developer ID identity. Its one team-less caller,
 the workflow's `unsigned_macos_dmg` dry run, archives
 `CODE_SIGNING_ALLOWED=NO`, which embeds no entitlements, so it is unaffected. A

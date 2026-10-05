@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  The macOS app's entitlements on the Debug configuration
+  (apps/apple/project.yml, the `Sunrise` target's `configs.Debug`).
+
+  The App Group the widgets read the app's snapshot through, and nothing
+  else. It is macOS/Sunrise.entitlements, which Release signs with, minus
+  `keychain-access-groups`: that one is restricted, and every Debug consumer
+  is team-less, so carrying it would get the build killed by AMFI before
+  `main`. The group is not restricted, so an ad-hoc build that carries it
+  still launches. `$(SUNRISE_APP_GROUP)` is spelled in project.yml.
+
+  Release also writes out `com.apple.security.device.camera`; Debug is
+  granted it all the same, by the `ENABLE_RESOURCE_ACCESS_CAMERA` build
+  setting project.yml sets on the target, which Xcode merges into what it
+  signs.
+-->
+<plist version="1.0">
+<dict>
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>$(SUNRISE_APP_GROUP)</string>
+	</array>
+</dict>
+</plist>

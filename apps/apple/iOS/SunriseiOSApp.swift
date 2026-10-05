@@ -18,7 +18,10 @@ struct SunriseiOSApp: App {
     /// same directory is refused, so every surface in the process has to share
     /// one open vault.
     @State private var session = SessionModel.standard()
-    @State private var surfaces = AppSurfaces()
+    /// Publishing into the App Group container the Home and Lock Screen
+    /// widgets read. `project.yml` names the group.
+    @State private var surfaces = AppSurfaces(widgets: .appGroup())
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
         WindowGroup {
@@ -27,5 +30,13 @@ struct SunriseiOSApp: App {
         // An iPad with a hardware keyboard gets the Mac's ⌘ bindings, the
         // palette and the cheat sheet (`docs/08-features/keyboard.md` Rule 3).
         .commands { KeyCommandMenus(surfaces: surfaces) }
+        // An iOS app is suspended in the background, so its change feed and
+        // its timer stop with it. Coming back is the moment the snapshot is
+        // most likely to be stale — a day that rolled over, a sync that
+        // landed while it slept — and a re-read that finds nothing new
+        // redraws nothing.
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { surfaces.widgets?.refresh() }
+        }
     }
 }
