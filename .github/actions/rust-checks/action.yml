@@ -3,9 +3,9 @@
 # with itself.
 #
 # This is a composite action rather than a two-leg matrix in ci.yml because
-# `Rust (macos-latest)` is a required status check in the `Protect master`
-# ruleset, and the two ways of not running a matrix leg are not equivalent. A
-# leg removed by `exclude` reports *nothing*, so the required context sits at
+# `Rust (macos-latest)` is a required status check on `master`, and the two
+# ways of not running a matrix leg are not equivalent. A leg removed by
+# `exclude` reports *nothing*, so the required context sits at
 # "Expected — waiting for status to be reported" and the pull request can
 # never merge. A whole job skipped by a job-level `if:` reports `skipped`,
 # which GitHub counts as a successful status. Keeping the macOS leg off the

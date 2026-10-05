@@ -84,7 +84,7 @@ Read from the tree rather than from a plan:
   scheme (`:533-547`), unlike `SunriseUITests`, which is `skipped: true` in the
   macOS scheme (`:514-515`) because a macOS XCUITest needs
   `sudo DevToolsSecurity -enable` on the machine. The scheme runs the target
-  whole — `mise.toml:686-691` records that `mise run ios-app` passes no
+  whole — `mise.toml:889-893` records that `mise run ios-app` passes no
   `-only-testing` — so what the simulator runs on every build is every case in
   the six files under `apps/apple/SunriseiOSUITests/`, seventeen `func test`
   declarations at this revision, and not only the tab shell's.
