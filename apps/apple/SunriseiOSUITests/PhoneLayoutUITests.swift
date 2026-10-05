@@ -26,12 +26,12 @@ final class PhoneLayoutUITests: SunriseUITestCase {
 
         activate(app.tabBars.buttons["Browse"], named: "the Browse tab")
         XCTAssertTrue(
-            app.navigationBars["Browse"].waitForExistence(timeout: 10),
+            app.navigationBars["Browse"].appears(within: 10),
             "Browse is on screen"
         )
 
         let header = app.staticTexts["Contexts"]
-        XCTAssertTrue(header.waitForExistence(timeout: 10), "the Contexts header is in the sidebar")
+        XCTAssertTrue(header.appears(within: 10), "the Contexts header is in the sidebar")
 
         for _ in 0..<3 where !header.isHittable {
             app.swipeUp()
@@ -58,9 +58,12 @@ final class PhoneLayoutUITests: SunriseUITestCase {
         // says nothing about this toolbar.
         for name in ["Previous", "Next"] {
             let control = app.buttons[name]
-            XCTAssertTrue(control.waitForExistence(timeout: 10), "\(name) is on screen")
+            XCTAssertTrue(control.appears(within: 10), "\(name) is on screen")
+            // Waited for rather than read once: the tab switch above can still
+            // be settling the moment the control first exists, and the claim
+            // is about where the toolbar lands, not where it passes through.
             XCTAssertTrue(
-                control.isHittable,
+                waitUntil(timeout: 5) { control.isHittable },
                 "\(name) is inside the window rather than off its edge"
             )
         }
@@ -68,7 +71,7 @@ final class PhoneLayoutUITests: SunriseUITestCase {
         // The other end of the toolbar, so a layout that fitted by dropping
         // half of itself would not pass.
         let span = app.segmentedControls.buttons["Week"]
-        XCTAssertTrue(span.waitForExistence(timeout: 5), "the span picker is on screen")
-        XCTAssertTrue(span.isHittable, "and it is reachable too")
+        XCTAssertTrue(span.appears(within: 5), "the span picker is on screen")
+        XCTAssertTrue(waitUntil(timeout: 5) { span.isHittable }, "and it is reachable too")
     }
 }
