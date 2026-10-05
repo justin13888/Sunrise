@@ -76,7 +76,9 @@ impl FutureWriter {
     ///
     /// The device must never write to `stream_id` itself: this writer owns
     /// that `(stream, device)` sequence from 1. A paired device that issues no
-    /// commands writes only control ops, which live on the meta stream.
+    /// commands still publishes a `StreamDigest` into every stream it has
+    /// applied an op in (ADR-0043 §5), so the harness shuts the device's own
+    /// core down once the account is synced.
     pub(crate) fn new(
         device_id: [u8; 16],
         signing_seed: [u8; 32],
