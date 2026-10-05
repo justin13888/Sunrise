@@ -30,8 +30,9 @@ impl Clock for SystemClock {
 /// The build's commit, when the build was given one.
 ///
 /// Read from `SUNRISE_BUILD_COMMIT` at compile time. A build that does not set
-/// it reports `unknown`, which is honest and still one series.
-const BUILD_COMMIT: &str = match option_env!("SUNRISE_BUILD_COMMIT") {
+/// it reports `unknown`, which is honest and still one series. The trace
+/// exporter's resource reports the same value.
+pub const BUILD_COMMIT: &str = match option_env!("SUNRISE_BUILD_COMMIT") {
     Some(commit) => commit,
     None => "unknown",
 };
@@ -89,6 +90,10 @@ pub struct ServerState {
     /// The pairing rendezvous: live sessions keyed by `pair_id`, and the
     /// pair-attempt ledgers. In memory only; a session lives five minutes.
     pub pairing: crate::api::pairing::Rendezvous,
+    /// Trace export. Disabled unless `[observability]` is configured, and
+    /// then the root of every traced operation; `docs/06-server/observability.md`
+    /// §Tracing.
+    pub telemetry: sunrise_telemetry::Telemetry,
 }
 
 /// Why [`ServerState::try_new`] could not build a state.
@@ -170,7 +175,18 @@ impl ServerState {
             limiter: crate::api::ratelimit::Limiter::default(),
             push,
             pairing: crate::api::pairing::Rendezvous::new(),
+            telemetry: sunrise_telemetry::Telemetry::disabled(),
         }
+    }
+
+    /// Trace through `telemetry`.
+    ///
+    /// The binary installs the OTLP exporter `[observability]` describes here,
+    /// once a runtime exists to send on; a test installs an in-memory one.
+    #[must_use]
+    pub fn with_telemetry(mut self, telemetry: sunrise_telemetry::Telemetry) -> Self {
+        self.telemetry = telemetry;
+        self
     }
 
     /// Deliver wake-ups through `provider`, with the documented bounds.

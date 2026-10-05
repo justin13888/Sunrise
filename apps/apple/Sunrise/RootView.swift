@@ -63,6 +63,13 @@ struct RootView: View {
             }
         }
         .task { await session.start() }
+        // The widgets are drawn by another process that has no lock of its
+        // own. Whenever this window stops showing an open vault — a lock, a
+        // sign-out, a failure, the first beat of a switch — they stop showing
+        // one too.
+        .onChange(of: session.phase) { _, phase in
+            if phase != .unlocked { surfaces.widgets?.withdraw() }
+        }
         // The recovery ceremony, over whatever the window is showing.
         //
         // Presented here rather than inside `VaultShell` for the reason

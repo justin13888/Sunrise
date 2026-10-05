@@ -12,10 +12,13 @@ import XCTest
 ///
 /// Unlike its macOS twin, this **also runs on every `mise run ios-app`** and so
 /// in CI, because `SunriseiOSUITests` is not skipped in the `SunriseiOS`
-/// scheme. That costs about a minute and buys two things: the walk cannot rot
-/// unnoticed, and every CI run leaves a full set of screenshots in its result
-/// bundle. If that minute ever stops being worth it, `-skip-testing:` on the
-/// `ios-app` task is the lever — not deleting the suite.
+/// scheme. It measured 128 s in CI, and buys one thing: the walk cannot rot
+/// unnoticed. It is the only iOS UI test that opens the Search tab, seeds a
+/// fixture through five captures and dismisses the keyboard. The screenshots
+/// only outlive the runner when the run fails, because a green run's result
+/// bundle is never uploaded. If those 128 s ever stop being worth it,
+/// `-skip-testing:` on the `ios-app` task is the lever — not deleting the
+/// suite.
 @MainActor
 final class ScreenshotWalkTests: SunriseUITestCase {
 

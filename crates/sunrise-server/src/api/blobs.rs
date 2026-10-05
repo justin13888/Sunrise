@@ -50,6 +50,7 @@ use kynos::response::stream::binary::BinaryStream;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use sunrise_storage::BlobStore;
+use sunrise_telemetry::{Attr, Count};
 
 /// Largest single chunk the relay accepts, per
 /// `docs/02-domain/attachments.md` §Lazy fetch ("chunks are 1 MiB each").
@@ -307,9 +308,20 @@ pub async fn put_chunk(
         .await?;
     state.limiter.touch_upload(&state, &caller, upload);
     let store = pending_store(&state, &caller, &upload)?;
+    let write_span = sunrise_telemetry::span(
+        "blob.chunk_write",
+        [
+            Attr::count(Count::Chunks, 1),
+            Attr::count(Count::Bytes, bytes.len() as u64),
+        ],
+    );
     store
         .put_chunk(&upload, path.chunk_idx, &bytes)
-        .map_err(|_| ApiError::internal())?;
+        .map_err(|_| {
+            write_span.fail("chunk write failed");
+            ApiError::internal()
+        })?;
+    drop(write_span);
     state.metrics.incr("sunrise_blob_chunk_total");
     state.metrics.add_with(
         "sunrise_blob_bytes_total",
@@ -367,6 +379,10 @@ pub async fn finalize(
     let mut hasher = blake3::Hasher::new();
     let mut chunks = Vec::with_capacity(expected.len());
     let mut size_bytes: u64 = 0;
+    let read_span = sunrise_telemetry::span(
+        "blob.chunk_read",
+        [Attr::count(Count::Chunks, expected.len() as u64)],
+    );
     for (idx, want) in expected.iter().enumerate() {
         let idx = u32::try_from(idx).map_err(|_| ApiError::internal())?;
         let bytes = pending
@@ -386,6 +402,8 @@ pub async fn finalize(
         size_bytes = size_bytes.saturating_add(bytes.len() as u64);
         chunks.push(bytes);
     }
+    read_span.set(Attr::count(Count::Bytes, size_bytes));
+    drop(read_span);
     if hasher.finalize().as_bytes() != &content_hash {
         state.metrics.incr("sunrise_blob_hash_mismatch_total");
         return Err(hash_mismatch("content_hash mismatch"));
@@ -401,12 +419,21 @@ pub async fn finalize(
     // mid-commit leaves an invisible partial rather than a short read.
     let blob = blob_key(&content_hash);
     let committed = committed_store(&state, &caller)?;
+    let write_span = sunrise_telemetry::span(
+        "blob.chunk_write",
+        [
+            Attr::count(Count::Chunks, chunks.len() as u64),
+            Attr::count(Count::Bytes, size_bytes),
+        ],
+    );
     for (idx, bytes) in chunks.iter().enumerate() {
         let idx = u32::try_from(idx).map_err(|_| ApiError::internal())?;
-        committed
-            .put_chunk(&blob, idx, bytes)
-            .map_err(|_| ApiError::internal())?;
+        committed.put_chunk(&blob, idx, bytes).map_err(|_| {
+            write_span.fail("chunk write failed");
+            ApiError::internal()
+        })?;
     }
+    drop(write_span);
     let chunk_count = u32::try_from(chunks.len()).map_err(|_| ApiError::internal())?;
     write_manifest(&state, &caller, &blob, chunk_count, size_bytes)?;
     // The same ciphertext uploaded again is the attachment coming back — a
@@ -470,11 +497,21 @@ pub async fn fetch(
         )
         .await?;
     state.metrics.incr("sunrise_blob_fetch_total");
+    // Opened here, under the request, and ended when the body is dropped —
+    // after the request's own span, since the body outlives the handler.
+    let read_span = sunrise_telemetry::span(
+        "blob.chunk_read",
+        [
+            Attr::count(Count::Chunks, u64::from(chunk_count)),
+            Attr::count(Count::Bytes, size_bytes),
+        ],
+    );
     Ok(BinaryStream::new(chunk_stream(
         store,
         blob,
         chunk_count,
         state.metrics.clone(),
+        read_span,
     )))
 }
 
@@ -566,16 +603,23 @@ type ChunkStream = futures_util::stream::BoxStream<'static, Result<bytes::Bytes,
 /// Each chunk is counted in `sunrise_blob_bytes_total{direction="download"}`
 /// as it is read, so a fetch abandoned part-way counts what was read for it
 /// rather than the whole blob.
+///
+/// `span` lives as long as the stream, so the `blob.chunk_read` it holds ends
+/// when the body is finished or abandoned, and is marked failed by a read that
+/// fails.
 fn chunk_stream(
     store: BlobStore,
     blob: [u8; 16],
     chunk_count: u32,
     metrics: crate::Metrics,
+    span: sunrise_telemetry::SpanGuard,
 ) -> ChunkStream {
     use futures_util::StreamExt as _;
+    let span = std::sync::Arc::new(span);
     futures_util::stream::unfold(0u32, move |idx| {
         let store = store.clone();
         let metrics = metrics.clone();
+        let span = std::sync::Arc::clone(&span);
         async move {
             if idx >= chunk_count {
                 return None;
@@ -595,6 +639,9 @@ fn chunk_stream(
                 )),
                 Err(_) => Err(std::io::Error::other("chunk read failed")),
             };
+            if item.is_err() {
+                span.fail("chunk read failed");
+            }
             Some((item, idx + 1))
         }
     })

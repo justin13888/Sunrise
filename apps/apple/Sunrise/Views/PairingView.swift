@@ -1,11 +1,13 @@
 import SwiftUI
 
-/// The pairing sheet, from either side.
+/// The pairing sheet, from either side, over either transport.
 ///
-/// One view for both roles on purpose. The two devices walk the *same* eight
-/// legs in the same order — they simply alternate who is showing and who is
-/// pasting — and two screens would be two places for that order to drift out
-/// of step with `sunrise-pairing`.
+/// One view for both roles on purpose. The two devices walk the *same* legs in
+/// the same order — they simply alternate who is showing and who is pasting —
+/// and two screens would be two places for that order to drift out of step
+/// with `sunrise-pairing`. Over the relay the legs collapse to three (scan,
+/// compare, done) and the same cases draw them: the code is a hand-off, the
+/// digits are the SAS screen, and everything in between is `.working`.
 ///
 /// It was six until the account's signing key stopped travelling (#105). The
 /// device holding the vault cannot certify keys the joining device has not
@@ -15,6 +17,8 @@ import SwiftUI
 struct PairingView: View {
     @Bindable var model: PairingModel
     let dismiss: () -> Void
+    /// The scanner sheet, over this one. Only the code leg offers it.
+    @State private var scanning = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -29,6 +33,17 @@ struct PairingView: View {
             footer
         }
         .macSheetFrame(width: 560, height: 520)
+        .sheet(isPresented: $scanning) {
+            QRScannerView(
+                source: .current,
+                found: { payload in
+                    scanning = false
+                    model.pasted = payload
+                    Task { await model.submit() }
+                },
+                pasteInstead: { scanning = false }
+            )
+        }
     }
 
     // MARK: - Chrome
@@ -76,6 +91,10 @@ struct PairingView: View {
                     dismiss()
                 }
                 .accessibilityIdentifier("pairing.cancel")
+                if model.offersManualFallback {
+                    Button("Copy and paste instead") { model.useManualInstead() }
+                        .accessibilityIdentifier("pairing.useManual")
+                }
                 Spacer()
                 primaryAction
             }
@@ -88,10 +107,14 @@ struct PairingView: View {
     private var primaryAction: some View {
         switch model.phase {
         case .idle:
-            Button("Show my pairing code") { model.begin() }
+            Button("Show my pairing code") { Task { await model.begin() } }
                 .buttonStyle(.borderedProminent)
                 .disabled(model.accountEmail.trimmed.isEmpty)
                 .accessibilityIdentifier("pairing.begin")
+        case .handOff where model.transport == .relay:
+            // Nothing to press: the relay tells this device when the code has
+            // been read, and the digits replace it.
+            ProgressView().controlSize(.small)
         case let .handOff(handOff):
             Button(handOff.leg == .grant ? "I've pasted it" : "Continue") { model.advance() }
                 .buttonStyle(.borderedProminent)
@@ -114,6 +137,21 @@ struct PairingView: View {
 
     @ViewBuilder
     private var content: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            if let notice = model.notice, !model.phase.isOutcome {
+                Label(notice, systemImage: "arrow.left.arrow.right")
+                    .font(.callout)
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+                    .accessibilityIdentifier("pairing.notice")
+            }
+            phaseContent
+        }
+    }
+
+    @ViewBuilder
+    private var phaseContent: some View {
         switch model.phase {
         case .idle:
             accountForm
@@ -127,13 +165,9 @@ struct PairingView: View {
                 isNewDevice: model.intent == .addThisMac,
                 answer: { matched in Task { await model.confirm(matched: matched) } }
             )
-        case .working:
-            Label(
-                model.intent == .addThisMac
-                    ? "Opening your vault on this \(Platform.deviceName)…"
-                    : "Sealing your vault key for the other device…",
-                systemImage: "hourglass"
-            )
+        case let .working(label):
+            Label(label, systemImage: "hourglass")
+                .accessibilityIdentifier("pairing.working")
         case let .done(summary):
             outcome(
                 symbol: "checkmark.seal",
@@ -238,10 +272,18 @@ struct PairingView: View {
             Text(prompt.instruction)
                 .font(.callout)
                 .foregroundStyle(.secondary)
-            // A text field, not a camera. `docs/07-clients/parity-matrix.md`
-            // says "camera or paste", and a paste field needs no entitlement,
-            // works on a Mac with the lid shut, and is the only thing that can
-            // carry the Noise messages anyway — they are far too long to scan.
+            // Camera or paste, as `docs/07-clients/parity-matrix.md` says, and
+            // only on the code leg: the code is the one message small enough
+            // to be a symbol. The paste field stays under the button because
+            // it needs no permission, works on a Mac with the lid shut, and is
+            // the only thing that can carry the Noise messages of the manual
+            // flow — they are far too long to scan.
+            if prompt.leg == .code {
+                Button("Scan the code", systemImage: "qrcode.viewfinder") { scanning = true }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .accessibilityIdentifier("pairing.scan")
+            }
             TextEditor(text: $model.pasted)
                 // A Noise message in base64. Autocapitalising its first
                 // character or "correcting" a run of letters inside it
@@ -398,6 +440,27 @@ private struct CopyableBlock: View {
             }
         }
         .onChange(of: text) { copied = false }
+    }
+}
+
+extension Binding where Value == PairingModel? {
+    /// The binding a pairing sheet presents from, which ends the pairing
+    /// however the sheet goes away.
+    ///
+    /// SwiftUI clears the binding itself on an iOS swipe-down, so this setter
+    /// is the one place every dismissal passes through — Cancel and Done
+    /// included, for which ``PairingModel/dismissed()`` is a no-op or a repeat.
+    var endingThePairingOnDismiss: Binding<PairingModel?> {
+        Binding(
+            get: { wrappedValue },
+            set: { next in
+                // SwiftUI writes a presentation binding on the main thread.
+                MainActor.assumeIsolated {
+                    if next == nil { wrappedValue?.dismissed() }
+                }
+                wrappedValue = next
+            }
+        )
     }
 }
 

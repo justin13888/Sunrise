@@ -22,6 +22,7 @@ use kynos::response::stream::sse::{Event, KeepAlive, Sse};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use sunrise_error::ErrorCode;
+use sunrise_telemetry::{Attr, Count};
 
 use super::credential::{resolve, SessionHeader};
 
@@ -207,6 +208,14 @@ pub type EventStream =
 ///
 /// `slot` is the device's stream permit, moved into the task so it is held
 /// exactly as long as the task runs.
+///
+/// Traced as one long-lived `sync.stream` span, a child of the request that
+/// opened it and ended with the task, rather than a span per frame: a stream
+/// can live for hours, and a trace of one is its shape — `gap`, `caught_up`,
+/// each live `frame`, and the reason it `closed` — as events on that span.
+/// The task runs under the span's context, so the replay read and the
+/// revocation re-checks are its children. Which streams, and whose, is not
+/// span data.
 fn spawn_stream(
     state: ServerState,
     id: String,
@@ -215,9 +224,13 @@ fn spawn_stream(
     slot: Option<Permit>,
 ) -> EventStream {
     use futures_util::StreamExt as _;
+    use sunrise_telemetry::FutureExt as _;
     let (tx, rx) = tokio::sync::mpsc::channel::<Event<SyncEvent>>(STREAM_BUFFER);
+    let span = stream_span(&session, after);
+    let cx = span.context();
 
     tokio::spawn(async move {
+        let span = span;
         let _slot = slot;
         // The device is online for exactly as long as this task runs, so the
         // push dispatcher does not wake a device already receiving the ops.
@@ -256,6 +269,8 @@ fn spawn_stream(
                     );
                     // Never CaughtUp here: the client would record a
                     // completeness it has no basis for.
+                    span.event("closed", [Attr::reason("replay_failed")]);
+                    span.fail("op log unreadable");
                     let _ = tx
                         .send(closed(
                             ErrorCode::RelayStorageUnavailable,
@@ -279,6 +294,7 @@ fn spawn_stream(
                     n_devices = gaps.len() as u64,
                     "subscriber cursor predates durable retention"
                 );
+                span.event("gap", []);
                 let event = Event::new(SyncEvent::Gap {
                     stream_id: hex::encode(sid),
                     code: ErrorCode::SyncCursorGap.to_string(),
@@ -304,12 +320,14 @@ fn spawn_stream(
             if tx.send(caught_up).await.is_err() {
                 return;
             }
+            span.event("caught_up", []);
         }
 
         let account_h = crate::logging::account_h(&session.account_id);
-        live_loop(state, id, session, receivers, tx).await;
+        let reason = live_loop(state, id, session, receivers, tx, &span).await;
+        span.event("closed", [Attr::reason(reason)]);
         tracing::info!(ev = "srv.sync.stream_closed", account_h = %account_h, "event stream ended");
-    });
+    }.with_context(cx));
 
     futures_util::stream::unfold(rx, |mut rx| async move {
         rx.recv().await.map(|event| (Ok(event), rx))
@@ -317,14 +335,30 @@ fn spawn_stream(
     .boxed()
 }
 
+/// The `sync.stream` span: whether the stream resumed, and how many streams
+/// it subscribes to.
+fn stream_span(session: &Session, after: Option<u64>) -> sunrise_telemetry::SpanGuard {
+    sunrise_telemetry::span(
+        "sync.stream",
+        [
+            Attr::resumed(after.is_some()),
+            Attr::count(Count::Streams, session.streams.len() as u64),
+        ],
+    )
+}
+
 /// The live half: fan-out, the token deadline, and the revocation re-check.
+///
+/// Returns why it ended, as the literal the `closed` span event carries, and
+/// marks each live frame it delivers as a `frame` event on `span`.
 async fn live_loop(
     state: ServerState,
     id: String,
     session: Session,
     mut receivers: Vec<([u8; 16], tokio::sync::broadcast::Receiver<RelayFrame>)>,
     tx: tokio::sync::mpsc::Sender<Event<SyncEvent>>,
-) {
+    span: &sunrise_telemetry::SpanGuard,
+) -> &'static str {
     let recheck = std::time::Duration::from_millis(state.config.device_recheck_ms.max(1));
     let mut ticker = tokio::time::interval(recheck);
     ticker.tick().await;
@@ -348,13 +382,13 @@ async fn live_loop(
                     "server is draining; ending the stream with a retryable close"
                 );
                 let _ = tx.send(closed(ErrorCode::SyncNetworkUnavailable, DRAINING)).await;
-                break;
+                return "draining";
             }
 
             // The client went away. Without this arm a quiet stream would
             // only notice on its next frame, holding the device's stream
             // slot (and a relay subscription) for a connection nobody reads.
-            () = tx.closed() => break,
+            () = tx.closed() => return "peer_gone",
 
             Some((sid, frame)) = next => {
                 // The session's own batches are not echoed back to it: it
@@ -376,7 +410,7 @@ async fn live_loop(
                     frame: base64::engine::general_purpose::STANDARD.encode(&frame.bytes),
                 });
                 if tx.send(event).await.is_err() {
-                    break;
+                    return "peer_gone";
                 }
                 // Handed to this subscriber's response stream. That is as far
                 // as the relay can see: the socket write belongs to the HTTP
@@ -384,6 +418,7 @@ async fn live_loop(
                 if let Some(clock) = &frame.fanout {
                     clock.settle();
                 }
+                span.event("frame", []);
             }
 
             _ = ticker.tick() => {
@@ -402,7 +437,7 @@ async fn live_loop(
                     let _ = tx
                         .send(closed(ErrorCode::AuthTokenExpired, "access token expired"))
                         .await;
-                    break;
+                    return "token_expired";
                 }
                 // Revoking a device has to end the stream it already holds,
                 // not merely refuse the next one.
@@ -426,7 +461,7 @@ async fn live_loop(
                         let _ = tx
                             .send(closed(ErrorCode::AuthDeviceRevoked, "device revoked"))
                             .await;
-                        break;
+                        return "device_revoked";
                     }
                 }
             }

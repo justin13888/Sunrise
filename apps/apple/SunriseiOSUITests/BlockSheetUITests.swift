@@ -34,7 +34,7 @@ final class BlockSheetUITests: SunriseUITestCase {
         // change beside it. The `named:` argument carries the diagnosis into
         // the failure message.
         XCTAssertTrue(
-            app.buttons["Add block"].waitForExistence(timeout: 5),
+            app.buttons["Add block"].appears(within: 5),
             "the draft sheet must offer a way to commit the block it is asking "
                 + "about — without one it is a modal a phone can open and not finish"
         )
@@ -45,7 +45,7 @@ final class BlockSheetUITests: SunriseUITestCase {
 
         activate(app.buttons["Add block"], named: "the draft sheet's Add block")
         XCTAssertTrue(
-            app.descendants(matching: .any)["calendar-block"].waitForExistence(timeout: 5),
+            app.descendants(matching: .any)["calendar-block"].appears(within: 5),
             "pressing it must actually create the block, so this suite fails on a "
                 + "control that is visible and inert as well as on one that is absent"
         )
@@ -60,7 +60,7 @@ final class BlockSheetUITests: SunriseUITestCase {
         openDraftSheet()
         activate(app.buttons["Add block"], named: "the draft sheet's Add block")
         XCTAssertTrue(
-            app.descendants(matching: .any)["calendar-block"].waitForExistence(timeout: 5),
+            app.descendants(matching: .any)["calendar-block"].appears(within: 5),
             "the block reached the grid"
         )
 
@@ -72,7 +72,7 @@ final class BlockSheetUITests: SunriseUITestCase {
         Self.blockCentre(in: app).tap()
 
         XCTAssertTrue(
-            app.buttons["Save"].waitForExistence(timeout: 5),
+            app.buttons["Save"].appears(within: 5),
             "the editor must offer a way to keep an edit"
         )
         XCTAssertTrue(app.buttons["Cancel"].exists, "and a way to drop one")
@@ -85,7 +85,7 @@ final class BlockSheetUITests: SunriseUITestCase {
         createVault()
         openDraftSheet()
         XCTAssertTrue(
-            app.navigationBars["New block"].waitForExistence(timeout: 5),
+            app.navigationBars["New block"].appears(within: 5),
             "the draft sheet's bar must say what it is for"
         )
     }
@@ -101,7 +101,7 @@ final class BlockSheetUITests: SunriseUITestCase {
         // The span picker, which carries `calendar-toolbar` down onto its own
         // controls rather than exposing a container of that name.
         XCTAssertTrue(
-            app.segmentedControls["calendar-toolbar"].waitForExistence(timeout: 10),
+            app.segmentedControls["calendar-toolbar"].appears(within: 10),
             "the calendar is on screen before anything is dragged on it"
         )
 
@@ -119,7 +119,7 @@ final class BlockSheetUITests: SunriseUITestCase {
         start.press(forDuration: 0.6, thenDragTo: end)
 
         XCTAssertTrue(
-            app.textFields["block-title"].waitForExistence(timeout: 10),
+            app.textFields["block-title"].appears(within: 10),
             "the drag must open the draft sheet; if this fails the rest of the "
                 + "suite is asserting about a sheet that never appeared"
         )

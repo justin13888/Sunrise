@@ -49,6 +49,7 @@ mod devices;
 mod lifecycle;
 mod migrations;
 mod pragmas;
+mod tx;
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;

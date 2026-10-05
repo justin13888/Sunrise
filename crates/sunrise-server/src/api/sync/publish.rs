@@ -20,6 +20,7 @@ use kynos::extract::params::header::Headers;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use sunrise_error::ErrorCode;
+use sunrise_telemetry::{Attr, Count};
 use sunrise_wire_protocol::{encode_frame, FrameFlags, MsgKind, OpBatchPayload};
 
 use super::credential::{resolve, SessionHeader};
@@ -159,7 +160,6 @@ pub async fn ops(
         .map_err(|_| ApiError::validation("batch could not be framed"))?;
 
     let heads = frame_heads(&batch);
-    let ops_h = batch_ops_hash(&batch.ops);
 
     // Read before the append, and only useful before it: afterwards this
     // batch's own ops are what the channel holds, and every append would look
@@ -172,31 +172,28 @@ pub async fn ops(
         .relay_device_heads((session.account, stream_id))
         .unwrap_or_default();
 
-    let appended = state
-        .store
-        .relay_append(
-            (session.account, stream_id),
-            &frame,
-            &heads,
-            ops_h.as_ref(),
-            body.batch_id,
-            now_ms,
-            state.durable_caps,
-        )
-        .map_err(|e| {
-            tracing::error!(
-                ev = "srv.relay.append_failed",
-                err_code = %ErrorCode::RelayStorageUnavailable,
-                err_kind = "transient",
-                retryable = true,
-                result = "failed",
-                stream_h = %crate::logging::id_h(&stream_id),
-                cause = %e,
-                "could not persist an op batch; refusing to ack it"
-            );
-            state.metrics.incr("sunrise_relay_append_failed_total");
-            ApiError::unavailable("relay could not durably store the batch")
-        })?;
+    let appended = append(
+        &state,
+        (session.account, stream_id),
+        &frame,
+        &heads,
+        &batch,
+        now_ms,
+    )
+    .map_err(|e| {
+        tracing::error!(
+            ev = "srv.relay.append_failed",
+            err_code = %ErrorCode::RelayStorageUnavailable,
+            err_kind = "transient",
+            retryable = true,
+            result = "failed",
+            stream_h = %crate::logging::id_h(&stream_id),
+            cause = %e,
+            "could not persist an op batch; refusing to ack it"
+        );
+        state.metrics.incr("sunrise_relay_append_failed_total");
+        ApiError::unavailable("relay could not durably store the batch")
+    })?;
 
     let first_seen_ms = match appended {
         Appended::Fresh { first_seen_ms } => {
@@ -259,6 +256,46 @@ fn fan_out(
             fanout: Some(FanoutClock::start(accepted, state.metrics.clone())),
         },
     );
+}
+
+/// The durable append of one batch, traced as `relay.append` with its store
+/// transaction beneath it.
+///
+/// The span is ended before this returns, so the fan-out that follows a fresh
+/// append is its sibling under the request rather than its child. It carries
+/// the batch's op count and frame size, and how the append ended; nothing
+/// about which stream or whose.
+fn append(
+    state: &ServerState,
+    key: crate::relay::StreamKey,
+    frame: &[u8],
+    heads: &[FrameHead],
+    batch: &OpBatchPayload,
+    now_ms: u64,
+) -> Result<Appended, crate::store::StoreError> {
+    let span = sunrise_telemetry::span(
+        "relay.append",
+        [
+            Attr::count(Count::Ops, batch.ops.len() as u64),
+            Attr::count(Count::Bytes, frame.len() as u64),
+        ],
+    );
+    let _current = span.enter();
+    let appended = state.store.relay_append(
+        key,
+        frame,
+        heads,
+        batch_ops_hash(&batch.ops).as_ref(),
+        batch.batch_id,
+        now_ms,
+        state.durable_caps,
+    );
+    match &appended {
+        Ok(Appended::Fresh { .. }) => span.set(Attr::result("fresh")),
+        Ok(Appended::Duplicate { .. }) => span.set(Attr::result("duplicate")),
+        Err(_) => span.fail("relay storage unavailable"),
+    }
+    appended
 }
 
 /// Whether this batch re-sends an op the channel already holds.

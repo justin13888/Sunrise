@@ -118,7 +118,7 @@ impl Store {
         now_ms: u64,
     ) -> Result<Device, StoreError> {
         let device_id = mint_id(now_ms);
-        let conn = self.conn.lock();
+        let conn = self.tx("store.register_device");
         conn.execute(
             "INSERT INTO devices (device_id, account_id, device_pub_s, device_pub_d, device_cert, \
              vault_device_id, nickname, platform, app_version, created_at_ms, last_seen_at_ms, \
@@ -156,7 +156,7 @@ impl Store {
     /// Every device on an account, revoked ones included (the API's
     /// `DeviceMeta` carries a `revoked` flag, so the row survives revocation).
     pub fn list_devices(&self, account_id: &str) -> Result<Vec<Device>, StoreError> {
-        let conn = self.conn.lock();
+        let conn = self.tx("store.list_devices");
         let mut stmt = conn.prepare(
             "SELECT device_id, account_id, device_pub_s, device_pub_d, vault_device_id, \
              nickname, platform, app_version, created_at_ms, last_seen_at_ms, revoked, \
@@ -173,7 +173,7 @@ impl Store {
 
     /// Count of devices that can still act on the account.
     pub fn active_device_count(&self, account_id: &str) -> Result<u32, StoreError> {
-        let conn = self.conn.lock();
+        let conn = self.tx("store.active_device_count");
         let n: i64 = conn.query_row(
             "SELECT COUNT(*) FROM devices WHERE account_id = ?1 AND revoked = 0",
             params![account_id],
@@ -192,7 +192,7 @@ impl Store {
         account_id: &str,
         device_id: &str,
     ) -> Result<Option<Device>, StoreError> {
-        let conn = self.conn.lock();
+        let conn = self.tx("store.active_device");
         Ok(conn
             .query_row(
                 "SELECT device_id, account_id, device_pub_s, device_pub_d, vault_device_id, \
@@ -216,7 +216,7 @@ impl Store {
         device_id: &str,
         now_ms: u64,
     ) -> Result<(), StoreError> {
-        let mut conn = self.conn.lock();
+        let mut conn = self.tx("store.revoke_device");
         let tx = conn.transaction()?;
         let changed = tx.execute(
             "UPDATE devices SET revoked = 1, revoked_at_ms = ?3 \
@@ -262,7 +262,7 @@ impl Store {
         vault_device_id: &str,
         now_ms: u64,
     ) -> Result<usize, StoreError> {
-        let mut conn = self.conn.lock();
+        let mut conn = self.tx("store.revoke_devices_by_vault_id");
         let tx = conn.transaction()?;
         // Collected before the update, because afterwards the predicate that
         // selects them no longer holds and the push tokens would survive.
@@ -295,7 +295,7 @@ impl Store {
 
     /// Record the last time a device made an authenticated request.
     pub fn touch_device(&self, device_id: &str, now_ms: u64) -> Result<(), StoreError> {
-        let conn = self.conn.lock();
+        let conn = self.tx("store.touch_device");
         conn.execute(
             "UPDATE devices SET last_seen_at_ms = ?2 WHERE device_id = ?1",
             params![device_id, i64::try_from(now_ms).unwrap_or(i64::MAX)],
@@ -311,7 +311,7 @@ impl Store {
         token: &str,
         now_ms: u64,
     ) -> Result<(), StoreError> {
-        let conn = self.conn.lock();
+        let conn = self.tx("store.upsert_push_token");
         conn.execute(
             "INSERT INTO push_tokens (device_id, platform, token, updated_at_ms) \
              VALUES (?1, ?2, ?3, ?4) \
@@ -328,7 +328,7 @@ impl Store {
 
     /// Every push token registered for a device, as `(platform, token)`.
     pub fn push_tokens(&self, device_id: &str) -> Result<Vec<(String, String)>, StoreError> {
-        let conn = self.conn.lock();
+        let conn = self.tx("store.push_tokens");
         let mut stmt = conn.prepare(
             "SELECT platform, token FROM push_tokens WHERE device_id = ?1 ORDER BY platform",
         )?;
@@ -351,7 +351,7 @@ impl Store {
         account_id: &str,
         platform: &str,
     ) -> Result<Vec<(String, String)>, StoreError> {
-        let conn = self.conn.lock();
+        let conn = self.tx("store.push_targets");
         let mut stmt = conn.prepare(
             "SELECT d.device_id, p.token FROM devices d \
              JOIN push_tokens p ON p.device_id = d.device_id \
@@ -374,7 +374,7 @@ impl Store {
         device_id: &str,
         platform: &str,
     ) -> Result<Option<String>, StoreError> {
-        let conn = self.conn.lock();
+        let conn = self.tx("store.push_target");
         Ok(conn
             .query_row(
                 "SELECT p.token FROM push_tokens p \
@@ -397,7 +397,7 @@ impl Store {
         platform: &str,
         token: &str,
     ) -> Result<bool, StoreError> {
-        let conn = self.conn.lock();
+        let conn = self.tx("store.delete_push_token");
         let n = conn.execute(
             "DELETE FROM push_tokens WHERE device_id = ?1 AND platform = ?2 AND token = ?3",
             params![device_id, platform, token],

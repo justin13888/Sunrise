@@ -559,6 +559,8 @@ fn op_payload(inner: InnerOp) -> OpPayload {
         | InnerOp::DeviceRevoke(_)
         | InnerOp::DeviceCertPublish(_)
         | InnerOp::IdentityTransition(_)
+        | InnerOp::VaultRequires(_)
+        | InnerOp::DeviceFeatures(_)
         // A digest says what a replica holds, not what anyone did.
         | InnerOp::StreamDigest(_)
         // A field-level write carries no whole task to diff against, and this

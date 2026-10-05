@@ -128,9 +128,17 @@ surface covers, so that the narrowness never has to be re-derived. It is not a
 *partial*, which is reserved for a row whose core action a user cannot
 complete.
 
-**Every MUST graded below is met, except the four that ADR-0042 restored or
-added:** sharing (two rows), calendar integration, and widgets. None of those
-has a reachable surface, and each is a ranked issue. The graded MUSTs live in
+**Every MUST graded below is met, except these ones that ADR-0042 restored or
+added:**
+
+- Sharing (two rows) and calendar integration. None of these has a reachable
+  surface, and each is a ranked issue.
+- The macOS **widget** row. The Notification Centre widget is built and
+  embedded ([#14](https://github.com/justin13888/Sunrise/issues/14)), but
+  nobody has seen a Mac offer it, so it stays **unmet** until someone does
+  ([#376](https://github.com/justin13888/Sunrise/issues/376)).
+
+The iOS widget row is graded **met**. The graded MUSTs live in
 three columns: macOS, the CLI, and iOS. iOS's rows were SHOULDs under
 [ADR-0028](../11-adr/0028-ios-is-a-v1-client.md) when they were last graded,
 and became MUSTs under ADR-0042 without any verdict changing. The previous revision of
@@ -142,7 +150,7 @@ around it is recorded in the cells below and in
 [What is still narrow](#what-is-still-narrow) — an audit whose every row says
 "met" is worth nothing if the narrowness is not written down beside it.
 
-### macOS — 23 MUSTs
+### macOS — 24 MUSTs
 
 | Capability | Verdict | Reached from |
 |---|---|---|
@@ -161,12 +169,13 @@ around it is recorded in the cells below and in
 | Quick capture (hotkey / menu bar) | met | Carbon `RegisterEventHotKey` ⌘⇧N + `MenuBarExtra`; both via `previewCapture` |
 | Reminders / local notifications | met | `ReminderScheduler` follows the change feed, reconciles against pending requests, snooze targets from the domain |
 | Multi-account | met | Settings → vault picker → `SessionModel.switchTo`, teardown before reopen |
-| Pairing — scan QR | met *(paste half)* | `PairingView` paste-accept → `DevicePairing.accept`. **No camera scanner exists**; the row's "camera or paste" is satisfied by paste. The script is **eight legs, not six**, since the account signing key stopped travelling (#105): the last hand-over became offer → request → grant, because the device holding the vault cannot certify keys the joining device has not minted yet |
+| Pairing — scan QR | met | `PairingView`'s **Scan the code** → `QRScannerView` (`Pairing/QRScanner.swift`): an `AVCaptureSession` over the system's preferred camera, Continuity Camera included, with Vision barcode detection, behind `com.apple.security.device.camera` and a purpose string, asked for only on Scan. The scanned text goes to `RelayPairing.accept` as read, and the pairing is three phases — scan, compare the SAS, done — over the relay (`Pairing/PairingRelay.swift`). Paste stays beside the button, and a refused camera offers it in one tap. With no relay, no signed-in account, or a relay that does not answer, the sheet says which and runs the **eight-leg** copy-and-paste script over `DevicePairing` (offer → request → grant at the end since #105, because the device holding the vault cannot certify keys the joining device has not minted yet) |
 | Pairing — show QR | met | `QRCode.image` (CoreImage) rendered on the code leg, with copyable text beside it |
 | Pairing — sponsor a device | met *(with a stated limit)* | Settings → **Add a device…**, disabled with an explanation on a vault that was itself added by pairing. Such a vault holds `ID_S_pub` and no signing key, so it cannot issue a certificate — the same absence that stops a *revoked* device certifying itself back in. `SunriseCore.canSponsorPairing()` is the question; `SessionModel.canSponsorPairing` is the snapshot a view body can read |
 | iCal import / export | met *(windowed, no round-trip)* | File → Import Calendar… (⌘⇧I) and Export Calendar ▸ Today \| This Week → `AppSurfaces` → `IcalModel` → `CoreBridge.importIcal` / `.exportIcal` → the seam's `import_ical` / `export_ical` |
 | Background sync (while running) | met | `startSync` spawns a live driver for the life of the window; off when no relay URL is set |
 | Menu bar | met | `MenuBarExtra` with real Today / Inbox / sync data off the change feed |
+| Lock screen / home screen widget (Notification Centre) | unmet | Built but never observed. `SunriseWidgets` is embedded under `Contents/PlugIns` and draws the snapshot `WidgetPublisher` writes from `Query::Today`, as on iOS. A Mac loads only a sandboxed widget whose App Group it has granted, and no build this repository makes has the team that grant is keyed to (`DEVELOPMENT_TEAM: ""`; `mise run macos-app` builds with `CODE_SIGNING_ALLOWED=NO`). So no one has watched the widget appear in the gallery. Measuring it on a Developer ID build is [#376](https://github.com/justin13888/Sunrise/issues/376) |
 | OS automation (App Intents) | met | six intents + `AppShortcutsProvider` + `TaskEntity`/`EntityStringQuery`; `IntentVault` counted lease |
 | Mouse | met | standard AppKit/SwiftUI controls, plus double-click-to-open and context menus |
 | First-run pairing | met | `OnboardingView` "Pair with that device", and the same route out of `LockedView` |
@@ -239,11 +248,12 @@ moved. Refusing and then telling the user exactly how to proceed is the point:
 guessing would have left every such vault readable by anyone holding a copy of
 `sunrise`.
 
-### iOS — 23 MUSTs
+### iOS — 24 MUSTs
 
 Measured the same way, and against the same two trees the iOS product compiles:
 `apps/apple/iOS/` for the shell, and the shared `apps/apple/Sunrise/` for
-everything below it. **23 met.** These rows were graded as SHOULDs under
+everything below it. **24 met.** The widget row is the newest. The other 23
+were graded as SHOULDs under
 [ADR-0028](../11-adr/0028-ios-is-a-v1-client.md) and are MUSTs of the
 phone/tablet class under ADR-0042. It is the record of what a user can
 actually reach on a phone.
@@ -263,12 +273,13 @@ actually reach on a phone.
 | Keyboard navigation | met | `onKeyChord(scope: .list…)` on the shared `TaskListView` — every row-scoped binding in [keyboard.md](../08-features/keyboard.md), on an attached keyboard. On an **iPad** the `.application`-scoped chords as well: `KeyCommandMenus` (`Sunrise/Keyboard/KeyboardCommands.swift`), attached to the scene in `iOS/SunriseiOSApp.swift`, turns `CommandMenus` into `UIKeyCommand`-backed menu commands, and `VaultTabs.perform(_:)` opens the palette (⇧⌘P) and the cheat sheet (⌘/, or `?` in a list). On an **iPhone** both stay inert by decision ([#348](https://github.com/justin13888/Sunrise/issues/348)), and so do the empty-state hints; the ⌘ commands themselves still answer an attached keyboard. Print and Export as PDF are the Mac's and are not offered (`AppAction.isOffered`). `PadKeyboardUITests` drives ⇧⌘P and `?` and skips on an iPhone simulator, which is the one the `ios-app` task runs |
 | Drag-and-drop | met *(six of eight cells)* | six of the eight cells, from shared files with no platform fork. `.draggable` on the task row (`TaskRowView.swift:74`) is the source for three of them — stream and context rows accept it (`BrowseSidebar.swift:263`, `:306`) and other task rows accept it for reorder (`TaskListView.swift:192`). The other three need no task drag: stream order is `ForEach.onMove` (`BrowseSidebar.swift:45`), files drop onto the attachments pane (`AttachmentsView.swift:32`), and a block moves and resizes inside the grid by its own gestures (`BlockChip`, `CalendarView.swift:417`, moved at `:467` and resized at `:504`). The gesture is a long-press drag rather than a click-drag. Two cells are **No**. *Calendar block → Task* is unbuilt on both platforms (`BlockChip` carries no `.draggable`; `TaskListView`'s drop only reorders). *Task → Calendar block* — a **Yes** on macOS — fails on iOS for reach: the grid's `dropDestination` (`CalendarView.swift:280`) is shared and built, and `accept(items:at:)` (`:371`) takes `tsk_` payloads only, so it serves this cell and no other — but no iOS screen shows a task row and the grid together, no `Tab` carries a `dropDestination`, and nothing configures spring-loading. Those last two are the cell's load-bearing claims, so they are asserted rather than described: `SunriseTests/TabDropTargetTests.swift` reads every source under `apps/apple/iOS/` and fails if one of them configures a `dropDestination`, an `onDrop` or spring-loading, with a second test that the shell still declares the five tabs it is reading — so the cell goes red on the commit that would overturn it. It replaced a two-second simulator drag ([#215](https://github.com/justin13888/Sunrise/issues/215)), which asserted the same negative through a timing-dependent gesture: it failed CI on a pull request that touched five markdown files and then passed a re-run of the same commit, and an assertion that can fail spuriously can pass spuriously — a drag that never lifted satisfies "the tab did not change" without anything having been measured. So the **one-handed** gesture is recorded as *unbuilt* rather than as measured-and-absent ([#72](https://github.com/justin13888/Sunrise/issues/72)), and the two-handed one stays unmeasured, because XCUITest has no API for two independent simultaneous touches; the cell stays **No** on this table's own rule that a completable path has to be shown. Of the six, *File → Task* needs iPad multitasking ([`interaction-patterns.md`](interaction-patterns.md#drag-and-drop-matrix)) |
 | Quick capture (system surface) | met | a **Capture** toolbar button on all five tab roots and on every pushed task list (`VaultTabs.swift:410-416`, attached at `:81`, `:91`, `:162`, `:173`, `:189`, `:278`; the six other pushed destinations at `:282-293` carry none, because a `.toolbar` on a `NavigationStack` root is not inherited by a `navigationDestination`), routed to the inline bar where the list has one and to the sheet where it does not (`:450-456`, `:459-468`); `sunrise://capture?text=`, registered by the iOS target in its own right (`project.yml:394-397`); and the **Capture Task** App Shortcut (`SunriseShortcuts.swift:23-33`) |
-| Reminders / local notifications | met | `ReminderScheduler` follows the change feed for the life of the shell (`iOS/VaultSurfaces.swift:68`, inside the `Lifecycle` modifier the shell applies at `VaultTabs.swift:56-62`); the category with its buttons (`NotificationCenterClient.swift:88-113`) and the response delegate (`:235-264`) are one shared file; Settings asks for authorization (`VaultTabs.swift:485`) |
-| Multi-account | met | More → Settings (`VaultTabs.swift:240`, the sheet at `:475-498`) → the vault picker (`AccountView.swift:133-142`), whose binding setter calls `SessionModel.switchTo` (`AccountView.swift:191-193`); teardown before reopen is in the method itself (`SessionModel.swift:400`) — `await bridge?.shutdown()` then re-point (`:413-414`, `:420-424`), then reopen through the same launch decision a cold start takes (`:429`) |
-| Pairing — scan QR | met *(paste half)* | `PairingView`'s paste field, reached from Settings → **Add a device…** and from `LockedView`. **No camera scanner exists on either platform**; the row's "camera or paste" is satisfied by paste, as it is on macOS. Eight legs here too — `apps/apple/Sunrise/Pairing/` compiles into both targets, so the extra round trip #105 forced is one implementation, not two |
+| Reminders / local notifications | met | `ReminderScheduler` follows the change feed for the life of the shell (`iOS/VaultSurfaces.swift:68`, inside the `Lifecycle` modifier the shell applies at `VaultTabs.swift:56-62`); the category with its buttons (`NotificationCenterClient.swift:88-113`) and the response delegate (`:235-264`) are one shared file; Settings asks for authorization (`iOS/SettingsSheet.swift:30`) |
+| Multi-account | met | More → Settings (`VaultTabs.swift:240`, the sheet at `iOS/SettingsSheet.swift:20-43`) → the vault picker (`AccountView.swift:133-142`), whose binding setter calls `SessionModel.switchTo` (`AccountView.swift:191-193`); teardown before reopen is in the method itself (`SessionModel.swift:400`) — `await bridge?.shutdown()` then re-point (`:413-414`, `:420-424`), then reopen through the same launch decision a cold start takes (`:429`) |
+| Pairing — scan QR | met | `PairingView`'s **Scan the code**, reached from Settings → **Add a device…**, scans with VisionKit's `DataScannerViewController` (`Pairing/QRScanner.swift`), asking for the camera only then, with the purpose string `project.yml` sets. The rest is the Mac's — `apps/apple/Sunrise/Pairing/` compiles into both targets: three phases over `RelayPairing`, paste beside the button and one tap away from a refused camera, and the eight-leg copy-and-paste script when there is no relay to run over. `SunriseiOSUITests/PairingScanUITests` injects a pairing QR into the scanner and refuses the camera |
 | Pairing — show QR | met | `QRCode.image` (`QRCode.swift:29-48`) through `PlatformImage`'s `UIImage` branch (`PlatformKit.swift:42-52`), with the copyable text beside it |
 | iCal import / export | met *(windowed, no round-trip)* | Browse → More → **Import calendar…** / **Export calendar ▸ Today \| This Week** (`iOS/VaultTabs.swift`, `overflowMenu`), into the same URL-taking `AppSurfaces.importIcal(from:)` / `exportIcal(_:to:)` the Mac's File menu reaches — a `fileImporter` and a `fileExporter` in place of the Mac's two `NSPanel`s (`iOS/VaultSurfaces.swift`, `iOS/IcalDocuments.swift`), and `IcalSurfaces` hung on the tab shell as the Mac hangs it on its window, so the notice report an import produces is shown here too. The picked document's security scope is held across the read. Same scope note as the Mac's row, and for the same reason: it is the seam's |
-| Background sync | met *(frontmost only)* | `startSync` (`VaultTabs.swift:500-510`) on the shell's `.task` and again on every relay-URL change (`iOS/VaultSurfaces.swift:62-66`, `:71`), exactly as the Mac's window does it. There is no `BGAppRefreshTask` anywhere in `apps/apple`, so sync stops when the app leaves the foreground ([#31](https://github.com/justin13888/Sunrise/issues/31)) |
+| Background sync | met *(frontmost only)* | `startSync` (`VaultTabs.swift:486-496`) on the shell's `.task` and again on every relay-URL change (`iOS/VaultSurfaces.swift:62-66`, `:71`), exactly as the Mac's window does it. There is no `BGAppRefreshTask` anywhere in `apps/apple`, so sync stops when the app leaves the foreground ([#31](https://github.com/justin13888/Sunrise/issues/31)) |
+| Lock screen / home screen widget | met *(Next Up only)* | Home Screen or Lock Screen → the widget gallery → Sunrise → **Next Up**, served by `SunriseWidgetsiOS`, which is embedded in the app's `PlugIns`. It reads the App Group snapshot that `WidgetPublisher` writes from `Query::Today` and `today_section` (`Sunrise/App/WidgetPublisher.swift`), and every row links to `sunrise://task/<id>?action=open`. The group is granted, not just declared: `WidgetPublisherTests.theAppNamesItsAppGroup` asserts that iOS hands the signed test host its container, and iOS refuses the container to a process without the grant. The capture widget and the Stream tile that [mobile-ios.md](./mobile-ios.md#widgets) also specifies are not built ([#376](https://github.com/justin13888/Sunrise/issues/376)) |
 | OS automation (App Intents) | met | `Sunrise/Intents/` compiles into both products; the iOS target names `AppIntents.framework` (`project.yml:369`), which is what makes Xcode write the metadata bundle without which the intents link and are never offered; six `AppShortcut`s (`SunriseShortcuts.swift:22-83`); the live vault is adopted at `AppSurfaces.swift:162` so an intent fired while the app is open is answered rather than refused |
 | Vim-style modal navigation | met | the same ten-binding subset behind the same toggle — `onKeyChord(… vim:)` (`TaskListView.swift:118`) and Settings → Keyboard → **Vim-style motions** (`AccountView.swift:245-254`). Needs an attached keyboard, which is the row's own scope |
 | Touch | met | tap-to-select on tagged rows, which iOS does **not** give for free and which left every `BrowseSidebar` entry inert until it was added (`PlatformKit.swift:133-159`); swipe actions (`TaskListView.swift:199-203`); a **Done** toolbar to put the software keyboard away, since a phone has no Escape (`CaptureBar.swift:84-85`); **Cancel** / **Add** in the capture sheet, where the Mac has only Return and Escape (`QuickCaptureView.swift:66-85`); haptic refusal feedback where the Mac beeps (`PlatformKit.swift:122-128`) |
@@ -290,10 +301,13 @@ Nothing above demotes a mark, and nothing above is graded up past what a user
 can reach. What is narrower than the row's prose, recorded rather than smoothed
 over:
 
-- **macOS.** No camera QR scanner exists — the *Pairing — scan QR* row's "camera
-  or paste" is satisfied by paste alone. The relay's pairing rendezvous and
-  the `RelayPairing` seam that drives it exist, and would take every other
-  paste away. Neither Apple client calls them yet
+- **macOS.** Pairing runs over the relay only when *both* devices have a
+  relay and a signed-in account, and sign-in lives in Settings, which a device
+  on first run cannot reach before it has a vault. Unless an earlier sign-in
+  is still in its Keychain, the device being added therefore walks the eight
+  copy-and-paste legs, with the sheet saying why. No test drives a real
+  camera: the scanner's reader is tested on a still image of a real code, and
+  the capture session around it only on a Mac with one
   ([#464](https://github.com/justin13888/Sunrise/issues/464)). Drag-and-drop is missing the Calendar
   block → Task gesture — unbuilt rather than inexpressible: the block chip is
   not a drag source and the task row's drop only reorders. iCal is windowed on
@@ -366,8 +380,8 @@ over:
   Search, *Pairing — scan QR* and the two *Attachments* rows are
   narrow here in exactly the way they are on the Mac, and none of the three
   narrownesses is iOS's: the literal-AND FTS query and the attachment byte path
-  are the seam's, while the absent camera scanner is shared SwiftUI rather than
-  anything in the core. See the macOS
+  are the seam's, while when pairing falls back to copy and paste is shared
+  SwiftUI rather than anything in the core. See the macOS
   note above.
 
   Two things that were narrow here are no longer, and both are recorded rather
@@ -449,7 +463,7 @@ capability and each capability is reachable. They are written down so that
   to attach to and stays in prose. The test is mechanical — find the capability
   in the requirement table above, and if its mark in that column is not the one
   that column's audit grades, there is no cell to qualify. Among the ones
-  recorded today: macOS *Print / PDF export*, a **SHOULD** the 23-MUST audit
+  recorded today: macOS *Print / PDF export*, a **SHOULD** the 24-MUST audit
   has no line for; the CLI's unwritable Task `body`, which belongs to its
   *Notes* row, a **MAY** the 9-MUST audit has no line for, and is why
   *Read/write tasks* — in whose cell that gap is recorded — is bare; and on

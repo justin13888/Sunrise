@@ -271,8 +271,41 @@ async fn run(args: Vec<String>) -> Result<(), u8> {
         );
     }
 
+    // Only with `[observability]` written: otherwise no exporter is built and
+    // no batch thread starts. Built here rather than in `ServerState::try_new`
+    // because the exporter sends on the runtime, and this is the first point
+    // one is certain to exist.
+    if let Some(export) = state
+        .config
+        .trace_export(sunrise_server::state::BUILD_COMMIT)
+    {
+        match sunrise_server::telemetry::Telemetry::otlp(&export, tokio::runtime::Handle::current())
+        {
+            Ok(telemetry) => state = state.with_telemetry(telemetry),
+            Err(e) => {
+                tracing::error!(
+                    ev = "srv.start.refused",
+                    err_code = "CONFIG_INVALID",
+                    err_kind = "permanent",
+                    retryable = false,
+                    cause = %e,
+                    "refusing to start"
+                );
+                return Err(EX_CONFIG);
+            }
+        }
+    }
+
     spawn_maintenance(state.clone());
-    serve_until_signalled(state, &bind).await
+    let telemetry = state.telemetry.clone();
+    let served = serve_until_signalled(state, &bind).await;
+    // The spans of the drain itself are queued until here. The flush blocks
+    // until the exporter answers or times out, so it runs off the runtime; a
+    // failed flush is reported by the exporter's own log and loses only spans.
+    // After a drain a second signal abandoned there is nothing to flush:
+    // `serve_until_signalled` abandoned the exporter, and this returns at once.
+    let _ = tokio::task::spawn_blocking(move || telemetry.shutdown()).await;
+    served
 }
 
 /// Bind `bind`, serve until `SIGTERM`/`SIGINT`, and drain.
@@ -300,12 +333,17 @@ async fn serve_until_signalled(state: ServerState, bind: &str) -> Result<(), u8>
             return Err(EX_FAILURE);
         }
     };
+    let telemetry = state.telemetry.clone();
     let served = tokio::select! {
         served = sunrise_server::serve_until(state, listener, shutdown) => served,
         // A second signal: the operator wants it gone now. Dropping the server
         // future aborts its accept loops, and returning ends the runtime and
         // every connection with it.
         Ok(()) = &mut force_rx => {
+            // Nor does it wait on the collector: abandoned, the exporter drops
+            // its queue, the flush after the drain returns at once, and the
+            // runtime's teardown dropping the last clone flushes nothing.
+            telemetry.abandon();
             tracing::error!(
                 ev = "srv.stop.failed",
                 err_kind = "user",

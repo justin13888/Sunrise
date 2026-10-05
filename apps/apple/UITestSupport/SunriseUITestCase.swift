@@ -84,7 +84,7 @@ class SunriseUITestCase: XCTestCase {
         line: UInt = #line
     ) {
         let subject = name ?? "the element"
-        guard element.waitForExistence(timeout: timeout) else {
+        guard element.appears(within: timeout) else {
             XCTFail("\(subject) is on screen to be pressed", file: file, line: line)
             return
         }
@@ -163,7 +163,7 @@ class SunriseUITestCase: XCTestCase {
 
         let expected = title ?? text
         XCTAssertTrue(
-            app.staticTexts[expected].waitForExistence(timeout: 10),
+            app.staticTexts[expected].appears(within: 10),
             "the captured task appears in the list it was typed into",
             file: file,
             line: line
@@ -179,5 +179,30 @@ class SunriseUITestCase: XCTestCase {
             usleep(100_000)
         }
         return condition()
+    }
+}
+
+extension XCUIElement {
+    /// `waitForExistence(timeout:)`, without its one-second floor.
+    ///
+    /// XCTest's own wait does not look before it waits: in the result bundle
+    /// of CI run 35624523650 every one of the 166 `waitForExistence` calls the
+    /// iOS UI suite made took its first look between 1.00 and 1.10 s after it
+    /// was asked, and 162 of them found the element on that first look —
+    /// including a second wait on `onboarding.create` issued right after the
+    /// first had found it. That floor alone was 172 s of a ten-minute suite.
+    ///
+    /// So look first, and fall back to XCTest's wait only when the element is
+    /// not there yet. The fallback is XCTest's rather than a poll of our own
+    /// because its "Waiting …s for … to exist" activity is what the result
+    /// bundle's timeline shows, and that timeline is how a flake is read
+    /// (#277); the fast path adds no activity, because it waited for nothing.
+    ///
+    /// The two screenshot walks keep calling `waitForExistence` directly, on
+    /// purpose. There a wait is followed by a `shot`, not an assertion, and
+    /// the second the floor costs is what lets a pushed screen finish arriving
+    /// before it is photographed. Neither walk runs on a pull request.
+    func appears(within timeout: TimeInterval) -> Bool {
+        exists || waitForExistence(timeout: timeout)
     }
 }

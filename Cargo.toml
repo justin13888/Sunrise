@@ -149,6 +149,19 @@ jsonschema = { version = "0.18", default-features = false }
 tracing = { version = "0.1", default-features = false, features = ["std", "attributes"] }
 tracing-core = { version = "0.1", default-features = false }
 tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "fmt", "env-filter", "json", "registry"] }
+# OpenTelemetry trace export, off unless `[observability]` is configured
+# (`crates/sunrise-telemetry`, docs/06-server/observability.md §Tracing).
+# `trace` only: the relay's metrics are its own Prometheus registry and its
+# logs are `sunrise-log`'s NDJSON, so the OTel metrics and logs signals stay
+# out. `internal-logs` is kept so an export failure reaches the operator's log.
+opentelemetry = { version = "0.33", default-features = false, features = ["trace", "internal-logs"] }
+opentelemetry_sdk = { version = "0.33", default-features = false, features = ["trace", "internal-logs"] }
+# OTLP over HTTP with protobuf bodies. No `grpc-tonic` (a second HTTP/2 and TLS
+# stack) and none of the bundled HTTP clients: they pin `reqwest` 0.13, a second
+# major line beside the workspace's 0.12. `sunrise-telemetry` hands the exporter
+# a client over the `hyper-rustls` stack the server already links.
+opentelemetry-otlp = { version = "0.33", default-features = false, features = ["trace", "http-proto", "internal-logs"] }
+opentelemetry-http = { version = "0.33", default-features = false, features = ["internal-logs"] }
 
 # --- utility ---
 thiserror = { version = "1.0", default-features = false }
@@ -206,6 +219,7 @@ criterion = { version = "0.5", default-features = false, features = ["cargo_benc
 
 # --- internal workspace crates ---
 sunrise-log = { path = "crates/sunrise-log", version = "0.1.0" }
+sunrise-telemetry = { path = "crates/sunrise-telemetry", version = "0.1.0" }
 sunrise-id = { path = "crates/sunrise-id", version = "0.1.0" }
 sunrise-error = { path = "crates/sunrise-error", version = "0.1.0" }
 sunrise-http-sig = { path = "crates/sunrise-http-sig", version = "0.1.0" }

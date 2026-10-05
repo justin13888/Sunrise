@@ -27,6 +27,17 @@ enum QRCode {
     /// saying so would be a pairing screen that silently cannot be paired
     /// with. Callers must show the payload as text instead.
     static func image(for text: String, side: CGFloat = 240) -> PlatformImage? {
+        guard let cgImage = cgImage(for: text, side: side) else { return nil }
+        let size = CGSize(width: cgImage.width, height: cgImage.height)
+        return PlatformImage.fromCGImage(cgImage, size: size)
+    }
+
+    /// The same symbol as a bitmap, for a reader rather than a screen.
+    ///
+    /// `QRScanner`'s still-image source decodes exactly this, so a test that
+    /// scans what ``image(for:side:)`` draws reads the symbol the pairing
+    /// screen shows rather than a second rendering of it.
+    static func cgImage(for text: String, side: CGFloat = 240) -> CGImage? {
         guard !text.isEmpty, side > 0 else { return nil }
         let filter = CIFilter.qrCodeGenerator()
         filter.message = Data(text.utf8)
@@ -42,8 +53,6 @@ enum QRCode {
         // per pairing screen, so caching one would trade a real concurrency
         // constraint for an invisible saving.
         let context = CIContext()
-        guard let cgImage = context.createCGImage(scaled, from: scaled.extent) else { return nil }
-        let size = CGSize(width: scaled.extent.width, height: scaled.extent.height)
-        return PlatformImage.fromCGImage(cgImage, size: size)
+        return context.createCGImage(scaled, from: scaled.extent)
     }
 }

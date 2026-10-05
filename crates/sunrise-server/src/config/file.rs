@@ -159,6 +159,10 @@ pub struct FileConfig {
     /// `[push.apns]` sub-table has no defaults: written at all, it is written
     /// whole.
     pub push: Option<super::PushConfig>,
+    /// The `[observability]` table, deserialized straight into the model's
+    /// type. Absent, no trace is exported; written, `endpoint` is required and
+    /// every other key defaults.
+    pub observability: Option<super::ObservabilityConfig>,
 }
 
 impl FileConfig {
@@ -197,6 +201,9 @@ impl FileConfig {
         }
         if let Some(v) = self.push {
             base.push = v;
+        }
+        if let Some(v) = self.observability {
+            base.observability = Some(v);
         }
         if let Some(v) = self.auth.oidc_issuer {
             base.oidc_issuer = Some(v);

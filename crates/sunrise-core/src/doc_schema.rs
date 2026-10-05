@@ -17,7 +17,10 @@
 //! - every `InnerOp` variant the decoder accepts, read out of the derive, so
 //!   the control families are covered as well as the registry's;
 //! - every lossless string enum on the wire, with the spellings its
-//!   `lossy_enum!` table holds and the arm an unknown value reads as.
+//!   `lossy_enum!` table holds and the arm an unknown value reads as;
+//! - every feature id this build supports ([`crate::feature::FEATURES`]),
+//!   with its scope, the op kinds, fields and field-op kinds it introduces,
+//!   and the version it arrived in (ADR-0045 §7).
 //!
 //! What it does not hold is what is not part of the document's shape: storage
 //! tables and columns, Rust field names, declaration comments, and the order
@@ -211,6 +214,13 @@ fn canonical_order(mut schema: Value) -> Value {
         sort_strings(&mut e["variants"]);
     }
     schema["enums"] = Value::Array(enums);
+    let mut features = take_sorted(&mut schema["features"], "id");
+    for f in &mut features {
+        sort_strings(&mut f["op_kinds"]);
+        sort_strings(&mut f["fields"]);
+        sort_strings(&mut f["field_op_kinds"]);
+    }
+    schema["features"] = Value::Array(features);
     schema
 }
 
@@ -252,12 +262,39 @@ fn raw_schema() -> Value {
         })
         .collect();
 
+    let features: Vec<Value> = crate::feature::FEATURES
+        .iter()
+        .map(|f| {
+            json!({
+                "id": f.id,
+                "scope": feature_scope_value(f.id),
+                "op_kinds": f.op_kinds,
+                "fields": f.fields,
+                "field_op_kinds": f.field_op_kinds,
+                "since": f.since,
+            })
+        })
+        .collect();
+
     json!({
         "format": SCHEMA_FORMAT,
         "entities": entities,
         "op_kinds": crate::inner_op::known_kinds(),
         "enums": enums,
+        "features": features,
     })
+}
+
+/// A feature's scope as the schema writes it: `"structural"`, or the tag of
+/// the entity it gates. Read off the id, as every build reads it
+/// ([`crate::feature`] §The scope is in the id).
+fn feature_scope_value(id: &str) -> Value {
+    use crate::feature::FeatureScope;
+    match FeatureScope::of(id) {
+        FeatureScope::Structural => json!("structural"),
+        FeatureScope::Entity(kind) => json!({ "entity": kind.tag() }),
+        FeatureScope::UnknownEntity(prefix) => json!({ "entity": prefix }),
+    }
 }
 
 /// `BLAKE3::derive_key(DOC_SCHEMA_FP_DOMAIN, JCS(schema))`.

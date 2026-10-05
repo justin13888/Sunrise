@@ -142,6 +142,9 @@ THRESHOLDS: dict[str, int] = {
     "crates/sunrise-domain": 763,
     "crates/sunrise-server": 857,
     "crates/sunrise-sync": 708,
+    # Four files on the day it was added, so the pooled number as for
+    # `sunrise-sync`.
+    "crates/sunrise-telemetry": 708,
 }
 
 _NOT_YET_MEASURED = (

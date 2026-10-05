@@ -74,7 +74,10 @@ pub type ApiRouter = kynos::Router<
         kynos::middleware::cors::Cors,
         kynos::middleware::stack::Cons<
             kynos::middleware::limits::BodySize,
-            kynos::middleware::stack::Cons<ratelimit::Admission, ()>,
+            kynos::middleware::stack::Cons<
+                ratelimit::Admission,
+                kynos::middleware::stack::Cons<observe::TraceRequest, ()>,
+            >,
         >,
     >,
 >;
@@ -140,7 +143,12 @@ pub fn router(config: &crate::ServerConfig, metrics: &crate::Metrics) -> ApiRout
         .trusted_proxies(kynos::http::forwarded::TrustedProxies::networks(
             config.trusted_proxy_networks(),
         ))
-        // First, so outermost: a flood is refused before `BodySize` reads a
+        // Outermost of all, so a request the limiter refuses is still one
+        // traced operation, and the root span covers every interceptor below
+        // it. Declares nothing, so the description is unchanged; does nothing
+        // at all without `[observability]`.
+        .intercept(observe::TraceRequest)
+        // Next, so outside the rest: a flood is refused before `BodySize` reads a
         // chunked body into memory to measure it. Covering every operation is
         // also what puts `429` in every operation's description.
         .intercept(ratelimit::Admission)

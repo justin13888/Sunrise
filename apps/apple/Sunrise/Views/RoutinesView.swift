@@ -42,11 +42,13 @@ struct RoutinesView: View {
         .toolbar {
             ToolbarItem {
                 Button("New routine", systemImage: "plus") { creating = true }
+                    .disabledUnlessEditable(.routine, .task)
             }
             ToolbarItem {
                 Menu("More", systemImage: "ellipsis.circle") {
                     Toggle("Show archived", isOn: $model.showsArchived)
                     Button("Generate now") { Task { await model.materializeNow() } }
+                        .disabledUnlessEditable(.task)
                 }
             }
         }
@@ -87,15 +89,21 @@ struct RoutinesView: View {
     @ViewBuilder
     private func menu(for routine: RoutineItem) -> some View {
         Button("Edit…") { editing = routine }
-        Button("Skip next occurrence") { Task { await model.skipNext(routine) } }
-        Button(routine.paused ? "Resume" : "Pause") {
-            Task { await model.setPaused(routine, !routine.paused) }
+        // Skipping can tombstone the occurrence's task, and pausing or
+        // archiving is an update, which re-materializes: each writes tasks.
+        Group {
+            Button("Skip next occurrence") { Task { await model.skipNext(routine) } }
+            Button(routine.paused ? "Resume" : "Pause") {
+                Task { await model.setPaused(routine, !routine.paused) }
+            }
+            Button(routine.archived ? "Unarchive" : "Archive") {
+                Task { await model.setArchived(routine, !routine.archived) }
+            }
         }
-        Button(routine.archived ? "Unarchive" : "Archive") {
-            Task { await model.setArchived(routine, !routine.archived) }
-        }
+        .disabledUnlessEditable(.routine, .task)
         Divider()
         Button("Delete…", role: .destructive) { confirmingDelete = routine }
+            .disabledUnlessEditable(.routine)
     }
 }
 

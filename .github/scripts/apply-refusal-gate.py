@@ -129,6 +129,9 @@ PROPAGATES: dict[str, str] = {
     "refold_device_revocations": "register fold",
     "compact_device_revoke_ops": "device_revoke_ops delete",
     "release_orphan_read_bounds": "device_read_bounds delete",
+    # Feature folds (features.rs). A malformed id is skipped and logged.
+    "apply_vault_requires": "vault_required_features write",
+    "apply_device_features": "device_features write",
     # Entity rows (lww.rs and the per-kind writers it calls).
     "read_row_lww": "entity row read",
     "ensure_stream_row": "streams row write",

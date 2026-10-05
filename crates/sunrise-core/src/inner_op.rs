@@ -20,12 +20,14 @@
 //! contend with one another and re-delivery is a no-op. See ADR-0013 and
 //! [`crate::engine`]'s `materialize_focus_remote`.
 //!
-//! Five families are **control** ops rather than entities: `KeyEnvelope`,
+//! Seven families are **control** ops rather than entities: `KeyEnvelope`,
 //! `DeviceRevoke`, `DeviceCertPublish` and `IdentityTransition` carry key
-//! material and trust, and `StreamDigest` carries a replica's frontier in one
-//! stream (ADR-0043 §5). They have no row and no last-writer-wins stamp, and
-//! are classed `OpEffect::Control` so the compiler keeps them out of the
-//! entity materializer. See [`crate::control_op`], ADR-0024 and ADR-0032.
+//! material and trust, `StreamDigest` carries a replica's frontier in one
+//! stream (ADR-0043 §5), and `VaultRequires` and `DeviceFeatures` carry the
+//! vault's feature state (ADR-0045 §7). None has a row or a last-writer-wins
+//! stamp, and all are classed `OpEffect::Control` so the compiler keeps them
+//! out of the entity materializer. See [`crate::control_op`], ADR-0024 and
+//! ADR-0032.
 //!
 //! Two shapes write entity state (ADR-0044):
 //!
@@ -42,10 +44,13 @@
 //!
 //! This build applies both and emits only the first. ADR-0044 §9 forbids a
 //! build from emitting its first `Patch` into a vault until the vault's
-//! `vault_requires` lists `core.field_ops`, and `vault_requires` does not exist
-//! yet (#324).
+//! `vault_requires` lists `core.field_ops`, and this build's feature registry
+//! (`crate::feature`) does not register that feature yet.
 
-use crate::control_op::{DeviceRevokePayload, IdentityTransitionPayload, KeyEnvelopePayload};
+use crate::control_op::{
+    DeviceFeaturesPayload, DeviceRevokePayload, IdentityTransitionPayload, KeyEnvelopePayload,
+    VaultRequiresPayload,
+};
 use serde::{Deserialize, Serialize};
 use sunrise_domain::{
     Attachment, Block, Context, FocusEnd, FocusStart, Interruption, ReviewSnapshot, Routine,
@@ -58,9 +63,9 @@ use thiserror::Error;
 /// [`InnerOp`] and its routing.
 ///
 /// Every entity op variant, its payload, its `inner_kind`, its effect, its
-/// target field and its entity are read from the registry; only the four
-/// control families, which carry key material and trust rather than an
-/// entity, are written here. An entity op therefore cannot be added without
+/// target field and its entity are read from the registry; only the six
+/// control families, which carry key material, trust and feature state rather
+/// than an entity, are written here. An entity op therefore cannot be added without
 /// every routing table below learning it.
 ///
 /// The derived `inner_kind` and `target_kind` reach the op log only on the
@@ -144,6 +149,12 @@ macro_rules! define_inner_op {
             /// each device's chain root with its own and records what
             /// disagrees or what it is missing. See [`StreamDigestPayload`].
             StreamDigest(StreamDigestPayload),
+            /// Add feature ids to the vault's grow-only required set (ADR-0045
+            /// §7). Control op, on the vault-meta stream.
+            VaultRequires(VaultRequiresPayload),
+            /// The sending device's supported feature ids, read as its latest
+            /// such op (ADR-0045 §7). Control op, on the vault-meta stream.
+            DeviceFeatures(DeviceFeaturesPayload),
         }
 
         impl InnerOp {
@@ -164,6 +175,8 @@ macro_rules! define_inner_op {
                         _ => "patch",
                     },
                     Self::StreamDigest(_) => "stream.digest",
+                    Self::VaultRequires(_) => "vault.requires",
+                    Self::DeviceFeatures(_) => "device.features",
                 }
             }
 
@@ -173,10 +186,13 @@ macro_rules! define_inner_op {
                 match self {
                     $($( Self::$op(_) => $tag, )*)*
                     Self::KeyEnvelope(_) => "stream_key",
-                    Self::DeviceRevoke(_) | Self::DeviceCertPublish(_) => "device",
+                    Self::DeviceRevoke(_)
+                    | Self::DeviceCertPublish(_)
+                    | Self::DeviceFeatures(_) => "device",
                     Self::IdentityTransition(_) => "identity",
                     Self::Patch(p) => p.target.kind().tag(),
                     Self::StreamDigest(_) => "stream",
+                    Self::VaultRequires(_) => "vault",
                 }
             }
 
@@ -202,6 +218,14 @@ macro_rules! define_inner_op {
                     // payload does not repeat; as for a cert, a zero ref is the
                     // least misleading answer.
                     Self::StreamDigest(_) => EntityRef::new(EntityKind::Stream, [0u8; 16]),
+                    // The vault-meta stream: the required set belongs to the
+                    // vault, and that stream is the vault's own log.
+                    Self::VaultRequires(_) => {
+                        EntityRef::new(EntityKind::Stream, crate::engine::META_STREAM)
+                    }
+                    // The sender, which the payload does not repeat; the
+                    // zero id for `DeviceCertPublish`'s reason.
+                    Self::DeviceFeatures(_) => EntityRef::new(EntityKind::Device, [0u8; 16]),
                 }
             }
 
@@ -213,7 +237,9 @@ macro_rules! define_inner_op {
                     | Self::DeviceRevoke(_)
                     | Self::DeviceCertPublish(_)
                     | Self::IdentityTransition(_)
-                    | Self::StreamDigest(_) => OpEffect::Control,
+                    | Self::StreamDigest(_)
+                    | Self::VaultRequires(_)
+                    | Self::DeviceFeatures(_) => OpEffect::Control,
                     Self::Patch(p) => p.effect(),
                 }
             }
@@ -222,8 +248,10 @@ macro_rules! define_inner_op {
             pub(crate) fn entity_kind(&self) -> EntityKind {
                 match self {
                     $($( Self::$op(_) => EntityKind::$kind, )*)*
-                    Self::KeyEnvelope(_) => EntityKind::Stream,
-                    Self::DeviceRevoke(_) | Self::DeviceCertPublish(_) => EntityKind::Device,
+                    Self::KeyEnvelope(_) | Self::VaultRequires(_) => EntityKind::Stream,
+                    Self::DeviceRevoke(_)
+                    | Self::DeviceCertPublish(_)
+                    | Self::DeviceFeatures(_) => EntityKind::Device,
                     Self::IdentityTransition(_) => EntityKind::Identity,
                     Self::Patch(p) => p.target.kind(),
                     Self::StreamDigest(_) => EntityKind::Stream,
@@ -242,6 +270,8 @@ macro_rules! define_inner_op {
                         | Self::DeviceCertPublish(_)
                         | Self::IdentityTransition(_)
                         | Self::StreamDigest(_)
+                        | Self::VaultRequires(_)
+                        | Self::DeviceFeatures(_)
                 )
             }
         }
@@ -554,7 +584,7 @@ mod tests {
     fn known_kinds_is_the_derives_variant_list() {
         let kinds = known_kinds();
         assert_eq!(kinds.first(), Some(&"TaskCreate"));
-        assert_eq!(kinds.last(), Some(&"StreamDigest"));
+        assert_eq!(kinds.last(), Some(&"DeviceFeatures"));
         for name in [
             "BlockCreate",
             "AttachmentDelete",
@@ -569,8 +599,9 @@ mod tests {
     }
 
     /// `InnerOp` is the registry's ops, in registry order, then the four
-    /// control families, then `Patch`, then `StreamDigest` — read out of the
-    /// derive, so it is the list the decoder actually accepts.
+    /// control families, then `Patch`, then `StreamDigest`, then the two
+    /// feature control families — read out of the derive, so it is the list
+    /// the decoder actually accepts.
     #[test]
     fn the_derive_declares_the_registry_ops_then_the_control_families() {
         let mut expected: Vec<&str> = sunrise_id::registry::ENTITIES
@@ -584,6 +615,8 @@ mod tests {
             "IdentityTransition",
             "Patch",
             "StreamDigest",
+            "VaultRequires",
+            "DeviceFeatures",
         ]);
         assert_eq!(known_kinds(), expected.as_slice());
     }

@@ -338,10 +338,19 @@ edit can still hold unknown values.
   - the op kinds it introduces
   - the field names it introduces
   - the field-op kinds it introduces
-  - its **scope**: a list of entity kinds, or `structural` for the whole vault
+  - its **scope**: one entity kind, or `structural` for the whole vault
   - the `DOC_SCHEMA_V` it arrived in
 
   Ids are never reused or renamed.
+- **The scope is read off the id**, never stored beside it. `core.*` is
+  structural, and `<entity>.*` scopes the entity whose registry tag is
+  `<entity>`. The build that needs a feature's scope is exactly the build that
+  lacks the feature's registry entry, so a scope held only in the registry
+  would be unknowable to the one reader it exists for. A feature that changes
+  how two entity kinds are written is therefore structural, or two features.
+  An id whose prefix names an entity this build does not have scopes that
+  entity, which nothing in this build writes: it locks nothing, and it is
+  still reported as missing.
 - **`vault_requires`** is a new signed control op family on the vault-meta
   stream (`stream_id = 0x00…00`), sealed like the other control ops in
   `crates/sunrise-core/src/control_op.rs`:
@@ -367,8 +376,9 @@ edit can still hold unknown values.
 - **Devices advertise what they support.** A second control op,
   `DeviceFeatures { "features": [+ feature-id] }`, is emitted by each device on
   the vault-meta stream whenever its supported set changes. It is read as the
-  latest op per device, by `(hlc, seq)`. A device that has never emitted one
-  supports nothing.
+  latest op per device, ordered by its HLC and then by the encoded feature
+  list, so a duplicate stamp resolves the same way on every replica. A device
+  that has never emitted one supports nothing.
 - **Enabling a feature.** A client MUST NOT add a feature to `vault_requires`
   while any non-revoked device lacks it in its latest `DeviceFeatures`, unless
   the user confirms. The confirmation names the devices, for example "Your
@@ -397,6 +407,23 @@ When `vault_requires` contains a feature this build does not have:
    than letting them fail.
 5. **After upgrade, nothing has been lost.** Parked ops replay (§4), and the
    banner clears when no required feature is missing.
+
+**Where the gate runs.** The refusal is made where every local op is sealed
+(`crates/sunrise-core/src/engine/features.rs`), not per command, so it covers
+every op a command writes, including the tasks routine materialization
+generates, and a command added later cannot route around it. The transaction it
+aborts rolls back, so a refused command leaves nothing in the log. The same
+guard refuses an op that uses a registered feature before any applied
+`VaultRequires` names it, which makes the emission order of §7 a test failure
+when a feature's command path forgets it, rather than a rule to remember.
+`Core::open` treats a refused routine materialization as the read-only state
+working and opens the vault.
+
+**Confirmation.** The rule in §7 that a feature is not enabled over a device
+that has not advertised it surfaces as a typed refusal naming those devices,
+which the caller turns into the confirmation and retries. No registered feature
+is enabled by a user action yet, so no client draws that confirmation; the
+first feature that is adds it.
 
 ## Alternatives considered
 
@@ -428,8 +455,10 @@ When `vault_requires` contains a feature this build does not have:
   [ADR-0042](./0042-v0-forever.md) withdrew any pre-release licence to break
   compatibility, so none of them may rely on one.
 - **Two new control op families** (`VaultRequires` and `DeviceFeatures`) and
-  one new error code (`DOC_FEATURE_MISSING`) arrive in the same schema bump as
-  field 13.
+  one new error code (`DOC_FEATURE_MISSING`) arrive at `DOC_SCHEMA_V` 10,
+  after `Patch` (8) and `StreamDigest` (9). A v9 build parks either family and
+  replays it after
+  an upgrade.
 - [`../02-domain/schema-versioning.md`](../02-domain/schema-versioning.md) and
   [`../10-cross-cutting/protocol-versioning.md`](../10-cross-cutting/protocol-versioning.md)
   are rewritten to this record.

@@ -97,7 +97,28 @@ key_id      = "ABC123DEFG"                # the key's 10-character Key ID (JWT `
 team_id     = "DEF123GHIJ"                # 10-character Apple Developer Team ID (JWT `iss`)
 topic       = "dev.sunrise.app"           # the app's bundle id, sent as `apns-topic`
 environment = "production"                # "sandbox" for development builds' tokens
+
+[observability]                           # optional; absent = no tracing at all
+endpoint     = "http://127.0.0.1:4318/v1/traces"   # required; the collector's OTLP/HTTP
+                                          # traces URL, used verbatim; http:// or https://
+sample_ratio = 0.01                       # default 0.01; 0.0 to 1.0, and also the cap on
+                                          # what a client's traceparent can ask for
+service_name = "sunrise-server"           # default "sunrise-server"; `service.name`
+deployment   = "production"               # optional; `deployment.environment.name`
 ```
+
+`[observability]` exports OpenTelemetry traces of the relay's requests, sync
+streams and push deliveries to a collector over OTLP/HTTP (protobuf bodies),
+redacted by construction: no span carries an id, a token, a path or a body
+([`observability.md`](./observability.md) §Tracing lists what each span holds).
+Written at all, the table turns export on, and `endpoint` is the one key it
+needs. `sample_ratio` defaults to the 1% production figure; a staging relay that
+wants every trace sets `1.0`. A client's `traceparent` joins its trace to the
+relay's and can lower that ratio, never raise it. Plain `http://` suits a
+collector on the same host; send to one elsewhere over `https://`. The
+exporter also honours the standard `OTEL_EXPORTER_OTLP_TRACES_HEADERS` for a
+collector that wants an authorization header, and the `OTEL_BSP_*` batch
+settings. Without the table no exporter is built and no span is recorded.
 
 `[push.apns]` turns on content-less wake-ups for iOS devices that have no event
 stream open (see [`push-notifications.md`](./push-notifications.md)). Written at
@@ -135,6 +156,7 @@ The server exits 78 rather than starting, when:
 | `sunrise.db` is at a schema version newer than this binary's | A newer release migrated it; writing to it could corrupt what that release relies on (see "Upgrade") |
 | `[push.apns] key_path` is readable by group or others, missing, or not a P-256 `.p8` key | It signs pushes for the whole app; a key that cannot sign would fail every push instead of the start |
 | `[push.apns] key_id` or `team_id` is not 10 uppercase letters and digits, or `topic` is empty | APNs would refuse every provider token or push |
+| `[observability] endpoint` is not an `http://` or `https://` URL with a host, `sample_ratio` is outside `0.0`–`1.0`, or `service_name` is empty | The exporter could not send, or would sample a fraction that is not one |
 
 Unknown keys and unknown tables are **rejected**, not ignored. Writing a
 `[tls]` block and having it silently dropped would serve plaintext while the
@@ -220,8 +242,7 @@ To scrape metrics, run the scraper on the relay's host against
 These appear in earlier drafts of this document and are **not implemented**;
 the parser will reject them rather than accept them silently:
 `[tls]` (terminate TLS at a reverse proxy for now), `[push]` providers other
-than `[push.apns]`, `[quotas]`,
-`[observability]`, `[storage] mode` / `sqlite_pool_size` / `postgres_url` /
+than `[push.apns]`, `[quotas]`, `[storage] mode` / `sqlite_pool_size` / `postgres_url` /
 `s3_*`, `[server] public_url`, and `[auth] oidc_client_secret` /
 `admin_emails`. The `doctor` those drafts described is
 `sunrise-server admin doctor` (see "Admin CLI").

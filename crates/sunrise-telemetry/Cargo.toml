@@ -1,0 +1,37 @@
+[package]
+name = "sunrise-telemetry"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+description = "Redacted OpenTelemetry tracing for the Sunrise relay: allowlisted span attributes, a capped sampler, and an OTLP exporter"
+
+[lints]
+workspace = true
+
+[dependencies]
+async-trait = { workspace = true }
+bytes = { workspace = true }
+http = { workspace = true }
+http-body-util = { workspace = true }
+hyper-rustls = { workspace = true }
+hyper-util = { workspace = true, features = ["client-legacy", "http1"] }
+opentelemetry = { workspace = true }
+opentelemetry-http = { workspace = true }
+opentelemetry-otlp = { workspace = true }
+opentelemetry_sdk = { workspace = true }
+sunrise-log = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["rt"] }
+
+[features]
+# `testing::recording`: telemetry over an in-memory exporter, for the server's
+# span tests. Never enabled outside a dev-dependency.
+testing = ["opentelemetry_sdk/testing"]
+
+[dev-dependencies]
+opentelemetry_sdk = { workspace = true, features = ["testing"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net"] }

@@ -28,8 +28,9 @@ status: proposed
 >
 > - **No command emits a `Patch`.** ADR-0044 §9 forbids a build from emitting
 >   its first `Patch` into a vault until the vault's `vault_requires` lists
->   `core.field_ops`, and `vault_requires` is
->   [#324](https://github.com/justin13888/Sunrise/issues/324). Every local
+>   `core.field_ops`, and the feature registry `vault_requires` reads
+>   ([#324](https://github.com/justin13888/Sunrise/issues/324)) does not list
+>   it yet. Every local
 >   command still writes a full-state op, which merges as a write to every
 >   field it carries (see [Legacy full-state ops](#legacy-full-state-ops)). So
 >   between two devices running this build, a concurrent edit to a different

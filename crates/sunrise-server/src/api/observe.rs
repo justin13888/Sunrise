@@ -40,10 +40,11 @@
 
 use crate::state::ServerState;
 use kynos::http::{Request, Response};
-use kynos::middleware::Observer;
+use kynos::middleware::{Continued, Interceptor, Next, Observer};
 use kynos::router::operation::Route;
 use std::time::Duration;
-use tracing::Span;
+use sunrise_telemetry::{Attr, FutureExt as _};
+use tracing::{Instrument as _, Span};
 
 /// The `endpoint` recorded for a request that matched no operation.
 ///
@@ -131,6 +132,73 @@ impl Observer<ServerState> for RequestLog {
     }
 }
 
+/// Opens the root span of each traced operation and runs the rest of the
+/// request inside it (`docs/06-server/observability.md` §Tracing).
+///
+/// An interceptor rather than an observer, because a root span has to be
+/// *current* while the handler runs for the verify, store, relay and blob
+/// spans beneath it to find their parent, and only an interceptor wraps the
+/// handler's future. It declares nothing — it reads no header it extracts,
+/// adds none, and always continues — so mounting it leaves the published
+/// description unchanged.
+///
+/// The span is named `"{method} {endpoint}"`, where `endpoint` is the matched
+/// route's template in the log's `:id` spelling, so a span and a
+/// `srv.req.*` record of the same request carry the same value under the same
+/// key. The request is read for its `traceparent` and nothing else; its URI
+/// is never consulted, the same rule [`RequestLog`] keeps.
+///
+/// While a sampled span is open the handler also runs inside an
+/// `http.request` log span carrying `trace_id` and `span_id`, so every record
+/// written during the request joins the trace it belongs to. Without
+/// `[observability]`, or for a request the sampler dropped, there is no
+/// telemetry span and no log span, and the request runs exactly as it would
+/// with this interceptor absent.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TraceRequest;
+
+impl Interceptor<ServerState> for TraceRequest {
+    type Reads = ();
+    type Adds = ();
+    type Short = std::convert::Infallible;
+
+    async fn intercept(
+        &self,
+        request: Request,
+        reads: (),
+        state: &ServerState,
+        next: Next<'_, ServerState>,
+    ) -> Result<Continued<()>, std::convert::Infallible> {
+        let () = reads;
+        let route = next.route();
+        let method = route.method().as_wire_str();
+        let endpoint = templated(route.path());
+        let root = state
+            .telemetry
+            .server_span(method, &endpoint, request.headers());
+        let Some(ids) = root.ids() else {
+            return Ok(next.run(request).await);
+        };
+        let log = tracing::info_span!(
+            "http.request",
+            method = %method,
+            endpoint = %endpoint,
+            trace_id = %ids.trace_id,
+            span_id = %ids.span_id,
+        );
+        let continued = next
+            .run(request)
+            .with_context(root.context())
+            .instrument(log)
+            .await;
+        root.set(Attr::status(continued.status().as_u16()));
+        if continued.status().is_server_error() {
+            root.fail("server error");
+        }
+        Ok(continued)
+    }
+}
+
 /// Records `sunrise_http_requests_total` and
 /// `sunrise_http_request_duration_seconds`.
 ///
@@ -183,6 +251,10 @@ impl Observer<ServerState> for HttpMetrics {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "observe_trace_tests.rs"]
+mod trace_tests;
 
 #[cfg(test)]
 mod tests {

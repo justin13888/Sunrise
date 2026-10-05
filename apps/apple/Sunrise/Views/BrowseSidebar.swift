@@ -89,8 +89,10 @@ struct BrowseSidebar: View {
             HStack(spacing: 4) {
                 addButton("New stream", systemImage: "plus",
                           identifier: "sidebar.stream.new") { newStream = true }
+                    .disabledUnlessEditable(.stream)
                 addButton("New context", systemImage: "at",
                           identifier: "sidebar.context.new") { newContext = true }
+                    .disabledUnlessEditable(.context)
                 Spacer()
             }
             .buttonStyle(.borderless)
@@ -103,8 +105,10 @@ struct BrowseSidebar: View {
                 Menu("Add", systemImage: "plus") {
                     Button("New stream", systemImage: "plus") { newStream = true }
                         .accessibilityIdentifier("sidebar.stream.new")
+                        .disabledUnlessEditable(.stream)
                     Button("New context", systemImage: "at") { newContext = true }
                         .accessibilityIdentifier("sidebar.context.new")
+                        .disabledUnlessEditable(.context)
                 }
                 .accessibilityLabel("Add")
                 .accessibilityIdentifier("sidebar.add")
@@ -271,15 +275,20 @@ struct BrowseSidebar: View {
                 // so every one of these would be rejected by the core.
                 Text("The Inbox cannot be edited")
             } else {
+                // Edit… stays open so a locked stream can still be read; its
+                // sheet's Save is gated instead.
                 Button("Edit…") { editingStream = row }
-                Button(row.paused ? "Resume" : "Pause") {
-                    Task { await model.setStreamPaused(row, !row.paused) }
+                Group {
+                    Button(row.paused ? "Resume" : "Pause") {
+                        Task { await model.setStreamPaused(row, !row.paused) }
+                    }
+                    Button(row.archived ? "Unarchive" : "Archive") {
+                        Task { await model.setStreamArchived(row, !row.archived) }
+                    }
+                    Divider()
+                    Button("Delete…", role: .destructive) { confirmingStreamDelete = row }
                 }
-                Button(row.archived ? "Unarchive" : "Archive") {
-                    Task { await model.setStreamArchived(row, !row.archived) }
-                }
-                Divider()
-                Button("Delete…", role: .destructive) { confirmingStreamDelete = row }
+                .disabledUnlessEditable(.stream)
             }
         }
     }
@@ -310,11 +319,14 @@ struct BrowseSidebar: View {
         .dropHighlight(isActive: isTargeted == row.id)
         .contextMenu {
             Button("Edit…") { editingContext = row }
-            Button(row.archived ? "Unarchive" : "Archive") {
-                Task { await model.setContextArchived(row, !row.archived) }
+            Group {
+                Button(row.archived ? "Unarchive" : "Archive") {
+                    Task { await model.setContextArchived(row, !row.archived) }
+                }
+                Divider()
+                Button("Delete…", role: .destructive) { confirmingContextDelete = row }
             }
-            Divider()
-            Button("Delete…", role: .destructive) { confirmingContextDelete = row }
+            .disabledUnlessEditable(.context)
         }
     }
 }

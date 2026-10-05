@@ -109,6 +109,10 @@ impl Engine {
         epoch: u32,
         stream_key: &StreamKey,
     ) -> rusqlite::Result<()> {
+        // Every local op is sealed here, so this is the one place a feature
+        // gate cannot be routed around (ADR-0045 §8): an op on a scope a
+        // missing feature locks never reaches the log.
+        self.seal_guard(tx, inner_op, target_kind)?;
         let device_id = self.keychain.device_id();
         let ts_ms = hlc.physical_ms;
         // Fields 14 and 15 (ADR-0043 §1–§2), from this op log, inside this
@@ -808,7 +812,7 @@ pub(super) fn ops_run_end(
 /// changed no row and released no parked op;
 /// `crates/sunrise-core/src/engine/oplog.rs:159#ops_insert_at` at the tail of
 /// this device's own emit, after the op-log insert and the outbox enqueue; and
-/// `crates/sunrise-core/src/engine/sync.rs:762#park_op`, after inserting the
+/// `crates/sunrise-core/src/engine/sync.rs:769#park_op`, after inserting the
 /// unapplied row of an op whose kind this build does not know. That last one
 /// is why a parked op counts toward the prefix: its row is in `ops` like any
 /// other, and this function reads nothing else (issue #320).
@@ -880,7 +884,7 @@ pub(super) fn ops_run_end(
 /// at this `(stream, epoch)` opens the envelope,
 /// `crates/sunrise-core/src/engine/sync.rs:338#apply_remote_all` when the
 /// sender's clock is outside the drift window, and
-/// `crates/sunrise-core/src/engine/sync.rs:944#apply_control_op` when a key
+/// `crates/sunrise-core/src/engine/sync.rs:951#apply_control_op` when a key
 /// envelope names an epoch above `MAX_EPOCH_LEAP`. The first two return an
 /// error before the transaction opens, so no op row and no cursor; the third
 /// drops a payload with the op row already in, so the op counts toward the
@@ -932,9 +936,9 @@ pub(super) fn ops_run_end(
 /// asks for it there —
 /// `crates/sunrise-core/src/engine/oplog.rs#upsert_sync_cursor` is where the
 /// start is computed;
-/// `crates/sunrise-core/src/engine/oplog.rs:692#ops_run_end` is parameterised
+/// `crates/sunrise-core/src/engine/oplog.rs:694#ops_run_end` is parameterised
 /// on `start` at
-/// `crates/sunrise-core/src/engine/oplog.rs:696#ops_run_end` and hard-codes
+/// `crates/sunrise-core/src/engine/oplog.rs:700#ops_run_end` and hard-codes
 /// nothing. So an op delivered with a gap below it is in the log and outside
 /// the prefix: with the log holding `{2}` the `ELSE ?3 - 1` arm writes 0, and with
 /// it holding `{1, 3}` the run ends at 1. Refused or applied makes no

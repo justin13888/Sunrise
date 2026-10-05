@@ -53,6 +53,7 @@ struct ReviewView: View {
                     savingSnapshot = true
                 }
                 .disabled(model.weekly == nil)
+                .disabledUnlessEditable(.reviewSnapshot)
             }
         }
         .task { await model.refresh() }

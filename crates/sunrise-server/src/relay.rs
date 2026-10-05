@@ -429,7 +429,11 @@ impl RelayHub {
     /// broadcast it live. Returns the number of live receivers reached
     /// (best-effort — slow ones see `Lagged`), and tells the frame's
     /// [`FanoutClock`], if it carries one, how many subscribers to wait for.
+    ///
+    /// Traced as `relay.fanout`, whose one attribute is that count, as
+    /// `n_streams`: which streams, and whose, is not span data.
     pub fn publish(&self, key: StreamKey, frame: RelayFrame) -> usize {
+        let span = sunrise_telemetry::span("relay.fanout", []);
         let fanout = frame.fanout.clone();
         let reached = {
             let mut inner = self.inner.lock();
@@ -441,6 +445,10 @@ impl RelayHub {
         if let Some(clock) = fanout {
             clock.expect(reached);
         }
+        span.set(sunrise_telemetry::Attr::count(
+            sunrise_telemetry::Count::Streams,
+            reached as u64,
+        ));
         reached
     }
 

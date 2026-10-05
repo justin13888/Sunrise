@@ -50,6 +50,9 @@ struct CaptureBar: View {
             }
             .padding(10)
             .background(.quaternary.opacity(0.4), in: .rect(cornerRadius: 8))
+            // Capture writes a task; a vault that locks tasks on this build
+            // shows the read-only banner instead (ADR-0045 §8).
+            .disabledUnlessEditable(.task)
 
             if let preview = model.preview {
                 previewLine(preview)
