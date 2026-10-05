@@ -13,7 +13,9 @@
 //!   corrupting a payload byte survives framing but fails AEAD verification
 //!   downstream — both are acceptable "tampered frame" outcomes.
 //! - **delay** — with a configured range, the frame is held for a uniformly
-//!   random [`Duration`] before it is forwarded (`tokio::time::sleep`).
+//!   random [`Duration`] before it is forwarded (`tokio::time::sleep`), in
+//!   both directions unless [`ToxicConfig::delay_send_only`] confines it to
+//!   sends.
 //! - **partition** — a runtime switch on [`FaultHandle`]; while partitioned all
 //!   sends and receives return a transport error, modelling a cut link.
 //!
@@ -61,6 +63,9 @@ pub struct ToxicConfig {
     /// Inclusive `(min, max)` delay range applied to each forwarded frame.
     /// `None` forwards with no artificial delay.
     pub delay: Option<(Duration, Duration)>,
+    /// Apply [`delay`](Self::delay) to sent frames only, and receive
+    /// undelayed. `false`, the default, delays both directions.
+    pub delay_send_only: bool,
 }
 
 impl ToxicConfig {
@@ -71,6 +76,31 @@ impl ToxicConfig {
             drop_prob: 0.0,
             corrupt_prob: 0.0,
             delay: None,
+            delay_send_only: false,
+        }
+    }
+
+    /// A clean link to the relay whose round trip averages `rtt`, as the
+    /// sync-latency harness injects it (#366): every *send* waits `rtt`,
+    /// jittered uniformly by ±20 % from the seeded RNG, and receives are not
+    /// delayed. No drop, no corruption.
+    ///
+    /// Charged to the send because of what a send is on the SSE transport: a
+    /// `POST` whose reply is the ack, so a real sender is held for one round
+    /// trip per send and has its ack the moment the send returns. And an op
+    /// one device sends reaches another after half a round trip up to the
+    /// relay and half a round trip down, one RTT in all, which is the same
+    /// RTT spent before the relay sees it here. Delaying the receive side as
+    /// well would count the reader's half twice and hold each ack a second
+    /// time, and the receive hold is serial — one frame per delay — so under
+    /// a steady stream the acks queue behind it until the driver's retransmit
+    /// policy gives up on them.
+    #[must_use]
+    pub fn round_trip(rtt: Duration) -> Self {
+        Self {
+            delay: Some((rtt.mul_f64(0.8), rtt.mul_f64(1.2))),
+            delay_send_only: true,
+            ..Self::passthrough()
         }
     }
 }
@@ -172,6 +202,8 @@ pub struct Toxic<T: Transport> {
     inner: T,
     faults: FaultHandle,
     delay: Option<(Duration, Duration)>,
+    /// [`ToxicConfig::delay_send_only`].
+    delay_send_only: bool,
     rng: ChaCha20Rng,
     /// An inbound frame already taken off `inner`, waiting out its delay.
     ///
@@ -218,6 +250,7 @@ impl<T: Transport> Toxic<T> {
             inner,
             faults: faults.clone(),
             delay: config.delay,
+            delay_send_only: config.delay_send_only,
             rng: ChaCha20Rng::seed_from_u64(seed),
             held: None,
         };
@@ -229,19 +262,16 @@ impl<T: Transport> Toxic<T> {
     /// `seed`. Every wrapper built from the same handle observes the same
     /// runtime drop / corrupt / partition switches — the shape a reconnecting
     /// transport factory needs, where one handle must steer every connection it
-    /// opens. `delay` is the static per-frame delay range (mirrors
-    /// [`ToxicConfig::delay`]).
+    /// opens. The delay comes from `config` ([`ToxicConfig::delay`] and
+    /// [`ToxicConfig::delay_send_only`]); its probabilities are ignored, because
+    /// the handle's are the ones in force.
     #[must_use]
-    pub fn with_handle(
-        inner: T,
-        faults: FaultHandle,
-        delay: Option<(Duration, Duration)>,
-        seed: u64,
-    ) -> Self {
+    pub fn with_handle(inner: T, faults: FaultHandle, config: ToxicConfig, seed: u64) -> Self {
         Self {
             inner,
             faults,
-            delay,
+            delay: config.delay,
+            delay_send_only: config.delay_send_only,
             rng: ChaCha20Rng::seed_from_u64(seed),
             held: None,
         }
@@ -323,7 +353,12 @@ impl<T: Transport> Transport for Toxic<T> {
                     continue;
                 }
                 let frame = self.maybe_corrupt(frame);
-                let due = tokio::time::Instant::now() + self.sample_delay();
+                let delay = if self.delay_send_only {
+                    Duration::ZERO
+                } else {
+                    self.sample_delay()
+                };
+                let due = tokio::time::Instant::now() + delay;
                 self.held = Some((frame, due));
             }
             let Some((_, due)) = self.held.as_ref() else {

@@ -15,6 +15,7 @@
 
 pub mod chaos;
 pub mod cross_version;
+pub mod latency;
 
 use std::net::SocketAddr;
 use std::path::Path;
@@ -150,7 +151,6 @@ pub fn toxic_ws_factory(
 ) -> (TransportFactory, FaultHandle) {
     let url = format!("http://{addr}");
     let handle = FaultHandle::from_config(config);
-    let delay = config.delay;
     let counter = Arc::new(AtomicU64::new(0));
     let conn_handle = handle.clone();
     let factory: TransportFactory = Arc::new(move |read: CredentialRead| {
@@ -160,7 +160,7 @@ pub fn toxic_ws_factory(
         let conn_seed = seed.wrapping_add(n);
         Box::pin(async move {
             let inner = SseTransport::connect_with_bearer(&url, read.bearer());
-            let toxic = Toxic::with_handle(inner, faults, delay, conn_seed);
+            let toxic = Toxic::with_handle(inner, faults, config, conn_seed);
             Ok(Box::new(toxic) as BoxTransport)
         }) as sunrise_core::ConnectFuture
     });

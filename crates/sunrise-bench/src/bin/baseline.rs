@@ -6,11 +6,16 @@
 //! nanoseconds for those iterations). The per-iteration time is
 //! `times[i] / iters[i]`; percentiles are taken across those per-sample values.
 //!
-//! Bench → metric-key mapping (with unit conversion):
-//! - `submit`       → `submit_create_task_p50_us`, `submit_create_task_p99_us` (ns→µs)
-//! - `query_today`  → `query_today_10k_tasks_p99_ms` (ns→ms)
-//! - `fts`          → `fts_query_10k_p99_ms` (ns→ms)
-//! - `ws_handshake` → `ws_handshake_p99_ms` (ns→ms)
+//! [`BENCHES`] is the bench → metric-key mapping, one row per directory
+//! Criterion writes. A grouped bench writes `<group>/<function>/`, with every
+//! `/` inside the function name made filename-safe as `_`, so
+//! `prime_hlc`'s `scan/10000` lands in `prime_hlc/scan_10000/`.
+//!
+//! The table and `benches/*.rs` are held to each other by a unit test: every
+//! `bench_function` or `benchmark_group` name in a bench source must head a
+//! row, and every row must name one. Without that, renaming a bench left its
+//! row reading a directory nothing writes any more, and the `None` arm skipped
+//! it without a word (#366).
 //!
 //! The platform key is derived from the build target (`linux-x86_64`,
 //! `darwin-aarch64`, …). Other platforms and the schema fields in
@@ -20,7 +25,10 @@
 //! - `baseline [CRITERION_DIR] [BASELINE_JSON]` — merge current samples in.
 //! - `baseline --check [CRITERION_DIR] [BASELINE_JSON] [TOLERANCE_PCT]` —
 //!   compare without writing, exiting non-zero if any metric regressed by more
-//!   than the tolerance.
+//!   than the tolerance, or if a row's directory is missing or a directory no
+//!   row names is present. Both are printed in either mode; only `--check`
+//!   fails on them, because merging the results of `cargo bench --bench
+//!   submit` alone is a legitimate partial update.
 //!
 //! On the tolerance: `docs/10-cross-cutting/testing.md` specifies a 5% gate.
 //! That figure assumes stable hardware. On GitHub's shared runners, run-to-run
@@ -70,7 +78,21 @@ fn main() -> ExitCode {
     println!("baseline: platform = {platform}");
     println!("baseline: reading Criterion samples from {criterion_dir}");
 
-    let metrics = collect_metrics(Path::new(&criterion_dir));
+    let Collected {
+        metrics,
+        missing,
+        unknown,
+    } = collect_metrics(Path::new(&criterion_dir));
+    for dir in &missing {
+        println!(
+            "baseline: missing {criterion_dir}/{dir}/new/sample.json — that bench did not run"
+        );
+    }
+    for dir in &unknown {
+        println!(
+            "baseline: unknown bench directory {criterion_dir}/{dir} — no row in BENCHES reads it"
+        );
+    }
     if metrics.is_empty() {
         println!("baseline: no sample.json found under {criterion_dir}; run `cargo bench` first.");
         return ExitCode::FAILURE;
@@ -81,12 +103,21 @@ fn main() -> ExitCode {
     }
 
     if check_mode {
-        return check_against(
+        let compared = check_against(
             Path::new(&baseline_path),
             &platform,
             &metrics,
             tolerance_pct,
         );
+        if !missing.is_empty() || !unknown.is_empty() {
+            println!(
+                "::error::baseline: {} missing and {} unknown bench director(ies); see above",
+                missing.len(),
+                unknown.len()
+            );
+            return ExitCode::FAILURE;
+        }
+        return compared;
     }
 
     merge_into(Path::new(&baseline_path), &platform, &metrics)
@@ -173,18 +204,168 @@ fn platform_key() -> String {
     format!("{os}-{}", std::env::consts::ARCH)
 }
 
-/// Walk the known bench directories under `criterion_dir`, compute each bench's
-/// percentiles, and return the flattened `(metric_key, value)` list in
-/// baseline-schema order.
-fn collect_metrics(criterion_dir: &Path) -> Vec<(String, f64)> {
-    const BENCHES: &[&str] = &["submit", "query_today", "fts", "ws_handshake"];
-    let mut out = Vec::new();
+/// The unit a metric is recorded in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Unit {
+    /// Microseconds.
+    Us,
+    /// Milliseconds.
+    Ms,
+}
+
+/// One directory Criterion writes, and the baseline keys its percentiles land
+/// under.
+#[derive(Debug)]
+struct Bench {
+    /// Relative to the Criterion output directory: a `bench_function` name, or
+    /// `<group>/<function>` with the function's own `/` written as `_`.
+    dir: &'static str,
+    /// The p50 key, for the benches whose median is part of the budget.
+    p50: Option<&'static str>,
+    /// The p99 key. Every bench has one.
+    p99: &'static str,
+    unit: Unit,
+}
+
+/// Every bench the baseline records.
+///
+/// The sized groups list their *default* sizes only — `vault_open` at 10k and
+/// 100k rows, `compaction` at 10k tasks. A run at another size writes a
+/// directory no row names, which `--check` reports as unknown rather than
+/// comparing against a baseline taken at a different size. `compaction` at
+/// 100k is left out because seeding it takes about 24 minutes, longer than the
+/// whole nightly job is allowed; CI sets `SUNRISE_BENCH_COMPACT_TASKS=10000`.
+const BENCHES: &[Bench] = &[
+    Bench {
+        dir: "submit",
+        p50: Some("submit_create_task_p50_us"),
+        p99: "submit_create_task_p99_us",
+        unit: Unit::Us,
+    },
+    Bench {
+        dir: "query_today",
+        p50: None,
+        p99: "query_today_10k_tasks_p99_ms",
+        unit: Unit::Ms,
+    },
+    Bench {
+        dir: "fts",
+        p50: None,
+        p99: "fts_query_10k_p99_ms",
+        unit: Unit::Ms,
+    },
+    Bench {
+        dir: "sync_session",
+        p50: None,
+        p99: "sync_session_p99_ms",
+        unit: Unit::Ms,
+    },
+    Bench {
+        dir: "prime_hlc/scan_10000",
+        p50: None,
+        p99: "vault_open_prime_hlc_scan_10k_ops_p99_ms",
+        unit: Unit::Ms,
+    },
+    Bench {
+        dir: "prime_hlc/indexed_10000",
+        p50: None,
+        p99: "vault_open_prime_hlc_indexed_10k_ops_p99_ms",
+        unit: Unit::Ms,
+    },
+    Bench {
+        dir: "prime_hlc/scan_100000",
+        p50: None,
+        p99: "vault_open_prime_hlc_scan_100k_ops_p99_ms",
+        unit: Unit::Ms,
+    },
+    Bench {
+        dir: "prime_hlc/indexed_100000",
+        p50: None,
+        p99: "vault_open_prime_hlc_indexed_100k_ops_p99_ms",
+        unit: Unit::Ms,
+    },
+    Bench {
+        dir: "compaction/fold_10000",
+        p50: None,
+        p99: "compaction_fold_10k_tasks_p99_ms",
+        unit: Unit::Ms,
+    },
+    Bench {
+        dir: "compaction/snapshot_10000",
+        p50: None,
+        p99: "compaction_snapshot_10k_tasks_p99_ms",
+        unit: Unit::Ms,
+    },
+];
+
+/// Criterion's own summary directory, which holds no samples.
+const NOT_A_BENCH: &[&str] = &["report"];
+
+/// What one pass over the Criterion output found.
+#[derive(Debug, Default)]
+struct Collected {
+    /// `(metric_key, value)` in [`BENCHES`] order.
+    metrics: Vec<(String, f64)>,
+    /// Rows whose `sample.json` is absent or unreadable.
+    missing: Vec<&'static str>,
+    /// Directories holding a `sample.json` that no row names.
+    unknown: Vec<String>,
+}
+
+/// Read every [`BENCHES`] row under `criterion_dir`, and say which rows had
+/// nothing to read and which directories no row accounts for.
+fn collect_metrics(criterion_dir: &Path) -> Collected {
+    let mut out = Collected::default();
     for bench in BENCHES {
-        let sample_path = criterion_dir.join(bench).join("new").join("sample.json");
-        let Some((p50_ns, p99_ns)) = read_percentiles(&sample_path) else {
-            continue;
+        let sample_path = sample_path(criterion_dir, bench.dir);
+        match read_percentiles(&sample_path) {
+            Some((p50_ns, p99_ns)) => out.metrics.extend(metrics_for(bench, p50_ns, p99_ns)),
+            None => out.missing.push(bench.dir),
+        }
+    }
+    out.unknown = sampled_dirs(criterion_dir)
+        .into_iter()
+        .filter(|dir| !BENCHES.iter().any(|b| b.dir == dir))
+        .collect();
+    out
+}
+
+fn sample_path(criterion_dir: &Path, dir: &str) -> std::path::PathBuf {
+    let mut p = criterion_dir.to_path_buf();
+    p.extend(dir.split('/'));
+    p.join("new").join("sample.json")
+}
+
+/// Every directory, one or two levels deep, that holds a `new/sample.json`,
+/// as a `/`-joined path relative to `criterion_dir`, sorted.
+fn sampled_dirs(criterion_dir: &Path) -> Vec<String> {
+    fn subdirs(dir: &Path) -> Vec<String> {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return Vec::new();
         };
-        out.extend(metrics_for(bench, p50_ns, p99_ns));
+        let mut names: Vec<String> = entries
+            .filter_map(Result::ok)
+            .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+            .filter_map(|e| e.file_name().into_string().ok())
+            .collect();
+        names.sort();
+        names
+    }
+    let has_sample = |rel: &str| sample_path(criterion_dir, rel).is_file();
+    let mut out = Vec::new();
+    for top in subdirs(criterion_dir) {
+        if NOT_A_BENCH.contains(&top.as_str()) {
+            continue;
+        }
+        if has_sample(&top) {
+            out.push(top.clone());
+        }
+        for inner in subdirs(&criterion_dir.join(&top)) {
+            let rel = format!("{top}/{inner}");
+            if has_sample(&rel) {
+                out.push(rel);
+            }
+        }
     }
     out
 }
@@ -234,19 +415,17 @@ fn percentile(sorted: &[f64], p: f64) -> f64 {
 
 /// Map a bench's `(p50_ns, p99_ns)` to its baseline metric keys, converting
 /// units and rounding to two decimals.
-fn metrics_for(bench: &str, p50_ns: f64, p99_ns: f64) -> Vec<(String, f64)> {
-    let us = |ns: f64| round2(ns / 1_000.0);
-    let ms = |ns: f64| round2(ns / 1_000_000.0);
-    match bench {
-        "submit" => vec![
-            ("submit_create_task_p50_us".to_string(), us(p50_ns)),
-            ("submit_create_task_p99_us".to_string(), us(p99_ns)),
-        ],
-        "query_today" => vec![("query_today_10k_tasks_p99_ms".to_string(), ms(p99_ns))],
-        "fts" => vec![("fts_query_10k_p99_ms".to_string(), ms(p99_ns))],
-        "ws_handshake" => vec![("ws_handshake_p99_ms".to_string(), ms(p99_ns))],
-        _ => Vec::new(),
-    }
+fn metrics_for(bench: &Bench, p50_ns: f64, p99_ns: f64) -> Vec<(String, f64)> {
+    let convert = |ns: f64| match bench.unit {
+        Unit::Us => round2(ns / 1_000.0),
+        Unit::Ms => round2(ns / 1_000_000.0),
+    };
+    bench
+        .p50
+        .map(|key| (key.to_string(), convert(p50_ns)))
+        .into_iter()
+        .chain([(bench.p99.to_string(), convert(p99_ns))])
+        .collect()
 }
 
 fn round2(x: f64) -> f64 {
@@ -327,7 +506,7 @@ mod tests {
     #[test]
     fn unit_mapping_and_rounding() {
         // submit: 1500ns → 1.5µs (p50), 2500ns → 2.5µs (p99).
-        let m = metrics_for("submit", 1_500.0, 2_500.0);
+        let m = metrics_for(row("submit"), 1_500.0, 2_500.0);
         assert_eq!(
             m,
             vec![
@@ -336,8 +515,162 @@ mod tests {
             ]
         );
         // query_today: 2_000_000ns → 2.0ms.
-        let q = metrics_for("query_today", 0.0, 2_000_000.0);
+        let q = metrics_for(row("query_today"), 0.0, 2_000_000.0);
         assert_eq!(q, vec![("query_today_10k_tasks_p99_ms".to_string(), 2.0)]);
+        // sync_session: 1_234_567ns → 1.23ms, under the key that replaced
+        // `ws_handshake_p99_ms`.
+        let s = metrics_for(row("sync_session"), 0.0, 1_234_567.0);
+        assert_eq!(s, vec![("sync_session_p99_ms".to_string(), 1.23)]);
+    }
+
+    fn row(dir: &str) -> &'static Bench {
+        BENCHES
+            .iter()
+            .find(|b| b.dir == dir)
+            .unwrap_or_else(|| panic!("no BENCHES row for {dir}"))
+    }
+
+    /// Every string-literal `bench_function` and `benchmark_group` name in
+    /// `benches/*.rs`, with the file it came from.
+    fn bench_source_names() -> Vec<(String, String)> {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("benches");
+        let mut out = Vec::new();
+        let mut files: Vec<_> = std::fs::read_dir(&dir)
+            .expect("read benches/")
+            .map(|e| e.expect("dir entry").path())
+            .filter(|p| p.extension().is_some_and(|x| x == "rs"))
+            .collect();
+        files.sort();
+        assert!(
+            !files.is_empty(),
+            "no bench sources under {}",
+            dir.display()
+        );
+        for path in files {
+            let text = std::fs::read_to_string(&path).expect("read bench source");
+            let file = path.file_name().unwrap().to_string_lossy().into_owned();
+            let mut found = 0;
+            for call in ["benchmark_group(\"", "bench_function(\""] {
+                for (at, _) in text.match_indices(call) {
+                    let rest = &text[at + call.len()..];
+                    let name = &rest[..rest.find('"').expect("closing quote")];
+                    out.push((file.clone(), name.to_string()));
+                    found += 1;
+                }
+            }
+            // A bench whose every name is built with `format!` and sits in no
+            // literal group would escape both directions of the check below.
+            assert!(
+                found > 0,
+                "{file} names no bench with a string literal; give it a benchmark_group"
+            );
+        }
+        out
+    }
+
+    /// The defect #366 found: `sync_session` replaced `ws_handshake`, the
+    /// table kept the old name, and nothing noticed. Each direction is a
+    /// failure: a bench with no row is never compared, and a row with no bench
+    /// reads a directory nothing writes.
+    #[test]
+    fn every_bench_has_a_row_and_every_row_a_bench() {
+        let names = bench_source_names();
+        let head = |b: &Bench| b.dir.split('/').next().unwrap_or(b.dir);
+        for (file, name) in &names {
+            assert!(
+                BENCHES.iter().any(|b| head(b) == name),
+                "{file}: bench `{name}` has no row in BENCHES, so baseline.rs never reads it"
+            );
+        }
+        for b in BENCHES {
+            assert!(
+                names.iter().any(|(_, n)| n == head(b)),
+                "BENCHES row `{}` names no bench in benches/*.rs",
+                b.dir
+            );
+        }
+    }
+
+    /// The keys are the schema of `bench/baseline.json`, so two rows must never
+    /// write the same one.
+    #[test]
+    fn metric_keys_are_unique() {
+        let mut keys: Vec<&str> = BENCHES
+            .iter()
+            .flat_map(|b| b.p50.into_iter().chain([b.p99]))
+            .collect();
+        let n = keys.len();
+        keys.sort_unstable();
+        keys.dedup();
+        assert_eq!(keys.len(), n, "a metric key appears twice in BENCHES");
+    }
+
+    /// Every key in `bench/baseline.json` is one this tool writes, and every
+    /// key it writes is recorded for every platform: a key only one side has
+    /// is a comparison that silently compares nothing on the other.
+    #[test]
+    fn committed_baseline_carries_exactly_the_collected_keys() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../bench/baseline.json");
+        let doc: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect("read baseline.json"))
+                .expect("baseline.json parses");
+        let mut expected: Vec<&str> = BENCHES
+            .iter()
+            .flat_map(|b| b.p50.into_iter().chain([b.p99]))
+            .collect();
+        expected.sort_unstable();
+        let platforms = doc["platforms"].as_object().expect("platforms object");
+        assert!(!platforms.is_empty());
+        for (platform, metrics) in platforms {
+            let mut keys: Vec<&str> = metrics
+                .as_object()
+                .expect("platform object")
+                .keys()
+                .map(String::as_str)
+                .collect();
+            keys.sort_unstable();
+            assert_eq!(keys, expected, "{platform}'s keys differ from BENCHES");
+        }
+    }
+
+    fn write_sample(root: &Path, dir: &str) {
+        let path = sample_path(root, dir);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, r#"{"iters":[1.0,1.0],"times":[1000.0,3000.0]}"#).unwrap();
+    }
+
+    #[test]
+    fn a_missing_and_an_unknown_directory_are_both_reported() {
+        let root = tempfile::tempdir().unwrap();
+        for b in BENCHES.iter().filter(|b| b.dir != "sync_session") {
+            write_sample(root.path(), b.dir);
+        }
+        // The pre-#366 bench name, and a sized run nobody recorded.
+        write_sample(root.path(), "ws_handshake");
+        write_sample(root.path(), "prime_hlc/scan_1000");
+        // Criterion's summary directory is not a bench.
+        std::fs::create_dir_all(root.path().join("report")).unwrap();
+
+        let got = collect_metrics(root.path());
+        assert_eq!(got.missing, vec!["sync_session"]);
+        assert_eq!(got.unknown, vec!["prime_hlc/scan_1000", "ws_handshake"]);
+        assert!(got.metrics.iter().all(|(k, _)| k != "sync_session_p99_ms"));
+    }
+
+    #[test]
+    fn a_complete_run_reports_nothing_missing_or_unknown() {
+        let root = tempfile::tempdir().unwrap();
+        for b in BENCHES {
+            write_sample(root.path(), b.dir);
+        }
+        let got = collect_metrics(root.path());
+        assert!(got.missing.is_empty(), "{:?}", got.missing);
+        assert!(got.unknown.is_empty(), "{:?}", got.unknown);
+        let n: usize = BENCHES
+            .iter()
+            .map(|b| 1 + usize::from(b.p50.is_some()))
+            .sum();
+        assert_eq!(got.metrics.len(), n);
     }
 
     #[test]
@@ -351,11 +684,11 @@ mod tests {
     "platforms": {
         "darwin-aarch64": {
             "submit_create_task_p50_us": null,
-            "ws_handshake_p99_ms": null
+            "sync_session_p99_ms": null
         },
         "linux-x86_64": {
             "submit_create_task_p50_us": null,
-            "ws_handshake_p99_ms": null
+            "sync_session_p99_ms": null
         }
     }
 }
@@ -364,7 +697,7 @@ mod tests {
 
         let metrics = vec![
             ("submit_create_task_p50_us".to_string(), 1.23),
-            ("ws_handshake_p99_ms".to_string(), 4.56),
+            ("sync_session_p99_ms".to_string(), 4.56),
         ];
         merge_into(&path, "linux-x86_64", &metrics).unwrap();
 
@@ -378,11 +711,11 @@ mod tests {
             1.23
         );
         assert_eq!(
-            out["platforms"]["linux-x86_64"]["ws_handshake_p99_ms"],
+            out["platforms"]["linux-x86_64"]["sync_session_p99_ms"],
             4.56
         );
         // Other platform untouched (still null).
         assert!(out["platforms"]["darwin-aarch64"]["submit_create_task_p50_us"].is_null());
-        assert!(out["platforms"]["darwin-aarch64"]["ws_handshake_p99_ms"].is_null());
+        assert!(out["platforms"]["darwin-aarch64"]["sync_session_p99_ms"].is_null());
     }
 }

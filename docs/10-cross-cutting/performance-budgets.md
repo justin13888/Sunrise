@@ -59,15 +59,40 @@ because the UI repaints from that feed.
 
 | Leg | Budget (p99) | Measured by |
 |---|---|---|
-| Author: commit → batch on the wire | 50 ms | client sync-driver span ([#366](https://github.com/justin13888/Sunrise/issues/366)) |
-| Relay: batch accepted → flushed to the last subscriber | 100 ms | `sunrise_sync_fanout_latency_seconds` ([`metrics.md`](../06-server/metrics.md)) |
-| Network, both hops | 2 × RTT (≤ 100 ms at the stated RTT) | harness-injected |
-| Receiver: frame read → applied and published | 50 ms | client engine span |
+| Author: commit → batch on the wire | 50 ms | not measured on its own; inside the harness total |
+| Relay: batch accepted → handed to the last subscriber's stream | 100 ms | `sunrise_sync_fanout_latency_seconds` ([`metrics.md`](../06-server/metrics.md)) |
+| Network, both hops | 2 × RTT (≤ 100 ms at the stated RTT) | harness-injected as one RTT on the op's path (half up, half down), held on the author's send; the second RTT is budgeted, not injected |
+| Receiver: frame read → applied and published | 50 ms | not measured on its own; inside the harness total |
 | Headroom | 200 ms | — |
 
-The budget is enforced by the two-client harness [#366](https://github.com/justin13888/Sunrise/issues/366) specifies: two engines and a real relay on
-loopback, with injected RTT and a steady op rate, asserting the p99 over at least 10 000 ops. The
-wider-network rows in [`../05-sync/overview.md`](../05-sync/overview.md) §Latency targets (LTE, a
+**How it is measured.** `crates/sunrise-e2e/src/latency.rs` boots the real relay and two paired
+cores on loopback. Each device reaches the relay through a fault-injecting link that holds every
+send for the stated RTT, ±20 % from a seeded RNG: on the SSE transport a send is a `POST` whose reply
+is its ack, and an op's trip up to the relay and down to the peer adds to one round trip. Device A
+commits 10 000 tasks, ten a second. Each sample runs from A's `submit` returning to B publishing that
+task's `Created`, both timestamps read from one monotonic clock, and the p99 is nearest-rank over
+every op. An op that never arrives is reported, not dropped from the sample.
+`crates/sunrise-e2e/tests/sync_latency.rs` runs that at 0, 20 and 80 ms RTT in the nightly
+`Sync latency` CI job, and fails if, at 0 or 20 ms, any op is missing or the p99 reaches 500 ms. The
+80 ms leg falls outside the budget's conditions and is reported only.
+
+Measured on an Apple M3 Pro, release build, at this revision:
+
+| RTT | Ops arrived | p50 | p95 | p99 | max |
+|---|---|---|---|---|---|
+| 0 ms | 10 000 of 10 000 | 12.3 ms | 23.9 ms | 31.0 ms | 60.2 ms |
+| 20 ms | 10 000 of 10 000 | 36.3 ms | 62.0 ms | 74.3 ms | 111.3 ms |
+| 80 ms | 1 910 of 10 000 | — | — | — | — |
+
+At 80 ms the author's session collapsed partway through ([#475](https://github.com/justin13888/Sunrise/issues/475)),
+so that row has no distribution to report.
+
+Ten commits a second is not an arbitrary ceiling. At 40 a second and 20 ms, or 10 a second and
+80 ms, the author's sync driver stops reading its acks and tears its session down
+([#475](https://github.com/justin13888/Sunrise/issues/475)). Until that is fixed, a faster harness
+would measure that collapse and not propagation.
+
+The wider-network rows in [`../05-sync/overview.md`](../05-sync/overview.md) §Latency targets (LTE, a
 phone woken by push) are budgets for those conditions, not relaxations of this one.
 
 ## Planner preview
@@ -125,24 +150,35 @@ crosses a snap boundary, at most once per frame, so it has a frame budget: **≤
 - **As specified:** any benchmark exceeding budget by >5% is a P1 and blocks
   merge via a required check, and a "Hard cap" violation on the user's path
   blocks release.
-- **As built:** the `bench-regression` job in `ci.yml` runs on `schedule` and
-  `workflow_dispatch` only — never on a pull request — carries
-  `continue-on-error: true`, and compares against `bench/baseline.json` with a
-  **60%** tolerance rather than 5%. It reports; it blocks nothing, and no
-  automated check enforces the hard caps in the table above.
+- **As built, the Criterion suite:** the `bench-regression` job in `ci.yml`
+  runs on `schedule` and `workflow_dispatch` only — never on a pull request —
+  on `ubuntu-latest` and on the pinned `macos-15` image, one leg per platform
+  key in `bench/baseline.json`. It carries `continue-on-error: true` and
+  compares with a **60%** tolerance rather than 5%. It reports; it blocks
+  nothing, and no automated check enforces the hard caps in the table above.
 - The job's own comment records why: measured on the shared runner, the same
-  binary against its own recorded baseline swings +270% (`ws_handshake`) and
-  −39% (`submit_create_task`) from scheduling noise and a short measurement
-  window alone. A gate that red-lights on noise is ignored within a week, and
-  then it protects nothing. The 5% figure assumes the dedicated hardware named
-  under "Calibration cadence" below, which the project does not have yet.
-- **A comparison that silently compares nothing:** `crates/sunrise-bench/src/bin/baseline.rs:180`
-  still lists the retired `ws_handshake` bench, and the bench that replaced it is
-  `crates/sunrise-bench/benches/sync_session.rs`. So the sync bench's result is never compared
-  against anything, and nothing reports that. Every `darwin-aarch64` value in `bench/baseline.json` is null. Both
-  are fixed by [#366](https://github.com/justin13888/Sunrise/issues/366).
-- Until it does, a budget regression is something a human notices in the
-  nightly report, not something that stops a merge or a release. Tracked in
+  binary against its own recorded baseline swings +270% (`ws_handshake`, since
+  renamed `sync_session`) and −39% (`submit_create_task`) from scheduling noise
+  and a short measurement window alone. A gate that red-lights on noise is
+  ignored within a week, and then it protects nothing. The 5% figure assumes
+  the dedicated hardware named under "Calibration cadence" below, which the
+  project does not have yet.
+- **What the comparison reads.** `crates/sunrise-bench/src/bin/baseline.rs`
+  keeps one row per directory Criterion writes, and a unit test holds that
+  table to every `bench_function` and `benchmark_group` name in
+  `crates/sunrise-bench/benches/*.rs`, in both directions. A row whose bench did
+  not run, or a directory no row names, is printed and fails `--check`; it is
+  never skipped in silence, which is how `sync_session` went uncompared after
+  it replaced `ws_handshake`.
+- **As built, the sync propagation budget:** the `Sync latency` job runs the
+  harness under [Sync propagation](#sync-propagation-commit-on-one-device--applied-on-another)
+  nightly and on demand, and it does gate: it fails when the p99 at any RTT the
+  budget covers reaches 500 ms. An absolute budget with the measured tail far
+  below it is not at the mercy of runner noise the way a 5% relative gate is.
+  It is still not a pull-request check — it takes minutes — so a regression
+  there turns the nightly run red rather than stopping a merge.
+- Otherwise a budget regression is something a human notices in the nightly
+  report, not something that stops a merge or a release. Tracked in
   [#33](https://github.com/justin13888/Sunrise/issues/33).
 
 ## Calibration cadence

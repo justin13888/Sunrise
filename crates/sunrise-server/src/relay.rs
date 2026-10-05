@@ -71,6 +71,9 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use tokio::sync::broadcast;
 
+mod fanout;
+pub use fanout::FanoutClock;
+
 /// Capacity per relay channel's live broadcast buffer. Senders never block —
 /// they overflow into `RecvError::Lagged(n)` for slow receivers, which is
 /// logged and counted.
@@ -132,6 +135,11 @@ pub struct RelayFrame {
     /// raises an eviction watermark, so an unreadable header can only ever
     /// cause a redundant replay, never a missed op.
     pub heads: Vec<FrameHead>,
+    /// Times this frame's live fan-out, when the publisher asked for it.
+    ///
+    /// Only the live copy carries one: the retained ring stores the frame
+    /// without it, because a replay is not part of the fan-out it measures.
+    pub fanout: Option<Arc<FanoutClock>>,
 }
 
 impl RelayFrame {
@@ -143,6 +151,7 @@ impl RelayFrame {
             from,
             bytes,
             heads: Vec::new(),
+            fanout: None,
         }
     }
 
@@ -221,7 +230,10 @@ impl Channel {
     /// the just-appended frame even if it alone exceeds `max_bytes`.
     fn push_retained(&mut self, frame: &RelayFrame, caps: RingCaps) {
         self.retained_bytes += frame.bytes.len();
-        self.retained.push_back(frame.clone());
+        self.retained.push_back(RelayFrame {
+            fanout: None,
+            ..frame.clone()
+        });
         while self.retained.len() > caps.max_frames
             || (self.retained_bytes > caps.max_bytes && self.retained.len() > 1)
         {
@@ -349,12 +361,14 @@ impl RelayHub {
     /// Publish a frame: append it to the channel's retained ring (creating
     /// the channel if needed, so late subscribers still see it) and
     /// broadcast it live. Returns the number of live receivers reached
-    /// (best-effort — slow ones see `Lagged`).
+    /// (best-effort — slow ones see `Lagged`), and tells the frame's
+    /// [`FanoutClock`], if it carries one, how many subscribers to wait for.
     ///
     /// Traced as `relay.fanout`, whose one attribute is that count, as
     /// `n_streams`: which streams, and whose, is not span data.
     pub fn publish(&self, key: StreamKey, frame: RelayFrame) -> usize {
         let span = sunrise_telemetry::span("relay.fanout", []);
+        let fanout = frame.fanout.clone();
         let reached = {
             let mut inner = self.inner.lock();
             let caps = self.caps;
@@ -362,6 +376,9 @@ impl RelayHub {
             ch.push_retained(&frame, caps);
             ch.tx.send(frame).unwrap_or(0)
         };
+        if let Some(clock) = fanout {
+            clock.expect(reached);
+        }
         span.set(sunrise_telemetry::Attr::count(
             sunrise_telemetry::Count::Streams,
             reached as u64,
@@ -419,6 +436,7 @@ mod tests {
                 device_id: device,
                 max_seq: seq,
             }],
+            fanout: None,
         }
     }
 
@@ -523,6 +541,7 @@ mod tests {
                         max_seq: 4,
                     },
                 ],
+                fanout: None,
             },
         );
         assert_eq!(
@@ -579,6 +598,7 @@ mod tests {
                         device_id: DEV_A,
                         max_seq: u64::from(i) + 1,
                     }],
+                    fanout: None,
                 },
             );
         }
@@ -670,6 +690,62 @@ mod tests {
         hub.publish(key(), RelayFrame::opaque(0, vec![1]));
         hub.publish(key(), RelayFrame::opaque(0, vec![2]));
         assert!(hub.subscribe(key(), &none()).gaps.is_empty());
+    }
+
+    // ---- fan-out latency ----
+
+    const FANOUT: &str = "sunrise_sync_fanout_latency_seconds";
+
+    fn timed(metrics: &crate::Metrics) -> RelayFrame {
+        RelayFrame {
+            fanout: Some(FanoutClock::start(
+                tokio::time::Instant::now(),
+                metrics.clone(),
+            )),
+            ..RelayFrame::opaque(0, vec![1])
+        }
+    }
+
+    fn observed(metrics: &crate::Metrics) -> u64 {
+        metrics.histogram_count(FANOUT, &[])
+    }
+
+    /// One observation, and only when the last of the subscribers the send
+    /// reached has settled.
+    #[tokio::test]
+    async fn fanout_is_observed_once_when_the_last_subscriber_settles() {
+        let metrics = crate::Metrics::new();
+        let hub = RelayHub::new();
+        let mut a = hub.subscribe_live(key());
+        let mut b = hub.subscribe_live(key());
+        assert_eq!(hub.publish(key(), timed(&metrics)), 2);
+
+        let fa = a.recv().await.unwrap().fanout.unwrap();
+        let fb = b.recv().await.unwrap().fanout.unwrap();
+        fa.settle();
+        assert_eq!(observed(&metrics), 0, "one subscriber is still delivering");
+        fb.settle();
+        assert_eq!(observed(&metrics), 1);
+    }
+
+    /// No live subscriber is no fan-out: nothing to time.
+    #[tokio::test]
+    async fn fanout_to_nobody_is_not_observed() {
+        let metrics = crate::Metrics::new();
+        let hub = RelayHub::new();
+        assert_eq!(hub.publish(key(), timed(&metrics)), 0);
+        assert_eq!(observed(&metrics), 0);
+    }
+
+    /// The ring keeps the frame for replay, not the clock: a replay is not part
+    /// of the fan-out being timed.
+    #[tokio::test]
+    async fn the_retained_copy_carries_no_clock() {
+        let metrics = crate::Metrics::new();
+        let hub = RelayHub::new();
+        hub.publish(key(), timed(&metrics));
+        let sub = hub.subscribe(key(), &none());
+        assert!(sub.retained.iter().all(|f| f.fanout.is_none()));
     }
 
     #[tokio::test]

@@ -394,7 +394,17 @@ async fn live_loop(
                 // The session's own batches are not echoed back to it: it
                 // already has them, and applying its own op twice is exactly
                 // what the op-log gate then has to undo.
+                //
+                // Skipping it still closes this copy on the frame's fan-out
+                // clock: this session was one of the receivers the publish
+                // counted, and a receiver that never closes keeps the batch
+                // out of `sunrise_sync_fanout_latency_seconds` altogether. It
+                // closes as a skip, not a delivery, so a batch only its
+                // author's stream received is not observed.
                 if frame.from == session.conn {
+                    if let Some(clock) = &frame.fanout {
+                        clock.skip();
+                    }
                     continue;
                 }
                 let event = Event::new(SyncEvent::Ops {
@@ -403,6 +413,12 @@ async fn live_loop(
                 });
                 if tx.send(event).await.is_err() {
                     return "peer_gone";
+                }
+                // Handed to this subscriber's response stream. That is as far
+                // as the relay can see: the socket write belongs to the HTTP
+                // stack, behind a buffer of `STREAM_BUFFER` events.
+                if let Some(clock) = &frame.fanout {
+                    clock.settle();
                 }
                 span.event("frame", []);
             }

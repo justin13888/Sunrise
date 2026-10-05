@@ -122,6 +122,52 @@ async fn delay_preserves_fifo_order() {
     assert_eq!(order, expected, "frames must arrive in send order");
 }
 
+/// `round_trip` charges the whole RTT, ±20 %, to the send.
+#[test]
+fn round_trip_delays_sends_by_the_rtt() {
+    let c = ToxicConfig::round_trip(Duration::from_millis(80));
+    assert_eq!(
+        c.delay,
+        Some((Duration::from_millis(64), Duration::from_millis(96)))
+    );
+    assert!(c.delay_send_only);
+    assert!(c.drop_prob.abs() < f64::EPSILON && c.corrupt_prob.abs() < f64::EPSILON);
+    assert_eq!(
+        ToxicConfig::round_trip(Duration::ZERO).delay,
+        Some((Duration::ZERO, Duration::ZERO))
+    );
+}
+
+/// A send-only delay holds sends and passes received frames straight through.
+#[tokio::test]
+async fn a_send_only_delay_leaves_receives_undelayed() {
+    let (a, mut b) = loopback_pair();
+    let config = ToxicConfig {
+        delay: Some((Duration::from_millis(200), Duration::from_millis(200))),
+        delay_send_only: true,
+        ..ToxicConfig::passthrough()
+    };
+    let (mut toxic, _faults) = Toxic::with_seed(a, config, 3);
+
+    b.send_frame(vec![1]).await.expect("peer send");
+    let started = tokio::time::Instant::now();
+    assert_eq!(toxic.recv_frame().await.expect("recv ok"), Some(vec![1]));
+    assert!(
+        started.elapsed() < Duration::from_millis(150),
+        "the receive was delayed: {:?}",
+        started.elapsed()
+    );
+
+    let started = tokio::time::Instant::now();
+    toxic.send_frame(vec![2]).await.expect("send ok");
+    assert!(
+        started.elapsed() >= Duration::from_millis(200),
+        "the send was not delayed: {:?}",
+        started.elapsed()
+    );
+    assert_eq!(b.recv_frame().await.expect("peer recv"), Some(vec![2]));
+}
+
 proptest! {
     // `Direct`, not the `SourceParallel` default: nothing above a `tests/` file
     // holds a `lib.rs` or `main.rs`, so the default warns and drops the
