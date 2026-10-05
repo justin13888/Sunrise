@@ -71,6 +71,14 @@ extension VaultTabs {
                     session.renewSessionWhileOpen()
                 }
                 .task { await models.sync.poll(from: bridge) }
+                // The read-only state, as on the Mac (ADR-0045 §8): followed
+                // from the change feed, shown above every tab, and handed to
+                // the edit actions it disables.
+                .task { await models.editGate.follow(bridge) }
+                .safeAreaInset(edge: .top, spacing: 0) {
+                    ReadOnlyBanner(model: models.editGate)
+                }
+                .environment(\.editGate, models.editGate)
                 .task { await surfaces.reminders?.follow() }
                 .task { await models.undo.follow() }
                 .task { await models.savedViews.load() }

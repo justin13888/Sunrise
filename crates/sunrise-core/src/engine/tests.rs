@@ -18950,6 +18950,8 @@ fn a_finished_session_completes_a_task_in_an_unknown_state() {
     assert_eq!(res.state, Some(TaskState::Done));
 }
 
+mod feature_gate;
+
 /// Per-field merge (ADR-0044): `Patch` ops and their convergence.
 mod field_merge;
 

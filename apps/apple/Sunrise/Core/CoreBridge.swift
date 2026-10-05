@@ -125,6 +125,10 @@ actor CoreBridge {
     /// What the Undo and Redo menu items should say right now.
     func undoState() -> UndoState { core.undoState() }
 
+    /// What this build may edit in this vault: whether to show "Update
+    /// Sunrise to edit", and which edit actions to disable (ADR-0045 §8).
+    func editGate() throws -> EditGate { try core.editGate() }
+
     /// Parse a capture line without writing anything. Debounce before calling:
     /// each one costs two vault reads to resolve `#stream` and `@context`.
     func previewCapture(_ text: String, timeZone: String) async throws -> CapturePreview {
@@ -334,6 +338,17 @@ actor CoreBridge {
     /// Stream key are sealed alongside it.
     func sendPairingGrant(to pairing: DevicePairing, request: String) throws -> String {
         try core.sendPairingGrant(pairing: pairing, sealedRequest: request)
+    }
+
+    /// Run the existing device's side of a relay pairing whose digits the user
+    /// has just confirmed: offer out, request back, cert and grant out, all
+    /// through the relay.
+    ///
+    /// Here rather than in the pairing model because it needs the vault's own
+    /// `SunriseCore`, which never leaves this actor; the cert is signed inside
+    /// it, exactly as ``sendPairingGrant(to:request:)`` signs one.
+    func sponsor(_ pairing: any RelayPairingProtocol) async throws {
+        try await pairing.sponsor(core: core)
     }
 
     /// This device's stable id, hex-encoded — what a login binds its token to.

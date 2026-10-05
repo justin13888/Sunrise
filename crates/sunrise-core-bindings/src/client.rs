@@ -50,7 +50,8 @@ use sunrise_core::{Command, Core, Query, QueryResult};
 use sunrise_domain::{RoutineRow, Task};
 use sunrise_id::EntityRef;
 
-use crate::BindingError;
+use crate::dto::EditGate;
+use crate::{BindingError, SunriseCore};
 
 // ---------------------------------------------------------------------------
 // Undo / redo
@@ -513,4 +514,108 @@ pub fn parse_saved_view(name: String, spec: String) -> Result<SavedView, Binding
     views::parse_view(&name, &spec)
         .map(|v| SavedView::from(&v))
         .map_err(BindingError::Core)
+}
+
+// ---------------------------------------------------------------------------
+// Feature gate
+// ---------------------------------------------------------------------------
+
+#[uniffi::export]
+impl SunriseCore {
+    /// What this build may edit in this vault (ADR-0045 §8).
+    ///
+    /// Re-read it on every change batch: the op that locks a scope arrives by
+    /// sync and is reported as an update to the vault-meta stream. Sync and
+    /// reads carry on whatever it says.
+    pub fn edit_gate(&self) -> Result<EditGate, BindingError> {
+        Ok(EditGate::from_missing(&self.inner.missing_features()?))
+    }
+}
+
+/// Whether `gate` leaves edits to the entity tagged `tag` (`"task"`,
+/// `"stream"`, …) open.
+///
+/// Exported so a client asks one question per action rather than re-deriving
+/// the rule from the record's fields.
+#[uniffi::export]
+#[must_use]
+pub fn edit_gate_allows(gate: EditGate, tag: String) -> bool {
+    !(gate.locks_all || gate.locked_tags.contains(&tag))
+}
+
+#[cfg(test)]
+mod feature_gate_tests {
+    use super::*;
+    use crate::dto::{FeatureLock, MissingFeatureItem};
+    use sunrise_core::{FeatureScope, MissingFeature};
+    use sunrise_id::EntityKind;
+
+    fn missing(id: &str, scope: FeatureScope) -> MissingFeature {
+        MissingFeature {
+            id: id.into(),
+            scope,
+        }
+    }
+
+    /// A refused write crosses the seam as its own variant, not as a `Core`
+    /// message a client would have to parse.
+    #[test]
+    fn a_feature_refusal_crosses_as_feature_missing() {
+        let e = BindingError::from(sunrise_core::CoreError::Engine(
+            sunrise_core::EngineError::FeatureMissing {
+                feature: "task.x".into(),
+            },
+        ));
+        assert!(matches!(e, BindingError::FeatureMissing { feature } if feature == "task.x"));
+    }
+
+    #[test]
+    fn nothing_missing_is_an_open_vault() {
+        let gate = EditGate::from_missing(&[]);
+        assert_eq!(gate, EditGate::default());
+        assert!(edit_gate_allows(gate, "task".into()));
+    }
+
+    #[test]
+    fn an_entity_feature_locks_that_entity_only() {
+        let gate =
+            EditGate::from_missing(&[missing("task.x", FeatureScope::Entity(EntityKind::Task))]);
+        assert!(gate.read_only);
+        assert!(!gate.locks_all);
+        assert_eq!(gate.locked_tags, vec!["task".to_owned()]);
+        assert_eq!(
+            gate.missing,
+            vec![MissingFeatureItem {
+                feature: "task.x".into(),
+                lock: FeatureLock::Entity { tag: "task".into() },
+            }]
+        );
+        assert!(!edit_gate_allows(gate.clone(), "task".into()));
+        assert!(edit_gate_allows(gate, "stream".into()));
+    }
+
+    #[test]
+    fn a_structural_feature_locks_everything() {
+        let gate = EditGate::from_missing(&[
+            missing("core.x", FeatureScope::Structural),
+            missing("task.x", FeatureScope::Entity(EntityKind::Task)),
+        ]);
+        assert!(gate.locks_all);
+        assert!(gate.locked_tags.is_empty());
+        assert!(!edit_gate_allows(gate, "stream".into()));
+    }
+
+    /// A feature of an entity this build lacks locks nothing, and the banner
+    /// still shows: the user is missing data this build cannot display.
+    #[test]
+    fn an_unknown_entitys_feature_shows_the_banner_and_locks_nothing() {
+        let gate = EditGate::from_missing(&[missing(
+            "place.entity",
+            FeatureScope::UnknownEntity("place".into()),
+        )]);
+        assert!(gate.read_only);
+        assert!(!gate.locks_all);
+        assert!(gate.locked_tags.is_empty());
+        assert!(edit_gate_allows(gate, "task".into()));
+    }
 }

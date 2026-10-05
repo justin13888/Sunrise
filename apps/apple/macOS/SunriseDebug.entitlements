@@ -10,6 +10,11 @@
   is team-less, so carrying it would get the build killed by AMFI before
   `main`. The group is not restricted, so an ad-hoc build that carries it
   still launches. `$(SUNRISE_APP_GROUP)` is spelled in project.yml.
+
+  Release also writes out `com.apple.security.device.camera`; Debug is
+  granted it all the same, by the `ENABLE_RESOURCE_ACCESS_CAMERA` build
+  setting project.yml sets on the target, which Xcode merges into what it
+  signs.
 -->
 <plist version="1.0">
 <dict>

@@ -10,6 +10,117 @@ import Foundation
 /// The two methods are internal rather than private only because Swift's
 /// `private` is file-scoped and their one caller is now in a different file.
 extension PairingModel {
+    /// Text this device has produced that the other one needs.
+    struct HandOff: Equatable {
+        let leg: Leg
+        let title: String
+        let instruction: String
+        let text: String
+        /// Only the QR payload is drawn as a code. Every other message is
+        /// bigger than a screen-readable symbol and is copied, not scanned.
+        let drawsCode: Bool
+    }
+
+    /// Text the other device is showing that this one needs.
+    struct Prompt: Equatable {
+        let leg: Leg
+        let title: String
+        let instruction: String
+    }
+
+    /// The code, on the device being added, when the relay carries the rest.
+    ///
+    /// The text under it is still there: pasting it is the fallback for a Mac
+    /// with no camera, or a user who would rather not grant one.
+    func relayCodeHandOff(_ payload: String) -> HandOff {
+        HandOff(
+            leg: .code,
+            title: "Scan this with the device that has your vault",
+            instruction: """
+                On that device, open Settings › Vaults › Add a device and \
+                choose Scan, or paste the text below there. The code works \
+                for five minutes; this screen moves on by itself once it has \
+                been read.
+                """,
+            text: payload,
+            drawsCode: true
+        )
+    }
+
+    var doneSummary: String {
+        intent == .addThisMac
+            ? "This \(Platform.deviceName) is paired. Your vault is open here."
+            : "The other device has a certificate from your account and a copy of your vault key."
+    }
+
+    /// What `.working` says while the last messages cross.
+    var finishingLabel: String {
+        intent == .addThisMac
+            ? "Opening your vault on this \(Platform.deviceName)…"
+            : "Sealing your vault key for the other device…"
+    }
+
+    static let reachingRelay = "Reaching your relay…"
+    static let connecting = "Connecting to the other device through your relay…"
+
+    // MARK: - Why this pairing is copy and paste
+
+    static var noRelayConfigured: String {
+        """
+        This \(Platform.deviceName) has no relay set up, so this pairing runs by \
+        copy and paste. The other device should choose “Copy and paste instead” \
+        too. Add your relay under Settings › Sync to pair by scanning a code \
+        instead.
+        """
+    }
+
+    static var notSignedIn: String {
+        """
+        Pairing over your relay needs this \(Platform.deviceName) signed in to \
+        your account, so this pairing runs by copy and paste. The other device \
+        should choose “Copy and paste instead” too.
+        """
+    }
+
+    /// Why the device with the vault could not join the pairing a code names,
+    /// and the way out.
+    ///
+    /// A code drawn for copy and paste reads exactly like a relay code, so
+    /// scanning one over the relay reaches a pairing that never existed, and
+    /// the seam's own words for that ("start again from a new code") would
+    /// send the user round the same rescan.
+    static func relayCodeFailed(_ error: any Error) -> String {
+        """
+        \(error.localizedDescription)
+
+        If the other device says its pairing runs by copy and paste, choose \
+        “Copy and paste instead” here and scan its code again.
+        """
+    }
+
+    static func relayDidNotAnswer(_ relayURL: String) -> String {
+        """
+        Your relay at \(relayURL) did not answer, so this pairing runs by copy \
+        and paste. The other device should choose “Copy and paste instead” too.
+        """
+    }
+
+    static func relayDidNotAnswerHere(_ relayURL: String) -> String {
+        """
+        Your relay at \(relayURL) did not answer from this \(Platform.deviceName), \
+        so pair by copy and paste: on the device you are adding, choose “Copy and \
+        paste instead”, then scan or paste the new code it shows.
+        """
+    }
+
+    static func relayRefused(_ error: any Error) -> String {
+        """
+        Your relay could not start this pairing (\(error.localizedDescription)), \
+        so it runs by copy and paste. The other device should choose “Copy and \
+        paste instead” too.
+        """
+    }
+
     func handOff(for leg: Leg, text: String) -> HandOff {
         switch leg {
         case .code:
@@ -83,10 +194,11 @@ extension PairingModel {
         case .code:
             Prompt(
                 leg: leg,
-                title: "Paste the code from the device you are adding",
+                title: "Scan the code on the device you are adding",
                 instruction: """
                     That device is showing a QR code with the same text \
-                    underneath it. Paste the text here.
+                    underneath it. Scan it with the camera, or paste the text \
+                    here.
                     """
             )
         case .first, .second, .third:

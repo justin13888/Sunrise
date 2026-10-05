@@ -121,7 +121,13 @@ pub const ENVELOPE_FORMAT_FLOOR: u16 = 3;
 /// not move. A v8 build parks a `StreamDigest` and replays it after an
 /// upgrade. Envelope fields 14 and 15 land with it, but they are container
 /// fields, not document schema, and move nothing here.
-pub const DOC_SCHEMA_V: u16 = 9;
+///
+/// `10` adds the two feature control families, `VaultRequires` and
+/// `DeviceFeatures`, and the feature registry to the canonical schema
+/// (issue #324, ADR-0045 §7). A v9 build parks an op of either family, and
+/// replays it once a v10 build opens the vault. Every v1..v9 payload shape is
+/// unchanged, so the floor still does not move.
+pub const DOC_SCHEMA_V: u16 = 10;
 
 /// The first [`DOC_SCHEMA_V`] that has a fingerprint (ADR-0045 §3, `N_fp`).
 ///
@@ -162,6 +168,10 @@ pub const DOC_SCHEMA_FINGERPRINTS: &[(u16, [u8; 32])] = &[
     (
         9,
         hex32("875fc9a8b8d426ff9c52dd6fa5ce2da8685903353fc58f98446c4825c2d7de01"),
+    ),
+    (
+        10,
+        hex32("e9a6d82f484ef86b75291f8d58f28e1a04bc6ee5f877de89da5afe0af03ff12c"),
     ),
 ];
 
@@ -422,4 +432,10 @@ pub const CRYPTO_SUITE_V: u16 = 5;
 /// last frontier each peer published in its stream digest, and the latest
 /// snapshot record per stream. Schema-only: a vault without a floor reads its
 /// prefix from seq 1, exactly as before.
-pub const STORAGE_V: u16 = 35;
+///
+/// `36` is migration `0036_vault_features.sql`, the folds of the two feature
+/// control ops (issue #324, ADR-0045 §7–§8): the vault's grow-only set of
+/// required feature ids, and each device's latest list of supported ones.
+/// Schema-only: both start empty, which is what a vault no feature-aware build
+/// has written to means.
+pub const STORAGE_V: u16 = 36;
