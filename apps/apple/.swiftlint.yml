@@ -4,6 +4,7 @@ included:
   - Sunrise
   - macOS
   - iOS
+  - Widgets
   - SunriseTests
   - SunriseUITests
   - SunriseiOSUITests

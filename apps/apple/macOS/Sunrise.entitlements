@@ -19,10 +19,19 @@
   writes lands in. No item names a group explicitly, so a second group here
   would change nothing but what the app could read.
 
+  `com.apple.security.application-groups` is the App Group the widgets read
+  the app's snapshot through. It is the one key this file shares with
+  macOS/SunriseDebug.entitlements, which Debug signs with; keep the two in
+  step. `$(SUNRISE_APP_GROUP)` is spelled in project.yml.
+
   No `com.apple.security.app-sandbox`: the App Sandbox stays off (ADR-0031).
 -->
 <plist version="1.0">
 <dict>
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>$(SUNRISE_APP_GROUP)</string>
+	</array>
 	<key>keychain-access-groups</key>
 	<array>
 		<string>$(AppIdentifierPrefix)dev.sunrise.Sunrise</string>
