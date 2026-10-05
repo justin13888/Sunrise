@@ -967,7 +967,11 @@ impl Engine {
         stream_id: &[u8; 16],
     ) -> Result<bool, EngineError> {
         let now_ms = self.clock.now_ms();
-        Ok(db.with_tx(|tx| self.emit_stream_digest(tx, stream_id, now_ms))?)
+        let seq = db.with_tx(|tx| self.emit_stream_digest(tx, stream_id, now_ms))?;
+        if let Some(seq) = seq {
+            log_digest_published(stream_id, seq);
+        }
+        Ok(seq.is_some())
     }
 
     /// Publish a digest in every stream where one is due: no digest from this
@@ -981,7 +985,7 @@ impl Engine {
     pub fn publish_due_stream_digests(&self, db: &mut Db) -> Result<usize, EngineError> {
         let now_ms = self.clock.now_ms();
         let me = self.keychain.device_id();
-        Ok(db.with_tx(|tx| -> rusqlite::Result<usize> {
+        let published = db.with_tx(|tx| -> rusqlite::Result<Vec<([u8; 16], u64)>> {
             let streams: Vec<Vec<u8>> = {
                 let mut stmt = tx.prepare(
                     "SELECT DISTINCT stream_id FROM sync_cursors WHERE last_applied_seq > 0
@@ -990,7 +994,7 @@ impl Engine {
                 let rows = stmt.query_map([], |r| r.get(0))?;
                 rows.collect::<rusqlite::Result<_>>()?
             };
-            let mut written = 0;
+            let mut written = Vec::new();
             for s in streams {
                 let Ok(stream_id) = <[u8; 16]>::try_from(s.as_slice()) else {
                     continue;
@@ -1027,12 +1031,21 @@ impl Engine {
                                     >= DIGEST_EVERY_MS)
                     }
                 };
-                if due && self.emit_stream_digest(tx, &stream_id, now_ms)? {
-                    written += 1;
+                if !due {
+                    continue;
+                }
+                if let Some(seq) = self.emit_stream_digest(tx, &stream_id, now_ms)? {
+                    written.push((stream_id, seq));
                 }
             }
             Ok(written)
-        })?)
+        })?;
+        // Logged once the transaction has committed: a later stream's failure
+        // rolls every digest in it back, and the event must not claim one.
+        for (stream_id, seq) in &published {
+            log_digest_published(stream_id, *seq);
+        }
+        Ok(published.len())
     }
 
     /// What this replica holds about chains: fork evidence, digest
@@ -1044,20 +1057,23 @@ impl Engine {
         Ok(integrity(db.conn())?)
     }
 
+    /// Write this replica's digest of `stream_id` inside `tx`. Returns the
+    /// digest op's `seq`, or `None` where nothing was written. The caller
+    /// logs `core.chain.digest_published` once `tx` has committed.
     fn emit_stream_digest(
         &self,
         tx: &Transaction<'_>,
         stream_id: &[u8; 16],
         now_ms: u64,
-    ) -> rusqlite::Result<bool> {
+    ) -> rusqlite::Result<Option<u64>> {
         // A stream this device holds no key for is one it cannot write to,
         // and minting a key here would hand the account a new epoch as a side
         // effect of a checksum.
         let Some((epoch, key)) = self.keychain.current_stream_key_tx(tx, stream_id)? else {
-            return Ok(false);
+            return Ok(None);
         };
         let Some(payload) = digest_payload(tx, stream_id, now_ms)? else {
-            return Ok(false);
+            return Ok(None);
         };
         let inner = InnerOp::StreamDigest(payload);
         let blob = encode_inner_op(&inner).map_err(|_| rusqlite::Error::ExecuteReturnedResults)?;
@@ -1081,8 +1097,19 @@ impl Engine {
             epoch,
             &key,
         )?;
-        Ok(true)
+        Ok(Some(seq))
     }
+}
+
+/// The committed-digest event. Called only after the transaction that wrote
+/// the digest op has committed.
+fn log_digest_published(stream_id: &[u8; 16], seq: u64) {
+    tracing::debug!(
+        ev = "core.chain.digest_published",
+        stream_h = hex_short(stream_id),
+        seq,
+        "published this replica's stream digest"
+    );
 }
 
 /// The op-log `inner_kind` of a `StreamDigest`.
