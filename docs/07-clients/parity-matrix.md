@@ -169,7 +169,7 @@ around it is recorded in the cells below and in
 | Quick capture (hotkey / menu bar) | met | Carbon `RegisterEventHotKey` ⌘⇧N + `MenuBarExtra`; both via `previewCapture` |
 | Reminders / local notifications | met | `ReminderScheduler` follows the change feed, reconciles against pending requests, snooze targets from the domain |
 | Multi-account | met | Settings → vault picker → `SessionModel.switchTo`, teardown before reopen |
-| Pairing — scan QR | met *(paste half)* | `PairingView` paste-accept → `DevicePairing.accept`. **No camera scanner exists**; the row's "camera or paste" is satisfied by paste. The script is **eight legs, not six**, since the account signing key stopped travelling (#105): the last hand-over became offer → request → grant, because the device holding the vault cannot certify keys the joining device has not minted yet |
+| Pairing — scan QR | met | `PairingView`'s **Scan the code** → `QRScannerView` (`Pairing/QRScanner.swift`): an `AVCaptureSession` over the system's preferred camera, Continuity Camera included, with Vision barcode detection, behind `com.apple.security.device.camera` and a purpose string, asked for only on Scan. The scanned text goes to `RelayPairing.accept` as read, and the pairing is three phases — scan, compare the SAS, done — over the relay (`Pairing/PairingRelay.swift`). Paste stays beside the button, and a refused camera offers it in one tap. With no relay, no signed-in account, or a relay that does not answer, the sheet says which and runs the **eight-leg** copy-and-paste script over `DevicePairing` (offer → request → grant at the end since #105, because the device holding the vault cannot certify keys the joining device has not minted yet) |
 | Pairing — show QR | met | `QRCode.image` (CoreImage) rendered on the code leg, with copyable text beside it |
 | Pairing — sponsor a device | met *(with a stated limit)* | Settings → **Add a device…**, disabled with an explanation on a vault that was itself added by pairing. Such a vault holds `ID_S_pub` and no signing key, so it cannot issue a certificate — the same absence that stops a *revoked* device certifying itself back in. `SunriseCore.canSponsorPairing()` is the question; `SessionModel.canSponsorPairing` is the snapshot a view body can read |
 | iCal import / export | met *(windowed, no round-trip)* | File → Import Calendar… (⌘⇧I) and Export Calendar ▸ Today \| This Week → `AppSurfaces` → `IcalModel` → `CoreBridge.importIcal` / `.exportIcal` → the seam's `import_ical` / `export_ical` |
@@ -275,7 +275,7 @@ actually reach on a phone.
 | Quick capture (system surface) | met | a **Capture** toolbar button on all five tab roots and on every pushed task list (`VaultTabs.swift:410-416`, attached at `:81`, `:91`, `:162`, `:173`, `:189`, `:278`; the six other pushed destinations at `:282-293` carry none, because a `.toolbar` on a `NavigationStack` root is not inherited by a `navigationDestination`), routed to the inline bar where the list has one and to the sheet where it does not (`:450-456`, `:459-468`); `sunrise://capture?text=`, registered by the iOS target in its own right (`project.yml:394-397`); and the **Capture Task** App Shortcut (`SunriseShortcuts.swift:23-33`) |
 | Reminders / local notifications | met | `ReminderScheduler` follows the change feed for the life of the shell (`iOS/VaultSurfaces.swift:68`, inside the `Lifecycle` modifier the shell applies at `VaultTabs.swift:56-62`); the category with its buttons (`NotificationCenterClient.swift:88-113`) and the response delegate (`:235-264`) are one shared file; Settings asks for authorization (`iOS/SettingsSheet.swift:30`) |
 | Multi-account | met | More → Settings (`VaultTabs.swift:240`, the sheet at `iOS/SettingsSheet.swift:20-43`) → the vault picker (`AccountView.swift:133-142`), whose binding setter calls `SessionModel.switchTo` (`AccountView.swift:191-193`); teardown before reopen is in the method itself (`SessionModel.swift:400`) — `await bridge?.shutdown()` then re-point (`:413-414`, `:420-424`), then reopen through the same launch decision a cold start takes (`:429`) |
-| Pairing — scan QR | met *(paste half)* | `PairingView`'s paste field, reached from Settings → **Add a device…** and from `LockedView`. **No camera scanner exists on either platform**; the row's "camera or paste" is satisfied by paste, as it is on macOS. Eight legs here too — `apps/apple/Sunrise/Pairing/` compiles into both targets, so the extra round trip #105 forced is one implementation, not two |
+| Pairing — scan QR | met | `PairingView`'s **Scan the code**, reached from Settings → **Add a device…**, scans with VisionKit's `DataScannerViewController` (`Pairing/QRScanner.swift`), asking for the camera only then, with the purpose string `project.yml` sets. The rest is the Mac's — `apps/apple/Sunrise/Pairing/` compiles into both targets: three phases over `RelayPairing`, paste beside the button and one tap away from a refused camera, and the eight-leg copy-and-paste script when there is no relay to run over. `SunriseiOSUITests/PairingScanUITests` injects a pairing QR into the scanner and refuses the camera |
 | Pairing — show QR | met | `QRCode.image` (`QRCode.swift:29-48`) through `PlatformImage`'s `UIImage` branch (`PlatformKit.swift:42-52`), with the copyable text beside it |
 | iCal import / export | met *(windowed, no round-trip)* | Browse → More → **Import calendar…** / **Export calendar ▸ Today \| This Week** (`iOS/VaultTabs.swift`, `overflowMenu`), into the same URL-taking `AppSurfaces.importIcal(from:)` / `exportIcal(_:to:)` the Mac's File menu reaches — a `fileImporter` and a `fileExporter` in place of the Mac's two `NSPanel`s (`iOS/VaultSurfaces.swift`, `iOS/IcalDocuments.swift`), and `IcalSurfaces` hung on the tab shell as the Mac hangs it on its window, so the notice report an import produces is shown here too. The picked document's security scope is held across the read. Same scope note as the Mac's row, and for the same reason: it is the seam's |
 | Background sync | met *(frontmost only)* | `startSync` (`VaultTabs.swift:486-496`) on the shell's `.task` and again on every relay-URL change (`iOS/VaultSurfaces.swift:62-66`, `:71`), exactly as the Mac's window does it. There is no `BGAppRefreshTask` anywhere in `apps/apple`, so sync stops when the app leaves the foreground ([#31](https://github.com/justin13888/Sunrise/issues/31)) |
@@ -301,10 +301,13 @@ Nothing above demotes a mark, and nothing above is graded up past what a user
 can reach. What is narrower than the row's prose, recorded rather than smoothed
 over:
 
-- **macOS.** No camera QR scanner exists — the *Pairing — scan QR* row's "camera
-  or paste" is satisfied by paste alone. The relay's pairing rendezvous and
-  the `RelayPairing` seam that drives it exist, and would take every other
-  paste away. Neither Apple client calls them yet
+- **macOS.** Pairing runs over the relay only when *both* devices have a
+  relay and a signed-in account, and sign-in lives in Settings, which a device
+  on first run cannot reach before it has a vault. Unless an earlier sign-in
+  is still in its Keychain, the device being added therefore walks the eight
+  copy-and-paste legs, with the sheet saying why. No test drives a real
+  camera: the scanner's reader is tested on a still image of a real code, and
+  the capture session around it only on a Mac with one
   ([#464](https://github.com/justin13888/Sunrise/issues/464)). Drag-and-drop is missing the Calendar
   block → Task gesture — unbuilt rather than inexpressible: the block chip is
   not a drag source and the task row's drop only reorders. iCal is windowed on
@@ -377,8 +380,8 @@ over:
   Search, *Pairing — scan QR* and the two *Attachments* rows are
   narrow here in exactly the way they are on the Mac, and none of the three
   narrownesses is iOS's: the literal-AND FTS query and the attachment byte path
-  are the seam's, while the absent camera scanner is shared SwiftUI rather than
-  anything in the core. See the macOS
+  are the seam's, while when pairing falls back to copy and paste is shared
+  SwiftUI rather than anything in the core. See the macOS
   note above.
 
   Two things that were narrow here are no longer, and both are recorded rather

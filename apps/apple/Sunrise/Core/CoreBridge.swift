@@ -340,6 +340,17 @@ actor CoreBridge {
         try core.sendPairingGrant(pairing: pairing, sealedRequest: request)
     }
 
+    /// Run the existing device's side of a relay pairing whose digits the user
+    /// has just confirmed: offer out, request back, cert and grant out, all
+    /// through the relay.
+    ///
+    /// Here rather than in the pairing model because it needs the vault's own
+    /// `SunriseCore`, which never leaves this actor; the cert is signed inside
+    /// it, exactly as ``sendPairingGrant(to:request:)`` signs one.
+    func sponsor(_ pairing: any RelayPairingProtocol) async throws {
+        try await pairing.sponsor(core: core)
+    }
+
     /// This device's stable id, hex-encoded — what a login binds its token to.
     func deviceId() -> String { core.deviceId() }
 

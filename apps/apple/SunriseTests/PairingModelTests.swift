@@ -75,7 +75,7 @@ struct PairingModelTests {
         )
 
         added.accountEmail = "someone@example.com"
-        added.begin()
+        await added.begin()
 
         // The QR payload, then Noise message 1, both from the device being
         // added — XX starts with the initiator.
@@ -223,7 +223,7 @@ struct PairingModelTests {
         let added = PairingModel(intent: .addThisMac, relayURL: Self.relay)
         let holder = PairingModel(intent: .addAnotherDevice)
         added.accountEmail = "someone@example.com"
-        added.begin()
+        await added.begin()
 
         holder.pasted = try #require(shownText(added))
         await holder.submit()
@@ -290,7 +290,7 @@ struct PairingModelTests {
         #expect(added.progress == nil, "nothing has started")
 
         added.accountEmail = "someone@example.com"
-        added.begin()
+        await added.begin()
         #expect(added.progress?.leg == 1)
         #expect(added.progress?.of == 8, "six until the signing key stopped travelling")
 

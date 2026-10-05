@@ -19,6 +19,12 @@
   writes lands in. No item names a group explicitly, so a second group here
   would change nothing but what the app could read.
 
+  `com.apple.security.device.camera` is the hardened runtime's gate on the
+  camera, which the pairing sheet uses to scan the other device's code
+  (#464). It is not restricted, so Debug gets it too, from the
+  `ENABLE_RESOURCE_ACCESS_CAMERA` build setting in apps/apple/project.yml;
+  it is written here as well so the shipped entitlements say it.
+
   `com.apple.security.application-groups` is the App Group the widgets read
   the app's snapshot through. It is the one key this file shares with
   macOS/SunriseDebug.entitlements, which Debug signs with; keep the two in
@@ -32,6 +38,8 @@
 	<array>
 		<string>$(SUNRISE_APP_GROUP)</string>
 	</array>
+	<key>com.apple.security.device.camera</key>
+	<true/>
 	<key>keychain-access-groups</key>
 	<array>
 		<string>$(AppIdentifierPrefix)dev.sunrise.Sunrise</string>

@@ -87,15 +87,17 @@ struct LockedView: View {
         }
         .padding(40)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .sheet(item: $pairing) { model in
+        .sheet(item: $pairing.endingThePairingOnDismiss) { model in
             PairingView(model: model) { pairing = nil }
         }
     }
 
+    /// As ``OnboardingView``'s: the relay and the process's account bearer
+    /// when both are here, copy and paste with the reason shown when not.
     private func makePairing() -> PairingModel {
-        PairingModel(
-            intent: .addThisMac,
+        .joining(
             relayURL: settings.relayURL.trimmed,
+            account: session?.account,
             adopt: { [session] root, bundle in
                 await session?.adoptPairing(root: root, bundle: bundle)
             }
