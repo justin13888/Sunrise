@@ -61,7 +61,7 @@ because the UI repaints from that feed.
 |---|---|---|
 | Author: commit → batch on the wire | 50 ms | not measured on its own; inside the harness total |
 | Relay: batch accepted → handed to the last subscriber's stream | 100 ms | `sunrise_sync_fanout_latency_seconds` ([`metrics.md`](../06-server/metrics.md)) |
-| Network, both hops | 2 × RTT (≤ 100 ms at the stated RTT) | harness-injected |
+| Network, both hops | 2 × RTT (≤ 100 ms at the stated RTT) | harness-injected as one RTT on the op's path (half up, half down), held on the author's send; the second RTT is budgeted, not injected |
 | Receiver: frame read → applied and published | 50 ms | not measured on its own; inside the harness total |
 | Headroom | 200 ms | — |
 

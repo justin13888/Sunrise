@@ -161,9 +161,10 @@ async fn the_harness_measures_every_op() {
         report.percentile(99.0),
     );
     assert!(p50 <= p95 && p95 <= p99, "{}", report.summary());
-    // Two links, each delaying by at least 40 % of the RTT one way: no op can
-    // arrive faster than that, so a smaller p50 means the delay was not
-    // injected at all.
+    // A's link holds every send for at least 80 % of the RTT (16 ms at 20 ms),
+    // and an op's only send on its path is A's `POST`: B receives it on a
+    // stream, which its link does not delay. No op can arrive faster than
+    // that, so a smaller p50 means the delay was not injected at all.
     assert!(
         p50 >= Duration::from_millis(16),
         "the injected RTT is missing from the measurement: {}",
