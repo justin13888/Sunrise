@@ -474,28 +474,14 @@ extension VaultTabs {
     }
 
     private var settingsSheet: some View {
-        NavigationStack {
-            AccountView(
-                settings: models.settings,
-                account: models.account,
-                notifications: surfaces.notifications,
-                deviceID: deviceID,
-                authorization: surfaces.reminders?.authorization ?? .notDetermined,
-                scheduledCount: surfaces.reminders?.scheduled.count ?? 0,
-                signIn: signIn,
-                allowNotifications: { await surfaces.reminders?.requestAuthorization() },
-                keyboard: keys,
-                session: session,
-                devices: models.devices
-            )
-            .navigationTitle("Settings")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { showingSettings = false }
-                }
-            }
-        }
+        SettingsSheet(
+            bridge: bridge, session: session,
+            models: models,
+            surfaces: surfaces,
+            keys: keys,
+            deviceID: deviceID,
+            isPresented: $showingSettings
+        )
     }
 
     private func startSync() async {
@@ -508,15 +494,6 @@ extension VaultTabs {
             relayDeviceID: session.relayDeviceID(relayURL: relayURL, bearer: token)
         ) else { return }
         try? await bridge.startSync(url: url, bearer: bearer, relayDeviceID: relayDeviceID)
-    }
-
-    private func signIn() async {
-        await models.account.signIn(
-            issuer: models.settings.oidcIssuer,
-            clientID: models.settings.oidcClientID,
-            deviceID: deviceID,
-            nowMs: await bridge.nowMs()
-        )
     }
 }
 

@@ -59,7 +59,7 @@ final class AppNavigationUITests: SunriseUITestCase {
         field.typeText("ferry")
 
         XCTAssertTrue(
-            app.staticTexts["Book the ferry"].waitForExistence(timeout: 10),
+            app.staticTexts["Book the ferry"].appears(within: 10),
             "the match shows"
         )
         XCTAssertTrue(
@@ -96,7 +96,7 @@ final class AppNavigationUITests: SunriseUITestCase {
 
         XCTAssertTrue(
             app.descendants(matching: .any)["sidebar.stream.travel"]
-                .firstMatch.waitForExistence(timeout: 10),
+                .firstMatch.appears(within: 10),
             "the new stream is a row in the sidebar"
         )
     }
