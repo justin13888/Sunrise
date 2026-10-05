@@ -33,6 +33,13 @@ impl LoggedEvent {
             && self.cause.as_deref() == Some("corrupt_op")
     }
 
+    /// Whether this is a `HEAD` core publishing a `StreamDigest` (ADR-0043
+    /// §5): an op kind a baseline cut before #320's parking fix cannot read.
+    #[must_use]
+    pub fn is_digest_published(&self) -> bool {
+        self.ev.as_deref() == Some("core.chain.digest_published")
+    }
+
     /// Read one event out of the baseline driver's JSON form, which uses the
     /// same field names.
     pub(crate) fn from_json(v: &serde_json::Value) -> Self {
@@ -88,8 +95,14 @@ impl<S: tracing::Subscriber> Layer<S> for Capture {
         let mut fields = Fields::default();
         event.record(&mut fields);
         let level = *event.metadata().level();
-        let loss = fields.ev.as_deref() == Some("sync.loss_evidence");
-        if level > tracing::Level::WARN && !loss {
+        // Two debug events are kept: the sync driver's loss evidence, and a
+        // published digest, which is what explains a baseline's corruption
+        // log when the baseline predates parking.
+        let kept = matches!(
+            fields.ev.as_deref(),
+            Some("sync.loss_evidence" | "core.chain.digest_published")
+        );
+        if level > tracing::Level::WARN && !kept {
             return;
         }
         if let Ok(mut events) = HEAD_EVENTS.lock() {

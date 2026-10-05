@@ -260,6 +260,8 @@ pub struct Model {
     touched: BTreeMap<(EntityRef, u32), BTreeSet<Writer>>,
     unkept: Vec<Unkept>,
     taints: Vec<Taint>,
+    /// Whether a `HEAD` core published a `StreamDigest` during the run.
+    digest_published: bool,
     epoch: u32,
     clock: u64,
     tasks: Vec<EntityRef>,
@@ -334,6 +336,13 @@ impl Model {
             let at = self.tick();
             self.taints.push(Taint { task, write, at });
         }
+    }
+
+    /// Record that a `HEAD` core published a `StreamDigest`, an op kind a
+    /// baseline that predates parking classes as corruption when the relay
+    /// delivers it.
+    pub fn published_digest(&mut self) {
+        self.digest_published = true;
     }
 
     /// Whether a baseline A can be expected to agree with B about `task` at a
@@ -420,9 +429,19 @@ impl Model {
             } if cross => cause(*write, carried),
             // The baseline's sync driver dropping a `HEAD` write that carries a
             // newer value `HEAD` kept: the same unknown value, one hop later.
-            Violation::LoggedCorruption { who: Who::A, .. } if cross => {
-                self.taints.first().and_then(|t| t.write.baseline_issue())
-            }
+            // Or `HEAD`'s own `StreamDigest` (ADR-0043 §5), which every
+            // `HEAD` core publishes on its anti-entropy tick: an op kind
+            // the baseline cannot read, so it reaches the baseline's sync
+            // driver exactly as `FutureWrite::OpKind` would.
+            Violation::LoggedCorruption { who: Who::A, .. } if cross => self
+                .taints
+                .first()
+                .and_then(|t| t.write.baseline_issue())
+                .or_else(|| {
+                    self.digest_published
+                        .then_some(FutureWrite::OpKind)
+                        .and_then(FutureWrite::baseline_issue)
+                }),
             Violation::Lost {
                 who, task, field, ..
             } => self.explain_loss(cross, *who, *task, *field),
@@ -470,5 +489,55 @@ impl Model {
             }
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cross_version::gaps::FLOOR;
+
+    fn corruption_at_a() -> Vec<Violation> {
+        vec![Violation::LoggedCorruption {
+            who: Who::A,
+            message: "scheduling a resync".into(),
+        }]
+    }
+
+    fn issue(model: &Model, baseline: Option<&str>) -> Option<u32> {
+        model.classify(baseline, corruption_at_a())[0].issue
+    }
+
+    /// A baseline that predates parking logs `HEAD`'s digest as corruption,
+    /// which is #320, but only once `HEAD` has published one.
+    #[test]
+    fn a_published_digest_explains_the_floors_corruption_log_as_320() {
+        let mut model = Model::default();
+        assert_eq!(
+            issue(&model, Some(FLOOR)),
+            None,
+            "no digest, no explanation"
+        );
+        model.published_digest();
+        assert_eq!(issue(&model, Some(FLOOR)), Some(320));
+    }
+
+    /// A baseline cut after the parking fix keeps a digest, so a corruption
+    /// log there is not #320 however many digests `HEAD` published.
+    #[test]
+    fn a_published_digest_explains_nothing_against_a_parking_baseline() {
+        let mut model = Model::default();
+        model.published_digest();
+        let after_parking = "0000000000000000000000000000000000000000";
+        assert_eq!(issue(&model, Some(after_parking)), None);
+    }
+
+    /// `HEAD` against `HEAD` parks its own digest kind, so a corruption log
+    /// in the control run stays unexplained.
+    #[test]
+    fn a_published_digest_explains_nothing_in_the_control_run() {
+        let mut model = Model::default();
+        model.published_digest();
+        assert_eq!(issue(&model, None), None);
     }
 }

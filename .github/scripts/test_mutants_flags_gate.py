@@ -1353,7 +1353,7 @@ class FlagsGateContract(unittest.TestCase):
         self.assertEqual(
             derived,
             {
-                "mise.toml": 47,
+                "mise.toml": 49,
                 ".github/scripts/grep-gate.sh": 4,
                 ".github/scripts/sparkle-tools.sh": 3,
                 ".github/workflows/ci.yml": 2,
@@ -1364,12 +1364,13 @@ class FlagsGateContract(unittest.TestCase):
             "docs/10-cross-cutting/testing.md in the same change, and "
             "check whether a file has started going unread rather than "
             "only editing this mapping to match.")
-        # And the two kinds inside `mise.toml`: 46 fences, which are
-        # unbalanced quotations to a shell lexer, and `:691` alone,
-        # which is an unclosed `$(` continued with `\\` inside a `"""`
-        # string. They are counted together by the gate and stated
-        # separately by its docstring, so they are asserted separately
-        # here.
+        # And the two kinds inside `mise.toml`: 48 unbalanced quotations
+        # to a shell lexer — 46 fences, plus the opening and closing lines
+        # of the single-quoted `python3 -c` program `ios-app` picks its
+        # simulator with — and `:710` alone, which is an unclosed `$(`
+        # continued with `\\` inside a `"""` string. They are counted
+        # together by the gate and stated separately by its docstring, so
+        # they are asserted separately here.
         kinds: dict[str, int] = {}
         for _, line in gate.logical_lines((root / "mise.toml").read_text()):
             try:
@@ -1377,7 +1378,7 @@ class FlagsGateContract(unittest.TestCase):
             except ValueError as error:
                 if not gate.INVOCATION.search(line):
                     kinds[str(error)] = kinds.get(str(error), 0) + 1
-        self.assertEqual(kinds.get("no closing quotation"), 46)
+        self.assertEqual(kinds.get("no closing quotation"), 48)
         self.assertEqual(
             kinds.get("no closing `)` for a command substitution"), 1)
         # Finally, the number the gate PRINTS is the sum of the parts.
