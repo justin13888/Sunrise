@@ -67,6 +67,8 @@ sunrise-log = { workspace = true }
 # relay and the spec read one set of constants.
 sunrise-pairing = { workspace = true }
 sunrise-storage = { workspace = true }
+# Redacted trace export, off unless `[observability]` is written.
+sunrise-telemetry = { workspace = true }
 sunrise-wire-protocol = { workspace = true }
 # The relay database key is wiped when its holder drops (ADR-0060).
 zeroize = { workspace = true }
@@ -83,5 +85,8 @@ futures-util = { workspace = true }
 # embedding seam, so the thirty lines below cost less than the policy change.
 http-body-util = { workspace = true }
 tempfile = "3"
+# Reads exported spans back in `tests/span-redaction.rs` and the span-tree
+# tests.
+sunrise-telemetry = { workspace = true, features = ["testing"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 sunrise-crypto-test-vectors = { workspace = true }

@@ -95,9 +95,19 @@ Spans are `tracing` spans. `#[instrument]`, `Span::in_scope`, and the automatic
 fields ride every record emitted inside it (the `span` object in §3).
 
 Entry points that begin user-visible work open a span: the server opens
-`http.request` per request (`sunrise_server::logging::RequestSpan`) and the
+`http.request` per request (`sunrise_server::api::observe`) and the
 sync driver's session is one scope. Within it, nested spans are created only
 where `target` + `ev` do not already say which operation is running.
+
+**OpenTelemetry correlation.** With `[observability]` configured, the relay
+exports traces ([`../06-server/observability.md`](../06-server/observability.md)
+§Tracing), and while a *sampled* request runs its handler sits inside an
+`http.request` span that also carries `trace_id` and `span_id` — the ids of the
+request's root span — so every record written during the request names the
+trace it belongs to under `span`. A request that is not sampled, or a relay
+without the table, writes the records it always did. The relay joins a
+client's W3C `traceparent` when one is sent, but no Sunrise client sends one
+yet, so the paragraph below still describes cross-device propagation.
 
 **Not implemented: cross-device propagation.** The original spec carried a ULID
 `trace` id across the wire in `x-sunrise-trace` / a `trace` frame field, so a
@@ -158,6 +168,7 @@ never be user-authored content. Broad shapes:
 | `bind`, `relay` | socket address / host | The server's own listen address, and the relay hostname §6.2 sanctions as the stand-in for a client IP. |
 | `client_net` | IPv4 `/24` or IPv6 `/48` prefix | A client address truncated to the finest prefix §6.2 permits. Written only by the relay's rate-limit refusal, `srv.ratelimit.rejected`. |
 | `err_code`, `err_kind`, `retryable`, `cause` | error envelope | §5 |
+| `trace_id`, `span_id` | W3C trace and span ids, lowercase hex | The OpenTelemetry trace a record was written in (§4). Ids, not entities: carved out of the `_id` rule by name. |
 | `ev`, `message` | envelope | §3 |
 
 ### How this is enforced

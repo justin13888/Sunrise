@@ -11,6 +11,7 @@
 mod file;
 mod limits;
 mod model;
+mod observability;
 
 pub use file::{
     load, resolve_candidate, AuthTable, Candidate, FileConfig, LoadError, ServerTable,
@@ -18,5 +19,6 @@ pub use file::{
 };
 pub use limits::{parse_cidr, LimitsConfig};
 pub use model::{ApnsConfig, ApnsEnvironment, ConfigError, PushConfig, Retention, ServerConfig};
+pub use observability::{ObservabilityConfig, ObservabilityError};
 
 pub(crate) use model::binds_loopback;

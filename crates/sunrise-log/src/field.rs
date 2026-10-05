@@ -140,6 +140,13 @@ pub static ALLOWED: &[&str] = &[
     "sender_h",
     "seq",
     "sig_alg",
+    // --- trace correlation (`sunrise-server`'s OpenTelemetry tracing) ---
+    // The W3C trace and span ids of the sampled request a record was written
+    // in, lowercase hex, so a log line joins the trace it belongs to. Random
+    // ids the tracer minted, or a client's own `traceparent` trace id, which
+    // names a trace and nothing else; neither names an entity, which is why
+    // both are carved out of the `_id` rule by `NOT_ENTITY_IDS`.
+    "span_id",
     "status",
     "storage_v",
     "stream_h",
@@ -147,6 +154,7 @@ pub static ALLOWED: &[&str] = &[
     "task_h",
     "tier",
     "to_v",
+    "trace_id",
     "view",
     "wire_v",
 ];
@@ -258,7 +266,7 @@ mod tests {
     /// hand, which is the point of the rule. What stops the list being a
     /// loophole is [`entity_ids_implied_by_hashes`] — an exception may not name
     /// something the allowlist has already called an entity.
-    const NOT_ENTITY_IDS: &[&str] = &["batch_id"];
+    const NOT_ENTITY_IDS: &[&str] = &["batch_id", "span_id", "trace_id"];
 
     /// The `_id` names the allowlist's own `_h` entries forbid.
     ///

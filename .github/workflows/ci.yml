@@ -1293,6 +1293,7 @@ jobs:
             crates/sunrise-core-bindings/src \
             crates/sunrise-http-sig/src \
             crates/sunrise-relay-client/src \
+            crates/sunrise-telemetry/src \
             crates/*/src/telemetry crates/*/src/logging crates/*/src/observability
 
   constant-time:

@@ -139,6 +139,11 @@ pub struct ServerConfig {
     /// no push at all; see `docs/06-server/push-notifications.md`.
     #[serde(default)]
     pub push: PushConfig,
+    /// The `[observability]` table: OpenTelemetry trace export. Absent — the
+    /// default — exports nothing and starts no exporter; see
+    /// `docs/06-server/observability.md` §Tracing.
+    #[serde(default)]
+    pub observability: Option<super::observability::ObservabilityConfig>,
     /// Days between `DELETE /api/v1/accounts/me` and the maintenance pass
     /// that erases the account. `[storage] account_delete_grace_days`.
     #[serde(default = "default_thirty_days")]
@@ -365,6 +370,9 @@ pub enum ConfigError {
          and a maintenance interval of zero runs the pass in a busy loop"
     )]
     ZeroMaintenance(&'static str),
+    /// An `[observability]` table the exporter cannot be built from.
+    #[error(transparent)]
+    Observability(#[from] super::observability::ObservabilityError),
 }
 
 impl ServerConfig {
@@ -443,6 +451,9 @@ impl ServerConfig {
             if apns.topic.trim().is_empty() {
                 return Err(ConfigError::EmptyApnsTopic);
             }
+        }
+        if let Some(obs) = &self.observability {
+            obs.validate()?;
         }
         Ok(())
     }
@@ -569,6 +580,7 @@ impl Default for ServerConfig {
             trusted_proxies: Vec::new(),
             limits: super::limits::LimitsConfig::default(),
             push: PushConfig::default(),
+            observability: None,
         }
     }
 }

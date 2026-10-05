@@ -137,8 +137,10 @@
 //! - **Spans.** `redact.rs` argues deliberately that spans are ungated, and
 //!   names a second span site as the trigger to revisit — but nothing here
 //!   detects a second span site, so that trigger is a note, not an alarm. One
-//!   span exists today (`api/observe.rs`, `method` and `endpoint`, both
-//!   allowlisted and server-derived).
+//!   span name exists today, `http.request` in `api/observe.rs`, built at two
+//!   sites: the request log's (`method`, `endpoint`) and the trace
+//!   interceptor's, which adds `trace_id` and `span_id`. All four are
+//!   allowlisted and server-derived, and the second site is the trigger.
 //! - **Build config this file does not know to read.** The build-config gates
 //!   read `.github/workflows/`, `.github/actions/`, `Dockerfile*` and the root
 //!   `mise.toml` — a hardcoded list, and so an assertion about where build

@@ -11,8 +11,10 @@ Operate the server without violating the E2EE guarantee.
 > (`api::observe::RequestLog`) with its redaction tests — in-module in
 > `api/observe.rs` and end-to-end in `crates/sunrise-server/tests/logging.rs` —
 > and an in-process counter registry
-> exposed at `/metrics` (`metrics.rs`). **Not built:** labelled metrics of any
-> kind, histograms, OTel tracing and sampling, the deep health check's
+> exposed at `/metrics` (`metrics.rs`), and redacted OpenTelemetry tracing with
+> a capped sampler behind an off-by-default `[observability]` table
+> (`crates/sunrise-telemetry`, §Tracing). **Not built:** labelled metrics of any
+> kind, histograms, the deep health check's
 > disk-free-ratio probe, alerting, and the per-account audit log. Each section says which it is.
 
 ## What we log
@@ -301,11 +303,115 @@ the request's path.
 
 ## Tracing
 
-**Not implemented as specified.** There is no `sunrise-telemetry` crate, no
-`span_redactor`, no OTel exporter, no sampling rate, and no
-`tests/span-redaction.rs`.
+OpenTelemetry traces, exported over OTLP/HTTP, **off unless `[observability]`
+is written** in `sunrise.toml` ([`self-hosting.md`](./self-hosting.md) documents
+the table). Without it there is no exporter, no batch thread and no span: every
+span call returns at its first branch, and a request's log records are exactly
+what they were before tracing existed. `crates/sunrise-telemetry` holds the
+mechanism and `crates/sunrise-server` the call sites.
 
-What exists is a request log that never consults the URI, which is a better
+### What is traced
+
+One trace per HTTP operation, rooted at a server span the outermost interceptor
+(`api::observe::TraceRequest`) opens. It runs the rest of the request — every
+other interceptor, the extractors, the handler — under that span, so the spans
+below find their parent without being handed it.
+
+| Span | Where | Attributes and events |
+|---|---|---|
+| `"{METHOD} {endpoint}"`, e.g. `POST /api/v1/sync/ops` | the root, per operation | `method`, `endpoint`, `status`; status `error` on a 5xx |
+| `auth.verify_token` | `api::auth::resolve_bearer`; the account lookup beneath it | status `error` on a refused bearer |
+| `auth.verify_signature` | `api::signed::verify_bytes`; the device lookup beneath it | status `error` on a refused signature |
+| `store.<operation>`, e.g. `store.relay_append` | every store operation the request paths reach (`store/tx.rs`) | none: the operation's name only |
+| `relay.append` | the durable append in `POST /sync/ops`, its `store.relay_append` beneath it | `n_ops`, `n_bytes`, `result` (`fresh` / `duplicate`) |
+| `relay.fanout` | `RelayHub::publish` | `n_streams`: the live subscribers reached, and nothing else |
+| `blob.chunk_write`, `blob.chunk_read` | chunk upload, finalize's read-back and commit, and the fetch body | `n_chunks`, `n_bytes` |
+| `sync.stream` | one per `GET /sync/events`, alive as long as the stream | `resumed`, `n_streams`; events `gap`, `caught_up`, `frame`, `closed` (with `reason`) |
+| `push.dispatch` → `push.attempt` | each push delivery, the root of its own trace | `provider`; per attempt `attempt`, `result` |
+
+The SSE stream is one long-lived span with events, not a span per frame: a stream
+lives for hours, and what a trace of one should show is its shape. A push
+delivery is a root rather than a child because the dispatcher coalesces wakes
+from many requests and sends on its own schedule, so no one request is its
+parent.
+
+### Redaction by construction
+
+A span is a log surface in the sense of
+[`../10-cross-cutting/logging.md`](../10-cross-cutting/logging.md) §6, and it
+leaves the process for a collector the operator runs. Nothing redacts a span
+after the fact; what a span can hold is fixed by the types that build it:
+
+- an attribute is a `sunrise_telemetry::Attr`, which has no constructor that
+  takes a key. Its twelve keys (`attr::KEYS`) are names `sunrise_log`'s
+  allowlist already admits, with the meaning they have in a log record, and a
+  unit test holds every one to that allowlist. Values are numbers, booleans and
+  `&'static str` literals chosen at the call site; the one runtime string is
+  `endpoint`, the matched route's template. There is no constructor for an id,
+  hashed or not: a trace already groups one request's work.
+- a span name, an event name and a status description are `&'static str`,
+  except the root's name, which is the method and the route template.
+- the request is read for its W3C `traceparent` and nothing else. Its URI is
+  never consulted, the rule the request log below keeps, and no `tracestate`
+  or baggage is carried.
+
+No bearer, session id, signature, device or account id, email, push token or raw
+path can therefore become span data. `crates/sunrise-server/tests/span-redaction.rs`
+is the gate: it drives every operation in the published description with a
+sentinel bearer, `?access_token=`, session id (a real one too), device id,
+signature and email, and searches the whole `Debug` rendering of every exported
+span — name, attributes, events, status, links, trace state — for each. It also
+holds every attribute key to the allowlist and every span name to the closed
+set above.
+
+### Sampling
+
+`sunrise_telemetry::CappedSampler`, at `[observability] sample_ratio` — 1% by
+default, which is the production figure; a staging relay sets `1.0`. It is
+parent-based so a client can join its trace to the relay's, but a
+`traceparent` can lower the relay's sampling and never raise it:
+
+| Parent | Decision |
+|---|---|
+| none | the ratio, over the trace id the relay minted |
+| local (a span of this process) | the parent's decision, so a trace is whole or absent |
+| remote, `sampled=0` | dropped |
+| remote, `sampled=1` | the ratio, over a draw the relay makes |
+
+The last row does not read the client's trace id, because the stock ratio
+sampler compares that id's low bits against a threshold and a client could pick
+ids under it. `span-redaction.rs` asserts the ratio holds both for the relay's
+own roots and for a client sending `sampled=1` with such an id, and that
+`sampled=0` is obeyed at a ratio of 1.
+
+### The export
+
+OTLP over HTTP with protobuf bodies, to `[observability] endpoint` verbatim,
+from the SDK's batch processor on a thread of its own. The HTTP client is the
+`hyper` + `rustls` stack the server already links for its JWKS fetch and APNs,
+so tracing adds no second TLS stack and no second `reqwest`; an export that has
+not finished in 10 s is abandoned. The resource carries `service.name`,
+`service.version`, `vcs.ref.head.revision` (the build's `SUNRISE_BUILD_COMMIT`,
+as `sunrise_build_info` reports it) and, when configured,
+`deployment.environment.name` — nothing the SDK would detect from the host or
+the environment. The queue is flushed after the drain on shutdown. An export
+failure is reported through the OpenTelemetry SDK's own log records.
+
+### Correlation
+
+While a sampled request runs, its handler also runs inside an `http.request` log
+span carrying `method`, `endpoint`, `trace_id` and `span_id`, so a record written
+during the request carries the ids of its root span under `span`
+(`a_log_record_inside_a_traced_request_carries_its_trace_and_span_ids`). Both
+ids are on `sunrise_log`'s field allowlist, carved out of its `_id` rule by name
+because they name a trace and not an entity
+([`../10-cross-cutting/logging.md`](../10-cross-cutting/logging.md) §4, §6). A
+request that is not sampled, or a relay without `[observability]`, writes
+exactly the records it did before.
+
+### The request log
+
+What predates tracing is a request log that never consults the URI, which is a better
 placement than redacting one. `api::observe::RequestLog` implements
 `kynos::middleware::Observer<ServerState>` and is mounted with
 `.observe(observe::RequestLog)` in `api/mod.rs`. kynos hands the observer the
@@ -377,13 +483,9 @@ templates opaque segments out of a *raw* target — and it is still exported fro
 `docs/10-cross-cutting/logging.md` §6.3 additionally bans `Plain::expose` here.
 The `log-redaction` job in `.github/workflows/ci.yml` greps
 `\bplain[a-z_]*\.expose[[:space:]]*\(` over `crates/sunrise-server/src` — so
-both `api/observe.rs` and `logging/` are covered — along with every other crate
-that emits log records and any `crates/*/src/logging` module.
-
-The target — OTel-compatible tracing with a sampling rate (1% prod, 100%
-staging), span attributes scrubbed of user identifiers, spans covering
-connection lifecycle, op-batch ingress/egress and push dispatch — is unchanged
-and unbuilt.
+both `api/observe.rs` and `logging/` are covered — along with
+`crates/sunrise-telemetry/src`, every other crate that emits log records, and
+any `crates/*/src/logging` module.
 
 ## Health
 
