@@ -29,6 +29,7 @@ struct TaskRowView: View {
             .buttonStyle(.plain)
             .accessibilityLabel(facets.isDone ? "Completed" : "Complete “\(facets.title)”")
             .disabled(facets.isDone)
+            .disabledUnlessEditable(.task)
 
             if isTicked {
                 Image(systemName: "checkmark")

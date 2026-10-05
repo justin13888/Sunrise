@@ -76,6 +76,7 @@ struct StreamEditorView: View {
                     }
                     .keyboardShortcut(.defaultAction)
                     .disabled(name.trimmed.isEmpty)
+                    .disabledUnlessEditable(.stream)
                 }
             }
         }
@@ -166,6 +167,7 @@ struct ContextEditorView: View {
                     }
                     .keyboardShortcut(.defaultAction)
                     .disabled(name.trimmed.isEmpty)
+                    .disabledUnlessEditable(.context)
                 }
             }
         }

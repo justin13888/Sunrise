@@ -411,6 +411,7 @@ extension VaultTabs {
     private var captureButton: some ToolbarContent {
         ToolbarItem(placement: .primaryAction) {
             Button("Capture", systemImage: "square.and.pencil", action: openCapture)
+                .disabledUnlessEditable(.task)
                 .accessibilityIdentifier("capture")
         }
     }

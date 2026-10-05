@@ -163,6 +163,7 @@ struct PlanRowView: View {
             Spacer(minLength: 0)
             Button("Start") { Task { await start() } }
                 .buttonStyle(.borderedProminent)
+                .disabledUnlessEditable(.focusSession)
                 .accessibilityLabel("Start a session on “\(row.task.title)”")
         }
         .padding(.vertical, 3)
@@ -199,9 +200,12 @@ struct RunningSessionView: View {
                         .foregroundStyle(progress.overran ? .orange : .secondary)
                 }
                 Spacer()
+                // Done ends the session and completes its task.
                 Button("Done") { Task { await end(true) } }
                     .buttonStyle(.borderedProminent)
+                    .disabledUnlessEditable(.focusSession, .task)
                 Button("Stop") { Task { await end(false) } }
+                    .disabledUnlessEditable(.focusSession)
             }
 
             HStack(spacing: 8) {
@@ -212,6 +216,7 @@ struct RunningSessionView: View {
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
+                    .disabledUnlessEditable(.focusSession)
                 }
                 if !session.interruptions.isEmpty {
                     Text("\(session.interruptions.count) logged")

@@ -82,6 +82,7 @@ struct QuickCaptureView: View {
                 Button("Add", action: submit)
                     .buttonStyle(.borderedProminent)
                     .disabled(!model.canCommit)
+                    .disabledUnlessEditable(.task)
                     .accessibilityIdentifier("quick-capture.add")
             }
             .padding(.top, 4)

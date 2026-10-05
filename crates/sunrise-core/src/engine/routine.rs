@@ -77,6 +77,9 @@ impl Engine {
     ) -> Result<CommandResult, EngineError> {
         d.validate()?;
         require_writable_stream(d.template.stream_id)?;
+        // The routine op commits before its occurrences are materialized in
+        // a second transaction, so a task lock is checked here, up front.
+        self.ensure_unlocked(db.conn(), &[EntityKind::Routine, EntityKind::Task])?;
         let now_ms = self.clock.now_ms();
         let routine_id = self.fresh_id(EntityKind::Routine, now_ms);
         let routine = Routine {
@@ -155,6 +158,9 @@ impl Engine {
             require_writable_stream(t.stream_id)?;
         }
         patch.validate()?;
+        // As in `create_routine`: tasks are regenerated and materialized
+        // after the routine op commits.
+        self.ensure_unlocked(db.conn(), &[EntityKind::Routine, EntityKind::Task])?;
         let now_ms = self.clock.now_ms();
         let mut routine = read_routine(db.conn(), id.bytes())?
             .ok_or_else(|| EngineError::NotFound(format!("routine {id}")))?;
