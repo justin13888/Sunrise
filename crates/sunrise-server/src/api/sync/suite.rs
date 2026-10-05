@@ -522,6 +522,60 @@ mod tests {
         );
     }
 
+    /// A writer that also holds a live stream is one of the receivers the
+    /// publish counts. Its stream skips its own batch, and that skip has to
+    /// close its copy on the clock: otherwise the count never reaches zero and
+    /// the peer's delivery is never observed.
+    #[tokio::test]
+    async fn a_fanout_the_writers_own_stream_skips_is_observed_once() {
+        const FANOUT: &str = "sunrise_sync_fanout_latency_seconds";
+        let client = Client::new(ServerConfig::default());
+        let reader = establish(&client).await;
+        let writer = establish(&client).await;
+        subscribe(&client, &reader, None).await;
+        subscribe(&client, &writer, None).await;
+
+        let (to_reader, to_writer, published) = tokio::join!(
+            read(&client, &reader, &[]),
+            read(&client, &writer, &[]),
+            async {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                publish(&client, &writer, vec![], 1).await
+            }
+        );
+        assert_eq!(published, StatusCode::OK);
+        assert!(
+            to_reader.contains("\"kind\":\"ops\""),
+            "no fan-out in: {to_reader}"
+        );
+        assert!(
+            !to_writer.contains("\"kind\":\"ops\""),
+            "the writer was echoed its own batch: {to_writer}"
+        );
+        assert_eq!(client.metrics.histogram_count(FANOUT, &[]), 1);
+    }
+
+    /// The writer's own stream is the only one open: the batch reached no
+    /// peer, so there was no fan-out to time, and the skip records nothing.
+    #[tokio::test]
+    async fn a_batch_only_its_writers_stream_received_is_not_observed() {
+        const FANOUT: &str = "sunrise_sync_fanout_latency_seconds";
+        let client = Client::new(ServerConfig::default());
+        let writer = establish(&client).await;
+        subscribe(&client, &writer, None).await;
+
+        let (to_writer, published) = tokio::join!(read(&client, &writer, &[]), async {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            publish(&client, &writer, vec![], 1).await
+        });
+        assert_eq!(published, StatusCode::OK);
+        assert!(
+            !to_writer.contains("\"kind\":\"ops\""),
+            "the writer was echoed its own batch: {to_writer}"
+        );
+        assert_eq!(client.metrics.histogram_count(FANOUT, &[]), 0);
+    }
+
     /// Was `ws_malformed_op_batch_nacked_no_fanout`.
     ///
     /// Shape changed: a `Nack` frame becomes a refusal status, and the body is

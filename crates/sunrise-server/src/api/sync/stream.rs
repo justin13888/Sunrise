@@ -395,13 +395,15 @@ async fn live_loop(
                 // already has them, and applying its own op twice is exactly
                 // what the op-log gate then has to undo.
                 //
-                // Skipping it still settles the frame's fan-out clock: this
-                // session was one of the receivers the publish counted, and a
-                // receiver that never settles keeps the batch out of
-                // `sunrise_sync_fanout_latency_seconds` altogether.
+                // Skipping it still closes this copy on the frame's fan-out
+                // clock: this session was one of the receivers the publish
+                // counted, and a receiver that never closes keeps the batch
+                // out of `sunrise_sync_fanout_latency_seconds` altogether. It
+                // closes as a skip, not a delivery, so a batch only its
+                // author's stream received is not observed.
                 if frame.from == session.conn {
                     if let Some(clock) = &frame.fanout {
-                        clock.settle();
+                        clock.skip();
                     }
                     continue;
                 }
