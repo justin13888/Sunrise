@@ -1704,7 +1704,11 @@ jobs:
           # Full history, because the gate resolves each block's
           # `Last extracted:` marker to a commit. Under the default shallow
           # checkout that object is absent and the script skips the check,
-          # which would quietly retire half of what this job is for.
+          # which would quietly retire half of what this job is for. It also
+          # fetches every branch, so on a pull request `origin/$GITHUB_BASE_REF`
+          # is there for the gate to require each marker be reachable from it:
+          # a commit only on the pull request's branch is gone after the squash
+          # merge (#485).
           fetch-depth: 0
       - name: Reject an extracted block that has drifted from the tree
         # The two blocks in observability.md are what an operator reads to know
