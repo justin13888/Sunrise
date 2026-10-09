@@ -45,7 +45,10 @@ The 49 `ev` names the server emits, complete:
      `Last extracted` names the commit this block was last reconciled against —
      NOT the commit that last changed the set. Now that the gate runs, it is
      provenance rather than the reader's assurance: diff that ref against HEAD
-     over the grepped path to see what a human last looked at.
+     over the grepped path to see what a human last looked at. Name a commit
+     already on the base branch: pull requests are squash-merged, so a commit
+     on the pull request's own branch is gone once it merges, and the gate
+     rejects one the base does not reach.
      Last extracted: 3bc16cd0 -->
 
 ```
@@ -150,7 +153,10 @@ extracted from the source and checked by a gate, so the catalogue's
      `Last extracted` names the commit this block was last reconciled against —
      NOT the commit that last changed the set. Now that the gate runs, it is
      provenance rather than the reader's assurance: diff that ref against HEAD
-     over the grepped path to see what a human last looked at.
+     over the grepped path to see what a human last looked at. Name a commit
+     already on the base branch: pull requests are squash-merged, so a commit
+     on the pull request's own branch is gone once it merges, and the gate
+     rejects one the base does not reach.
      Last extracted: 38a02c42 -->
 
 ```
