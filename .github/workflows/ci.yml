@@ -65,6 +65,11 @@ jobs:
   # legs never cost the same — macOS minutes bill at 10x, so the expensive one
   # gets the *tighter* cap rather than inheriting a ceiling sized for the
   # slower-but-cheaper one — and two jobs can simply say so.
+  #
+  # `cargo test --workspace --all-targets` compiles `sunrise-core-bindings`,
+  # the UniFFI seam, and runs its tests on both legs; Linux is the leg every
+  # pull request gets. The seam's `cdylib` and the Kotlin generated from it
+  # are the `kotlin-smoke` job's, and Windows is `rust-windows`'s.
   rust:
     name: Rust (ubuntu-latest)
     runs-on: ubuntu-latest
@@ -118,6 +123,118 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
       - uses: ./.github/actions/rust-checks
+
+  # The portable core on Windows (#369): the crates a Windows desktop client
+  # would link, built and tested on `windows-latest`. The two jobs above never
+  # compile a `cfg(not(unix))` or `cfg(windows)` branch, and that is where the
+  # Windows behaviour lives: the private-file writes in `sunrise-auth` and
+  # `sunrise-cli`, and the device time zone in `sunrise-core`.
+  #
+  # `sunrise-server` is not on the list and is not tested here: the relay is
+  # Linux-only (`docs/01-architecture/dependencies.md` §Windows). It is still
+  # *compiled*, as a dev-dependency of `sunrise-cli`'s live-sync test.
+  #
+  # Advisory, not a required check, and the difference is a ruleset edit rather
+  # than anything in this file. It runs on every pull request and goes red like
+  # any other job; it is not yet in the `master` ruleset's required list
+  # because it has no record of passing, and a required check that has never
+  # run green blocks every pull request behind it. Add `Rust (windows-latest)`
+  # to that list once it has a record.
+  #
+  # SQLCipher's OpenSSL is vendored on Windows (`crates/sunrise-storage/
+  # Cargo.toml`), and `openssl-src` runs OpenSSL's `Configure` with Perl. Git
+  # for Windows ships an MSYS Perl whose paths `Configure` rejects, and which
+  # Perl a shell finds first depends on that shell's PATH, so the runner's
+  # Strawberry Perl is named outright.
+  rust-windows:
+    name: Rust (windows-latest)
+    runs-on: windows-latest
+    # No observation yet. A cold build compiles OpenSSL from source on top of
+    # the graph the `rust` job builds; sized from that job's cold time with the
+    # same margin, plus the OpenSSL build.
+    timeout-minutes: 60
+    env:
+      OPENSSL_SRC_PERL: C:\Strawberry\perl\bin\perl.exe
+    steps:
+      # Before checkout: the runner's git converts LF to CRLF on checkout,
+      # which changes the bytes of every fixture and `include_str!` input the
+      # tests compare against. The repository is LF everywhere.
+      - name: Check out with LF line endings
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067  # v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+        with:
+          shared-key: rust-windows
+          # As in the `rust` gate: only `master` writes, so a pull request
+          # cannot spend the cache quota on an entry only it can read.
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+      # The list is the issue's portable core. One cargo invocation for each
+      # step, so feature unification is the same in both and the test step
+      # reuses the build.
+      - name: Build the portable core
+        run: >-
+          cargo build --locked
+          -p sunrise-core -p sunrise-core-bindings -p sunrise-storage
+          -p sunrise-crypto -p sunrise-sync -p sunrise-domain
+          -p sunrise-auth -p sunrise-cli
+      - name: Test the portable core
+        run: >-
+          cargo test --locked
+          -p sunrise-core -p sunrise-core-bindings -p sunrise-storage
+          -p sunrise-crypto -p sunrise-sync -p sunrise-domain
+          -p sunrise-auth -p sunrise-cli
+
+  # The UniFFI seam's Kotlin half, on a JVM (#369). The Apple jobs only ever
+  # generate Swift, so a seam change Kotlin cannot take passed every check
+  # here; the first run of this task found one (`NoteBlock::List`, renamed for
+  # Kotlin in `crates/sunrise-core-bindings/uniffi.toml`). This is
+  # `mise run kotlin-smoke`, which says what it proves and what it does not.
+  #
+  # It is also the `cdylib` artefact check: the `rust` job compiles
+  # `sunrise-core-bindings` as an rlib and runs its tests, and this job builds
+  # the `cdylib` crate type, asserts the file exists, and loads it.
+  #
+  # Not a required check. Linux only: the generated Kotlin names no platform,
+  # and a second OS would load the same file through the same JNA.
+  kotlin-smoke:
+    name: Kotlin seam smoke (JVM)
+    runs-on: ubuntu-latest
+    # No observation yet. Locally, warm: two minutes. Cold here: a debug build
+    # of the seam's graph and a release build of `tools/uniffi-bindgen`.
+    timeout-minutes: 30
+    env:
+      # Clears the workflow-level `-D warnings`, as `apple-xcframework` does
+      # and for the same reason: this builds `tools/uniffi-bindgen`, whose
+      # third-party tree is not ours to keep warning-free. The `rust` job's
+      # clippy step holds the workspace's own warnings.
+      RUSTFLAGS: ""
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067  # v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+        with:
+          workspaces: |
+            .
+            tools/uniffi-bindgen
+          shared-key: kotlin-smoke
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+      # The runner image's default JDK is what runs the compiler and the
+      # program; the task fails naming it if there is none.
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca  # v5.1.1
+        with:
+          install: false
+          cache: false
+      - name: Trust mise config
+        run: mise trust --yes
+      - name: mise run kotlin-smoke
+        run: mise run kotlin-smoke
 
   apple-xcframework:
     name: Apple xcframework (3 slices + Swift bindings)
