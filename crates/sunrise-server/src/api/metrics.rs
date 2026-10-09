@@ -56,12 +56,14 @@ async fn sample_gauges(state: &ServerState) {
     // than a zero that reads as an empty database.
     if let Some(path) = state.config.sqlite_path.as_deref() {
         #[allow(clippy::cast_precision_loss)]
-        state
-            .metrics
-            .set_gauge("sunrise_db_size_bytes", &[], db_size_bytes(path) as f64);
+        state.metrics.set_gauge(
+            "sunrise_db_size_bytes",
+            &[],
+            crate::store::file_bytes(path) as f64,
+        );
     }
 
-    sample_counts(state);
+    sample_counts(state).await;
 
     // The guards alive right now: one per request inside the handler stack,
     // this scrape included, and one per open event stream.
@@ -95,8 +97,8 @@ async fn sample_gauges(state: &ServerState) {
 ///
 /// A store that does not answer leaves each gauge at its last reading, as the
 /// session gauge above does; the failure is the store's to log.
-fn sample_counts(state: &ServerState) {
-    let Ok(stats) = state.store.stats() else {
+async fn sample_counts(state: &ServerState) {
+    let Ok(stats) = state.store.stats().await else {
         return;
     };
     #[allow(clippy::cast_precision_loss)]
@@ -114,21 +116,6 @@ fn sample_counts(state: &ServerState) {
         n(stats.devices_revoked),
     );
     m.set_gauge("sunrise_relay_log_bytes", &[], n(stats.relay_bytes));
-}
-
-/// The main database file plus its write-ahead log, in bytes.
-///
-/// The WAL is counted because under WAL mode it is where recent writes live
-/// until a checkpoint, and an operator sizing a disk needs both. A file that
-/// cannot be read contributes nothing.
-fn db_size_bytes(path: &std::path::Path) -> u64 {
-    let mut wal = path.as_os_str().to_owned();
-    wal.push("-wal");
-    [path, std::path::Path::new(&wal)]
-        .iter()
-        .filter_map(|p| std::fs::metadata(p).ok())
-        .map(|m| m.len())
-        .sum()
 }
 
 #[cfg(test)]
@@ -183,12 +170,12 @@ mod tests {
         let client = crate::api::testing::Client::from_state(state);
         let (kept, _) = crate::api::testing::register_device(&client, 1, "kept", None).await;
         let (gone, _) = crate::api::testing::register_device(&client, 2, "gone", None).await;
-        let account = store.device_owner(&gone).unwrap().expect("an owner");
+        let account = store.device_owner(&gone).await.unwrap().expect("an owner");
         assert_eq!(
-            store.device_owner(&kept).unwrap().as_deref(),
+            store.device_owner(&kept).await.unwrap().as_deref(),
             Some(&*account)
         );
-        store.revoke_device(&account, &gone, 1).unwrap();
+        store.revoke_device(&account, &gone, 1).await.unwrap();
         client
             .send(Method::GET, "/api/v1/devices", None)
             .await

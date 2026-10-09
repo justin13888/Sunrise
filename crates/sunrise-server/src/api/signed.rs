@@ -138,19 +138,26 @@ pub struct DeviceSig {
 /// from a bad bearer or the code becomes an enumeration oracle. See
 /// [`ApiError::device_sig_invalid`] for the full rule and for the bearer-
 /// validity disclosure the pre-lookup case carries.
-pub fn verify<T: serde::Serialize>(
-    state: &ServerState,
-    principal: &Principal,
-    sig: &DeviceSig,
-    method: &str,
-    path: &str,
+///
+/// The one failure that is not a `401` is the metadata store not answering the
+/// device lookup: `503 RELAY_STORAGE_UNAVAILABLE`, which the client retries
+/// rather than refreshing a bearer that was never the problem (ADR-0062 §1).
+///
+/// The body is canonicalized before the returned future is built, so the
+/// future holds bytes rather than a borrow of `T`.
+pub fn verify<'a, T: serde::Serialize>(
+    state: &'a ServerState,
+    principal: &'a Principal,
+    sig: &'a DeviceSig,
+    method: &'a str,
+    path: &'a str,
     value: Option<&T>,
-) -> Result<Option<Device>, ApiError> {
-    let canonical = match value {
-        Some(v) => sunrise_http_sig::canonical_json(v).map_err(|_| ApiError::unauthenticated())?,
-        None => Vec::new(),
-    };
-    verify_bytes(state, principal, sig, method, path, &canonical)
+) -> impl std::future::Future<Output = Result<Option<Device>, ApiError>> + Send + 'a {
+    let canonical = value.map_or_else(
+        || Ok(Vec::new()),
+        |v| sunrise_http_sig::canonical_json(v).map_err(|_| ApiError::unauthenticated()),
+    );
+    async move { verify_bytes(state, principal, sig, method, path, &canonical?).await }
 }
 
 /// [`verify`], against a body that is already in its canonical form.
@@ -164,7 +171,7 @@ pub fn verify<T: serde::Serialize>(
 ///
 /// # Errors
 /// As [`verify`], as are the effects: this is the function that performs them.
-pub fn verify_bytes(
+pub async fn verify_bytes(
     state: &ServerState,
     principal: &Principal,
     sig: &DeviceSig,
@@ -172,18 +179,20 @@ pub fn verify_bytes(
     path: &str,
     canonical_body: &[u8],
 ) -> Result<Option<Device>, ApiError> {
+    use sunrise_telemetry::FutureExt as _;
     // `auth.verify_signature`, with the device lookup beneath it. Neither the
     // signature nor the device id is span data.
     let span = sunrise_telemetry::span("auth.verify_signature", []);
-    let _current = span.enter();
-    let verified = verify_binding(state, principal, sig, method, path, canonical_body);
+    let verified = verify_binding(state, principal, sig, method, path, canonical_body)
+        .with_context(span.context())
+        .await;
     if verified.is_err() {
         span.fail("device signature refused");
     }
     verified
 }
 
-fn verify_binding(
+async fn verify_binding(
     state: &ServerState,
     principal: &Principal,
     sig: &DeviceSig,
@@ -225,7 +234,7 @@ fn verify_binding(
     let device = state
         .store
         .active_device(&principal.account.account_id, device_id)
-        .map_err(|_| ApiError::unauthenticated())?
+        .await?
         .ok_or_else(ApiError::unauthenticated)?;
 
     let date = sig
@@ -258,7 +267,8 @@ fn verify_binding(
 
     let _ = state
         .store
-        .touch_device(&device.device_id, state.clock.now_ms());
+        .touch_device(&device.device_id, state.clock.now_ms())
+        .await;
     Ok(Some(device))
 }
 
@@ -454,7 +464,7 @@ where
     let device = if binding == Binding::Bootstrap && sig.device.is_none() {
         None
     } else {
-        verify(state, &principal, &sig, &method, &target, Some(&received))?
+        verify(state, &principal, &sig, &method, &target, Some(&received)).await?
     };
     Ok((Caller { principal, device }, value))
 }
@@ -498,7 +508,7 @@ impl FromRequestParts<ServerState> for SignedParts {
     ) -> Result<Self, Self::Rejection> {
         let (principal, sig) = caller_of(parts, context).await?;
         let (method, target) = target_of(parts);
-        let device = verify::<()>(context, &principal, &sig, &method, &target, None)?;
+        let device = verify::<()>(context, &principal, &sig, &method, &target, None).await?;
         Ok(Self(Caller { principal, device }))
     }
 }
@@ -579,7 +589,7 @@ impl FromRequest<ServerState> for SignedBinary {
         let binary =
             Binary::<OctetStream>::from_request(Request::from_parts(parts, body), context).await?;
         let bytes = binary.bytes.to_vec();
-        let device = verify_bytes(context, &principal, &sig, &method, &target, &bytes)?;
+        let device = verify_bytes(context, &principal, &sig, &method, &target, &bytes).await?;
         Ok(Self {
             caller: Caller { principal, device },
             bytes,

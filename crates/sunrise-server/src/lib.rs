@@ -42,6 +42,7 @@
 pub mod admin;
 pub mod api;
 pub mod auth;
+pub mod blob;
 pub mod config;
 pub mod drain;
 pub mod healthcheck;
@@ -60,6 +61,7 @@ mod serve_tests;
 pub use api::error::ApiError;
 pub use auth::oidc::{OidcConfig, OidcVerifier};
 pub use auth::{AuthError, NullVerifier, StaticVerifier, Subject, TokenVerifier, Verified};
+pub use blob::{BlobBackend, BlobError, FsBlobs};
 pub use config::ServerConfig;
 pub use logging::{account_h, id_h};
 pub use metrics::Metrics;
@@ -68,7 +70,7 @@ pub use push::{
 };
 pub use relay::RelayHub;
 pub use state::{Clock, ServerState, SystemClock};
-pub use store::{Account, Device, Store, StoreError};
+pub use store::{Account, Device, MetadataError, MetadataStore, Store, StoreError};
 /// Redacted trace export: the handle [`ServerState::with_telemetry`] takes.
 pub use sunrise_telemetry as telemetry;
 pub use sync_session::{
@@ -131,7 +133,7 @@ pub async fn serve_until(
 ) -> kynos::Result<()> {
     let grace = state.config.shutdown_grace();
     let drain = state.drain.clone();
-    let store = std::sync::Arc::clone(&state.store);
+    let metadata = std::sync::Arc::clone(&state.store);
     let trigger = {
         let drain = drain.clone();
         async move {
@@ -156,7 +158,11 @@ pub async fn serve_until(
     // Only after a drain: a listener that failed outright still leaves the
     // store to the process exit, which closes it the same way.
     if drain.is_draining() {
-        let flushed = checkpoint(&store);
+        // Only the SQLite store has a write-ahead log to fold back; another
+        // backend's durability is its own.
+        let flushed = metadata
+            .as_sqlite()
+            .map_or(Ok(()), store::Store::checkpoint);
         tracing::info!(
             ev = "srv.stop",
             result = match &served {
@@ -177,18 +183,4 @@ pub async fn serve_until(
         );
     }
     served
-}
-
-/// Fold the write-ahead log back into the database file.
-///
-/// Every acknowledged frame is already durable in the WAL, so this loses
-/// nothing if it fails; what it buys is a data directory that is one file once
-/// the relay stops, which is what `self-hosting.md` tells an operator to back
-/// up. `TRUNCATE` rather than `PASSIVE` because no request is left to contend
-/// with it.
-fn checkpoint(store: &store::Store) -> rusqlite::Result<()> {
-    store
-        .conn
-        .lock()
-        .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))
 }
