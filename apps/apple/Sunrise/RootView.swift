@@ -20,7 +20,7 @@ struct RootView: View {
                 // `adoptPairing` — drives itself out again on the same call,
                 // and `lock()` lands on `.locked(.lockedByUser)` rather than
                 // here for exactly this reason.
-                ProgressView("Opening your vault…")
+                ProgressView(L10n.Root.opening)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             case .firstRun:
                 // The session goes down with it: "Pair with that device"
@@ -56,7 +56,7 @@ struct RootView: View {
                 }
             case let .failed(message):
                 ContentUnavailableView(
-                    "Sunrise could not start",
+                    L10n.Root.failedTitle,
                     systemImage: "exclamationmark.triangle",
                     description: Text(message)
                 )
@@ -118,7 +118,7 @@ struct NoteBanner: View {
             Image(systemName: "info.circle")
             Text(text).font(.callout)
             Spacer()
-            Button("Dismiss", systemImage: "xmark", action: dismiss)
+            Button(L10n.Action.dismiss, systemImage: "xmark", action: dismiss)
                 .labelStyle(.iconOnly)
                 .buttonStyle(.plain)
         }
