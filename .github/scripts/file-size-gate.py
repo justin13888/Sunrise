@@ -37,6 +37,16 @@ threshold is instead the pooled p90 of every Rust file in the packages still in
 codebase's own distribution, drawn from the packages most like it, rather than a
 number from a style guide.
 
+The twenty-one packages still in `UNGATED` then entered together, emptying it,
+so "the packages still in `UNGATED`" was all of them: their pooled p90 is 802,
+nearest-rank over their 189 files, and that is the threshold of each of them
+with fewer than ten files. `sunrise-sync` and `sunrise-telemetry` keep 708,
+the pool they were measured against when they entered. The six of the
+twenty-one with ten or more files carry their own p90 as everyone else does;
+for `sunrise-cli`, `sunrise-core-bindings` and `sunrise-pairing`, with ten to
+thirteen files, that is their second-largest file, which is what a nearest-rank
+p90 of so few files is.
+
 Which packages are measured
 ---------------------------
 
@@ -52,10 +62,12 @@ because the file was within a bound but because it had none, and nobody had
 decided that it should not. A new crate now has to be classified on the day it
 is added, and an ungated one is ungated on the record.
 
-`UNGATED` is debt in the same sense `BASELINE` is: it may shrink as packages
-move into `THRESHOLDS`, and a package leaves it by getting a threshold and a
-`BASELINE` entry for each of its files over that threshold. An entry whose
-crate is gone is reported as bookkeeping, exit 2, like a stale baseline entry.
+`UNGATED` is debt in the same sense `BASELINE` is, and it is empty: every
+crate in the tree has a threshold and a `BASELINE` entry for each of its files
+over it. A crate added later goes into `THRESHOLDS`; one listed in `UNGATED`
+instead needs a reason of its own for staying unbounded, not "not measured
+yet". An entry whose crate is gone is reported as bookkeeping, exit 2, like a
+stale baseline entry.
 
 What is counted
 ---------------
@@ -145,41 +157,39 @@ THRESHOLDS: dict[str, int] = {
     # Four files on the day it was added, so the pooled number as for
     # `sunrise-sync`.
     "crates/sunrise-telemetry": 708,
+    # The twenty-one packages below entered together, when UNGATED was
+    # emptied. Those with ten or more Rust files carry their own nearest-rank
+    # p90; the rest carry 802, the pooled p90 of all 189 files of the
+    # twenty-one: see "Where the numbers come from" above.
+    "crates/sunrise-auth": 802,
+    "crates/sunrise-bench": 802,
+    "crates/sunrise-cbor": 802,
+    "crates/sunrise-cli": 1831,  # 13 files
+    "crates/sunrise-client-core": 802,
+    "crates/sunrise-core-bindings": 2454,  # 13 files
+    "crates/sunrise-core-wasm": 802,
+    "crates/sunrise-crypto": 895,  # 22 files
+    "crates/sunrise-crypto-test-vectors": 802,
+    "crates/sunrise-e2e": 517,  # 38 files
+    "crates/sunrise-error": 802,
+    "crates/sunrise-http-sig": 802,
+    "crates/sunrise-id": 802,
+    "crates/sunrise-integrations": 802,
+    "crates/sunrise-log": 448,  # 16 files
+    "crates/sunrise-onboarding": 802,
+    "crates/sunrise-pairing": 835,  # 10 files
+    "crates/sunrise-relay-client": 802,
+    "crates/sunrise-storage": 802,
+    "crates/sunrise-test-seed": 802,
+    "crates/sunrise-wire-protocol": 802,
 }
-
-_NOT_YET_MEASURED = (
-    "Not measured yet. No threshold has been derived for this package and "
-    "none of its files has been audited for BASELINE, so nothing bounds it. "
-    "Moving it into THRESHOLDS means deriving its p90 and writing a BASELINE "
-    "entry, with what the file is, for each file over it."
-)
 
 # package root -> why nothing measures it. Every directory under `crates/` is
 # in exactly one of THRESHOLDS and this table, and the gate fails on one that
-# is in neither: see "Which packages are measured" above. This list may shrink
-# as packages move into THRESHOLDS; a new crate joins it only on purpose.
+# is in neither: see "Which packages are measured" above. A new crate joins it
+# only on purpose, with a reason of its own.
 UNGATED: dict[str, str] = {
-    "crates/sunrise-auth": _NOT_YET_MEASURED,
-    "crates/sunrise-bench": _NOT_YET_MEASURED,
-    "crates/sunrise-cbor": _NOT_YET_MEASURED,
-    "crates/sunrise-cli": _NOT_YET_MEASURED,
-    "crates/sunrise-client-core": _NOT_YET_MEASURED,
-    "crates/sunrise-core-bindings": _NOT_YET_MEASURED,
-    "crates/sunrise-core-wasm": _NOT_YET_MEASURED,
-    "crates/sunrise-crypto": _NOT_YET_MEASURED,
-    "crates/sunrise-crypto-test-vectors": _NOT_YET_MEASURED,
-    "crates/sunrise-e2e": _NOT_YET_MEASURED,
-    "crates/sunrise-error": _NOT_YET_MEASURED,
-    "crates/sunrise-http-sig": _NOT_YET_MEASURED,
-    "crates/sunrise-id": _NOT_YET_MEASURED,
-    "crates/sunrise-integrations": _NOT_YET_MEASURED,
-    "crates/sunrise-log": _NOT_YET_MEASURED,
-    "crates/sunrise-onboarding": _NOT_YET_MEASURED,
-    "crates/sunrise-pairing": _NOT_YET_MEASURED,
-    "crates/sunrise-relay-client": _NOT_YET_MEASURED,
-    "crates/sunrise-storage": _NOT_YET_MEASURED,
-    "crates/sunrise-test-seed": _NOT_YET_MEASURED,
-    "crates/sunrise-wire-protocol": _NOT_YET_MEASURED,
+    # Empty: every crate in the tree is measured.
 }
 
 # Every file over its threshold today. This list may shrink; it may not grow.
@@ -263,6 +273,101 @@ BASELINE: dict[str, str] = {
         "`tests/` cannot reach it. Splitting the test module by the route it "
         "exercises is a change of its own."
     ),
+    # --- sunrise-cli --------------------------------------------------------
+    "crates/sunrise-cli/src/main.rs": (
+        "The binary's argument handling and every subcommand's body, with no "
+        "test module: `tests/cli.rs` drives the real binary instead. 530 of "
+        "its lines are the one `dispatch` match over subcommand names. Not "
+        "audited for a split; the subcommands that already have a module "
+        "(`login`, `vault`, `livesync`, `recover`) show the shape one would "
+        "take."
+    ),
+    # --- sunrise-client-core ------------------------------------------------
+    "crates/sunrise-client-core/src/undo.rs": (
+        "380 implementation lines; the rest is tests. One concern: the "
+        "inverse command for each command a client submits, which the module "
+        "doc argues is the only undo a client can build without a protocol "
+        "change."
+    ),
+    # --- sunrise-core-bindings ----------------------------------------------
+    "crates/sunrise-core-bindings/src/dto.rs": (
+        "The UniFFI mirror of the domain vocabulary: 69 records and enums and "
+        "the exhaustively destructuring `From` impls that make a new domain "
+        "field fail this crate's build. No test module. Its length tracks the "
+        "domain's; splitting it by the domain module each mirror comes from "
+        "is a change of its own."
+    ),
+    # --- sunrise-crypto -----------------------------------------------------
+    "crates/sunrise-crypto/src/op_envelope.rs": (
+        "862 implementation lines; the rest is tests. The byte-exact CBOR "
+        "codec, signing, encryption, verification and decryption of one wire "
+        "type. Not audited for a split."
+    ),
+    "crates/sunrise-crypto/src/device_cert.rs": (
+        "462 implementation lines -- below this package's threshold on its "
+        "own; the rest is tests. The codec, signing and verification of one "
+        "certificate type."
+    ),
+    # --- sunrise-e2e --------------------------------------------------------
+    "crates/sunrise-e2e/src/cross_version/mod.rs": (
+        "The cross-version merge harness's driver (ADR-0057): the step "
+        "vocabulary, the run loop and the replica plumbing. Its parts with a "
+        "boundary of their own (`baseline`, `events`, `future`, `gaps`, "
+        "`model`) are already sibling modules. Test-harness code; not audited "
+        "for a split."
+    ),
+    "crates/sunrise-e2e/src/lib.rs": (
+        "The crate's whole helper surface for booting a relay, opening wired "
+        "`Core`s and waiting on convergence. Test-harness code; not audited "
+        "for a split."
+    ),
+    "crates/sunrise-e2e/src/cross_version/model.rs": (
+        "494 implementation lines -- below this package's threshold on its "
+        "own; the rest is tests. The reference projection the no-loss "
+        "property compares each replica against."
+    ),
+    # --- sunrise-id ---------------------------------------------------------
+    "crates/sunrise-id/src/registry.rs": (
+        "807 implementation lines, most of them one declaration: the "
+        "`for_each_entity!` x-macro that states every entity kind, its ops "
+        "and every field's wire name once (ADR-0044). Splitting the "
+        "declaration would defeat the reason it exists."
+    ),
+    # --- sunrise-integrations -----------------------------------------------
+    "crates/sunrise-integrations/src/ical.rs": (
+        "631 implementation lines -- below this package's threshold on its "
+        "own; the rest is tests. The iCalendar syntax layer only; mapping and "
+        "the vault driver are already separate modules."
+    ),
+    "crates/sunrise-integrations/src/gcal.rs": (
+        "514 implementation lines -- below this package's threshold on its "
+        "own; the rest is tests. Google Calendar OAuth and read-only import "
+        "request building."
+    ),
+    # --- sunrise-log --------------------------------------------------------
+    "crates/sunrise-log/tests/event_catalog.rs": (
+        "An integration test: the event catalogue and log-field vocabulary "
+        "enforced against the files rustc compiled, read from dep-info: 25 "
+        "tests over one shared reading of the build. Not audited for a split."
+    ),
+    # --- sunrise-pairing ----------------------------------------------------
+    "crates/sunrise-pairing/src/protocol.rs": (
+        "793 implementation lines -- below this package's threshold on its "
+        "own; the rest is tests. The three messages of the pairing protocol "
+        "and the transitions between them."
+    ),
+    # --- sunrise-storage ----------------------------------------------------
+    "crates/sunrise-storage/src/vault_fixtures.rs": (
+        "A `#[cfg(test)]` module, all of it test code: the checked-in old "
+        "vaults, the rows each one is stated to hold, and the migration chain "
+        "run over them. Its expectations are kept beside the fixtures they "
+        "describe on purpose."
+    ),
+    "crates/sunrise-storage/src/db.rs": (
+        "601 implementation lines -- below this package's threshold on its "
+        "own; the rest is tests. The SQLCipher wrapper: keying, pragmas, "
+        "integrity check, pre-migration backups and the migration runner."
+    ),
 }
 
 SKIP_DIRS = {"target", "node_modules"}
@@ -323,22 +428,22 @@ def main() -> int:
 
     new_violations: list[tuple[str, int, int]] = []
     measured: dict[str, int] = {}
+    # The threshold each file was measured against, recorded by the package
+    # walk that found it. Recovering it from the path by prefix would judge
+    # `crates/sunrise-core-bindings/...` against `crates/sunrise-core`.
+    limit: dict[str, int] = {}
 
     for pkg, threshold in THRESHOLDS.items():
         for path in rust_files(Path(pkg)):
             rel = path.as_posix()
             n = length(path)
             measured[rel] = n
+            limit[rel] = threshold
             if n > threshold and rel not in BASELINE:
                 new_violations.append((rel, n, threshold))
 
     # A baseline entry that no longer earns its place.
-    stale = [
-        rel
-        for rel in BASELINE
-        if rel in measured
-        and measured[rel] <= THRESHOLDS[next(p for p in THRESHOLDS if rel.startswith(p))]
-    ]
+    stale = [rel for rel in BASELINE if rel in measured and measured[rel] <= limit[rel]]
     missing = [rel for rel in BASELINE if rel not in measured]
     ungated_gone = sorted(set(UNGATED) - crates)
 
@@ -369,8 +474,7 @@ def main() -> int:
             "tracking — bookkeeping, not a regression."
         )
         for rel in sorted(stale):
-            pkg = next(p for p in THRESHOLDS if rel.startswith(p))
-            print(f"  {rel}: now {measured[rel]} lines, under {THRESHOLDS[pkg]}")
+            print(f"  {rel}: now {measured[rel]} lines, under {limit[rel]}")
         print()
         print(
             "Delete each of those entries from BASELINE in "
