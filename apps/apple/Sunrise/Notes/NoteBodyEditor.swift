@@ -76,20 +76,20 @@ struct NoteBodyEditor: View {
                     }
                 }
             } label: {
-                Label("Add block", systemImage: "plus")
+                Label(L10n.Notes.addBlock, systemImage: "plus")
             }
             .menuStyle(.borderlessButton)
             .fixedSize()
-            .help("Add a block below")
+            .help(L10n.Notes.addBlockHelp)
 
             Spacer()
 
-            Button("Copy as Markdown", systemImage: "doc.on.doc") {
+            Button(L10n.Notes.copyMarkdown, systemImage: "doc.on.doc") {
                 PlatformPasteboard.set(model.markdown)
             }
             .buttonStyle(.borderless)
             .labelStyle(.iconOnly)
-            .help("Copy as Markdown")
+            .help(L10n.Notes.copyMarkdown)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
@@ -133,17 +133,17 @@ private struct NoteBlockRow: View {
     /// the same question — what should this block be, and where.
     private var gutter: some View {
         Menu {
-            Picker("Block", selection: kindBinding) {
+            Picker(L10n.Notes.blockPicker, selection: kindBinding) {
                 ForEach(NoteBlockKind.allCases) { kind in
                     Label(kind.title, systemImage: kind.symbol).tag(kind)
                 }
             }
             .pickerStyle(.inline)
             Divider()
-            Button("Move up", systemImage: "arrow.up") { model.moveBlock(block.id, by: -1) }
-            Button("Move down", systemImage: "arrow.down") { model.moveBlock(block.id, by: 1) }
+            Button(L10n.Notes.moveUp, systemImage: "arrow.up") { model.moveBlock(block.id, by: -1) }
+            Button(L10n.Notes.moveDown, systemImage: "arrow.down") { model.moveBlock(block.id, by: 1) }
             Divider()
-            Button("Delete block", systemImage: "trash", role: .destructive) {
+            Button(L10n.Notes.deleteBlock, systemImage: "trash", role: .destructive) {
                 model.removeBlock(block.id)
             }
         } label: {
@@ -226,7 +226,7 @@ private struct NoteBlockRow: View {
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
             } else {
-                TextField("Language", text: $block.language, prompt: Text("swift"))
+                TextField(L10n.Notes.language, text: $block.language, prompt: Text(verbatim: "swift"))
                     .textInput(.identifier)
                     .font(.caption)
                     .textFieldStyle(.roundedBorder)
@@ -257,7 +257,7 @@ private struct NoteBlockRow: View {
                 )
             }
             if !model.isReadOnly {
-                Button("Add row", systemImage: "plus") { model.addRow(to: block.id) }
+                Button(L10n.Notes.addRow, systemImage: "plus") { model.addRow(to: block.id) }
                     .buttonStyle(.borderless)
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -296,7 +296,7 @@ private struct NoteRowLine: View {
     private var marker: some View {
         switch block.kind {
         case .checklist:
-            Toggle("Done", isOn: $row.checked)
+            Toggle(L10n.Notes.rowDone, isOn: $row.checked)
                 .labelsHidden()
                 #if os(macOS)
                 .toggleStyle(.checkbox)
@@ -319,18 +319,18 @@ private struct NoteRowLine: View {
     private var controls: some View {
         Menu {
             if block.kind.allowsNesting {
-                Button("Indent", systemImage: "increase.indent") {
+                Button(L10n.Notes.indent, systemImage: "increase.indent") {
                     model.indentRow(row.id, in: block.id)
                 }
-                Button("Outdent", systemImage: "decrease.indent") {
+                Button(L10n.Notes.outdent, systemImage: "decrease.indent") {
                     model.outdentRow(row.id, in: block.id)
                 }
                 Divider()
             }
-            Button("Add row below", systemImage: "plus") {
+            Button(L10n.Notes.addRowBelow, systemImage: "plus") {
                 model.addRow(to: block.id, after: row.id)
             }
-            Button("Delete row", systemImage: "trash", role: .destructive) {
+            Button(L10n.Notes.deleteRow, systemImage: "trash", role: .destructive) {
                 model.removeRow(row.id, from: block.id)
             }
         } label: {

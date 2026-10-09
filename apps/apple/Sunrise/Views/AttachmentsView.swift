@@ -17,9 +17,9 @@ struct AttachmentsView: View {
             }
             if model.rows.isEmpty {
                 ContentUnavailableView(
-                    "No attachments",
+                    L10n.Attachments.emptyTitle,
                     systemImage: "paperclip",
-                    description: Text("Drop a file here, or use Attach.")
+                    description: Text(L10n.Attachments.emptyMessage)
                 )
                 .frame(maxWidth: .infinity, minHeight: 120)
             } else {
@@ -45,10 +45,10 @@ struct AttachmentsView: View {
 
     private var header: some View {
         HStack {
-            Text("Attachments").font(.headline)
+            Text(L10n.Attachments.title).font(.headline)
             Spacer()
             if model.isBusy { ProgressView().controlSize(.small) }
-            Button("Attach…", systemImage: "paperclip") { picking = true }
+            Button(L10n.Attachments.attach, systemImage: "paperclip") { picking = true }
                 .disabledUnlessEditable(.attachment)
                 .accessibilityIdentifier("attach-file")
         }
@@ -70,7 +70,7 @@ struct AttachmentsView: View {
                 }
                 Spacer()
                 transferControls(for: row, transfer)
-                Button("Remove", systemImage: "trash") {
+                Button(L10n.Action.remove, systemImage: "trash") {
                     Task { await model.detach(row) }
                 }
                 .labelStyle(.iconOnly)
@@ -104,7 +104,7 @@ struct AttachmentsView: View {
     ) -> some View {
         switch transfer {
         case .here:
-            Button("Open", systemImage: "arrow.up.forward.app") {
+            Button(L10n.Attachments.open, systemImage: "arrow.up.forward.app") {
                 Task {
                     if let url = await model.exportToTemporary(row) {
                         Platform.openExternal(url)
@@ -115,7 +115,7 @@ struct AttachmentsView: View {
             .buttonStyle(.plain)
         case .running:
             ProgressView().controlSize(.small)
-            Button("Cancel", systemImage: "xmark.circle") {
+            Button(L10n.Action.cancel, systemImage: "xmark.circle") {
                 model.cancelDownload(row)
             }
             .labelStyle(.iconOnly)
@@ -123,7 +123,7 @@ struct AttachmentsView: View {
             .accessibilityIdentifier("cancel-attachment-download")
         case .interrupted, .absent:
             Button(
-                transfer == .interrupted ? "Download again" : "Download",
+                transfer == .interrupted ? L10n.Attachments.downloadAgain : L10n.Attachments.download,
                 systemImage: "arrow.down.circle"
             ) {
                 model.download(row)
@@ -154,7 +154,7 @@ struct AttachmentsView: View {
                 PdfPreview(data: previewing.data)
                     .frame(minHeight: 260)
             case .none:
-                Text("\(row.item.filename) opens in another app.")
+                Text(L10n.Attachments.opensElsewhere(filename: row.item.filename))
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
@@ -185,9 +185,9 @@ struct AttachmentsView: View {
     private func subtitle(for row: AttachmentRow, _ transfer: AttachmentTransfer) -> String {
         switch transfer {
         case .here: return "\(row.sizeText) · \(row.item.mimeType)"
-        case .running: return "\(row.sizeText) · downloading…"
-        case .interrupted: return "\(row.sizeText) · download interrupted"
-        case .absent: return "\(row.sizeText) · not on this device"
+        case .running: return "\(row.sizeText) · \(L10n.Attachments.statusDownloading)"
+        case .interrupted: return "\(row.sizeText) · \(L10n.Attachments.statusInterrupted)"
+        case .absent: return "\(row.sizeText) · \(L10n.Attachments.statusAbsent)"
         }
     }
 }

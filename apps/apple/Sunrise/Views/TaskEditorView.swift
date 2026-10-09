@@ -16,10 +16,10 @@ enum TaskEditorPane: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .details: "Details"
-        case .notes: "Notes"
-        case .attachments: "Attachments"
-        case .activity: "Activity"
+        case .details: L10n.TaskEditor.paneDetails
+        case .notes: L10n.TaskEditor.paneNotes
+        case .attachments: L10n.TaskEditor.paneAttachments
+        case .activity: L10n.TaskEditor.paneActivity
         }
     }
 }
@@ -80,7 +80,7 @@ struct TaskEditorView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            Picker("Pane", selection: $pane) {
+            Picker(L10n.TaskEditor.panePicker, selection: $pane) {
                 ForEach(TaskEditorPane.allCases) { Text($0.title).tag($0) }
             }
             .pickerStyle(.segmented)
@@ -100,14 +100,14 @@ struct TaskEditorView: View {
 
     private var details: some View {
         Form {
-            TextField("Title", text: $title)
+            TextField(L10n.TaskEditor.titleField, text: $title)
 
-            Picker("Priority", selection: $priority) {
-                Text("None").tag(0)
+            Picker(L10n.TaskEditor.priority, selection: $priority) {
+                Text(L10n.TaskEditor.priorityNone).tag(0)
                 ForEach(1...5, id: \.self) { Text("!\($0)").tag($0) }
             }
 
-            Picker("Energy", selection: $energy) {
+            Picker(L10n.TaskEditor.energy, selection: $energy) {
                 Text(energyLabel(energy: nil)).tag(nil as Energy?)
                 Text(energyLabel(energy: .low)).tag(Energy.low as Energy?)
                 Text(energyLabel(energy: .med)).tag(Energy.med as Energy?)
@@ -119,24 +119,24 @@ struct TaskEditorView: View {
                 }
             }
 
-            LabeledContent("Estimate") {
+            LabeledContent(L10n.TaskEditor.estimate) {
                 HStack {
                     TextField("", value: $estimateMinutes, format: .number)
                         .textInput(.number)
                         .frame(width: 60)
-                    Text(estimateMinutes > 0 ? shortDuration(secs: UInt64(estimateMinutes * 60)) : "none")
+                    Text(estimateMinutes > 0 ? shortDuration(secs: UInt64(estimateMinutes * 60)) : L10n.TaskEditor.estimateNone)
                         .foregroundStyle(.secondary)
                 }
             }
 
-            Toggle("Has a deadline", isOn: $hasDue)
+            Toggle(L10n.TaskEditor.hasDeadline, isOn: $hasDue)
             if hasDue {
-                DatePicker("Due", selection: $due, displayedComponents: [.date, .hourAndMinute])
+                DatePicker(L10n.TaskEditor.due, selection: $due, displayedComponents: [.date, .hourAndMinute])
             }
 
             Section {
                 HStack {
-                    Button("Delete", role: .destructive) {
+                    Button(L10n.Action.delete, role: .destructive) {
                         Task {
                             await delete()
                             dismiss()
@@ -146,8 +146,8 @@ struct TaskEditorView: View {
                     // build (ADR-0045 §8); Cancel never writes, so it stays.
                     .disabledUnlessEditable(.task)
                     Spacer()
-                    Button("Cancel") { dismiss() }
-                    Button("Save") {
+                    Button(L10n.Action.cancel) { dismiss() }
+                    Button(L10n.Action.save) {
                         Task {
                             await apply(edit)
                             dismiss()
