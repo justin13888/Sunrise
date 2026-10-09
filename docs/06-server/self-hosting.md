@@ -245,7 +245,12 @@ the parser will reject them rather than accept them silently:
 than `[push.apns]`, `[quotas]`, `[storage] mode` / `sqlite_pool_size` / `postgres_url` /
 `s3_*`, `[server] public_url`, and `[auth] oidc_client_secret` /
 `admin_emails`. The `doctor` those drafts described is
-`sunrise-server admin doctor` (see "Admin CLI").
+`sunrise-server admin doctor` (see "Admin CLI"). The scaled deployment's keys
+are `[storage] backend`, `postgres_url_file`, `[blobs] backend` and
+`s3_credentials_file`, as
+[ADR-0062](../11-adr/0062-relay-scale-out-storage-seam.md) §6 decides; they are
+refused too until that deployment is built, and the draft names above stay
+refused after it.
 
 ## Stopping, health and readiness
 
@@ -444,7 +449,8 @@ plaintext.
 - **What is in a backup.** Without encryption, everything the relay database
   holds, in plaintext: treat the backup accordingly. With it, ciphertext.
   Neither carries the key file or the APNs key, which are config.
-- Scaled: standard Postgres + S3 backup tooling. There is no scaled deployment.
+- Scaled: standard Postgres + S3 backup tooling. There is no scaled deployment
+  yet; [ADR-0062](../11-adr/0062-relay-scale-out-storage-seam.md) is its design.
 
 ### Restore
 
@@ -483,7 +489,12 @@ between backups is the relay history you accept losing.
   after 10 s, and logs `srv.store.quick_check`. A result other than `ok` does
   not stop the server; it is the signal to restore a backup.
 - Zero-downtime upgrade for scaled deployments via standard rolling restart.
-  (No scaled deployment exists.)
+  (No scaled deployment exists.) As designed in
+  [ADR-0062](../11-adr/0062-relay-scale-out-storage-seam.md), a node stopped by
+  `SIGTERM` drains as above and ends its streams with a retryable close; the
+  client reconnects through the balancer to another node, which knows its
+  session from the shared table and replays from its cursor out of the shared
+  log.
 
 ## Testing the install
 
