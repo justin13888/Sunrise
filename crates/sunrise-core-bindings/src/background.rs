@@ -277,7 +277,12 @@ impl SunriseCore {
         let dialled_before = self.sync_link.dialled();
 
         self.start_sync(url, bearer, relay_device_id)?;
-        self.sync_link.kick();
+        // Nothing dialled yet means no session from before this call exists:
+        // the driver this call may just have started is dialling the fresh
+        // one, and kicking it would only cost a reconnect.
+        if dialled_before > 0 {
+            self.sync_link.kick();
+        }
 
         let wait = async {
             loop {
