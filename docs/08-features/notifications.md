@@ -120,6 +120,13 @@ What exists today, read from the tree:
   (`apps/apple/Sunrise/Notifications/NotificationPreferences.swift:31`), not a
   toggle per kind. No request sets an interruption level, and nothing observes a
   time-zone change.
+- **The keys** of §Preference keys are in the core's key table
+  (`crates/sunrise-domain/src/preferences/keys.rs#PREFERENCE_KEYS`), stored and
+  resolved there and served by `Query::Preferences` ([#337](https://github.com/justin13888/Sunrise/issues/337)).
+  Nothing reads them yet: `ReminderIntents` still takes the per-device
+  `ReminderSettings` the Apple client builds from its own `UserDefaults`, until
+  that client reads through the core ([#489](https://github.com/justin13888/Sunrise/issues/489))
+  and the planner reads the keys itself ([#347](https://github.com/justin13888/Sunrise/issues/347)).
 - **On iOS**, on-event kinds need a background wake, which does not exist yet
   ([#367](https://github.com/justin13888/Sunrise/issues/367)); until it does they fire when the app next runs.
 
@@ -283,9 +290,9 @@ account default a device may override) and `device` (this install only).
 | `deadline` | `true` | `.lead_s`: `uint`, default `3600` | `.enabled` `vault_overridable`; `.lead_s` `vault` |
 | `routine_due` | `true` | — | `vault_overridable` |
 | `block_start` | `true` | `.lead_s`: `uint`, default `900` | `.enabled` `vault_overridable`; `.lead_s` `vault` |
-| `morning_brief` | `true` | `.offset_s`: `int`, seconds after wake, default `900` | `.enabled` `vault_overridable`; `.offset_s` `vault` |
+| `morning_brief` | `true` | `.offset_s`: `int` −86400..86400, seconds after wake, default `900` | `.enabled` `vault_overridable`; `.offset_s` `vault` |
 | `triage_nudge` | `true` | — | `vault_overridable` |
-| `evening_plan` | `true` | `.offset_s`: `int`, seconds before sleep, default `7200` | `.enabled` `vault_overridable`; `.offset_s` `vault` |
+| `evening_plan` | `true` | `.offset_s`: `int` −86400..86400, seconds before sleep, default `7200` | `.enabled` `vault_overridable`; `.offset_s` `vault` |
 | `wind_down` | `true` (fires only once a sleep time is set) | `.lead_s`: `uint` 0..14400, default `3600` | `.enabled` `vault_overridable`; `.lead_s` `vault` |
 | `focus_end` | `true` | — | `vault_overridable` |
 | `timezone_changed` | **`false`** | — | `vault_overridable` |
