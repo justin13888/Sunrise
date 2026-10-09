@@ -302,6 +302,45 @@ mod tests {
             .assert_status(StatusCode::UNAUTHORIZED);
     }
 
+    /// A session store that does not answer is the relay's failure, not the
+    /// caller's: establishment and every operation naming a session answer a
+    /// retryable `503`, never the `401` that would send a client to re-auth.
+    #[tokio::test]
+    async fn an_unreachable_session_store_is_a_retryable_503() {
+        let state = ServerState::new(ServerConfig::default())
+            .with_session_backend(Arc::new(crate::sync_session::conformance::Unreachable));
+        let client = Client::from_state(state);
+
+        let res = client
+            .send_as(
+                Method::POST,
+                "/api/v1/sync/session",
+                Some(BEARER),
+                Some(&hello()),
+            )
+            .await;
+        res.assert_status(StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            res.json()["code"],
+            serde_json::json!(codes::RELAY_STORAGE_UNAVAILABLE)
+        );
+
+        let res = client
+            .send_with(
+                Method::POST,
+                "/api/v1/sync/subscribe",
+                Some(BEARER),
+                Some(&serde_json::json!({ "streams": [] })),
+                &[("x-sunrise-session", "ses_00000000000000000000000000000000")],
+            )
+            .await;
+        res.assert_status(StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            res.json()["code"],
+            serde_json::json!(codes::RELAY_STORAGE_UNAVAILABLE)
+        );
+    }
+
     /// Was `unknown_bearer_is_refused`.
     #[tokio::test]
     async fn an_unknown_bearer_is_refused() {
@@ -798,6 +837,8 @@ mod tests {
         let session = client
             .sessions
             .get(&id, client.clock_now_ms())
+            .await
+            .unwrap()
             .expect("a live session");
         assert_eq!(
             session.streams.len(),
@@ -1228,7 +1269,7 @@ mod tests {
             .assert_status(StatusCode::UNAUTHORIZED);
 
         assert!(
-            client.sessions.get(&id, T0_MS).is_none(),
+            client.sessions.get(&id, T0_MS).await.unwrap().is_none(),
             "the session must be gone, not merely refused"
         );
     }
@@ -1280,7 +1321,7 @@ mod tests {
             .assert_status(StatusCode::UNAUTHORIZED);
 
         assert!(
-            client.sessions.get(&id, T0_MS).is_none(),
+            client.sessions.get(&id, T0_MS).await.unwrap().is_none(),
             "the session must be gone, not merely refused"
         );
     }

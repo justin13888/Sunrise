@@ -133,7 +133,7 @@ pub async fn events(
     SignedParts(caller): SignedParts,
 ) -> Result<Sse<EventStream>, Throttled> {
     let now_ms = state.clock.now_ms();
-    let (id, session) = resolve(&state, &header, &caller, now_ms)?;
+    let (id, session) = resolve(&state, &header, &caller, now_ms).await?;
     // Held by the stream's task and released when it ends, which includes
     // the client going away: `live_loop` watches for that.
     let slot = state
@@ -169,7 +169,9 @@ pub async fn events(
     if session.subscribe_unserved {
         state
             .sessions
-            .update(&id, now_ms, |s| s.subscribe_unserved = false);
+            .update(&id, now_ms, |s| s.subscribe_unserved = false)
+            .await
+            .map_err(ApiError::from)?;
     }
 
     state.metrics.incr("sunrise_sync_stream_total");
@@ -428,7 +430,21 @@ async fn live_loop(
                 // A session outliving its own credential is the defect this
                 // check exists for: the bearer was presented once, and the
                 // stream is long-lived.
-                if state.sessions.get(&id, now_ms).is_none() {
+                let live = match state.sessions.get(&id, now_ms).await {
+                    Ok(live) => live,
+                    // Not knowing is not "expired": the client is told to
+                    // retry, and a reopened stream reads the session afresh.
+                    Err(_) => {
+                        let _ = tx
+                            .send(closed(
+                                ErrorCode::RelayStorageUnavailable,
+                                "relay could not read its session store",
+                            ))
+                            .await;
+                        return "session_store_unavailable";
+                    }
+                };
+                if live.is_none() {
                     // Answers "why did a working client drop hourly".
                     tracing::warn!(
                         ev = "srv.sync.token_expired",
@@ -459,7 +475,12 @@ async fn live_loop(
                             account_h = %crate::logging::account_h(&session.account_id),
                             "session device is no longer active; ending the stream"
                         );
-                        state.sessions.remove(&id);
+                        // The stream ends either way. A removal the store
+                        // refused leaves a session that `resolve` still
+                        // serves, so it is logged where it failed, and the
+                        // revoked device's own signature is what a later
+                        // request is refused on.
+                        let _ = state.sessions.remove(&id).await;
                         let _ = tx
                             .send(closed(ErrorCode::AuthDeviceRevoked, "device revoked"))
                             .await;

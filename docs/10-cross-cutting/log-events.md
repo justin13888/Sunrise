@@ -66,6 +66,7 @@ See [`logging.md`](./logging.md) for the record schema and grammar, and
 | `srv.sync.stream_closed` | info | The event stream ended, whether by the client leaving or by the server closing it. `account_h`. |
 | `srv.sync.stream_drained` | info | The server began draining, so the stream was closed with `SYNC_NETWORK_UNAVAILABLE` — retryable, so the client reconnects with backoff. `account_h`. One per stream open when shutdown began; `srv.stop.draining` carries the total. |
 | `srv.sync.subscribe` | debug | The session's stream set was replaced; `n_streams`. |
+| `srv.sync.session_store_failed` | error | The session store did not answer; `err_kind` (`transient`), `retryable`, `cause`. The request it served answers `503 RELAY_STORAGE_UNAVAILABLE`, and a live stream that could not re-read its session ends with a retryable close of the same code. The in-process store never raises it; a shared one (ADR-0062 §3) does when its database is unreachable. |
 | `srv.sync.device_revoked` | warn | The session's device is no longer an active row on its account; the stream is closed with `AUTH_DEVICE_REVOKED`. `account_h`. Distinct from `srv.sync.token_expired` on purpose: that one means "renew and reconnect", this one means "access was withdrawn, ask the user". |
 | `srv.sync.token_expired` | warn | The session's bearer passed its `exp`; the stream is closed with `AUTH_TOKEN_EXPIRED`. `account_h`. Answers "why did a working client drop hourly". |
 | `srv.sync.refreshed` | debug | A refresh verified; the session's deadline moved out with no reconnect. `account_h`. |

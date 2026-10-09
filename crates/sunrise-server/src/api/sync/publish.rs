@@ -124,7 +124,7 @@ pub async fn ops(
     // injected wall clock, because it measures a duration.
     let accepted = tokio::time::Instant::now();
     let now_ms = state.clock.now_ms();
-    let (_, session) = resolve(&state, &header, &caller, now_ms)?;
+    let (_, session) = resolve(&state, &header, &caller, now_ms).await?;
     // A session opened before the deletion was confirmed must not keep
     // writing into a log the erasure is about to remove.
     crate::api::account_deletion::refuse_if_pending_deletion(&state, &session.account_id)?;
