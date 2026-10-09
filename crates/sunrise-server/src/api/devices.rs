@@ -174,7 +174,8 @@ pub async fn list(
 ) -> Result<Json<Vec<DeviceMeta>>, ApiError> {
     let devices = state
         .store
-        .list_devices(&caller.principal.account.account_id)?;
+        .list_devices(&caller.principal.account.account_id)
+        .await?;
     Ok(Json(devices.into_iter().map(DeviceMeta::from).collect()))
 }
 
@@ -221,19 +222,22 @@ pub async fn register(
         }
     }
 
-    let device = state.store.register_device(
-        &caller.principal.account.account_id,
-        &NewDevice {
-            device_pub_s: body.device_pub_s,
-            device_pub_d: body.device_pub_d,
-            device_cert: body.device_cert,
-            vault_device_id: body.vault_device_id,
-            nickname: body.nickname,
-            platform: body.platform,
-            app_version: body.app_version,
-        },
-        state.clock.now_ms(),
-    )?;
+    let device = state
+        .store
+        .register_device(
+            &caller.principal.account.account_id,
+            &NewDevice {
+                device_pub_s: body.device_pub_s,
+                device_pub_d: body.device_pub_d,
+                device_cert: body.device_cert,
+                vault_device_id: body.vault_device_id,
+                nickname: body.nickname,
+                platform: body.platform,
+                app_version: body.app_version,
+            },
+            state.clock.now_ms(),
+        )
+        .await?;
     state.metrics.incr("sunrise_devices_register_total");
     let id = device.device_id.clone();
     Ok(Created::at(
@@ -276,8 +280,9 @@ pub async fn revoke(
             &path.device_id,
             state.clock.now_ms(),
         )
+        .await
         .map_err(|e| match e {
-            crate::store::StoreError::NotFound => ApiError::not_found(
+            crate::store::MetadataError::NotFound => ApiError::not_found(
                 codes::DEVICE_NOT_FOUND,
                 "no such active device on this account",
             ),
@@ -341,8 +346,9 @@ pub async fn revoke_by_vault_id(
             &path.vault_device_id,
             state.clock.now_ms(),
         )
+        .await
         .map_err(|e| match e {
-            crate::store::StoreError::NotFound => ApiError::not_found(
+            crate::store::MetadataError::NotFound => ApiError::not_found(
                 codes::DEVICE_NOT_FOUND,
                 "no active device on this account carries that vault device id",
             ),
@@ -376,7 +382,8 @@ pub async fn push_tokens(
     // an unowned device by naming one.
     state
         .store
-        .active_device(&caller.principal.account.account_id, &body.device_id)?
+        .active_device(&caller.principal.account.account_id, &body.device_id)
+        .await?
         .ok_or_else(|| {
             ApiError::forbidden(
                 codes::AUTH_DEVICE_NOT_OWNER,
@@ -385,12 +392,15 @@ pub async fn push_tokens(
         })?;
 
     // The same spelling the dispatcher looks tokens up by.
-    state.store.upsert_push_token(
-        &body.device_id,
-        body.platform.store_tag(),
-        &body.token,
-        state.clock.now_ms(),
-    )?;
+    state
+        .store
+        .upsert_push_token(
+            &body.device_id,
+            body.platform.store_tag(),
+            &body.token,
+            state.clock.now_ms(),
+        )
+        .await?;
     state.metrics.incr("sunrise_push_register_total");
     Ok(NoContent)
 }

@@ -106,7 +106,8 @@ pub async fn subscribe(
             .collect();
         state
             .store
-            .record_cursors(&device.device_id, &declared, now_ms)?;
+            .record_cursors(&device.device_id, &declared, now_ms)
+            .await?;
     }
     tracing::debug!(
         ev = "srv.sync.subscribe",

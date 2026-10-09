@@ -35,7 +35,9 @@
 //! small table, so the critical section is microseconds; a self-host relay
 //! does not have the write volume to justify a pool, and a single connection
 //! makes "revocation takes effect in the request's transaction" trivially
-//! true. A multi-node deployment replaces this module with Postgres.
+//! true. A multi-node deployment puts Postgres behind [`MetadataStore`], the
+//! seam this `Store` is the first implementation of (ADR-0062 §1), and
+//! `ServerState` holds the trait, not this type.
 //!
 //! The relay append path is the exception worth knowing about before reading
 //! the paragraph above as the whole story: it takes this same mutex for a
@@ -45,8 +47,12 @@
 
 mod accounts;
 mod cipher;
+#[cfg(test)]
+pub(crate) mod conformance;
 mod devices;
+mod error;
 mod lifecycle;
+mod metadata;
 mod migrations;
 mod pragmas;
 mod tx;
@@ -56,7 +62,6 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 use rusqlite::Connection;
-use thiserror::Error;
 
 // The inline suite below reaches this through its `use super::*`; every
 // statement that names a subject itself is in `accounts`.
@@ -66,144 +71,10 @@ use crate::auth::Subject;
 pub use accounts::Account;
 pub use cipher::{pre_encryption_copy, DbKey};
 pub use devices::{Device, NewDevice};
+pub use error::StoreError;
 pub use lifecycle::{AccountSummary, DeclaredCursor, NewTombstone, StoreStats};
+pub use metadata::{MetadataError, MetadataStore};
 pub use pragmas::DEFAULT_BUSY_TIMEOUT;
-
-/// Why a store operation failed.
-#[derive(Debug, Error)]
-pub enum StoreError {
-    /// Underlying SQLite failure.
-    #[error("sqlite: {0}")]
-    Sqlite(#[from] rusqlite::Error),
-    /// The caller's `(iss, sub)` has no account and `allow_signup` is false.
-    #[error("sign-up is disabled on this server")]
-    SignupDisabled,
-    /// No such row for this account.
-    #[error("not found")]
-    NotFound,
-    /// A `recovery_blob` was offered for an account that already holds a
-    /// different one.
-    ///
-    /// The column is write-once. It used to be silently so: `set_identity`
-    /// wrote `COALESCE(?4, recovery_blob)`, so a second, different blob was
-    /// accepted with a `201` and dropped on the floor — and the client that
-    /// sent it had just shown its user a recovery code for a blob the server
-    /// does not hold. Refusing is what makes a displayed code trustworthy;
-    /// re-sending the *same* bytes is still idempotent and still succeeds.
-    #[error("this account already holds a different recovery blob")]
-    RecoveryBlobExists,
-    /// The database's schema version is one this binary does not know.
-    ///
-    /// A newer release migrated the file, or something other than this relay
-    /// stamped it. The store refuses it before writing anything, the journal
-    /// mode included, and the binary exits 78 (`EX_CONFIG`) so a supervisor
-    /// does not restart it into the same refusal.
-    #[error(
-        "the database is at schema version {found}, and this binary supports up to {supported}: \
-         run the release that wrote it, or restore a backup taken before that upgrade"
-    )]
-    SchemaTooNew {
-        /// The database's `PRAGMA user_version`.
-        found: i64,
-        /// The newest version this binary migrates to.
-        supported: u32,
-    },
-    /// A busy timeout longer than SQLite can hold.
-    ///
-    /// `sqlite3_busy_timeout` takes a C `int` of milliseconds, and rusqlite
-    /// panics on a `Duration` above `i32::MAX` of them rather than returning
-    /// an error. Refusing it here is what turns `[storage] busy_timeout_ms =
-    /// 3000000000` into exit 78 and `srv.start.refused` instead of a crash.
-    #[error(
-        "the SQLite busy timeout is {ms} ms, and SQLite takes at most {max} ms (about 24 days): \
-         lower [storage] busy_timeout_ms"
-    )]
-    BusyTimeoutTooLong {
-        /// The timeout asked for, in milliseconds.
-        ms: u128,
-        /// The longest SQLite accepts, `i32::MAX` milliseconds.
-        max: i32,
-    },
-    /// The key file could not be read, or does not hold a key.
-    #[error("[storage] key_file {}: {cause}", path.display())]
-    KeyFile {
-        /// The file.
-        path: PathBuf,
-        /// What was wrong with it.
-        cause: String,
-    },
-    /// The key file can be read by its group or by others.
-    #[error(
-        "[storage] key_file {} has mode {mode:o}: it opens the whole database, so only its \
-         owner may read it — chmod 600",
-        path.display()
-    )]
-    KeyPermissions {
-        /// The file.
-        path: PathBuf,
-        /// Its permission bits.
-        mode: u32,
-    },
-    /// The key file lies inside the data dir, so every backup of the data dir
-    /// would carry the key beside the ciphertext it opens.
-    #[error(
-        "[storage] key_file {} is inside the data dir {}: keep it outside, so a copy of the \
-         data dir is not also a copy of its key",
-        key_file.display(),
-        data_dir.display()
-    )]
-    KeyInDataDir {
-        /// The key file.
-        key_file: PathBuf,
-        /// The data dir it is inside.
-        data_dir: PathBuf,
-    },
-    /// `[storage] encrypt` and `[storage] key_file` disagree.
-    #[error("{0}")]
-    KeyConfig(&'static str),
-    /// The database is not a plaintext SQLite file and no key was given: it
-    /// is encrypted, or is not a database at all.
-    #[error(
-        "{} is encrypted (or is not a SQLite database): set [storage] encrypt = true and the \
-         key_file it was encrypted with",
-        path.display()
-    )]
-    KeyRequired {
-        /// The database.
-        path: PathBuf,
-    },
-    /// The key does not open the database.
-    #[error(
-        "the key in [storage] key_file does not open {}: name the key it was encrypted with, \
-         or restore a backup taken under this one",
-        path.display()
-    )]
-    WrongKey {
-        /// The database.
-        path: PathBuf,
-    },
-    /// An operation that needs the database to itself found another
-    /// connection holding it.
-    #[error(
-        "{} is open in another process: stop the relay (and any other admin command) first",
-        path.display()
-    )]
-    InUse {
-        /// The database.
-        path: PathBuf,
-    },
-    /// The database is not encrypted, so there is no key to rotate.
-    #[error("the database is not encrypted: set [storage] encrypt = true and start once first")]
-    NotEncrypted,
-    /// A file beside the database could not be read or written.
-    #[error("{}: {cause}", path.display())]
-    Io {
-        /// The file.
-        path: PathBuf,
-        /// The operating system's reason.
-        cause: String,
-    },
-}
 
 /// SQLite-backed account/device store.
 pub struct Store {
@@ -318,6 +189,91 @@ impl Store {
             path: path.map(Path::to_owned),
             key: Mutex::new(key.cloned()),
         })
+    }
+
+    /// `SELECT 1` within `deadline`: the readiness probe's store check.
+    ///
+    /// The store is one connection behind a mutex, so the failure this can see
+    /// is a wedged lock as much as a broken file. `try_lock_for` rather than a
+    /// timeout around `lock`, so a wedged store does not leave the caller's
+    /// thread parked behind it for every probe.
+    ///
+    /// # Errors
+    /// [`StoreError::Busy`] when the connection is not free within `deadline`,
+    /// or the query's own failure.
+    pub fn ping(&self, deadline: Duration) -> Result<(), StoreError> {
+        let conn = self.conn.try_lock_for(deadline).ok_or(StoreError::Busy)?;
+        let one: i64 = conn.query_row("SELECT 1", [], |row| row.get(0))?;
+        if one == 1 {
+            Ok(())
+        } else {
+            Err(StoreError::Busy)
+        }
+    }
+
+    /// `PRAGMA quick_check(1)`'s answer: `ok`, or the first problem found.
+    /// The doctor's database check.
+    ///
+    /// # Errors
+    /// The pragma's own failure.
+    pub fn quick_check(&self) -> Result<String, StoreError> {
+        Ok(self
+            .conn
+            .lock()
+            .query_row("PRAGMA quick_check(1)", [], |r| r.get(0))?)
+    }
+
+    /// Write `len` bytes beside the database file, fsync, read them back,
+    /// compare, and remove them: the doctor's check that the disk under the
+    /// database takes a write. In memory there is no disk, and the check runs
+    /// in the working directory, as it always has.
+    ///
+    /// # Errors
+    /// The first I/O failure, or a read-back that differs from the write.
+    pub fn probe_data_dir(&self, len: usize) -> std::io::Result<()> {
+        use std::io::Write as _;
+        let dir = self
+            .path
+            .as_deref()
+            .and_then(Path::parent)
+            .unwrap_or_else(|| Path::new("."));
+        std::fs::create_dir_all(dir)?;
+        let path = dir.join(".sunrise-doctor.tmp");
+        // A pattern rather than zeros, so a filesystem that hands back a zeroed
+        // page for an unwritten extent does not pass.
+        let data: Vec<u8> = (0..=250u8).cycle().take(len).collect();
+        let result = (|| {
+            {
+                let mut f = std::fs::File::create(&path)?;
+                f.write_all(&data)?;
+                f.sync_all()?;
+            }
+            if std::fs::read(&path)? != data {
+                return Err(std::io::Error::other(
+                    "read back differs from what was written",
+                ));
+            }
+            Ok(())
+        })();
+        let removed = std::fs::remove_file(&path);
+        result.and(removed)
+    }
+
+    /// Fold the write-ahead log back into the database file.
+    ///
+    /// Every acknowledged frame is already durable in the WAL, so this loses
+    /// nothing if it fails; what it buys is a data directory that is one file
+    /// once the relay stops, which is what `self-hosting.md` tells an operator
+    /// to back up. `TRUNCATE` rather than `PASSIVE` because no request is left
+    /// to contend with it.
+    ///
+    /// # Errors
+    /// The checkpoint's own failure.
+    pub fn checkpoint(&self) -> Result<(), StoreError> {
+        Ok(self
+            .conn
+            .lock()
+            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?)
     }
 }
 

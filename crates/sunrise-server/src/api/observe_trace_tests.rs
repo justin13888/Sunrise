@@ -230,6 +230,8 @@ async fn an_append_records_its_outcome_and_fails_with_the_store() {
 
     // Gone from under the relay, so the next append's insert fails.
     store
+        .as_sqlite()
+        .expect("the default store is SQLite")
         .conn
         .lock()
         .execute_batch("DROP TABLE relay_frames")
@@ -310,7 +312,9 @@ async fn a_failed_chunk_write_fails_its_span() {
     std::fs::write(&shard, b"").unwrap();
 
     exporter.reset();
-    assert_eq!(put(1).await, StatusCode::INTERNAL_SERVER_ERROR);
+    // A blob backend that cannot write is unavailable, not broken: 503, which
+    // the client retries (ADR-0062 §1).
+    assert_eq!(put(1).await, StatusCode::SERVICE_UNAVAILABLE);
     let spans = finished(&exporter);
     assert_eq!(
         only(&spans, "blob.chunk_write").status,

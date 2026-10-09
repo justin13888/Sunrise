@@ -106,7 +106,8 @@ pub async fn session(
     crate::api::account_deletion::refuse_if_pending_deletion(
         &state,
         &caller.principal.account.account_id,
-    )?;
+    )
+    .await?;
     // Hung off the busiest path rather than a timer task whose only job is to
     // take a lock occasionally.
     state

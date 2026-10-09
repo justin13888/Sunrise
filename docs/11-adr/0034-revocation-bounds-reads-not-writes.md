@@ -171,7 +171,7 @@ Revocation today is a **register plus a read bound**:
   peer's relay id. That was the obstacle, and #80 removed it by adding the route
   that takes the id a vault has:
   `DELETE /api/v1/devices/by-vault-id/{vault_device_id}`
-  (`crates/sunrise-server/src/api/devices.rs:310#revoke_by_vault_id`).
+  (`crates/sunrise-server/src/api/devices.rs:317#revoke_by_vault_id`).
   `RevokeDevice` now inserts a `relay_revocation_intents` row in the op's own
   transaction, when the fold finds the revocation effective
   (`crates/sunrise-core/src/engine/revocation.rs:317-324#revoke_device`), and

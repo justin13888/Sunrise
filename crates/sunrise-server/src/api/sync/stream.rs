@@ -251,11 +251,10 @@ fn spawn_stream(
                 .iter()
                 .map(|c| (c.device_id, c.last_applied_seq))
                 .collect();
-            let replay = state.store.relay_replay_after(
-                (session.account, sid),
-                after.unwrap_or(0),
-                &cursors,
-            );
+            let replay = state
+                .store
+                .relay_replay_after((session.account, sid), after.unwrap_or(0), &cursors)
+                .await;
             let (frames, gaps) = match replay {
                 Ok(v) => v,
                 Err(e) => {
@@ -478,7 +477,11 @@ async fn device_recheck(
     span: &sunrise_telemetry::SpanGuard,
 ) -> Option<&'static str> {
     let device_id = session.device_id.as_deref()?;
-    let active = match state.store.active_device(&session.account_id, device_id) {
+    let active = match state
+        .store
+        .active_device(&session.account_id, device_id)
+        .await
+    {
         Ok(active) => active,
         // A store that did not answer has not revoked anything: closing
         // `AUTH_DEVICE_REVOKED` would send the user to re-pair over a server

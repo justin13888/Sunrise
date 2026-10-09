@@ -6,12 +6,12 @@
 //! on the surface; the route is unsigned, so the canonical-target note in
 //! [`crate::api::signed`] still holds for every signed operation.
 
+use crate::blob::BlobBackend;
 use crate::state::ServerState;
+use crate::store::MetadataStore;
 use kynos::di::inject::Inject;
 use kynos::extract::params::query::Query;
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -113,7 +113,7 @@ pub async fn health(
     }
     let (store, blob_root) = tokio::join!(
         probe_store(Arc::clone(&state.store)),
-        probe_blob_root(PathBuf::clone(&state.blob_root)),
+        probe_blob_root(Arc::clone(&state.blobs)),
     );
     let checks = ReadinessChecks {
         accepting: !state.drain.is_draining(),
@@ -145,48 +145,32 @@ pub async fn health(
     })
 }
 
-/// `SELECT 1` against the store, within [`STORE_DEADLINE`].
+/// The metadata store's own probe, within [`STORE_DEADLINE`].
 ///
-/// The store is one connection behind a mutex, so the failure this can see is
-/// a wedged lock as much as a broken file. `try_lock_for` rather than a
-/// timeout around `lock`, so a wedged store does not leave a blocking thread
-/// parked behind it for every probe.
-async fn probe_store(store: Arc<crate::Store>) -> bool {
-    let probe = tokio::task::spawn_blocking(move || {
-        store.conn.try_lock_for(STORE_DEADLINE).is_some_and(|conn| {
-            conn.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))
-                .is_ok_and(|one| one == 1)
-        })
-    });
+/// On a blocking thread, because a probe may block for its whole deadline —
+/// the SQLite store waits on its one connection's lock, so the failure this
+/// can see is a wedged lock as much as a broken file — and that wait must not
+/// hold an executor thread. The deadline is the store's to keep, so a wedged
+/// store does not leave a blocking thread parked behind it for every probe.
+async fn probe_store(store: Arc<dyn MetadataStore>) -> bool {
+    let runtime = tokio::runtime::Handle::current();
+    let probe =
+        tokio::task::spawn_blocking(move || runtime.block_on(store.ping(STORE_DEADLINE)).is_ok());
     matches!(probe.await, Ok(true))
 }
 
-/// Write and remove a probe file under the blob root, within
-/// [`BLOB_DEADLINE`].
-///
-/// Creating the root first is deliberate: the blob routes create it on first
-/// use, so a fresh data directory without one is ready, and a root that cannot
-/// be created is exactly the condition a blob upload would fail on.
-async fn probe_blob_root(root: PathBuf) -> bool {
-    let probe = tokio::task::spawn_blocking(move || write_probe(&root).is_ok());
+/// The blob backend's write-and-remove probe, within [`BLOB_DEADLINE`], on a
+/// blocking thread for the same reason as [`probe_store`]. For the filesystem
+/// backend that is a probe file under the blob root, created first, since a
+/// root that cannot be created is exactly the condition a blob upload would
+/// fail on.
+async fn probe_blob_root(blobs: Arc<dyn BlobBackend>) -> bool {
+    let runtime = tokio::runtime::Handle::current();
+    let probe = tokio::task::spawn_blocking(move || runtime.block_on(blobs.probe()).is_ok());
     matches!(
         tokio::time::timeout(BLOB_DEADLINE, probe).await,
         Ok(Ok(true))
     )
-}
-
-fn write_probe(root: &Path) -> std::io::Result<()> {
-    // Unique per probe, so two concurrent probes never remove each other's
-    // file and a crash mid-probe leaves a name nothing else uses.
-    static NEXT: AtomicU64 = AtomicU64::new(0);
-    std::fs::create_dir_all(root)?;
-    let path = root.join(format!(
-        ".ready-probe-{}-{}",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    ));
-    std::fs::write(&path, b"ok")?;
-    std::fs::remove_file(&path)
 }
 
 #[cfg(test)]
@@ -321,7 +305,7 @@ mod tests {
         let (locked_tx, locked_rx) = std::sync::mpsc::channel();
         let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
         let holder = std::thread::spawn(move || {
-            let _held = store.conn.lock();
+            let _held = store.as_sqlite().expect("a SQLite store").conn.lock();
             locked_tx.send(()).unwrap();
             let _ = release_rx.recv();
         });

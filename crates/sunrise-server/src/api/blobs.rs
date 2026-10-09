@@ -28,17 +28,19 @@
 //!
 //! # Isolation
 //!
-//! Both the pending area and the committed store are rooted at a per-account
-//! directory keyed by a BLAKE3 of the account id. Content addressing across
-//! accounts would be a cross-tenant read primitive: one account could name
-//! another's blob by its hash. Per-account roots make that impossible by
-//! construction rather than by a check someone can forget, and dedup still
-//! works where it should — across one account's devices.
+//! Every call into [`crate::blob::BlobBackend`] is keyed by the account's
+//! BLAKE3 hash, so both the pending area and the committed store are
+//! per-account. Content addressing across accounts would be a cross-tenant
+//! read primitive: one account could name another's blob by its hash.
+//! Per-account keys make that impossible by construction rather than by a
+//! check someone can forget, and dedup still works where it should — across
+//! one account's devices.
 
 use crate::api::error::{codes, ApiError};
 use crate::api::ratelimit::policy::Budget;
 use crate::api::ratelimit::Throttled;
 use crate::api::signed::{Caller, Signed, SignedBinary, SignedParts};
+use crate::blob::{AccountKey, BlobBackend, Manifest};
 use crate::state::ServerState;
 use kynos::di::inject::Inject;
 use kynos::extract::body::json::Json;
@@ -48,8 +50,7 @@ use kynos::openapi::Schema as OpenApiSchema;
 use kynos::response::status::NoContent;
 use kynos::response::stream::binary::BinaryStream;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
-use sunrise_storage::BlobStore;
+use std::sync::Arc;
 use sunrise_telemetry::{Attr, Count};
 
 /// Largest single chunk the relay accepts, per
@@ -255,7 +256,7 @@ pub async fn init(
     if body.stream_id.trim().is_empty() {
         return Err(ApiError::validation("stream_id required").into());
     }
-    refuse_if_pending(&state, &caller)?;
+    refuse_if_pending(&state, &caller).await?;
 
     let mut raw = [0u8; 16];
     getrandom::getrandom(&mut raw).map_err(|_| ApiError::internal())?;
@@ -266,7 +267,11 @@ pub async fn init(
     let upload_id = format!("up_{}", hex::encode(raw));
     // Create the pending area eagerly so a chunk PUT is a write, not a
     // mkdir-then-write race between two concurrent chunk uploads.
-    pending_store(&state, &caller, &raw)?;
+    state
+        .blobs
+        .open_upload(account(&caller), raw)
+        .await
+        .map_err(ApiError::from)?;
     let chunk_urls = (0..body.chunk_count)
         .map(|i| format!("/api/v1/blobs/{upload_id}/{i}"))
         .collect();
@@ -295,7 +300,7 @@ pub async fn put_chunk(
             ApiError::validation(format!("chunk must be 1..={MAX_CHUNK_BYTES} bytes")).into(),
         );
     }
-    refuse_if_pending(&state, &caller)?;
+    refuse_if_pending(&state, &caller).await?;
     state
         .limiter
         .charge(
@@ -307,7 +312,6 @@ pub async fn put_chunk(
         )
         .await?;
     state.limiter.touch_upload(&state, &caller, upload);
-    let store = pending_store(&state, &caller, &upload)?;
     let write_span = sunrise_telemetry::span(
         "blob.chunk_write",
         [
@@ -315,11 +319,13 @@ pub async fn put_chunk(
             Attr::count(Count::Bytes, bytes.len() as u64),
         ],
     );
-    store
-        .put_chunk(&upload, path.chunk_idx, &bytes)
-        .map_err(|_| {
+    state
+        .blobs
+        .put_pending(account(&caller), upload, path.chunk_idx, &bytes)
+        .await
+        .map_err(|e| {
             write_span.fail("chunk write failed");
-            ApiError::internal()
+            ApiError::from(e)
         })?;
     drop(write_span);
     state.metrics.incr("sunrise_blob_chunk_total");
@@ -369,9 +375,9 @@ pub async fn finalize(
         .iter()
         .map(|h| parse_hash(&h.0, "chunk_hashes"))
         .collect::<Result<_, _>>()?;
-    refuse_if_pending(&state, &caller)?;
+    refuse_if_pending(&state, &caller).await?;
 
-    let pending = pending_store(&state, &caller, &upload)?;
+    let account = account(&caller);
     // Re-hash what is actually on disk. The client's hashes are a claim; this
     // is the check. A chunk that never arrived, arrived truncated, or arrived
     // corrupted all fail here rather than becoming an unreadable attachment
@@ -385,9 +391,10 @@ pub async fn finalize(
     );
     for (idx, want) in expected.iter().enumerate() {
         let idx = u32::try_from(idx).map_err(|_| ApiError::internal())?;
-        let bytes = pending
-            .get_chunk(&upload, idx)
-            .map_err(|_| ApiError::internal())?
+        let bytes = state
+            .blobs
+            .get_pending(account, upload, idx)
+            .await?
             .ok_or_else(|| {
                 ApiError::conflict(
                     codes::BLOB_CHUNK_MISSING,
@@ -418,7 +425,6 @@ pub async fn finalize(
     // manifest LAST: a reader that finds no manifest sees no blob, so a crash
     // mid-commit leaves an invisible partial rather than a short read.
     let blob = blob_key(&content_hash);
-    let committed = committed_store(&state, &caller)?;
     let write_span = sunrise_telemetry::span(
         "blob.chunk_write",
         [
@@ -428,28 +434,39 @@ pub async fn finalize(
     );
     for (idx, bytes) in chunks.iter().enumerate() {
         let idx = u32::try_from(idx).map_err(|_| ApiError::internal())?;
-        committed.put_chunk(&blob, idx, bytes).map_err(|_| {
-            write_span.fail("chunk write failed");
-            ApiError::internal()
-        })?;
+        state
+            .blobs
+            .put_committed(account, blob, idx, bytes)
+            .await
+            .map_err(|e| {
+                write_span.fail("chunk write failed");
+                ApiError::from(e)
+            })?;
     }
     drop(write_span);
     let chunk_count = u32::try_from(chunks.len()).map_err(|_| ApiError::internal())?;
-    write_manifest(&state, &caller, &blob, chunk_count, size_bytes)?;
+    state
+        .blobs
+        .write_manifest(
+            account,
+            blob,
+            Manifest {
+                chunk_count,
+                size_bytes,
+            },
+        )
+        .await?;
     // The same ciphertext uploaded again is the attachment coming back — a
     // detach undone, or the same file attached elsewhere — so any tombstone
     // on its content address no longer describes it.
     state
         .store
-        .clear_tombstone(&caller.principal.account.account_id, &blob)?;
-    // Best effort: a leftover pending area costs disk, never correctness, and
-    // the maintenance pass sweeps whatever this leaves. The whole upload
-    // directory rather than `delete_all`, which empties the chunk directory
-    // and left the upload's own directory behind on every finalize.
-    let _ = std::fs::remove_dir_all(pending_dir(
-        &account_root(&state, &caller, PENDING),
-        &upload,
-    ));
+        .clear_tombstone(&caller.principal.account.account_id, &blob)
+        .await?;
+    // Best effort: a leftover pending area costs storage, never correctness,
+    // and the maintenance pass sweeps whatever this leaves. The whole upload,
+    // not only its chunks.
+    let _ = state.blobs.discard_upload(account, upload).await;
     state.limiter.close_upload(&caller, upload);
 
     state.metrics.incr("sunrise_blob_finalize_total");
@@ -475,11 +492,21 @@ pub async fn fetch(
     SignedParts(caller): SignedParts,
 ) -> Result<BinaryStream<ChunkStream, OctetStream>, Throttled> {
     let blob = parse_blob_id(&path.blob_id.0)?;
-    let (chunk_count, size_bytes) = read_manifest(&state, &caller, &blob)?.ok_or_else(not_found)?;
-    let store = committed_store(&state, &caller)?;
-    if !store
-        .has_all(&blob, chunk_count)
-        .map_err(|_| ApiError::internal())?
+    let account = account(&caller);
+    let Manifest {
+        chunk_count,
+        size_bytes,
+    } = state
+        .blobs
+        .manifest(account, blob)
+        .await
+        .map_err(ApiError::from)?
+        .ok_or_else(not_found)?;
+    if !state
+        .blobs
+        .has_all(account, blob, chunk_count)
+        .await
+        .map_err(ApiError::from)?
     {
         return Err(not_found().into());
     }
@@ -507,7 +534,8 @@ pub async fn fetch(
         ],
     );
     Ok(BinaryStream::new(chunk_stream(
-        store,
+        Arc::clone(&state.blobs),
+        account,
         blob,
         chunk_count,
         state.metrics.clone(),
@@ -562,21 +590,28 @@ pub async fn delete(
     let origin_device = parse_hex16(&body.device_id, "device_id")?;
     // The same `404` as a fetch, for the same reason: no oracle for whether
     // another account holds this ciphertext.
-    read_manifest(&state, &caller, &blob)?.ok_or_else(not_found)?;
+    state
+        .blobs
+        .manifest(account(&caller), blob)
+        .await?
+        .ok_or_else(not_found)?;
 
     let now_ms = state.clock.now_ms();
     let account_id = &caller.principal.account.account_id;
-    state.store.tombstone_blob(
-        account_id,
-        &crate::store::NewTombstone {
-            blob_key: blob,
-            stream_id,
-            origin_device,
-            seq: body.seq,
-            deleted_by: caller.device.as_ref().map(|d| d.device_id.clone()),
-        },
-        now_ms,
-    )?;
+    state
+        .store
+        .tombstone_blob(
+            account_id,
+            &crate::store::NewTombstone {
+                blob_key: blob,
+                stream_id,
+                origin_device,
+                seq: body.seq,
+                deleted_by: caller.device.as_ref().map(|d| d.device_id.clone()),
+            },
+            now_ms,
+        )
+        .await?;
     tracing::info!(
         ev = "srv.blob.tombstoned",
         account_h = %crate::logging::account_h(account_id),
@@ -593,7 +628,7 @@ pub async fn delete(
 /// The stream [`fetch`] returns: one chunk per poll, read on demand.
 type ChunkStream = futures_util::stream::BoxStream<'static, Result<bytes::Bytes, std::io::Error>>;
 
-/// Read `chunk_count` chunks of `blob` from `store`, one at a time.
+/// Read `chunk_count` chunks of `blob` from `blobs`, one at a time.
 ///
 /// A chunk that vanishes between the `has_all` check and its read ends the body
 /// with an error rather than silently short-reading: the success status is
@@ -608,23 +643,24 @@ type ChunkStream = futures_util::stream::BoxStream<'static, Result<bytes::Bytes,
 /// when the body is finished or abandoned, and is marked failed by a read that
 /// fails.
 fn chunk_stream(
-    store: BlobStore,
+    blobs: Arc<dyn BlobBackend>,
+    account: AccountKey,
     blob: [u8; 16],
     chunk_count: u32,
     metrics: crate::Metrics,
     span: sunrise_telemetry::SpanGuard,
 ) -> ChunkStream {
     use futures_util::StreamExt as _;
-    let span = std::sync::Arc::new(span);
+    let span = Arc::new(span);
     futures_util::stream::unfold(0u32, move |idx| {
-        let store = store.clone();
+        let blobs = Arc::clone(&blobs);
         let metrics = metrics.clone();
-        let span = std::sync::Arc::clone(&span);
+        let span = Arc::clone(&span);
         async move {
             if idx >= chunk_count {
                 return None;
             }
-            let item = match store.get_chunk(&blob, idx) {
+            let item = match blobs.get_committed(account, blob, idx).await {
                 Ok(Some(bytes)) => {
                     metrics.add_with(
                         "sunrise_blob_bytes_total",
@@ -649,128 +685,20 @@ fn chunk_stream(
 }
 
 // ---------------------------------------------------------------------------
-// Storage layout
+// Storage keys
 // ---------------------------------------------------------------------------
 
-/// Per-account root. Keyed by a BLAKE3 of the account id so the path is
-/// unconditionally filesystem-safe and reveals nothing to anyone reading the
-/// disk — the same reasoning as `logging::account_h`, at full width because
-/// this one has to be collision-free rather than merely correlatable.
-fn account_root(state: &ServerState, caller: &Caller, area: &str) -> PathBuf {
-    account_dir(&state.blob_root, area, &caller.principal.account.account_id)
-}
-
-/// The per-account directory under `blob_root/<area>`, where `area` is
-/// [`PENDING`] or [`COMMITTED`]: the first 16 bytes of `BLAKE3(account_id)`,
-/// hex — the same key the relay log files the account's frames under.
-pub(crate) fn account_dir(blob_root: &std::path::Path, area: &str, account_id: &str) -> PathBuf {
-    blob_root
-        .join(area)
-        .join(hex::encode(crate::relay_log::account_key(account_id)))
-}
-
-/// Where uploads wait between `init` and `finalize`.
-pub(crate) const PENDING: &str = "pending";
-
-/// Where finalized blobs live.
-pub(crate) const COMMITTED: &str = "committed";
-
-/// Remove one committed blob of `account_id`: its manifest first, so a reader
-/// stops seeing it before any chunk goes, then its chunks.
+/// The key every blob of the caller's account is filed under: the first 16
+/// bytes of `BLAKE3(account_id)`, the same key the relay log files the
+/// account's frames under. A hash rather than the id, so no backend ever holds
+/// an account id in a path or an object key.
 ///
-/// Absent pieces are not an error, so a pass interrupted half-way finishes on
-/// the next one.
-pub(crate) fn delete_committed(
-    blob_root: &std::path::Path,
-    account_id: &str,
-    blob: &[u8; 16],
-) -> std::io::Result<()> {
-    let root = account_dir(blob_root, COMMITTED, account_id);
-    match std::fs::remove_file(root.join("manifests").join(hex::encode(blob))) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => return Err(e),
-    }
-    BlobStore::new(&root)
-        .and_then(|s| s.delete_all(blob))
-        .map_err(|e| std::io::Error::other(e.to_string()))
-}
-
-fn pending_store(
-    state: &ServerState,
-    caller: &Caller,
-    upload: &[u8; 16],
-) -> Result<BlobStore, ApiError> {
-    let root = pending_dir(&account_root(state, caller, PENDING), upload);
-    BlobStore::new(&root).map_err(|_| ApiError::internal())
-}
-
-/// Where one upload's chunks live, under that account's pending root.
-///
-/// One directory per upload keeps a `delete_all` at finalize from touching any
-/// other in-flight upload of the same account.
-///
-/// Named from the **parsed bytes**, re-encoded, rather than from the URL
-/// segment they were parsed out of. `parse_hex16` decodes through
-/// `hex::decode_to_slice`, which is case-insensitive, so `up_AB…` and `up_ab…`
-/// are one upload with two spellings. Joining the raw segment gave them two
-/// directories on a case-sensitive filesystem — chunks PUT under one spelling
-/// were invisible to a `finalize` using the other, and the loser was never
-/// swept. Taking `[u8; 16]` rather than a `&str` is what makes that
-/// unrepresentable: there is no spelling left to disagree about.
-// `Path` in this module is kynos's path extractor, so the filesystem one is
-// spelled out.
-fn pending_dir(root: &std::path::Path, upload: &[u8; 16]) -> PathBuf {
-    root.join(format!("up_{}", hex::encode(upload)))
-}
-
-fn committed_store(state: &ServerState, caller: &Caller) -> Result<BlobStore, ApiError> {
-    BlobStore::new(&account_root(state, caller, COMMITTED)).map_err(|_| ApiError::internal())
-}
-
-fn manifest_path(state: &ServerState, caller: &Caller, blob: &[u8; 16]) -> PathBuf {
-    account_root(state, caller, COMMITTED)
-        .join("manifests")
-        .join(hex::encode(blob))
-}
-
-/// `"<chunk_count> <size_bytes>"`. Written after every chunk, so its presence
-/// is what makes a blob readable.
-fn write_manifest(
-    state: &ServerState,
-    caller: &Caller,
-    blob: &[u8; 16],
-    chunk_count: u32,
-    size_bytes: u64,
-) -> Result<(), ApiError> {
-    let path = manifest_path(state, caller, blob);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|_| ApiError::internal())?;
-    }
-    std::fs::write(&path, format!("{chunk_count} {size_bytes}")).map_err(|_| ApiError::internal())
-}
-
-fn read_manifest(
-    state: &ServerState,
-    caller: &Caller,
-    blob: &[u8; 16],
-) -> Result<Option<(u32, u64)>, ApiError> {
-    let path = manifest_path(state, caller, blob);
-    let raw = match std::fs::read_to_string(&path) {
-        Ok(s) => s,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(_) => return Err(ApiError::internal()),
-    };
-    let mut parts = raw.split_whitespace();
-    let count: u32 = parts
-        .next()
-        .and_then(|s| s.parse().ok())
-        .ok_or_else(ApiError::internal)?;
-    let size: u64 = parts
-        .next()
-        .and_then(|s| s.parse().ok())
-        .ok_or_else(ApiError::internal)?;
-    Ok(Some((count, size)))
+/// An upload is likewise named by its **parsed bytes**, never by the URL
+/// segment they were parsed out of: `up_AB…` and `up_ab…` would otherwise be
+/// one upload with two spellings, and a backend that stored them apart would
+/// hide chunks PUT under one from a `finalize` using the other.
+fn account(caller: &Caller) -> AccountKey {
+    crate::relay_log::account_key(&caller.principal.account.account_id)
 }
 
 // ---------------------------------------------------------------------------
@@ -812,7 +740,8 @@ fn parse_blob_id(s: &str) -> Result<[u8; 16], ApiError> {
 /// `hex::decode_to_slice` is case-insensitive, so this is the only thing
 /// standing between the contract these parsers state and the one they enforce.
 /// An id with two spellings is a liability where ids name directories and
-/// content addresses — `pending_dir` carries the concrete cost — and nothing
+/// content addresses — `FsBlobs`'s upload directory carries the concrete
+/// cost — and nothing
 /// released spells one any other way.
 fn is_lowercase_hex(s: &str) -> bool {
     s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
@@ -868,16 +797,16 @@ fn not_found() -> ApiError {
 /// `403 ACCOUNT_PENDING_DELETION` for every upload step of an account whose
 /// deletion is confirmed: an upload finished after the mark would write files
 /// the erasure then has to chase.
-fn refuse_if_pending(state: &ServerState, caller: &Caller) -> Result<(), ApiError> {
+async fn refuse_if_pending(state: &ServerState, caller: &Caller) -> Result<(), ApiError> {
     crate::api::account_deletion::refuse_if_pending_deletion(
         state,
         &caller.principal.account.account_id,
     )
+    .await
 }
 
 #[cfg(test)]
 mod tests {
-    use super::pending_dir;
     use crate::api::error::codes;
     use crate::api::testing::{Client, SECOND_BEARER};
     use kynos::http::{Method, StatusCode};
@@ -1179,43 +1108,6 @@ mod tests {
                 "for {hash}"
             );
         }
-    }
-
-    /// An upload's directory is decided by its bytes, never by how they were
-    /// spelled.
-    ///
-    /// `pending_store` used to join the raw URL segment. `parse_hex16` decodes
-    /// case-insensitively, so `up_AB…` and `up_ab…` are the same sixteen bytes
-    /// and used to become two directories: chunks PUT under one spelling were
-    /// invisible to a `finalize` using the other, and the abandoned one was
-    /// never swept.
-    ///
-    /// **Asserted on the constructed path, not on the filesystem.** The split
-    /// only happens where directory names are case-*sensitive*, which is
-    /// production (Linux) and is not macOS, whose APFS volumes fold case by
-    /// default. A test that wrote a chunk under each spelling and looked for
-    /// two directories would therefore have passed on a laptop while the
-    /// defect was live on the relay. Comparing the `PathBuf` is the same
-    /// question asked where the answer does not depend on the host.
-    #[test]
-    fn an_uploads_directory_is_named_by_its_bytes_and_not_by_their_spelling() {
-        let root = std::path::Path::new("/blobs/pending/acct");
-        let mut upper = [0u8; 16];
-        let mut lower = [0u8; 16];
-        hex::decode_to_slice("AB".repeat(16), &mut upper).unwrap();
-        hex::decode_to_slice("ab".repeat(16), &mut lower).unwrap();
-        assert_eq!(upper, lower, "the premise: one upload, two spellings");
-
-        assert_eq!(
-            pending_dir(root, &upper),
-            pending_dir(root, &lower),
-            "two spellings of one upload must not become two directories"
-        );
-        assert_eq!(
-            pending_dir(root, &upper),
-            root.join(format!("up_{}", "ab".repeat(16))),
-            "and the one they share is the canonical lowercase spelling"
-        );
     }
 
     /// **Content addressing, which nothing checked.**

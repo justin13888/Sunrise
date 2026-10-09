@@ -47,7 +47,7 @@ use sunrise_e2e::{
 };
 use sunrise_id::{EntityKind, EntityRef};
 use sunrise_server::store::NewDevice;
-use sunrise_server::{ServerConfig, StaticVerifier, Store, Subject};
+use sunrise_server::{MetadataStore, ServerConfig, StaticVerifier, Store, Subject};
 use sunrise_sync::{SseTransport, Transport, TransportError};
 use sunrise_wire_protocol::{
     decode_frame, encode_frame, FrameFlags, Hello, MsgKind, REQUIRED_CLIENT_BITS,
@@ -73,7 +73,11 @@ fn subject() -> Subject {
 /// config is what demands the binding, so every test in this file — the
 /// refusal and the convergence alike — runs against the default an operator
 /// gets by naming an issuer, not against an override.
-async fn spawn_bound_relay() -> (SocketAddr, tokio::task::JoinHandle<()>, Arc<Store>) {
+async fn spawn_bound_relay() -> (
+    SocketAddr,
+    tokio::task::JoinHandle<()>,
+    Arc<dyn MetadataStore>,
+) {
     let config = ServerConfig {
         oidc_issuer: Some(ISSUER.to_owned()),
         oidc_client_id: Some("sunrise".to_owned()),
@@ -87,7 +91,7 @@ async fn spawn_bound_relay() -> (SocketAddr, tokio::task::JoinHandle<()>, Arc<St
     config
         .validate(false)
         .expect("a deployable multi-tenant config");
-    let mut captured: Option<Arc<Store>> = None;
+    let mut captured: Option<Arc<dyn MetadataStore>> = None;
     let (addr, handle) = spawn_relay_with(config, |state| {
         captured = Some(state.store.clone());
         state.with_verifier(Arc::new(StaticVerifier::default().with(BEARER, subject())))
@@ -205,7 +209,8 @@ async fn handshake(t: &mut SseTransport) -> Result<(), TransportError> {
 /// scenario answered `401` at the first step.
 #[tokio::test(flavor = "multi_thread")]
 async fn two_bound_devices_converge_through_a_relay_that_requires_the_binding() {
-    let (addr, relay, store) = spawn_bound_relay().await;
+    let (addr, relay, held) = spawn_bound_relay().await;
+    let store = held.as_sqlite().expect("the default store is SQLite");
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);
     let account = store
         .resolve_account(&subject(), true, clock.now_ms())
@@ -217,7 +222,7 @@ async fn two_bound_devices_converge_through_a_relay_that_requires_the_binding() 
         dir_a.path(),
         ROOT,
         addr,
-        &store,
+        store,
         &account.account_id,
         &clock,
         "a",
@@ -228,7 +233,7 @@ async fn two_bound_devices_converge_through_a_relay_that_requires_the_binding() 
     // signatures, one account. A single shared key would make the binding
     // untestable — the relay could not tell which device sent a request.
     let b = open_paired_core_offline(dir_b.path(), &a, addr, Arc::clone(&clock)).await;
-    let b_device = register(&store, &account.account_id, &b, "b", clock.now_ms());
+    let b_device = register(store, &account.account_id, &b, "b", clock.now_ms());
     b.sync_credential().set(Some(BEARER.to_owned()));
     b.start_sync(signed_ws_factory(addr, b.device_signer(b_device)))
         .expect("start sync");
@@ -296,7 +301,8 @@ async fn a_client_whose_clock_is_wrong_is_told_it_is_its_clock() {
         }
     }
 
-    let (addr, relay, store) = spawn_bound_relay().await;
+    let (addr, relay, held) = spawn_bound_relay().await;
+    let store = held.as_sqlite().expect("the default store is SQLite");
     let clock: Arc<dyn Clock> = Arc::new(SkewedClock(
         (sunrise_http_sig::MAX_CLOCK_SKEW_SECS + 100) * 1000,
     ));
@@ -307,7 +313,7 @@ async fn a_client_whose_clock_is_wrong_is_told_it_is_its_clock() {
     let dir = tempfile::tempdir().expect("temp dir");
     let core = open_core_offline(dir.path(), ROOT, addr, Arc::clone(&clock)).await;
     let device_id = register(
-        &store,
+        store,
         &account.account_id,
         &core,
         "skewed",
@@ -344,7 +350,8 @@ async fn a_client_whose_clock_is_wrong_is_told_it_is_its_clock() {
 /// device-bound. This is that gap.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_bound_client_can_revoke_a_device_at_a_relay_that_requires_the_binding() {
-    let (addr, relay, store) = spawn_bound_relay().await;
+    let (addr, relay, held) = spawn_bound_relay().await;
+    let store = held.as_sqlite().expect("the default store is SQLite");
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);
     let account = store
         .resolve_account(&subject(), true, clock.now_ms())
@@ -356,7 +363,7 @@ async fn a_bound_client_can_revoke_a_device_at_a_relay_that_requires_the_binding
         dir_a.path(),
         ROOT,
         addr,
-        &store,
+        store,
         &account.account_id,
         &clock,
         "a",
@@ -366,7 +373,7 @@ async fn a_bound_client_can_revoke_a_device_at_a_relay_that_requires_the_binding
     // B has to be live too, and not only registered: A can revoke a device it
     // has a vault row for, and B's `device_cert` op is how A learns it exists.
     let b = open_paired_core_offline(dir_b.path(), &a, addr, Arc::clone(&clock)).await;
-    let b_relay_id = register(&store, &account.account_id, &b, "b", clock.now_ms());
+    let b_relay_id = register(store, &account.account_id, &b, "b", clock.now_ms());
     b.sync_credential().set(Some(BEARER.to_owned()));
     b.start_sync(signed_ws_factory(addr, b.device_signer(b_relay_id.clone())))
         .expect("start sync");

@@ -65,7 +65,7 @@ use sunrise_e2e::{
 };
 use sunrise_id::EntityRef;
 use sunrise_server::store::NewDevice;
-use sunrise_server::{ServerConfig, StaticVerifier, Store, Subject};
+use sunrise_server::{MetadataStore, ServerConfig, StaticVerifier, Store, Subject};
 
 /// Shared paired-device vault root, as in the other two-core tests.
 const ROOT: [u8; 32] = [0x42; 32];
@@ -214,7 +214,7 @@ async fn attachment_bytes_travel_over_a_relay_that_requires_a_device_binding() {
     const BEARER: &str = "alice-token";
     let subject = Subject::new(ISSUER, "alice");
 
-    let mut captured: Option<Arc<Store>> = None;
+    let mut captured: Option<Arc<dyn MetadataStore>> = None;
     let (addr, relay) = spawn_relay_with(
         ServerConfig {
             require_device_sig: Some(true),
@@ -228,7 +228,8 @@ async fn attachment_bytes_travel_over_a_relay_that_requires_a_device_binding() {
         },
     )
     .await;
-    let store = captured.expect("the harness hands back the relay's own store");
+    let held = captured.expect("the harness hands back the relay's own store");
+    let store = held.as_sqlite().expect("the default store is SQLite");
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);
     let account = store
         .resolve_account(&subject, true, clock.now_ms())
@@ -238,13 +239,13 @@ async fn attachment_bytes_travel_over_a_relay_that_requires_a_device_binding() {
     let dir_b = tempfile::tempdir().expect("a vault dir");
 
     let a = open_core_offline(dir_a.path(), ROOT, addr, Arc::clone(&clock)).await;
-    let a_device = register(&store, &account.account_id, &a, "a", clock.now_ms());
+    let a_device = register(store, &account.account_id, &a, "a", clock.now_ms());
     a.sync_credential().set(Some(BEARER.to_owned()));
     a.start_sync(signed_ws_factory(addr, a.device_signer(a_device)))
         .expect("start sync");
 
     let b = open_paired_core_offline(dir_b.path(), &a, addr, Arc::clone(&clock)).await;
-    let b_device = register(&store, &account.account_id, &b, "b", clock.now_ms());
+    let b_device = register(store, &account.account_id, &b, "b", clock.now_ms());
     b.sync_credential().set(Some(BEARER.to_owned()));
     b.start_sync(signed_ws_factory(addr, b.device_signer(b_device)))
         .expect("start sync");

@@ -2,6 +2,7 @@
 
 use super::maintenance::{self, Report};
 use crate::api::testing::{register_device, send_signed_with, Client, Res};
+use crate::blob::{Area, FsBlobs};
 use crate::state::{Clock, ServerState};
 use crate::ServerConfig;
 use kynos::http::{Method, StatusCode};
@@ -53,12 +54,23 @@ impl Harness {
         self.clock.0.store(ms, Ordering::SeqCst);
     }
 
-    fn pass(&self) -> Report {
-        maintenance::run(&self.state, self.clock.now_ms(), false).unwrap()
+    async fn pass(&self) -> Report {
+        maintenance::run(&self.state, self.clock.now_ms(), false)
+            .await
+            .unwrap()
+    }
+
+    /// The SQLite store under the seam, for the row-level assertions only a
+    /// database can answer.
+    fn db(&self) -> &crate::Store {
+        self.state
+            .store
+            .as_sqlite()
+            .expect("the default store is SQLite")
     }
 
     fn account_id(&self) -> String {
-        let accounts = self.state.store.account_summaries().unwrap();
+        let accounts = self.db().account_summaries().unwrap();
         assert_eq!(
             accounts.len(),
             1,
@@ -138,9 +150,14 @@ impl Harness {
             .status
     }
 
-    fn area(&self, area: &str) -> std::path::PathBuf {
-        crate::api::blobs::account_dir(self.dir.path(), area, &self.account_id())
+    fn area(&self, area: Area) -> std::path::PathBuf {
+        account_dir(self.dir.path(), area, &self.account_id())
     }
+}
+
+/// Where the filesystem backend keeps `account_id`'s `area` under `root`.
+fn account_dir(root: &Path, area: Area, account_id: &str) -> std::path::PathBuf {
+    FsBlobs::new(root).account_dir(area, crate::relay_log::account_key(account_id))
 }
 
 fn hello() -> serde_json::Value {
@@ -203,13 +220,11 @@ async fn a_deleted_account_is_erased_completely_after_the_grace_period() {
     let (device_id, _key) = register_device(&h.client, 7, "phone", None).await;
     let _second = register_device(&h.client, 8, "laptop", None).await;
     let account_id = h.account_id();
-    h.state
-        .store
+    h.db()
         .upsert_push_token(&device_id, "apns", "tok", T0_MS)
         .unwrap();
     let account_h = crate::relay_log::account_key(&account_id);
-    h.state
-        .store
+    h.db()
         .relay_append(
             (account_h, [0x11; 16]),
             b"ciphertext",
@@ -229,7 +244,7 @@ async fn a_deleted_account_is_erased_completely_after_the_grace_period() {
     }
     let blob = h.upload(b"attachment").await;
     h.start_upload(b"abandoned").await;
-    assert!(h.area("pending").exists() && h.area("committed").exists());
+    assert!(h.area(Area::Pending).exists() && h.area(Area::Committed).exists());
 
     let res = h
         .send(Method::POST, "/api/v1/accounts/me/delete/initiate", None)
@@ -247,12 +262,12 @@ async fn a_deleted_account_is_erased_completely_after_the_grace_period() {
     assert_eq!(erase_after, T0_MS + 30 * DAY_MS);
 
     h.at(erase_after - 1);
-    assert_eq!(h.pass().accounts_erased, 0, "inside the grace period");
+    assert_eq!(h.pass().await.accounts_erased, 0, "inside the grace period");
     assert_eq!(h.fetch(&blob).await, StatusCode::OK);
     assert_eq!(h.state.relay.retained_len(own_channel), 1);
 
     h.at(erase_after);
-    let report = h.pass();
+    let report = h.pass().await;
     assert_eq!(report.accounts_erased, 1);
     assert_eq!(report.failures, 0);
     assert_eq!(h.state.metrics.get("sunrise_account_delete_total"), 1);
@@ -268,7 +283,7 @@ async fn a_deleted_account_is_erased_completely_after_the_grace_period() {
         "another account's channel went with it"
     );
 
-    let conn = h.state.store.conn.lock();
+    let conn = h.db().conn.lock();
     let by_id = |table: &str, column: &str, value: &str| -> i64 {
         conn.query_row(
             &format!("SELECT COUNT(*) FROM {table} WHERE {column} = ?1"),
@@ -299,8 +314,8 @@ async fn a_deleted_account_is_erased_completely_after_the_grace_period() {
         assert_eq!(n, 0, "{table}");
     }
     drop(conn);
-    for area in ["pending", "committed"] {
-        let dir = crate::api::blobs::account_dir(h.dir.path(), area, &account_id);
+    for area in [Area::Pending, Area::Committed] {
+        let dir = account_dir(h.dir.path(), area, &account_id);
         assert!(!dir.exists(), "{} survived", dir.display());
     }
 }
@@ -331,23 +346,23 @@ async fn a_tombstoned_blob_waits_for_its_grace_period_and_its_quorum() {
     assert_eq!(res.json()["collect_after_ms"], T0_MS + 30 * DAY_MS);
 
     h.at(T0_MS + 30 * DAY_MS - 1);
-    assert_eq!(h.pass().blobs_collected, 0, "inside the grace period");
+    assert_eq!(h.pass().await.blobs_collected, 0, "inside the grace period");
     assert_eq!(h.fetch(&blob).await, StatusCode::OK, "still readable");
 
     h.at(T0_MS + 30 * DAY_MS);
     assert_eq!(
-        h.pass().blobs_collected,
+        h.pass().await.blobs_collected,
         0,
         "the peer has applied seq 4, not the tombstone's 5"
     );
     assert_eq!(h.fetch(&blob).await, StatusCode::OK);
 
     declare(&h, &peer, 5).await;
-    let report = h.pass();
+    let report = h.pass().await;
     assert_eq!(report.blobs_collected, 1);
     assert_eq!(h.fetch(&blob).await, StatusCode::NOT_FOUND);
     assert_eq!(h.state.metrics.get("sunrise_blob_gc_deleted_total"), 1);
-    assert_eq!(h.pass().blobs_collected, 0, "collected once");
+    assert_eq!(h.pass().await.blobs_collected, 0, "collected once");
 }
 
 /// Re-uploading tombstoned ciphertext brings the attachment back, so the
@@ -359,12 +374,12 @@ async fn a_reupload_lifts_the_tombstone_and_an_unknown_blob_is_not_found() {
     h.tombstone(&blob, 1)
         .await
         .assert_status(StatusCode::ACCEPTED);
-    assert_eq!(h.state.store.stats().unwrap().blob_tombstones, 1);
+    assert_eq!(h.db().stats().unwrap().blob_tombstones, 1);
     assert_eq!(h.upload(b"same bytes").await, blob);
-    assert_eq!(h.state.store.stats().unwrap().blob_tombstones, 0);
+    assert_eq!(h.db().stats().unwrap().blob_tombstones, 0);
 
     h.at(T0_MS + 365 * DAY_MS);
-    assert_eq!(h.pass().blobs_collected, 0);
+    assert_eq!(h.pass().await.blobs_collected, 0);
 
     let missing = h.tombstone(&format!("blb_{}", "0".repeat(32)), 1).await;
     missing.assert_status(StatusCode::NOT_FOUND);
@@ -378,15 +393,19 @@ async fn an_abandoned_upload_is_swept_after_its_ttl() {
     let h = Harness::new();
     let committed = h.upload(b"keep me").await;
     h.start_upload(b"half done").await;
-    let pending = h.area("pending");
+    let pending = h.area(Area::Pending);
     let newest = newest_ms(&pending);
     let ttl = 24 * 60 * 60 * 1000;
 
-    let kept = maintenance::run(&h.state, newest + ttl, false).unwrap();
+    let kept = maintenance::run(&h.state, newest + ttl, false)
+        .await
+        .unwrap();
     assert_eq!(kept.uploads_swept, 0);
     assert_eq!(std::fs::read_dir(&pending).unwrap().count(), 1);
 
-    let dry = maintenance::run(&h.state, newest + ttl + 1, true).unwrap();
+    let dry = maintenance::run(&h.state, newest + ttl + 1, true)
+        .await
+        .unwrap();
     assert_eq!((dry.dry_run, dry.uploads_swept), (true, 1));
     assert_eq!(
         std::fs::read_dir(&pending).unwrap().count(),
@@ -394,7 +413,9 @@ async fn an_abandoned_upload_is_swept_after_its_ttl() {
         "a dry run deletes nothing"
     );
 
-    let swept = maintenance::run(&h.state, newest + ttl + 1, false).unwrap();
+    let swept = maintenance::run(&h.state, newest + ttl + 1, false)
+        .await
+        .unwrap();
     assert_eq!(swept.uploads_swept, 1);
     assert_eq!(
         swept.orphans_swept, 0,
@@ -414,10 +435,12 @@ async fn an_orphaned_account_directory_is_swept() {
     std::fs::create_dir_all(orphan.join("manifests")).unwrap();
     let newest = newest_ms(&orphan);
 
-    let report = maintenance::run(&h.state, newest + 25 * 60 * 60 * 1000, false).unwrap();
+    let report = maintenance::run(&h.state, newest + 25 * 60 * 60 * 1000, false)
+        .await
+        .unwrap();
     assert_eq!(report.orphans_swept, 1);
     assert!(!orphan.exists());
-    assert!(h.area("committed").exists());
+    assert!(h.area(Area::Committed).exists());
 }
 
 /// An account tree goes manifests first, so a removal that stops part-way
@@ -442,7 +465,9 @@ async fn an_account_tree_loses_its_manifests_before_its_chunks() {
     }
     let newest = newest_ms(&orphan);
 
-    let report = maintenance::run(&h.state, newest + 25 * 60 * 60 * 1000, false).unwrap();
+    let report = maintenance::run(&h.state, newest + 25 * 60 * 60 * 1000, false)
+        .await
+        .unwrap();
     for dir in &locked {
         std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).unwrap();
     }
@@ -465,12 +490,14 @@ async fn the_orphan_sweep_skips_the_default_shared_root() {
         Arc::new(TestClock(AtomicU64::new(T0_MS))),
     );
     assert!(state.config.blob_root.is_none());
-    state.blob_root = Arc::new(dir.path().to_path_buf());
+    state.blobs = Arc::new(FsBlobs::new(dir.path()));
     let orphan = dir.path().join("committed").join("ab".repeat(16));
     std::fs::create_dir_all(orphan.join("manifests")).unwrap();
     let newest = newest_ms(&orphan);
 
-    let report = maintenance::run(&state, newest + 25 * 60 * 60 * 1000, false).unwrap();
+    let report = maintenance::run(&state, newest + 25 * 60 * 60 * 1000, false)
+        .await
+        .unwrap();
     assert_eq!(report.orphans_swept, 0);
     assert_eq!(report.failures, 0);
     assert!(
@@ -487,7 +514,7 @@ async fn a_signed_subscribe_records_the_devices_cursors() {
     let device = register_device(&h.client, 3, "phone", None).await;
     declare(&h, &device, 9).await;
     let rows: Vec<(Vec<u8>, i64, i64)> = {
-        let conn = h.state.store.conn.lock();
+        let conn = h.db().conn.lock();
         let mut stmt = conn
             .prepare(
                 "SELECT origin_device, applied_seq, reported_at_ms FROM device_cursors
