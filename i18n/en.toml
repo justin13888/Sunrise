@@ -96,15 +96,1481 @@ unwound = "{count, plural, one {The account no longer records a removal of one o
 # Account, sign-in, pairing, recovery, onboarding and sync status.
 # @@lane-a@@
 
+[apple.account]
+# Settings: the heading of the relay section.
+section_sync = "Sync"
+# Settings, Sync: the relay address field's label.
+relay_url = "Relay URL"
+# Settings, Sync: caption under the relay field. {device} is the platform's
+# word for this device ("Mac", "iPhone"). Must keep that an empty field is a
+# supported, complete setup, not a missing one.
+relay_hint = "Leave empty to work entirely on this {device}."
+# Settings: the heading of the sign-in section.
+section_account = "Account"
+# Settings, Account: field labels. "OIDC" is a protocol name; keep it.
+oidc_issuer = "OIDC issuer"
+client_id = "Client ID"
+# Settings, Account: label beside this device's id.
+this_device = "This device"
+
+[apple.account.quick_capture]
+# macOS Settings: the heading of the global capture shortcut section.
+title = "Quick capture"
+# Label beside the shortcut's key combination.
+shortcut = "Shortcut"
+# Label beside whether macOS has granted the Accessibility permission.
+accessibility_permission = "Accessibility permission"
+# The permission's two states, shown beside that label.
+granted = "Granted"
+not_granted = "Not granted"
+# Caption: the permission is listed only to say the shortcut does not need it.
+accessibility_not_required = "Not required for the shortcut above."
+
+[apple.account.keyboard]
+# Settings: the heading of the keyboard section.
+title = "Keyboard"
+# Toggle that turns on vi-style keyboard motions.
+vim_mode = "Vim-style motions"
+# Caption under that toggle. The keys and symbols (h j k l, gg, G, u, ⌃R, /,
+# :, ⌘N, X) are literal keys and must stay exactly as written. {device} is the
+# platform's word for this device.
+vim_mode_caption = "h j k l, gg, G, u, ⌃R, / and : in any list. Additive — ⌘N, X and the rest keep working. Stored on this {device} only, never synced."
+# Label, and its value: how to open the keyboard cheat sheet. "?" is a key.
+shortcut_reference = "Shortcut reference"
+shortcut_reference_value = "Press ? in any view"
+
+[apple.account.notifications]
+# Settings: the heading of the reminders section.
+title = "Notifications"
+# Label beside the operating system's notification permission state.
+system_permission = "System permission"
+# Button that asks the system for notification permission; a prompt follows.
+allow = "Allow…"
+# Toggle. {device} is the platform's word for this device.
+remind_on_device = "Remind me on this {device}"
+# Toggle: this device is the one that delivers reminders for the account.
+primary_device = "This is my primary device"
+# Caption under the primary-device toggle.
+primary_caption = "Only the primary device delivers reminders — the core hands the others nothing to schedule, so an account with four devices still rings once."
+# Picker label: how long before a task's time a reminder fires.
+remind_me = "Remind me"
+# Picker choices for that lead time.
+lead_at_time = "At the scheduled time"
+lead_minutes = "{minutes, plural, one {# minute before} other {# minutes before}}"
+# Caption under the lead-time picker: which setting wins.
+lead_caption = "The fallback. A lead time set on a task wins over one set on its stream, and either wins over this."
+# Label beside the number of reminders the system is holding right now.
+scheduled_now = "Scheduled now"
+
+[apple.account.quiet_hours]
+# Settings: the heading of the quiet-hours section.
+title = "Quiet hours"
+# Toggle that turns quiet hours on.
+silence = "Silence reminders overnight"
+# Picker labels: the start and end time of quiet hours.
+from = "From"
+until = "Until"
+# Picker label and its two choices: what happens to a reminder due during
+# quiet hours.
+policy = "During quiet hours"
+hold = "Hold until it ends"
+drop = "Drop them"
+# Caption under the quiet-hours settings. Must keep the four-hour limit.
+caption = "A held reminder fires when the window ends, and no more than four hours after it was due — past that it is dropped rather than delivered late."
+
+[apple.sign_in]
+# Settings, Account: starts sign-in in the browser; the ellipsis says more follows.
+sign_in = "Sign in…"
+# Shown while the browser sign-in is in progress.
+awaiting_browser = "Finish signing in in your browser…"
+# Label of the signed-in row.
+signed_in = "Signed in"
+# When the session expires. {date} is an already formatted date and time.
+expires = "expires {date}"
+# Button that signs this device out.
+sign_out = "Sign out"
+# Sign-in failures shown in the Account row. "OIDC" is a protocol name.
+not_configured = "Set an OIDC issuer and client ID before signing in."
+bad_authorize_url = "The identity provider returned an address Sunrise could not open."
+refused_by_issuer = "The identity provider ended this session. Sign in again to keep syncing."
+# A sign-out the Keychain refused. {device} is the platform's word for this
+# device; {message} is the Keychain's own explanation, quoted after the colon.
+# Must say "the stored credential", not a specific kind of token.
+sign_out_incomplete_headline = "Signed out on this {device}, but the stored credential could not be removed: {message}"
+# Caption under that headline. "Sign out" names the button beside it.
+sign_out_incomplete_caption = "The stored credential is still in the Keychain, so the next launch will sign you back in. Unlock your Keychain, then Sign out here to try removing it again."
+# The shorter caption once the headline was dismissed. "Sign out" names the
+# button beside it.
+sign_out_retry_caption = "A credential the last sign-out could not remove is still in the Keychain. Unlock your Keychain, then Sign out here to try again."
+
+[apple.vaults]
+# Settings: the heading of the vault switcher.
+title = "Vaults"
+# Picker label: which vault is open.
+open_vault = "Open vault"
+# Caption under the picker. Must keep that switching closes one before opening
+# the other.
+switch_caption = "Only one vault is open at a time. Switching closes the one you are in — the core holds a lock on it — and then opens the other, so anything unsaved is written first."
+# Buttons; the ellipsis says a dialog or sheet follows.
+add_vault = "Add a vault…"
+add_device = "Add a device…"
+# Caption when this device can add another. The quoted words name the
+# "Add a device…" button, without its ellipsis.
+add_device_caption = "\"Add a device\" hands this vault's key to another device, after you have compared six digits on both screens."
+# Caption when this device cannot add another. {device} is the platform's
+# word for this device.
+cannot_add_device_caption = "This {device} was itself added by pairing, so it cannot add another. Only the device you first created this account on can — which is also what stops a device you have removed from letting itself back in."
+# The add-vault dialog: its title, its name field, and its message.
+add_title = "Add a vault"
+name = "Name"
+add_message = "A separate, separately encrypted vault with its own key. Sunrise closes the one that is open before it opens the new one."
+# The name the first vault is given. Saved, so it stays in the language it
+# was created in.
+default_first = "My vault"
+# The name a new vault gets when the user leaves the name empty. {number} is
+# its position in the list.
+default_numbered = "Vault {number}"
+# An internal vault id that cannot be used. {id} is that id, in quotes.
+unusable_identifier = "\"{id}\" is not a usable vault identifier."
+
+[apple.identity]
+# Shown in the device list when the core answered with the wrong kind of data.
+device_list_unexpected = "The core answered a device list with something else."
+# Keychain failures surfaced on screen.
+keychain_malformed = "The Keychain item is not in the expected format."
+# Fallback when the system has no text for a Keychain status code. {status}
+# is the numeric code, already formatted.
+keychain_error = "Keychain error {status}."
+# {reason} is the system's own explanation, after the colon. "This secret"
+# deliberately does not say which secret.
+keychain_not_raised = "This secret is stored under an older, weaker Keychain protection class and the Keychain would not change it: {reason}"
+# Leads with what was stored. {reason} is the system's explanation.
+keychain_written_other_refused = "This secret was saved, but an older copy of it in your other keychain could not be removed: {reason}"
+# Must say the secret may still be in the other keychain. {reason} is the
+# system's explanation.
+keychain_other_unreadable = "A copy of this secret may be in your other keychain, which could not be read: {reason}"
+keychain_migration_unverified = "Two different secrets are stored under the same Keychain name, so this app cannot tell which one belongs to your vault. Nothing has been deleted."
+# A stored vault key of the wrong size. {expected} and {actual} are byte counts.
+vault_key_wrong_length = "A vault key must be {expected, number} bytes; this one is {actual, number}."
+vault_key_unavailable = "The system could not generate a new vault key."
+# "relay device id" is the id the relay knows this device by.
+relay_device_id_empty = "A relay device id cannot be empty."
+
+[apple.locked]
+# The heading of the screen shown when the vault cannot be opened.
+title = "Sunrise is locked"
+# Why it is locked. {detail} is the Keychain's own explanation.
+keychain_unavailable = "Sunrise could not read its key from the Keychain. {detail}"
+# Must keep that making a new key would not open the existing data.
+key_missing = "There is a vault on this device, but its key is not in this Keychain. Pair with a device that still has it, or restore from your recovery code. A new key would not open this data."
+# The user closed the vault themselves. Must keep that nothing was lost.
+locked_by_user = "Your vault is closed. Nothing was lost — the key is still in your Keychain, and unlocking opens it again."
+# Button that reopens a vault the user closed.
+unlock = "Unlock"
+# macOS button that opens the Keychain Access app; keep the app's name as the
+# system shows it.
+open_keychain_access = "Open Keychain Access"
+# Buttons; the ellipsis says a sheet follows.
+pair = "Pair with a device…"
+restore = "Restore from recovery code…"
+# Caption under those buttons. {device} is the platform's word for this
+# device. Must keep that the unreadable vault is moved aside, not deleted.
+key_missing_caption = "Pairing brings the key back from a device that still has it. The data already on this {device} stays where it is — the key is the only thing that was missing. With no device left, the recovery code restores the account from the relay; the unreadable vault is moved aside, not deleted."
+
+[apple.onboarding]
+# First-run screen heading.
+welcome = "Welcome to Sunrise"
+# First-run explanation. {device} is the platform's word for this device.
+# Must keep that the key never leaves the device.
+intro = "Your tasks are encrypted on this {device} with a key only you hold. Sunrise stores it in your Keychain — it never leaves the device, and no server can read your data with or without it."
+# Primary button: make a new vault.
+create = "Create my vault"
+# Heading over the pairing option, for someone with a vault elsewhere.
+already_using = "Already using Sunrise on another device?"
+pair = "Pair with that device"
+pair_caption = "Adopts the vault you already have, instead of starting a second one."
+restore = "Restore from recovery code"
+# "twenty-four words" is the recovery code.
+restore_caption = "No other device left? Your twenty-four words bring the account back."
+
+[apple.root]
+# Shown while the vault opens at launch.
+opening = "Opening your vault…"
+# Heading when the app could not start; the reason is shown under it.
+failed_title = "Sunrise could not start"
+
+[apple.recovery]
+# Recovery-code sheet titles, one per step.
+title_setting_up = "Setting up recovery"
+title_show = "Your recovery code"
+title_verify = "Type it back"
+title_done = "Recovery is set up"
+title_not_this_device = "Recovery lives on another device"
+title_failed = "Recovery is not set up"
+# Progress while the recovery code is made.
+setting_up = "Setting up recovery…"
+# The warning shown above the code. Specified verbatim in the design docs:
+# translate it faithfully, without softening the promise or its cost.
+warning = "Sunrise is end-to-end encrypted. We cannot reset your account if you lose this code. This is by design — it means we can't read your data, but it also means we can't recover it for you. Save this code somewhere you'll find it years from now."
+# Under the code.
+shown_once = "Shown once. Not written to any file, and not in any log."
+# Instruction above the field the user types the code back into.
+verify_instruction = "Type the code back, to prove it is written down somewhere you can read."
+# The typed code did not match. Must keep that the account is fine.
+mismatch = "That is not the code that was shown. Nothing is wrong with your account — check what you wrote down, or see the code again."
+done = "Recovery is set up. Keep that code where you will find it years from now."
+# {device} is the platform's word for this device.
+not_this_device = "This {device} joined an existing account by pairing, so it does not hold the key a recovery code is made from — and does not need to. The device that created the account is the one that showed the code."
+# Failure: a heading, then the reason, then this caption. Must keep that this
+# device holds the only copy of the account key until recovery succeeds.
+failed = "Recovery could not be set up."
+failed_caption = "Your vault is fine and your tasks are safe on this device. Until this succeeds, though, this device holds the only copy of your account key: if you lose it, the data cannot be recovered by anyone, including us."
+# Buttons.
+written = "I have written it down"
+show_again = "Show the code again"
+confirm = "Confirm"
+not_now = "Not now"
+# Why recovery could not be set up.
+code_empty = "The recovery code came back empty."
+vault_closed = "The vault closed before recovery could be set up."
+not_configured = "Sunrise needs a relay address and your account email before it can store your recovery blob. Add them in Settings, then set recovery up again."
+signed_out = "Sign in first. Your recovery blob is stored on the relay under your account, and the relay will not take it from a device it cannot identify."
+
+[apple.recovery.restore]
+# Restore-from-recovery-code sheet titles.
+title = "Restore from your recovery code"
+title_restored = "Your account is back"
+title_incomplete = "Your account is back, still catching up"
+# Progress while the browser sign-in is open.
+signing_in = "Sign in again in your browser…"
+# Progress steps of the restore.
+fetching = "Fetching your encrypted account…"
+identity_opened = "Code accepted. Setting up this device…"
+device_registered = "Reading your history…"
+replaying = "{count, plural, one {Reading your history: # change so far…} other {Reading your history: # changes so far…}}"
+incomplete = "Your vault is restored and open. Part of its history had not arrived yet; it finishes the next time Sunrise syncs."
+entry_instruction = "Type the twenty-four words you saved when you set Sunrise up. Your provider will ask you to sign in again before the relay releases your encrypted account."
+# Under the words field. {positions} lists word positions (numbers, comma
+# separated), never the words themselves; {count} is how many there are.
+unknown_words = "{count, plural, one {Word {positions} is not a recovery-code word.} other {Words {positions} are not recovery-code words.}}"
+# {problem} is the checksum failure's explanation.
+invalid_checksum = "All twenty-four are real words, but they are not a valid code: {problem}"
+# How many of the twenty-four words have been typed.
+word_count = "{count, number} of 24 words"
+# The two things to do after a restore. "Stream" is a product term.
+aftercare = "Two things are worth doing now, and neither is automatic. Remove the devices you lost: until you do, anything still holding them can read what this account writes. Then rotate your Stream keys, which bounds what a lost device keeps reading."
+rotate = "Rotate Stream keys"
+rotated = "{count, plural, one {# Stream key rotated.} other {# Stream keys rotated.}}"
+submit = "Sign in and restore"
+# Why a restore could not start or finish.
+not_now = "A vault is already open on this device."
+relay_not_configured = "Add your relay address in Settings first. The recovery blob your code opens is stored there."
+sign_in_not_configured = "Add your sign-in provider in Settings first. The relay releases the recovery blob only after you sign in again."
+# {path} is a file path on disk. Must keep that nothing was deleted.
+original_not_put_back = "The restore did not complete, and your existing vault could not be moved back into place. Nothing was deleted: it is at {path}."
+
+[apple.pairing]
+# Pairing sheet titles: joining this device, or adding another. {device} is
+# the platform's word for this device.
+title_join = "Pair this {device}"
+title_add = "Add a device"
+# Pairing progress, top right. {step} and {total} are leg numbers.
+progress = "Step {step, number} of {total, number}"
+# The handshake's own state, in a small badge. Technical; "SAS" is the short
+# authentication string (the six digits).
+step_handshaking = "handshaking"
+step_awaiting_confirmation = "awaiting SAS"
+step_confirmed = "confirmed"
+step_finished = "finished"
+# Footer buttons.
+manual_instead = "Copy and paste instead"
+begin = "Show my pairing code"
+pasted_it = "I've pasted it"
+continue_button = "Continue"
+start_over = "Start over"
+# Outcome headings and the mismatch explanation. Must keep that no key was sent.
+paired = "Paired"
+mismatch_title = "The digits did not match"
+mismatch_detail = "Sunrise has thrown this pairing away and no key was sent. Two devices talking directly to each other always show the same six digits, so a mismatch means something was relaying between them. Start again, and if it happens twice, do it on a network you trust."
+failed_title = "Pairing stopped"
+# The account step. Must keep that the address itself never travels.
+account_question = "Which account is this?"
+account_explanation = "Sunrise puts a four-byte hash of this address in the pairing code so the other device can tell it is being asked about the right account. The address itself does not travel."
+email = "Email"
+account_tag = "Account tag"
+# Accessibility label of the QR code image.
+qr_label = "Pairing QR code"
+# {device} is the platform's word for this device.
+qr_failed = "This {device} could not draw the code. Copy the text instead."
+# Buttons on the paste step.
+scan_code = "Scan the code"
+paste = "Paste"
+copy = "Copy"
+copied = "Copied"
+# The digit-comparison screen.
+sas_title = "Do both devices show these digits?"
+# Accessibility label; {digits} is the six digits separated by spaces.
+sas_label = "Pairing digits {digits}"
+sas_instruction = "Read them aloud, or look at the other screen. Both devices must be showing the same six digits, and both of you have to confirm before anything is sent."
+sas_joining = "These digits are derived from every message the two devices have exchanged. If anything were sitting between them, it could not make both screens agree — it would have to guess six digits, once, with you watching."
+# {device} is the platform's word for this device.
+sas_sponsoring = "Nothing has left this {device} yet. Your vault key is sealed and sent only after you confirm below, and only for the device on the other end of these digits."
+sas_match = "The digits match"
+sas_differ = "They're different"
+# Pairing results and progress. {device} is the platform's word for this device.
+done_joined = "This {device} is paired. Your vault is open here."
+done_sponsored = "The other device has a certificate from your account and a copy of your vault key."
+finishing_joining = "Opening your vault on this {device}…"
+finishing_sponsoring = "Sealing your vault key for the other device…"
+reaching_relay = "Reaching your relay…"
+connecting = "Connecting to the other device through your relay…"
+# Pairing failures that are the screen's own.
+no_session = "This pairing is over. Start it again from the beginning."
+no_payload = "Sunrise could not produce a pairing code for this device."
+no_open_vault = "There is no open vault on this device to share."
+
+[apple.pairing.notice]
+# Why a pairing runs by copy and paste. The quoted button name must match
+# apple.pairing.manual_instead. "Settings › Sync" names a settings section.
+# {device} is the platform's word for this device; {url} is the relay
+# address; {error} is the relay's own explanation.
+no_relay = "This {device} has no relay set up, so this pairing runs by copy and paste. The other device should choose “Copy and paste instead” too. Add your relay under Settings › Sync to pair by scanning a code instead."
+not_signed_in = "Pairing over your relay needs this {device} signed in to your account, so this pairing runs by copy and paste. The other device should choose “Copy and paste instead” too."
+# Follows the relay's own error message, in a new paragraph.
+relay_code_failed = "If the other device says its pairing runs by copy and paste, choose “Copy and paste instead” here and scan its code again."
+relay_did_not_answer = "Your relay at {url} did not answer, so this pairing runs by copy and paste. The other device should choose “Copy and paste instead” too."
+relay_did_not_answer_here = "Your relay at {url} did not answer from this {device}, so pair by copy and paste: on the device you are adding, choose “Copy and paste instead”, then scan or paste the new code it shows."
+relay_refused = "Your relay could not start this pairing ({error}), so it runs by copy and paste. The other device should choose “Copy and paste instead” too."
+
+[apple.pairing.legs]
+# Titles and instructions for each step of pairing. "Settings › Vaults › Add a
+# device" is a navigation path and must match those screens' names.
+relay_code_title = "Scan this with the device that has your vault"
+relay_code_instruction = "On that device, open Settings › Vaults › Add a device and choose Scan, or paste the text below there. The code works for five minutes; this screen moves on by itself once it has been read."
+code_title = "Show this to the device that has your vault"
+code_instruction = "Scan the code, or copy the text below and paste it into Settings › Vaults › Add a device on your other device — the one that already has your vault."
+message_title = "Copy this to the other device"
+message_instruction = "Paste it into the field the other device is showing, then come back here and continue."
+offer_title = "Copy this to the device you are adding"
+offer_instruction = "This says who your account is. It carries no keys — the other device replies with keys of its own, and only then does anything of yours leave this one."
+request_title = "Copy this back to the device with your vault"
+# {device} is the platform's word for this device.
+request_instruction = "This {device} has just made itself a pair of keys. Only the public halves are in this block; the private ones stay here and are never sent anywhere."
+grant_title = "Copy this last block to the other device"
+grant_instruction = "This is the certificate admitting that device to your account, and your vault key, sealed so that only the device whose digits you just confirmed can open it. Anything it passes through on the way — a message, a clipboard, a relay — sees nothing usable."
+prompt_code_title = "Scan the code on the device you are adding"
+prompt_code_instruction = "That device is showing a QR code with the same text underneath it. Scan it with the camera, or paste the text here."
+prompt_message_title = "Paste what the other device is showing"
+prompt_message_instruction = "Copy the block from the other device's screen and paste it here."
+prompt_offer_title = "Paste the block that names the account"
+prompt_offer_instruction = "The other device is showing a block that says which account you are joining. Pasting it makes this device a pair of keys for that account to certify."
+prompt_request_title = "Paste the keys from the device you are adding"
+prompt_request_instruction = "That device replied with the public half of the keys it just made. Pasting them here signs a certificate for them."
+prompt_grant_title = "Paste the sealed certificate and key"
+prompt_grant_instruction = "The other device is showing one last block, now that you have both confirmed the digits. It is the only thing in this whole exchange that carries your vault key."
+
+[apple.pairing.scan]
+# The camera scanner sheet.
+title = "Scan the pairing code"
+paste_instead = "Paste the code instead"
+refused_title = "Sunrise cannot use the camera"
+# "System Settings › Privacy & Security › Camera" is the system's own path;
+# use the system's names for it. "Scan" names the button.
+refused_detail = "Camera access is off for Sunrise. Paste the text shown under the code instead, or allow the camera in System Settings › Privacy & Security › Camera and choose Scan again."
+no_camera_title = "There is no camera here that can scan"
+no_camera_detail = "Paste the text shown under the code instead."
+
+[apple.sync]
+# The sync badge's label, and its longer detail where it has one.
+checking = "Checking…"
+synced = "Synced"
+sending = "Sending"
+catching_up = "Catching up"
+catching_up_detail = "Replaying changes from your other devices."
+offline = "Offline"
+offline_detail = "Your tasks are on this device and up to date here."
+# Must not read as a variant of "Synced": edits exist that will not arrive.
+changes_missing = "Changes missing"
+changes_missing_detail = "The relay can no longer supply some changes this device never received. Another device may hold edits that will not arrive over this connection."
+stopped = "Sync stopped"
+stopped_detail = "The relay ended this device's session and will not reconnect it on its own. Sign in again or reopen Sunrise to retry."
+pending = "{count, plural, one {# change waiting to send} other {# changes waiting to send}}"
+# The badge's accessibility label: {label} is the badge, {detail} its detail.
+accessibility = "{label}. {detail}"
+# Banner when this version cannot edit some of the vault.
+read_only_title = "Update Sunrise to edit"
+read_only_all = "This vault uses features a newer version of Sunrise added. You can still read and sync everything here."
+read_only_some = "Some items in this vault use features a newer version of Sunrise added. You can still read and sync them."
+
+[apple.platform]
+# iOS checklist tick's accessibility label: whether the item is done.
+checklist_done = "Done"
+checklist_not_done = "Not done"
+
 # Planning: the weekly review, calendar blocks, routines and streams.
 # @@lane-b@@
+
+[apple.review]
+# The Review screen's navigation title, and the hidden label of its tab picker.
+title = "Review"
+# The four tabs of the Review screen's segmented control. Keep them short.
+tab_weekly = "Weekly"
+tab_daily = "Daily"
+tab_trends = "Trends"
+tab_history = "History"
+# Toolbar menu that saves statistics as a file. Its items are the datasets
+# below, each a submenu of file formats (CSV, JSON).
+export = "Export"
+# Export submenu: the four datasets a file can hold.
+dataset_trends = "Trends"
+dataset_activity = "Activity"
+dataset_focus = "Focus"
+dataset_streaks = "Streaks"
+# Toolbar button that records this week's review as a saved snapshot.
+save_snapshot = "Save snapshot"
+# Banner after a snapshot is saved: the week's review is now recorded.
+saved_note = "This week is on the record."
+# Shown when an export file could not be made.
+export_failed = "That export could not be produced."
+# Weekly review: the first section, this week's totals.
+this_week = "This week"
+# Weekly review section headings; # is how many tasks the section lists.
+inbox_to_triage = "{count, plural, one {Inbox to triage (#)} other {Inbox to triage (#)}}"
+slipped = "{count, plural, one {Slipped past its date (#)} other {Slipped past its date (#)}}"
+# Row labels beside a number of tasks, in the weekly totals and per Stream.
+completed = "Completed"
+deferred = "Deferred"
+dropped = "Dropped"
+created = "Created"
+reopened = "Reopened"
+# Tasks created this week that nothing has happened to since.
+created_untouched = "Created and untouched"
+# Row label beside a duration of focus time spent on a Stream.
+focused = "Focused"
+# Weekly review section: routines whose tasks are being missed.
+routines_drifting = "Routines drifting"
+# Beside a routine's name: how many of its expected occurrences were missed.
+drift_missed = "{missed, plural, one {# of {expected, number} missed} other {# of {expected, number} missed}}"
+# Weekly review section: routines and their current streak lengths.
+streaks = "Streaks"
+# Daily review section headings; # is how many tasks the section lists.
+just_captured = "{count, plural, one {Just captured (#)} other {Just captured (#)}}"
+today = "{count, plural, one {Today (#)} other {Today (#)}}"
+blocked = "{count, plural, one {Blocked (#)} other {Blocked (#)}}"
+# Daily review: shown in a section that has no tasks.
+nothing = "Nothing"
+# Trends: the label of the picker choosing how many weeks of history to show.
+weeks = "Weeks"
+# Trends: the section covering every Stream together.
+whole_vault = "Whole vault"
+# Trends: a section heading for a Stream whose name could not be found.
+stream_fallback = "Stream"
+# Trends: shown instead of the chart when there is no history yet.
+no_trend_title = "No trend yet"
+no_trend_description = "Complete something and it will show up here."
+# Tasks completed in one week (a chart bar's spoken label), or in a saved
+# review (one part of a line joined with " · ").
+completed_count = "{count, plural, one {# completed} other {# completed}}"
+# Parts of a saved review's summary line, joined with " · ".
+deferred_count = "{count, plural, one {# deferred} other {# deferred}}"
+created_count = "{count, plural, one {# created} other {# created}}"
+# History: shown instead of the list when no review has been saved.
+no_snapshots_title = "No reviews saved"
+no_snapshots_description = "Saving a review records that you did it, and what you saw."
+# The sheet that saves a review: its heading, explanation and note field.
+snapshot_sheet_title = "Save this week's review"
+snapshot_sheet_body = "The counts on screen are recorded as they are. That you did the review is the one thing the op log cannot re-derive."
+snapshot_note = "Note (optional)"
+
+[apple.calendar]
+# The calendar's span picker: one day or one week.
+span = "Span"
+span_day = "Day"
+span_week = "Week"
+# The picker for how many minutes a drag on the grid snaps to.
+snap = "Snap"
+# One choice in the snap picker; # is a number of minutes. Keep it short.
+snap_minutes = "{minutes, plural, one {# min} other {# min}}"
+# The date stepper: the previous and next day or week, and back to today.
+previous = "Previous"
+today = "Today"
+next = "Next"
+# A time block that has no title and no bound task to take one from.
+untitled_block = "Untitled block"
+# A block's context menu: opens the block editor; the ellipsis says a sheet follows.
+edit_ellipsis = "Edit…"
+# A block's context menu: the submenu offering ways to settle an overlap.
+resolve = "Resolve"
+# Resolve submenu: a section for one overlapping block. {title} is its title.
+overlaps = "Overlaps {title}"
+# Resolve actions: leave both blocks alone, join them into one, or open a
+# sheet to change their times (the ellipsis says a sheet follows).
+keep_both = "Keep both"
+merge = "Merge"
+adjust_times = "Adjust times…"
+# Banners after a Resolve action.
+note_kept_both = "Both blocks kept."
+note_merged = "Merged into one block."
+# The three ways a block can hold its time, as picker choices. "Local time
+# here" follows this time zone; "Wherever I am" follows the person; "A fixed
+# moment" is the same instant everywhere.
+kind_zoned = "Local time here"
+kind_floating = "Wherever I am"
+kind_instant = "A fixed moment"
+# The explanation under each choice. 09:00 is an example clock time: write it
+# as this language writes nine in the morning.
+kind_zoned_explanation = "09:00 in this timezone. Flying somewhere else moves it on your day."
+kind_floating_explanation = "09:00 wherever you are. Flying somewhere else keeps it at 09:00."
+kind_instant_explanation = "The same instant everywhere. Flying somewhere else changes the clock time."
+# What the Undo and Redo menu items name after the word "Undo" or "Redo",
+# lower case: the calendar step that would be reversed.
+undo_create_block = "create a block"
+undo_move_block = "move a block"
+undo_bind_task = "bind a task"
+undo_unbind_task = "unbind a task"
+undo_delete_block = "delete a block"
+undo_edit_block = "edit a block"
+
+[apple.block_editor]
+# The block sheets' fields: the block's title and its start and end times.
+title_field = "Title"
+starts = "Starts"
+ends = "Ends"
+# The sheet for a block just drawn on the grid: its heading and commit button.
+new_block = "New block"
+add_block = "Add block"
+# The sheet that edits an existing block.
+edit_block = "Edit block"
+# Toggle: the block's title follows its one bound task's title.
+follow_task_title = "Follow the bound task's title"
+# Tooltip on that toggle, when it is available and when it is not.
+follow_help_on = "Renaming the task renames this block."
+follow_help_off = "Only a block bound to exactly one task can follow a title."
+# Section listing the tasks bound to the block.
+tasks = "Tasks"
+# Icon-only button beside a bound task: detaches it from the block.
+unbind = "Unbind"
+# The picker choosing how the block holds its time.
+time = "Time"
+# The sheet that adjusts two overlapping blocks side by side.
+overlap_title = "These two overlap"
+# The overlapping span. {from} and {to} are clock times.
+shared_range = "Shared: {from}–{to}"
+# Applies new times to one of the two blocks.
+apply = "Apply"
+
+[apple.routines]
+# The Routines screen's navigation title.
+title = "Routines"
+# Shown instead of the list when there are no routines.
+empty_title = "No routines"
+empty_description = "A routine generates its task on a cadence you describe."
+# Toolbar button that opens the new-routine sheet.
+new_routine = "New routine"
+# Toolbar overflow menu, and its two items.
+more = "More"
+show_archived = "Show archived"
+generate_now = "Generate now"
+# Delete confirmation. {title} is the routine's title.
+delete_confirm_title = "Delete “{title}”?"
+delete_confirm_message = "Generation stops and this cannot be undone. Tasks it already made stay. Pause it instead to stop generation and keep it."
+# A routine's context menu. The ellipses say a sheet or confirmation follows.
+edit_ellipsis = "Edit…"
+skip_next = "Skip next occurrence"
+pause = "Pause"
+resume = "Resume"
+archive = "Archive"
+unarchive = "Unarchive"
+delete_ellipsis = "Delete…"
+# Tooltip on the paused mark beside a routine's title.
+paused_help = "Paused — generates nothing"
+# Under a routine: when it next makes a task. {day} is a relative day such
+# as "tomorrow", already worded.
+next = "next {day}"
+# Under a routine: how many occurrences in a row were done.
+streak = "{count, plural, one {streak #} other {streak #}}"
+# What the Undo and Redo menu items name after the word "Undo" or "Redo",
+# lower case. {title} is the routine's title; {occurrence} is a date and time
+# written as 2026-03-04T09:00.
+undo_new = "new routine “{title}”"
+undo_edit = "edit “{title}”"
+undo_pause = "pause “{title}”"
+undo_resume = "resume “{title}”"
+undo_archive = "archive “{title}”"
+undo_unarchive = "unarchive “{title}”"
+undo_delete = "delete “{title}”"
+undo_skip = "skip {occurrence} of “{title}”"
+undo_materialize = "materialize routines"
+
+[apple.routine_editor]
+# The routine's title field, and the example shown in it while empty.
+title_field = "Title"
+title_prompt = "Water the plants"
+# Section holding when the routine repeats.
+cadence = "Cadence"
+# The field where the cadence is typed in the app's English recurrence grammar.
+repeats = "Repeats"
+# Picker of the time zone the routine runs in.
+timezone = "Timezone"
+# Picker: what happens to occurrences that passed while the app was closed.
+missed = "Missed occurrences"
+catchup_skip = "Skip"
+catchup_merge = "Merge into one"
+catchup_queue = "Queue them all"
+# A choice a newer version of the app wrote, which this one cannot name.
+unknown = "Unknown"
+# Toggle, and the date picker it reveals, for a routine that ends.
+stops_on_date = "Stops on a date"
+until = "Until"
+# Section of the fields every generated task gets.
+each_task = "Each task"
+stream = "Stream"
+priority = "Priority"
+# The priority picker's choice for no priority.
+priority_none = "None"
+energy = "Energy"
+# How long each task should take, and what shows when none is set.
+estimate = "Estimate"
+estimate_none = "none"
+# The commit button when the sheet makes a new routine.
+create = "Create"
+# The sheet's title when making or editing a routine.
+new_routine = "New routine"
+edit_routine = "Edit routine"
+
+[apple.stream_editor]
+# The Stream's name field.
+name = "Name"
+# Picker of the Stream's colour.
+colour = "Colour"
+# Picker of how often the Stream is reviewed, and its choices.
+review_cadence = "Review cadence"
+cadence_none = "None"
+cadence_weekly = "Weekly"
+cadence_biweekly = "Biweekly"
+cadence_monthly = "Monthly"
+# A cadence a newer version of the app wrote, which this one cannot name.
+cadence_unknown = "Unknown"
+# The commit button when the sheet makes a new Stream or context.
+create = "Create"
+# The sheet's title when making or editing a Stream.
+new_stream = "New stream"
+edit_stream = "Edit stream"
+# Shown when the Stream could not be loaded for editing. {name} is its name.
+unreadable = "“{name}” could not be read."
+# Context sheet: the name field's example, a typical context written as the
+# user would type it after @ (lower case, one word).
+context_name_prompt = "errands"
+# Context sheet: the description field and its placeholder.
+context_description = "Description"
+context_description_prompt = "Optional"
+# The sheet's title when making or editing a context.
+new_context = "New context"
+edit_context = "Edit context"
+
+[apple.ical]
+# The calendar import report's first line, in parts joined with ", ". The
+# first part is always shown; the others only when their count is above zero.
+headline_imported = "{count, plural, one {# event imported} other {# events imported}}"
+headline_up_to_date = "{count, plural, one {# already up to date} other {# already up to date}}"
+headline_failed = "{count, plural, one {# could not be read} other {# could not be read}}"
+# The import report's second line, when nothing was lost.
+notices_none = "Everything in the file came across."
+# The import report's second line: # is how many notices follow.
+notices_count = "{count, plural, one {# thing could not be carried into a time block.} other {# things could not be carried into time blocks.}}"
+# Headings over the import report's notices, one per kind.
+heading_skipped = "Events not imported"
+heading_unsupported_component = "Parts of the file a time block cannot hold"
+heading_bad_value = "Values that could not be read"
+heading_unknown_timezone = "Unknown time zones, read as UTC"
+heading_unmapped_property = "Details that did not come across"
+# The import report's list of blocks it wrote.
+blocks_written = "Time blocks written"
+# Beside each block written: whether the import made it or updated one an
+# earlier import made. Shown in a narrow column; keep it short.
+block_new = "new"
+block_updated = "updated"
+# Alert when a calendar file could not be imported or exported, and its button.
+read_failed_title = "The calendar could not be read"
+ok = "OK"
+# The Export Calendar menu's items: the day or week to export.
+export_today = "Today"
+export_this_week = "This Week"
 
 # Tasks: lists, the editor, browse, focus, search, notes and keyboard.
 # @@lane-c@@
 
+[apple.browse]
+# Sidebar section headings. "Streams" and "Contexts" are product terms: a
+# Stream is a list of tasks, a context a tag such as @errands.
+streams_header = "Streams"
+contexts_header = "Contexts"
+# Sidebar add buttons (icon-only on the Mac, so also their spoken names).
+new_stream = "New stream"
+new_context = "New context"
+# Sidebar context-menu toggle that reveals archived streams and contexts.
+show_archived = "Show archived"
+# Confirmation dialog title for deleting a stream. {name} is the stream's name.
+delete_stream_title = "Delete “{name}”?"
+delete_stream_message = "This cannot be undone. Archive it instead to keep its tasks reachable."
+# Confirmation dialog for deleting a context. The @ before {name} is the
+# capture syntax for a context and must stay attached to it.
+delete_context_title = "Delete @{name}?"
+delete_context_message = "This removes @{name} from every task carrying it, and cannot be undone."
+# Shown in place of a context menu on the Inbox row.
+inbox_not_editable = "The Inbox cannot be edited"
+# Stream and context row context-menu items. The ellipses say a sheet or a
+# confirmation follows.
+edit_ellipsis = "Edit…"
+pause = "Pause"
+resume = "Resume"
+archive = "Archive"
+unarchive = "Unarchive"
+delete_ellipsis = "Delete…"
+# Titles of the built-in lists, used in the sidebar and as the empty-state title.
+today = "Today"
+# Today filtered to {count} contexts; the " · " is a separator.
+today_filtered = "{count, plural, one {Today · # context} other {Today · # contexts}}"
+inbox = "Inbox"
+search = "Search"
+# Sidebar destinations that are not task lists.
+calendar = "Calendar"
+routines = "Routines"
+review = "Review"
+# A list's empty state. {name} is a stream or context name; keep the @ that
+# marks a context.
+empty_today = "Nothing is scheduled or due today."
+empty_today_filtered = "Nothing in those contexts is scheduled or due today."
+empty_inbox = "Your Inbox is empty."
+empty_stream = "Nothing in {name} yet."
+empty_context = "Nothing carries @{name}."
+empty_search_blank = "Type to search titles and notes."
+# {text} is what the user searched for.
+empty_search = "Nothing matches “{text}”."
+# The sentence after an empty state. {keys} is a keyboard shortcut such as ⌘N.
+hint_capture = "Press {keys} to capture."
+hint_search_field = "Press {keys} to jump to the field."
+hint_search_new = "Press {keys} to start a new search."
+
+[apple.browse.color]
+# The stream colour picker's names for the palette.
+slate = "Slate"
+rose = "Rose"
+amber = "Amber"
+emerald = "Emerald"
+sky = "Sky"
+indigo = "Indigo"
+violet = "Violet"
+pink = "Pink"
+# A colour a newer version of the app wrote that this one does not know.
+unknown = "Unknown"
+
+[apple.tasks]
+# Today's section headings.
+section_scheduled = "Scheduled"
+section_due = "Due today"
+section_overdue = "Overdue"
+# Task row swipe action and context-menu items. A shortcut key may be printed
+# after these in the menu.
+tomorrow = "Tomorrow"
+reopen = "Reopen"
+complete = "Complete"
+edit_ellipsis = "Edit…"
+defer_tomorrow = "Defer to tomorrow"
+defer_week = "Defer a week"
+schedule_ellipsis = "Schedule…"
+move_to_stream_ellipsis = "Move to stream…"
+start_focus = "Start focus session"
+# Schedule sheet: its heading for one task (also the confirm button), and for
+# several.
+schedule = "Schedule"
+schedule_many = "{count, plural, one {Schedule # task} other {Schedule # tasks}}"
+# Schedule sheet: the (hidden) date picker's name.
+when = "When"
+# Move-to-stream sheet: its heading for one task, and for several.
+move_title = "Move to stream"
+move_title_many = "{count, plural, one {Move # task} other {Move # tasks}}"
+# Move-to-stream sheet: the (hidden) stream picker's name, and the confirm button.
+stream_picker = "Stream"
+move = "Move"
+
+[apple.task_editor]
+# The editor's pane switcher and its four panes.
+pane_picker = "Pane"
+pane_details = "Details"
+pane_notes = "Notes"
+pane_attachments = "Attachments"
+pane_activity = "Activity"
+# Form fields of the task editor.
+title_field = "Title"
+priority = "Priority"
+# The priority picker's "no priority" choice.
+priority_none = "None"
+energy = "Energy"
+# The estimate field (minutes), and what it reads when empty (lowercase).
+estimate = "Estimate"
+estimate_none = "none"
+has_deadline = "Has a deadline"
+due = "Due"
+
+[apple.task_row]
+# Spoken name of the completion button on a done task.
+completed = "Completed"
+# Spoken name of the completion button. {title} is the task's title.
+complete = "Complete “{title}”"
+# Spoken form of the !N priority badge.
+priority = "Priority {priority, number}"
+# Tooltip on the icon of a task blocked by another.
+waiting = "Waiting on another task"
+# Spoken state of a row ticked into a multi-selection.
+selected = "Selected"
+# Row chip. {when} is a relative date such as "tomorrow" or "overdue 2d".
+due = "due {when}"
+# Row chip: how many times the task was deferred. Keep it very short.
+deferred = "{count, plural, one {deferred #×} other {deferred #×}}"
+
+[apple.focus]
+# The Focus screen's title, also its sidebar entry.
+title = "Focus"
+# Pickers chosen before a session: how much energy, and how long.
+energy = "Energy"
+session = "Session"
+empty_title = "Nothing to focus on"
+empty_message = "Every open task is blocked, done, or in another stream."
+# Planner row: how many focus sessions the task already had.
+prior_sessions = "{count, plural, one {# prior} other {# prior}}"
+# Planner row button, and its spoken name. {title} is the task's title.
+start = "Start"
+start_label = "Start a session on “{title}”"
+# Spoken name of the running clock. {clock} is a time readout such as 12:34.
+elapsed = "Elapsed {clock}"
+# Heading of a running session with no task title.
+focusing = "Focusing"
+# Running session buttons: Done ends it and completes the task; Stop only ends it.
+done = "Done"
+stop = "Stop"
+# Label before the interruption-reason buttons.
+interrupted_by = "Interrupted by"
+interruptions_logged = "{count, plural, one {# logged} other {# logged}}"
+# The line under the session title: what is left of the planned time.
+over_plan = "over the plan"
+until_done = "until done"
+time_left = "{clock} left"
+# Banner after a completion released blocked tasks. The app joins the two
+# parts with "; " when some are still blocked.
+unblocked = "{count, plural, one {Unblocked # task} other {Unblocked # tasks}}"
+still_waiting = "{count, plural, one {# still waiting on something else} other {# still waiting on something else}}"
+# Labels under the statistics strip's numbers.
+stat_sessions = "Sessions"
+stat_focused = "Focused"
+stat_interruptions = "Interruptions"
+# Label under a factor such as "1.3×": how long work runs against its estimate.
+stat_estimates = "Estimates run"
+
+[apple.saved_views]
+# The toolbar menu of saved views.
+menu = "Views"
+empty = "No saved views"
+save_ellipsis = "Save this view…"
+# The sheet that names a saved view.
+sheet_title = "Save this view"
+name = "Name"
+# Example name in the empty name field; a single lowercase word.
+name_prompt = "errands"
+# `sunrise` is the command-line program's name; keep it as is.
+footnote = "Saved to the same file `sunrise` reads, so this view is recallable from the command line too."
+# A recalled view named contexts that no longer exist.
+missing_contexts = "{count, plural, one {# of this view's contexts no longer exists and was not applied.} other {# of this view's contexts no longer exist and were not applied.}}"
+
+[apple.brief]
+# Navigation titles of the two daily briefs, also their sidebar entries.
+morning_title = "Morning"
+evening_title = "Evening"
+# The line under each brief's headline.
+morning_subtitle = "What closed yesterday, and what today is asking for."
+evening_subtitle = "What today did not finish, the week ahead, and the backlog to plan from."
+# Task row context-menu items and swipe action.
+complete = "Complete"
+edit_ellipsis = "Edit…"
+tomorrow = "Tomorrow"
+# Evening toolbar button, and the confirmation it raises.
+move_today = "Move today to tomorrow"
+move_confirm = "{count, plural, one {Move # open task to tomorrow?} other {Move # open tasks to tomorrow?}}"
+move_them = "Move them"
+move_message = "Each task's deferral count goes up. That is the point: it is how a task that keeps slipping becomes visible."
+
+[apple.attachments]
+title = "Attachments"
+empty_title = "No attachments"
+# "Attach" names the button beside it.
+empty_message = "Drop a file here, or use Attach."
+attach = "Attach…"
+# Icon-only buttons on an attachment row (spoken names).
+open = "Open"
+download = "Download"
+download_again = "Download again"
+# Shown instead of a preview. {filename} is the attachment's file name.
+opens_elsewhere = "{filename} opens in another app."
+# Second line of a row, after the file size and " · ".
+status_downloading = "downloading…"
+status_interrupted = "download interrupted"
+status_absent = "not on this device"
+# "Download" names the row's button.
+not_local = "{filename} is not on this device yet. Use Download."
+
+[apple.capture]
+# The capture field's name.
+field = "Capture"
+# Example line in the empty capture field. #travel, ^next saturday, !1 and ~1h
+# are capture syntax (stream, date, priority, duration): keep the symbols, and
+# keep the date phrase one the app's parser understands.
+prompt = "Renew passport #travel ^next saturday !1 ~1h"
+# Parse preview: how many streams and contexts the line carries.
+tags = "{count, plural, one {# tag} other {# tags}}"
+# Quick capture: after saving, and when saving failed. {reason} is the error.
+captured = "Captured “{title}”"
+not_saved = "Not saved: {reason}"
+# Parse issues. Each says the typed text was kept, because it was.
+unknown_stream = "No stream called “{name}” — kept in the title."
+unknown_context = "No context called “{name}” — kept in the title."
+# {typed} is what was typed, {candidates} a comma-separated list of names.
+ambiguous = "“{typed}” matches {candidates}."
+bad_date = "“{text}” is not a date Sunrise understands."
+bad_priority = "Priority “{text}” is outside 1–5."
+bad_duration = "“{text}” is not a duration."
+
+[apple.search]
+title = "Search"
+# The search field's name and its placeholder.
+field = "Search"
+prompt = "Titles and notes"
+# Icon-only button that empties the field.
+clear = "Clear"
+# Above the results.
+matches = "{count, plural, one {# match} other {# matches}}"
+# Above the results when the result cap was hit.
+matches_capped = "{count, plural, one {First # match — narrow it further} other {First # matches — narrow it further}}"
+
+[apple.activity]
+title = "Activity"
+empty_title = "Nothing recorded yet"
+empty_message = "Completions, deferrals and moves show up here."
+# Caption under an activity row: {day} and {time} say when, then which device.
+caption_this_device = "{day} {time} · this device"
+caption_another_device = "{day} {time} · another device"
+
+[apple.keyboard]
+# Keyboard tip. "?" is the key that opens the shortcuts; {palette} is a shortcut
+# such as ⇧⌘P.
+tip_hint = "Press ? for the keyboard shortcuts, or {palette} for the command palette."
+# First-run coachmark. {shortcut} is the global capture shortcut, such as ⇧⌘N.
+coachmark = "Press ? in any view for the shortcuts, and {shortcut} to capture a thought from whatever app you are in."
+keyboard_first = "Sunrise is keyboard-first"
+show_tips = "Show keyboard tips as I go"
+# A sentence after an empty state. {keys} is a shortcut, {purpose} a verb phrase.
+press_hint = "Press {keys} to {purpose}."
+# The name printed for the space bar in shortcut lists.
+key_space = "space"
+# The shortcut sheet's title and its vim-mode switch.
+cheat_sheet_title = "Keyboard"
+vim_toggle = "Vim-style motions"
+# The listed keys are vim motions and stay as they are. {device} is "Mac",
+# "iPhone" or "iPad".
+vim_note = "h j k l, gg, G, u, ⌃R, / and : — on this {device} only, never synced."
+vim_section = "Vim mode"
+# The menu-bar menu of navigation commands.
+menu_go = "Go"
+
+[apple.keyboard.heading]
+# Section headings of the keyboard shortcut sheet.
+capture = "Capture"
+navigation = "Going places"
+list = "Moving through a list"
+task = "Acting on what is selected"
+edit = "Undo"
+document = "Files and printing"
+help = "Help"
+
+[apple.keyboard.command]
+# Command names, shared by the menu bar, the command palette and the shortcut
+# sheet. Title case as macOS menus use it; ellipses mean a window follows.
+quick_capture_global = "Quick Capture (anywhere)"
+quick_capture = "New Task"
+today = "Go to Today"
+inbox = "Go to Inbox"
+search_in_view = "Find in This List"
+search_global = "Search Everything"
+command_palette = "Command Palette"
+new_stream = "New Stream…"
+mark_done = "Mark Done"
+defer_task = "Defer to Tomorrow"
+schedule = "Schedule…"
+move_to_stream = "Move to Stream…"
+focus_mode = "Start Focus Session"
+move_up = "Move Up"
+move_down = "Move Down"
+list_top = "Go to Top"
+list_bottom = "Go to Bottom"
+open_detail = "Open"
+close_detail = "Close"
+toggle_selection = "Toggle Selection"
+extend_selection_up = "Extend Selection Up"
+extend_selection_down = "Extend Selection Down"
+undo = "Undo"
+redo = "Redo"
+print_view = "Print…"
+export_pdf = "Export as PDF…"
+cheat_sheet = "Keyboard Shortcuts"
+morning_summary = "Morning Summary"
+end_of_day = "End of Day"
+import_calendar = "Import Calendar…"
+
+[apple.palette]
+# The command palette's field: its name, placeholder and spoken name.
+field = "Command"
+prompt = "Run a command"
+empty_title = "No command matches"
+empty_message = "Try a shorter word."
+# Spoken hint on a greyed-out command.
+needs_selection = "Needs a selected task"
+
+[apple.notes]
+# Banners over a note the editor shows read-only.
+unreadable = "This note was written by a newer version of Sunrise. You can read it here; editing it would drop the parts this version cannot show."
+unsupported = "This note uses formatting this editor cannot change yet — a reference, a mention, or nested content. You can read it here, and edit it in a later version."
+# Length warnings.
+at_limit = "This note is at the size limit. Split it into two."
+getting_long = "This note is getting long. Consider splitting it."
+# Toolbar menu that inserts a block, and its tooltip.
+add_block = "Add block"
+add_block_help = "Add a block below"
+copy_markdown = "Copy as Markdown"
+# A block's menu: its type picker and actions.
+block_picker = "Block"
+move_up = "Move up"
+move_down = "Move down"
+delete_block = "Delete block"
+# A code block's language field.
+language = "Language"
+# Table and checklist rows.
+add_row = "Add row"
+# A checklist row's checkbox (spoken name).
+row_done = "Done"
+indent = "Indent"
+outdent = "Outdent"
+add_row_below = "Add row below"
+delete_row = "Delete row"
+
+[apple.notes.block]
+# Block types in the note editor's insert menu and type picker.
+paragraph = "Text"
+heading_one = "Heading 1"
+heading_two = "Heading 2"
+heading_three = "Heading 3"
+bulleted = "Bulleted list"
+numbered = "Numbered list"
+checklist = "Checklist"
+code = "Code"
+quote = "Quote"
+divider = "Divider"
+
+[apple.notes.mark]
+# Inline formatting buttons.
+bold = "Bold"
+italic = "Italic"
+underline = "Underline"
+strike = "Strikethrough"
+code = "Code"
+
+[apple.undo]
+# Edit-menu titles. {action} is one of the action names below (or one the
+# core supplies), lowercase, naming the step: "Undo edit “Travel”".
+undo = "Undo"
+redo = "Redo"
+undo_named = "Undo {action}"
+redo_named = "Redo {action}"
+# Status after undoing or redoing: "Undid edit “Travel”".
+undid = "Undid {action}"
+redid = "Redid {action}"
+# Action names, inserted as {action} above. {name} is a stream's name; the @
+# before a context's name is capture syntax and must stay attached to it.
+new_stream = "new stream “{name}”"
+edit_stream = "edit “{name}”"
+archive_stream = "archive “{name}”"
+unarchive_stream = "unarchive “{name}”"
+pause_stream = "pause “{name}”"
+resume_stream = "resume “{name}”"
+delete_stream = "delete “{name}”"
+reorder_streams = "reorder streams"
+new_context = "new context @{name}"
+edit_context = "edit @{name}"
+archive_context = "archive @{name}"
+unarchive_context = "unarchive @{name}"
+delete_context = "delete @{name}"
+move_to_stream = "move to stream"
+add_context = "add a context"
+
 # The app's shells and system surfaces: menus, windows, the iOS tabs,
 # widgets, Shortcuts, notifications and printing.
 # @@lane-d@@
+
+[apple.menu]
+# The menu bar extra's dropdown, Mac only. Shown instead of the counts when
+# Today and the Inbox are both empty.
+nothing_outstanding = "Nothing outstanding today."
+# The dropdown's count rows: a label on the left, its number on the right.
+overdue = "Overdue"
+due_today = "Due today"
+scheduled = "Scheduled"
+inbox = "Inbox"
+done_today = "Done today"
+# Dropdown buttons. "Quick capture" opens the floating capture panel.
+quick_capture = "Quick capture"
+open_app = "Open Sunrise"
+quit_app = "Quit Sunrise"
+# Shown in the dropdown while no vault is open (locked, first run, starting).
+not_unlocked = "Sunrise is not unlocked."
+
+[apple.commands]
+# File menu submenu (Mac); its items are the export windows (Today, This Week).
+export_calendar = "Export Calendar"
+
+[apple.mac]
+# The main window's toolbar button that opens the settings sheet.
+settings = "Settings"
+# The Save View sheet's summary when nothing is selected in the sidebar; it
+# names the Today list.
+today_fallback = "Today"
+# The main window's detail pane when nothing in the sidebar is selected.
+pick_something = "Pick something on the left."
+# The open panel for File → Import Calendar…: its message, and its default
+# button.
+ical_import_message = "Choose a calendar file to import as time blocks."
+ical_import_prompt = "Import"
+# The save panel for File → Export Calendar: its message, and its default
+# button.
+ical_export_message = "Choose where to write the calendar."
+ical_export_prompt = "Export"
+# The save panel for File → Export as PDF…: its message, and its default button.
+pdf_export_message = "Choose where to write the PDF."
+pdf_export_prompt = "Export"
+# The global quick-capture hotkey's status, under the menu bar's Quick capture
+# button and in Settings. Keep the ⌘⇧N glyphs exactly; they are the shortcut.
+hotkey_active = "⌘⇧N opens quick capture from anywhere."
+hotkey_taken = "Another app already uses ⌘⇧N. Quick capture is still on the menu bar."
+# {code} is the operating system's numeric error status.
+hotkey_unavailable = "The system refused the shortcut (error {code}). Quick capture is still on the menu bar."
+hotkey_idle = "Not registered."
+
+[apple.ios]
+# The toolbar overflow menu on iPhone and iPad, holding the screens that have
+# no tab of their own.
+more = "More"
+# Overflow menu section headings. "Today" groups the morning and evening briefs.
+section_today = "Today"
+section_calendar = "Calendar"
+# Overflow menu items for iCalendar files; the ellipsis says a picker follows.
+import_calendar = "Import calendar…"
+export_calendar = "Export calendar"
+# Overflow menu item that opens the settings sheet.
+settings = "Settings"
+# The floating button that opens quick capture.
+capture = "Capture"
+
+[apple.tabs]
+# The iPhone and iPad tab bar's titles, also each tab's navigation title.
+# Keep them short: they sit under an icon.
+today = "Today"
+calendar = "Calendar"
+browse = "Browse"
+focus = "Focus"
+search = "Search"
+# Navigation titles of the screens reached from the overflow menu.
+routines = "Routines"
+review = "Review"
+morning = "Morning"
+evening = "Evening"
+
+[apple.settings]
+# The settings sheet's navigation title (iPhone and iPad).
+title = "Settings"
+
+[apple.widget]
+# The widget gallery: the widget's name, and its one-line description.
+display_name = "Next Up"
+description = "What is left on Today, first things first."
+# Under the visible rows when Today holds more tasks than fit.
+more = "{count, plural, one {+# more} other {+# more}}"
+# Lock Screen and inline widgets: how many of Today's tasks are open. The
+# separator and the first task's title follow it in code.
+left = "{count, plural, one {# left} other {# left}}"
+left_today = "{count, plural, one {# left today} other {# left today}}"
+# The header's caption beside the big count, which is drawn on its own; agree
+# with that count.
+left_today_label = "{count, plural, one {left today} other {left today}}"
+# Overdue tasks, beside the count; drawn in red.
+overdue = "{count, plural, one {# overdue} other {# overdue}}"
+# The circular Lock Screen widget: the word under the count.
+circular_today = "today"
+# VoiceOver label of the circular Lock Screen widget.
+circular_accessibility = "{count, plural, one {# task left today} other {# tasks left today}}"
+# Shown instead of rows when nothing is left on Today.
+all_clear = "Today is clear"
+# VoiceOver label of the "how long ago" stamp; the elapsed time is read after
+# it.
+updated = "Updated"
+# No vault open: the widget says what to do rather than showing an empty list.
+open_app = "Open Sunrise"
+open_to_show_today = "Open to show Today"
+open_app_to_show_today = "Open Sunrise to show Today"
+# A row's section, read by VoiceOver after the task and shown in capitals
+# above the small widget's task.
+section_overdue = "Overdue"
+section_due = "Due today"
+section_scheduled = "Scheduled"
+# Made-up tasks for the widget gallery's preview. Never a user's data; any
+# plausible everyday tasks will do.
+sample_report = "Send the quarterly report"
+sample_draft = "Review Maya's draft"
+sample_flights = "Book flights"
+sample_plants = "Water the plants"
+
+[apple.intents]
+# Shortcuts categories that group the intents. Keep them short.
+category_capture = "Capture"
+category_tasks = "Tasks"
+category_focus = "Focus"
+# The name Shortcuts gives a Sunrise task, and the title of a task parameter.
+task_type = "Task"
+task_parameter = "Task"
+
+[apple.intents.capture_task]
+# The Capture Task action in Shortcuts and Spotlight: its title and
+# description. Keep #stream, @context, ^when, !priority and ~estimate exactly:
+# they are the syntax the user types.
+title = "Capture Task"
+description = "Adds a task to Sunrise, reading the same #stream, @context, ^when, !priority and ~estimate tags that quick capture reads."
+# Its text parameter: a description, and Siri's question when it is missing.
+line_description = "A capture line, tags and all."
+line_prompt = "What would you like to capture?"
+# What Siri or Shortcuts says after a capture. {title} is the task's title;
+# {issue} is a sentence about a tag the capture could not resolve.
+captured = "Captured “{title}”."
+captured_with_issue = "Captured “{title}”. {issue}"
+# {rest} is how many further unresolved tags there are.
+captured_with_issues = "{rest, plural, one {Captured “{title}”. {issue} And # more.} other {Captured “{title}”. {issue} And # more.}}"
+
+[apple.intents.complete_task]
+# The Complete Task action in Shortcuts: its title and description.
+title = "Complete Task"
+description = "Marks a Sunrise task as done, and says what completing it unblocked."
+# Siri's question when the task is missing.
+task_prompt = "Which task did you finish?"
+# Said after the action runs. {title} is the task's title.
+already_done = "“{title}” was already done."
+completed = "Completed “{title}”."
+# {count} tasks were waiting on this one and are now free to start.
+completed_unblocked = "{count, plural, one {Completed “{title}”. That unblocked # task.} other {Completed “{title}”. That unblocked # tasks.}}"
+
+[apple.intents.start_focus]
+# The Start Focus Session action in Shortcuts: its title and description.
+title = "Start Focus Session"
+description = "Opens a Sunrise focus session on a task."
+# Siri's question when the task is missing, and the length parameter's title.
+task_prompt = "What do you want to focus on?"
+length_title = "Length"
+# Said after the action runs. {title} is the task; {length} describes the
+# session's length ("25 minutes").
+started = "Focusing on “{title}” — {length}."
+
+[apple.intents.end_focus]
+# The End Focus Session action in Shortcuts: its title and description.
+title = "End Focus Session"
+description = "Closes the running Sunrise focus session, optionally marking the task it was on as done."
+# The switch that also completes the task.
+complete_title = "Complete the task"
+# Said after the action runs. {duration} is the time focused, as a clock
+# ("25:00").
+ended = "Session ended after {duration}."
+ended_completed = "Session ended after {duration}, task completed."
+
+[apple.intents.focus_length]
+# The session-length picker in Shortcuts: its type name, then its options.
+type_name = "Session Length"
+pomodoro = "One pomodoro"
+estimate = "Sized to the estimate"
+until_done = "Until it is done"
+
+[apple.intents.task_list]
+# The two list-reading actions in Shortcuts: titles and descriptions.
+today_title = "Get Today's Tasks"
+today_description = "Returns the Sunrise tasks scheduled, due, or overdue today."
+inbox_title = "Get Inbox Tasks"
+inbox_description = "Returns the Sunrise tasks still waiting in the Inbox."
+# Said when the list read is empty.
+today_empty = "Nothing is on for today."
+inbox_empty = "The inbox is empty."
+# Said when it is not. {titles} is the task titles, comma-separated.
+summary = "{count, plural, one {# task: {titles}.} other {# tasks: {titles}.}}"
+
+[apple.intents.shortcuts]
+# The short titles of Sunrise's App Shortcuts, shown on their tiles in
+# Shortcuts and Spotlight. Keep them very short.
+capture = "Capture Task"
+complete = "Complete Task"
+today = "Today's Tasks"
+inbox = "Inbox"
+start_focus = "Start Focus"
+end_focus = "End Focus"
+
+[apple.intents.failure]
+# Why a Shortcuts action failed, read by Siri or shown in Shortcuts. Each says
+# what to do next; keep that half.
+vault_unavailable = "Sunrise reported an open vault with nothing behind it. Reopen Sunrise and try again."
+no_vault = "Sunrise has no vault on this device yet. Open Sunrise once to create or pair one — an automation will not create it for you."
+# {summary} is a sentence saying why the vault is locked.
+vault_locked = "Sunrise could not open its vault. {summary}"
+vault_held = "Sunrise already has this vault open and did not offer it to automations. Do this in the Sunrise window, or quit Sunrise and run it again."
+# {message} is the underlying error, untranslated.
+vault_failed = "Sunrise could not open its vault: {message}"
+vault_busy = "Sunrise is still opening its vault. Try again in a moment."
+nothing_to_capture = "There was nothing to capture."
+empty_title = "That capture line has no title left once its tags are read."
+# {id} is the task's internal id.
+task_not_found = "That task is no longer in Sunrise ({id})."
+# {title} is the task the running session is on.
+focus_running = "A focus session is already running on “{title}”. End it before starting another."
+no_focus = "No focus session is running."
+# {message} is the underlying error, untranslated.
+core = "Sunrise could not complete that: {message}"
+
+[apple.notifications]
+# Settings: the notification permission's state, as a short value beside its
+# label.
+auth_not_asked = "Not asked"
+auth_denied = "Not allowed"
+auth_allowed = "Allowed"
+auth_provisional = "Quiet delivery"
+auth_unavailable = "Unavailable"
+# Settings: the sentence under that state. Each one says the app still works.
+explain_not_asked = "Sunrise has not asked yet. Reminders stay off until you allow them; everything else works either way."
+explain_denied = "Notifications are turned off for Sunrise in System Settings. Nothing else is affected — the morning and evening views are still in the sidebar."
+explain_allowed = "Reminders for scheduled tasks and time blocks are delivered by this device."
+explain_provisional = "Reminders arrive quietly, in Notification Centre only, until you allow them properly."
+# {reason} is the system's error, untranslated.
+explain_unavailable = "The system refused the request ({reason}). Reminders are off; the rest of Sunrise is unaffected."
+# A reminder's body line for a calendar time block that is about to begin.
+block_starting = "Time block starting"
+# A reminder's body when quiet hours delayed it. {time} is when it was due.
+quiet_hours_note = "Held for quiet hours"
+due_at = "due {time}"
+# Buttons on a reminder notification, and on the evening view's snooze menu.
+mark_done = "Mark Done"
+snooze_hour = "Defer 1 Hour"
+snooze_tomorrow = "Snooze Until Tomorrow"
+snooze_next_week = "Snooze Until Next Week"
+
+[apple.brief_notification.morning]
+# The morning brief's sections: a heading, and what it says when empty.
+yesterday_title = "Finished yesterday"
+yesterday_empty = "Nothing was completed yesterday."
+today_title = "Already done today"
+today_empty = "The day is still ahead of you."
+triage_title = "To triage"
+triage_empty = "Your Inbox is empty."
+due_title = "Landing today"
+due_empty = "Nothing is scheduled or due today."
+# The headline while the brief is still loading.
+loading = "Reading your morning…"
+# The headline's parts, joined by a separator in code. Only the first is
+# always shown.
+completed = "{count, plural, one {# completed since yesterday} other {# completed since yesterday}}"
+landing = "{count, plural, one {# landing today} other {# landing today}}"
+triage = "{count, plural, one {# to triage} other {# to triage}}"
+
+[apple.brief_notification.evening]
+# The end-of-day plan's sections: a heading, and what it says when empty.
+open_title = "Still open today"
+open_empty = "Today is clear. Nothing was left behind."
+week_title = "The week ahead"
+week_empty = "Nothing is scheduled in the next seven days."
+backlog_title = "Unscheduled"
+backlog_empty = "Everything open has a date on it."
+# The headline while the plan is still loading.
+loading = "Reading your evening…"
+# The headline's parts, joined by a separator in code. Only the first is
+# always shown.
+still_open = "{count, plural, one {# still open today} other {# still open today}}"
+this_week = "{count, plural, one {# this week} other {# this week}}"
+unscheduled = "{count, plural, one {# unscheduled} other {# unscheduled}}"
+
+[apple.print]
+# A printed section heading repeated at the top of the next page.
+continued = "{heading} (continued)"
+# A printed section heading with how many tasks are under it.
+section_count = "{heading} ({count, number})"
+# The heading of a printed list that has no sections.
+task_count = "{count, plural, one {# task} other {# tasks}}"
+# A calendar block with no title, on a printed calendar.
+untitled_block = "Untitled block"
+# Printed document titles.
+calendar_day = "Calendar — Day"
+calendar_week = "Calendar — Week"
+weekly_review = "Weekly Review"
+daily_review = "Daily Review"
+# Printed daily review section headings.
+just_captured = "Just captured"
+today = "Today"
+blocked = "Blocked"
+# Printed weekly review: the totals section and its rows.
+this_week = "This week"
+completed = "Completed"
+deferred = "Deferred"
+dropped = "Dropped"
+created = "Created"
+reopened = "Reopened"
+# Printed weekly review section headings.
+inbox_to_triage = "Inbox to triage"
+slipped = "Slipped past its date"
+by_stream = "By stream"
+routines_drifting = "Routines drifting"
+# A stream's row in the printed weekly review.
+stream_detail = "{completed, plural, one {# completed} other {# completed}}, {deferred, plural, one {# deferred} other {# deferred}}, {untouched, plural, one {# untouched} other {# untouched}}"
+# A drifting routine's row: occurrences missed out of {expected} expected.
+drift_detail = "{missed, plural, one {# of {expected, number} missed} other {# of {expected, number} missed}}"
+# A task row's facet chips. {date} is the due date as the screen shows it.
+due_chip = "due {date}"
+# Chip on a task that is blocked by another.
+waiting = "waiting"
+# A printed page with no rows.
+empty = "Nothing to print."
+# Why Print… is greyed out on this screen: its tooltip and VoiceOver hint.
+refusal_trends = "Trends is a chart. Use the CSV or JSON export beside it."
+refusal_history = "History is a list of links. Use the CSV or JSON export beside it."
+refusal_focus = "Focus is one task and a timer, not a list."
+refusal_routines = "Routines are rules rather than things to do. Print a task list instead."
+refusal_brief = "The daily brief is a glance, not a document."
+refusal_nothing_selected = "Nothing is selected."
+
+[apple.app]
+# Settings: whether the routine timer (which advances recurring tasks) runs.
+routine_timer_stopped = "Not running"
+routine_timer_running = "Running"
+# {message} is the underlying error, untranslated.
+routine_timer_failed = "Failed: {message}"
+# Quick capture failed because no vault is open.
+no_open_vault = "No vault is open. Open Sunrise and try again."
+# An internal error shown when the widget snapshot could not be built.
+widget_query_mismatch = "The core answered a task query with something else."
+
+[apple.update]
+# App menu items under About (Mac). The ellipsis says a window follows.
+check = "Check for Updates…"
+include_beta = "Include Beta Updates"
+# Tooltip of the beta toggle.
+include_beta_help = "Offer release candidates and betas as well as stable releases."
+# Why both update items are greyed out: their tooltip and VoiceOver hint.
+unavailable = "This build carries no update-signing public key, so it cannot verify an update. Download a release from the project's Releases page instead."
 
 [apple.action]
 # Buttons and menu items that mean the same thing on every screen. A screen

@@ -12,7 +12,7 @@ struct ReviewView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            Picker("Review", selection: $model.tab) {
+            Picker(L10n.Review.title, selection: $model.tab) {
                 ForEach(ReviewTab.allCases) { Text($0.title).tag($0) }
             }
             .pickerStyle(.segmented)
@@ -33,10 +33,10 @@ struct ReviewView: View {
             Divider()
             body(for: model.tab)
         }
-        .navigationTitle("Review")
+        .navigationTitle(L10n.Review.title)
         .toolbar {
             ToolbarItem {
-                Menu("Export", systemImage: "square.and.arrow.up") {
+                Menu(L10n.Review.export, systemImage: "square.and.arrow.up") {
                     ForEach(ExportDataset.all, id: \.self) { dataset in
                         Menu(dataset.title) {
                             ForEach(ExportFormat.all, id: \.self) { format in
@@ -49,7 +49,7 @@ struct ReviewView: View {
                 }
             }
             ToolbarItem {
-                Button("Save snapshot", systemImage: "checkmark.seal") {
+                Button(L10n.Review.saveSnapshot, systemImage: "checkmark.seal") {
                     savingSnapshot = true
                 }
                 .disabled(model.weekly == nil)
@@ -115,30 +115,30 @@ struct WeeklyReviewBody: View {
 
     var body: some View {
         List {
-            Section("This week") {
+            Section(L10n.Review.thisWeek) {
                 counts(report.totals)
             }
 
             if !report.inbox.isEmpty {
-                Section("Inbox to triage (\(report.inbox.count))") {
+                Section(L10n.Review.inboxToTriage(count: report.inbox.count)) {
                     ForEach(report.inbox, id: \.id) { Text($0.title) }
                 }
             }
 
             if !report.slipped.isEmpty {
-                Section("Slipped past its date (\(report.slipped.count))") {
+                Section(L10n.Review.slipped(count: report.slipped.count)) {
                     ForEach(report.slipped, id: \.id) { Text($0.title) }
                 }
             }
 
             ForEach(report.streams, id: \.stream) { stream in
                 Section(stream.name) {
-                    LabeledContent("Completed", value: "\(stream.completed.count)")
-                    LabeledContent("Deferred", value: "\(stream.deferred.count)")
-                    LabeledContent("Created and untouched", value: "\(stream.createdUntouched.count)")
+                    LabeledContent(L10n.Review.completed, value: "\(stream.completed.count)")
+                    LabeledContent(L10n.Review.deferred, value: "\(stream.deferred.count)")
+                    LabeledContent(L10n.Review.createdUntouched, value: "\(stream.createdUntouched.count)")
                     if let focus = stream.focus {
                         LabeledContent(
-                            "Focused",
+                            L10n.Review.focused,
                             value: shortDuration(secs: focus.focusedMs / 1000)
                         )
                     }
@@ -146,10 +146,10 @@ struct WeeklyReviewBody: View {
             }
 
             if !report.driftingRoutines.isEmpty {
-                Section("Routines drifting") {
+                Section(L10n.Review.routinesDrifting) {
                     ForEach(report.driftingRoutines, id: \.routine) { drift in
                         LabeledContent(drift.title) {
-                            Text("\(drift.missed) of \(drift.expected) missed")
+                            Text(L10n.Review.driftMissed(missed: Int(drift.missed), expected: Int(drift.expected)))
                                 .foregroundStyle(.orange)
                         }
                     }
@@ -157,7 +157,7 @@ struct WeeklyReviewBody: View {
             }
 
             if !report.streaks.isEmpty {
-                Section("Streaks") {
+                Section(L10n.Review.streaks) {
                     ForEach(report.streaks, id: \.routine) { streak in
                         LabeledContent(streak.title, value: "\(streak.streak)")
                     }
@@ -169,11 +169,11 @@ struct WeeklyReviewBody: View {
 
     @ViewBuilder
     private func counts(_ totals: ReviewCounts) -> some View {
-        LabeledContent("Completed", value: "\(totals.completed)")
-        LabeledContent("Deferred", value: "\(totals.deferred)")
-        LabeledContent("Dropped", value: "\(totals.dropped)")
-        LabeledContent("Created", value: "\(totals.created)")
-        LabeledContent("Reopened", value: "\(totals.reopened)")
+        LabeledContent(L10n.Review.completed, value: "\(totals.completed)")
+        LabeledContent(L10n.Review.deferred, value: "\(totals.deferred)")
+        LabeledContent(L10n.Review.dropped, value: "\(totals.dropped)")
+        LabeledContent(L10n.Review.created, value: "\(totals.created)")
+        LabeledContent(L10n.Review.reopened, value: "\(totals.reopened)")
     }
 }
 
@@ -183,18 +183,19 @@ struct DailyReviewBody: View {
 
     var body: some View {
         List {
-            section("Just captured", report.inbox)
-            section("Today", report.today)
-            section("Blocked", report.blocked)
+            section(L10n.Review.justCaptured, report.inbox)
+            section(L10n.Review.today, report.today)
+            section(L10n.Review.blocked, report.blocked)
         }
         .listStyle(.inset)
     }
 
+    /// `title` words the heading around the section's task count.
     @ViewBuilder
-    private func section(_ title: String, _ tasks: [TaskItem]) -> some View {
-        Section("\(title) (\(tasks.count))") {
+    private func section(_ title: (Int) -> String, _ tasks: [TaskItem]) -> some View {
+        Section(title(tasks.count)) {
             if tasks.isEmpty {
-                Text("Nothing").foregroundStyle(.secondary)
+                Text(L10n.Review.nothing).foregroundStyle(.secondary)
             } else {
                 ForEach(tasks, id: \.id) { Text($0.title) }
             }
@@ -211,8 +212,8 @@ struct TrendsBody: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("Weeks").font(.caption).foregroundStyle(.secondary)
-                Picker("Weeks", selection: $weeks) {
+                Text(L10n.Review.weeks).font(.caption).foregroundStyle(.secondary)
+                Picker(L10n.Review.weeks, selection: $weeks) {
                     ForEach([4, 8, 12, 26] as [UInt32], id: \.self) { Text("\($0)").tag($0) }
                 }
                 .labelsHidden()
@@ -224,11 +225,11 @@ struct TrendsBody: View {
 
             if let trends, !trends.overall.isEmpty {
                 List {
-                    Section("Whole vault") {
+                    Section(L10n.Review.wholeVault) {
                         WeekBars(weeks: trends.overall)
                     }
                     ForEach(trends.perStream, id: \.stream) { row in
-                        Section(names.stream(row.stream) ?? "Stream") {
+                        Section(names.stream(row.stream) ?? L10n.Review.streamFallback) {
                             WeekBars(weeks: row.weeks)
                         }
                     }
@@ -236,9 +237,9 @@ struct TrendsBody: View {
                 .listStyle(.inset)
             } else {
                 ContentUnavailableView(
-                    "No trend yet",
+                    L10n.Review.noTrendTitle,
                     systemImage: "chart.line.uptrend.xyaxis",
-                    description: Text("Complete something and it will show up here.")
+                    description: Text(L10n.Review.noTrendDescription)
                 )
             }
         }
@@ -261,7 +262,7 @@ struct WeekBars: View {
                         .foregroundStyle(.secondary)
                         .monospacedDigit()
                 }
-                .accessibilityLabel("\(week.completed) completed")
+                .accessibilityLabel(L10n.Review.completedCount(count: Int(week.completed)))
             }
             Spacer()
         }
@@ -285,18 +286,20 @@ struct SnapshotHistoryBody: View {
     var body: some View {
         if snapshots.isEmpty {
             ContentUnavailableView(
-                "No reviews saved",
+                L10n.Review.noSnapshotsTitle,
                 systemImage: "clock.arrow.circlepath",
-                description: Text("Saving a review records that you did it, and what you saw.")
+                description: Text(L10n.Review.noSnapshotsDescription)
             )
         } else {
             List(snapshots, id: \.id) { snapshot in
                 VStack(alignment: .leading, spacing: 3) {
                     Text(window(snapshot)).font(.headline)
                     Text(
-                        "\(snapshot.totals.completed) completed · "
-                            + "\(snapshot.totals.deferred) deferred · "
-                            + "\(snapshot.totals.created) created"
+                        [
+                            L10n.Review.completedCount(count: Int(snapshot.totals.completed)),
+                            L10n.Review.deferredCount(count: Int(snapshot.totals.deferred)),
+                            L10n.Review.createdCount(count: Int(snapshot.totals.created)),
+                        ].joined(separator: " · ")
                     )
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -329,19 +332,16 @@ struct SnapshotNoteSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Save this week's review").font(.headline)
-            Text(
-                "The counts on screen are recorded as they are. That you did the review "
-                    + "is the one thing the op log cannot re-derive."
-            )
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            TextField("Note (optional)", text: $note, axis: .vertical)
+            Text(L10n.Review.snapshotSheetTitle).font(.headline)
+            Text(L10n.Review.snapshotSheetBody)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            TextField(L10n.Review.snapshotNote, text: $note, axis: .vertical)
                 .lineLimit(2...5)
             HStack {
                 Spacer()
-                Button("Cancel") { dismiss() }
-                Button("Save") {
+                Button(L10n.Action.cancel) { dismiss() }
+                Button(L10n.Action.save) {
                     Task {
                         await save()
                         dismiss()
