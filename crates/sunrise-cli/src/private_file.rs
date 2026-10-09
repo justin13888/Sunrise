@@ -31,30 +31,39 @@ fn staging_path(path: &Path) -> PathBuf {
 }
 
 /// Create or replace `path` with `bytes`, readable and writable by its owner
-/// only.
+/// only where the platform has a way to say so.
 ///
-/// The mode is set **at creation**, not chmod'd afterwards, so the file is
-/// never briefly world-readable — the same rule, and the same reason, as
-/// `sunrise_auth::FileStore`.
+/// Every platform stages the bytes in a sibling and renames it over `path`, so
+/// a crash or a full disk mid-write leaves the previous file whole rather than
+/// a truncated one. Both of the files this guards — the vault key and the
+/// parked pairing secret — are unrecoverable once truncated.
+///
+/// On Unix the mode is set **at creation**, not chmod'd afterwards, so the
+/// file is never briefly world-readable — the same rule, and the same reason,
+/// as `sunrise_auth::FileStore`. Windows has no mode bits, and its DACL is not
+/// set here: the file takes the ACL its directory hands down.
+/// `docs/07-clients/desktop.md` §Windows says what that does and does not
+/// protect.
 ///
 /// # Errors
 /// Any I/O failure from creating the parent directory, writing the staging
 /// file, or renaming it into place. A staging file left by a failed write is
 /// removed before the error is returned.
-#[cfg(unix)]
 pub fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
     use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
 
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
     let tmp = staging_path(path);
-    let mut f = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&tmp)?;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut f = options.open(&tmp)?;
     let staged = (|| -> io::Result<()> {
         f.write_all(bytes)?;
         f.sync_all()
@@ -69,32 +78,28 @@ pub fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
     result
 }
 
-/// Windows has no mode bits to set. A client there should be using the OS
-/// credential store, exactly as `sunrise_auth::FileStore` says.
-///
-/// # Errors
-/// Any I/O failure from creating the parent directory or writing the file.
-#[cfg(not(unix))]
-pub fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::write(path, bytes)
-}
-
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::PermissionsExt;
+
+    #[cfg(unix)]
+    #[test]
+    fn the_file_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("secret.key");
+        write_private(&path, b"secret").unwrap();
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "mode was {:o}", mode & 0o777);
+    }
 
     #[test]
-    fn the_file_is_owner_only_and_holds_exactly_what_was_written() {
+    fn the_file_holds_exactly_what_was_written() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("secret.key");
         write_private(&path, b"\x00\x01\xfftwo\nlines\n").unwrap();
 
-        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
-        assert_eq!(mode & 0o777, 0o600, "mode was {:o}", mode & 0o777);
         assert_eq!(
             std::fs::read(&path).unwrap(),
             b"\x00\x01\xfftwo\nlines\n",
@@ -136,7 +141,36 @@ mod tests {
         write_private(&path, b"first").unwrap();
         write_private(&path, b"second").unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), b"second");
-        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
-        assert_eq!(mode & 0o777, 0o600);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+    }
+
+    /// The replacement is a rename, not a rewrite in place, on every platform.
+    ///
+    /// A hard link to the old file tells the two apart: a rewrite in place
+    /// changes what the link reads too, and a rename only moves the name, so
+    /// the link keeps the old bytes. A truncate-then-write is the shape that
+    /// leaves a half-written key behind a crash, and it is what the Windows
+    /// branch of this function used to do.
+    #[test]
+    fn a_rewrite_renames_a_new_file_over_the_old_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("secret.key");
+        let link = dir.path().join("old.key");
+        write_private(&path, b"first").unwrap();
+        std::fs::hard_link(&path, &link).unwrap();
+
+        write_private(&path, b"second").unwrap();
+
+        assert_eq!(std::fs::read(&path).unwrap(), b"second");
+        assert_eq!(
+            std::fs::read(&link).unwrap(),
+            b"first",
+            "the old file was rewritten in place rather than replaced"
+        );
     }
 }
