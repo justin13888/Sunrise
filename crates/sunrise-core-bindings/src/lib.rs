@@ -69,7 +69,7 @@ pub mod recovery;
 pub mod types;
 pub mod vocab;
 
-pub use background::SyncOnceOutcome;
+pub use background::{SyncCancel, SyncOnceOutcome};
 pub use client::{
     PrimaryView, SavedView, SavedViewFile, SavedViews, UndoRefusal, UndoState, UndoableOutcome,
 };

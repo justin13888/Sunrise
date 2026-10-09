@@ -516,6 +516,19 @@ impl Core {
         }
     }
 
+    /// Make a driver waiting out a reconnect delay dial now.
+    ///
+    /// For a caller with a short, fixed budget — a mobile background run —
+    /// that cannot afford the up-to-thirty-second wait a driver suspended
+    /// mid-backoff would otherwise finish first. Skips one delay, not the
+    /// schedule: a refused dial waits as before. A no-op before
+    /// [`Core::start_sync`].
+    pub fn wake_sync(&self) {
+        if self.sync_shared.is_active() {
+            self.sync_shared.wake_reconnect();
+        }
+    }
+
     /// Resolves once this vault is shutting down.
     ///
     /// Awaited beside anything that waits on the driver, so a `close` cannot

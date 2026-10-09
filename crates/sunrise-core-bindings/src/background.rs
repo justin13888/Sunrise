@@ -25,8 +25,14 @@
 //!
 //! # Expiry
 //!
-//! When the OS ends the budget, the foreign side cancels its task and UniFFI
-//! drops this future. Nothing here holds a transaction: the wait only reads
+//! When the OS ends the budget, the foreign side calls [`SyncCancel::cancel`]
+//! on the handle it passed in, and `sync_once` returns at once with
+//! `completed == false`. The handle is the only way the cancel reaches Rust:
+//! UniFFI's Swift async glue has no cancellation path, so cancelling the Swift
+//! task alone would leave this future waiting out its whole budget. A Rust
+//! caller that drops the future instead gets the same result.
+//!
+//! Nothing here holds a transaction: the wait only reads
 //! status, and the driver applies each inbound op through
 //! `Core::apply_remote_all`, which commits it whole or not at all while the
 //! database lock is held, never across an await. Dropping the wait therefore
@@ -185,6 +191,56 @@ impl Transport for KickableTransport {
     }
 }
 
+/// The foreign side's way to end a [`SunriseCore::sync_once`] early.
+///
+/// UniFFI's Swift async glue does not forward a Swift task's cancellation to
+/// the Rust future it awaits, so an expiring iOS task that only cancelled its
+/// own task would leave `sync_once` running to the end of its budget — past
+/// the OS's deadline. The app makes one of these per run, cancels it from the
+/// expiration handler, and `sync_once` returns as soon as it sees it.
+///
+/// One-way and sticky: a handle cancelled before `sync_once` is called makes
+/// that call return at once, and a cancelled handle stays cancelled.
+#[derive(Debug, uniffi::Object)]
+pub struct SyncCancel {
+    cancelled: watch::Sender<bool>,
+}
+
+#[uniffi::export]
+impl SyncCancel {
+    /// A handle nobody has cancelled yet.
+    #[uniffi::constructor]
+    #[must_use]
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self {
+            cancelled: watch::Sender::new(false),
+        })
+    }
+
+    /// End the `sync_once` this handle was passed to, or the next one.
+    /// Idempotent, and sync so a non-async expiration handler can call it.
+    pub fn cancel(&self) {
+        self.cancelled.send_replace(true);
+    }
+
+    /// Whether [`Self::cancel`] has been called.
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
+        *self.cancelled.borrow()
+    }
+}
+
+impl SyncCancel {
+    /// Resolves once the handle is cancelled.
+    async fn cancelled(&self) {
+        let mut rx = self.cancelled.subscribe();
+        // The sender lives as long as `self`, so the wait cannot fail; if it
+        // somehow did, treating it as a cancel ends the call rather than
+        // stranding it.
+        let _ = rx.wait_for(|c| *c).await;
+    }
+}
+
 /// What one [`SunriseCore::sync_once`] achieved.
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct SyncOnceOutcome {
@@ -255,8 +311,10 @@ impl SunriseCore {
     /// when this returns, exactly as [`Self::start_sync`] left it; a
     /// suspended process simply stops scheduling it.
     ///
-    /// Cancelling the call — what an expired iOS task does — stops the wait
-    /// and nothing else. No batch is half applied: see the module docs.
+    /// Cancelling `cancel` — what an expired iOS task does — ends the wait at
+    /// once with `completed == false`, and nothing else: the driver keeps
+    /// what it applied, and no batch is half applied (see the module docs).
+    /// A handle already cancelled when the call begins starts nothing.
     ///
     /// # Errors
     ///
@@ -269,6 +327,7 @@ impl SunriseCore {
         bearer: Option<String>,
         relay_device_id: Option<String>,
         budget_ms: u64,
+        cancel: Arc<SyncCancel>,
     ) -> Result<SyncOnceOutcome, BindingError> {
         // Subscribed before anything moves, so nothing the driver does from
         // here on is missed by either count.
@@ -276,30 +335,45 @@ impl SunriseCore {
         let mut updates = self.inner.sync_status();
         let dialled_before = self.sync_link.dialled();
 
-        self.start_sync(url, bearer, relay_device_id)?;
-        // Nothing dialled yet means no session from before this call exists:
-        // the driver this call may just have started is dialling the fresh
-        // one, and kicking it would only cost a reconnect.
-        if dialled_before > 0 {
-            self.sync_link.kick();
-        }
+        let completed = if cancel.is_cancelled() {
+            false
+        } else {
+            self.start_sync(url, bearer, relay_device_id)?;
+            // Nothing dialled yet means no session from before this call
+            // exists: the driver this call may just have started is dialling
+            // the fresh one, and kicking it would only cost a reconnect.
+            if dialled_before > 0 {
+                self.sync_link.kick();
+            }
+            // A driver the app was suspended in the middle of a reconnect
+            // delay would otherwise finish that delay — up to thirty seconds,
+            // more than the whole budget — before dialling the fresh session.
+            self.inner.wake_sync();
 
-        let wait = async {
-            loop {
-                let status = self.sync_status_now().await?;
-                let fresh = self.sync_link.dialled() > dialled_before;
-                if let Some(done) = settled(&status, fresh) {
-                    return Ok::<bool, BindingError>(done);
+            let wait = async {
+                loop {
+                    // The dial count before the status, never after: a
+                    // reconnect landing between the two reads would otherwise
+                    // let the kicked session's stale `Live` pass as fresh.
+                    let fresh = self.sync_link.dialled() > dialled_before;
+                    let status = self.sync_status_now().await?;
+                    if let Some(done) = settled(&status, fresh) {
+                        return Ok::<bool, BindingError>(done);
+                    }
+                    tokio::select! {
+                        _ = updates.recv() => {}
+                        () = tokio::time::sleep(STATUS_POLL) => {}
+                    }
                 }
-                tokio::select! {
-                    _ = updates.recv() => {}
-                    () = tokio::time::sleep(STATUS_POLL) => {}
+            };
+            tokio::select! {
+                biased;
+                () = cancel.cancelled() => false,
+                done = tokio::time::timeout(Duration::from_millis(budget_ms), wait) => {
+                    done.unwrap_or(Ok(false))?
                 }
             }
         };
-        let completed = tokio::time::timeout(Duration::from_millis(budget_ms), wait)
-            .await
-            .unwrap_or(Ok(false))?;
 
         let mut changed = 0u64;
         loop {
@@ -362,7 +436,7 @@ impl SunriseCore {
 
 #[cfg(test)]
 mod tests {
-    use super::{settled, SyncLink};
+    use super::{settled, SyncCancel, SyncLink};
     use sunrise_core::SyncStatus;
     use sunrise_sync::{SyncState, Transport, TransportError};
 
@@ -406,6 +480,30 @@ mod tests {
     fn a_refusal_or_a_gap_ends_the_wait_without_completing() {
         assert_eq!(settled(&status(SyncState::Stopped, 0), true), Some(false));
         assert_eq!(settled(&status(SyncState::Degraded, 0), true), Some(false));
+    }
+
+    /// The cancel is sticky: a wait that starts after it resolves at once,
+    /// and one already waiting is woken.
+    #[tokio::test]
+    async fn a_cancel_ends_a_wait_before_or_after_it_starts() {
+        let early = SyncCancel::new();
+        early.cancel();
+        tokio::time::timeout(std::time::Duration::from_secs(5), early.cancelled())
+            .await
+            .expect("a handle cancelled first resolves at once");
+
+        let late = SyncCancel::new();
+        assert!(!late.is_cancelled());
+        let waiter = {
+            let late = std::sync::Arc::clone(&late);
+            tokio::spawn(async move { late.cancelled().await })
+        };
+        late.cancel();
+        tokio::time::timeout(std::time::Duration::from_secs(5), waiter)
+            .await
+            .expect("a waiting handle is woken")
+            .expect("the waiter ran");
+        assert!(late.is_cancelled());
     }
 
     /// A transport whose stream never yields: what a socket that died while

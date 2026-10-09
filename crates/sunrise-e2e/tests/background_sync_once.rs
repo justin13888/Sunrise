@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use sunrise_core::{Clock, Command, Core, SystemClock};
-use sunrise_core_bindings::{CoreQuery, CoreQueryResult, SunriseCore};
+use sunrise_core_bindings::{CoreQuery, CoreQueryResult, SunriseCore, SyncCancel};
 use sunrise_domain::TaskDraft;
 use sunrise_e2e::{open_synced_core, pair_with, spawn_relay, wait_pending_zero};
 use sunrise_sync::SyncState;
@@ -95,30 +95,56 @@ async fn a_background_sync_is_bounded_idempotent_and_leaves_nothing_half_applied
     let starved_device = asleep_replica(&peer, dir_starved.path()).await;
     let starved = tokio::time::timeout(
         Duration::from_secs(5),
-        starved_device.sync_once(url.clone(), None, None, 1),
+        starved_device.sync_once(url.clone(), None, None, 1, SyncCancel::new()),
     )
     .await
     .expect("a 1 ms budget returns long before five seconds")
     .expect("a starved run still returns an outcome");
     assert!(!starved.completed, "{starved:?}");
 
-    // 2. The OS expiring the task mid-drain: the foreign side cancels, which
-    //    drops the future. Whatever landed before the drop landed whole —
-    //    no row twice, none the peer did not write — and the next run
-    //    finishes the job with every task exactly once.
+    // 1b. A handle the OS expired before the run reached Rust starts nothing:
+    //     the call answers at once, incomplete, and dials no session.
+    let precancelled = SyncCancel::new();
+    precancelled.cancel();
+    let skipped = tokio::time::timeout(
+        Duration::from_secs(5),
+        starved_device.sync_once(url.clone(), None, None, BUDGET_MS, precancelled),
+    )
+    .await
+    .expect("a run cancelled before it began returns at once")
+    .expect("a cancelled run still returns an outcome");
+    assert!(!skipped.completed, "{skipped:?}");
+
+    // 2. The OS expiring the task mid-drain: the foreign side cancels the
+    //    handle it passed in, the only path a Swift cancel has into Rust.
+    //    The call returns at once rather than waiting out its budget, and
+    //    whatever landed before it landed whole — no row twice, none the peer
+    //    did not write — and the next run finishes the job with every task
+    //    exactly once.
     let dir_expired = tempfile::tempdir().expect("vault dir");
     let expired = asleep_replica(&peer, dir_expired.path()).await;
-    let _ = tokio::time::timeout(
-        Duration::from_millis(20),
-        expired.sync_once(url.clone(), None, None, BUDGET_MS),
+    let cancel = SyncCancel::new();
+    let expiry = {
+        let cancel = Arc::clone(&cancel);
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            cancel.cancel();
+        })
+    };
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        expired.sync_once(url.clone(), None, None, BUDGET_MS, cancel),
     )
-    .await;
+    .await
+    .expect("a cancelled run returns long before its thirty-second budget")
+    .expect("a cancelled run still returns an outcome");
+    expiry.await.expect("the expiry ran");
     for (title, count) in inbox_titles(&expired).await {
         assert!(titles.contains(&title), "an unexpected row {title:?}");
         assert_eq!(count, 1, "{title:?} applied more than once");
     }
     let resumed = expired
-        .sync_once(url.clone(), None, None, BUDGET_MS)
+        .sync_once(url.clone(), None, None, BUDGET_MS, SyncCancel::new())
         .await
         .expect("the next run");
     assert!(resumed.completed, "{resumed:?}");
@@ -128,7 +154,7 @@ async fn a_background_sync_is_bounded_idempotent_and_leaves_nothing_half_applied
     let dir_device = tempfile::tempdir().expect("vault dir");
     let device = asleep_replica(&peer, dir_device.path()).await;
     let caught_up = device
-        .sync_once(url.clone(), None, None, BUDGET_MS)
+        .sync_once(url.clone(), None, None, BUDGET_MS, SyncCancel::new())
         .await
         .expect("a full run");
     assert!(caught_up.completed, "{caught_up:?}");
@@ -145,7 +171,7 @@ async fn a_background_sync_is_bounded_idempotent_and_leaves_nothing_half_applied
     //    proves a live session is replaced rather than trusted — the call
     //    completes only once a session dialled after it has caught up.
     let again = device
-        .sync_once(url.clone(), None, None, BUDGET_MS)
+        .sync_once(url.clone(), None, None, BUDGET_MS, SyncCancel::new())
         .await
         .expect("a repeat run");
     assert!(again.completed, "{again:?}");
@@ -160,7 +186,7 @@ async fn a_background_sync_is_bounded_idempotent_and_leaves_nothing_half_applied
     create_task(&peer, &late).await;
     wait_pending_zero(&peer, TIMEOUT).await;
     let woken = device
-        .sync_once(url.clone(), None, None, BUDGET_MS)
+        .sync_once(url.clone(), None, None, BUDGET_MS, SyncCancel::new())
         .await
         .expect("the push-triggered run");
     assert!(woken.completed, "{woken:?}");
@@ -198,7 +224,7 @@ async fn a_background_sync_drains_the_outbox() {
     }
 
     let outcome = device
-        .sync_once(url, None, None, BUDGET_MS)
+        .sync_once(url, None, None, BUDGET_MS, SyncCancel::new())
         .await
         .expect("a full run");
     assert!(outcome.completed, "{outcome:?}");
