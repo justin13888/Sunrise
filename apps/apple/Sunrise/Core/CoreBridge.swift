@@ -276,6 +276,45 @@ actor CoreBridge {
         )
     }
 
+    /// File this device's APNs token with the relay, signed as
+    /// `relayDeviceID` — the id ``registerRelayDevice(relayURL:bearer:nickname:)``
+    /// or ``bootstrapAccount(relayURL:bearer:email:nickname:termsAcceptedAtMs:)``
+    /// returned. `token` is the APNs device token as lowercase hex.
+    /// Idempotent at the relay: a repeat replaces the row with itself.
+    func registerPushToken(
+        relayURL: String,
+        bearer: String,
+        relayDeviceID: String,
+        token: String
+    ) async throws {
+        try await core.registerPushToken(
+            relayUrl: relayURL,
+            bearer: bearer,
+            relayDeviceId: relayDeviceID,
+            token: token
+        )
+    }
+
+    /// Bring the vault level with the relay once, within `budgetMs`
+    /// (`docs/07-clients/mobile-ios.md` §Background sync). Starts the driver
+    /// if nothing has, replaces any session from before the app was
+    /// suspended, and waits for a fresh one to catch up. Cancelling the
+    /// calling task — what an expired background task does — stops the wait
+    /// and leaves no batch half applied.
+    func syncOnce(
+        url: String,
+        bearer: String?,
+        relayDeviceID: String?,
+        budgetMs: UInt64
+    ) async throws -> SyncOnceOutcome {
+        try await core.syncOnce(
+            url: url,
+            bearer: bearer,
+            relayDeviceId: relayDeviceID,
+            budgetMs: budgetMs
+        )
+    }
+
     // MARK: - iCalendar
 
     /// Read an `.ics` document's `VEVENT`s into the vault as time blocks.
