@@ -22,10 +22,17 @@ extension SessionModel {
     ///
     /// `afterSync` runs once the sync has, with the vault it synced: the
     /// shell re-plans local notifications and redraws the widgets there.
+    ///
+    /// `budgetMs` covers the whole run, not the sync alone: what opening the
+    /// vault, renewing the token and binding the relay device spent comes out
+    /// of what the sync is given. A cancelled run — the OS ended the budget —
+    /// stops at the next step and answers `.failed`; the sync itself ends at
+    /// once (`CoreBridge.syncOnce`), and nothing runs after it.
     func backgroundSync(
         budgetMs: UInt64 = backgroundSyncBudgetMs,
         afterSync: @MainActor (CoreBridge) async -> Void = { _ in }
     ) async -> BackgroundSyncResult {
+        let began = ContinuousClock.now
         if mayOpenInBackground { await start() }
         guard phase == .unlocked, let bridge else { return .noData }
 
@@ -46,17 +53,20 @@ extension SessionModel {
             relayDeviceID: relayDeviceID(relayURL: settings.relayURL, bearer: token)
         ) else { return .noData }
 
+        let spentMs = UInt64(max(0, (ContinuousClock.now - began) / .milliseconds(1)))
+        guard !Task.isCancelled, spentMs < budgetMs else { return .failed }
         let outcome: SyncOnceOutcome
         do {
             outcome = try await bridge.syncOnce(
                 url: url,
                 bearer: bearer,
                 relayDeviceID: deviceID,
-                budgetMs: budgetMs
+                budgetMs: budgetMs - spentMs
             )
         } catch {
             return .failed
         }
+        guard !Task.isCancelled else { return .failed }
         await afterSync(bridge)
         return BackgroundSyncResult(outcome)
     }

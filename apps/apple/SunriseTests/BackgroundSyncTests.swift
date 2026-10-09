@@ -134,7 +134,59 @@ struct BackgroundSyncTests {
         sync.expire()
 
         #expect(await result == .failed)
+        // The cancelled run winds down behind the answer, and only then does
+        // the coordinator take another.
+        for _ in 0..<1000 where sync.isRunning { await _Concurrency.Task.yield() }
         #expect(!sync.isRunning)
+    }
+
+    /// Expiry answers the OS even when the run is stuck in a step that does
+    /// not see cancellation — a vault open, a token renewal — so the task is
+    /// completed inside the OS's window. The run is held until it ends, so a
+    /// new caller cannot overlap it.
+    @Test
+    func expiryAnswersEveryCallerWhileTheRunIsStillStuck() async {
+        // A continuation, not a stream: iterating a stream ends on
+        // cancellation, and this run must not see it.
+        var release: CheckedContinuation<Void, Never>?
+        let sync = background {
+            await withCheckedContinuation { release = $0 }
+            return .newData
+        }
+
+        async let refresh = sync.refresh()
+        while !sync.isRunning { await _Concurrency.Task.yield() }
+        let push = _Concurrency.Task { await sync.sync() }
+        for _ in 0..<100 { await _Concurrency.Task.yield() }
+        sync.expire()
+
+        #expect(await refresh == .failed)
+        #expect(await push.value == .failed)
+        #expect(sync.isRunning, "the stuck run is still the one in flight")
+
+        while release == nil { await _Concurrency.Task.yield() }
+        release?.resume()
+        for _ in 0..<1000 where sync.isRunning { await _Concurrency.Task.yield() }
+        #expect(!sync.isRunning)
+    }
+
+    /// A silent push has no expiration handler, so the coordinator keeps the
+    /// deadline itself: a run that outlives it is answered `.failed`.
+    @Test
+    func aRunPastTheDeadlineIsAnsweredFailed() async {
+        var release: CheckedContinuation<Void, Never>?
+        let sync = BackgroundSync(
+            scheduler: RecordingScheduler(),
+            now: { launch },
+            deadline: .milliseconds(20)
+        ) {
+            await withCheckedContinuation { release = $0 }
+            return .newData
+        }
+
+        #expect(await sync.sync() == .failed)
+        while release == nil { await _Concurrency.Task.yield() }
+        release?.resume()
     }
 
     /// What the OS is told, from what the core reports.

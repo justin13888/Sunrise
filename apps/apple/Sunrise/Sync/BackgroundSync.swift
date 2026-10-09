@@ -46,8 +46,13 @@ protocol BackgroundTaskScheduling {
 ///
 /// Holds no vault. `run` is the one sync, supplied by the app, and everything
 /// here is about *when* it runs and *how many* run: re-arming the refresh,
-/// keeping a push and a refresh from overlapping, and cancelling the run in
-/// flight when the OS ends the budget.
+/// keeping a push and a refresh from overlapping, and ending the run in
+/// flight when the OS ends the budget or ``runDeadline`` passes.
+///
+/// The OS's deadline is kept here, not by `run`: whatever `run` is doing
+/// when the budget ends — opening the vault, renewing a token, syncing —
+/// every caller is answered `.failed` at once, so the OS is told before it
+/// kills the app, and the run is cancelled to wind down behind that answer.
 @MainActor
 final class BackgroundSync {
     /// The refresh task's identifier. Listed in the app's
@@ -63,21 +68,37 @@ final class BackgroundSync {
     /// The soonest the next maintenance window may open.
     static let maintenanceInterval: TimeInterval = 24 * 60 * 60
 
+    /// The longest a run may take before its callers are answered `.failed`
+    /// regardless. A silent push has no expiration handler and gets about
+    /// thirty seconds, as a refresh task does; this answers inside that with
+    /// a margin for the answer itself to reach the OS.
+    static let runDeadline: Duration = .seconds(28)
+
     private let scheduler: any BackgroundTaskScheduling
     private let now: () -> Date
+    private let deadline: Duration
     private let run: @MainActor () async -> BackgroundSyncResult
     /// The run in flight, if any. A second caller joins it rather than
     /// starting another: a push that lands during a refresh wants the same
     /// answer, and two syncs at once would only race each other's sessions.
+    /// Held until the run actually ends, even after an expiry has answered
+    /// its callers, so a run winding down is never overlapped by a new one.
     private var inFlight: Task<BackgroundSyncResult, Never>?
+    /// The callers waiting on the run in flight: answered with its result
+    /// when it ends, or with `.failed` the moment the budget ends.
+    private var waiters: [CheckedContinuation<BackgroundSyncResult, Never>] = []
+    /// Expires the run in flight at ``runDeadline``.
+    private var watchdog: Task<Void, Never>?
 
     init(
         scheduler: any BackgroundTaskScheduling,
         now: @escaping () -> Date = Date.init,
+        deadline: Duration = BackgroundSync.runDeadline,
         run: @escaping @MainActor () async -> BackgroundSyncResult
     ) {
         self.scheduler = scheduler
         self.now = now
+        self.deadline = deadline
         self.run = run
     }
 
@@ -117,20 +138,47 @@ final class BackgroundSync {
     }
 
     /// One sync, single-flight: joins the run in flight rather than starting a
-    /// second.
+    /// second. Answers by ``runDeadline`` at the latest.
     func sync() async -> BackgroundSyncResult {
-        if let inFlight { return await inFlight.value }
-        let task = Task { await run() }
-        inFlight = task
-        let result = await task.value
-        if inFlight == task { inFlight = nil }
-        return result
+        if inFlight == nil { start() }
+        return await withCheckedContinuation { waiters.append($0) }
     }
 
-    /// The OS is ending the budget. Cancels the run in flight, which cancels
-    /// the core's wait; what already landed stays, and nothing is half
-    /// applied (`SunriseCore.syncOnce`).
+    /// The OS is ending the budget. Answers every caller `.failed` now, and
+    /// cancels the run in flight, which reaches the core's wait
+    /// (`CoreBridge.syncOnce`); what already landed stays, and nothing is
+    /// half applied.
     func expire() {
-        inFlight?.cancel()
+        guard let inFlight else { return }
+        inFlight.cancel()
+        answer(.failed)
+    }
+
+    private func start() {
+        let task = Task { await run() }
+        inFlight = task
+        watchdog = Task { [weak self, deadline] in
+            try? await Task.sleep(for: deadline)
+            guard !Task.isCancelled else { return }
+            self?.expire()
+        }
+        Task { [weak self] in
+            let result = await task.value
+            self?.finish(task, with: result)
+        }
+    }
+
+    private func finish(_ task: Task<BackgroundSyncResult, Never>, with result: BackgroundSyncResult) {
+        guard inFlight == task else { return }
+        inFlight = nil
+        watchdog?.cancel()
+        watchdog = nil
+        answer(result)
+    }
+
+    private func answer(_ result: BackgroundSyncResult) {
+        let answered = waiters
+        waiters = []
+        for waiter in answered { waiter.resume(returning: result) }
     }
 }

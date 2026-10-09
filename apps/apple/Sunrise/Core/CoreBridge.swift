@@ -298,21 +298,31 @@ actor CoreBridge {
     /// Bring the vault level with the relay once, within `budgetMs`
     /// (`docs/07-clients/mobile-ios.md` §Background sync). Starts the driver
     /// if nothing has, replaces any session from before the app was
-    /// suspended, and waits for a fresh one to catch up. Cancelling the
-    /// calling task — what an expired background task does — stops the wait
-    /// and leaves no batch half applied.
+    /// suspended, and waits for a fresh one to catch up.
+    ///
+    /// Cancelling the calling task — what an expired background task does —
+    /// ends the Rust wait at once and leaves no batch half applied. The
+    /// cancel crosses as a `SyncCancel` the handler fires: UniFFI's async
+    /// glue does not forward a Swift task's cancellation, so without it the
+    /// core would wait out the whole budget.
     func syncOnce(
         url: String,
         bearer: String?,
         relayDeviceID: String?,
         budgetMs: UInt64
     ) async throws -> SyncOnceOutcome {
-        try await core.syncOnce(
-            url: url,
-            bearer: bearer,
-            relayDeviceId: relayDeviceID,
-            budgetMs: budgetMs
-        )
+        let cancel = SyncCancel()
+        return try await withTaskCancellationHandler {
+            try await core.syncOnce(
+                url: url,
+                bearer: bearer,
+                relayDeviceId: relayDeviceID,
+                budgetMs: budgetMs,
+                cancel: cancel
+            )
+        } onCancel: {
+            cancel.cancel()
+        }
     }
 
     // MARK: - iCalendar

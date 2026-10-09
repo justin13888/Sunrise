@@ -48,6 +48,9 @@ final class BackgroundHost {
             let result = await session.backgroundSync { bridge in
                 await Self.refresh(surfaces, from: bridge)
             }
+            // An expired run has already been answered; the upload waits for
+            // the next run rather than outliving this one's budget.
+            guard !_Concurrency.Task.isCancelled else { return result }
             await push.uploadIfNeeded(to: session.pushUploadTarget())
             return result
         }
@@ -73,9 +76,10 @@ final class BackgroundHost {
         }
     }
 
-    /// Run one task to completion, or to the OS's expiry. Expiry cancels the
-    /// run, which reports `.failed` and so completes the task unsuccessfully;
-    /// the next refresh is already scheduled by then.
+    /// Run one task to completion, or to the OS's expiry. Expiry answers the
+    /// run `.failed` at once, completing the task unsuccessfully inside the
+    /// OS's window, and cancels the run behind that answer; the next refresh
+    /// is already scheduled by then.
     private func perform(
         _ task: BGTask,
         _ body: @escaping @MainActor (BackgroundSync) async -> BackgroundSyncResult
