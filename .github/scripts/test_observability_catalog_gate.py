@@ -15,7 +15,8 @@ never touches a tree, a repository or an exit code.
 
 Both directions are here. `Rejects` pins every route to exit 1 —
 undocumented name, retired name, wrong count, missing count sentence,
-missing provenance, dead provenance, unusable marker, wrong number of
+missing provenance, dead provenance, provenance the landing branch does
+not reach, an unfetched base branch, unusable marker, wrong number of
 blocks. `Accepts` pins what the comparison must ignore: the block's
 two-column layout, its parenthesised asides, prose elsewhere in the
 document, and a name that appears in a file the grep does not read. The
@@ -38,6 +39,7 @@ Run it with `python3 .github/scripts/test_observability_catalog_gate.py`.
 
 from __future__ import annotations
 
+import os
 import pathlib
 import subprocess
 import sys
@@ -137,12 +139,30 @@ class GateCase(unittest.TestCase):
             + f"\n\n```\n{metric_names}\n```\n{tail}",
         )
 
-    def run_gate(self, *args: str) -> subprocess.CompletedProcess:
+    def commit(self, rel: str, text: str) -> str:
+        """Commit one more file on the current branch, returning its short SHA."""
+        self.write(rel, text)
+        self._git("commit", "-qm", rel)
+        return subprocess.run(
+            ["git", "-C", str(self.repo), "rev-parse", "--short=7", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+
+    def run_gate(self, *args: str, base_ref: str | None = None) -> subprocess.CompletedProcess:
+        # CI sets `GITHUB_BASE_REF` on pull requests, and this file runs there
+        # too: the fixture repository has no `origin`, so it is cleared unless
+        # a case sets it on purpose.
+        env = {k: v for k, v in os.environ.items() if k != "GITHUB_BASE_REF"}
+        if base_ref is not None:
+            env["GITHUB_BASE_REF"] = base_ref
         return subprocess.run(
             [sys.executable, str(GATE), "--root", str(self.repo), *args],
             capture_output=True,
             text=True,
             cwd=self.tmp,
+            env=env,
         )
 
     def assert_code(self, result: subprocess.CompletedProcess, code: int, *fragments: str) -> None:
@@ -243,6 +263,56 @@ class Rejects(GateCase):
             self.run_gate(), VIOLATION, "`Last extracted: deadbee` names no commit in this repository."
         )
 
+    def test_provenance_on_a_branch_the_landing_ref_does_not_reach(self):
+        # #485: `a3ea6453` existed only on a pull request branch. It resolved
+        # while that pull request's checks ran, and the squash merge left
+        # `master` naming a commit it did not have.
+        self._git("switch", "-qc", "side")
+        side = self.commit("side.txt", "only on the branch\n")
+        self._git("switch", "-q", "-")
+        self.document(ref=side)
+        self.assert_code(
+            self.run_gate(),
+            VIOLATION,
+            f"`Last extracted: {side}` is not reachable from `HEAD`",
+            "Name a commit already on the base branch.",
+        )
+
+    def test_a_pull_requests_own_commit_is_not_on_its_base(self):
+        # On a pull request `HEAD` reaches the branch's commits, so the base
+        # branch is the ref that survives the merge.
+        self._git("update-ref", "refs/remotes/origin/base", "HEAD")
+        own = self.commit("own.txt", "the pull request's commit\n")
+        self.document(ref=own)
+        self.assert_code(
+            self.run_gate(base_ref="base"),
+            VIOLATION,
+            f"`Last extracted: {own}` is not reachable from `refs/remotes/origin/base`",
+        )
+
+    def test_a_base_branch_that_was_not_fetched(self):
+        # Without the base the reachability check cannot run, which must be red
+        # rather than a quietly retired half of the provenance check.
+        self.document()
+        self.assert_code(
+            self.run_gate(base_ref="absent"),
+            VIOLATION,
+            "the landing ref `refs/remotes/origin/absent` names no commit",
+        )
+
+    def test_a_landing_override_that_does_not_reach_the_provenance(self):
+        # `--landing REF` replaces the default landing ref. `HEAD` reaches the
+        # commit, so only the override can make this run red.
+        self._git("update-ref", "refs/heads/landing", "HEAD")
+        later = self.commit("later.txt", "after the landing ref\n")
+        self.document(ref=later)
+        self.assert_code(self.run_gate(), CLEAN, "OK: observability-catalog clean.")
+        self.assert_code(
+            self.run_gate("--landing", "landing"),
+            VIOLATION,
+            f"`Last extracted: {later}` is not reachable from `landing`",
+        )
+
     def test_a_grep_path_that_is_not_a_directory(self):
         self.document(path="nowhere")
         self.assert_code(
@@ -301,6 +371,17 @@ class Accepts(GateCase):
             metric_names="sunrise_a_total\nsunrise_b_total          (LoggingProvider; never reached)"
         )
         self.assert_code(self.run_gate(), CLEAN, "OK: observability-catalog clean.")
+
+    def test_provenance_on_the_pull_requests_base(self):
+        self._git("update-ref", "refs/remotes/origin/base", "HEAD")
+        self.commit("own.txt", "the pull request's commit\n")
+        self.document()  # the fixture commit, which the base reaches
+        self.assert_code(self.run_gate(base_ref="base"), CLEAN, "OK: observability-catalog clean.")
+
+    def test_an_empty_base_ref_is_a_push_and_lands_on_head(self):
+        # GitHub sets `GITHUB_BASE_REF` to the empty string on push events.
+        self.document(ref=self.commit("later.txt", "on the default branch\n"))
+        self.assert_code(self.run_gate(base_ref=""), CLEAN, "OK: observability-catalog clean.")
 
     def test_the_blocks_two_column_layout(self):
         self.document(metric_names="sunrise_a_total          sunrise_b_total")

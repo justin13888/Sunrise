@@ -53,6 +53,16 @@ decorative string. That check is skipped in a shallow clone, where the object
 genuinely is not present and a red gate would be about the clone rather than
 about the document; the CI job checks out with full history so it runs there.
 
+Existing is not enough: the ref also has to be reachable from the branch the
+change lands on. Pull requests are squash-merged, so a commit that exists only
+on a pull request branch is present while that pull request's checks run and
+absent from the default branch once it merges. `a3ea6453` did exactly that: it
+passed on #479 and turned `master` red at the squash commit (#485). The landing
+ref is the pull request's base branch, `origin/$GITHUB_BASE_REF`, when CI runs
+on a pull request, and `HEAD` otherwise; `--landing REF` overrides both. So a
+block reconciled on a branch names a commit already on the base, and the
+pull request fails before the merge rather than the default branch after it.
+
 Scope
 -----
 
@@ -282,8 +292,21 @@ def check_counts(text: str, blocks: list[Block]) -> list[str]:
     return problems
 
 
-def check_provenance(root: str, blocks: list[Block]) -> list[str]:
-    """`Last extracted` has to name a commit, or it is a decorative string."""
+def landing_ref() -> str:
+    """The ref a `Last extracted` commit has to be reachable from.
+
+    A pull request's checks run on a merge of its head into the base, so `HEAD`
+    reaches the branch's own commits, and squash-merging drops them. The base
+    branch is what survives the merge. `GITHUB_BASE_REF` is set, and empty, on
+    push events, which is why emptiness falls back to `HEAD`.
+    """
+    base = os.environ.get("GITHUB_BASE_REF", "").strip()
+    return f"refs/remotes/origin/{base}" if base else "HEAD"
+
+
+def check_provenance(root: str, blocks: list[Block], landing: str = "HEAD") -> list[str]:
+    """`Last extracted` has to name a commit the landing branch reaches, or it is
+    a decorative string — or one the merge is about to delete."""
     problems: list[str] = []
     missing = [b for b in blocks if b.ref is None]
     for block in missing:
@@ -303,6 +326,17 @@ def check_provenance(root: str, blocks: list[Block]) -> list[str]:
             "The CI job checks out full history."
         )
         return problems
+    resolved = subprocess.run(
+        ["git", "-C", root, "rev-parse", "--verify", "--quiet", f"{landing}^{{commit}}"],
+        capture_output=True,
+        check=False,
+    )
+    if resolved.returncode != 0:
+        problems.append(
+            f"the landing ref `{landing}` names no commit, so no `Last extracted` ref could be "
+            "checked for reachability. CI fetches every branch with `fetch-depth: 0`."
+        )
+        return problems
     for block in blocks:
         if block.ref is None:
             continue
@@ -316,10 +350,22 @@ def check_provenance(root: str, blocks: list[Block]) -> list[str]:
                 f"{DOC}:{block.line}: `Last extracted: {block.ref}` names no commit in this "
                 "repository."
             )
+            continue
+        reachable = subprocess.run(
+            ["git", "-C", root, "merge-base", "--is-ancestor", block.ref, landing],
+            capture_output=True,
+            check=False,
+        )
+        if reachable.returncode != 0:
+            problems.append(
+                f"{DOC}:{block.line}: `Last extracted: {block.ref}` is not reachable from "
+                f"`{landing}`, so a squash merge leaves it naming no commit. Name a commit "
+                "already on the base branch."
+            )
     return problems
 
 
-def check(root: str) -> int:
+def check(root: str, landing: str = "HEAD") -> int:
     path = os.path.join(root, DOC)
     try:
         with open(path, encoding="utf-8") as handle:
@@ -346,7 +392,7 @@ def check(root: str) -> int:
         print(f"observability-catalog: {block.kind} block — {len(block.names)} listed, {len(found)} in `{block.path}`.")
 
     problems += check_counts(text, blocks)
-    problems += check_provenance(root, blocks)
+    problems += check_provenance(root, blocks, landing)
 
     if problems:
         for problem in problems:
@@ -451,6 +497,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Check observability.md's extracted blocks.")
     parser.add_argument("--root", default=None, help="repository root (default: the working tree this script is in)")
     parser.add_argument("--self-test", action="store_true", help="assert the parsing and comparison rules and exit")
+    parser.add_argument(
+        "--landing",
+        default=None,
+        help="ref each `Last extracted` commit must be reachable from "
+        "(default: origin/$GITHUB_BASE_REF on a pull request, else HEAD)",
+    )
     args = parser.parse_args()
 
     if args.self_test:
@@ -473,7 +525,7 @@ def main() -> int:
     failed = self_test()
     if failed:
         return failed
-    return check(root)
+    return check(root, args.landing or landing_ref())
 
 
 if __name__ == "__main__":
