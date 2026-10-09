@@ -300,6 +300,19 @@ class Rejects(GateCase):
             "the landing ref `refs/remotes/origin/absent` names no commit",
         )
 
+    def test_a_landing_override_that_does_not_reach_the_provenance(self):
+        # `--landing REF` replaces the default landing ref. `HEAD` reaches the
+        # commit, so only the override can make this run red.
+        self._git("update-ref", "refs/heads/landing", "HEAD")
+        later = self.commit("later.txt", "after the landing ref\n")
+        self.document(ref=later)
+        self.assert_code(self.run_gate(), CLEAN, "OK: observability-catalog clean.")
+        self.assert_code(
+            self.run_gate("--landing", "landing"),
+            VIOLATION,
+            f"`Last extracted: {later}` is not reachable from `landing`",
+        )
+
     def test_a_grep_path_that_is_not_a_directory(self):
         self.document(path="nowhere")
         self.assert_code(
