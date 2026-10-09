@@ -326,6 +326,25 @@ mod tests {
         res.assert_status(StatusCode::OK);
     }
 
+    /// The probes go through the seams, so a backend that is not SQLite or
+    /// not a filesystem is probed the same way, and one that does not answer
+    /// is named.
+    #[tokio::test]
+    async fn deep_names_each_backend_that_does_not_answer() {
+        let state = ServerState::new(ServerConfig::default())
+            .with_metadata_store(Arc::new(crate::store::conformance::Unreachable))
+            .with_blob_backend(Arc::new(crate::blob::conformance::Unreachable));
+        let client = Client::from_state(state);
+        let res = client
+            .send(Method::GET, "/api/v1/health?deep=1", None)
+            .await;
+        res.assert_status(StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            res.json()["failed"],
+            serde_json::json!(["store", "blob_root"])
+        );
+    }
+
     #[tokio::test]
     async fn deep_flips_to_503_once_the_drain_begins() {
         let dir = tempfile::tempdir().unwrap();
