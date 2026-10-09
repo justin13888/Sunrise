@@ -32,19 +32,19 @@ version is that the app is not sandboxed
 ([`desktop.md`](./desktop.md) §Sandboxing), the Mac App Store requires the
 sandbox, and a self-hosted relay should not be somebody else's review decision.
 
-## The seven secrets
+## The eight secrets
 
-All seven are **repository secrets** (Settings → Secrets and variables →
+All eight are **repository secrets** (Settings → Secrets and variables →
 Actions → Repository secrets). Only the repository owner can create them. Until
-all seven exist, **every tag push fails** — in the `verify` job, with a message
+all eight exist, **every tag push fails** — in the `verify` job, with a message
 naming the ones that are missing, before anything is built and before the
 container image is pushed. That placement is deliberate twice over: the
 alternative to failing is an unsigned `.dmg` on the Releases page that nobody
 notices until a user tries to open it, and the alternative to failing *early*
 is a tag whose image reached GHCR and whose Release never appeared.
 
-Two error messages, not one, and the split is on purpose: the first six are
-about the file a stranger downloads, and the seventh is about the feed every
+Two error messages, not one, and the split is on purpose: the first seven are
+about the file a stranger downloads, and the eighth is about the feed every
 already-installed copy reads. Both are printed before the job exits, so one
 failed run tells you everything that is missing.
 
@@ -53,6 +53,7 @@ failed run tells you everything that is missing.
 | `MACOS_CERTIFICATE_P12` | Base64 of a `.p12` holding the **Developer ID Application** certificate *and* its private key | `security import` into the job's temporary keychain |
 | `MACOS_CERTIFICATE_PASSWORD` | The password set when exporting that `.p12` | the same `security import` |
 | `MACOS_TEAM_ID` | The 10-character Apple Developer Team ID | `DEVELOPMENT_TEAM` on the archive, `teamID` in the export options plist |
+| `MACOS_PROVISIONING_PROFILE` | Base64 of the **Developer ID** provisioning profile for `dev.sunrise.Sunrise`, which grants the app's `keychain-access-groups` | installed into Xcode's profiles directory; named on the archive and in the export options plist's `provisioningProfiles` |
 | `APPLE_API_KEY_P8` | Base64 of the App Store Connect API key file, `AuthKey_<KEYID>.p8` | `xcrun notarytool --key` |
 | `APPLE_API_KEY_ID` | That key's id — the `<KEYID>` in the filename | `xcrun notarytool --key-id` |
 | `APPLE_API_ISSUER_ID` | The issuer UUID for the App Store Connect account | `xcrun notarytool --issuer` |
@@ -113,6 +114,55 @@ Mac.
 
 6. Delete the `.p12`. The copy in your keychain is the one you keep, and a
    private key in a Downloads folder is a private key somebody else will find.
+
+### `MACOS_PROVISIONING_PROFILE`
+
+The Release build's entitlements (`apps/apple/macOS/Sunrise.entitlements`)
+carry `keychain-access-groups`, which moves the app onto the data-protection
+keychain. It is a **restricted** entitlement: macOS kills a binary carrying it
+before `main` unless a provisioning profile from the signing team grants it,
+and a Developer ID signature alone is not that grant.
+[`desktop.md`](./desktop.md) §The data-protection keychain is not a one-line
+entitlement has the measurement. Create the certificate above first — the
+profile names it.
+
+1. [developer.apple.com](https://developer.apple.com/account/resources/identifiers/list)
+   → Identifiers → **+** → **App IDs** → *App*. Description `Sunrise`,
+   **Explicit** Bundle ID `dev.sunrise.Sunrise`. No capability needs ticking:
+   a macOS profile grants the team's keychain groups (`<TEAMID>.*`) by
+   default, and the App Group the app uses is team-prefixed, which Developer
+   ID grants without a profile. Skip this step if the App ID exists.
+2. Profiles → **+** → under *Distribution*, **Developer ID** → App ID
+   `dev.sunrise.Sunrise` → the **Developer ID Application** certificate whose
+   `.p12` is `MACOS_CERTIFICATE_P12` → name it, e.g. `Sunrise Developer ID`.
+   The name is what the pipeline refers to the profile by, and it reads it out
+   of the profile itself, so any name works. **Generate**, and download the
+   `.provisionprofile`.
+3. Check it before you trust it, so a wrong profile fails here rather than on
+   a macOS runner:
+
+   ```
+   security cms -D -i Sunrise_Developer_ID.provisionprofile | plutil -p - \
+     | grep -E 'application-identifier|keychain-access-groups|ProvisionsAllDevices|ExpirationDate' -A2
+   ```
+
+   You must see `com.apple.application-identifier` =
+   `<TEAMID>.dev.sunrise.Sunrise`, a `keychain-access-groups` array (normally
+   `<TEAMID>.*`), `ProvisionsAllDevices => true` — which is what makes it a
+   Developer ID profile rather than a development one — and an
+   `ExpirationDate` in the future. The pipeline asserts the same four things
+   before it builds.
+4. Base64 it into `MACOS_PROVISIONING_PROFILE`:
+
+   ```
+   base64 -i Sunrise_Developer_ID.provisionprofile | pbcopy
+   ```
+
+The profile is bound to the certificate it names. **Renewing the Developer ID
+certificate means regenerating the profile against the new one** and replacing
+both secrets together; a profile for the old certificate fails the archive.
+The profile also expires on its own, and the pipeline refuses an expired one by
+name.
 
 ### `APPLE_API_KEY_P8`, `APPLE_API_KEY_ID`, `APPLE_API_ISSUER_ID`
 
@@ -223,7 +273,7 @@ code-signature check is a separate gate they do not hold.
 
 `.github/workflows/release.yml`, job `macos-app`, on `macos-26`:
 
-0. **Preflight**, in `verify` rather than in this job. Checks all six secrets
+0. **Preflight**, in `verify` rather than in this job. Checks all eight secrets
    are non-empty and stops the whole workflow if any is not. Only the boolean
    `secrets.X != ''` crosses into that job — no key material — because all it
    has to know is whether the secret exists.
@@ -245,12 +295,29 @@ code-signature check is a separate gate they do not hold.
    that are not currently valid, and names the reason) and the keychain's
    certificates, because the `-v` output alone cannot separate the causes that
    leave no valid identity at all.
+
+   **Then the provisioning profile.** `MACOS_PROVISIONING_PROFILE` is decoded,
+   unwrapped with `security cms -D`, and **asserted** before anything is
+   built: its App ID is `$MACOS_TEAM_ID.dev.sunrise.Sunrise`, it provisions
+   all devices (a Developer ID profile, not a development one), it grants a
+   `keychain-access-groups` entry, and it has not expired. Every failing check
+   is reported, then the job stops. It is then copied into Xcode's profiles
+   directory under its own UUID, and its Name is what the next two steps
+   refer to it by.
 3. **`xcodegen generate` then `xcodebuild archive`** on the `Sunrise` macOS
    scheme, `-destination 'generic/platform=macOS'`, `-configuration Release`,
    with `ARCHS=arm64`, `CODE_SIGN_STYLE=Manual`, `CODE_SIGN_IDENTITY="Developer
-   ID Application"`, `DEVELOPMENT_TEAM=$MACOS_TEAM_ID` and
+   ID Application"`, `DEVELOPMENT_TEAM=$MACOS_TEAM_ID`, the profile, and
    `OTHER_CODE_SIGN_FLAGS=--timestamp`. The hardened runtime is **not** passed
    here; `project.yml` carries it (see below).
+
+   The profile reaches the `Sunrise` target alone, as
+   `PROVISIONING_PROFILE_SPECIFIER='$(SUNRISE_PROFILE_$(TARGET_NAME))'` plus
+   `SUNRISE_PROFILE_Sunrise=<the profile's Name>`. A plain specifier on the
+   command line would apply to every target the scheme builds, including the
+   embedded `SunriseWidgets` extension, whose bundle id the profile does not
+   match; the reference resolves to the profile for the app and to nothing for
+   the extension, which needs none.
    `MARKETING_VERSION` comes from the tag rather than from `project.yml`'s
    pinned `0.1.0`, so the About box and the file name agree.
 
@@ -273,7 +340,13 @@ code-signature check is a separate gate they do not hold.
    that triple to `macos_slices` first. Until then, arm64 is the product, and
    the artifact's name says so.
 4. **`xcodebuild -exportArchive`** with a `method: developer-id`,
-   `signingStyle: manual` export options plist.
+   `signingStyle: manual` export options plist whose `provisioningProfiles`
+   maps `dev.sunrise.Sunrise` to the profile. The step then **asserts** that
+   the exported app's signed entitlements carry `keychain-access-groups` =
+   `<TEAMID>.dev.sunrise.Sunrise` and that
+   `Sunrise.app/Contents/embedded.provisionprofile` exists. A profile that
+   silently failed to embed would otherwise sign, notarize and staple without
+   complaint and be found by the first user whose Mac kills the app.
 5. **Notarize and staple the app**, then build the `.dmg` around the stapled
    copy, sign it, **notarize and staple the `.dmg` too**. Two submissions, and
    the first is the one that makes an offline first launch work — see ADR-0031.
@@ -426,8 +499,10 @@ uploads it as a workflow artifact. It creates no tag, no Release and no
 registry push — `verify` marks the run as a dry run and the `binaries`, `image`
 and `release` jobs skip.
 
-What it does **not** exercise, and cannot: the keychain import, `xcodebuild
--exportArchive` (there is no export method that produces an unsigned Developer
+What it does **not** exercise, and cannot: the keychain import, the
+provisioning profile (the dry run archives `CODE_SIGNING_ALLOWED=NO`, which
+embeds no entitlements and so needs no profile), `xcodebuild
+-exportArchive` and its entitlement assertion (there is no export method that produces an unsigned Developer
 ID export, so the dry run lifts the `.app` straight out of the archive
 instead), both notarization submissions, the stapling, and the update feed —
 the `.dmg`'s EdDSA signature, and the whole `appcast` job, which needs a
@@ -451,6 +526,9 @@ correct behaviour and it is why the file name says `UNSIGNED`.
 | `errSecInternalComponent` from `codesign` | `security set-key-partition-list` did not run or did not match the keychain password. The workflow does it; a local reproduction usually has not. |
 | `No Developer ID Application identity in the signing keychain` | The keychain step's assertion. The `.p12` decoded and imported, but the keychain holds no *valid* `Developer ID Application` identity: exported without its private key, a different certificate type, an expired certificate, or a chain that does not validate on the runner. The listings printed under the error say which — an expired or untrusted certificate appears in the non-`-v` identity list with its reason, and a `.p12` that carried no key leaves a certificate but no identity. |
 | `No signing certificate "Developer ID Application" found` from `xcodebuild` | Usually a valid identity that does not match `MACOS_TEAM_ID`, since the assertion above intercepts the missing-private-key case earlier under its own message. Check the team in the identity's name against the secret; a keychain search-list or partition-list problem affecting the `xcodebuild` step alone can also reach here. |
+| `The provisioning profile is for a different app or team`, `… is not a Developer ID profile`, `… grants no keychain access group`, or `… has expired` | The profile step's assertions, each naming the one check that failed. Regenerate the profile as [`MACOS_PROVISIONING_PROFILE`](#macos_provisioning_profile) describes — Developer ID type, App ID `dev.sunrise.Sunrise`, the same team as `MACOS_TEAM_ID` — and replace the secret. |
+| `xcodebuild archive` reports the profile does not include the signing certificate | The profile was generated against a different Developer ID Application certificate than the one in `MACOS_CERTIFICATE_P12`, usually after a certificate renewal. Regenerate the profile against the current certificate. |
+| `The exported app does not carry its keychain access group` or `… embeds no provisioning profile` | The export's post-condition. The archive and export ran, but the bundle they produced would either run on the login keychain or be killed by AMFI on launch. The signed entitlements are printed above the error. Check that `apps/apple/project.yml` still points the `Sunrise` target's Release `CODE_SIGN_ENTITLEMENTS` at `macOS/Sunrise.entitlements`, and that the export options plist's `provisioningProfiles` key is the app's bundle id. |
 | notarytool: `Team is not yet configured for notarization` | The Apple Developer Program membership is not active, or the account has not accepted the current agreements. |
 | notarytool status `Invalid`, log says `The executable does not have the hardened runtime enabled` | `ENABLE_HARDENED_RUNTIME: YES` is missing from `apps/apple/project.yml`'s `settings.base`, or a target overrode it back to `NO`. |
 | notarytool status `Invalid`, log says `The signature does not include a secure timestamp` | `--timestamp` did not reach `codesign`, usually because `OTHER_CODE_SIGN_FLAGS` was overridden elsewhere. |
