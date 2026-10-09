@@ -127,7 +127,15 @@ pub const ENVELOPE_FORMAT_FLOOR: u16 = 3;
 /// (issue #324, ADR-0045 §7). A v9 build parks an op of either family, and
 /// replays it once a v10 build opens the vault. Every v1..v9 payload shape is
 /// unchanged, so the floor still does not move.
-pub const DOC_SCHEMA_V: u16 = 10;
+///
+/// `11` adds the `prf_` Preferences entity and its feature,
+/// `preferences.entity` (issue #337, ADR-0050). It has no op family of its
+/// own: it is written only by `Patch`, one map register per key. A v10 build
+/// cannot decode a `Patch` whose `ref` has a prefix it does not know, and
+/// refuses it as an invalid op; it never receives one, because a vault write
+/// waits until every device has advertised `preferences.entity`. Every v1..v10
+/// payload shape is unchanged, so the floor still does not move.
+pub const DOC_SCHEMA_V: u16 = 11;
 
 /// The first [`DOC_SCHEMA_V`] that has a fingerprint (ADR-0045 §3, `N_fp`).
 ///
@@ -172,6 +180,10 @@ pub const DOC_SCHEMA_FINGERPRINTS: &[(u16, [u8; 32])] = &[
     (
         10,
         hex32("e9a6d82f484ef86b75291f8d58f28e1a04bc6ee5f877de89da5afe0af03ff12c"),
+    ),
+    (
+        11,
+        hex32("3c75fc18c3369d0481d746a3534a34028ad1068a02ee6816e3062b830e6debd4"),
     ),
 ];
 
@@ -438,4 +450,9 @@ pub const CRYPTO_SUITE_V: u16 = 5;
 /// required feature ids, and each device's latest list of supported ones.
 /// Schema-only: both start empty, which is what a vault no feature-aware build
 /// has written to means.
-pub const STORAGE_V: u16 = 36;
+///
+/// `37` is migration `0037_preferences.sql` (issue #337, ADR-0050): the
+/// projection of the vault's one `Preferences` entity, and this device's
+/// preference overlay. Schema-only: both start empty, and every key then
+/// resolves to its default, which is what a vault with no preferences means.
+pub const STORAGE_V: u16 = 37;

@@ -50,7 +50,7 @@ use sunrise_core::{Command, Core, Query, QueryResult};
 use sunrise_domain::{RoutineRow, Task};
 use sunrise_id::EntityRef;
 
-use crate::dto::EditGate;
+use crate::dto::{EditGate, PreferenceItem};
 use crate::{BindingError, SunriseCore};
 
 // ---------------------------------------------------------------------------
@@ -514,6 +514,99 @@ pub fn parse_saved_view(name: String, spec: String) -> Result<SavedView, Binding
     views::parse_view(&name, &spec)
         .map(|v| SavedView::from(&v))
         .map_err(BindingError::Core)
+}
+
+// ---------------------------------------------------------------------------
+// Bootstrap preferences
+// ---------------------------------------------------------------------------
+
+/// The bootstrap preferences (`sync.relay_url`, `auth.oidc_issuer`,
+/// `auth.oidc_client_id`) held in `dir`, resolved. Read without a vault: these
+/// are what a device needs to find and unlock one.
+///
+/// `dir` is the directory the client keeps its vaults in; the file is
+/// `preferences.bootstrap.json` there.
+///
+/// # Errors
+/// The file exists and cannot be read.
+#[uniffi::export]
+pub fn bootstrap_preferences(dir: String) -> Result<Vec<PreferenceItem>, BindingError> {
+    let file = read_bootstrap_file(std::path::Path::new(&dir))?;
+    Ok(sunrise_core::BootstrapPreferences::resolve(file.as_deref())
+        .into_iter()
+        .map(PreferenceItem::from)
+        .collect())
+}
+
+/// Set one bootstrap preference in `dir`, or remove it with `None`. The file
+/// is written to a sibling and renamed over the old one, so a crash leaves
+/// one whole file or the other.
+///
+/// # Errors
+/// A key that is not a bootstrap key, a value that does not fit it, or a
+/// file that cannot be written.
+#[uniffi::export]
+pub fn set_bootstrap_preference(
+    dir: String,
+    key: String,
+    value: Option<String>,
+) -> Result<(), BindingError> {
+    let dir = std::path::Path::new(&dir);
+    let file = read_bootstrap_file(dir)?;
+    let body = sunrise_core::BootstrapPreferences::set(file.as_deref(), &key, value.as_deref())
+        .map_err(|e| BindingError::Core(e.to_string()))?;
+    let io = |e: std::io::Error| BindingError::Core(format!("bootstrap preferences: {e}"));
+    std::fs::create_dir_all(dir).map_err(io)?;
+    let path = dir.join(sunrise_core::BOOTSTRAP_FILE);
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, body).map_err(io)?;
+    std::fs::rename(&tmp, &path).map_err(io)
+}
+
+/// The bootstrap file's bytes in `dir`, `None` when there is none.
+fn read_bootstrap_file(dir: &std::path::Path) -> Result<Option<Vec<u8>>, BindingError> {
+    match std::fs::read(dir.join(sunrise_core::BOOTSTRAP_FILE)) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(BindingError::Core(format!("bootstrap preferences: {e}"))),
+    }
+}
+
+#[cfg(test)]
+mod bootstrap_tests {
+    use super::*;
+    use crate::dto::PreferenceValue;
+
+    #[test]
+    fn the_bootstrap_file_is_written_whole_and_read_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vaults");
+        let at = path.to_string_lossy().into_owned();
+        assert!(bootstrap_preferences(at.clone())
+            .unwrap()
+            .iter()
+            .all(|p| p.value.is_none()));
+        set_bootstrap_preference(
+            at.clone(),
+            "sync.relay_url".into(),
+            Some("wss://relay.example/sync".into()),
+        )
+        .unwrap();
+        let relay = bootstrap_preferences(at.clone())
+            .unwrap()
+            .into_iter()
+            .find(|p| p.key == "sync.relay_url")
+            .unwrap();
+        assert_eq!(
+            relay.value,
+            Some(PreferenceValue::Text {
+                value: "wss://relay.example/sync".into()
+            })
+        );
+        assert!(path.join(sunrise_core::BOOTSTRAP_FILE).exists());
+        assert!(!path.join("preferences.bootstrap.json.tmp").exists());
+        assert!(set_bootstrap_preference(at, "week_start".into(), Some("MO".into())).is_err());
+    }
 }
 
 // ---------------------------------------------------------------------------
