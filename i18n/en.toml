@@ -93,25 +93,314 @@ relay_told = "The relay has been told."
 # {count} earlier removals the account stopped recording; their ids follow.
 unwound = "{count, plural, one {The account no longer records a removal of one other device, because the device that removed it was itself removed. It is not back in — it receives no keys and reads nothing written since — but the account does not say it was removed. Remove it again from a device you still trust.} other {The account no longer records a removal of # other devices, because the device that removed them was itself removed. They are not back in — they receive no keys and read nothing written since — but the account does not say they were removed. Remove each of them again from a device you still trust.}}"
 
+# Every key under `cli` is prose the command line prints for a person. Command
+# names (`sunrise sync --once`), flags, environment variable names and file
+# names are what the user types, so they stay as they are in every language.
+
+[cli.usage]
+# `sunrise help`. Translate the descriptions only: the command lines, flags,
+# placeholders in <angle brackets> and variable names are typed as written.
+# The description column starts at column 34; keep it aligned.
+text = '''
+sunrise — command-line client for Sunrise
+
+USAGE:
+  capture and triage
+    sunrise capture <text>...    parse and commit one task, then exit
+    sunrise edit <id>... <tokens>...
+                                 change a task's fields (see EDIT SYNTAX)
+    sunrise retitle <id> <text>...
+                                 give one task a new title
+    sunrise defer <id>... <when> push tasks out, counting the deferral
+    sunrise done <id>...         complete one or more tasks
+    sunrise drop <id>...         soft-delete one or more tasks
+    sunrise today                list today's tasks
+    sunrise inbox                list inbox tasks
+    sunrise next                 the focus planner's top picks
+    sunrise search <query>...    full-text search
+
+  the vault's shape
+    sunrise streams              list streams with open counts
+    sunrise streams move <id|name> before <id|name>
+    sunrise streams move <id|name> last
+                                 reorder the stream list; syncs to every device
+    sunrise stream <id|name>     list the tasks in one stream
+    sunrise contexts             list contexts with task counts
+    sunrise context <id|name>    list the tasks carrying one context
+    sunrise routines             list routines with cadence and streak
+
+  attachments
+    sunrise attachments <task-id>
+                                 list a task's attachments, marking which are
+                                 on this device
+    sunrise attachment get <attachment-id> [path]
+                                 download one attachment's bytes on demand,
+                                 whatever its size, and write them to `path`
+                                 or to stdout
+    sunrise attachment cancel <attachment-id>
+                                 stop a download this vault has outstanding and
+                                 mark it partial; `get` restarts it from byte 0
+
+  review and reporting
+    sunrise review               print this week's review summary
+    sunrise export <dataset> [json|csv] [path]
+                                 trends | activity | focus | streaks
+
+  calendar interchange (RFC 5545)
+    sunrise ical import <path|-> [--stream <id>] [--source <name>]
+                                 read an .ics file (or stdin) as time blocks
+    sunrise ical export [today|week] [path]
+                                 write .ics to stdout, or to a path
+
+  devices and identity
+    sunrise pair offer --out <file>
+                                 (on the device with the vault) write the
+                                 account's public identity. Carries no key
+    sunrise pair request --offer <file> --out <file>
+                                 (on the device being added) mint this device's
+                                 keys and ask for a certificate
+    sunrise pair issue --request <file> --out <file>
+                                 (on the device with the vault) certify those
+                                 keys and hand over the vault. This file carries
+                                 your vault key
+    sunrise pair accept --response <file>
+                                 (on the device being added) adopt the
+                                 certificate and open the vault
+    sunrise devices              list this account's devices, marking revoked
+                                 and non-current ones distinctly
+    sunrise device revoke <id-prefix> [--reason lost|stolen|retired|compromised]
+                                 revoke a device and rotate every Stream key, so
+                                 it reads nothing written afterwards. Also
+                                 rotates the account identity, on the device
+                                 that created the account. It cannot be
+                                 undone: to use the device again, pair it
+                                 as a new device
+    sunrise identity status      the account's identity chain: its stable name,
+                                 the identity in force, and whether this device
+                                 still speaks for it
+    sunrise identity rotate [--new-recovery-code]
+                                 replace the account identity, keeping every
+                                 current device. --new-recovery-code refuses to
+                                 carry the old code forward, which is what to
+                                 use when the code itself is suspected
+
+  account
+    sunrise vaults               list this machine's vaults, marking the open one
+    sunrise login                sign in via OIDC and store the token
+    sunrise logout               forget the stored token
+    sunrise whoami               report the stored token's state
+    sunrise bootstrap [email]    publish this vault's identity to the relay,
+                                 register this device, and print the 24-word
+                                 recovery code once. Write that code down
+    sunrise recover <word>...    rebuild this account in an EMPTY vault
+                                 directory from the 24-word code. Reads the
+                                 code from stdin if none is given, and signs
+                                 you in again first — the relay only releases
+                                 a recovery blob to a fresh authentication
+
+  plumbing
+    sunrise focus <id>           open a focus session on a task
+    sunrise focus end [--done]   close every running session; --done also
+                                 completes the task it was opened on
+    sunrise sync --once          drain the outbox and exit (cron / CI)
+    sunrise help                 show this message
+
+CAPTURE SYNTAX:
+    #stream  @context  ^when  !priority(1-5)  ~duration  *due:when*
+
+    sunrise capture 'Renew passport #travel ^next saturday !1 ~1h'
+
+EDIT SYNTAX:
+    #stream  @ctx  @-ctx  !priority  %energy  ~duration  ^when  due:when
+    a trailing `-` clears a field:  !-  %-  ~-  ^-  due:-  @-
+
+    sunrise edit tsk_01J… ''#work !1 ^next friday'
+    sunrise edit tsk_01J… tsk_01K… '@errands ~30m'
+
+    Bare words are refused: an edit line is not a title, and the whole
+    line is rejected if any token is, so nothing is half-applied.
+    The title is `sunrise retitle`, which is all title and no grammar.
+
+ENVIRONMENT:
+    SUNRISE_VAULT             vault directory (default ~/.sunrise/vault).
+                              Each one is a separate account: the first open
+                              mints a random 32-byte root for it
+    SUNRISE_KEYSTORE          where those roots are kept, mode 0600 and one
+                              file per vault (default
+                              $XDG_DATA_HOME/sunrise/keys). Deliberately not
+                              inside the vault: a vault directory copied on
+                              its own must stay ciphertext. Back both up
+    SUNRISE_VAULT_ROOT        open with this root (64 hex chars) and touch no
+                              keystore — how two vaults share one account
+                              until pairing lands, and how to open a vault
+                              made before per-vault keys
+    SUNRISE_SYNC_URL          relay endpoint; unset means fully offline
+    SUNRISE_SYNC_TOKEN        OIDC bearer for the relay; overrides a stored
+                              login. Unset, with no stored login, only works
+                              against a self-host relay
+    SUNRISE_OIDC_ISSUER       OIDC issuer URL, for `sunrise login`
+    SUNRISE_OIDC_CLIENT_ID    OIDC client id, for `sunrise login`
+    SUNRISE_LOG_FILE          override the NDJSON log destination
+
+  Joining an account is `sunrise pair`, not a variable. The two that used to do
+  it carried the account's signing key in one file; see `sunrise pair`.
+'''
+
+[cli.general]
+# stderr, before any failure. {message} is the failure, already worded.
+error = "error: {message}"
+# stderr, before an advisory line the command printed and carried on after.
+note = "note: {text}"
+# A failure that means the program itself is wrong, not the user's input.
+unexpected_result = "unexpected query result"
+expected_device_list = "expected a device list"
+expected_identity_status = "expected an identity status"
+# {raw} is what the user typed; {reason} is why it is not an id.
+not_a_task_id = "not a task id: {raw} ({reason})"
+not_an_attachment_id = "not an attachment id: {raw} ({reason})"
+not_a_stream_id = "not a stream id: {raw} ({reason})"
+no_such_task = "no such task: {id}"
+# {arg} is one argument the command did not expect.
+unexpected_argument = "unexpected argument: {arg}"
+# {name} is the subcommand the user typed, in quotes.
+unknown_subcommand = "unknown subcommand {name}; try `sunrise help`"
+
 [cli.login]
 opening_browser = "Opening your browser to sign in. If it does not open, visit:"
 # {seconds} is how long the new access token lasts.
 signed_in = "Signed in. Access token valid for {seconds, plural, one {# second} other {# seconds}}."
 signed_out = "Signed out."
+# {error} names the missing variable; {issuer} and {client_id} are both names.
+needs_config = "{error}; set {issuer} and {client_id} first"
+# {name} is an environment variable's name.
+not_set = "{name} is not set"
+# Printed after the sign-in URL when no browser could be opened. {error} says why.
+no_browser = "(could not open a browser: {error})"
+# `sunrise whoami`.
+status_expired = "logged in, but the access token has expired — run `sunrise login`"
+status_valid = "logged in; access token valid for another {seconds, plural, one {#s} other {#s}}"
+status_none = "not logged in"
+status_unreadable = "cannot read stored credentials: {error}"
+
+[cli.bootstrap]
+not_signed_in = "not signed in; run `sunrise login` first"
+# {var} is the environment variable that names the relay.
+needs_relay = "set {var} to the relay origin"
+# {device} is the relay's id for this device; {path} the file it belongs in.
+unrecorded = "registered as {device} but could not record it at {path}: {error}"
+# {identity} and {device} are ids; {email} the account's address.
+ready = "Account {identity} ({email}) ready; this device is {device}."
+paired_no_code = "this vault was paired into an existing account, so it holds no identity key and cannot produce a recovery code. The device that created the account is the one that can."
 
 [cli.vaults]
 # stderr, when `sunrise vaults` has nothing to list. {dir} is a path.
 none = "no vaults keyed in {dir}"
 
+[cli.capture]
+needs_text = "capture needs some text; see `sunrise help`"
+# The notes below follow `note: ` on stderr, one per word capture could not
+# use. {text} is the word as typed, shown in quotes.
+unknown_stream = "no stream matches \"{text}\" (try `sunrise streams`)"
+unknown_context = "no context matches \"{text}\" (try `sunrise contexts`)"
+# {candidates} is a comma-separated list of names.
+ambiguous = "\"{text}\" matches {candidates}"
+unreadable_date = "could not read the date \"{text}\""
+priority_out_of_range = "priority \"{text}\" is not 1-5"
+unreadable_duration = "could not read the duration \"{text}\""
+
+[cli.search]
+needs_query = "search needs a query"
+
+[cli.streams]
+usage = "usage: stream <id|name>; `sunrise streams` lists them"
+# {text} is the name the user typed.
+no_match = "no stream matches \"{text}\""
+# Two lines; the second is aligned under the first's command.
+move_usage = "usage: streams move <id|name> before <id|name>\n                                streams move <id|name> last"
+inbox_fixed = "the Inbox is not a stream and cannot be reordered"
+not_in_list = "that stream is not in the list"
+cannot_place = "cannot place that stream: {error}"
+
+[cli.contexts]
+usage = "usage: context <id|name>; `sunrise contexts` lists them"
+no_match = "no context matches \"{text}\""
+
+[cli.done]
+needs_id = "done needs at least one task id"
+
+[cli.drop]
+needs_id = "drop needs at least one task id"
+
+[cli.edit]
+usage = "usage: edit <id>... <tokens>...; see `sunrise help`"
+needs_change = "edit needs something to change, e.g. `!1 ^tomorrow #work`"
+nothing_changed = "nothing was changed; fix the line and run it again"
+
+[cli.retitle]
+usage = "usage: retitle <id> <text>...; see `sunrise help`"
+one_task = "retitle takes one task: a title is what tells two tasks apart, so one title for several of them loses the difference rather than saving a command"
+# {error} says what is wrong with the title.
+bad_title = "that title will not do: {error}"
+
+[cli.defer]
+usage = "usage: defer <id>... <when>; see `sunrise help`"
+needs_date = "defer needs a date, e.g. `tomorrow`, `next friday`, `+3d`"
+before_epoch = "that date is before the epoch"
+
 [cli.focus]
 nothing_actionable = "nothing actionable — everything is blocked, done, or unscheduled"
 # {title} is the task's title.
 started_on = "focus started on {title}"
+# {arg} is what followed `focus end`, in quotes.
+end_usage = "usage: focus end [--done]; got {arg}"
+none_running = "no focus session is running; `sunrise focus <id>` opens one"
+
+[cli.export]
+usage = "usage: export <trends|activity|focus|streaks> [json|csv] [path]"
+unknown_dataset = "unknown dataset: {name}"
+
+[cli.ical]
+# {mode} is what the user typed, in quotes.
+unknown_mode = "unknown ical mode {mode}; try import or export"
+usage = "usage: ical import <path|-> | ical export [today|week] [path]"
+import_usage = "usage: ical import <path|-> [--stream <id>] [--source <name>]"
+stream_needs_id = "--stream needs a stream id"
+source_needs_name = "--source needs a name"
+source_needs_text = "--source needs a non-empty name"
+
+[cli.attachments]
+list_usage = "usage: attachments <task-id>"
+usage = "usage: attachment get <attachment-id> [path] | attachment cancel <id>"
+get_usage = "usage: attachment get <attachment-id> [path]"
+cancel_usage = "usage: attachment cancel <id>"
+# The state column of `sunrise attachments`: where an attachment's bytes are.
+here = "here"
+downloading = "downloading"
+partial = "partial (interrupted; `attachment get` restarts it)"
+fetchable = "not here (`attachment get` fetches it)"
+never_uploaded = "not here, and never uploaded"
+# {seconds} is how long `attachment get` waited.
+deadline = "the download did not finish within {seconds, plural, one {#s} other {#s}}. The request stands: `sunrise sync --once` will finish it"
+# stderr, after the bytes went to {path}.
+written = "{count, plural, one {# byte written to {path}} other {# bytes written to {path}}}"
+# stderr, after the attachment's id.
+cancelled = "download cancelled; marked partial"
 
 [cli.sync]
 live = "sync: live, outbox empty"
 # {count} changes wait to upload; {state} is the sync state's name.
 pending = "sync: {count, plural, one {# pending} other {# pending}} ({state})"
+usage = "usage: sync --once"
+needs_url = "sync needs SUNRISE_SYNC_URL"
+# {seconds} is how long `sync --once` waited.
+timed_out = "sync: outbox did not drain within {seconds, plural, one {#s} other {#s}}"
+# stderr, as a command opens the vault. {url} is the relay.
+driver_started = "sync driver started -> {url}"
+# {var} is the environment variable that names this device to the relay.
+not_device_bound = "sync is not device-bound (no relay device id); run `sunrise bootstrap` or set {var}"
+start_failed = "start_sync failed: {error}"
+# {var} is the environment variable that turns sync on.
+off = "sync off (set {var} to enable)"
 
 [cli.devices]
 # A bullet under a removal's report. {count} earlier removals the account no
@@ -120,7 +409,119 @@ unwound = "{count, plural, one {NOTE: the account no longer records a removal of
 # Printed after each id listed under `unwound`.
 unwound_row = "(shows as current; still receives no keys)"
 unwound_remedy = "They are not back in: they receive no keys and cannot read anything written since. But the account does not say they were removed. Remove each of them again from a device you still trust."
+no_prefix = "give a device id or a prefix of one"
+# {prefix} is the id prefix the user typed.
+no_match = "no device id starts with `{prefix}`"
+ambiguous = "{count, plural, one {`{prefix}` matches # device; use more characters} other {`{prefix}` matches # devices; use more characters}}"
+# The marks in brackets after a row of `sunrise devices`, comma-separated.
+mark_this_device = "this device"
+mark_revoked = "revoked"
+mark_read_bounded = "removed earlier; the account no longer records that, but it still receives no keys -- remove it again from a device you trust"
+mark_not_current = "not active on this account"
+mark_admitted_after_revocation = "joined after a device was removed"
+# Under the list, on the device that holds the identity key. Three lines.
+identity_key = "This device holds the account identity key. A sealed recovery code is \nits only other copy: without one, losing this vault destroys the key \npermanently and no recovery feature added later can retrieve it."
+identity_key_remedy = "`sunrise bootstrap` seals that second copy"
+revoke_usage = "usage: sunrise device revoke <id-prefix> [--reason <r>]"
+# {verb} is what the user typed after `sunrise device`.
+unknown_subcommand = "unknown device subcommand `{verb}`"
+unknown_reason = "unknown reason `{reason}`; use lost, stolen, retired or compromised"
+# A revocation this device was not allowed to make, then its bullets. {id}
+# is the other device's id.
+gated_title = "NOT revoked: this device has itself been revoked, so the account discards its revocations of other devices."
+gated_still_current = "{id} is still a current device"
+gated_relay = "this revocation tells the relay nothing"
+gated_kept = "the op is kept, not dropped: revoke from a device the account still trusts, or see `sunrise devices` for which those are"
+gated_untouched = "no Stream key was rotated and the account identity is untouched"
+# A revocation that went through, then its bullets. {id} is the device's id.
+revoked_title = "Revoked {id} locally."
+revoked_all_rotated = "every Stream key rotated, and the account identity with it"
+# Followed by the stream ids that could not be rotated, one per line.
+revoked_some_unrotated = "the account identity rotated, and every Stream key BUT these:"
+# After each of those ids.
+unrotated_row = "(not a 16-byte stream id; nothing to rotate)"
+unrotated_note = "that device may still read them. This is a corrupt row in the local vault, not something the revocation can retry."
+no_recertify = "that device cannot certify itself back in under a new id"
+irreversible = "this cannot be undone: to use that device again, pair it as a new device"
+relay_pending = "the relay has NOT been told yet; it is queued and will be sent on the next `sunrise sync`"
+relay_told = "the relay has been told"
+
+[cli.identity]
+# The values of `sunrise identity status`'s `this device`, `recovery` and
+# `pairing` rows; the row labels are not translated.
+speaks = "speaks for the account"
+does_not_speak = "does NOT speak for the account (no share of the current identity)"
+can_seal = "this device can seal a recovery code"
+cannot_seal = "this device cannot seal a recovery code"
+can_sponsor = "this device can add another device"
+cannot_sponsor = "this device was added by pairing and cannot add another; run `sunrise pair` on the device the account was created on"
+# {verb} is what the user typed after `sunrise identity`.
+unknown_subcommand = "unknown identity subcommand `{verb}`"
+# {id} is the account's stable identity id.
+rotated = "Rotated. The account is still {id}."
+current_now = "current identity is now {id}"
+code_kept = "your existing recovery code still works"
+code_retired = "your old recovery code no longer opens this account; run `sunrise bootstrap` to mint a new one"
+
+[cli.pair]
+# `sunrise pair` with no step. Translate the parenthesised notes and the last
+# line; the command lines are typed as written.
+usage = '''
+usage:
+  sunrise pair offer    --out <file>                 (on the device with the vault)
+  sunrise pair request  --offer <file> --out <file>  (on the device being added)
+  sunrise pair issue    --request <file> --out <file>(on the device with the vault)
+  sunrise pair accept   --response <file>            (on the device being added)
+
+Run them in that order, moving each file to the other machine as it is written.
+'''
+# {flag} is the missing flag; {usage} is the text above.
+flag_required = "{flag} is required\n\n{usage}"
+# {step} is what the user typed, in quotes.
+unknown_step = "unknown pair step {step}\n\n{usage}"
+cannot_sponsor = "this vault was itself added by pairing, so it holds the account's public identity and no signing key; it cannot certify another device. Run this on the device the account was created on."
+# Each of these is three lines: what was written to {path}, then what to do
+# next, then the command to run on the other machine.
+offer_written = "wrote the pairing offer -> {path}\nmove it to the device you are adding, then run:\n  sunrise pair request --offer <that file> --out request.cbor"
+# {dir} is the vault directory.
+not_empty = "{dir} already holds a vault; a device joins an account when its vault is created, so pair into an empty directory (set SUNRISE_VAULT)"
+request_written = "minted this device's keys and wrote the cert request -> {path}\nmove it back to the device with your vault, then run:\n  sunrise pair issue --request <that file> --out grant.cbor"
+grant_written = "issued a certificate and wrote the grant -> {path}\nthis file carries your vault key. Move it to the device you are adding, then run:\n  sunrise pair accept --response <that file>"
+no_pending = "no pending pairing in {dir} ({error}); run `sunrise pair request` on this device first"
+# {device} is this device's new id.
+joined = "this device joined the account as {device}\nrun `sunrise sync --once` against the account's relay to pull its history"
 
 [cli.recover]
 # Printed above the 24 words, which follow in rows of four.
 code_heading = "Your recovery code — write it down now, on paper:"
+# Printed below the 24 words. Keep the line breaks: the terminal shows it as is.
+code_footer = "This code and your devices are the only two ways into this account. \nSunrise is end-to-end encrypted: the relay stores your recovery blob \nas ciphertext it cannot open, and nobody — including us — can reset \nthe account for you. Lose every device and this code, and the data is \ngone permanently.\n\nIt is shown once. It is not written to any file and not in any log."
+# {dir} is the directory the recovery was pointed at.
+not_empty = "{dir} already holds a vault; a recovery creates one and cannot merge into another. Point SUNRISE_VAULT at an empty directory and run this again."
+needs_code = "a recovery needs the 24-word code: `sunrise recover <word>...`, or pipe it in"
+# {detail} is the relay's refusal; {var} the bearer's environment variable.
+step_up_required = "the relay will not serve the recovery blob to this session: {detail}. It requires a fresh sign-in (an OIDC step-up), which is what `sunrise recover` performs when it runs the login itself — so this means the token in {var} is an ordinary one. Unset it and let this command sign you in."
+# {error} says how far the replay got.
+never_caught_up = "{error}. Nothing is lost: run `sunrise sync --once` when the network is better."
+# Progress, on stderr.
+code_accepted = "recovery code accepted; the account identity is restored"
+vault_rebuilt = "vault rebuilt from the recovery code"
+rekeyed = "re-keyed as device {device}"
+unrecorded = "registered as {device} but could not record it: {error}"
+replaying = "{count, plural, one {replaying history: # change applied} other {replaying history: # changes applied}}"
+using_bearer = "using the bearer in {var}"
+needs_config = "{error}; set {issuer} and {client_id}, or set {var} to a token that carries a fresh sign-in"
+signing_in = "signing in — your provider will ask you to authenticate again, which is what lets the relay release the recovery blob"
+# Printed last, on stderr. {identity} is the account's id. Keep the line breaks.
+aftercare = "Account {identity} is restored on this device.\n\nTwo things are worth doing now, and neither is automatic:\n\n* Revoke the devices you lost. Until you do, anything still\nholding them can read what this account writes.\n* Rotate your Stream keys. A recovery means an unknown-state\nenvironment, and rotation is what bounds what a lost device\nkeeps reading. See docs/03-crypto/key-rotation.md.\n\nYour recovery code still works and has not changed. This device now\nholds ID_D_priv, so it can seal a new one if you ever rotate it."
+
+[cli.vault]
+# A vault made before vaults had their own keys. {dir} is its directory; the
+# second line is a command to copy, with {var}={root} typed as written.
+pre_multi_account = "the vault at {dir} was created before vaults had their own keys, when every vault shared one root compiled into this binary. It is not opened by guessing that root, because that would leave it readable by anyone holding a copy of `sunrise`. To open it once and move the work somewhere new:\n    {var}={root} sunrise export activity json > out.json\nOtherwise pick a fresh directory; this build makes a new key for it."
+# {id} is the vault's id; {keystore} the directory searched for its key.
+root_missing = "no key for vault {id} in {keystore}. The key never lives beside the data — a vault directory copied on its own is ciphertext. Bring the keystore over from the machine that made it, or supply the root directly with {var}=<64 hex chars>."
+bad_root_hex = "{var} must be exactly {chars, plural, one {# hex character} other {# hex characters}} ({bytes, plural, one {# byte} other {# bytes}}); got {len, number}"
+# What is wrong with a vault's id or key file.
+bad_id = "{chars, plural, one {expected # hex character naming a vault} other {expected # hex characters naming a vault}}"
+bad_key = "{chars, plural, one {expected # hex character} other {expected # hex characters}}"

@@ -40,6 +40,8 @@ use sunrise_core::{
 use sunrise_crypto::keys::VaultRootKey;
 use sunrise_sync::{DeviceSigner, SseTransport};
 
+use crate::i18n::strings;
+
 /// Env var: relay **origin** for the `/api/v1/sync` surface. Unset ⇒ sync
 /// stays off.
 ///
@@ -289,12 +291,9 @@ pub fn apply_plan(core: &Arc<Core>, plan: &SyncPlan) -> Vec<String> {
                         result = "ok",
                         "sync driver started"
                     );
-                    log.push(format!("sync driver started -> {}", sc.url));
+                    log.push(strings::sync::driver_started(&sc.url));
                     if signer.is_none() {
-                        log.push(format!(
-                        "sync is not device-bound (no relay device id); run `sunrise bootstrap` \
-                         or set {ENV_SYNC_DEVICE_ID}"
-                    ));
+                        log.push(strings::sync::not_device_bound(ENV_SYNC_DEVICE_ID));
                     }
                 }
                 Err(e) => {
@@ -308,13 +307,13 @@ pub fn apply_plan(core: &Arc<Core>, plan: &SyncPlan) -> Vec<String> {
                         cause = %e,
                         "sync driver did not start"
                     );
-                    log.push(format!("start_sync failed: {e}"));
+                    log.push(strings::sync::start_failed(&e.to_string()));
                 }
             }
         }
         None => {
             tracing::info!(ev = "sync.session.off", result = "skipped", "sync disabled");
-            log.push(format!("sync off (set {ENV_SYNC_URL} to enable)"));
+            log.push(strings::sync::off(ENV_SYNC_URL));
         }
     }
 

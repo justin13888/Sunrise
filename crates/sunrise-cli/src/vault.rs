@@ -64,6 +64,8 @@ use std::path::{Path, PathBuf};
 
 use sunrise_core::Rng;
 
+use crate::i18n::strings;
+
 /// Env var: where per-vault root keys are stored. Default
 /// `$XDG_DATA_HOME/sunrise/keys`, falling back to `~/.local/share/sunrise/keys`.
 pub const ENV_KEYSTORE: &str = "SUNRISE_KEYSTORE";
@@ -165,34 +167,31 @@ pub enum VaultError {
 impl std::fmt::Display for VaultError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::PreMultiAccount { dir } => write!(
-                f,
-                "the vault at {} was created before vaults had their own keys, \
-                 when every vault shared one root compiled into this binary. \
-                 It is not opened by guessing that root, because that would \
-                 leave it readable by anyone holding a copy of `sunrise`. \
-                 To open it once and move the work somewhere new:\n\
-                 \x20   {ENV_VAULT_ROOT}={LEGACY_DEV_ROOT_HEX} sunrise export activity json > out.json\n\
-                 Otherwise pick a fresh directory; this build makes a new key for it.",
-                dir.display()
-            ),
-            Self::RootMissing { id, keystore } => write!(
-                f,
-                "no key for vault {id} in {}. The key never lives beside the \
-                 data — a vault directory copied on its own is ciphertext. \
-                 Bring the keystore over from the machine that made it, or \
-                 supply the root directly with {ENV_VAULT_ROOT}=<64 hex chars>.",
-                keystore.display()
-            ),
-            Self::BadRootHex { len } => write!(
-                f,
-                "{ENV_VAULT_ROOT} must be exactly {} hex characters ({ROOT_LEN} bytes); got {len}",
-                ROOT_LEN * 2
-            ),
+            Self::PreMultiAccount { dir } => f.write_str(&strings::vault::pre_multi_account(
+                &dir.display().to_string(),
+                ENV_VAULT_ROOT,
+                LEGACY_DEV_ROOT_HEX,
+            )),
+            Self::RootMissing { id, keystore } => f.write_str(&strings::vault::root_missing(
+                id,
+                &keystore.display().to_string(),
+                ENV_VAULT_ROOT,
+            )),
+            Self::BadRootHex { len } => f.write_str(&strings::vault::bad_root_hex(
+                ENV_VAULT_ROOT,
+                count(ROOT_LEN * 2),
+                count(ROOT_LEN),
+                count(*len),
+            )),
             Self::Io { path, source } => write!(f, "{}: {source}", path.display()),
             Self::Malformed { path, detail } => write!(f, "{}: {detail}", path.display()),
         }
     }
+}
+
+/// A length as the catalog's integer argument.
+fn count(n: usize) -> i64 {
+    i64::try_from(n).unwrap_or(i64::MAX)
 }
 
 impl std::error::Error for VaultError {
@@ -399,7 +398,7 @@ fn read_vault_id(vault_dir: &Path) -> Result<Option<String>, VaultError> {
         // silently minting a second vault over the first one's data.
         return Err(VaultError::Malformed {
             path,
-            detail: format!("expected {} hex characters naming a vault", ID_LEN * 2),
+            detail: strings::vault::bad_id(count(ID_LEN * 2)),
         });
     }
     Ok(Some(id))
@@ -454,7 +453,7 @@ fn read_hex_line<const N: usize>(path: &Path) -> Result<Option<[u8; N]>, VaultEr
         // vault whose data is keyed by the old one.
         VaultError::Malformed {
             path: path.to_path_buf(),
-            detail: format!("expected {} hex characters", N * 2),
+            detail: strings::vault::bad_key(count(N * 2)),
         }
     })
 }
