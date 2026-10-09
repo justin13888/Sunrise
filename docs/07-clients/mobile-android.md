@@ -13,8 +13,9 @@ status: proposed
 > allowlist (`crates/sunrise-server/src/api/devices.rs:19`,
 > `store/devices.rs:79`, `crates/sunrise-relay-client/src/bootstrap.rs:53`) and two
 > comments saying Kotlin bindings would be generated when Android arrives
-> (`crates/sunrise-core-bindings/src/lib.rs:5`, its `Cargo.toml:10`). No Android
-> source, no Gradle or SDK configuration, no CI job, no device.
+> (`crates/sunrise-core-bindings/src/lib.rs:5`, its `Cargo.toml:10`), and the
+> Kotlin smoke build below. No Android source, no Gradle or SDK configuration,
+> no Android CI job, no device.
 > `.github/workflows/release.yml:893` puts it plainly: "Google Play — there is
 > no Android app."
 >
@@ -48,6 +49,39 @@ Compose UI ──▶ ViewModels ──▶ CoreClient (Kotlin wrapper)
                                   ▼
                           sunrise-core (Rust .so)
 ```
+
+### The Kotlin smoke build
+
+The seam's Kotlin half is checked on every pull request, without an emulator,
+by CI's `kotlin-smoke` job, which is `mise run kotlin-smoke`
+(issue #369). It builds `sunrise-core-bindings` as a Linux `cdylib`, generates
+Kotlin from it with `tools/uniffi-bindgen`, compiles that and
+`tools/kotlin-smoke/Smoke.kt` against JNA and kotlinx-coroutines, and runs the
+program on a JVM. The program opens a fresh vault through the async
+`SunriseCore.open` constructor and queries its Inbox.
+
+**What it proves:**
+
+- The generated Kotlin compiles. A seam change Swift accepts and Kotlin does
+  not, such as an exported name that shadows a Kotlin type, fails the job.
+  Its first run found one: `NoteBlock::List` shadowed `kotlin.collections.List`
+  inside `NoteBlock`, and `crates/sunrise-core-bindings/uniffi.toml` renames it
+  to `NoteBlock.ItemList` for Kotlin alone.
+- JNA loads the library, and the checksum of every exported function matches
+  between the generated Kotlin and the library. That is the check that catches
+  bindings generated from a different build than the one loaded.
+- An async constructor and an async method complete across the seam through
+  kotlinx-coroutines, and a SQLCipher vault opens and answers a query.
+
+**What it does not prove:**
+
+- Nothing about Android. No Android target (`aarch64-linux-android` and the
+  rest) is compiled, so nothing here shows the core builds against the NDK,
+  links against Bionic, or loads under ART. The Android Keystore, WorkManager
+  and every surface below are untouched.
+- Nothing about the `.aar` packaging this page describes, or about Gradle.
+- Only one query of the seam's surface is called. The rest compiles, and
+  nothing else about it is shown to work.
 
 ## Android-specific surfaces
 
