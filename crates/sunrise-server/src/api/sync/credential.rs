@@ -109,7 +109,11 @@ pub async fn session(
     )?;
     // Hung off the busiest path rather than a timer task whose only job is to
     // take a lock occasionally.
-    state.sessions.collect(now_ms);
+    state
+        .sessions
+        .collect(now_ms)
+        .await
+        .map_err(ApiError::from)?;
 
     let hello = Hello {
         client_app_v: body.client_app_v,
@@ -184,7 +188,8 @@ pub async fn session(
     let session_id = state
         .sessions
         .insert(stored)
-        .map_err(|_| ApiError::internal())?;
+        .await
+        .map_err(ApiError::from)?;
 
     state.metrics.incr("sunrise_sync_session_total");
     tracing::info!(
@@ -247,7 +252,7 @@ pub async fn refresh(
     }: Signed<RefreshRequest>,
 ) -> Result<Json<RefreshResponse>, ApiError> {
     let now_ms = state.clock.now_ms();
-    let (id, session) = resolve(&state, &header, &caller, now_ms)?;
+    let (id, session) = resolve(&state, &header, &caller, now_ms).await?;
 
     let account_h = crate::logging::account_h(&session.account_id);
     let verified = state
@@ -276,14 +281,17 @@ pub async fn refresh(
             account_h = %account_h,
             "refresh token names a different principal or device; ending the session"
         );
-        state.sessions.remove(&id);
+        // A removal the store refused is a `503`, not the `401`: the session
+        // is still live, and the client's retry is what gets it ended.
+        state.sessions.remove(&id).await?;
         return Err(ApiError::unauthenticated());
     }
 
     let deadline = verified.expires_at_ms;
     state
         .sessions
-        .update(&id, now_ms, |s| s.deadline_ms = deadline);
+        .update(&id, now_ms, move |s| s.deadline_ms = deadline)
+        .await?;
     state.metrics.incr("sunrise_sync_refresh_total");
     tracing::debug!(
         ev = "srv.sync.refreshed",
@@ -300,7 +308,7 @@ pub async fn refresh(
 /// The ownership check is the load-bearing half. A session id is a
 /// bearer-equivalent, so without it any authenticated account presenting
 /// another's id would be handed that account's op stream.
-pub(super) fn resolve(
+pub(super) async fn resolve(
     state: &ServerState,
     header: &SessionHeader,
     caller: &crate::api::signed::Caller,
@@ -313,6 +321,7 @@ pub(super) fn resolve(
     let session = state
         .sessions
         .get(id, now_ms)
+        .await?
         .ok_or_else(ApiError::unauthenticated)?;
     if session.subject.principal_key() != caller.principal.subject.principal_key() {
         return Err(ApiError::unauthenticated());

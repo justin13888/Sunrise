@@ -71,7 +71,9 @@ pub use state::{Clock, ServerState, SystemClock};
 pub use store::{Account, Device, Store, StoreError};
 /// Redacted trace export: the handle [`ServerState::with_telemetry`] takes.
 pub use sunrise_telemetry as telemetry;
-pub use sync_session::{Session, SessionStore};
+pub use sync_session::{
+    MemorySessions, Session, SessionBackend, SessionEdit, SessionError, SessionStore,
+};
 
 use kynos::router::service::Service;
 

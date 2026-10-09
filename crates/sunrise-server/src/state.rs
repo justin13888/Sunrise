@@ -77,7 +77,8 @@ pub struct ServerState {
     pub blob_root: Arc<std::path::PathBuf>,
     /// Retention bounds for the durable relay op log.
     pub durable_caps: crate::relay_log::DurableCaps,
-    /// Live sync sessions. Empty until `POST /sync/session` files one.
+    /// Live sync sessions. Empty until `POST /sync/session` files one; held
+    /// in-process unless [`ServerState::with_session_backend`] replaced it.
     pub sessions: crate::sync_session::SessionStore,
     /// Set once shutdown begins; readiness and the SSE streams watch it.
     pub drain: crate::drain::Drain,
@@ -235,6 +236,19 @@ impl ServerState {
     #[must_use]
     pub fn with_ring_caps(mut self, caps: crate::relay::RingCaps) -> Self {
         self.relay = RelayHub::with_caps(caps);
+        self
+    }
+
+    /// Keep live sessions in `backend` instead of the in-process map.
+    ///
+    /// The seam ADR-0062 §3 puts a shared table behind; today an embedding's
+    /// and a test's.
+    #[must_use]
+    pub fn with_session_backend(
+        mut self,
+        backend: Arc<dyn crate::sync_session::SessionBackend>,
+    ) -> Self {
+        self.sessions = crate::sync_session::SessionStore::with_backend(backend);
         self
     }
 

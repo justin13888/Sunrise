@@ -28,7 +28,7 @@ use kynos::extract::body::text::Text;
 /// docs for why those two facts belong together.
 #[kynos::get("/metrics", operation_id = "metrics")]
 pub async fn metrics(Inject(state): Inject<ServerState>) -> Result<Text, ApiError> {
-    sample_gauges(&state);
+    sample_gauges(&state).await;
     Ok(Text(state.metrics.render()))
 }
 
@@ -37,17 +37,20 @@ pub async fn metrics(Inject(state): Inject<ServerState>) -> Result<Text, ApiErro
 /// `docs/06-server/metrics.md` §Rules: a gauge is sampled when it is read,
 /// never kept by paired increments that drift. So each one is a measurement
 /// taken here, of the thing itself.
-fn sample_gauges(state: &ServerState) {
+async fn sample_gauges(state: &ServerState) {
     // Expired and idle sessions are reaped first, so the gauge counts the
     // sessions a client could still use rather than the ones nothing has
-    // collected yet.
-    state.sessions.collect(state.clock.now_ms());
-    #[allow(clippy::cast_precision_loss)]
-    state.metrics.set_gauge(
-        "sunrise_sync_sessions_active",
-        &[],
-        state.sessions.len() as f64,
-    );
+    // collected yet. A session store that does not answer leaves the gauge
+    // at its last reading rather than reporting a count nobody took; the
+    // failure is logged where it happened.
+    if state.sessions.collect(state.clock.now_ms()).await.is_ok() {
+        if let Ok(n) = state.sessions.len().await {
+            #[allow(clippy::cast_precision_loss)]
+            state
+                .metrics
+                .set_gauge("sunrise_sync_sessions_active", &[], n as f64);
+        }
+    }
 
     // An in-memory store has no file to measure, so it has no series rather
     // than a zero that reads as an empty database.
