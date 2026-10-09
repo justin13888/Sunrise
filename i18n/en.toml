@@ -93,6 +93,35 @@ relay_told = "The relay has been told."
 # {count} earlier removals the account stopped recording; their ids follow.
 unwound = "{count, plural, one {The account no longer records a removal of one other device, because the device that removed it was itself removed. It is not back in — it receives no keys and reads nothing written since — but the account does not say it was removed. Remove it again from a device you still trust.} other {The account no longer records a removal of # other devices, because the device that removed them was itself removed. They are not back in — they receive no keys and read nothing written since — but the account does not say they were removed. Remove each of them again from a device you still trust.}}"
 
+# Account, sign-in, pairing, recovery, onboarding and sync status.
+# @@lane-a@@
+
+# Planning: the weekly review, calendar blocks, routines and streams.
+# @@lane-b@@
+
+# Tasks: lists, the editor, browse, focus, search, notes and keyboard.
+# @@lane-c@@
+
+# The app's shells and system surfaces: menus, windows, the iOS tabs,
+# widgets, Shortcuts, notifications and printing.
+# @@lane-d@@
+
+[apple.action]
+# Buttons and menu items that mean the same thing on every screen. A screen
+# whose button needs different words in some language has its own key.
+cancel = "Cancel"
+done = "Done"
+save = "Save"
+add = "Add"
+delete = "Delete"
+remove = "Remove"
+close = "Close"
+dismiss = "Dismiss"
+edit = "Edit"
+try_again = "Try again"
+# Opens the system Settings app; the ellipsis says a window follows.
+open_settings = "Open Settings…"
+
 # Every key under `cli` is prose the command line prints for a person. Command
 # names (`sunrise sync --once`), flags, environment variable names and file
 # names are what the user types, so they stay as they are in every language.

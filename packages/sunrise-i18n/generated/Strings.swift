@@ -94,6 +94,31 @@ enum L10n {
         }
     }
 
+    enum Action {
+        /// Cancel
+        static var cancel: String { L10n.tr("apple.action.cancel") }
+        /// Done
+        static var done: String { L10n.tr("apple.action.done") }
+        /// Save
+        static var save: String { L10n.tr("apple.action.save") }
+        /// Add
+        static var add: String { L10n.tr("apple.action.add") }
+        /// Delete
+        static var delete: String { L10n.tr("apple.action.delete") }
+        /// Remove
+        static var remove: String { L10n.tr("apple.action.remove") }
+        /// Close
+        static var close: String { L10n.tr("apple.action.close") }
+        /// Dismiss
+        static var dismiss: String { L10n.tr("apple.action.dismiss") }
+        /// Edit
+        static var edit: String { L10n.tr("apple.action.edit") }
+        /// Try again
+        static var tryAgain: String { L10n.tr("apple.action.try_again") }
+        /// Open Settings…
+        static var openSettings: String { L10n.tr("apple.action.open_settings") }
+    }
+
     enum Common {
         /// Sunrise
         static var productName: String { L10n.tr("common.product_name") }
