@@ -434,7 +434,10 @@ async fn live_loop(
                     Ok(live) => live,
                     // Not knowing is not "expired": the client is told to
                     // retry, and a reopened stream reads the session afresh.
+                    // The store logged it; the span records the outage as
+                    // the failure it is, as `replay_failed` does.
                     Err(_) => {
+                        span.fail("session store unreadable");
                         let _ = tx
                             .send(closed(
                                 ErrorCode::RelayStorageUnavailable,
@@ -457,39 +460,69 @@ async fn live_loop(
                         .await;
                     return "token_expired";
                 }
-                // Revoking a device has to end the stream it already holds,
-                // not merely refuse the next one.
-                if let Some(device_id) = session.device_id.as_deref() {
-                    let active = state
-                        .store
-                        .active_device(&session.account_id, device_id)
-                        .ok()
-                        .flatten();
-                    if active.is_none() {
-                        // Distinct from `token_expired` on purpose: that one
-                        // means "renew and reconnect", this one means "access
-                        // was withdrawn, ask the user".
-                        tracing::warn!(
-                            ev = "srv.sync.device_revoked",
-                            err_kind = "user",
-                            account_h = %crate::logging::account_h(&session.account_id),
-                            "session device is no longer active; ending the stream"
-                        );
-                        // The stream ends either way. A removal the store
-                        // refused leaves a session that `resolve` still
-                        // serves, so it is logged where it failed, and the
-                        // revoked device's own signature is what a later
-                        // request is refused on.
-                        let _ = state.sessions.remove(&id).await;
-                        let _ = tx
-                            .send(closed(ErrorCode::AuthDeviceRevoked, "device revoked"))
-                            .await;
-                        return "device_revoked";
-                    }
+                if let Some(reason) = device_recheck(&state, &id, &session, &tx, span).await {
+                    return reason;
                 }
             }
         }
     }
+}
+
+/// Revoking a device has to end the stream it already holds, not merely
+/// refuse the next one. Returns why the stream ended, if it did.
+async fn device_recheck(
+    state: &ServerState,
+    id: &str,
+    session: &Session,
+    tx: &tokio::sync::mpsc::Sender<Event<SyncEvent>>,
+    span: &sunrise_telemetry::SpanGuard,
+) -> Option<&'static str> {
+    let device_id = session.device_id.as_deref()?;
+    let active = match state.store.active_device(&session.account_id, device_id) {
+        Ok(active) => active,
+        // A store that did not answer has not revoked anything: closing
+        // `AUTH_DEVICE_REVOKED` would send the user to re-pair over a server
+        // fault. The close is retryable, and a reopened stream rechecks
+        // (ADR-0062 §1, §4).
+        Err(e) => {
+            tracing::error!(
+                ev = "srv.store.failed",
+                err_code = %ErrorCode::RelayStorageUnavailable,
+                err_kind = "transient",
+                retryable = true,
+                cause = %e,
+                "storage error"
+            );
+            span.fail("device store unreadable");
+            let _ = tx
+                .send(closed(
+                    ErrorCode::RelayStorageUnavailable,
+                    "relay could not read its device store",
+                ))
+                .await;
+            return Some("device_store_unavailable");
+        }
+    };
+    if active.is_some() {
+        return None;
+    }
+    // Distinct from `token_expired` on purpose: that one means "renew and
+    // reconnect", this one means "access was withdrawn, ask the user".
+    tracing::warn!(
+        ev = "srv.sync.device_revoked",
+        err_kind = "user",
+        account_h = %crate::logging::account_h(&session.account_id),
+        "session device is no longer active; ending the stream"
+    );
+    // The stream ends either way. A removal the store refused leaves a
+    // session that `resolve` still serves, so it is logged where it failed,
+    // and the revoked device's own signature is what a later request is
+    // refused on.
+    let _ = state.sessions.remove(id).await;
+    let _ = tx
+        .send(closed(ErrorCode::AuthDeviceRevoked, "device revoked"))
+        .await;
+    Some("device_revoked")
 }
 
 /// Await the first frame from any subscribed stream.

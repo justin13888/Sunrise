@@ -319,6 +319,7 @@ fn logged<T>(result: Result<T, SessionError>) -> Result<T, SessionError> {
     if let Err(e) = &result {
         tracing::error!(
             ev = "srv.sync.session_store_failed",
+            err_code = %sunrise_error::ErrorCode::RelayStorageUnavailable,
             err_kind = "transient",
             retryable = true,
             cause = %e,
@@ -372,6 +373,61 @@ pub(crate) mod conformance {
         }
         async fn count(&self) -> Result<usize, SessionError> {
             Err(down())
+        }
+    }
+
+    /// The in-process backend with a switch per call that can fail, for the
+    /// failures that only arrive after a session exists: a `remove` or an
+    /// `update` refused, or a `get` lost mid-stream. [`Unreachable`] cannot
+    /// reach those, since `resolve` fails before them.
+    #[derive(Debug, Default)]
+    pub(crate) struct Faulty {
+        inner: super::MemorySessions,
+        /// `get` fails while set.
+        pub(crate) get: std::sync::atomic::AtomicBool,
+        /// `update` fails while set.
+        pub(crate) update: std::sync::atomic::AtomicBool,
+        /// `remove` fails while set.
+        pub(crate) remove: std::sync::atomic::AtomicBool,
+    }
+
+    impl Faulty {
+        fn check(flag: &std::sync::atomic::AtomicBool) -> Result<(), SessionError> {
+            if flag.load(std::sync::atomic::Ordering::SeqCst) {
+                Err(down())
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SessionBackend for Faulty {
+        async fn insert(&self, id: String, session: Session) -> Result<(), SessionError> {
+            self.inner.insert(id, session).await
+        }
+        async fn get(&self, id: &str, now_ms: u64) -> Result<Option<Session>, SessionError> {
+            Self::check(&self.get)?;
+            self.inner.get(id, now_ms).await
+        }
+        async fn update(
+            &self,
+            id: &str,
+            now_ms: u64,
+            edit: SessionEdit,
+        ) -> Result<bool, SessionError> {
+            Self::check(&self.update)?;
+            self.inner.update(id, now_ms, edit).await
+        }
+        async fn remove(&self, id: &str) -> Result<(), SessionError> {
+            Self::check(&self.remove)?;
+            self.inner.remove(id).await
+        }
+        async fn collect(&self, now_ms: u64) -> Result<(), SessionError> {
+            self.inner.collect(now_ms).await
+        }
+        async fn count(&self) -> Result<usize, SessionError> {
+            self.inner.count().await
         }
     }
 
