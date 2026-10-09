@@ -302,6 +302,45 @@ mod tests {
             .assert_status(StatusCode::UNAUTHORIZED);
     }
 
+    /// A session store that does not answer is the relay's failure, not the
+    /// caller's: establishment and every operation naming a session answer a
+    /// retryable `503`, never the `401` that would send a client to re-auth.
+    #[tokio::test]
+    async fn an_unreachable_session_store_is_a_retryable_503() {
+        let state = ServerState::new(ServerConfig::default())
+            .with_session_backend(Arc::new(crate::sync_session::conformance::Unreachable));
+        let client = Client::from_state(state);
+
+        let res = client
+            .send_as(
+                Method::POST,
+                "/api/v1/sync/session",
+                Some(BEARER),
+                Some(&hello()),
+            )
+            .await;
+        res.assert_status(StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            res.json()["code"],
+            serde_json::json!(codes::RELAY_STORAGE_UNAVAILABLE)
+        );
+
+        let res = client
+            .send_with(
+                Method::POST,
+                "/api/v1/sync/subscribe",
+                Some(BEARER),
+                Some(&serde_json::json!({ "streams": [] })),
+                &[("x-sunrise-session", "ses_00000000000000000000000000000000")],
+            )
+            .await;
+        res.assert_status(StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            res.json()["code"],
+            serde_json::json!(codes::RELAY_STORAGE_UNAVAILABLE)
+        );
+    }
+
     /// Was `unknown_bearer_is_refused`.
     #[tokio::test]
     async fn an_unknown_bearer_is_refused() {
@@ -798,6 +837,8 @@ mod tests {
         let session = client
             .sessions
             .get(&id, client.clock_now_ms())
+            .await
+            .unwrap()
             .expect("a live session");
         assert_eq!(
             session.streams.len(),
@@ -1228,7 +1269,7 @@ mod tests {
             .assert_status(StatusCode::UNAUTHORIZED);
 
         assert!(
-            client.sessions.get(&id, T0_MS).is_none(),
+            client.sessions.get(&id, T0_MS).await.unwrap().is_none(),
             "the session must be gone, not merely refused"
         );
     }
@@ -1280,9 +1321,136 @@ mod tests {
             .assert_status(StatusCode::UNAUTHORIZED);
 
         assert!(
-            client.sessions.get(&id, T0_MS).is_none(),
+            client.sessions.get(&id, T0_MS).await.unwrap().is_none(),
             "the session must be gone, not merely refused"
         );
+    }
+
+    /// A refused removal on a refresh-identity mismatch is the relay's
+    /// failure: `503`, with the session still held, and the client's retry is
+    /// what ends it. A `401` here would report a session ended that is not.
+    #[tokio::test]
+    async fn a_refused_removal_on_a_refresh_mismatch_is_a_503_and_the_retry_ends_it() {
+        let clock = TestClock::at(T0_MS);
+        let verifier = StaticVerifier::default()
+            .with_expiring("alice", Subject::new(ISSUER, "alice"), T0_MS + 60_000)
+            .with_expiring("bob", Subject::new(ISSUER, "bob"), T0_MS + 600_000);
+        let faulty = Arc::new(crate::sync_session::conformance::Faulty::default());
+        let state = ServerState::with_clock(ServerConfig::default(), clock)
+            .with_verifier(Arc::new(verifier))
+            .with_session_backend(faulty.clone());
+        let client = Client::from_state(state);
+        let id = session_as(&client, "Bearer alice").await;
+        let body = serde_json::json!({ "token": "bob" });
+        let headers = [("x-sunrise-session", id.as_str())];
+        let refresh = || {
+            client.send_with(
+                Method::POST,
+                "/api/v1/sync/session/refresh",
+                Some("Bearer alice"),
+                Some(&body),
+                &headers,
+            )
+        };
+
+        faulty.remove.store(true, Ordering::SeqCst);
+        let res = refresh().await;
+        res.assert_status(StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            res.json()["code"],
+            serde_json::json!(codes::RELAY_STORAGE_UNAVAILABLE)
+        );
+        assert!(
+            client.sessions.get(&id, T0_MS).await.unwrap().is_some(),
+            "the removal was refused, so the session is still held"
+        );
+
+        faulty.remove.store(false, Ordering::SeqCst);
+        refresh().await.assert_status(StatusCode::UNAUTHORIZED);
+        assert!(
+            client.sessions.get(&id, T0_MS).await.unwrap().is_none(),
+            "the retry ends the session"
+        );
+    }
+
+    /// Every `update` a request makes on a live session answers a retryable
+    /// `503` when the store refuses it: the refresh's new deadline, the
+    /// subscribe's stream set, and the stream open's served mark.
+    #[tokio::test]
+    async fn a_refused_session_update_is_a_retryable_503() {
+        let faulty = Arc::new(crate::sync_session::conformance::Faulty::default());
+        let state = ServerState::new(ServerConfig::default()).with_session_backend(faulty.clone());
+        let client = Client::from_state(state);
+        let id = establish(&client).await;
+        // Leaves the set unserved, so the stream open below has to update it.
+        subscribe(&client, &id, None).await;
+
+        faulty.update.store(true, Ordering::SeqCst);
+        let refreshed = client
+            .send_with(
+                Method::POST,
+                "/api/v1/sync/session/refresh",
+                Some(BEARER),
+                Some(&serde_json::json!({ "token": "anything" })),
+                &[("x-sunrise-session", &id)],
+            )
+            .await;
+        let subscribed = client
+            .send_with(
+                Method::POST,
+                "/api/v1/sync/subscribe",
+                Some(BEARER),
+                Some(&serde_json::json!({
+                    "streams": [{ "stream_id": stream_hex(), "cursors": [] }]
+                })),
+                &[("x-sunrise-session", &id)],
+            )
+            .await;
+        let opened = open_events(&client, &id, &[]).await;
+        for (what, res) in [
+            ("refresh", refreshed),
+            ("subscribe", subscribed),
+            ("stream open", opened),
+        ] {
+            res.assert_status(StatusCode::SERVICE_UNAVAILABLE);
+            assert_eq!(
+                res.json()["code"],
+                serde_json::json!(codes::RELAY_STORAGE_UNAVAILABLE),
+                "{what}"
+            );
+        }
+    }
+
+    /// A live stream that cannot re-read its session on a recheck has not
+    /// seen it expire: it closes with the retryable storage code, never
+    /// `AUTH_TOKEN_EXPIRED`, which would send the client to re-authenticate.
+    #[tokio::test]
+    async fn a_stream_that_loses_its_session_store_closes_retryably() {
+        let faulty = Arc::new(crate::sync_session::conformance::Faulty::default());
+        let state = ServerState::new(ServerConfig {
+            device_recheck_ms: 20,
+            ..ServerConfig::default()
+        })
+        .with_session_backend(faulty.clone());
+        let client = Client::from_state(state);
+        let id = establish(&client).await;
+        subscribe(&client, &id, None).await;
+
+        // The open has to resolve the session first; the store goes away
+        // under the stream it served.
+        let (body, ()) = tokio::join!(read(&client, &id, &[]), async {
+            tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+            faulty.get.store(true, Ordering::SeqCst);
+        });
+        assert!(
+            body.contains("\"kind\":\"caught_up\""),
+            "the stream was served before the store went away: {body}"
+        );
+        assert!(
+            body.contains("RELAY_STORAGE_UNAVAILABLE"),
+            "the stream must close naming the store: {body}"
+        );
+        assert!(!body.contains("AUTH_TOKEN_EXPIRED"), "{body}");
     }
 
     /// Was `an_ack_for_a_token_with_no_expiry_reports_zero`.

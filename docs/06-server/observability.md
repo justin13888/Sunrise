@@ -33,7 +33,7 @@ connection counts, per-account op rates and slow-query logs have no
 implementation; error frequency is recoverable from the `err_code` field on
 rejection lines, not from a metric.
 
-The 48 `ev` names the server emits, complete:
+The 49 `ev` names the server emits, complete:
 
 <!-- Extracted from the tree; do not edit by hand. Re-run and reconcile:
      grep -rhoE 'ev = "srv\.[a-z0-9_.]+"' crates/sunrise-server/src | sort -u
@@ -45,8 +45,11 @@ The 48 `ev` names the server emits, complete:
      `Last extracted` names the commit this block was last reconciled against —
      NOT the commit that last changed the set. Now that the gate runs, it is
      provenance rather than the reader's assurance: diff that ref against HEAD
-     over the grepped path to see what a human last looked at.
-     Last extracted: 83496a14 -->
+     over the grepped path to see what a human last looked at. Name a commit
+     already on the base branch: pull requests are squash-merged, so a commit
+     on the pull request's own branch is gone once it merges, and the gate
+     rejects one the base does not reach.
+     Last extracted: 3bc16cd0 -->
 
 ```
 srv.start                        srv.req.start
@@ -71,6 +74,7 @@ srv.sync.stream_closed           srv.sync.refreshed
 srv.sync.stream_drained          srv.sync.resume_conflict
 srv.sync.token_expired
 srv.sync.device_revoked
+srv.sync.session_store_failed
 srv.push.disabled                srv.push.lookup_failed
 srv.push.token_unregistered      srv.push.delivery_failed
 srv.account.delete_initiated     srv.blob.tombstoned
@@ -149,7 +153,10 @@ extracted from the source and checked by a gate, so the catalogue's
      `Last extracted` names the commit this block was last reconciled against —
      NOT the commit that last changed the set. Now that the gate runs, it is
      provenance rather than the reader's assurance: diff that ref against HEAD
-     over the grepped path to see what a human last looked at.
+     over the grepped path to see what a human last looked at. Name a commit
+     already on the base branch: pull requests are squash-merged, so a commit
+     on the pull request's own branch is gone once it merges, and the gate
+     rejects one the base does not reach.
      Last extracted: 38a02c42 -->
 
 ```

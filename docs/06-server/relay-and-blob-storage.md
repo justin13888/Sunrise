@@ -10,6 +10,13 @@ status: accepted
 > There is no Postgres, no object store, and no pub/sub; the "managed" sections
 > below describe a deployment that does not exist. Sections that describe built
 > behaviour are marked **(implemented)**.
+>
+> [ADR-0062](../11-adr/0062-relay-scale-out-storage-seam.md) is the design of
+> record for the scaled deployment: the four storage traits, the `LISTEN/NOTIFY`
+> fan-out, shared sessions, and the order they are built in. Of those, only the
+> session seam is built: live sessions sit behind `SessionBackend`
+> (`crates/sunrise-server/src/sync_session.rs`), whose one implementation is
+> the in-process map.
 
 ## Relay model
 
@@ -26,12 +33,13 @@ subscription impossible rather than merely discouraged.
 
 | Storage | Contents | Backend |
 |---|---|---|
-| Op metadata | `(op_id, stream_id, originating_device_id, seq, size, created_at, …)` | Postgres |
-| Op envelopes | encrypted bytes, large | S3-compatible object store (key: `ops/<stream>/<op_id>`) |
+| Op metadata | the `relay_frames`, `relay_frame_heads`, `relay_evicted` and `relay_batches` rows the SQLite log holds today | Postgres |
+| Op envelopes | encrypted frame bytes, one op batch each | Postgres, in the same row as their metadata (ADR-0062 §1: the append stays one transaction) |
 | Per-device cursors | `(stream_id, device_id, last_acked_seq)` | Postgres |
 | Account & device records | `(account_id, email, devices, …)` | Postgres |
-| Blobs | encrypted attachment chunks | S3-compatible object store (key: `blobs/<blob_id>/<chunk>`) |
-| Push tokens | encrypted at rest, per device | Postgres |
+| Sync sessions | the `Session` row, keyed by `BLAKE3(session_id)` | Postgres (ADR-0062 §3) |
+| Blobs | encrypted attachment chunks | S3-compatible object store (keys: `blobs/<account_h>/{pending,committed}/…`, ADR-0062 §7) |
+| Push tokens | per device | Postgres; at-rest encryption is the operator's (ADR-0062 §6) |
 
 ## Storage layout (self-host single-binary — implemented)
 

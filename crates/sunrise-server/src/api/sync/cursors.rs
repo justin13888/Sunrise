@@ -70,7 +70,7 @@ pub async fn subscribe(
     }: Signed<SubscribeRequest>,
 ) -> Result<kynos::response::status::NoContent, ApiError> {
     let now_ms = state.clock.now_ms();
-    let (id, session) = resolve(&state, &header, &caller, now_ms)?;
+    let (id, session) = resolve(&state, &header, &caller, now_ms).await?;
 
     let mut streams = Vec::with_capacity(body.streams.len());
     for s in &body.streams {
@@ -113,10 +113,13 @@ pub async fn subscribe(
         n_streams = streams.len() as u64,
         "stream set replaced"
     );
-    state.sessions.update(&id, now_ms, |s| {
-        s.streams = streams;
-        s.subscribe_unserved = true;
-    });
+    state
+        .sessions
+        .update(&id, now_ms, move |s| {
+            s.streams = streams;
+            s.subscribe_unserved = true;
+        })
+        .await?;
 
     Ok(kynos::response::status::NoContent)
 }
