@@ -196,6 +196,7 @@ impl Clock for SystemClock {
 }
 
 /// Where every Unix keeps the pointer to the device's zone.
+#[cfg(unix)]
 const LOCALTIME: &str = "/etc/localtime";
 
 /// The device's IANA zone name, or `None` when the OS will not name one.
@@ -216,10 +217,23 @@ const LOCALTIME: &str = "/etc/localtime";
 /// zone the OS gives *them*. West of UTC the two disagree for the last hours
 /// of every evening, and the calendar grid quietly returns nothing for blocks
 /// that are plainly on it.
+///
+/// # Windows
+///
+/// jiff reads the zone out of the registry and maps the Windows zone id onto
+/// its IANA name, so the first branch answers there and the link fallback
+/// below is Unix-only: Windows has no `/etc/localtime` to read.
+/// `the_os_names_a_zone_on_windows` holds that.
 fn system_iana_name() -> Option<String> {
     if let Some(name) = jiff::tz::TimeZone::system().iana_name() {
         return Some(name.to_string());
     }
+    localtime_link_name()
+}
+
+/// The zone `/etc/localtime` names, by link.
+#[cfg(unix)]
+fn localtime_link_name() -> Option<String> {
     // `read_link` first: it is the shortest spelling, and the one that still
     // names the zone on a macOS whose canonical path buries it under a tzdb
     // version directory. `canonicalize` is the fallback for a chain of links.
@@ -233,6 +247,12 @@ fn system_iana_name() -> Option<String> {
         })
 }
 
+/// No link to read off Unix; the device zone is whatever jiff named, or UTC.
+#[cfg(not(unix))]
+fn localtime_link_name() -> Option<String> {
+    None
+}
+
 /// Pull `America/Toronto` out of `…/zoneinfo/America/Toronto`.
 ///
 /// Anchored on the **last** `zoneinfo` component so a versioned or nested tree
@@ -240,6 +260,7 @@ fn system_iana_name() -> Option<String> {
 /// some distributions ship are stepped over. The result is only returned when
 /// the tzdb actually knows it, so a path this does not understand degrades to
 /// UTC rather than naming a zone nothing can load.
+#[cfg(any(unix, test))]
 fn zone_name_in(path: &std::path::Path) -> Option<String> {
     let parts: Vec<&str> = path
         .components()
@@ -418,6 +439,33 @@ mod tests {
             return;
         };
         assert_eq!(SystemClock.timezone(), expected);
+    }
+
+    /// Whatever the host, the production clock names a zone the bundled tzdb
+    /// can load. A name it cannot load would fold every civil day in UTC
+    /// behind a label that says otherwise.
+    #[test]
+    fn the_production_clock_names_a_zone_the_tzdb_knows() {
+        let zone = SystemClock.timezone();
+        assert!(
+            jiff::tz::TimeZone::get(&zone).is_ok(),
+            "the device zone {zone:?} is not in the tzdb"
+        );
+    }
+
+    /// On Windows the zone comes from the registry through jiff's Windows-to-
+    /// IANA map, and nothing falls back behind it. So the OS has to answer:
+    /// `None` here is every Windows device silently claiming UTC, which is the
+    /// macOS defect above in a different place.
+    #[test]
+    #[cfg(windows)]
+    fn the_os_names_a_zone_on_windows() {
+        let name = system_iana_name().expect("jiff names no zone for this Windows host");
+        assert!(
+            jiff::tz::TimeZone::get(&name).is_ok(),
+            "{name:?} is not in the tzdb"
+        );
+        assert_eq!(SystemClock.timezone(), name);
     }
 
     #[test]
