@@ -46,7 +46,7 @@ The 49 `ev` names the server emits, complete:
      NOT the commit that last changed the set. Now that the gate runs, it is
      provenance rather than the reader's assurance: diff that ref against HEAD
      over the grepped path to see what a human last looked at.
-     Last extracted: a3ea6453 -->
+     Last extracted: 3bc16cd0 -->
 
 ```
 srv.start                        srv.req.start
