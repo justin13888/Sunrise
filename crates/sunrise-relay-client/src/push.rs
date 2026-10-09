@@ -70,7 +70,7 @@ pub enum PushTokenError {
 /// File `registration` with the relay at `base_url`, signed as
 /// `registration.relay_device_id`.
 ///
-/// `base_url` is the relay origin, as [`crate::bootstrap`] takes it. `now_ms`
+/// `base_url` is the relay origin, as [`crate::bootstrap()`] takes it. `now_ms`
 /// is the instant the signed `Date` header names; the relay refuses a date
 /// outside its skew window, so it comes from the caller's injected clock like
 /// every other signed request. `sign` turns the canonical string into the 64

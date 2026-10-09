@@ -17,7 +17,7 @@
 //! `Live` with nothing left in the outbox. Two engines would race over the
 //! same outbox and cursors; one driver has one of each.
 //!
-//! "Fresh" is what [`SyncLink`] is for. Every transport the driver dials is
+//! "Fresh" is what the crate-private `SyncLink` is for. Every transport the driver dials is
 //! wrapped so that a kick ends the session the wrapper belongs to, and every
 //! dial is counted. `sync_once` reads the count, kicks, and accepts `Live`
 //! only from a session dialled after the read — so a session that was `Live`
