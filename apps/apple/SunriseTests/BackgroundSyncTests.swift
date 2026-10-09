@@ -178,11 +178,12 @@ struct BackgroundSyncTests {
         let sync = BackgroundSync(
             scheduler: RecordingScheduler(),
             now: { launch },
-            deadline: .milliseconds(20)
-        ) {
-            await withCheckedContinuation { release = $0 }
-            return .newData
-        }
+            deadline: .milliseconds(20),
+            run: {
+                await withCheckedContinuation { release = $0 }
+                return .newData
+            }
+        )
 
         #expect(await sync.sync() == .failed)
         while release == nil { await _Concurrency.Task.yield() }

@@ -275,11 +275,13 @@ Each run (`SessionModel.backgroundSync`, `apps/apple/Sunrise/Sync/`):
 2. **Renews the account token if it is due**, binds the relay device as a
    foreground start does, and builds the same `SyncPlan`. A plan that is off
    answers "no data".
-3. **Calls `SunriseCore::sync_once(url, bearer, relay_device_id, budget_ms)`**
-   with a 25-second budget. The core starts the sync driver if nothing has,
-   ends any session that was up before the app was suspended — a session that
-   looks live over a socket that died while suspended is the failure this
-   prevents — and waits for a session dialled after the call to report `Live`
+3. **Calls `SunriseCore::sync_once(url, bearer, relay_device_id, budget_ms, cancel)`**
+   with what is left of a 25-second budget the whole run shares: the vault
+   open, the renewal and the device binding come out of it first. The core
+   starts the sync driver if nothing has, ends any session that was up before
+   the app was suspended — a session that looks live over a socket that died
+   while suspended is the failure this prevents — cuts short a reconnect delay
+   the driver was suspended in, and waits for a session dialled after the call to report `Live`
    with an empty outbox: every stream caught up, every local op acked. It
    returns whether that happened, how many changes the vault published
    meanwhile, and the driver's state. The driver keeps running afterwards; a
@@ -290,8 +292,14 @@ Each run (`SessionModel.backgroundSync`, `apps/apple/Sunrise/Sync/`):
 5. **Files the push token** if the relay does not hold it
    ([Push handling](#push-handling)).
 
-**Expiry.** When the OS ends the budget, the task's expiration handler
-cancels the run, which cancels the core's wait. Nothing is half applied: the
+**Expiry.** When the OS ends the budget — the task's expiration handler, or
+28 seconds after the run began, which is the only bound a silent push has —
+`BackgroundSync` answers the OS `.failed` at once, whatever step the run is
+in, and cancels the run behind that answer. The cancel reaches Rust through
+the `SyncCancel` handle `CoreBridge.syncOnce` passes in, because UniFFI's
+async glue does not forward a Swift task's cancellation; `sync_once` returns
+as soon as it sees it, and nothing after the sync (the re-plan, the token
+upload) runs. Nothing is half applied: the
 wait holds no transaction, and the driver commits each inbound op whole while
 the database lock is held, never across an await. The next run resumes from
 the cursors the committed ops advanced.
