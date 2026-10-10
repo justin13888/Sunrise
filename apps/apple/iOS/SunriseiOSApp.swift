@@ -57,7 +57,13 @@ struct SunriseiOSApp: App {
         // sync).
         .onChange(of: scenePhase) { _, phase in
             switch phase {
-            case .active: surfaces.widgets?.refresh()
+            case .active:
+                surfaces.widgets?.refresh()
+                // Shared from another app while Sunrise was in the background;
+                // the vault's opening files it too, for a cold launch.
+                if let vault = surfaces.vault {
+                    Task { await ShareInbox.shared.file(into: vault) }
+                }
             case .background:
                 BackgroundHost.shared.sync?.scheduleRefresh()
                 BackgroundHost.shared.sync?.scheduleMaintenance()

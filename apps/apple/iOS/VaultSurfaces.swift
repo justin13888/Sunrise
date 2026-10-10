@@ -82,6 +82,20 @@ extension VaultTabs {
                 .task { await surfaces.reminders?.follow() }
                 .task { await models.undo.follow() }
                 .task { await models.savedViews.load() }
+                // The focus Live Activity follows the running session, and
+                // whatever the share extension left waiting is filed into the
+                // Inbox now that a vault is open (`mobile-ios.md` §Live
+                // Activities, §Sharing extension).
+                .task { await FocusLiveActivity.follow(bridge) }
+                .task { await ShareInbox.shared.file(into: bridge) }
+                // A Focus turning on or off re-scopes Today and the reminder
+                // schedule at once, rather than at their next change batch.
+                .onChange(of: FocusFilterStore.shared.streams) {
+                    Task {
+                        await models.list.refresh()
+                        await surfaces.reminders?.reconcile()
+                    }
+                }
                 .onChange(of: models.settings.relayURL) { Task { await startSync() } }
                 .onChange(of: models.account.accessToken) { _, token in
                     Task {
