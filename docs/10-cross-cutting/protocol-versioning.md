@@ -194,7 +194,12 @@ From now on:
   shape: the canonical schema began describing every value type and op
   payload field by field
   ([#439](https://github.com/justin13888/Sunrise/issues/439)), which moved its
-  fingerprint.
+  fingerprint. `DOC_SCHEMA_V` 13 added eight optional Attachment
+  fields, the original's dimensions and a thumbnail blob, under the feature
+  `attachment.thumbnail` ([#346](https://github.com/justin13888/Sunrise/issues/346),
+  ADR-0053). An attachment without them encodes as before; a v12 build keeps
+  them as unknown fields, and stops writing attachments once the vault
+  requires the feature.
 - **Changing an existing variant's shape** is a new variant alongside the old
   one. The old one stays readable forever.
 

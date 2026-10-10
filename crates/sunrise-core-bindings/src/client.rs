@@ -643,6 +643,17 @@ pub fn edit_gate_allows(gate: EditGate, tag: String) -> bool {
     !(gate.locks_all || gate.locked_tags.contains(&tag))
 }
 
+/// The largest attachment this device fetches without being asked,
+/// [`sunrise_core::AUTO_FETCH_MAX_BYTES`].
+///
+/// Exported so a client's "this download is large and you are on cellular"
+/// confirmation (ADR-0053 §6) reads the core's number rather than a copy.
+#[uniffi::export]
+#[must_use]
+pub fn auto_fetch_max_bytes() -> u64 {
+    sunrise_core::AUTO_FETCH_MAX_BYTES
+}
+
 #[cfg(test)]
 mod feature_gate_tests {
     use super::*;

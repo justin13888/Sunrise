@@ -61,7 +61,9 @@ pub use activity::{
     TRACKED_TASK_FIELDS,
 };
 pub use annotate::{parse as parse_annotate, EditError, TaskEdit};
-pub use attachment::{Attachment, AttachmentDraft};
+pub use attachment::{
+    Attachment, AttachmentDraft, Thumbnail, MAX_THUMBNAIL_BYTES, THUMBNAIL_MIME_TYPES,
+};
 pub use block::{merge_blocks, overlaps, Block, BlockDraft, BlockOverlap, BlockPatch};
 pub use capture::{resolve_named, NameKind, NamedRef};
 pub use common::{Energy, NoteBody};

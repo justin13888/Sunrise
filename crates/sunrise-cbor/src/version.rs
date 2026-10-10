@@ -143,7 +143,15 @@ pub const ENVELOPE_FORMAT_FLOOR: u16 = 3;
 /// field by field. A field added to one of them now moves the fingerprint.
 /// The payloads a v11 build writes are the payloads a v12 build writes, so
 /// the floor does not move.
-pub const DOC_SCHEMA_V: u16 = 12;
+///
+/// `13` adds eight optional fields to the Attachment record, the original's
+/// `width` and `height` and six `thumbnail_*` fields, and their feature,
+/// `attachment.thumbnail` (issue #346, ADR-0053). An attachment without a
+/// thumbnail encodes exactly as before. A v12 build keeps the fields as
+/// unknowns and writes them back unchanged, and refuses to write attachments
+/// once the vault requires the feature. Every v1..v12 payload shape is
+/// unchanged, so the floor still does not move.
+pub const DOC_SCHEMA_V: u16 = 13;
 
 /// The first [`DOC_SCHEMA_V`] that has a fingerprint (ADR-0045 §3, `N_fp`).
 ///
@@ -196,6 +204,10 @@ pub const DOC_SCHEMA_FINGERPRINTS: &[(u16, [u8; 32])] = &[
     (
         12,
         hex32("1be56767d868335916e893ff50e7a6097d942957f1687109b8cc17fb4e2176f1"),
+    ),
+    (
+        13,
+        hex32("09ede17ec2962b1bc05b1214681c7fc1f4af325955535c27119d709c35a2cf05"),
     ),
 ];
 
@@ -467,4 +479,11 @@ pub const CRYPTO_SUITE_V: u16 = 5;
 /// projection of the vault's one `Preferences` entity, and this device's
 /// preference overlay. Schema-only: both start empty, and every key then
 /// resolves to its default, which is what a vault with no preferences means.
-pub const STORAGE_V: u16 = 37;
+///
+/// `38` is migration `0038_attachment_thumbnails.sql` (issue #346, ADR-0053):
+/// eight nullable `attachments` columns for the thumbnail and dimensions, and
+/// the device-local `blob_cache` index the LRU reads, with
+/// `blob_cache_backfill`, the record that the one pass indexing blobs from
+/// before the index has run. Schema-only: every new column is NULL and both
+/// tables start empty.
+pub const STORAGE_V: u16 = 38;
