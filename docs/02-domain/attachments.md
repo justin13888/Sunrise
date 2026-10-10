@@ -14,52 +14,83 @@ cache and the cellular gate are decided in
 Shared types are defined in
 [`overview.md` §Common CDDL types](./overview.md#common-cddl-types).
 
-What a device writes and signs today:
+What a device writes and signs:
 
 ```cddl
 Attachment = {
-    id:            tstr .regexp "att_[0-9A-HJKMNP-TV-Z]{26}",
-    created_at:    timestamp,
-    updated_at:    timestamp,
-    parent:        entity-ref,          ; Task today; Task or Note per §Parents
-    filename:      text<256>,
-    mime_type:     text<128>,
-    size_bytes:    uint,                ; 1 .. 100_000_000; see §Size policy
-    blob_key:      bstr .size 32,       ; per-blob symmetric key; sealed inside the op envelope
-    blob_id:       bstr .size 16,       ; assigned by the creating device
-    chunk_count:   uint,                ; >= 1
-    content_hash:  bstr .size 32,       ; BLAKE3 of plaintext; end-to-end integrity
-    deleted:       bool,
+    id:              tstr .regexp "att_[0-9A-HJKMNP-TV-Z]{26}",
+    created_at:      timestamp,
+    updated_at:      timestamp,
+    parent:          entity-ref,        ; Task today; Task or Note per §Parents
+    filename:        text<256>,
+    mime_type:       text<128>,
+    size_bytes:      uint,              ; 1 .. 100_000_000; see §Size policy
+    blob_key:        bstr .size 32,     ; per-blob symmetric key; sealed inside the op envelope
+    blob_id:         bstr .size 16,     ; assigned by the creating device
+    chunk_count:     uint,              ; >= 1
+    content_hash:    bstr .size 32,     ; BLAKE3 of plaintext; end-to-end integrity
+    ciphertext_hash: bstr .size 32,     ; BLAKE3 of the ciphertext; the relay's name for the blob
+    ? thumbnail-fields,                 ; see §Thumbnail and dimensions
+    deleted:         bool,
     unknown-fields,                     ; see overview.md
 }
 ```
 
-### Thumbnail and dimensions (specified, not yet modelled)
+### Thumbnail and dimensions
 
 Additive fields, registered through the entity registry, gated by the feature
 id `attachment.thumbnail` in `vault_requires`, and preserved by an older build
 ([ADR-0045](../11-adr/0045-schema-identity-and-feature-gating.md),
-[ADR-0053](../11-adr/0053-attachment-thumbnails-and-native-rendering.md)).
-`crates/sunrise-domain/src/attachment.rs:23#Attachment` has none of them yet
-([#346](https://github.com/justin13888/Sunrise/issues/346)):
+[ADR-0053](../11-adr/0053-attachment-thumbnails-and-native-rendering.md),
+`DOC_SCHEMA_V` 12). They are fields of
+`crates/sunrise-domain/src/attachment.rs:23#Attachment`:
 
 ```cddl
-; All optional; all written with the attachment and never changed.
-width?:                  uint,            ; original, px, when the source knows it
-height?:                 uint,
-thumbnail_blob_id?:      bstr .size 16,
-thumbnail_blob_key?:     bstr .size 32,   ; fresh key; never the original's
-thumbnail_mime?:         "image/jpeg" / "image/png",
-thumbnail_size_bytes?:   uint,            ; <= 262_144 (one chunk)
-thumbnail_content_hash?: bstr .size 32,   ; BLAKE3 of the thumbnail plaintext
+; All optional; all written with the attachment and never changed. A key
+; that is unset is absent from the map, so an attachment without a
+; thumbnail encodes exactly as it did before these fields existed.
+thumbnail-fields = (
+    ? width:                     uint,           ; original, px, when the source knows it
+    ? height:                    uint,
+    ? thumbnail_blob_id:         bstr .size 16,
+    ? thumbnail_blob_key:        bstr .size 32,  ; fresh key; never the original's
+    ? thumbnail_mime:            "image/jpeg" / "image/png",
+    ? thumbnail_size_bytes:      uint,           ; 1 .. 262_144 (one chunk)
+    ? thumbnail_content_hash:    bstr .size 32,  ; BLAKE3 of the thumbnail plaintext
+    ? thumbnail_ciphertext_hash: bstr .size 32,  ; BLAKE3 of the sealed chunk; the relay's name for it
+)
 ```
 
-The five `thumbnail_*` fields are present together or not at all. A thumbnail
-is always one chunk, so it has no `chunk_count`. The blob reference is
-flattened into fields rather than nested, so the op-envelope shape has no
-sub-record to version separately. The digest is BLAKE3, matching the hash used
-everywhere else, including the relay's finalize check
+The six `thumbnail_*` fields are present together or not at all, and a reader
+uses a thumbnail only when all six are there, `thumbnail_mime` is JPEG or PNG,
+the size is one chunk and the ciphertext hash is not zero
+(`Attachment::thumbnail`). Anything else is ignored rather than rendered.
+`thumbnail_ciphertext_hash` is there for the reason `ciphertext_hash` is: the
+relay names a committed blob by its ciphertext hash, and a device holding the
+op and not the bytes cannot compute it, so without it a receiver would hold
+the thumbnail's key and have no way to ask for it.
+
+A thumbnail is always one chunk, so it has no `chunk_count`. The blob reference
+is flattened into fields rather than nested, so the op-envelope shape has no
+sub-record to version separately. The digests are BLAKE3, matching the hash
+used everywhere else, including the relay's finalize check
 ([`../06-server/api.md`](../06-server/api.md) §Blobs).
+
+The vault requires the feature the first time an attachment carries the
+fields. While another paired, unrevoked device has not advertised
+`attachment.thumbnail`, the attachment is written without them instead of
+being refused, and its thumbnail chunks are discarded: the file is what the
+user asked to attach, and an older device must not be locked out of writing
+attachments by one it never asked for (`core.attachment.thumbnail_dropped`).
+Once the vault requires the feature, a build without it reads attachments and
+refuses to write them ([ADR-0045](../11-adr/0045-schema-identity-and-feature-gating.md)
+§8).
+
+On disk the fields are eight nullable `attachments` columns (migration 0038).
+A row a build without those columns projected from an op that carried them
+holds them in `extra`; the engine reads them from there when the column is
+NULL and drops them from the row's unknown fields, so they are neither lost by
+the upgrade nor written twice.
 
 ## Parents
 
@@ -137,6 +168,17 @@ documents where the OS offers one.
 Generating thumbnails on receivers is rejected: every receiver would have to
 fetch the full ciphertext just to make one, defeating lazy fetch.
 
+**What is built.** The Apple pane renders the thumbnail when a file is
+attached (`apps/apple/Sunrise/Tasks/ThumbnailRenderer.swift`), with QuickLook
+Thumbnailing for the image and ImageIO for the original's pixel size and the
+encoding. It redraws into a fresh sRGB bitmap, so none of the original's
+metadata survives; ImageIO's JPEG encoder adds three Exif tags of its own
+about the thumbnail (sRGB and its pixel size). `Core::attach_file_with` checks
+the type, the leading bytes and the size again, seals the thumbnail as a
+one-chunk blob under a fresh key and id, and queues it for upload beside the
+original. A receiver's sync driver fetches it unasked, before any original,
+and `Core::thumbnail_bytes` hands it to the client verified.
+
 ## Rendering
 
 Clients render only what their platform decodes natively, and hand everything
@@ -152,6 +194,17 @@ else to the system.
 Clients never bundle a third-party decoder. Decrypted plaintext handed to a
 previewer or to "Open in…" goes to a per-launch temporary directory, is deleted
 when the preview closes and at the next launch, and is not counted as cache.
+
+**What is built** on Apple (`apps/apple/Sunrise/Views/AttachmentsView.swift`).
+An image is drawn inline with `Image`; every other type goes to QuickLook,
+`QLPreviewView` on macOS and `QLPreviewController` on iOS, which covers PDFs.
+iOS asks `QLPreviewController.canPreview`; macOS has no such question, so it
+previews the content types QuickLook ships generators for (PDF, text, images,
+audio and video, presentations, spreadsheets, RTF, HTML, 3D) and gives every
+other type **Open in…**, the system's open-with, rather than a generic icon.
+Plaintext lives under `sunrise-previews/<launch>` in the temporary directory
+(`PreviewFiles`), and the previewed attachment is pinned in the core's cache
+until the preview closes. A row shows its thumbnail once it has arrived.
 
 ## Lazy fetch
 
@@ -172,6 +225,23 @@ verifies and keeps the sealed chunks in its local blob store.
   `attachments.auto_fetch_on_cellular` (default **off**) gates unasked fetches on
   cellular. An explicit Download always proceeds; over the threshold on
   cellular, it first confirms the size.
+
+  **Built.** `Core::set_network_class` records what the client reports, and
+  `Unmetered` until it does, so a client that never reports keeps the
+  behaviour from before the gate. The drain's queue is `auto_fetch_policy`
+  (`crates/sunrise-core/src/blob_cache.rs`) applied to it:
+
+  | Network | Thumbnails | Originals under the threshold |
+  |---|---|---|
+  | `unmetered` | fetched | fetched |
+  | `cellular` | fetched | fetched only when `attachments.auto_fetch_on_cellular` is on |
+  | `constrained` | waits | waits |
+
+  A requested fetch (`Core::fetch_attachment`) ignores the table. The Apple
+  app reports the class from `NWPathMonitor` (`isConstrained`, then
+  `isExpensive`) to every bridge as `CoreBridge` makes it, before any sync,
+  including a background one with no window, can drain; and its Download asks first, naming the size, when the
+  attachment is over the threshold and the path is cellular.
 
 **What is built** ([#176](https://github.com/justin13888/Sunrise/issues/176)).
 The byte path is: `Core::attach_file` seals the chunks into the local
@@ -200,8 +270,10 @@ behind the pane's Download and Cancel controls
 because it is a fact about this device's cache, and the attachment row is a
 replicated write-once entity.
 
-**Not built** ([#346](https://github.com/justin13888/Sunrise/issues/346)): thumbnails, QuickLook, the cache below, and the
-cellular gate. Today a fetched blob is kept forever.
+Thumbnails, QuickLook, the cache below and the cellular gate are built
+([#346](https://github.com/justin13888/Sunrise/issues/346)). The end-to-end proof
+that a second device shows a thumbnail without fetching the original is
+`crates/sunrise-e2e/tests/attachment_thumbnail.rs`.
 
 ## Local cache
 
@@ -221,6 +293,46 @@ local blob store. It is device-local: nothing about it syncs.
 - **A re-fetch after eviction** is the ordinary lazy-fetch path.
 - **Settings → Storage** shows usage, the limit, **Clear cache** (evicts every
   evictable blob) and the cellular toggle.
+
+**Built** (`crates/sunrise-core/src/blob_cache.rs`). The index is the
+device-local `blob_cache` table (migration 0038): one row per blob in the local
+blob store, with its sealed size, its last-open time, whether it is a
+thumbnail, and when it was evicted. Specifically:
+
+- **What counts** is sealed bytes, the plaintext plus one 16-byte tag per
+  chunk, of every indexed blob not evicted, thumbnails and pending uploads
+  included. `Core::attachment_cache_usage` reports it with the limit and the
+  evictable part.
+- **Recency** is stamped by `Core::attachment_bytes`, which every preview and
+  open reads through, and by every store.
+- **Eviction** runs after each attach and each fetch, under the same hold of
+  the database lock that indexed the new blob, so fetches finishing together
+  cannot leave the cache over its limit. That pass spares the blob it just
+  indexed, so a file larger than the whole limit is still there when its
+  Download returns, and goes on the next pass. Eviction also runs at launch, in
+  `Core::open`. The first launch of a vault after migration 0038 first indexes
+  any blob on disk the index does not know, as opened at time zero, and records
+  in `blob_cache_backfill` that it has; later launches skip that pass, because
+  every attach and fetch indexes what it stores. A failure at launch is logged
+  as `core.attachment.cache_enforce_failed` and the vault opens. "An upload
+  pending or unfinished" is any `blob_uploads` row, including one past its
+  attempt ceiling, since its blob may exist nowhere else. "Open in a preview" is
+  `Core::pin_attachment`, counted and keyed by the attachment, released by
+  `Core::unpin_attachment`, which reads no row, so a preview closed by a delete
+  still releases it.
+- **The limit** is `attachments.cache_limit_bytes` as resolved. When the
+  vault's preferences cannot be read, it is the key's default for the class of
+  the platform the build runs on, the value a device with no `devices` row
+  resolves to.
+- **An evicted blob stays evicted** until somebody asks for it: the automatic
+  fetch drain skips an original whose row records an eviction, because
+  fetching it back unasked would hold the cache at its limit by churning it.
+  `Core::fetch_attachment` brings it back and clears the mark.
+- **The limit** is `attachments.cache_limit_bytes`, resolved with the device's
+  class; a limit lowered in Settings is enforced at once
+  (`Core::enforce_attachment_cache`). **Clear cache** is
+  `Core::clear_attachment_cache`.
+- Evictions log `core.attachment.cache_evicted`.
 
 ## Client limitations
 

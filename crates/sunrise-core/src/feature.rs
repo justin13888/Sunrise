@@ -73,6 +73,25 @@ pub static FEATURES: &[Feature] = &[
         field_op_kinds: &[],
         since: 11,
     },
+    // An attachment's source-made thumbnail and the original's dimensions
+    // (ADR-0053 §2, issue #346). Eight optional fields on `AttachmentCreate`
+    // and `AttachmentDelete`; an op that carries none of them uses nothing.
+    Feature {
+        id: "attachment.thumbnail",
+        op_kinds: &[],
+        fields: &[
+            "width",
+            "height",
+            "thumbnail_blob_id",
+            "thumbnail_blob_key",
+            "thumbnail_mime",
+            "thumbnail_size_bytes",
+            "thumbnail_content_hash",
+            "thumbnail_ciphertext_hash",
+        ],
+        field_op_kinds: &[],
+        since: 12,
+    },
 ];
 
 /// What a feature locks when a build lacks it.

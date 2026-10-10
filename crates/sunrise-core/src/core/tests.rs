@@ -492,6 +492,9 @@ async fn create_and_delete_commands_publish_the_right_change_event() {
             chunk_count: 1,
             content_hash: [11u8; 32],
             ciphertext_hash: [13u8; 32],
+            width: None,
+            height: None,
+            thumbnail: None,
         }))
         .await
         .unwrap()

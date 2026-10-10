@@ -304,6 +304,14 @@ pub(super) const SEED: &[SeedRow] = &[
             ("lww_seq", I(104)),
             ("lww_device", B(&DEVICE_LAPTOP)),
             ("ciphertext_hash", B(b"\x35ciphertext-hash")),
+            ("width", I(4032)),
+            ("height", I(3024)),
+            ("thumbnail_blob_id", B(&[0x36; 16])),
+            ("thumbnail_blob_key", B(&[0x37; 32])),
+            ("thumbnail_mime", T(b"image/jpeg")),
+            ("thumbnail_size_bytes", I(20_480)),
+            ("thumbnail_content_hash", B(&[0x38; 32])),
+            ("thumbnail_ciphertext_hash", B(&[0x39; 32])),
         ],
     },
     SeedRow {
@@ -778,6 +786,22 @@ pub(super) const SEED: &[SeedRow] = &[
     SeedRow {
         table: "device_preferences",
         values: &[("key", T(b"keyboard.vim_mode")), ("value", B(b"\xf5"))],
+    },
+    // One indexed blob: the seed attachment's original, opened once.
+    SeedRow {
+        table: "blob_cache",
+        values: &[
+            ("blob_id", B(&BLOB_ID)),
+            ("sealed_bytes", I(40_992)),
+            ("last_access_ms", I(275)),
+            ("is_thumbnail", I(0)),
+            ("evicted_at_ms", I(276)),
+        ],
+    },
+    // The launch pass that indexes blobs from before the index has run.
+    SeedRow {
+        table: "blob_cache_backfill",
+        values: &[("id", I(1)), ("done_at_ms", I(277))],
     },
 ];
 

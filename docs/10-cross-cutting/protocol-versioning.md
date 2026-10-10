@@ -85,7 +85,7 @@ whether this build can safely write to this vault is a feature id.
 WIRE_PROTO_V          = 1
 ENVELOPE_FORMAT_V     = 3
 ENVELOPE_FORMAT_FLOOR = 3
-DOC_SCHEMA_V          = 11
+DOC_SCHEMA_V          = 12
 DOC_SCHEMA_FLOOR      = 1
 DOC_SCHEMA_FP_FIRST   = 7
 CRYPTO_SUITE_V        = 5
@@ -154,7 +154,7 @@ transition is lifted on purpose.
 
 `DOC_SCHEMA_FLOOR` is the lowest schema this build can still interpret. It
 moves only when a shape stops being readable, never merely because a newer one
-exists. It is `1` while `DOC_SCHEMA_V` is `11`, because a schema-1 payload
+exists. It is `1` while `DOC_SCHEMA_V` is `12`, because a schema-1 payload
 really does still decode: its bare-instant time fields read as
 `SunriseTime::Instant`. Every op ever written stays in logs and on relays and
 is the source of truth for a rebuild. So the floor MUST NOT be raised above any
@@ -190,7 +190,12 @@ From now on:
   ([#337](https://github.com/justin13888/Sunrise/issues/337), ADR-0050). A v10
   build cannot decode a `Patch` naming a prefix it does not know and refuses
   it, so no such op is written until every device has advertised
-  `preferences.entity`.
+  `preferences.entity`. `DOC_SCHEMA_V` 12 added eight optional Attachment
+  fields, the original's dimensions and a thumbnail blob, under the feature
+  `attachment.thumbnail` ([#346](https://github.com/justin13888/Sunrise/issues/346),
+  ADR-0053). An attachment without them encodes as before; a v11 build keeps
+  them as unknown fields, and stops writing attachments once the vault
+  requires the feature.
 - **Changing an existing variant's shape** is a new variant alongside the old
   one. The old one stays readable forever.
 

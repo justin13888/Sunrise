@@ -47,6 +47,7 @@
 )]
 
 pub mod attach;
+mod blob_cache;
 mod blob_fetch;
 mod blob_sync;
 pub mod commands;
@@ -68,7 +69,8 @@ pub mod sync_driver;
 pub mod unlock;
 pub mod vault_lock;
 
-pub use attach::AttachError;
+pub use attach::{AttachError, AttachPreview, ThumbnailImage};
+pub use blob_cache::{auto_fetch_policy, AutoFetchPolicy, CacheUsage, NetworkClass};
 pub use blob_sync::AUTO_FETCH_MAX_BYTES;
 pub use commands::{Command, CommandResult, FocusStartDraft};
 pub use config::{Clock, CoreConfig, HlcClock, MonotonicHlc, Rng, SystemClock, SystemRng};

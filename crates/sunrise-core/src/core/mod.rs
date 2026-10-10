@@ -105,6 +105,9 @@ pub struct Core {
     /// any one session — that is the reason it is a table at all — while
     /// `SyncShared` is scoped to the driver's own connection state.
     blob_fetch: Arc<crate::blob_fetch::BlobFetchSignals>,
+    /// The network class the client last reported and the blobs open
+    /// previews hold, which the attachment cache and the fetch drain read.
+    cache: crate::blob_cache::CacheSignals,
     /// What [`Core::compact_op_log`] may fold (ADR-0059). Set by
     /// [`Core::set_compaction_policy`]; the design of record's numbers until
     /// then.
@@ -246,7 +249,7 @@ impl Core {
             .sync
             .as_ref()
             .map_or_else(TokenSource::empty, |s| s.credential.clone());
-        Ok(Self {
+        let core = Self {
             cfg,
             db: Mutex::new(db),
             _vault_lock: lock,
@@ -258,10 +261,22 @@ impl Core {
             sync_handle: Mutex::new(None),
             routine_handle: Mutex::new(None),
             blob_fetch: Arc::new(crate::blob_fetch::BlobFetchSignals::new()),
+            cache: crate::blob_cache::CacheSignals::default(),
             compaction_policy: Mutex::new(crate::engine::CompactionPolicy::default()),
             last_compaction_ms: Mutex::new(None),
             closed: Mutex::new(false),
-        })
+        };
+        // ADR-0053 §5: eviction runs at launch. A cache over its limit is not
+        // a reason to refuse to open the vault, so a failure here is logged
+        // and the open goes on.
+        if let Err(e) = core.enforce_attachment_cache() {
+            tracing::warn!(
+                ev = "core.attachment.cache_enforce_failed",
+                cause = %e,
+                "the attachment cache could not be brought under its limit at launch"
+            );
+        }
+        Ok(core)
     }
 
     /// Submit a mutating command.
@@ -703,6 +718,25 @@ impl Core {
     /// unrepeatable.
     pub(crate) fn rng(&self) -> &dyn crate::config::Rng {
         self.cfg.rng.as_ref()
+    }
+
+    /// The reported network and the open previews behind the attachment
+    /// cache ([`crate::blob_cache`]).
+    pub(crate) fn cache_signals(&self) -> &crate::blob_cache::CacheSignals {
+        &self.cache
+    }
+
+    /// One preference, resolved as [`Query::Preferences`] resolves it, or
+    /// `None` when it resolves to an absent default or cannot be read.
+    pub(crate) fn resolved_preference(&self, key: &str) -> Option<sunrise_domain::PrefValue> {
+        let db = self.db.lock();
+        match self.engine.query(&db, Query::Preferences) {
+            Ok(QueryResult::Preferences(prefs)) => prefs
+                .into_iter()
+                .find(|p| p.key == key)
+                .and_then(|p| p.value),
+            _ => None,
+        }
     }
 
     /// Copy this vault's root key out, for handing to a device being paired.

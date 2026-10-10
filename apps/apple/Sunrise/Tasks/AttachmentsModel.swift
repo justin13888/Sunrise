@@ -26,13 +26,34 @@ struct AttachmentRow: Identifiable, Equatable {
         ByteCountFormatStyle(style: .file).format(Int64(item.sizeBytes))
     }
 
-    /// Whether this app can draw the bytes itself, rather than handing them to
-    /// another one.
+    /// How the pane previews the bytes (ADR-0053 §4): an image the platform
+    /// decodes is drawn inline, and everything else goes to QuickLook, which
+    /// previews PDFs and dozens of other types out of process. A type
+    /// QuickLook cannot preview gets **Open in…**.
     var previewKind: AttachmentPreview {
         let type = UTType(mimeType: item.mimeType)
-        if type?.conforms(to: .pdf) == true { return .pdf }
         if type?.conforms(to: .image) == true { return .image }
-        return .none
+        return .quickLook
+    }
+
+    /// Whether this attachment is over the size the sync driver fetches
+    /// unasked, which is when a download on cellular asks first.
+    var isOverAutoFetchThreshold: Bool {
+        item.sizeBytes > autoFetchMaxBytes()
+    }
+}
+
+/// What the pane is showing for the selected row.
+enum AttachmentPreviewing: Equatable {
+    /// An image's bytes, drawn inline.
+    case image(id: EntityRef, data: Data)
+    /// A file under ``PreviewFiles``, handed to QuickLook.
+    case file(id: EntityRef, url: URL)
+
+    var id: EntityRef {
+        switch self {
+        case let .image(id, _), let .file(id, _): id
+        }
     }
 }
 
@@ -49,11 +70,10 @@ enum AttachmentTransfer: Equatable {
     case absent
 }
 
-/// What the detail pane can render inline.
+/// How the detail pane renders one attachment.
 enum AttachmentPreview {
     case image
-    case pdf
-    case none
+    case quickLook
 }
 
 /// One task's attachments: list, add, open, remove.
@@ -68,10 +88,17 @@ enum AttachmentPreview {
 final class AttachmentsModel {
     private(set) var rows: [AttachmentRow] = []
     private(set) var errorMessage: String?
-    /// Bytes of the row being previewed, keyed by id so a stale load cannot
-    /// paint over a newer selection.
-    private(set) var previewing: (id: EntityRef, data: Data)?
+    /// What is being previewed, keyed by id so a stale load cannot paint over
+    /// a newer selection.
+    private(set) var previewing: AttachmentPreviewing?
+    /// Decoded thumbnails, by attachment. Filled as the sync driver fetches
+    /// them; a row without one draws its type's symbol.
+    private(set) var thumbnails: [EntityRef: Data] = [:]
     private(set) var isBusy = false
+    /// Bumped by every ``preview(_:)`` and ``closePreview()``. A preview load
+    /// that resumes from an await to find it moved was superseded: it
+    /// releases what it took instead of overwriting the newer selection.
+    @ObservationIgnored private var previewGeneration = 0
 
     private let bridge: CoreBridge
     private let task: EntityRef
@@ -106,6 +133,12 @@ final class AttachmentsModel {
                 let isLocal = (try? await bridge.attachmentIsLocal(item)) ?? false
                 let state = (try? await bridge.attachmentFetchState(item.id)) ?? .idle
                 built.append(AttachmentRow(item: item, isLocal: isLocal, fetchState: state))
+                // A thumbnail is one chunk and never evicted, so once read it
+                // stays read for as long as the pane is open.
+                if item.thumbnailMime != nil, thumbnails[item.id] == nil,
+                   let thumb = try? await bridge.thumbnailBytes(item.id) {
+                    thumbnails[item.id] = thumb.bytes
+                }
             }
             rows = built
             errorMessage = nil
@@ -134,11 +167,15 @@ final class AttachmentsModel {
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
         do {
             let bytes = try Data(contentsOf: url)
+            // Rendered while the security scope is held: QuickLook
+            // Thumbnailing reads the file itself (ADR-0053 §1).
+            let preview = await ThumbnailRenderer.preview(of: url)
             _ = try await bridge.attachFile(
                 to: task,
                 filename: url.lastPathComponent,
                 mimeType: Self.mimeType(of: url),
-                bytes: bytes
+                bytes: bytes,
+                preview: preview
             )
             await refresh()
         } catch {
@@ -151,8 +188,9 @@ final class AttachmentsModel {
     /// `docs/02-domain/attachments.md` §Lazy fetch: anything over the 10 MiB
     /// auto-fetch threshold "shows an inline placeholder with file name, size,
     /// and a 'Download' button". This is behind that button. Under the
-    /// threshold the sync driver has already fetched it, so the button is not
-    /// drawn and this is not reached.
+    /// threshold the sync driver fetches it unasked, except on cellular with
+    /// the toggle off, on a constrained network, and after the cache evicted
+    /// it; those three are the other times the button is drawn.
     ///
     /// Fire-and-forget: the call outlives any one frame, and the row redraws
     /// from `downloads` while it runs.
@@ -162,6 +200,13 @@ final class AttachmentsModel {
         downloads[id] = _Concurrency.Task { [weak self] in
             await self?.runDownload(id)
         }
+    }
+
+    /// Whether pressing Download on `row` should first confirm its size:
+    /// ADR-0053 §6, an explicit download over the auto-fetch threshold on
+    /// cellular.
+    func downloadNeedsConfirmation(_ row: AttachmentRow) -> Bool {
+        NetworkClassMonitor.shared.current == .cellular && row.isOverAutoFetchThreshold
     }
 
     /// What `row` offers to do about its bytes.
@@ -239,38 +284,70 @@ final class AttachmentsModel {
         errorMessage = failure
     }
 
-    /// Load one attachment's bytes for the inline preview.
+    /// Preview one attachment: an image inline, anything else in QuickLook.
+    ///
+    /// The previewed attachment is pinned in the core's cache until the
+    /// preview closes, so eviction cannot take the bytes out from under it
+    /// (ADR-0053 §5). A QuickLook preview reads a plaintext copy under
+    /// ``PreviewFiles``, deleted when it closes.
     func preview(_ row: AttachmentRow) async {
         guard row.isLocal else {
-            previewing = nil
+            closePreview()
             errorMessage = "\(row.item.filename) is not on this device yet. Use Download."
             return
         }
+        guard previewing?.id != row.id else { return }
+        closePreview()
+        // Two taps can both pass the guard above before either load returns.
+        // Each load checks after every await that it is still the latest, so
+        // the later tap wins and the earlier one leaves no pin behind.
+        let generation = previewGeneration
+        var pinned = false
         do {
-            previewing = (row.id, try await bridge.attachmentBytes(row.id))
+            let bytes = try await bridge.attachmentBytes(row.id)
+            guard generation == previewGeneration else { return }
+            pinned = (try? await bridge.pinAttachment(row.id)) != nil
+            guard generation == previewGeneration else {
+                if pinned { await bridge.unpinAttachment(row.id) }
+                return
+            }
+            switch row.previewKind {
+            case .image:
+                previewing = .image(id: row.id, data: bytes)
+            case .quickLook:
+                let url = try PreviewFiles.write(bytes, id: row.id, filename: row.item.filename)
+                previewing = .file(id: row.id, url: url)
+            }
             errorMessage = nil
         } catch {
+            if pinned { await bridge.unpinAttachment(row.id) }
+            guard generation == previewGeneration else { return }
             previewing = nil
             errorMessage = error.localizedDescription
         }
     }
 
-    /// Write an attachment to a temporary file and hand it to the system.
+    /// End the current preview: delete its plaintext copy and release its pin.
+    /// Also supersedes a preview still loading, which then releases its own.
+    func closePreview() {
+        previewGeneration += 1
+        guard let current = previewing else { return }
+        previewing = nil
+        if case let .file(_, url) = current { PreviewFiles.remove(url) }
+        let bridge = self.bridge
+        _Concurrency.Task { await bridge.unpinAttachment(current.id) }
+    }
+
+    /// Write an attachment to this launch's preview directory and hand it to
+    /// the system: **Open in…**.
     ///
-    /// The temporary copy is how anything but this app can open it: the bytes
-    /// live sealed in the vault and there is no path to hand over.
+    /// The copy is how anything but this app can open it: the bytes live
+    /// sealed in the vault and there is no path to hand over. It is deleted at
+    /// the next launch, since the app it went to may still be reading it.
     func exportToTemporary(_ row: AttachmentRow) async -> URL? {
         do {
             let bytes = try await bridge.attachmentBytes(row.id)
-            let url = FileManager.default.temporaryDirectory
-                .appending(path: "sunrise-\(row.id)")
-                .appending(path: row.item.filename)
-            try FileManager.default.createDirectory(
-                at: url.deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
-            try bytes.write(to: url)
-            return url
+            return try PreviewFiles.write(bytes, id: "\(row.id)-open", filename: row.item.filename)
         } catch {
             errorMessage = error.localizedDescription
             return nil
@@ -289,8 +366,8 @@ final class AttachmentsModel {
             // finished, and its `fetchAttachment` would otherwise outlive the
             // row and report against an id the pane no longer draws.
             if downloads[row.id] != nil { cancelDownload(row) }
+            if previewing?.id == row.id { closePreview() }
             _ = try await bridge.submit(.detachFile(id: row.id))
-            if previewing?.id == row.id { previewing = nil }
             await refresh()
         } catch {
             errorMessage = error.localizedDescription

@@ -18,7 +18,8 @@ use std::sync::{Arc, Condvar, Mutex};
 
 use sunrise_core::{AttachmentFetchState, CommandResult, DeviceRow};
 use sunrise_core_bindings::dto::{
-    CaptureIssue, CommandOutcome, Constraint, DeviceListRow, TaskDraftIn, TaskEdit, TimeValue,
+    AttachPreviewIn, CaptureIssue, CommandOutcome, Constraint, DeviceListRow, TaskDraftIn,
+    TaskEdit, TimeValue,
 };
 use sunrise_core_bindings::vocab::{
     constraint_summary, duration_clock, energy_label, relative_day, short_duration, today_section,
@@ -1418,6 +1419,7 @@ async fn a_file_attaches_and_reads_back_across_the_seam() {
             "return.pdf".into(),
             "application/pdf".into(),
             bytes.clone(),
+            AttachPreviewIn::default(),
         )
         .await
         .expect("attach");
@@ -1460,8 +1462,14 @@ async fn an_empty_attachment_is_a_typed_error() {
         .entity;
 
     assert!(matches!(
-        core.attach_file(task, "empty.txt".into(), "text/plain".into(), Vec::new())
-            .await,
+        core.attach_file(
+            task,
+            "empty.txt".into(),
+            "text/plain".into(),
+            Vec::new(),
+            AttachPreviewIn::default()
+        )
+        .await,
         Err(BindingError::Attachment(_))
     ));
 }
@@ -1480,7 +1488,13 @@ async fn an_attachment_whose_bytes_are_elsewhere_has_its_own_error() {
         .expect("create")
         .entity;
     let att = core
-        .attach_file(task, "n.txt".into(), "text/plain".into(), b"hello".to_vec())
+        .attach_file(
+            task,
+            "n.txt".into(),
+            "text/plain".into(),
+            b"hello".to_vec(),
+            AttachPreviewIn::default(),
+        )
         .await
         .expect("attach");
 
@@ -1514,7 +1528,13 @@ async fn asking_for_an_attachment_this_device_cannot_reach_is_answered_not_await
         .expect("create")
         .entity;
     let att = core
-        .attach_file(task, "n.txt".into(), "text/plain".into(), b"hello".to_vec())
+        .attach_file(
+            task,
+            "n.txt".into(),
+            "text/plain".into(),
+            b"hello".to_vec(),
+            AttachPreviewIn::default(),
+        )
         .await
         .expect("attach");
 
@@ -1566,7 +1586,13 @@ async fn a_malformed_attachment_row_is_refused_at_the_boundary() {
         .expect("create")
         .entity;
     let mut att = core
-        .attach_file(task, "n.txt".into(), "text/plain".into(), b"hello".to_vec())
+        .attach_file(
+            task,
+            "n.txt".into(),
+            "text/plain".into(),
+            b"hello".to_vec(),
+            AttachPreviewIn::default(),
+        )
         .await
         .expect("attach");
 

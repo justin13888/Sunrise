@@ -1,7 +1,7 @@
 {
     "entities": [
         {
-            "features": [],
+            "features": ["attachment.thumbnail"],
             "merge": "lww",
             "ops": [
                 {
@@ -66,6 +66,11 @@
                         },
                         {
                             "crdt": "register",
+                            "name": "height",
+                            "type": "Option<u32>"
+                        },
+                        {
+                            "crdt": "register",
                             "name": "id",
                             "type": "EntityRef"
                         },
@@ -86,8 +91,43 @@
                         },
                         {
                             "crdt": "register",
+                            "name": "thumbnail_blob_id",
+                            "type": "Option<[u8;16]>"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "thumbnail_blob_key",
+                            "type": "Option<[u8;32]>"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "thumbnail_ciphertext_hash",
+                            "type": "Option<[u8;32]>"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "thumbnail_content_hash",
+                            "type": "Option<[u8;32]>"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "thumbnail_mime",
+                            "type": "Option<String>"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "thumbnail_size_bytes",
+                            "type": "Option<u32>"
+                        },
+                        {
+                            "crdt": "register",
                             "name": "updated_at",
                             "type": "Timestamp"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "width",
+                            "type": "Option<u32>"
                         }
                     ],
                     "keeps_unknowns": true,
@@ -1136,6 +1176,25 @@
         }
     ],
     "features": [
+        {
+            "field_op_kinds": [],
+            "fields": [
+                "height",
+                "thumbnail_blob_id",
+                "thumbnail_blob_key",
+                "thumbnail_ciphertext_hash",
+                "thumbnail_content_hash",
+                "thumbnail_mime",
+                "thumbnail_size_bytes",
+                "width"
+            ],
+            "id": "attachment.thumbnail",
+            "op_kinds": [],
+            "scope": {
+                "entity": "attachment"
+            },
+            "since": 12
+        },
         {
             "field_op_kinds": [],
             "fields": [],

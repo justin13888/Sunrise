@@ -115,10 +115,12 @@
 //! this disk. The adversary is the user, and the user is bounded by their own
 //! storage.
 
+use crate::blob_cache::BlobRef;
 use crate::core::{Core, CoreError};
 use crate::engine::read_attachment;
 use sunrise_crypto::blob_chunk::{open_chunk, split_sealed, verify_content};
 use sunrise_domain::Attachment;
+use sunrise_id::EntityRef;
 use sunrise_storage::BlobStore;
 
 /// How many blobs one drain uploads before yielding, and therefore how many
@@ -198,7 +200,8 @@ pub(crate) struct PendingUpload {
 }
 
 impl Core {
-    /// Queue `att`'s sealed chunks for upload.
+    /// Queue one sealed blob of the attachment on `parent` for upload: its
+    /// original, or its thumbnail, which is a blob of its own (ADR-0053 §2).
     ///
     /// Called by [`Core::attach_file`] once the chunks are on disk and the
     /// metadata op is durable. `INSERT OR IGNORE`, so re-attaching the identical
@@ -206,7 +209,12 @@ impl Core {
     ///
     /// # Errors
     /// Storage failures.
-    pub(crate) fn enqueue_blob_upload(&self, att: &Attachment) -> Result<(), CoreError> {
+    pub(crate) fn enqueue_blob_upload(
+        &self,
+        parent: EntityRef,
+        blob: &BlobRef,
+        ciphertext_hash: &[u8; 32],
+    ) -> Result<(), CoreError> {
         let now_ms = i64::try_from(self.now_ms()).unwrap_or(i64::MAX);
         let db = self.db();
         // The Stream the parent task lives on. `init` only checks that the
@@ -217,7 +225,7 @@ impl Core {
             .conn()
             .query_row(
                 "SELECT stream_id FROM tasks WHERE id = ?",
-                rusqlite::params![&att.parent.bytes()[..]],
+                rusqlite::params![&parent.bytes()[..]],
                 |r| r.get(0),
             )
             .ok();
@@ -226,11 +234,11 @@ impl Core {
              (blob_id, stream_id, chunk_count, size_bytes, ciphertext_hash, created_at_ms)
              VALUES (?, ?, ?, ?, ?, ?)",
             rusqlite::params![
-                &att.blob_id[..],
+                &blob.blob_id[..],
                 stream_id.unwrap_or_else(|| vec![0u8; 16]),
-                att.chunk_count,
-                i64::try_from(att.size_bytes).unwrap_or(i64::MAX),
-                &att.ciphertext_hash[..],
+                blob.chunk_count,
+                i64::try_from(blob.size_bytes).unwrap_or(i64::MAX),
+                &ciphertext_hash[..],
                 now_ms,
             ],
         )?;
@@ -373,54 +381,76 @@ impl Core {
         Ok(Some(out))
     }
 
-    /// Live attachments this device has metadata for and bytes for, and which
-    /// are small enough to fetch without being asked.
+    /// Blobs this device has metadata for and no bytes for, which it may
+    /// fetch without being asked on the network it is on now: thumbnails
+    /// first, whatever their attachment's size, then originals under the
+    /// threshold that have not been evicted (ADR-0053 §3, §5, §6).
     ///
     /// The read side's whole queue. See the module docs for why this is a query
     /// rather than a buffer.
     ///
     /// # Errors
     /// Storage or blob store failures.
-    pub(crate) fn attachments_awaiting_bytes(&self) -> Result<Vec<Attachment>, CoreError> {
-        let candidates: Vec<Attachment> = {
+    pub(crate) fn attachments_awaiting_bytes(&self) -> Result<Vec<BlobRef>, CoreError> {
+        let policy = self.current_auto_fetch_policy();
+        let mut candidates: Vec<BlobRef> = Vec::new();
+        {
             let db = self.db();
-            let mut stmt = db.conn().prepare(
-                "SELECT id FROM attachments
-                 WHERE deleted = 0 AND size_bytes <= ?
-                 ORDER BY created_at_ms DESC, id DESC
-                 LIMIT ?",
-            )?;
-            let ids = stmt
-                .query_map(
-                    rusqlite::params![
-                        i64::try_from(AUTO_FETCH_MAX_BYTES).unwrap_or(i64::MAX),
-                        i64::try_from(MAX_FETCH_SCAN).unwrap_or(i64::MAX)
-                    ],
-                    |r| r.get::<_, Vec<u8>>(0),
-                )?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            let mut rows = Vec::new();
-            for raw in ids {
-                if let Some(a) = read_attachment(db.conn(), &sixteen(&raw))? {
-                    if a.is_fetchable() {
-                        rows.push(a);
+            let scan = i64::try_from(MAX_FETCH_SCAN).unwrap_or(i64::MAX);
+            if policy.thumbnails {
+                let ids = ids_where(
+                    db.conn(),
+                    "SELECT id FROM attachments
+                     WHERE deleted = 0 AND thumbnail_blob_id IS NOT NULL
+                     ORDER BY created_at_ms DESC, id DESC
+                     LIMIT ?",
+                    rusqlite::params![scan],
+                )?;
+                for raw in ids {
+                    if let Some(a) = read_attachment(db.conn(), &sixteen(&raw))? {
+                        candidates.extend(BlobRef::thumbnail(&a));
                     }
                 }
             }
-            rows
-        };
+            if policy.originals {
+                // An evicted original stays evicted until somebody opens it:
+                // fetching it back unasked would undo the eviction on the next
+                // drain and hold the cache at its limit by churning it.
+                let ids = ids_where(
+                    db.conn(),
+                    "SELECT a.id FROM attachments a
+                     WHERE a.deleted = 0 AND a.size_bytes <= ?
+                       AND NOT EXISTS (SELECT 1 FROM blob_cache c
+                                       WHERE c.blob_id = a.blob_id
+                                         AND c.evicted_at_ms IS NOT NULL)
+                     ORDER BY a.created_at_ms DESC, a.id DESC
+                     LIMIT ?",
+                    rusqlite::params![
+                        i64::try_from(AUTO_FETCH_MAX_BYTES).unwrap_or(i64::MAX),
+                        scan
+                    ],
+                )?;
+                for raw in ids {
+                    if let Some(a) = read_attachment(db.conn(), &sixteen(&raw))? {
+                        if a.is_fetchable() {
+                            candidates.push(BlobRef::original(&a));
+                        }
+                    }
+                }
+            }
+        }
 
         let store = BlobStore::new(self.vault_dir()).map_err(CoreError::from)?;
         let mut out = Vec::new();
-        for att in candidates {
+        for blob in candidates {
             if out.len() >= MAX_FETCHES_PER_DRAIN {
                 break;
             }
             if !store
-                .has_all(&att.blob_id, att.chunk_count)
+                .has_all(&blob.blob_id, blob.chunk_count)
                 .map_err(CoreError::from)?
             {
-                out.push(att);
+                out.push(blob);
             }
         }
         Ok(out)
@@ -452,18 +482,28 @@ impl Core {
         att: &Attachment,
         body: &[u8],
     ) -> Result<bool, CoreError> {
-        let Some(sealed) = split_sealed(body, att.chunk_count) else {
+        self.store_fetched(&BlobRef::original(att), body)
+    }
+
+    /// [`Core::store_fetched_blob`] for any blob, the original or the
+    /// thumbnail. Once the chunks are written the blob is indexed as opened
+    /// now and the cache is brought back under its limit.
+    ///
+    /// # Errors
+    /// Blob store failures.
+    pub(crate) fn store_fetched(&self, blob: &BlobRef, body: &[u8]) -> Result<bool, CoreError> {
+        let Some(sealed) = split_sealed(body, blob.chunk_count) else {
             return Ok(false);
         };
-        let mut plaintext = Vec::with_capacity(usize::try_from(att.size_bytes).unwrap_or(0));
+        let mut plaintext = Vec::with_capacity(usize::try_from(blob.size_bytes).unwrap_or(0));
         for (idx, piece) in sealed.iter().enumerate() {
             let idx = u32::try_from(idx).unwrap_or(u32::MAX);
-            match open_chunk(&att.blob_key, &att.blob_id, idx, att.chunk_count, piece) {
+            match open_chunk(&blob.blob_key, &blob.blob_id, idx, blob.chunk_count, piece) {
                 Ok(bytes) => plaintext.extend_from_slice(&bytes),
                 Err(_) => return Ok(false),
             }
         }
-        if verify_content(&plaintext, &att.content_hash).is_err() {
+        if verify_content(&plaintext, &blob.content_hash).is_err() {
             return Ok(false);
         }
 
@@ -471,11 +511,25 @@ impl Core {
         for (idx, piece) in sealed.iter().enumerate() {
             let idx = u32::try_from(idx).unwrap_or(u32::MAX);
             store
-                .put_chunk(&att.blob_id, idx, piece)
+                .put_chunk(&blob.blob_id, idx, piece)
                 .map_err(CoreError::from)?;
         }
+        self.note_blob_cached(blob)?;
         Ok(true)
     }
+}
+
+/// The raw ids one `SELECT id …` returns.
+fn ids_where(
+    conn: &rusqlite::Connection,
+    sql: &str,
+    params: impl rusqlite::Params,
+) -> rusqlite::Result<Vec<Vec<u8>>> {
+    let mut stmt = conn.prepare(sql)?;
+    let rows = stmt
+        .query_map(params, |r| r.get::<_, Vec<u8>>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
 }
 
 /// A stored blob narrowed to the 16 bytes it is; short or long is padded or
@@ -653,7 +707,7 @@ mod tests {
         std::fs::remove_dir_all(dir.path().join("blobs")).expect("drop the chunks");
         let wanted = core.attachments_awaiting_bytes().expect("scan");
         assert_eq!(wanted.len(), 1);
-        assert_eq!(wanted[0].id, att.id);
+        assert_eq!(wanted[0].attachment, att.id);
     }
 
     /// A download is checked against this attachment's own key, blob id and

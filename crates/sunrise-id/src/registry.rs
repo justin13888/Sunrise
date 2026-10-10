@@ -324,7 +324,7 @@ macro_rules! for_each_entity {
                 tag: "attachment",
                 merge: Lww,
                 owner: Parent,
-                features: [],
+                features: ["attachment.thumbnail"],
                 ops: [
                     /// Record attachment metadata. Write-once: every field but the tombstone
                     /// describes one specific run of ciphertext, so there is no update op.
@@ -351,6 +351,14 @@ macro_rules! for_each_entity {
                         chunk_count: u32 => Register;
                         content_hash: [u8; 32] => Register;
                         ciphertext_hash: [u8; 32] => Register;
+                        width: Option<u32> => Register;
+                        height: Option<u32> => Register;
+                        thumbnail_blob_id: Option<[u8; 16]> => Register;
+                        thumbnail_blob_key: Option<[u8; 32]> => Register;
+                        thumbnail_mime: Option<String> => Register;
+                        thumbnail_size_bytes: Option<u32> => Register;
+                        thumbnail_content_hash: Option<[u8; 32]> => Register;
+                        thumbnail_ciphertext_hash: Option<[u8; 32]> => Register;
                         deleted: bool => Register;
                         ..unknown
                     }

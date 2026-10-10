@@ -157,6 +157,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "preferences",
         sql: include_str!("../migrations/0037_preferences.sql"),
     },
+    Migration {
+        id: 38,
+        name: "attachment_thumbnails",
+        sql: include_str!("../migrations/0038_attachment_thumbnails.sql"),
+    },
 ];
 
 /// Current storage version (= last migration id).

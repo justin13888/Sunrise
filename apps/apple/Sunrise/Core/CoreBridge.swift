@@ -16,7 +16,10 @@ import Foundation
 /// that started answering them would be the second source of truth this whole
 /// design exists to avoid.
 actor CoreBridge {
-    private let core: SunriseCore
+    /// The handle. Internal rather than private only so the actor's own
+    /// extensions in other files (`CoreBridge+Attachments.swift`) can reach
+    /// it; nothing outside this type's files calls it.
+    let core: SunriseCore
     /// The one FFI subscription, opened lazily by ``startListening()``.
     private var subscription: Subscription?
     /// Pumps that subscription into ``broadcast``.
@@ -51,7 +54,7 @@ actor CoreBridge {
             appVersion: appVersion,
             pairedBundle: pairedBundle
         )
-        return CoreBridge(core: core)
+        return await made(core)
     }
 
     /// Restore an account from its recovery code into the empty `directory`,
@@ -88,11 +91,23 @@ actor CoreBridge {
             nickname: recovery.nickname,
             listener: RecoveryStepForwarder(onStep: onStep)
         )
-        return CoreBridge(core: core)
+        return await made(core)
     }
 
     private init(core: SunriseCore) {
         self.core = core
+    }
+
+    /// A bridge over `core`, told the network class before anyone holds it.
+    ///
+    /// Here, where every bridge is made, rather than in a view: an iOS
+    /// background launch syncs with no scene on screen, and a bridge never
+    /// told would drain as `Unmetered` on cellular or Low Data Mode
+    /// (ADR-0053 §6).
+    private static func made(_ core: SunriseCore) async -> CoreBridge {
+        let bridge = CoreBridge(core: core)
+        await NetworkClassMonitor.shared.report(to: bridge)
+        return bridge
     }
 
     // MARK: - Reads and writes
@@ -138,72 +153,6 @@ actor CoreBridge {
     /// The core's clock. One reading should drive a whole screen, so that two
     /// rows in the same list cannot disagree about what "today" is.
     func nowMs() -> UInt64 { core.nowMs() }
-
-    // MARK: - Attachments
-
-    /// Seal a file's bytes into the vault and record them against a task.
-    ///
-    /// The bytes go over whole rather than as a path: a file the user picked
-    /// arrives with a security scope this process holds and the Rust side
-    /// cannot, so reading it is the app's job. `mimeType` is the app's too —
-    /// `UTType` is what knows a `.heic` is `image/heic`.
-    func attachFile(
-        to task: EntityRef,
-        filename: String,
-        mimeType: String,
-        bytes: Data
-    ) async throws -> AttachmentItem {
-        try await core.attachFile(task: task, filename: filename, mimeType: mimeType, bytes: bytes)
-    }
-
-    /// One attachment's plaintext, reassembled and hash-checked by the core.
-    ///
-    /// Throws `BindingError.AttachmentNotHere` when this device holds the row
-    /// and not the chunks — a state to render, not a failure to report.
-    func attachmentBytes(_ id: EntityRef) async throws -> Data {
-        try await core.attachmentBytes(id: id)
-    }
-
-    /// Whether this device holds every chunk of `attachment`.
-    func attachmentIsLocal(_ attachment: AttachmentItem) throws -> Bool {
-        try core.attachmentIsLocal(attachment: attachment)
-    }
-
-    /// Download one attachment's bytes on demand, whatever its size.
-    ///
-    /// What the Download button calls. Under the core's 10 MiB auto-fetch
-    /// threshold nothing needs this — the sync driver fetches those unasked —
-    /// and over it this is the only route to the bytes at all.
-    ///
-    /// Returns when they are here. It has no timeout by design, and cancelling
-    /// the Swift `Task` awaiting it will not stop it: a UniFFI async call
-    /// carries no cancellation across the seam, so the way to end one is
-    /// `cancelAttachmentFetch`.
-    ///
-    /// Throws `BindingError.AttachmentDownloadCancelled` when that happens,
-    /// which is the user's own decision rather than a failure to report.
-    func fetchAttachment(_ id: EntityRef) async throws {
-        try await core.fetchAttachment(id: id)
-    }
-
-    /// Stop a running download and mark the attachment partial.
-    ///
-    /// Synchronous and immediate: it releases the pending `fetchAttachment`
-    /// whether or not a relay is answering, which is the state a user is most
-    /// likely to be cancelling from. A no-op for an id with nothing
-    /// outstanding.
-    func cancelAttachmentFetch(_ id: EntityRef) throws {
-        try core.cancelAttachmentFetch(id: id)
-    }
-
-    /// This device's cache state for one attachment's bytes.
-    ///
-    /// Durable, so a row still reads `.partial` after a relaunch — which is
-    /// what makes it a cache state rather than a view state, and why the model
-    /// reads it back rather than remembering it.
-    func attachmentFetchState(_ id: EntityRef) throws -> AttachmentFetchState {
-        try core.attachmentFetchState(id: id)
-    }
 
     // MARK: - Recovery
 
@@ -319,7 +268,7 @@ actor CoreBridge {
     /// Read an `.ics` document's `VEVENT`s into the vault as time blocks.
     ///
     /// The document crosses as **text**, not a path, for the reason
-    /// ``attachFile(to:filename:mimeType:bytes:)`` takes bytes: the file the
+    /// ``attachFile(to:filename:mimeType:bytes:preview:)`` takes bytes: the file the
     /// user picked carries a security scope this process holds and the Rust
     /// side cannot, so reading it is the app's job.
     ///

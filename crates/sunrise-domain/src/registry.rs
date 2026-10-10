@@ -295,10 +295,27 @@ mod tests {
                 chunk_count: 1,
                 content_hash: [0; 32],
                 ciphertext_hash: [0; 32],
+                width: None,
+                height: None,
+                thumbnail_blob_id: None,
+                thumbnail_blob_key: None,
+                thumbnail_mime: None,
+                thumbnail_size_bytes: None,
+                thumbnail_content_hash: None,
+                thumbnail_ciphertext_hash: None,
                 deleted: false,
                 unknown: Unknowns::new(),
             },
-            &[],
+            &[
+                "width",
+                "height",
+                "thumbnail_blob_id",
+                "thumbnail_blob_key",
+                "thumbnail_mime",
+                "thumbnail_size_bytes",
+                "thumbnail_content_hash",
+                "thumbnail_ciphertext_hash",
+            ],
         );
     }
 

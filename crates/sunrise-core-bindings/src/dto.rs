@@ -2841,6 +2841,15 @@ pub struct AttachmentItem {
     /// before the uploader existed, which is the same thing as "not on the
     /// relay".
     pub ciphertext_hash: String,
+    /// The original's width in pixels, when the source device knew it.
+    pub width: Option<u32>,
+    /// The original's height in pixels, when the source device knew it.
+    pub height: Option<u32>,
+    /// The MIME type of the attachment's usable thumbnail, `image/jpeg` or
+    /// `image/png`, or `None` when it has none. Its bytes come from
+    /// [`crate::SunriseCore::thumbnail_bytes`]; its key never crosses the
+    /// seam.
+    pub thumbnail_mime: Option<String>,
     /// Tombstoned.
     pub deleted: bool,
 }
@@ -2860,11 +2869,25 @@ impl From<&Attachment> for AttachmentItem {
             chunk_count,
             content_hash,
             ciphertext_hash,
+            width,
+            height,
+            // The thumbnail crosses as its MIME type, and only when
+            // `Attachment::thumbnail` finds it usable; the client reads its
+            // bytes through the core, so the key stays on this side.
+            thumbnail_blob_id: _,
+            thumbnail_blob_key: _,
+            thumbnail_mime: _,
+            thumbnail_size_bytes: _,
+            thumbnail_content_hash: _,
+            thumbnail_ciphertext_hash: _,
             deleted,
             // Deliberately not exported: see the module docs.
             unknown: _,
         } = a;
         Self {
+            width: *width,
+            height: *height,
+            thumbnail_mime: a.thumbnail().map(|t| t.mime_type),
             id: *id,
             created_at: *created_at,
             updated_at: *updated_at,
@@ -2893,7 +2916,8 @@ impl AttachmentItem {
     ///
     /// `unknown` is empty: forward-compat fields are preserved in storage and
     /// deliberately never exported (see the module docs), so a round trip
-    /// through the seam is not how a record gets written back.
+    /// through the seam is not how a record gets written back. The thumbnail
+    /// fields are empty for the same reason: only its MIME type crosses.
     ///
     /// # Errors
     ///
@@ -2912,9 +2936,76 @@ impl AttachmentItem {
             chunk_count: self.chunk_count,
             content_hash: from_hex(&self.content_hash, "content_hash")?,
             ciphertext_hash: from_hex(&self.ciphertext_hash, "ciphertext_hash")?,
+            width: self.width,
+            height: self.height,
+            thumbnail_blob_id: None,
+            thumbnail_blob_key: None,
+            thumbnail_mime: None,
+            thumbnail_size_bytes: None,
+            thumbnail_content_hash: None,
+            thumbnail_ciphertext_hash: None,
             deleted: self.deleted,
             unknown: sunrise_domain::Unknowns::new(),
         })
+    }
+}
+
+/// See [`sunrise_core::AttachPreview`]: what the platform could tell about a
+/// file being attached. Every field `None` when it could tell nothing.
+#[derive(Debug, Clone, Default, uniffi::Record)]
+pub struct AttachPreviewIn {
+    /// The original's width in pixels.
+    pub width: Option<u32>,
+    /// The original's height in pixels.
+    pub height: Option<u32>,
+    /// `image/jpeg` or `image/png`, with `thumbnail_bytes`.
+    pub thumbnail_mime: Option<String>,
+    /// The encoded thumbnail, at most 256 KiB, with `thumbnail_mime`.
+    pub thumbnail_bytes: Option<Vec<u8>>,
+}
+
+impl From<AttachPreviewIn> for sunrise_core::AttachPreview {
+    fn from(p: AttachPreviewIn) -> Self {
+        Self {
+            width: p.width,
+            height: p.height,
+            thumbnail: match (p.thumbnail_mime, p.thumbnail_bytes) {
+                (Some(mime_type), Some(bytes)) => {
+                    Some(sunrise_core::ThumbnailImage { mime_type, bytes })
+                }
+                _ => None,
+            },
+        }
+    }
+}
+
+/// An attachment's thumbnail, decrypted and verified.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct ThumbnailOut {
+    /// `image/jpeg` or `image/png`.
+    pub mime_type: String,
+    /// The encoded image.
+    pub bytes: Vec<u8>,
+}
+
+/// See [`sunrise_core::CacheUsage`].
+#[derive(Debug, Clone, Copy, uniffi::Record)]
+pub struct CacheUsageItem {
+    /// Sealed bytes the cache holds.
+    pub used_bytes: u64,
+    /// What Clear cache would free.
+    pub evictable_bytes: u64,
+    /// The limit.
+    pub limit_bytes: u64,
+}
+
+impl From<sunrise_core::CacheUsage> for CacheUsageItem {
+    fn from(u: sunrise_core::CacheUsage) -> Self {
+        Self {
+            used_bytes: u.used_bytes,
+            evictable_bytes: u.evictable_bytes,
+            limit_bytes: u.limit_bytes,
+        }
     }
 }
 
@@ -2958,6 +3049,12 @@ impl TryFrom<AttachmentDraftIn> for sunrise_domain::AttachmentDraft {
             chunk_count: d.chunk_count,
             content_hash: from_hex(&d.content_hash, "content_hash")?,
             ciphertext_hash: from_hex(&d.ciphertext_hash, "ciphertext_hash")?,
+            // A client that seals its own blobs through `AttachFile` has no
+            // thumbnail to describe; `SunriseCore::attach_file` is the path
+            // that makes one.
+            width: None,
+            height: None,
+            thumbnail: None,
         })
     }
 }

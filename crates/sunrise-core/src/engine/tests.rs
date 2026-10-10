@@ -304,6 +304,9 @@ mod testutil {
             chunk_count: 2,
             content_hash: [11u8; 32],
             ciphertext_hash: [13u8; 32],
+            width: None,
+            height: None,
+            thumbnail: None,
         }
     }
 
@@ -18964,3 +18967,6 @@ mod op_chain;
 /// Op-log compaction below an acknowledged floor, and stream snapshots
 /// (ADR-0059).
 mod compaction;
+
+/// An attachment's thumbnail and dimensions (ADR-0053, issue #346).
+mod attachment_thumbnail;

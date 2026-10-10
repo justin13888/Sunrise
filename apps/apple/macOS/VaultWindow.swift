@@ -130,7 +130,8 @@ struct VaultWindow: View {
                     allowNotifications: { await surfaces.reminders?.requestAuthorization() },
                     keyboard: keys,
                     session: session,
-                    devices: models.devices
+                    devices: models.devices,
+                    storage: models.storage
                 )
                 Button("Done") { showingSettings = false }
                     .keyboardShortcut(.defaultAction)
