@@ -17,11 +17,26 @@ struct SunriseiOSApp: App {
     /// the vault lock for as long as it runs and a second `Core::open` on the
     /// same directory is refused, so every surface in the process has to share
     /// one open vault.
-    @State private var session = SessionModel.standard()
+    @State private var session: SessionModel
     /// Publishing into the App Group container the Home and Lock Screen
     /// widgets read. `project.yml` names the group.
-    @State private var surfaces = AppSurfaces(widgets: .appGroup())
+    @State private var surfaces: AppSurfaces
     @Environment(\.scenePhase) private var scenePhase
+    /// Background task registration, the APNs token and the silent push —
+    /// the OS entry points a scene has no modifier for.
+    @UIApplicationDelegateAdaptor(SunriseAppDelegate.self) private var appDelegate
+
+    /// Builds the session here rather than in the property declarations so
+    /// the background host is bound to the same instance before launch
+    /// finishes: a refresh task or a silent push can launch the app with no
+    /// window at all, and it has to sync *this* session's vault.
+    init() {
+        let session = SessionModel.standard()
+        let surfaces = AppSurfaces(widgets: .appGroup())
+        _session = State(initialValue: session)
+        _surfaces = State(initialValue: surfaces)
+        BackgroundHost.shared.attach(session: session, surfaces: surfaces)
+    }
 
     var body: some Scene {
         WindowGroup {
@@ -35,8 +50,19 @@ struct SunriseiOSApp: App {
         // most likely to be stale — a day that rolled over, a sync that
         // landed while it slept — and a re-read that finds nothing new
         // redraws nothing.
+        //
+        // Going the other way is the moment to ask the OS for the next
+        // background refresh and maintenance window, so a suspended app is
+        // still woken to sync (`docs/07-clients/mobile-ios.md` §Background
+        // sync).
         .onChange(of: scenePhase) { _, phase in
-            if phase == .active { surfaces.widgets?.refresh() }
+            switch phase {
+            case .active: surfaces.widgets?.refresh()
+            case .background:
+                BackgroundHost.shared.sync?.scheduleRefresh()
+                BackgroundHost.shared.sync?.scheduleMaintenance()
+            default: break
+            }
         }
     }
 }
