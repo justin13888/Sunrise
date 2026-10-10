@@ -417,10 +417,18 @@ For `WIRE_PROTO_V`:
 
 1. **Minor change (no version bump).** Adding a new optional field to an
    existing message, a new error code, or a new capability bit. Old peers
-   ignore unknown fields, codes and bits. This holds for every JSON body on the
-   wire, the session request and response included: none of the sync bodies is
+   ignore unknown fields, codes and bits. This holds for every sync body
+   (`/sync/session`, `/sync/session/refresh`, `/sync/subscribe`, `/sync/ops`,
+   requests and responses), the session request and response included: none is
    `deny_unknown_fields`, and a body that has to be understood says so with a
-   capability bit or a compared version (§4), never with a decode failure.
+   capability bit or a compared version (§4), never with a decode failure. A
+   device-signed request's unknown field is covered by its signature, because
+   the relay verifies the value it received rather than its own parse
+   ([ADR-0022](../11-adr/0022-device-signature-canonical-json.md), amended
+   2026-10). The exception is the REST bodies outside the sync surface —
+   account, device, pairing and blob requests — which keep
+   `deny_unknown_fields`: they are not the negotiation path, and a field added
+   to one is a new OpenAPI document version, not a minor change.
 2. **Major change (version bump).** Anything that changes how an existing
    field is interpreted, removes a field, changes the frame layout, changes the
    compression scheme, or changes error semantics. A version bump requires:
