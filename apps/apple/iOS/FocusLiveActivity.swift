@@ -15,7 +15,10 @@ import Foundation
 /// of them would be four places to forget; reconciling against
 /// `Query::RunningFocusSessions` on every change batch is one, and it is the
 /// only one that sees the sync.
-@MainActor
+///
+/// Not main-actor isolated: `Activity` is not `Sendable`, and its `update` and
+/// `end` are nonisolated, so an activity read on the main actor could not be
+/// handed to them. Nothing here touches UI state.
 enum FocusLiveActivity {
     /// Make what ActivityKit shows match the running session in `bridge`.
     ///
@@ -45,6 +48,16 @@ enum FocusLiveActivity {
             guard !batch.isClosed else { return }
             await reconcile(in: bridge)
         }
+    }
+
+    /// End every focus activity: the vault they were read from has closed.
+    ///
+    /// The widget snapshot's rule (`mobile-ios.md` §The snapshot is the whole
+    /// contract) applied to the Lock Screen's other plaintext: a lock, a
+    /// sign-out or a vault switch takes the title off it, and the next vault
+    /// to open puts back whatever its own running session calls for.
+    static func endAll() async {
+        await apply(FocusActivityPlan.steps(showing: shown(), want: nil))
     }
 
     private static func shown() -> [ShownFocusActivity] {

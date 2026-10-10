@@ -87,6 +87,10 @@ extension VaultTabs {
                 // Inbox now that a vault is open (`mobile-ios.md` §Live
                 // Activities, §Sharing extension).
                 .task { await FocusLiveActivity.follow(bridge) }
+                // This shell is replaced only when the session leaves
+                // `.unlocked` — backgrounding does not — so this is the vault
+                // closing, and its title comes off the Lock Screen with it.
+                .onDisappear { Task { await FocusLiveActivity.endAll() } }
                 .task { await ShareInbox.shared.file(into: bridge) }
                 // A Focus turning on or off re-scopes Today and the reminder
                 // schedule at once, rather than at their next change batch.
