@@ -369,6 +369,13 @@ BASELINE: dict[str, str] = {
         "run over them. Its expectations are kept beside the fixtures they "
         "describe on purpose."
     ),
+    "crates/sunrise-storage/src/vault_fixtures/seed.rs": (
+        "A `#[cfg(test)]` module, nearly all of it one data table: `SEED`, a "
+        "row for every table any migration creates, which the fixtures "
+        "after v17 are filled with. One list on purpose, so the test that it "
+        "reaches every table and column reads it whole. Not audited for a "
+        "split."
+    ),
     "crates/sunrise-storage/src/db.rs": (
         "601 implementation lines -- below this package's threshold on its "
         "own; the rest is tests. The SQLCipher wrapper: keying, pragmas, "
