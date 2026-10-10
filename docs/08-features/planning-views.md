@@ -45,10 +45,12 @@ undated line `planned_at = today` so the row appears where it was typed
 default*).
 
 > **Today's build** composes Scheduled Blocks, tasks scheduled today, tasks due
-> today and an Overdue section from `scheduled_at` and `due_at` over a rolling
-> now + 24 h window (`crates/sunrise-core/src/engine/query.rs#query_today`),
-> with overdue meaning `due_at` before the start of today. [#334](https://github.com/justin13888/Sunrise/issues/334) and [#336](https://github.com/justin13888/Sunrise/issues/336)
-> move it to the composition above.
+> today and an Overdue section from `scheduled_at` and `due_at`: every open task
+> scheduled or due on or before the reader's civil day
+> (`crates/sunrise-core/src/engine/query.rs#query_today`), with overdue meaning
+> `due_at` before the start of today. [#334](https://github.com/justin13888/Sunrise/issues/334)
+> moves it to the composition above, and [#338](https://github.com/justin13888/Sunrise/issues/338)
+> bounds the day by the day schedule.
 
 ## Upcoming
 
