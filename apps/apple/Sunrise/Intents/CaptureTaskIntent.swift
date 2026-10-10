@@ -54,7 +54,10 @@ struct CaptureTaskIntent: AppIntent {
 
     @Parameter(
         title: LocalizedStringResource("apple.intents.task_parameter", table: "Localizable"),
-        description: LocalizedStringResource("apple.intents.capture_task.line_description", table: "Localizable"),
+        description: LocalizedStringResource(
+            "apple.intents.capture_task.line_description",
+            table: "Localizable"
+        ),
         requestValueDialog: IntentDialog(
             LocalizedStringResource("apple.intents.capture_task.line_prompt", table: "Localizable")
         )

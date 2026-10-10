@@ -354,7 +354,10 @@ extension PrintDocument {
                     PrintRow(
                         id: drift.routine,
                         title: drift.title,
-                        detail: L10n.Print.driftDetail(missed: Int(drift.missed), expected: Int(drift.expected))
+                        detail: L10n.Print.driftDetail(
+                            missed: Int(drift.missed),
+                            expected: Int(drift.expected)
+                        )
                     )
                 }
             )

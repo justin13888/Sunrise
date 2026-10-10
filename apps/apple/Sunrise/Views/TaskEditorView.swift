@@ -124,7 +124,9 @@ struct TaskEditorView: View {
                     TextField("", value: $estimateMinutes, format: .number)
                         .textInput(.number)
                         .frame(width: 60)
-                    Text(estimateMinutes > 0 ? shortDuration(secs: UInt64(estimateMinutes * 60)) : L10n.TaskEditor.estimateNone)
+                    Text(estimateMinutes > 0
+                        ? shortDuration(secs: UInt64(estimateMinutes * 60))
+                        : L10n.TaskEditor.estimateNone)
                         .foregroundStyle(.secondary)
                 }
             }

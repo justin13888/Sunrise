@@ -149,7 +149,10 @@ struct WeeklyReviewBody: View {
                 Section(L10n.Review.routinesDrifting) {
                     ForEach(report.driftingRoutines, id: \.routine) { drift in
                         LabeledContent(drift.title) {
-                            Text(L10n.Review.driftMissed(missed: Int(drift.missed), expected: Int(drift.expected)))
+                            Text(L10n.Review.driftMissed(
+                                missed: Int(drift.missed),
+                                expected: Int(drift.expected)
+                            ))
                                 .foregroundStyle(.orange)
                         }
                     }
@@ -298,7 +301,7 @@ struct SnapshotHistoryBody: View {
                         [
                             L10n.Review.completedCount(count: Int(snapshot.totals.completed)),
                             L10n.Review.deferredCount(count: Int(snapshot.totals.deferred)),
-                            L10n.Review.createdCount(count: Int(snapshot.totals.created)),
+                            L10n.Review.createdCount(count: Int(snapshot.totals.created))
                         ].joined(separator: " · ")
                     )
                     .font(.caption)

@@ -166,7 +166,8 @@ private struct RectangularView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
             Text(verbatim: snapshot.overdue > 0
-                ? "\(L10n.Widget.left(count: snapshot.outstanding)) · \(L10n.Widget.overdue(count: snapshot.overdue))"
+                ? L10n.Widget.left(count: snapshot.outstanding)
+                    + " · " + L10n.Widget.overdue(count: snapshot.overdue)
                 : L10n.Widget.leftToday(count: snapshot.outstanding))
                 .font(.headline)
                 .widgetAccentable()
