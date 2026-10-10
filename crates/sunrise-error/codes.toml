@@ -62,6 +62,14 @@ retryable = false
 since = "v1"
 docs = "Generic validation failure with structured diagnostic."
 
+[[code]]
+id = 105
+name = "VALIDATION_PREFERENCE_SCOPE"
+kind = "user"
+retryable = false
+since = "v1"
+docs = "Per docs/02-domain/preferences.md: a SetPreference or ClearPreference named a target (Vault or Device) its key's scope does not permit."
+
 # --- Auth -----------------------------------------------------------------
 
 [[code]]

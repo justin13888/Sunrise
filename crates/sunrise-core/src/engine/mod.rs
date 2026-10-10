@@ -91,6 +91,7 @@ mod lww;
 mod merge;
 mod notify;
 mod oplog;
+mod preferences;
 mod query;
 mod review;
 mod revocation;
@@ -111,6 +112,7 @@ pub use self::chain::ChainIntegrity;
 pub use self::compaction::{CompactionPolicy, CompactionReport};
 pub(crate) use self::ids::hex_short;
 use self::lww::LwwStamp;
+pub use self::preferences::{BootstrapError, BootstrapPreferences, BOOTSTRAP_FILE};
 pub(crate) use self::revocation::{adopt_sponsor_read_bounds, read_bounds_for_pairing};
 pub use self::snapshot::{SnapshotApplied, SNAPSHOT_FORMAT_V};
 
@@ -621,6 +623,12 @@ impl Engine {
                 self.log_interruption(db, session, reason)
             }
             Command::SaveReviewSnapshot(d) => self.save_review_snapshot(db, d),
+            Command::SetPreference { key, value, target } => {
+                self.write_preference(db, &key, Some(value), target)
+            }
+            Command::ClearPreference { key, target } => {
+                self.write_preference(db, &key, None, target)
+            }
         }
     }
 
@@ -683,6 +691,7 @@ impl Engine {
             Query::DayBlocks { day_ms } => self.query_day_blocks(db, day_ms),
             Query::WeekBlocks { week_ms } => self.query_week_blocks(db, week_ms),
             Query::Search { text, limit } => self.query_search(db, &text, limit),
+            Query::Preferences => self.query_preferences(db).map(QueryResult::Preferences),
             // Sync status is owned by `Core` (it reads the live `SyncShared` and
             // the DB outbox count); the engine never serves it.
             Query::SyncStatus => Err(EngineError::Invalid(

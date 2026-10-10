@@ -4,8 +4,8 @@ use crate::control_op::RevokeReason;
 use serde::{Deserialize, Serialize};
 use sunrise_domain::{
     AttachmentDraft, BlockDraft, BlockPatch, ContextDraft, ContextPatch, Energy,
-    InterruptionReason, ReviewSnapshotDraft, RoutineDraft, RoutinePatch, ScheduleConstraint,
-    SessionLength, StreamDraft, StreamPatch, TaskDraft, TaskPatch, TaskState,
+    InterruptionReason, PrefTarget, PrefValue, ReviewSnapshotDraft, RoutineDraft, RoutinePatch,
+    ScheduleConstraint, SessionLength, StreamDraft, StreamPatch, TaskDraft, TaskPatch, TaskState,
 };
 use sunrise_id::EntityRef;
 
@@ -327,6 +327,31 @@ pub enum Command {
     /// sat down and reviewed week W" cannot. Two devices each finishing a
     /// review of the same week mint different ids, so both survive.
     SaveReviewSnapshot(ReviewSnapshotDraft),
+    /// Set one preference (`docs/02-domain/preferences.md`).
+    ///
+    /// `target` names the store: `Vault` emits a `Patch` setting the key in
+    /// the vault's synced `Preferences`, `Device` writes this device's
+    /// overlay and emits nothing. A target the key's scope does not permit
+    /// is refused with `VALIDATION_PREFERENCE_SCOPE`; an unknown key, a
+    /// bootstrap key (written through `BootstrapPreferences`) or a value
+    /// that does not fit the key is refused with `VALIDATION_FIELD`.
+    SetPreference {
+        /// The key, e.g. `"week_start"`.
+        key: String,
+        /// The value.
+        value: PrefValue,
+        /// Which store to write.
+        target: PrefTarget,
+    },
+    /// Clear one preference from one store, so it resolves from the next
+    /// store down: the vault value, then the default. Checked as
+    /// [`Self::SetPreference`] is.
+    ClearPreference {
+        /// The key.
+        key: String,
+        /// Which store to clear it from.
+        target: PrefTarget,
+    },
 }
 
 /// Draft for [`Command::StartFocus`]. The core fills the session id, the

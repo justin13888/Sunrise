@@ -22,6 +22,9 @@ rand_core = { workspace = true }
 rusqlite = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_bytes = { workspace = true }
+# The bootstrap preference file is plaintext JSON, so a device pointed at the
+# wrong relay stays repairable by hand (`engine/preferences.rs`).
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 # `rt`, not `rt-multi-thread`: `Core` spawns onto whatever runtime its caller
 # runs, and `rt-multi-thread` pulls `mio`, which refuses the wasm target
@@ -44,7 +47,6 @@ zeroize = { workspace = true }
 # JSON, canonicalized by JCS, fingerprinted with BLAKE3 `derive_key`.
 blake3 = { workspace = true }
 serde_jcs = { workspace = true }
-serde_json = { workspace = true }
 proptest = { workspace = true }
 sunrise-crypto-test-vectors = { workspace = true }
 # `test_util::events_emitted_by`, so an engine test that asserts an `ev` fired
