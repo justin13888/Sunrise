@@ -48,7 +48,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 
 use parking_lot::Mutex;
 use sunrise_crypto::blob_chunk::{CHUNK_PLAINTEXT_LEN, SEALED_CHUNK_LEN};
-use sunrise_domain::{Attachment, PrefValue};
+use sunrise_domain::{pref_spec, Attachment, DeviceClass, PrefValue};
 use sunrise_id::EntityRef;
 use sunrise_storage::BlobStore;
 
@@ -62,9 +62,21 @@ pub(crate) const CACHE_LIMIT_KEY: &str = "attachments.cache_limit_bytes";
 /// The preference that lets originals auto-fetch on cellular.
 pub(crate) const AUTO_FETCH_ON_CELLULAR_KEY: &str = "attachments.auto_fetch_on_cellular";
 
-/// The limit when the preference cannot be read: the handheld default, the
-/// smaller of the two, so a fault errs toward keeping less.
-const FALLBACK_LIMIT_BYTES: u64 = 200_000_000;
+/// The limit when the vault's preferences cannot be read: the key's default
+/// for the class of the platform this build runs on, the same value the
+/// resolver gives a device with no row in `devices`. A fault then evicts
+/// down to what this device would hold anyway, rather than to a handheld's
+/// 200 MB on a desktop whose default is 1 GB.
+fn platform_default_limit_bytes() -> u64 {
+    let class = DeviceClass::of_platform(std::env::consts::OS);
+    match pref_spec(CACHE_LIMIT_KEY).and_then(|spec| spec.default.value(class)) {
+        Some(PrefValue::Uint(n)) => n,
+        // Unreachable while the key is registered with a class default
+        // (`a_class_dependent_default_follows_the_device`); the smaller
+        // default, so it errs toward keeping less.
+        _ => 200_000_000,
+    }
+}
 
 /// The class of network the client is on, as it reports it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -208,8 +220,11 @@ impl BlobRef {
 #[derive(Debug, Default)]
 pub(crate) struct CacheSignals {
     network: AtomicU8,
-    /// Blob ids an open preview holds, with how many previews hold each.
-    pins: Mutex<HashMap<[u8; 16], u32>>,
+    /// The attachments an open preview holds: each one's original blob id,
+    /// and how many previews hold it. Keyed by the attachment, so a pin is
+    /// released without reading the row, which a delete may already have
+    /// tombstoned.
+    pins: Mutex<HashMap<EntityRef, ([u8; 16], u32)>>,
     /// A limit below the preference's 100 MB floor, so a test can fill the
     /// cache with a few kilobytes.
     #[cfg(test)]
@@ -218,7 +233,10 @@ pub(crate) struct CacheSignals {
 
 impl CacheSignals {
     fn is_pinned(&self, blob_id: &[u8; 16]) -> bool {
-        self.pins.lock().contains_key(blob_id)
+        self.pins
+            .lock()
+            .values()
+            .any(|(pinned, _)| pinned == blob_id)
     }
 }
 
@@ -258,33 +276,34 @@ impl Core {
     /// [`AttachError::NotFound`] for an unknown or tombstoned id.
     pub async fn pin_attachment(&self, id: EntityRef) -> Result<(), AttachError> {
         let att = self.attachment_row(id).await?;
-        *self
-            .cache_signals()
+        self.cache_signals()
             .pins
             .lock()
-            .entry(att.blob_id)
-            .or_insert(0) += 1;
+            .entry(id)
+            .or_insert((att.blob_id, 0))
+            .1 += 1;
         Ok(())
     }
 
     /// Release one pin [`Core::pin_attachment`] took. A no-op for an id with
     /// none.
     ///
-    /// # Errors
-    /// [`AttachError::NotFound`] for an unknown or tombstoned id.
-    pub async fn unpin_attachment(&self, id: EntityRef) -> Result<(), AttachError> {
-        let att = self.attachment_row(id).await?;
+    /// Reads no row: the preview being closed may be closing because its
+    /// attachment was deleted, here or on another device, and a release that
+    /// needed the live row would leave that blob pinned for the life of the
+    /// process.
+    pub fn unpin_attachment(&self, id: EntityRef) {
         let mut pins = self.cache_signals().pins.lock();
-        if let Some(n) = pins.get_mut(&att.blob_id) {
+        if let Some((_, n)) = pins.get_mut(&id) {
             *n = n.saturating_sub(1);
             if *n == 0 {
-                pins.remove(&att.blob_id);
+                pins.remove(&id);
             }
         }
-        Ok(())
     }
 
-    /// The cache's limit: `attachments.cache_limit_bytes`, resolved.
+    /// The cache's limit: `attachments.cache_limit_bytes`, resolved, or this
+    /// platform's default for it when the vault cannot be read.
     fn cache_limit_bytes(&self) -> u64 {
         #[cfg(test)]
         if let Some(n) = *self.cache_signals().limit_override.lock() {
@@ -292,7 +311,7 @@ impl Core {
         }
         match self.resolved_preference(CACHE_LIMIT_KEY) {
             Some(PrefValue::Uint(n)) => n,
-            _ => FALLBACK_LIMIT_BYTES,
+            _ => platform_default_limit_bytes(),
         }
     }
 

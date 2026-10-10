@@ -104,9 +104,10 @@ extension CoreBridge {
         try await core.pinAttachment(id: id)
     }
 
-    /// Release one pin ``pinAttachment(_:)`` took.
-    func unpinAttachment(_ id: EntityRef) async throws {
-        try await core.unpinAttachment(id: id)
+    /// Release one pin ``pinAttachment(_:)`` took. Reads no row, so it also
+    /// releases a pin whose attachment was deleted while its preview was open.
+    func unpinAttachment(_ id: EntityRef) {
+        core.unpinAttachment(id: id)
     }
 
     /// What the attachment cache holds, what Clear cache would free, and the

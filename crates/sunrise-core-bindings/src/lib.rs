@@ -833,13 +833,10 @@ impl SunriseCore {
         Ok(self.inner.pin_attachment(id).await?)
     }
 
-    /// Release one pin [`SunriseCore::pin_attachment`] took.
-    ///
-    /// # Errors
-    ///
-    /// [`BindingError::Attachment`] for an unknown or tombstoned id.
-    pub async fn unpin_attachment(&self, id: EntityRef) -> Result<(), BindingError> {
-        Ok(self.inner.unpin_attachment(id).await?)
+    /// Release one pin [`SunriseCore::pin_attachment`] took. Infallible, and
+    /// valid for an attachment deleted since it was pinned.
+    pub fn unpin_attachment(&self, id: EntityRef) {
+        self.inner.unpin_attachment(id);
     }
 
     /// What this device's attachment cache holds and its limit, for

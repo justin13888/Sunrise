@@ -41,25 +41,52 @@ struct Vault {
 }
 
 impl Vault {
+    async fn core_at(dir: &std::path::Path, clock: Arc<FakeClock>) -> Result<Core, CoreError> {
+        let cfg = CoreConfig::with_clock(
+            dir.to_path_buf(),
+            "0.1.0+test",
+            clock,
+            Arc::new(CountingRng::default()),
+        );
+        Core::open(
+            cfg,
+            Unlock::DevicePaired {
+                root: VaultRootKey::from_bytes([7u8; 32]),
+                paired: None,
+            },
+        )
+        .await
+    }
+
+    /// Close the vault and open it again: a relaunch.
+    async fn reopen(self) -> Self {
+        let Self {
+            _dir: dir,
+            core,
+            clock,
+            task,
+        } = self;
+        drop(Arc::into_inner(core).expect("the only handle"));
+        let core = Arc::new(
+            Self::core_at(dir.path(), clock.clone())
+                .await
+                .expect("reopen"),
+        );
+        Self {
+            _dir: dir,
+            core,
+            clock,
+            task,
+        }
+    }
+
     async fn open() -> Self {
         let dir = tempfile::tempdir().unwrap();
         let clock = Arc::new(FakeClock(PLMutex::new(1_700_000_000_000)));
-        let cfg = CoreConfig::with_clock(
-            dir.path().to_path_buf(),
-            "0.1.0+test",
-            clock.clone(),
-            Arc::new(CountingRng::default()),
-        );
         let core = Arc::new(
-            Core::open(
-                cfg,
-                Unlock::DevicePaired {
-                    root: VaultRootKey::from_bytes([7u8; 32]),
-                    paired: None,
-                },
-            )
-            .await
-            .expect("open"),
+            Self::core_at(dir.path(), clock.clone())
+                .await
+                .expect("open"),
         );
         let task = core
             .submit(Command::CreateTask(TaskDraft {
@@ -102,6 +129,14 @@ impl Vault {
 
     fn local(&self, att: &Attachment) -> bool {
         self.core.attachment_is_local(att).unwrap()
+    }
+
+    /// How many blobs have a directory in the blob store.
+    fn blob_dirs(&self) -> usize {
+        std::fs::read_dir(self.core.vault_dir().join("blobs"))
+            .unwrap()
+            .map(|prefix| std::fs::read_dir(prefix.unwrap().path()).unwrap().count())
+            .sum()
     }
 }
 
@@ -252,6 +287,60 @@ async fn a_thumbnail_is_its_own_blob_under_its_own_key_and_is_uploaded() {
     );
 }
 
+/// While a paired device has not advertised `attachment.thumbnail`, the
+/// engine records the attachment without its thumbnail. The thumbnail's
+/// sealed chunks are then referenced by nothing, so they are deleted, and no
+/// upload is queued for them.
+#[tokio::test]
+async fn a_thumbnail_the_engine_dropped_leaves_no_chunks_and_no_upload() {
+    let v = Vault::open().await;
+    // A paired device that never sent `DeviceFeatures`.
+    v.core
+        .db()
+        .conn()
+        .execute(
+            "INSERT INTO devices (device_id, cert_blob, nickname, platform, created_at_ms)
+             VALUES (?, x'00', 'old phone', 'ios', 0)",
+            [&[0xEEu8; 16][..]],
+        )
+        .unwrap();
+
+    let att = v
+        .core
+        .attach_file_with(
+            v.task,
+            "photo.jpg".into(),
+            "image/jpeg".into(),
+            b"the whole photo",
+            AttachPreview {
+                width: Some(4032),
+                height: Some(3024),
+                thumbnail: Some(jpeg(100)),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(att.thumbnail().is_none(), "the engine dropped it: {att:?}");
+
+    let queued: Vec<[u8; 16]> = v
+        .core
+        .pending_blob_uploads()
+        .unwrap()
+        .into_iter()
+        .map(|u| u.blob_id)
+        .collect();
+    assert_eq!(queued, vec![att.blob_id], "only the original uploads");
+    assert_eq!(v.blob_dirs(), 1, "only the original's chunks are on disk");
+    assert!(v.local(&att));
+    let indexed: i64 = v
+        .core
+        .db()
+        .conn()
+        .query_row("SELECT COUNT(*) FROM blob_cache", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(indexed, 1, "only the original is indexed");
+}
+
 #[tokio::test]
 async fn a_thumbnail_a_receiver_might_not_decode_is_refused_before_anything_is_written() {
     let v = Vault::open().await;
@@ -341,13 +430,13 @@ async fn eviction_never_touches_a_pending_upload_a_thumbnail_or_a_pinned_blob() 
     v.core.pin_attachment(pictured.id).await.unwrap();
     v.core.pin_attachment(pictured.id).await.unwrap();
     assert_eq!(v.core.clear_attachment_cache().unwrap(), 0);
-    v.core.unpin_attachment(pictured.id).await.unwrap();
+    v.core.unpin_attachment(pictured.id);
     assert_eq!(
         v.core.clear_attachment_cache().unwrap(),
         0,
         "still pinned once"
     );
-    v.core.unpin_attachment(pictured.id).await.unwrap();
+    v.core.unpin_attachment(pictured.id);
 
     let usage = v.core.attachment_cache_usage().unwrap();
     assert_eq!(usage.evictable_bytes, sealed_size(500));
@@ -355,6 +444,34 @@ async fn eviction_never_touches_a_pending_upload_a_thumbnail_or_a_pinned_blob() 
     assert!(v.local(&pending), "an upload that has not happened is kept");
     assert!(!v.local(&pictured));
     assert!(v.core.thumbnail_bytes(pictured.id).await.unwrap().is_some());
+}
+
+/// A preview closed because its attachment was deleted still releases its
+/// pin: the release reads no row, so a tombstone cannot strand the blob
+/// pinned for the life of the process.
+#[tokio::test]
+async fn a_pin_is_released_after_its_attachment_is_deleted() {
+    let v = Vault::open().await;
+    let att = v.uploaded("doomed", 500).await;
+    v.core.pin_attachment(att.id).await.unwrap();
+    v.core.submit(Command::DetachFile(att.id)).await.unwrap();
+    assert_eq!(v.core.clear_attachment_cache().unwrap(), 0, "pinned");
+    v.core.unpin_attachment(att.id);
+    assert_eq!(v.core.clear_attachment_cache().unwrap(), sealed_size(500));
+}
+
+/// When the vault's preferences cannot be read, the limit is this
+/// platform's default for the key, not a fixed handheld value.
+#[test]
+fn the_fallback_limit_is_this_platforms_default() {
+    let class = DeviceClass::of_platform(std::env::consts::OS);
+    assert_eq!(
+        sunrise_domain::pref_spec(CACHE_LIMIT_KEY).and_then(|s| s.default.value(class)),
+        Some(PrefValue::Uint(platform_default_limit_bytes()))
+    );
+    if class == DeviceClass::Desktop {
+        assert_eq!(platform_default_limit_bytes(), 1_000_000_000);
+    }
 }
 
 /// An evicted blob is not fetched back unasked, and comes back through the
@@ -496,5 +613,98 @@ async fn the_launch_indexing_pass_runs_once_per_vault() {
         v.core.attachment_cache_usage().unwrap().used_bytes,
         0,
         "a second pass would have indexed the blob again"
+    );
+}
+
+// ---- at launch ----
+
+/// Every `ev` field the events emitted on this thread carried, while the
+/// guard lives.
+#[derive(Clone, Default)]
+struct EvLog(Arc<PLMutex<Vec<String>>>);
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for EvLog {
+    fn on_event(&self, event: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
+        struct Ev<'a>(&'a mut Vec<String>);
+        impl tracing::field::Visit for Ev<'_> {
+            fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+                if field.name() == "ev" {
+                    self.0.push(value.to_owned());
+                }
+            }
+            fn record_debug(&mut self, _: &tracing::field::Field, _: &dyn std::fmt::Debug) {}
+        }
+        event.record(&mut Ev(&mut self.0.lock()));
+    }
+}
+
+/// A cache that went over its limit while the vault was closed is brought
+/// under it by `Core::open` itself, before anything else adds to it.
+#[tokio::test]
+async fn opening_a_vault_evicts_a_cache_over_its_limit() {
+    let v = Vault::open().await;
+    v.at(1);
+    let old = v.uploaded("old", 1000).await;
+    v.at(2);
+    let new = v.uploaded("new", 1000).await;
+    v.core
+        .submit(Command::SetPreference {
+            key: CACHE_LIMIT_KEY.into(),
+            value: PrefValue::Uint(100_000_000),
+            target: PrefTarget::Device,
+        })
+        .await
+        .unwrap();
+    // The cheapest way to a cache over a 100 MB floor: the index says the
+    // older blob is 150 MB.
+    v.core
+        .db()
+        .conn()
+        .execute(
+            "UPDATE blob_cache SET sealed_bytes = 150000000 WHERE blob_id = ?",
+            [&old.blob_id[..]],
+        )
+        .unwrap();
+
+    let v = v.reopen().await;
+    assert!(!v.local(&old), "evicted during open");
+    assert!(v.local(&new));
+    let usage = v.core.attachment_cache_usage().unwrap();
+    assert_eq!(usage.used_bytes, sealed_size(1000));
+    assert_eq!(usage.limit_bytes, 100_000_000);
+}
+
+/// Enforcement that fails at launch is logged, and the vault opens anyway:
+/// an over-full cache is no reason to refuse it.
+#[tokio::test]
+async fn a_failed_launch_enforcement_is_logged_and_the_vault_opens() {
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    let v = Vault::open().await;
+    v.core
+        .db()
+        .conn()
+        .execute("DROP TABLE blob_cache", [])
+        .unwrap();
+    let Vault {
+        _dir: vault_dir,
+        core,
+        clock,
+        ..
+    } = v;
+    drop(Arc::into_inner(core).expect("the only handle"));
+
+    let log = EvLog::default();
+    let guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(log.clone()));
+    let reopened = Vault::core_at(vault_dir.path(), clock).await;
+    drop(guard);
+    assert!(reopened.is_ok(), "{:?}", reopened.err());
+    assert!(
+        log.0
+            .lock()
+            .iter()
+            .any(|ev| ev == "core.attachment.cache_enforce_failed"),
+        "logged: {:?}",
+        log.0.lock()
     );
 }
