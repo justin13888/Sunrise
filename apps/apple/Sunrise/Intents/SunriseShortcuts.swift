@@ -13,8 +13,9 @@ import AppIntents
 /// provider whose phrases do not. That is also why the phrases read the way
 /// they do — "in Sunrise", "from Sunrise" — rather than as bare commands.
 ///
-/// The cap is ten. Six are used, which leaves room for the next verb without
-/// having to argue about which one to drop.
+/// The cap is ten. Eight are used: the five verbs `mobile-ios.md` §Shortcuts
+/// and App Intents lists (capture, mark-done, defer, start-focus,
+/// stream-summary), the two fixed lists, and the end of a focus session.
 struct SunriseShortcuts: AppShortcutsProvider {
     /// Yellow: the app's mark is a sun.
     static let shortcutTileColor = ShortcutTileColor.orange
@@ -42,6 +43,16 @@ struct SunriseShortcuts: AppShortcutsProvider {
             systemImageName: "checkmark.circle"
         )
         AppShortcut(
+            intent: DeferTaskIntent(),
+            phrases: [
+                "Defer a \(.applicationName) task",
+                "Postpone a task in \(.applicationName)",
+                "Push back a \(.applicationName) task"
+            ],
+            shortTitle: "Defer Task",
+            systemImageName: "clock.arrow.circlepath"
+        )
+        AppShortcut(
             intent: TodayTasksIntent(),
             phrases: [
                 "What's on my \(.applicationName) list today",
@@ -60,6 +71,16 @@ struct SunriseShortcuts: AppShortcutsProvider {
             ],
             shortTitle: "Inbox",
             systemImageName: "tray"
+        )
+        AppShortcut(
+            intent: StreamSummaryIntent(),
+            phrases: [
+                "Summarise a \(.applicationName) stream",
+                "What's open in a \(.applicationName) stream",
+                "\(.applicationName) stream summary"
+            ],
+            shortTitle: "Stream Summary",
+            systemImageName: "number"
         )
         AppShortcut(
             intent: StartFocusIntent(),
