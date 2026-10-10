@@ -22,6 +22,13 @@
 //! [`ENTITIES`] is the machine-readable form: the input the canonical schema
 //! and its fingerprint (#323) and per-field merge (#319) are built from.
 //!
+//! The value types a record carries without being one (`RRule`,
+//! `SunriseTime`, …) and the op payloads the registry does not declare are
+//! described beside their types with [`describe_value_types!`], which checks
+//! each description against its type at build time (#439).
+//!
+//! [`describe_value_types!`]: crate::describe_value_types
+//!
 //! Adding an entity is one entry here plus the code no table can write: the
 //! domain type, its row writers and their materializer arm, its migration and
 //! its `UniFFI` mirror. Each of those is a build or test failure until it exists.

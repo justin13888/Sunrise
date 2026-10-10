@@ -135,16 +135,26 @@ mise run fix
   ([#438](https://github.com/justin13888/Sunrise/issues/438)). The decoder
   reads field 13 and keeps it under the signature, but a mismatch is applied
   rather than parked.
-- **The schema does not yet cover every shape**
-  ([#439](https://github.com/justin13888/Sunrise/issues/439)). Value types that
-  are not registry records appear only as a type name. These are
-  `ScheduleConstraint`, `RRule`, `SunriseTime`, `NoteBody`, `Chunk` and the
-  review rows. The control-op payloads are not described either. A field added
-  to one of them does not move the fingerprint. Field defaults wait for
-  [#319](https://github.com/justin13888/Sunrise/issues/319). Feature ids are
-  covered: each registered feature, with its scope, op kinds, fields,
-  field-op kinds and arrival version, is hashed from `DOC_SCHEMA_V` 10
-  ([#324](https://github.com/justin13888/Sunrise/issues/324)).
+- **Field defaults are not in the schema**. They wait for
+  [#319](https://github.com/justin13888/Sunrise/issues/319).
+
+Value types and op payloads are covered from `DOC_SCHEMA_V` 11
+([#439](https://github.com/justin13888/Sunrise/issues/439)). The schema's
+`values` list describes every value type a record carries
+(`ScheduleConstraint`, `RRule`, `SunriseTime`, `NoteBody`, `Chunk`, the review
+rows and the rest) and every type an op payload outside the entity registry
+carries. Each is a record of named fields, an alias of the type it encodes
+as, a positional tuple, or a set of variants with its tag. `op_payloads` names
+each such op's payload. The descriptions are declared with
+`sunrise_id::describe_value_types!` in `crates/sunrise-domain/src/registry.rs`
+and `crates/sunrise-core/src/control_op.rs`. That macro checks each one
+against its type, so a field or variant added to the type and not described
+fails the build. A test in `doc_schema.rs` fails while any type the schema
+names is described nowhere, and another fails while a `lossy_enum!` user is
+missing from the schema's enums. Feature ids are covered too: each registered
+feature, with its scope, op kinds, fields, field-op kinds and arrival
+version, is hashed from `DOC_SCHEMA_V` 10
+([#324](https://github.com/justin13888/Sunrise/issues/324)).
 
 ## How fields merge
 

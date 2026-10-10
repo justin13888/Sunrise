@@ -1131,5 +1131,499 @@
         "TaskDelete",
         "TaskUpdate",
         "VaultRequires"
+    ],
+    "op_payloads": [
+        {
+            "payload": "Vec<u8>",
+            "variant": "DeviceCertPublish"
+        },
+        {
+            "payload": "DeviceFeaturesPayload",
+            "variant": "DeviceFeatures"
+        },
+        {
+            "payload": "DeviceRevokePayload",
+            "variant": "DeviceRevoke"
+        },
+        {
+            "payload": "IdentityTransitionPayload",
+            "variant": "IdentityTransition"
+        },
+        {
+            "payload": "KeyEnvelopePayload",
+            "variant": "KeyEnvelope"
+        },
+        {
+            "payload": "PatchPayload",
+            "variant": "Patch"
+        },
+        {
+            "payload": "StreamDigestPayload",
+            "variant": "StreamDigest"
+        },
+        {
+            "payload": "VaultRequiresPayload",
+            "variant": "VaultRequires"
+        }
+    ],
+    "values": [
+        {
+            "fields": [
+                {
+                    "name": "index",
+                    "type": "u32"
+                },
+                {
+                    "name": "total",
+                    "type": "u32"
+                }
+            ],
+            "keeps_unknowns": false,
+            "name": "Chunk",
+            "shape": "record"
+        },
+        {
+            "fields": [
+                {
+                    "name": "end",
+                    "type": "Option<Date>"
+                },
+                {
+                    "name": "start",
+                    "type": "Date"
+                }
+            ],
+            "keeps_unknowns": true,
+            "name": "DateRange",
+            "shape": "record"
+        },
+        {
+            "fields": [
+                {
+                    "name": "features",
+                    "type": "Vec<String>"
+                }
+            ],
+            "keeps_unknowns": true,
+            "name": "DeviceFeaturesPayload",
+            "shape": "record"
+        },
+        {
+            "fields": [
+                {
+                    "name": "reason_code",
+                    "type": "RevokeReason"
+                },
+                {
+                    "name": "revoked_device_id",
+                    "type": "[u8;16]"
+                }
+            ],
+            "keeps_unknowns": false,
+            "name": "DeviceRevokePayload",
+            "shape": "record"
+        },
+        {
+            "items": ["[u8;16]", "u64", "[u8;32]"],
+            "name": "FrontierWire",
+            "shape": "tuple"
+        },
+        {
+            "fields": [
+                {
+                    "name": "device_shares",
+                    "type": "Vec<KeyShare>"
+                },
+                {
+                    "name": "from_identity_id",
+                    "type": "[u8;16]"
+                },
+                {
+                    "name": "identity_share",
+                    "type": "Option<ByteBuf>"
+                },
+                {
+                    "name": "next_sig",
+                    "type": "[u8;64]"
+                },
+                {
+                    "name": "prev_sig",
+                    "type": "[u8;64]"
+                },
+                {
+                    "name": "roster",
+                    "type": "Vec<RosterEntry>"
+                },
+                {
+                    "name": "to_id_d_pub",
+                    "type": "[u8;32]"
+                },
+                {
+                    "name": "to_id_s_pub",
+                    "type": "[u8;32]"
+                },
+                {
+                    "name": "to_identity_id",
+                    "type": "[u8;16]"
+                }
+            ],
+            "keeps_unknowns": false,
+            "name": "IdentityTransitionPayload",
+            "shape": "record"
+        },
+        {
+            "fields": [
+                {
+                    "name": "epoch",
+                    "type": "u32"
+                },
+                {
+                    "name": "hpke_ciphertext",
+                    "type": "Vec<u8>"
+                },
+                {
+                    "name": "key_id",
+                    "type": "[u8;8]"
+                },
+                {
+                    "name": "recipient",
+                    "type": "Recipient"
+                },
+                {
+                    "name": "stream_id",
+                    "type": "[u8;16]"
+                }
+            ],
+            "keeps_unknowns": false,
+            "name": "KeyEnvelopePayload",
+            "shape": "record"
+        },
+        {
+            "fields": [
+                {
+                    "name": "device_id",
+                    "type": "[u8;16]"
+                },
+                {
+                    "name": "hpke_ciphertext",
+                    "type": "Vec<u8>"
+                }
+            ],
+            "keeps_unknowns": false,
+            "name": "KeyShare",
+            "shape": "record"
+        },
+        {
+            "name": "NoteBody",
+            "shape": "alias",
+            "type": "Vec<u8>"
+        },
+        {
+            "fields": [
+                {
+                    "name": "create",
+                    "type": "bool"
+                },
+                {
+                    "name": "fields",
+                    "type": "Unknowns"
+                },
+                {
+                    "name": "origin",
+                    "type": "Option<String>"
+                },
+                {
+                    "name": "ref",
+                    "type": "EntityRef"
+                }
+            ],
+            "keeps_unknowns": true,
+            "name": "PatchPayload",
+            "shape": "record"
+        },
+        {
+            "fields": [
+                {
+                    "name": "by_day",
+                    "type": "Vec<Weekday>"
+                },
+                {
+                    "name": "by_month",
+                    "type": "Vec<u32>"
+                },
+                {
+                    "name": "by_month_day",
+                    "type": "Vec<i32>"
+                },
+                {
+                    "name": "by_set_pos",
+                    "type": "Vec<i32>"
+                },
+                {
+                    "name": "count",
+                    "type": "Option<u32>"
+                },
+                {
+                    "name": "freq",
+                    "type": "Frequency"
+                },
+                {
+                    "name": "interval",
+                    "type": "u32"
+                },
+                {
+                    "name": "until",
+                    "type": "Option<Timestamp>"
+                },
+                {
+                    "name": "wkst",
+                    "type": "Option<Weekday>"
+                }
+            ],
+            "keeps_unknowns": true,
+            "name": "RRule",
+            "shape": "record"
+        },
+        {
+            "keeps_unknowns": false,
+            "name": "Recipient",
+            "shape": "variants",
+            "tag": null,
+            "variants": [
+                {
+                    "name": "Device",
+                    "type": "[u8;16]"
+                },
+                {
+                    "name": "Identity",
+                    "type": "[u8;16]"
+                }
+            ]
+        },
+        {
+            "fields": [
+                {
+                    "name": "completed",
+                    "type": "u32"
+                },
+                {
+                    "name": "created",
+                    "type": "u32"
+                },
+                {
+                    "name": "deferred",
+                    "type": "u32"
+                },
+                {
+                    "name": "name",
+                    "type": "String"
+                },
+                {
+                    "name": "stream",
+                    "type": "EntityRef"
+                }
+            ],
+            "keeps_unknowns": false,
+            "name": "ReviewSnapshotStream",
+            "shape": "record"
+        },
+        {
+            "fields": [
+                {
+                    "name": "completed",
+                    "type": "u32"
+                },
+                {
+                    "name": "created",
+                    "type": "u32"
+                },
+                {
+                    "name": "deferred",
+                    "type": "u32"
+                },
+                {
+                    "name": "dropped",
+                    "type": "u32"
+                },
+                {
+                    "name": "reopened",
+                    "type": "u32"
+                }
+            ],
+            "keeps_unknowns": false,
+            "name": "ReviewTotals",
+            "shape": "record"
+        },
+        {
+            "keeps_unknowns": false,
+            "name": "RevokeReason",
+            "shape": "variants",
+            "tag": null,
+            "variants": [
+                {
+                    "name": "Compromised"
+                },
+                {
+                    "name": "Lost"
+                },
+                {
+                    "name": "Retired"
+                },
+                {
+                    "name": "Stolen"
+                }
+            ]
+        },
+        {
+            "fields": [
+                {
+                    "name": "cert",
+                    "type": "Vec<u8>"
+                }
+            ],
+            "keeps_unknowns": false,
+            "name": "RosterEntry",
+            "shape": "record"
+        },
+        {
+            "fields": [
+                {
+                    "name": "date_range",
+                    "type": "Option<DateRange>"
+                },
+                {
+                    "name": "days_of_week",
+                    "type": "WeekdaySet"
+                },
+                {
+                    "name": "severity",
+                    "type": "ConstraintSeverity"
+                },
+                {
+                    "name": "time_of_day",
+                    "type": "Option<TimeOfDayRange>"
+                }
+            ],
+            "keeps_unknowns": true,
+            "name": "ScheduleConstraint",
+            "shape": "record"
+        },
+        {
+            "fields": [
+                {
+                    "name": "last_completed_at_ms",
+                    "type": "Option<u64>"
+                },
+                {
+                    "name": "routine",
+                    "type": "EntityRef"
+                },
+                {
+                    "name": "streak",
+                    "type": "i64"
+                },
+                {
+                    "name": "title",
+                    "type": "String"
+                }
+            ],
+            "keeps_unknowns": false,
+            "name": "StreakRow",
+            "shape": "record"
+        },
+        {
+            "fields": [
+                {
+                    "name": "digest",
+                    "type": "[u8;32]"
+                },
+                {
+                    "name": "frontier",
+                    "type": "Vec<FrontierWire>"
+                }
+            ],
+            "keeps_unknowns": true,
+            "name": "StreamDigestPayload",
+            "shape": "record"
+        },
+        {
+            "keeps_unknowns": true,
+            "name": "SunriseTime",
+            "shape": "variants",
+            "tag": "kind",
+            "variants": [
+                {
+                    "fields": [
+                        {
+                            "name": "date",
+                            "type": "Date"
+                        }
+                    ],
+                    "name": "all_day"
+                },
+                {
+                    "fields": [
+                        {
+                            "name": "civil",
+                            "type": "DateTime"
+                        }
+                    ],
+                    "name": "floating"
+                },
+                {
+                    "fields": [
+                        {
+                            "name": "at",
+                            "type": "Timestamp"
+                        }
+                    ],
+                    "name": "instant"
+                },
+                {
+                    "fields": [
+                        {
+                            "name": "civil",
+                            "type": "DateTime"
+                        },
+                        {
+                            "name": "tz",
+                            "type": "String"
+                        }
+                    ],
+                    "name": "zoned"
+                }
+            ]
+        },
+        {
+            "fields": [
+                {
+                    "name": "end",
+                    "type": "Time"
+                },
+                {
+                    "name": "start",
+                    "type": "Time"
+                }
+            ],
+            "keeps_unknowns": true,
+            "name": "TimeOfDayRange",
+            "shape": "record"
+        },
+        {
+            "fields": [
+                {
+                    "name": "features",
+                    "type": "Vec<String>"
+                }
+            ],
+            "keeps_unknowns": true,
+            "name": "VaultRequiresPayload",
+            "shape": "record"
+        },
+        {
+            "name": "WeekdaySet",
+            "shape": "alias",
+            "type": "Vec<Weekday>"
+        }
     ]
 }
