@@ -798,6 +798,7 @@ fn a_constraint_summary_counts_the_hard_ones() {
         days_of_week: Vec::new(),
         date_range: None,
         severity: ConstraintSeverity::Hard,
+        extra: None,
     };
     let soft = Constraint {
         severity: ConstraintSeverity::Soft,
@@ -917,6 +918,7 @@ async fn a_routine_round_trips_its_recurrence_through_the_seam() {
                     priority: None,
                     estimated_duration_s: None,
                     body: None,
+                    extra: None,
                 },
                 rrule: parse_recurrence("every monday".into()).expect("parses"),
                 timezone: "UTC".into(),
@@ -964,6 +966,162 @@ async fn a_routine_round_trips_its_recurrence_through_the_seam() {
         recurrence_summary(row.rrule.clone()),
         "every week on Mo, Tu, We, Th, Fr"
     );
+    core.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
+// Forward-compat fields through the mirrors (ADR-0045 §6, #431)
+// ---------------------------------------------------------------------------
+
+/// An unknown-field map holding `pairs`, built the way one arrives: decoded
+/// from CBOR.
+fn unknowns(pairs: &[(&str, u64)]) -> sunrise_domain::Unknowns {
+    let map: std::collections::BTreeMap<&str, u64> = pairs.iter().copied().collect();
+    let bytes = sunrise_cbor::encode_canonical(&map).expect("encode");
+    sunrise_cbor::decode_lenient(&bytes).expect("decode")
+}
+
+/// A time kind a newer build added reaches the client as unknown, renders as
+/// unknown rather than as the day it is indexed at, still resolves where the
+/// core places it, and comes back as exactly the stored value.
+#[test]
+fn an_unknown_time_kind_round_trips_through_the_mirror_and_reads_as_unknown() {
+    use sunrise_core_bindings::vocab::time_value_ms;
+    use sunrise_domain::SunriseTime;
+
+    let stored = SunriseTime::Unknown {
+        kind: "recurring_window".into(),
+        raw: unknowns(&[("span_s", 3600), ("weight", 2)]),
+    };
+    let mirrored = TimeValue::from(&stored);
+    let TimeValue::Unknown { kind, .. } = &mirrored else {
+        panic!("an unknown kind must mirror as unknown, not as {mirrored:?}");
+    };
+    assert_eq!(kind, "recurring_window");
+    assert_eq!(
+        SunriseTime::from(mirrored.clone()),
+        stored,
+        "handed back unchanged, it is the stored value"
+    );
+
+    let day = relative_day(mirrored.clone(), 0, "UTC".into());
+    assert_eq!(day.text, "unknown");
+    assert!(!day.is_past);
+    assert_eq!(
+        time_value_ms(mirrored, "UTC".into()),
+        stored.to_instant(&jiff::tz::TimeZone::UTC).as_millisecond(),
+        "placed where the core places it"
+    );
+}
+
+/// A constraint (with its two windows), a rule and a template a client reads
+/// and hands back keep every field a newer build wrote on them.
+#[test]
+fn nested_unknown_fields_survive_a_constraint_rule_and_template_handed_back() {
+    use sunrise_core_bindings::dto::{DateWindow, Recurrence, Template, TimeWindow};
+    use sunrise_core_bindings::vocab::parse_recurrence;
+    use sunrise_domain::{RRule, ScheduleConstraint, TaskTemplate};
+
+    let mut constraint = ScheduleConstraint::from(Constraint {
+        time_of_day: Some(TimeWindow {
+            start: jiff::civil::time(9, 0, 0, 0),
+            end: jiff::civil::time(17, 0, 0, 0),
+            extra: None,
+        }),
+        days_of_week: Vec::new(),
+        date_range: Some(DateWindow {
+            start: jiff::civil::date(2026, 3, 1),
+            end: None,
+            extra: None,
+        }),
+        severity: ConstraintSeverity::Hard,
+        extra: None,
+    });
+    constraint.unknown = unknowns(&[("constraint_new", 1)]);
+    if let Some(w) = constraint.time_of_day.as_mut() {
+        w.unknown = unknowns(&[("window_new", 2)]);
+    }
+    if let Some(r) = constraint.date_range.as_mut() {
+        r.unknown = unknowns(&[("range_new", 3)]);
+    }
+    let mirrored = Constraint::from(&constraint);
+    assert!(mirrored.extra.is_some(), "the client holds the fields");
+    assert_eq!(ScheduleConstraint::from(mirrored), constraint);
+
+    let mut rule = RRule::from(parse_recurrence("every monday".into()).expect("parses"));
+    rule.unknown = unknowns(&[("rule_new", 4)]);
+    assert_eq!(RRule::from(Recurrence::from(&rule)), rule);
+
+    let mut template = TaskTemplate::from(Template {
+        title: "Water the plants".into(),
+        stream_id: sunrise_domain::inbox_stream_ref(),
+        contexts: Vec::new(),
+        energy: None,
+        priority: None,
+        estimated_duration_s: None,
+        body: None,
+        extra: None,
+    });
+    template.unknown = unknowns(&[("template_new", 5)]);
+    assert_eq!(TaskTemplate::from(Template::from(&template)), template);
+
+    // A value with no unknown fields carries no blob, so a client that builds
+    // one from scratch and one that read it back agree.
+    rule.unknown = sunrise_domain::Unknowns::new();
+    assert!(Recurrence::from(&rule).extra.is_none());
+}
+
+/// End to end: the fields a client carries in a rule and a template reach
+/// storage and come back on the next read.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_routine_keeps_the_nested_fields_its_client_handed_back() {
+    use sunrise_core_bindings::dto::{Recurrence, RoutineDraftIn, Template};
+    use sunrise_core_bindings::vocab::parse_recurrence;
+    use sunrise_domain::{RRule, TaskTemplate};
+
+    let mut template = TaskTemplate::from(Template {
+        title: "Water the plants".into(),
+        stream_id: sunrise_domain::inbox_stream_ref(),
+        contexts: Vec::new(),
+        energy: None,
+        priority: None,
+        estimated_duration_s: None,
+        body: None,
+        extra: None,
+    });
+    template.unknown = unknowns(&[("template_new", 5)]);
+    let mut rule = RRule::from(parse_recurrence("every monday".into()).expect("parses"));
+    rule.unknown = unknowns(&[("rule_new", 4)]);
+    let template = Template::from(&template);
+    let rrule = Recurrence::from(&rule);
+
+    let (_dir, core) = open_core().await;
+    let created = core
+        .submit(CoreCommand::CreateRoutine {
+            draft: RoutineDraftIn {
+                template: template.clone(),
+                rrule: rrule.clone(),
+                timezone: "UTC".into(),
+                starts_at: jiff::Timestamp::from_millisecond(1_700_000_000_000).expect("ts"),
+                ends_at: None,
+                scheduling_constraints: Vec::new(),
+                catchup_policy: sunrise_domain::RoutineCatchupPolicy::Skip,
+            },
+        })
+        .await
+        .expect("create routine");
+
+    let CoreQueryResult::Routines { routines } =
+        core.query(CoreQuery::Routines).await.expect("routines")
+    else {
+        panic!("Routines must return routines");
+    };
+    let row = routines
+        .iter()
+        .find(|r| r.id == created.entity)
+        .expect("the routine we just made");
+    assert_eq!(row.template.extra, template.extra);
+    assert_eq!(row.rrule.extra, rrule.extra);
     core.shutdown().await;
 }
 

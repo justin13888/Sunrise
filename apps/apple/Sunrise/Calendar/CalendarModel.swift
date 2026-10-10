@@ -361,6 +361,10 @@ final class CalendarModel {
         // An all-day block dragged to a time is no longer all-day: the user
         // just gave it one. Widening to zoned is the honest reading of that.
         case .allDay: .zoned(civil: civilText(ms: ms), tz: timeZone)
+        // A kind a newer build wrote cannot be re-expressed at another
+        // instant here; the drag is an explicit set, so it reads as local
+        // time, as all-day does.
+        case .unknown: .zoned(civil: civilText(ms: ms), tz: timeZone)
         }
     }
 

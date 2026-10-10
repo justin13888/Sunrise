@@ -314,10 +314,21 @@ decoder and the relay's header decoder share one function for this rule.
     row holds the marker as two integer columns. A `focus.start` op is
     immutable and never re-encoded from its row, so no write this build makes
     loses the map.
+  - The UniFFI mirrors of the nested values a client hands back whole
+    (`Constraint` and its `TimeWindow` and `DateWindow`, `Recurrence`,
+    `Template`) carry the map as an opaque `extra` blob of canonical CBOR,
+    absent when the map is empty. A client passes it back and never reads it,
+    so a constraint list, rule or template it edits keeps the fields a newer
+    build wrote
+    ([#431](https://github.com/justin13888/Sunrise/issues/431)).
 - **`SunriseTime` gains `Unknown { kind, raw }`.** It orders by its `index_ms`
   when the raw value carries one, round-trips unchanged, and never fails the
   enclosing op. Storage keeps the raw value rather than degrading it to
-  `Instant`.
+  `Instant`. The UniFFI `TimeValue` mirrors it as `Unknown { kind, raw }`,
+  with `raw` as opaque canonical CBOR: `relative_day` reads it as `unknown`
+  rather than as a day, `time_value_ms` places it where the core does, and a
+  client that hands it back unchanged keeps it
+  ([#431](https://github.com/justin13888/Sunrise/issues/431)).
 - **The four known `SunriseTime` kinds are closed shapes, and are the one
   recorded exception to lossless unknowns.** A key added to an `instant`,
   `zoned`, `floating` or `all_day` value decodes as that kind and is not
