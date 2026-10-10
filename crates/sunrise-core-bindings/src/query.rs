@@ -10,8 +10,9 @@ use sunrise_id::EntityRef;
 use crate::dto::{
     hex16, ActionableTaskRow, ActivityRow, AttachmentItem, BlockGridRow, Cascade, ContextItem,
     ContextListRow, DailyReviewReport, DeviceListRow, EveningReport, FocusTotals, MorningReport,
-    NotificationSettings, ParkedReasonCount, PlanRow, Reminder, RoutineItem, SessionRow, Snapshot,
-    StreamItem, StreamListRow, SyncSnapshot, TaskItem, TrendReport, WeeklyReviewReport,
+    NotificationSettings, ParkedReasonCount, PlanRow, PreferenceItem, Reminder, RoutineItem,
+    SessionRow, Snapshot, StreamItem, StreamListRow, SyncSnapshot, TaskItem, TrendReport,
+    WeeklyReviewReport,
 };
 
 /// A read query.
@@ -191,6 +192,10 @@ pub enum CoreQuery {
     /// How many ops this device holds parked, by reason: ops it keeps but
     /// cannot apply yet, most often because a newer device wrote them.
     ParkedOpsSummary,
+    /// Every preference but the bootstrap ones, resolved, each with where
+    /// its value came from. The bootstrap keys are read without the vault,
+    /// by `bootstrap_preferences`.
+    Preferences,
 }
 
 impl CoreQuery {
@@ -271,6 +276,7 @@ impl CoreQuery {
             Self::WeekBlocks { week_ms } => Query::WeekBlocks { week_ms },
             Self::Search { text, limit } => Query::Search { text, limit },
             Self::ParkedOpsSummary => Query::ParkedOpsSummary,
+            Self::Preferences => Query::Preferences,
         }
     }
 }
@@ -437,6 +443,11 @@ pub enum CoreQueryResult {
         /// Empty when nothing is parked.
         counts: Vec<ParkedReasonCount>,
     },
+    /// Every non-bootstrap preference, resolved, in key-table order.
+    Preferences {
+        /// The keys.
+        preferences: Vec<PreferenceItem>,
+    },
 }
 
 impl CoreQueryResult {
@@ -534,6 +545,9 @@ impl CoreQueryResult {
             QueryResult::Export(body) => Self::Export { body },
             QueryResult::ParkedOps(c) => Self::ParkedOps {
                 counts: c.iter().map(ParkedReasonCount::from).collect(),
+            },
+            QueryResult::Preferences(p) => Self::Preferences {
+                preferences: p.into_iter().map(PreferenceItem::from).collect(),
             },
         }
     }
