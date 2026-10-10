@@ -12,8 +12,8 @@ use ciborium::value::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use sunrise_domain::time::SunriseTime;
 use sunrise_domain::{
-    Attachment, Block, Context, Frequency, RRule, Routine, RoutineCatchupPolicy, Stream,
-    StreamColor, StreamReviewCadence, Task, TaskState, TaskTemplate, Unknowns,
+    Attachment, Block, Context, Frequency, Preferences, RRule, Routine, RoutineCatchupPolicy,
+    Stream, StreamColor, StreamReviewCadence, Task, TaskState, TaskTemplate, Unknowns,
 };
 use sunrise_id::registry::{Crdt, EntitySpec, FieldSpec, Merge, RecordSpec};
 use sunrise_id::{EntityKind, EntityRef};
@@ -317,6 +317,7 @@ fn deserializes_as(kind: EntityKind, value: Value) -> bool {
         EntityKind::Routine => value.deserialized::<Routine>().is_ok(),
         EntityKind::Block => value.deserialized::<Block>().is_ok(),
         EntityKind::Attachment => value.deserialized::<Attachment>().is_ok(),
+        EntityKind::Preferences => value.deserialized::<Preferences>().is_ok(),
         _ => true,
     }
 }
@@ -455,6 +456,13 @@ fn probe(kind: EntityKind) -> Option<Value> {
             content_hash: [0u8; 32],
             ciphertext_hash: [0u8; 32],
             deleted: false,
+            unknown: Unknowns::new(),
+        }),
+        EntityKind::Preferences => Value::serialized(&Preferences {
+            id: sunrise_domain::preferences_ref(),
+            created_at: at,
+            updated_at: at,
+            values: BTreeMap::new(),
             unknown: Unknowns::new(),
         }),
         _ => return None,

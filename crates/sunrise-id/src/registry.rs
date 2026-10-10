@@ -33,7 +33,7 @@
 //! Kind {
 //!     prefix: "xyz_",                         // 3 lowercase letters + `_`
 //!     tag: "kind",                            // op-log `target_kind`; schema name
-//!     merge: Lww | AppendOnly | Control | Unsynced,
+//!     merge: Lww | AppendOnly | Control | Unsynced,  // Lww with ops: [] is Patch-only
 //!     owner: Meta | Parent | Unowned | Field("stream_id"),
 //!     features: ["kind.entity", ...],         // feature ids scoped here (#324)
 //!     ops: [                                  // each may carry doc attributes
@@ -470,6 +470,28 @@ macro_rules! for_each_entity {
                     }
                 ],
             }
+            /// `prf_` — the vault's Preferences, one per vault under the zero
+            /// id (ADR-0050, `docs/02-domain/preferences.md`).
+            ///
+            /// Written only by `Patch`: it has no full-state op family, so no
+            /// build can overwrite it whole, and `ops` is empty.
+            Preferences {
+                prefix: "prf_",
+                tag: "preferences",
+                merge: Lww,
+                owner: Meta,
+                features: ["preferences.entity"],
+                ops: [],
+                records: [
+                    Preferences @ ("preferences", "id", Extra) {
+                        id: EntityRef => Register;
+                        created_at: Timestamp => Register;
+                        updated_at: Timestamp => Register;
+                        values: BTreeMap<String, CborValue> => Map;
+                        ..unknown
+                    }
+                ],
+            }
         }
     };
 }
@@ -844,18 +866,27 @@ mod tests {
         for e in &ENTITIES {
             match e.merge {
                 Merge::Lww | Merge::AppendOnly => {
-                    assert!(!e.ops.is_empty(), "{:?} syncs but has no op", e.kind);
+                    // An `Lww` entity with no op family of its own is written
+                    // only by `Patch` (Preferences); an append-only one has
+                    // nothing else to be written by.
+                    assert!(
+                        !e.ops.is_empty() || e.merge == Merge::Lww,
+                        "{:?} syncs but has no op",
+                        e.kind
+                    );
                     assert!(
                         e.storage().is_some(),
                         "{:?} syncs but its first record is not projected",
                         e.kind
                     );
-                    assert_eq!(
-                        e.ops[0].class,
-                        OpClass::Create,
-                        "{:?}'s first op must create it",
-                        e.kind
-                    );
+                    if let Some(first) = e.ops.first() {
+                        assert_eq!(
+                            first.class,
+                            OpClass::Create,
+                            "{:?}'s first op must create it",
+                            e.kind
+                        );
+                    }
                     assert_ne!(e.owner, Owner::Unowned, "{:?} has ops", e.kind);
                 }
                 Merge::Control | Merge::Unsynced => {

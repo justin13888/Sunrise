@@ -59,6 +59,10 @@ pub enum ValidationError {
     /// violation fails validation at submit time; a `soft` one never does.
     #[error("scheduled_at violates a hard scheduling constraint")]
     HardScheduleConstraint,
+    /// A preference write named a target its key's scope does not permit
+    /// (`docs/02-domain/preferences.md` §Scope and resolution).
+    #[error("the preference's scope does not permit that target")]
+    PreferenceScope,
     /// Field-shape violation with structured diagnostic. The string is
     /// dotted-path into the command payload.
     #[error("validation field error at {field}: {constraint}")]
@@ -79,6 +83,7 @@ impl ValidationError {
             Self::DueBeforeScheduled => ErrorCode::ValidationDueBeforeScheduled,
             Self::PayloadTooLarge => ErrorCode::ValidationPayloadTooLarge,
             Self::BlockedByCycle => ErrorCode::ValidationBlockedByCycle,
+            Self::PreferenceScope => ErrorCode::ValidationPreferenceScope,
             Self::InvalidStreamParent | Self::HardScheduleConstraint | Self::Field { .. } => {
                 ErrorCode::ValidationField
             }

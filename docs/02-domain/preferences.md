@@ -6,8 +6,12 @@ status: accepted
 
 The user's settings, as one typed entity per vault plus a device-local overlay.
 The decision and its alternatives are
-[ADR-0050](../11-adr/0050-preferences-and-day-schedule.md). Implementation is
-tracked in [#337](https://github.com/justin13888/Sunrise/issues/337).
+[ADR-0050](../11-adr/0050-preferences-and-day-schedule.md). The core implements
+it ([#337](https://github.com/justin13888/Sunrise/issues/337)): the key table,
+its codec and the resolver are `crates/sunrise-domain/src/preferences/`
+(`PREFERENCE_KEYS`, `resolve`), and the commands, the query, the projection and
+the bootstrap file's codec are `crates/sunrise-core/src/engine/preferences.rs`.
+§Status says what is not built yet.
 
 ## Shape
 
@@ -29,7 +33,18 @@ pref-key = tstr .regexp "[a-z][a-z0-9_]*(\\.[A-Za-z0-9_-]+)*"
 
 **Ops.** Preferences use the `Patch` op family of
 [ADR-0044](../11-adr/0044-per-field-ops.md), sealed under the vault-meta key
-domain. There is no preference-specific op.
+domain. There is no preference-specific op: the registry entry (`prf_`, tag
+`preferences`) has no op family, and its op-log kind is `preferences.patch`.
+
+**Gate.** The entity is the feature `preferences.entity`
+([ADR-0045](../11-adr/0045-schema-identity-and-feature-gating.md) §7). A
+device's first vault write adds it to `vault_requires`, which is refused with
+`FeatureUnsupportedByDevices` while another non-revoked device has not
+advertised it, and the seal guard refuses any `prf_` op sealed before the vault
+requires it. A build older than the entity cannot decode a `prf_` ref, so this
+is what keeps the op from reaching one. ADR-0044 §9's `core.field_ops` gate does
+not apply here: it protects entities a build without per-field merge would
+overwrite with a full-state op, and this entity has none.
 
 - **Create, idempotently.** A device's first write, while it has not seen the
   entity's create, is a `Patch` with `"create": true` under the fixed
@@ -66,10 +81,24 @@ Every key declares one scope:
 | `device` | the device overlay only | never |
 
 The **device overlay** is a table in the local encrypted database:
-`device_preferences(key TEXT PRIMARY KEY, value BLOB)`. It is never an op.
+`device_preferences(key TEXT PRIMARY KEY, value BLOB)`, the value canonical
+CBOR. It is never an op. The synced entity projects to
+`preferences(id, values_cbor, …)` (migration `0037_preferences.sql`).
+
 Keys marked **bootstrap** are needed before the vault can be unlocked; they
-live instead in a plaintext file the core manages beside the database, and they
-MUST be `device`-scoped and MUST NOT hold user content.
+live instead in a plaintext file the core manages beside the vault databases,
+and they MUST be `device`-scoped and MUST NOT hold user content. The file is
+`preferences.bootstrap.json` in the directory the client keeps its vaults in
+(on Apple, `~/Library/Application Support/Sunrise/`): one JSON object of string
+values, written to a sibling file and renamed into place. A key the file holds
+that this build does not know is kept on every write; a file that is not a JSON
+object reads as empty and is replaced by the next write, so a device pointed at
+an unreadable relay configuration stays repairable. It is read and written
+without a vault, through the FFI's `bootstrap_preferences` and
+`set_bootstrap_preference`, never through a command or `Query::Preferences`.
+The core holds only its codec (`BootstrapPreferences`); the file I/O is the
+platform layer's, because the core touches no file outside its storage handle
+([`../01-architecture/shared-core.md`](../01-architecture/shared-core.md) rule 2).
 
 ```
 resolve(key) =
@@ -78,12 +107,23 @@ resolve(key) =
     otherwise                                                → default
 ```
 
-`Query::Preferences` returns each resolved value with its source (`overlay`,
-`vault`, `default`). `Command::SetPreference { key, value, target }` and
-`Command::ClearPreference { key, target }` name `Vault` or `Device`, and a target
-the scope does not permit is rejected with `VALIDATION_PREFERENCE_SCOPE`. With
-target `Vault` they emit the `Patch` ops above; with target `Device` they write
-the overlay.
+A value that does not decode under its key's type is never read, wherever it
+is stored: it resolves as if absent. A `vault` key's overlay value and a
+`device` key's vault value are never read either.
+
+`Query::Preferences` returns every key but the bootstrap ones, in table order,
+each with its resolved value, its source (`overlay`, `vault`, `default`) and
+whether the vault holds a value for it at all. `Command::SetPreference { key,
+value, target }` and `Command::ClearPreference { key, target }` name `Vault` or
+`Device`, and a target the scope does not permit is rejected with
+`VALIDATION_PREFERENCE_SCOPE`. An unknown key, a bootstrap key, or a value that
+does not fit its key is rejected with `VALIDATION_FIELD`. With target `Vault`
+they emit the `Patch` ops above; with target `Device` they write the overlay and
+emit nothing.
+
+A default that differs by device class (`attachments.cache_limit_bytes`) is
+read for this device's class, from the platform its certificate names: `ios`,
+`ipados` and `android` are phone and tablet, anything else is desktop.
 
 ## Initial keys
 
@@ -97,7 +137,7 @@ Types use the CDDL names from [`overview.md`](./overview.md) and
 | `week_start` | `Weekday` | `"SU"` | `vault` | week views, the planner, reviews |
 | `home_timezone` | IANA zone name, or absent | absent | `vault` | dual-zone display when travelling ([`time.md`](../10-cross-cutting/time.md) §7) |
 | `time_format` | `"locale"` / `"h12"` / `"h24"` | `"locale"` | `vault_overridable` | every time label |
-| `day_schedule` | `DaySchedule` ([`day-schedule.md`](./day-schedule.md)) | empty (unset) | `vault` | planner day, Today, lateness, wind-down |
+| `day_schedule` | `DaySchedule` ([`day-schedule.md`](./day-schedule.md)) | empty (unset) | `vault` | planner day, Today, lateness, wind-down. Not in the key table yet: [#338](https://github.com/justin13888/Sunrise/issues/338) adds it with its map entries. |
 
 ### Tasks, triage and reviews
 
@@ -115,7 +155,7 @@ Types use the CDDL names from [`overview.md`](./overview.md) and
 | `planner.default_task_duration_s` | `uint` 60..86400 | `1800` | `vault` | the planner, for a task with no estimate |
 | `planner.min_gap_s` | `uint` 0..3600 | `0` | `vault` | the planner's gap between placed items |
 | `views.upcoming.span_days` | `7` / `14` / `30` | `7` | `device` | Upcoming ([`../08-features/planning-views.md`](../08-features/planning-views.md)) |
-| `search.content_language` | BCP 47 language tag | the creating device's language, written at vault creation | `vault` | the search tokenizer ([ADR-0052](../11-adr/0052-search-v2.md), [`../08-features/search.md`](../08-features/search.md)) |
+| `search.content_language` | BCP 47 language tag | the creating device's language, written at vault creation; absent until a build that does so writes it (the key table's default is absent) | `vault` | the search tokenizer ([ADR-0052](../11-adr/0052-search-v2.md), [`../08-features/search.md`](../08-features/search.md)) |
 
 ### Notifications
 
@@ -124,7 +164,9 @@ primary device, is defined in
 [`../08-features/notifications.md`](../08-features/notifications.md)
 §Preference keys, under the one prefix `notifications.`. That table is the list
 of record for their types, defaults and scopes, and this page does not repeat
-it; the Rust key table is generated from the catalog.
+it. The Rust key table (`PREFERENCE_KEYS`) is written by hand, and a test
+(`the_key_table_is_the_documented_one`) holds its keys and scopes equal to this
+page's tables and that catalog's.
 
 ### Device and connection
 
@@ -151,6 +193,24 @@ identity and is read from it.
   [`../08-features/notifications.md`](../08-features/notifications.md)
   §Preference keys.
 
+## Value encodings
+
+Each type has exactly one CBOR form, in the entity, in the overlay and on the
+wire:
+
+| Type | CBOR |
+|---|---|
+| `bool` | bool |
+| `uint`, `int` (with their ranges) | integer |
+| enumerated spellings, URL, `tstr`, IANA zone, BCP 47 tag, `entity-ref`, device id | text; a device id is its `dev_` ref |
+| `Weekday` | text, `"MO"` … `"SU"` |
+| `{ day, at }` (`review.cadence`) | `{ "at": "HH:MM:SS", "day": Weekday }` |
+| `{ start, end }` (quiet hours) | `{ "end": "HH:MM:SS", "start": "HH:MM:SS" }` |
+
+The two `notifications.*.offset_s` keys are `int` in −86 400..86 400, and the
+lead times without a stated range are `uint` up to 2³² − 1, which is what the
+reminder planner reads them as.
+
 ## Merge mapping
 
 | Part | Merge |
@@ -160,3 +220,28 @@ identity and is read from it.
 | each entry of a map-valued key | its own LWW register |
 | the device overlay | not merged; local only |
 | unknown keys | preserved registers, merged like any other |
+
+## Status
+
+Built in the core: the key table, the resolver, the entity and its gate, the
+overlay, the bootstrap store, `Command::SetPreference`,
+`Command::ClearPreference` and `Query::Preferences`, and their FFI mirrors
+(`CoreCommand::SetPreference`, `CoreQuery::Preferences`, `PreferenceItem`).
+
+Not built yet:
+
+- **No client reads or writes through it.** The Apple `AppSettings` and
+  `NotificationPreferences` still hold their values in `UserDefaults`, and the
+  one-time migration out of it has not run. That is
+  [#489](https://github.com/justin13888/Sunrise/issues/489).
+- **No core reader consumes a key yet.** `week_start` reaches the week views
+  with [#336](https://github.com/justin13888/Sunrise/issues/336), the
+  notification keys reach the reminder planner with
+  [#347](https://github.com/justin13888/Sunrise/issues/347), and `day_schedule`
+  is [#338](https://github.com/justin13888/Sunrise/issues/338).
+- **No cross-version run covers the entity.** The baseline build the
+  cross-version harness drives ([ADR-0057](../11-adr/0057-cross-version-merge-harness.md))
+  predates `prf_`, and a vault write is gated until every device supports it,
+  so no op of the entity can reach that baseline. The lossless rule is tested
+  in process instead, with this build as the older peer for a key and a value
+  it cannot read (`crates/sunrise-core/src/engine/tests/preferences.rs`).
