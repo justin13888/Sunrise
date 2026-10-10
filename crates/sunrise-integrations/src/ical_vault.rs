@@ -23,7 +23,7 @@
 use crate::ical::{self, ICalNotice, NoticeCode};
 use crate::ical_map::{block_to_event, event_to_block};
 use crate::IntegrationError;
-use sunrise_core::{Command, Core, Query, QueryResult};
+use sunrise_core::{Command, Core, CoreError, EngineError, Query, QueryResult};
 use sunrise_id::EntityRef;
 
 /// The `import_source_id` for a one-shot `.ics` file import.
@@ -70,7 +70,8 @@ pub struct ImportReport {
 pub enum ExportWindow {
     /// The civil day containing the given instant.
     Day,
-    /// The Monday-first civil week containing the given instant.
+    /// The civil week containing the given instant, starting on the
+    /// `week_start` preference as `Query::WeekBlocks` does.
     Week,
 }
 
@@ -111,14 +112,29 @@ pub async fn import(
         let created = !block_exists(core, id).await;
         let title = mapped.draft.title.clone().unwrap_or_default();
 
-        let res = core
+        let res = match core
             .submit(Command::ImportBlock {
                 source: source.to_string(),
                 uid: mapped.uid.clone(),
                 draft: mapped.draft,
             })
             .await
-            .map_err(|e| IntegrationError::Core(e.to_string()))?;
+        {
+            Ok(res) => res,
+            // The core refused this one event's draft (a range whose order
+            // depends on the reader's zone, inverted in this one): that is the
+            // event's, reported like a mapper refusal, not the import's.
+            Err(CoreError::Engine(EngineError::Validation(e))) => {
+                report.failed += 1;
+                report.notices.push(ICalNotice {
+                    code: NoticeCode::Skipped,
+                    uid: Some(mapped.uid),
+                    detail: format!("the vault refused this event: {e}"),
+                });
+                continue;
+            }
+            Err(e) => return Err(IntegrationError::Core(e.to_string())),
+        };
         report.blocks.push(ImportedBlock {
             block: res.entity,
             uid: mapped.uid,

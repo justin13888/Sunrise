@@ -47,8 +47,13 @@ use std::borrow::Cow;
 
 /// A time value that knows what kind of time it is.
 ///
-/// Ordering is by [`SunriseTime::index_ms`] — the same key storage indexes on —
-/// so a sorted list of mixed kinds matches a `ORDER BY *_at_ms` from SQL.
+/// [`Ord`] is by [`SunriseTime::index_ms`] — the same key storage indexes on —
+/// so a sorted list of mixed kinds matches a `ORDER BY *_at_ms` from SQL. That
+/// order is **storage's**, and only storage's: `index_ms` anchors the zone-less
+/// kinds in UTC, up to 14 hours from where any real reader puts them
+/// (`docs/10-cross-cutting/time.md` §2). A domain decision — a validator, a
+/// view, lateness, overlap, a sort a user sees — compares with
+/// [`SunriseTime::cmp_in`] in the reader's zone instead.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SunriseTime {
     /// A fixed point on the timeline, zone-independent.
@@ -95,6 +100,53 @@ pub enum SunriseTime {
 /// short of `jiff`'s maximum, so arithmetic on the resolved instant does not
 /// overflow.
 pub const UNANCHORED_MS: i64 = 253_370_764_800_000;
+
+/// How far a query that selects by time widens its `index_ms` bounds on each
+/// side before the exact filter runs: 48 hours.
+///
+/// `docs/10-cross-cutting/time.md` §2 rule 2. `index_ms` puts a floating or
+/// all-day value up to 14 hours from where a reader in any real zone resolves
+/// it (UTC−12 to UTC+14), and an all-day value occupies a whole planner day
+/// that can extend up to 24 hours past its start; 38 hours rounded up. A row
+/// the prefilter admits is then kept or dropped on its resolved instant, so
+/// the slack decides only how much is read, never what is returned.
+pub const PREFILTER_SLACK_MS: i64 = 48 * 60 * 60 * 1000;
+
+/// How far either side of the moment they are compared at two zones must
+/// agree for [`same_zone`] to call them one zone: 20 years, which covers
+/// every open task a reader plausibly holds.
+const SAME_ZONE_SPAN_SECS: i64 = 20 * 366 * 24 * 60 * 60;
+
+/// Whether a reader in `a` and a reader in `b` resolve every civil time the
+/// same way within 20 years of `around`: the same offset at
+/// the start of that span and the same transitions through it.
+///
+/// Names are not the test. `Asia/Calcutta` is a tzdb link to `Asia/Kolkata`,
+/// and `UTC`, `Etc/UTC` and `GMT` are one zone under three spellings, so a
+/// reader whose zone is reported under another name has not moved
+/// (`docs/10-cross-cutting/time.md` §7).
+#[must_use]
+pub fn same_zone(a: &TimeZone, b: &TimeZone, around: Timestamp) -> bool {
+    if a == b {
+        return true;
+    }
+    let span = jiff::SignedDuration::from_secs(SAME_ZONE_SPAN_SECS);
+    let from = around.saturating_sub(span).unwrap_or(Timestamp::MIN);
+    let until = around.saturating_add(span).unwrap_or(Timestamp::MAX);
+    if a.to_offset(from) != b.to_offset(from) {
+        return false;
+    }
+    let within = |t: &jiff::tz::TimeZoneTransition<'_>| t.timestamp() <= until;
+    let mut ta = a.following(from).take_while(within);
+    let mut tb = b.following(from).take_while(within);
+    loop {
+        match (ta.next(), tb.next()) {
+            (None, None) => return true,
+            (Some(x), Some(y)) if x.timestamp() == y.timestamp() && x.offset() == y.offset() => {}
+            _ => return false,
+        }
+    }
+}
 
 /// The `_kind` sidecar values. Stable strings: they are persisted.
 pub mod kind {
@@ -184,11 +236,13 @@ impl SunriseTime {
     /// * `Floating` and `AllDay` resolve in `tz`, which is the reading
     ///   device's zone. `AllDay` resolves to the START of the day.
     ///
-    /// An unresolvable zone name, or a civil time that does not exist in it (a
-    /// spring-forward gap), falls back to the compatible resolution `jiff`
-    /// offers rather than failing: a scheduled time that cannot be rendered is
-    /// worse than one rendered an hour off, and the stored civil value is
-    /// unchanged either way.
+    /// A civil time resolves by the one DST rule in
+    /// `docs/10-cross-cutting/time.md` §3, jiff's `Compatible`
+    /// disambiguation: a time inside a spring-forward gap moves forward by the
+    /// length of the gap, and a time inside a fall-back fold takes the earlier
+    /// of its two instants. That is the defined answer, not a fallback. A
+    /// `Zoned` value naming a zone this build does not know resolves in `tz`,
+    /// and its stored value is unchanged.
     ///
     /// An unknown kind resolves to its `at` instant when it carries one
     /// ([`SunriseTime::unknown_anchor`]), and to [`UNANCHORED_MS`] otherwise.
@@ -213,6 +267,81 @@ impl SunriseTime {
         }
     }
 
+    /// The instant this value is compared at by a reader in `tz`, or `None`
+    /// for an unknown kind that carries no `at` instant: a value this build
+    /// cannot place, which is compared with nothing rather than with the
+    /// [`UNANCHORED_MS`] stand-in, because that stand-in would invent an
+    /// answer.
+    ///
+    /// [`SunriseTime::to_instant`] otherwise, so an `AllDay` value resolves to
+    /// the start of its day. `docs/10-cross-cutting/time.md` §2 rule 1.
+    #[must_use]
+    pub fn resolve_in(&self, tz: &TimeZone) -> Option<Timestamp> {
+        match self {
+            Self::Unknown { .. } => self.unknown_anchor(),
+            _ => Some(self.to_instant(tz)),
+        }
+    }
+
+    /// The instant this value is **missed** at, read as a deadline in `tz`:
+    /// the end of the day for an `AllDay` value, and
+    /// [`SunriseTime::resolve_in`] for every other kind.
+    ///
+    /// `due()` in ADR-0047 §Due instant, and the one exception
+    /// `docs/10-cross-cutting/time.md` §2 rule 1 makes to start-of-day: a task
+    /// due "Friday" is on time all of Friday. With no day schedule yet (#338)
+    /// the day ends at the next civil midnight in `tz`.
+    #[must_use]
+    pub fn due_in(&self, tz: &TimeZone) -> Option<Timestamp> {
+        match self {
+            Self::AllDay { date } => {
+                let next = date.tomorrow().unwrap_or(*date);
+                Some(
+                    tz.to_zoned(next.to_datetime(civil::Time::midnight()))
+                        .map_or_else(|_| self.to_instant(tz), |z| z.timestamp()),
+                )
+            }
+            _ => self.resolve_in(tz),
+        }
+    }
+
+    /// The civil date a reader in `tz` sees this value on: its own date for
+    /// `AllDay`, and the date of its resolved instant in `tz` for every other
+    /// kind. `None` where [`SunriseTime::resolve_in`] is.
+    ///
+    /// Membership in a day is decided on this, never on an instant window,
+    /// because an `AllDay` value occupies its whole day and a timed value
+    /// belongs to exactly one.
+    #[must_use]
+    pub fn day_in(&self, tz: &TimeZone) -> Option<civil::Date> {
+        match self {
+            Self::AllDay { date } => Some(*date),
+            _ => self.resolve_in(tz).map(|at| at.to_zoned(tz.clone()).date()),
+        }
+    }
+
+    /// The order a reader in `tz` sees two values in
+    /// (`docs/10-cross-cutting/time.md` §2 rule 3): by resolved instant, then
+    /// `AllDay` before a timed value at the same instant, then the storage
+    /// order as a total tiebreak so two different values never compare
+    /// `Equal`. A value [`SunriseTime::resolve_in`] cannot place sorts after
+    /// every value it can.
+    ///
+    /// This is the comparison every domain decision uses; [`Ord`] is
+    /// storage's.
+    #[must_use]
+    pub fn cmp_in(&self, other: &Self, tz: &TimeZone) -> std::cmp::Ordering {
+        let placed = |t: &Self| t.resolve_in(tz);
+        match (placed(self), placed(other)) {
+            (Some(a), Some(b)) => a.cmp(&b),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        }
+        .then_with(|| other.is_all_day().cmp(&self.is_all_day()))
+        .then_with(|| self.cmp(other))
+    }
+
     /// The epoch-millisecond key this value is INDEXED under.
     ///
     /// Not the same thing as [`SunriseTime::to_instant`], and deliberately so.
@@ -226,9 +355,12 @@ impl SunriseTime {
     /// * The key is **lossless**: `from_parts` reconstructs the exact civil
     ///   value from it, because anchoring in UTC is a bijection.
     ///
-    /// It is within a day of the true instant for any real zone, which is what
-    /// makes it a usable coarse filter. Anything that must be exact resolves
-    /// with `to_instant` after reading.
+    /// It is up to 14 hours from the true instant in any real zone, so it is a
+    /// **storage key and nothing else** (`docs/10-cross-cutting/time.md` §2):
+    /// a SQL prefilter widens its bounds by [`PREFILTER_SLACK_MS`] and the
+    /// result is decided in Rust with [`SunriseTime::resolve_in`] or
+    /// [`SunriseTime::cmp_in`]. No domain decision compares it, and
+    /// `tests/index_ms_lint.rs` holds every caller outside storage to that.
     ///
     /// An unknown kind indexes at its `at` instant when it carries one, and at
     /// [`UNANCHORED_MS`] otherwise, so it sorts after every value this build
@@ -352,6 +484,11 @@ impl PartialOrd for SunriseTime {
     }
 }
 
+/// Storage order: by [`SunriseTime::index_ms`], the key `ORDER BY *_at_ms`
+/// sorts on, then a total tiebreak. Kept so a value can sit in a `BTreeSet` or
+/// be sorted the way a SQL scan returns it; it MUST NOT decide anything a user
+/// sees (`docs/10-cross-cutting/time.md` §2 rule 3, which amends ADR-0017).
+/// Use [`SunriseTime::cmp_in`] for that.
 impl Ord for SunriseTime {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         // Index order, then a total tiebreak so `Ord` stays consistent with
@@ -378,6 +515,20 @@ mod tests {
 
     fn ny() -> TimeZone {
         TimeZone::get("America/New_York").unwrap()
+    }
+
+    /// An alias, or UTC under another spelling, is the same zone; a zone
+    /// with the same offset today but other transitions is not.
+    #[test]
+    fn same_zone_compares_rules_not_names() {
+        let at: Timestamp = "2026-03-04T12:00:00Z".parse().unwrap();
+        let get = |n: &str| TimeZone::get(n).unwrap();
+        assert!(same_zone(&get("Asia/Calcutta"), &get("Asia/Kolkata"), at));
+        assert!(same_zone(&TimeZone::UTC, &get("Etc/UTC"), at));
+        assert!(same_zone(&TimeZone::UTC, &get("GMT"), at));
+        // Bogotá is UTC−5 all year, as New York is in March, but keeps no DST.
+        assert!(!same_zone(&ny(), &get("America/Bogota"), at));
+        assert!(!same_zone(&TimeZone::UTC, &get("Asia/Kolkata"), at));
     }
 
     #[test]

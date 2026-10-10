@@ -11,6 +11,7 @@ use super::ids::{
     decode_unknowns, encode_unknowns, extra_over_opaque, ms_to_ts, require_kind, ExtraTable,
 };
 use super::lww::LwwStamp;
+use super::query::{sort_by_landing, Unlanded};
 use super::task::read_task;
 use super::{Engine, EngineError, META_STREAM};
 use crate::commands::CommandResult;
@@ -192,7 +193,8 @@ impl Engine {
         Ok(CommandResult::new(id, None, op_id, seq))
     }
 
-    /// Tasks carrying one Context, newest scheduling first.
+    /// Tasks carrying one Context, unscheduled first and then by when each
+    /// lands in the reader's zone ([`sort_by_landing`]).
     ///
     /// Deleted tasks are excluded but *done* ones are not: a Context listing
     /// is "what is tagged this", and hiding completed work would make the
@@ -205,8 +207,7 @@ impl Engine {
         let mut stmt = db.conn().prepare(
             "SELECT t.id FROM tasks t
              JOIN task_contexts tc ON tc.task_id = t.id
-             WHERE tc.context_id = ? AND t.deleted = 0
-             ORDER BY COALESCE(t.scheduled_at_ms, t.due_at_ms) ASC, t.id ASC",
+             WHERE tc.context_id = ? AND t.deleted = 0",
         )?;
         let blob: Vec<u8> = context.bytes().to_vec();
         let ids = stmt
@@ -221,6 +222,7 @@ impl Engine {
                 tasks.push(t);
             }
         }
+        sort_by_landing(&mut tasks, &self.device_zone(), Unlanded::First);
         Ok(QueryResult::StreamTasks(tasks))
     }
 

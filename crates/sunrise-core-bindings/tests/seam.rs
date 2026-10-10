@@ -1626,7 +1626,7 @@ async fn overlapping_blocks_are_reported_and_merge_into_their_union() {
     };
     assert_eq!(blocks.len(), 2);
 
-    let conflicts = block_conflicts(blocks.clone());
+    let conflicts = block_conflicts(blocks.clone(), tz.into());
     assert_eq!(conflicts.len(), 1);
     assert_eq!(conflicts[0].from_ms, time_value_ms(ten, tz.into()));
     assert_eq!(conflicts[0].to_ms, time_value_ms(eleven, tz.into()));
@@ -1665,7 +1665,7 @@ async fn overlapping_blocks_are_reported_and_merge_into_their_union() {
         time_value_ms(blocks[0].block.ends_at.clone(), tz.into()),
         time_value_ms(thirteen, tz.into())
     );
-    assert!(block_conflicts(blocks).is_empty());
+    assert!(block_conflicts(blocks, tz.into()).is_empty());
 }
 
 // ---------------------------------------------------------------------------

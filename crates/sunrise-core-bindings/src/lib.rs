@@ -964,6 +964,25 @@ impl SunriseCore {
         self.inner.now_ms()
     }
 
+    /// Report the zone the OS says this device is in: on the OS's
+    /// time-zone-change notification and on every foreground
+    /// (`docs/10-cross-cutting/time.md` §7). See
+    /// [`sunrise_core::Core::on_time_zone_changed`].
+    ///
+    /// # Errors
+    ///
+    /// [`BindingError::Core`] for a zone name the tzdb does not know.
+    pub fn on_time_zone_changed(&self, zone: String) -> Result<TimeZoneChange, BindingError> {
+        let c = self.inner.on_time_zone_changed(&zone)?;
+        Ok(TimeZoneChange {
+            previous: c.previous,
+            zone: c.zone,
+            changed: c.changed,
+            affected_tasks: c.affected_tasks,
+            notify: c.notify,
+        })
+    }
+
     /// This device's stable id, hex-encoded — what [`SunriseLogin::begin`]
     /// binds the token to.
     #[must_use]
@@ -1392,6 +1411,22 @@ fn ws_factory(
     })
 }
 
+/// What reporting a zone did. See [`sunrise_core::TimeZoneChange`].
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct TimeZoneChange {
+    /// The reader's zone before the report.
+    pub previous: String,
+    /// The reader's zone now.
+    pub zone: String,
+    /// Whether the zone changed.
+    pub changed: bool,
+    /// Open tasks whose resolved time or lateness moved.
+    pub affected_tasks: u32,
+    /// Whether to post the one local notification naming the new zone; the
+    /// `notifications.timezone_changed.enabled` preference, off by default.
+    pub notify: bool,
+}
+
 /// One change to the local vault, addressed by entity.
 ///
 /// Deliberately carries no payload beyond the id: a change notification is a
@@ -1420,15 +1455,24 @@ pub enum ChangeEvent {
         /// The entity.
         entity: sunrise_id::EntityRef,
     },
+    /// The reader's zone changed and no entity did: every view derived from
+    /// the zone has to be read again (`docs/10-cross-cutting/time.md` §7).
+    TimeZoneChanged {
+        /// The new IANA zone.
+        zone: String,
+    },
 }
 
 impl From<&sunrise_core::DomainEvent> for ChangeEvent {
     fn from(e: &sunrise_core::DomainEvent) -> Self {
-        match *e {
-            sunrise_core::DomainEvent::Created(entity) => Self::Created { entity },
-            sunrise_core::DomainEvent::Updated(entity) => Self::Updated { entity },
-            sunrise_core::DomainEvent::Deleted(entity) => Self::Deleted { entity },
-            sunrise_core::DomainEvent::Forgotten(entity) => Self::Forgotten { entity },
+        match e {
+            sunrise_core::DomainEvent::Created(entity) => Self::Created { entity: *entity },
+            sunrise_core::DomainEvent::Updated(entity) => Self::Updated { entity: *entity },
+            sunrise_core::DomainEvent::Deleted(entity) => Self::Deleted { entity: *entity },
+            sunrise_core::DomainEvent::Forgotten(entity) => Self::Forgotten { entity: *entity },
+            sunrise_core::DomainEvent::TimeZoneChanged { zone } => {
+                Self::TimeZoneChanged { zone: zone.clone() }
+            }
         }
     }
 }

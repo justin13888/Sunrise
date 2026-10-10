@@ -9,7 +9,9 @@
 
 use jiff::tz::TimeZone;
 use jiff::Timestamp;
-use sunrise_domain::capture::{normalize_title, parse, parse_when, Capture, NamedRef, Unresolved};
+use sunrise_domain::capture::{
+    normalize_title, parse, parse_when, parse_when_time, Capture, NamedRef, Unresolved,
+};
 use sunrise_domain::SunriseTime;
 use sunrise_id::{EntityKind, EntityRef};
 
@@ -381,7 +383,7 @@ fn empty_input_yields_empty_title_for_live_preview() {
     assert_eq!(c.draft.title, "");
     assert!(c.unresolved.is_empty());
     assert!(
-        c.draft.validate().is_err(),
+        c.draft.validate(&utc()).is_err(),
         "an empty title must not commit"
     );
 }
@@ -402,8 +404,81 @@ fn parse_is_deterministic() {
 fn parsed_drafts_pass_domain_validation() {
     let c = run("Renew passport #travel @errands ^next saturday !1 ~1h");
     c.draft
-        .validate()
+        .validate(&utc())
         .expect("a fully-annotated parse must produce a valid draft");
+}
+
+// ---------------------------------------------------------------------------
+// Which kind of time each phrase class writes (docs/10-cross-cutting/time.md §1).
+// ---------------------------------------------------------------------------
+
+/// The kind `parse_when_time` gives `input`, and the value it holds.
+fn kind_of(input: &str) -> SunriseTime {
+    parse_when_time(input, now(), &utc()).unwrap_or_else(|| panic!("{input} should parse"))
+}
+
+/// A date with no time is a whole day: "friday" is not 00:00 UTC Friday,
+/// which west of UTC is Thursday evening.
+#[test]
+fn a_date_phrase_is_all_day() {
+    use jiff::civil::date;
+    for (input, want) in [
+        ("today", date(2026, 8, 21)),
+        ("tomorrow", date(2026, 8, 22)),
+        ("friday", date(2026, 8, 28)),
+        ("next saturday", date(2026, 8, 29)),
+        ("2026-12-25", date(2026, 12, 25)),
+    ] {
+        assert_eq!(kind_of(input), SunriseTime::all_day(want), "for {input}");
+    }
+}
+
+/// A wall-clock time, with or without a date, floats: "at 9" is 09:00
+/// wherever the user is when it comes round.
+#[test]
+fn a_wall_clock_phrase_is_floating() {
+    use jiff::civil::date;
+    for (input, want) in [
+        ("9am", date(2026, 8, 21).at(9, 0, 0, 0)),
+        ("14:00", date(2026, 8, 21).at(14, 0, 0, 0)),
+        ("tonight", date(2026, 8, 21).at(20, 0, 0, 0)),
+        ("tomorrow 9am", date(2026, 8, 22).at(9, 0, 0, 0)),
+        ("saturday 14:30", date(2026, 8, 22).at(14, 30, 0, 0)),
+        ("2026-03-08 02:30", date(2026, 3, 8).at(2, 30, 0, 0)),
+    ] {
+        assert_eq!(kind_of(input), SunriseTime::floating(want), "for {input}");
+    }
+}
+
+/// A relative offset is a point on the timeline counted from now.
+#[test]
+fn a_relative_phrase_is_an_instant() {
+    for (input, want) in [
+        ("+6h", "2026-08-21T18:00:00Z"),
+        ("+90m", "2026-08-21T13:30:00Z"),
+        ("+3d", "2026-08-24T12:00:00Z"),
+    ] {
+        assert_eq!(
+            kind_of(input),
+            SunriseTime::instant(want.parse().unwrap()),
+            "for {input}"
+        );
+    }
+}
+
+/// A floating capture keeps its wall-clock time when the reader moves: the
+/// whole reason it is not an instant.
+#[test]
+fn a_captured_time_follows_the_reader() {
+    let c = run("Call mum ^tomorrow 9am");
+    let at = c.draft.scheduled_at.expect("scheduled");
+    for zone in ["America/New_York", "Asia/Kolkata", "Pacific/Kiritimati"] {
+        let tz = TimeZone::get(zone).unwrap();
+        let z = at.to_instant(&tz).to_zoned(tz);
+        assert_eq!((z.hour(), z.minute()), (9, 0), "in {zone}");
+    }
+    let due = run("File taxes *due:friday*").draft.due_at.expect("due");
+    assert!(due.is_all_day());
 }
 
 // ---------------------------------------------------------------------------

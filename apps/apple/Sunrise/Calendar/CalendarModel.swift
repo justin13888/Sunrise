@@ -74,6 +74,8 @@ final class CalendarModel {
     private(set) var names = NameBook()
     private(set) var nowMs: UInt64 = 0
     private(set) var timeZone: String = TimeZone.current.identifier
+    /// The first day of a week, read from the core on every refresh.
+    private(set) var weekStart: Weekday = .su
     private(set) var errorMessage: String?
     /// Set after a Resolve action, so the grid can say what it did.
     private(set) var note: String?
@@ -90,6 +92,7 @@ final class CalendarModel {
         timeZone = TimeZone.current.identifier
         nowMs = await bridge.nowMs()
         if anchorMs == 0 { anchorMs = nowMs }
+        weekStart = await Self.weekStart(from: bridge)
         names = await NameBook.load(from: bridge)
         do {
             let query: CoreQuery = span == .day
@@ -101,8 +104,9 @@ final class CalendarModel {
                 return
             }
             self.rows = rows
-            // The domain's answer, not a comparison written here.
-            conflicts = blockConflicts(rows: rows)
+            // The domain's answer, not a comparison written here, resolved in
+            // the zone the grid draws in.
+            conflicts = blockConflicts(rows: rows, tz: timeZone)
             errorMessage = nil
         } catch {
             errorMessage = error.localizedDescription
@@ -180,13 +184,14 @@ final class CalendarModel {
 
     /// Start of the `offset`-th day of the grid.
     ///
-    /// A week starts on Monday, matching `Query::WeekBlocks`, which is
-    /// Monday-first. Getting this wrong would draw the right blocks in the
-    /// wrong columns — the sort of bug that looks like a sync failure.
+    /// A week starts on the `week_start` preference, the one
+    /// `Query::WeekBlocks` reads (`docs/10-cross-cutting/time.md` §4).
+    /// Getting this wrong would draw the right blocks in the wrong columns —
+    /// the sort of bug that looks like a sync failure.
     func dayStartMs(offset: Int) -> Int64 {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: timeZone) ?? .current
-        calendar.firstWeekday = 2 // Monday
+        calendar.firstWeekday = Self.firstWeekday(weekStart)
         let anchor = Date(timeIntervalSince1970: Double(anchorMs) / 1000)
         let base: Date = span == .day
             ? calendar.startOfDay(for: anchor)
@@ -194,6 +199,32 @@ final class CalendarModel {
                 ?? calendar.startOfDay(for: anchor)
         let day = calendar.date(byAdding: .day, value: offset, to: base) ?? base
         return Int64(day.timeIntervalSince1970 * 1000)
+    }
+
+    /// The `week_start` preference as the core resolves it. Sunday, the
+    /// preference's default, when the query fails or the value is missing.
+    static func weekStart(from bridge: CoreBridge) async -> Weekday {
+        guard case let .preferences(preferences: items)? = try? await bridge.query(.preferences),
+              let item = items.first(where: { $0.key == "week_start" }),
+              case let .weekday(day: day)? = item.value
+        else { return .su }
+        return day
+    }
+
+    /// `Calendar.firstWeekday` for a preference day: 1 is Sunday. A day token
+    /// this build does not know starts the week on the default, Sunday, as the
+    /// core does.
+    nonisolated static func firstWeekday(_ day: Weekday) -> Int {
+        switch day {
+        case .su: return 1
+        case .mo: return 2
+        case .tu: return 3
+        case .we: return 4
+        case .th: return 5
+        case .fr: return 6
+        case .sa: return 7
+        case .unknown: return 1
+        }
     }
 
     /// The blocks of the `offset`-th day, laid out.

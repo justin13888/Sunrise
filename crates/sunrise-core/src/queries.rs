@@ -12,7 +12,9 @@ use sunrise_id::EntityRef;
 /// Read query.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Query {
-    /// Today view: scheduled blocks, due-today tasks, manually-pulled tasks.
+    /// Today view: every open task scheduled or due on or before the civil
+    /// day containing `now_ms` in the device's zone
+    /// (`docs/10-cross-cutting/time.md` §4), by resolved time.
     Today {
         /// "Now" (ms since epoch).
         now_ms: u64,
@@ -195,9 +197,10 @@ pub enum Query {
         day_ms: u64,
     },
     /// **Calendar grid, one week**: every live Block overlapping the seven
-    /// civil days beginning at the Monday of the week containing `week_ms`.
+    /// civil days of the week containing `week_ms`.
     ///
-    /// Monday-first, matching `WeekGrid` and every other weekly fold. The
+    /// The week begins on the `week_start` preference, as `WeekGrid` and every
+    /// other weekly fold does (`docs/10-cross-cutting/time.md` §4). The
     /// window is built from civil dates rather than by adding 7 x 86_400_000,
     /// so a week containing a DST transition is still exactly seven days.
     WeekBlocks {

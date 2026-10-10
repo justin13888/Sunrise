@@ -361,16 +361,19 @@ pub struct BlockConflict {
 /// Every overlapping pair among the rows a calendar grid is showing.
 ///
 /// See [`sunrise_domain::overlaps`]. Exported rather than computed in the
-/// client because "overlap" is a decision, not arithmetic: it is measured on
-/// [`sunrise_domain::SunriseTime::index_ms`] so that the four time kinds
-/// compare the way storage orders them, and back-to-back blocks are
-/// deliberately *not* a conflict. A client comparing its own two numbers would
-/// get the second of those wrong on its first well-planned day.
+/// client because "overlap" is a decision, not arithmetic: each bound resolves
+/// in the reader's zone `tz` (`docs/10-cross-cutting/time.md` §2), so a
+/// floating block and a zoned one collide where the reader is, and
+/// back-to-back blocks are deliberately *not* a conflict. A client comparing
+/// its own two numbers would get the second of those wrong on its first
+/// well-planned day.
+///
+/// An unknown `tz` falls back to UTC, as everywhere else here.
 #[uniffi::export]
 #[must_use]
-pub fn block_conflicts(rows: Vec<BlockGridRow>) -> Vec<BlockConflict> {
+pub fn block_conflicts(rows: Vec<BlockGridRow>, tz: String) -> Vec<BlockConflict> {
     let blocks: Vec<sunrise_domain::Block> = rows.iter().map(|r| r.block.to_domain()).collect();
-    sunrise_domain::overlaps(&blocks)
+    sunrise_domain::overlaps(&blocks, &zone_or_utc(&tz))
         .into_iter()
         .map(|o| BlockConflict {
             a: o.a,

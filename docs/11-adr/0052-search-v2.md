@@ -21,12 +21,12 @@ What ships is free-text search over tasks, and nothing else.
   (`crates/sunrise-storage/migrations/0013_baseline.sql:475`) uses
   `porter unicode61 remove_diacritics 2`, fixed at vault creation, and only
   tasks are written to it
-  (`crates/sunrise-core/src/engine/task.rs:740#ftsr_upsert_task`). Streams,
+  (`crates/sunrise-core/src/engine/task.rs:743#ftsr_upsert_task`). Streams,
   blocks, notes, context names, attachment filenames and places cannot be found.
 - **Search is a literal AND.** `query_search`
-  (`crates/sunrise-core/src/engine/query.rs:292#query_search`) matches
+  (`crates/sunrise-core/src/engine/query.rs:404#query_search`) matches
   `kind = 'task'` and orders by `bm25`. `sanitize_fts_query`
-  (`crates/sunrise-core/src/engine/query.rs:341#sanitize_fts_query`) quotes
+  (`crates/sunrise-core/src/engine/query.rs:453#sanitize_fts_query`) quotes
   every whitespace token, which is what makes hostile input safe and also why
   `stream:work deploy` searches for the literal token `stream:work`.
 - **No CJK and no substrings.** `unicode61` treats a run of CJK text as one

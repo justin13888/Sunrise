@@ -13,7 +13,8 @@
 //! to call the disagreement a bug.
 //!
 //! Deliberately **not** a query: the ordering *within* a section is the core's
-//! (`Query::Today` sorts by `COALESCE(scheduled_at, due_at)`), and this only
+//! (`Query::Today` sorts by `scheduled_at`, else `due_at`, resolved in the
+//! reader's zone), and this only
 //! says which bucket a row lands in. Classify, then stable-partition, and both
 //! facts stay owned by whoever owns them.
 

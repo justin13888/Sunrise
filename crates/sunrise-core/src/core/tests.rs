@@ -1107,3 +1107,103 @@ async fn both_observer_channels_deliver_to_their_subscribers() {
 
     core.close().await.unwrap();
 }
+
+/// `docs/10-cross-cutting/time.md` §7: the one entry point a client reports
+/// the OS zone through. It moves the reader's zone, writes nothing, counts
+/// the open tasks whose time moved, tells subscribers to re-read, and asks
+/// for a notification only when the preference is on.
+#[tokio::test]
+async fn reporting_a_time_zone_moves_the_readers_zone_and_writes_nothing() {
+    use sunrise_domain::{PrefTarget, PrefValue, SunriseTime, TaskDraft};
+
+    let dir = tempfile::tempdir().unwrap();
+    let core = Core::open(cfg(dir.path()), unlock()).await.unwrap();
+    let day = jiff::civil::date(2023, 11, 15);
+    for (title, at) in [
+        ("floats", SunriseTime::floating(day.at(9, 0, 0, 0))),
+        (
+            "pinned",
+            SunriseTime::zoned(day.at(9, 0, 0, 0), "Europe/Berlin"),
+        ),
+    ] {
+        core.submit(Command::CreateTask(TaskDraft {
+            title: title.into(),
+            scheduled_at: Some(at),
+            ..Default::default()
+        }))
+        .await
+        .unwrap();
+    }
+    let mut events = core.changes();
+    let before = vault_footprint(&core);
+
+    let moved = core.on_time_zone_changed("Asia/Kolkata").unwrap();
+    assert_eq!(moved.previous, "UTC");
+    assert_eq!(moved.zone, "Asia/Kolkata");
+    assert!(moved.changed);
+    assert_eq!(moved.affected_tasks, 1, "only the floating task moves");
+    assert!(
+        !moved.notify,
+        "the notification preference is off by default"
+    );
+    assert!(matches!(
+        events.try_recv(),
+        Ok(DomainEvent::TimeZoneChanged { zone }) if zone == "Asia/Kolkata"
+    ));
+    assert_eq!(
+        vault_footprint(&core),
+        before,
+        "a zone change is not an edit"
+    );
+
+    // The same zone again, as every foreground reports it: nothing happens.
+    let same = core.on_time_zone_changed("Asia/Kolkata").unwrap();
+    assert!(!same.changed);
+    assert_eq!(same.affected_tasks, 0);
+    assert!(events.try_recv().is_err());
+
+    // The same zone under an alias is no change either: no event, nothing
+    // counted, so no spurious notification.
+    let alias = core.on_time_zone_changed("Asia/Calcutta").unwrap();
+    assert_eq!(alias.previous, "Asia/Kolkata");
+    assert!(!alias.changed);
+    assert_eq!(alias.affected_tasks, 0);
+    assert!(events.try_recv().is_err());
+    core.on_time_zone_changed("Asia/Kolkata").unwrap();
+
+    // A name the tzdb does not know is refused and changes nothing.
+    assert!(core.on_time_zone_changed("Mars/Olympus").is_err());
+    assert_eq!(
+        core.on_time_zone_changed("Asia/Kolkata").unwrap().previous,
+        "Asia/Kolkata"
+    );
+
+    core.submit(Command::SetPreference {
+        key: "notifications.timezone_changed.enabled".into(),
+        value: PrefValue::Bool(true),
+        target: PrefTarget::Device,
+    })
+    .await
+    .unwrap();
+    let back = core.on_time_zone_changed("UTC").unwrap();
+    assert!(back.changed);
+    assert!(back.notify);
+
+    core.close().await.unwrap();
+}
+
+/// The first report of the zone the injected clock already names, under
+/// another spelling, is no change: a vault open must not count as a zone
+/// change, nor ask for a notification, on every launch.
+#[tokio::test]
+async fn the_first_report_of_the_clocks_zone_under_another_name_is_no_change() {
+    let dir = tempfile::tempdir().unwrap();
+    let core = Core::open(cfg(dir.path()), unlock()).await.unwrap();
+    let mut events = core.changes();
+    let first = core.on_time_zone_changed("Etc/UTC").unwrap();
+    assert_eq!(first.previous, "UTC");
+    assert!(!first.changed);
+    assert!(!first.notify);
+    assert!(events.try_recv().is_err());
+    core.close().await.unwrap();
+}

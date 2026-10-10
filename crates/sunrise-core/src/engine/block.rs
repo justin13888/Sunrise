@@ -26,7 +26,7 @@ use crate::inner_op::{encode_inner_op, InnerOp};
 use crate::queries::{BlockRow, QueryResult};
 use rusqlite::{params, OptionalExtension, Transaction};
 use std::collections::BTreeSet;
-use sunrise_domain::time::SunriseTime;
+use sunrise_domain::time::{SunriseTime, PREFILTER_SLACK_MS};
 use sunrise_domain::Unknowns;
 use sunrise_domain::{imported_block_id, Block, BlockDraft, BlockPatch};
 use sunrise_id::{EntityKind, EntityRef};
@@ -38,7 +38,8 @@ impl Engine {
         db: &mut Db,
         d: BlockDraft,
     ) -> Result<CommandResult, EngineError> {
-        d.validate()?;
+        let tz = self.device_zone();
+        d.validate(&tz)?;
         require_writable_stream(d.stream_id)?;
         for t in &d.tasks {
             require_kind(*t, EntityKind::Task)?;
@@ -67,7 +68,7 @@ impl Engine {
             deleted: false,
             unknown: Unknowns::new(),
         };
-        block.validate_invariants()?;
+        block.validate_invariants(&tz)?;
         let seq = self.emit_block(db, &block, now_ms, &op_id, "block.create")?;
         Ok(CommandResult::new(block_id, None, op_id, seq))
     }
@@ -95,7 +96,8 @@ impl Engine {
                 "import: an external item needs a UID".into(),
             ));
         }
-        d.validate()?;
+        let tz = self.device_zone();
+        d.validate(&tz)?;
         require_writable_stream(d.stream_id)?;
         for t in &d.tasks {
             require_kind(*t, EntityKind::Task)?;
@@ -140,7 +142,7 @@ impl Engine {
                 .as_ref()
                 .map_or_else(Unknowns::new, |e| e.unknown.clone()),
         };
-        block.validate_invariants()?;
+        block.validate_invariants(&tz)?;
         // The op kind is what the activity feed reads, so a first import is a
         // create and a re-import is an update. Both apply identically on a
         // remote replica — every Block op is full-state.
@@ -184,7 +186,7 @@ impl Engine {
             block.stream_id = s;
         }
         block.updated_at = ms_to_ts(now_ms as i64);
-        block.validate_invariants()?;
+        block.validate_invariants(&self.device_zone())?;
         let op_id = self.fresh_op_id(now_ms);
         let seq = self.emit_block(db, &block, now_ms, &op_id, "block.update")?;
         Ok(CommandResult::new(id, None, op_id, seq))
@@ -327,8 +329,9 @@ impl Engine {
         self.query_blocks_between(db, from, to)
     }
 
-    /// Blocks overlapping the seven civil days beginning at the Monday of the
-    /// week containing `week_ms`, in the device zone.
+    /// Blocks overlapping the seven civil days of the week containing
+    /// `week_ms`, in the device zone, the week beginning on the `week_start`
+    /// preference (`docs/10-cross-cutting/time.md` §4).
     pub(super) fn query_week_blocks(
         &self,
         db: &Db,
@@ -336,13 +339,9 @@ impl Engine {
     ) -> Result<QueryResult, EngineError> {
         let tz = self.device_zone();
         let anchor = ms_to_ts(week_ms as i64).to_zoned(tz).date();
-        // Monday-first, matching `WeekGrid` and every other weekly fold here.
-        let back = i64::from(anchor.weekday().to_monday_zero_offset());
-        let monday = anchor
-            .checked_sub(jiff::Span::new().days(back))
-            .unwrap_or(anchor);
-        let monday_ms = self.civil_day_start_ms(monday)?;
-        let (from, to) = self.civil_span(monday_ms, 7)?;
+        let first = week_start_on_or_before(anchor, &self.week_start(db)?);
+        let first_ms = self.civil_day_start_ms(first)?;
+        let (from, to) = self.civil_span(first_ms, 7)?;
         self.query_blocks_between(db, from, to)
     }
 
@@ -383,29 +382,81 @@ impl Engine {
     /// Overlap, not containment: a two-hour block that started before the
     /// window still belongs on the grid, which is why the `blocks_by_end`
     /// index exists.
+    ///
+    /// The SQL reads the storage index widened by [`PREFILTER_SLACK_MS`] on
+    /// each side, and the overlap is then decided on each bound resolved in
+    /// the device zone (`docs/10-cross-cutting/time.md` §2 rule 2): the index
+    /// puts a floating or all-day bound up to 14 hours from where this reader
+    /// sees it, so on its own it drops evening blocks west of UTC and invents
+    /// morning ones east of it. Rows come back by resolved start, then id.
     pub(super) fn query_blocks_between(
         &self,
         db: &Db,
         from: i64,
         to: i64,
     ) -> Result<QueryResult, EngineError> {
+        let tz = self.device_zone();
         let mut stmt = db.conn().prepare(
             "SELECT id FROM blocks
-             WHERE deleted = 0 AND starts_at_ms < ? AND ends_at_ms > ?
-             ORDER BY starts_at_ms ASC, id ASC",
+             WHERE deleted = 0 AND starts_at_ms < ? AND ends_at_ms > ?",
         )?;
         let ids = stmt
-            .query_map(params![to, from], |r| r.get::<_, Vec<u8>>(0))?
+            .query_map(
+                params![
+                    to.saturating_add(PREFILTER_SLACK_MS),
+                    from.saturating_sub(PREFILTER_SLACK_MS)
+                ],
+                |r| r.get::<_, Vec<u8>>(0),
+            )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        let mut rows = Vec::with_capacity(ids.len());
+        let mut blocks = Vec::with_capacity(ids.len());
         for raw in ids {
             let Some(block) = read_block(db.conn(), &blob16(&raw))? else {
                 continue;
             };
+            let resolved = (
+                block.starts_at.resolve_in(&tz),
+                block.ends_at.resolve_in(&tz),
+            );
+            if let (Some(s), Some(e)) = resolved {
+                if s.as_millisecond() < to && e.as_millisecond() > from {
+                    blocks.push(block);
+                }
+            }
+        }
+        blocks.sort_by(|a, b| {
+            a.starts_at
+                .cmp_in(&b.starts_at, &tz)
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        let mut rows = Vec::with_capacity(blocks.len());
+        for block in blocks {
             rows.push(block_row(db.conn(), block)?);
         }
         Ok(QueryResult::Blocks(rows))
     }
+}
+
+/// The first day of the week containing `day`, for a week that begins on
+/// `week_start`. An unknown weekday token starts the week on the
+/// preference's default, Sunday (`docs/02-domain/preferences.md`).
+pub(super) fn week_start_on_or_before(
+    day: jiff::civil::Date,
+    week_start: &sunrise_domain::Weekday,
+) -> jiff::civil::Date {
+    use jiff::civil::Weekday as J;
+    use sunrise_domain::Weekday as W;
+    let first = match week_start {
+        W::Mo => J::Monday,
+        W::Tu => J::Tuesday,
+        W::We => J::Wednesday,
+        W::Th => J::Thursday,
+        W::Fr => J::Friday,
+        W::Sa => J::Saturday,
+        W::Su | W::Unknown(_) => J::Sunday,
+    };
+    let back = i64::from(day.weekday().since(first).rem_euclid(7));
+    day.checked_sub(jiff::Span::new().days(back)).unwrap_or(day)
 }
 
 // ---- table operations ----
