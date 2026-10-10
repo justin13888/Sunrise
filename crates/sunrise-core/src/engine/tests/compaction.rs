@@ -255,6 +255,53 @@ fn compaction_waits_for_every_known_device_and_changes_nothing_visible() {
     assert_eq!(again.floors_raised, 0);
 }
 
+/// A run that deletes rows returns the pages they held to the filesystem
+/// (#461): the vault has fewer pages after it and nothing on its free list.
+/// Without the incremental vacuum the page count could not fall at all.
+#[test]
+fn a_compaction_run_returns_the_pages_it_freed() {
+    let c = clock();
+    let mut r = replicas(2, &c);
+    let (eb, mut dbb) = r.pop().unwrap();
+    let (ea, mut dba) = r.pop().unwrap();
+    for i in 0..200 {
+        new_task(&ea, &mut dba, &format!("task {i:03} {}", "x".repeat(200)));
+    }
+    sync(&dba, &eb, &mut dbb);
+    ack_outbox(&mut dba);
+    let ack = digest_op(&eb, &mut dbb, &INBOX);
+    ea.apply_remote_all(&mut dba, &ack).unwrap();
+    // A snapshot written in the measured run would take more pages than the
+    // fold frees, so any snapshot is written now, inside the retention
+    // window where nothing folds, and never again.
+    let policy = CompactionPolicy {
+        snapshot_every_ms: u64::MAX,
+        ..policy()
+    };
+    let early = ea.compact_op_log(&mut dba, &policy).unwrap();
+    assert_eq!(early.ops_removed, 0, "{early:?}");
+    set_clock(&c, T0 + 2 * DAY);
+    let pragma = |db: &Db, name: &str| -> i64 {
+        db.conn()
+            .query_row(&format!("PRAGMA {name}"), [], |r| r.get(0))
+            .unwrap()
+    };
+    let pages = pragma(&dba, "page_count");
+
+    let report = ea.compact_op_log(&mut dba, &policy).unwrap();
+    assert!(report.ops_removed > 100, "{report:?}");
+    assert_eq!(report.snapshots_written, 0, "{report:?}");
+    assert_eq!(
+        pragma(&dba, "freelist_count"),
+        0,
+        "the free list is returned"
+    );
+    assert!(
+        pragma(&dba, "page_count") < pages,
+        "the vault must have shrunk"
+    );
+}
+
 /// An op younger than the retention window is kept however many devices
 /// have acknowledged it.
 #[test]

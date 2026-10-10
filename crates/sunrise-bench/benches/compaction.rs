@@ -10,10 +10,10 @@
 //! snapshot write on the folded one.
 //!
 //! What "log size" counts: the rows in `ops` and the bytes of their sealed
-//! envelopes. The file's page count is printed beside them, and it does not
-//! fall, because SQLite returns deleted pages to its free list rather than to
-//! the filesystem (the vault's `auto_vacuum` pragma does not take effect,
-//! issue #461); the free pages are what the next writes reuse.
+//! envelopes. The file's page count is printed beside them. A run that
+//! deletes rows ends with an incremental vacuum (issue #461), so the count
+//! after it is what the fold returned to the filesystem net of the pages the
+//! snapshot it writes takes.
 //!
 //! Sizes come from `SUNRISE_BENCH_COMPACT_TASKS` (comma-separated task
 //! counts) and default to `10000,100000`. Seeding is the slow part: 100k
