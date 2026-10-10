@@ -91,7 +91,7 @@ final class AppSurfaces {
     ///
     /// The sentence rather than a `Bool` — see
     /// ``PrintDocument/refusal(for:reviewTab:)``, which produces it.
-    private(set) var printRefusal: String? = "Nothing is selected."
+    private(set) var printRefusal: String? = L10n.Print.refusalNothingSelected
 
     /// The window reporting what its current screen can do with ⌘P.
     func printRefusalChanged(to reason: String?) {
@@ -501,9 +501,9 @@ enum RoutineTimerState: Equatable, Sendable {
     /// What a settings screen prints.
     var summary: String {
         switch self {
-        case .stopped: "Not running"
-        case .running: "Running"
-        case let .failed(message): "Failed: \(message)"
+        case .stopped: L10n.App.routineTimerStopped
+        case .running: L10n.App.routineTimerRunning
+        case let .failed(message): L10n.App.routineTimerFailed(message: message)
         }
     }
 }
@@ -517,7 +517,7 @@ enum CaptureError: Error, Equatable, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .noOpenVault:
-            "No vault is open. Open Sunrise and try again."
+            L10n.App.noOpenVault
         }
     }
 }

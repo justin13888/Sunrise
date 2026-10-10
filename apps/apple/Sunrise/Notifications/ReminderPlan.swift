@@ -77,7 +77,7 @@ enum ReminderPlan {
     static let identifierPrefix = "sunrise.reminder."
 
     /// What the body says when quiet hours moved a reminder.
-    static let quietHoursNote = "Held for quiet hours"
+    static var quietHoursNote: String { L10n.Notifications.quietHoursNote }
 
     /// How far ahead to schedule.
     ///
@@ -152,9 +152,10 @@ enum ReminderPlan {
     /// task looks like a bug.
     static func body(for reminder: Reminder, timeZone: TimeZone = .current) -> String {
         var parts: [String] = []
-        if reminder.kind == .block { parts.append("Time block starting") }
+        if reminder.kind == .block { parts.append(L10n.Notifications.blockStarting) }
         if let from = reminder.deferredFrom {
-            parts.append("\(quietHoursNote) · due \(clock(from, in: timeZone))")
+            parts.append(quietHoursNote)
+            parts.append(L10n.Notifications.dueAt(time: clock(from, in: timeZone)))
         }
         return parts.joined(separator: " · ")
     }

@@ -534,6 +534,15 @@ targets:
     platform: macOS
     sources:
       - path: Widgets
+      # The same string catalog the apps compile (see the note on the macOS
+      # app target): the widget's gallery name, description and empty states
+      # are catalog messages, and an extension is its own bundle, so it needs
+      # its own copy of `Localizable.xcstrings` for `L10n` to resolve against.
+      - path: ../../packages/sunrise-i18n/generated/Strings.swift
+        group: Generated
+      - path: ../../packages/sunrise-i18n/generated/Localizable.xcstrings
+        group: Generated
+        buildPhase: resources
     dependencies:
       - sdk: WidgetKit.framework
       - sdk: SwiftUI.framework
@@ -570,6 +579,13 @@ targets:
     platform: iOS
     sources:
       - path: Widgets
+      # The same string catalog the macOS widget target compiles; see the note
+      # there.
+      - path: ../../packages/sunrise-i18n/generated/Strings.swift
+        group: Generated
+      - path: ../../packages/sunrise-i18n/generated/Localizable.xcstrings
+        group: Generated
+        buildPhase: resources
     dependencies:
       - sdk: WidgetKit.framework
       - sdk: SwiftUI.framework

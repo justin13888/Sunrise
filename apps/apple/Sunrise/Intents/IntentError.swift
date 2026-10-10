@@ -40,39 +40,30 @@ enum IntentError: Swift.Error, CustomLocalizedStringResourceConvertible, Equatab
     /// The core refused; carries its own message.
     case core(String)
 
+    /// The sentence, already in the user's language.
+    ///
+    /// Formatted through `L10n` and handed over as one interpolated argument,
+    /// so the resource's own lookup (of the bare `%@` it is keyed by) finds
+    /// nothing to translate and passes the sentence through untouched.
     var localizedStringResource: LocalizedStringResource {
+        "\(message)"
+    }
+
+    private var message: String {
+        typealias Failure = L10n.Intents.Failure
         switch self {
-        case .vaultUnavailable:
-            "Sunrise reported an open vault with nothing behind it. Reopen Sunrise and try again."
-        case .noVault:
-            """
-            Sunrise has no vault on this device yet. Open Sunrise once to create or pair \
-            one — an automation will not create it for you.
-            """
-        case let .vaultLocked(summary):
-            "Sunrise could not open its vault. \(summary)"
-        case .vaultHeldByThisApp:
-            """
-            Sunrise already has this vault open and did not offer it to \
-            automations. Do this in the Sunrise window, or quit Sunrise and \
-            run it again.
-            """
-        case let .vaultFailed(message):
-            "Sunrise could not open its vault: \(message)"
-        case .vaultBusy:
-            "Sunrise is still opening its vault. Try again in a moment."
-        case .nothingToCapture:
-            "There was nothing to capture."
-        case .emptyTitle:
-            "That capture line has no title left once its tags are read."
-        case let .taskNotFound(id):
-            "That task is no longer in Sunrise (\(id))."
-        case let .focusAlreadyRunning(title):
-            "A focus session is already running on “\(title)”. End it before starting another."
-        case .noFocusRunning:
-            "No focus session is running."
-        case let .core(message):
-            "Sunrise could not complete that: \(message)"
+        case .vaultUnavailable: return Failure.vaultUnavailable
+        case .noVault: return Failure.noVault
+        case let .vaultLocked(summary): return Failure.vaultLocked(summary: summary)
+        case .vaultHeldByThisApp: return Failure.vaultHeld
+        case let .vaultFailed(message): return Failure.vaultFailed(message: message)
+        case .vaultBusy: return Failure.vaultBusy
+        case .nothingToCapture: return Failure.nothingToCapture
+        case .emptyTitle: return Failure.emptyTitle
+        case let .taskNotFound(id): return Failure.taskNotFound(id: id)
+        case let .focusAlreadyRunning(title): return Failure.focusRunning(title: title)
+        case .noFocusRunning: return Failure.noFocus
+        case let .core(message): return Failure.core(message: message)
         }
     }
 }

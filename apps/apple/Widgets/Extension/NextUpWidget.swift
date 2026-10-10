@@ -13,8 +13,8 @@ struct NextUpWidget: Widget {
         StaticConfiguration(kind: Self.kind, provider: NextUpProvider()) { entry in
             NextUpView(entry: entry)
         }
-        .configurationDisplayName("Next Up")
-        .description("What is left on Today, first things first.")
+        .configurationDisplayName(L10n.Widget.displayName)
+        .description(L10n.Widget.description)
         .supportedFamilies(Self.families)
     }
 
@@ -114,7 +114,7 @@ private struct ListView: View {
                 }
                 let hidden = snapshot.outstanding - min(rows, snapshot.rows.count)
                 if hidden > 0 {
-                    Text("+\(hidden) more")
+                    Text(L10n.Widget.more(count: hidden))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -132,9 +132,9 @@ private struct InlineView: View {
 
     var body: some View {
         if let first = snapshot.rows.first {
-            Text("\(snapshot.outstanding) left · \(first.title)")
+            Text(verbatim: "\(L10n.Widget.left(count: snapshot.outstanding)) · \(first.title)")
         } else {
-            Text("Today is clear")
+            Text(L10n.Widget.allClear)
         }
     }
 }
@@ -150,12 +150,12 @@ private struct CircularView: View {
                 Text("\(snapshot.outstanding)")
                     .font(.title2.weight(.semibold))
                     .widgetAccentable()
-                Text("today")
+                Text(L10n.Widget.circularToday)
                     .font(.caption2)
             }
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(snapshot.outstanding) tasks left today")
+        .accessibilityLabel(L10n.Widget.circularAccessibility(count: snapshot.outstanding))
     }
 }
 
@@ -165,13 +165,13 @@ private struct RectangularView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
-            Text(snapshot.overdue > 0
-                ? "\(snapshot.outstanding) left · \(snapshot.overdue) overdue"
-                : "\(snapshot.outstanding) left today")
+            Text(verbatim: snapshot.overdue > 0
+                ? "\(L10n.Widget.left(count: snapshot.outstanding)) · \(L10n.Widget.overdue(count: snapshot.overdue))"
+                : L10n.Widget.leftToday(count: snapshot.outstanding))
                 .font(.headline)
                 .widgetAccentable()
             if snapshot.rows.isEmpty {
-                Text("Today is clear")
+                Text(L10n.Widget.allClear)
             }
             ForEach(snapshot.rows.prefix(2)) { row in
                 Text(row.title).lineLimit(1)
@@ -192,11 +192,11 @@ private struct Header: View {
             Text("\(snapshot.outstanding)")
                 .font(.title.weight(.semibold))
                 .widgetAccentable()
-            Text("left today")
+            Text(L10n.Widget.leftTodayLabel(count: snapshot.outstanding))
                 .font(.caption)
                 .foregroundStyle(.secondary)
             if snapshot.overdue > 0 {
-                Text("\(snapshot.overdue) overdue")
+                Text(L10n.Widget.overdue(count: snapshot.overdue))
                     .font(.caption.weight(.medium))
                     .foregroundStyle(.red)
             }
@@ -219,7 +219,7 @@ private struct RowView: View {
                 .lineLimit(1)
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(row.title), \(row.section.spoken)")
+        .accessibilityLabel(Text(verbatim: "\(row.title), \(row.section.spoken)"))
         if let link = row.link {
             Link(destination: link) { label }
         } else {
@@ -240,13 +240,20 @@ private struct SectionLabel: View {
 
 private struct AllClear: View {
     var body: some View {
-        Label("Today is clear", systemImage: "checkmark.circle")
+        Label(L10n.Widget.allClear, systemImage: "checkmark.circle")
             .font(.subheadline)
             .foregroundStyle(.secondary)
     }
 }
 
-/// "Updated 5 min ago". The only way a widget can say how stale it is.
+/// "5 min" since the snapshot was written. The only way a widget can say how
+/// stale it is.
+///
+/// VoiceOver reads it as the label "Updated" with the live elapsed time as its
+/// value. Not one formatted sentence: the timeline never redraws on its own
+/// (see ``NextUpProvider``), so an age baked into a string would stay at
+/// whatever it was when the entry was made, while the relative `Text` is kept
+/// current by the system.
 private struct Stamp: View {
     let snapshot: WidgetSnapshot
 
@@ -255,7 +262,8 @@ private struct Stamp: View {
         Text(written, style: .relative)
             .font(.caption2)
             .foregroundStyle(.tertiary)
-            .accessibilityLabel(Text("Updated \(written, style: .relative) ago"))
+            .accessibilityLabel(L10n.Widget.updated)
+            .accessibilityValue(Text(written, style: .relative))
     }
 }
 
@@ -271,17 +279,17 @@ private struct NoVaultView: View {
         switch family {
         #if os(iOS)
         case .accessoryInline:
-            Text("Open Sunrise")
+            Text(L10n.Widget.openApp)
         case .accessoryCircular:
             ZStack {
                 AccessoryWidgetBackground()
                 Image(systemName: "sunrise")
             }
-            .accessibilityLabel("Open Sunrise")
+            .accessibilityLabel(L10n.Widget.openApp)
         case .accessoryRectangular:
             VStack(alignment: .leading) {
-                Text("Sunrise").font(.headline)
-                Text("Open to show Today")
+                Text(L10n.Common.productName).font(.headline)
+                Text(L10n.Widget.openToShowToday)
             }
         #endif
         default:
@@ -289,7 +297,7 @@ private struct NoVaultView: View {
                 Image(systemName: "sunrise")
                     .font(.title2)
                     .foregroundStyle(.orange)
-                Text("Open Sunrise to show Today")
+                Text(L10n.Widget.openAppToShowToday)
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
@@ -309,9 +317,9 @@ extension WidgetSnapshot.Section {
 
     var spoken: String {
         switch self {
-        case .overdue: "Overdue"
-        case .due: "Due today"
-        case .scheduled: "Scheduled"
+        case .overdue: L10n.Widget.sectionOverdue
+        case .due: L10n.Widget.sectionDue
+        case .scheduled: L10n.Widget.sectionScheduled
         }
     }
 }

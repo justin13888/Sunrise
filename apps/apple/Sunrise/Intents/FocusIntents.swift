@@ -12,12 +12,21 @@ enum FocusLength: String, CaseIterable, AppEnum {
     case estimate
     case untilDone
 
-    static let typeDisplayRepresentation = TypeDisplayRepresentation(name: "Session Length")
+    /// Catalog keys as literals; see the note on ``CaptureTaskIntent/title``.
+    static let typeDisplayRepresentation = TypeDisplayRepresentation(
+        name: LocalizedStringResource("apple.intents.focus_length.type_name", table: "Localizable")
+    )
 
     static let caseDisplayRepresentations: [FocusLength: DisplayRepresentation] = [
-        .pomodoro: "One pomodoro",
-        .estimate: "Sized to the estimate",
-        .untilDone: "Until it is done"
+        .pomodoro: DisplayRepresentation(
+            title: LocalizedStringResource("apple.intents.focus_length.pomodoro", table: "Localizable")
+        ),
+        .estimate: DisplayRepresentation(
+            title: LocalizedStringResource("apple.intents.focus_length.estimate", table: "Localizable")
+        ),
+        .untilDone: DisplayRepresentation(
+            title: LocalizedStringResource("apple.intents.focus_length.until_done", table: "Localizable")
+        )
     ]
 
     var sessionLength: SessionLength {
@@ -37,11 +46,15 @@ enum FocusLength: String, CaseIterable, AppEnum {
 /// declared what they are doing, exactly as pressing the button on the focus
 /// screen does.
 struct StartFocusIntent: AppIntent {
-    static let title: LocalizedStringResource = "Start Focus Session"
+    /// Catalog keys as literals; see the note on ``CaptureTaskIntent/title``.
+    static let title: LocalizedStringResource = LocalizedStringResource(
+        "apple.intents.start_focus.title",
+        table: "Localizable"
+    )
 
     static let description = IntentDescription(
-        "Opens a Sunrise focus session on a task.",
-        categoryName: "Focus",
+        LocalizedStringResource("apple.intents.start_focus.description", table: "Localizable"),
+        categoryName: LocalizedStringResource("apple.intents.category_focus", table: "Localizable"),
         searchKeywords: ["focus", "pomodoro", "timer", "deep work"]
     )
 
@@ -54,10 +67,18 @@ struct StartFocusIntent: AppIntent {
         Summary("Focus on \(\.$task) for \(\.$length)")
     }
 
-    @Parameter(title: "Task", requestValueDialog: "What do you want to focus on?")
+    @Parameter(
+        title: LocalizedStringResource("apple.intents.task_parameter", table: "Localizable"),
+        requestValueDialog: IntentDialog(
+            LocalizedStringResource("apple.intents.start_focus.task_prompt", table: "Localizable")
+        )
+    )
     var task: TaskEntity
 
-    @Parameter(title: "Length", default: .pomodoro)
+    @Parameter(
+        title: LocalizedStringResource("apple.intents.start_focus.length_title", table: "Localizable"),
+        default: .pomodoro
+    )
     var length: FocusLength
 
     init() {}
@@ -101,7 +122,10 @@ struct StartFocusIntent: AppIntent {
                 // an opinion the user never expressed.
                 energy: nil
             ))
-            return "Focusing on “\(item.title)” — \(sessionLengthLabel(length: length.sessionLength))."
+            return L10n.Intents.StartFocus.started(
+                title: item.title,
+                length: sessionLengthLabel(length: length.sessionLength)
+            )
         } catch {
             throw IntentError.wrapping(error)
         }
@@ -113,14 +137,15 @@ struct StartFocusIntent: AppIntent {
 /// Its counterpart exists for a plain reason: a surface that can start a timer
 /// and not stop it leaves an automation whose only undo is opening the app.
 struct EndFocusIntent: AppIntent {
-    static let title: LocalizedStringResource = "End Focus Session"
+    /// Catalog keys as literals; see the note on ``CaptureTaskIntent/title``.
+    static let title: LocalizedStringResource = LocalizedStringResource(
+        "apple.intents.end_focus.title",
+        table: "Localizable"
+    )
 
     static let description = IntentDescription(
-        """
-        Closes the running Sunrise focus session, optionally marking the task \
-        it was on as done.
-        """,
-        categoryName: "Focus",
+        LocalizedStringResource("apple.intents.end_focus.description", table: "Localizable"),
+        categoryName: LocalizedStringResource("apple.intents.category_focus", table: "Localizable"),
         searchKeywords: ["focus", "stop", "end", "timer"]
     )
 
@@ -133,7 +158,10 @@ struct EndFocusIntent: AppIntent {
         Summary("End the Sunrise focus session \(\.$completingTask)")
     }
 
-    @Parameter(title: "Complete the task", default: false)
+    @Parameter(
+        title: LocalizedStringResource("apple.intents.end_focus.complete_title", table: "Localizable"),
+        default: false
+    )
     var completingTask: Bool
 
     init() {}
@@ -165,8 +193,8 @@ struct EndFocusIntent: AppIntent {
                 completedTask: completingTask
             ))
             let focused = durationClock(ms: running.focusedMs)
-            guard completingTask else { return "Session ended after \(focused)." }
-            return "Session ended after \(focused), task completed."
+            guard completingTask else { return L10n.Intents.EndFocus.ended(duration: focused) }
+            return L10n.Intents.EndFocus.endedCompleted(duration: focused)
         } catch {
             throw IntentError.wrapping(error)
         }

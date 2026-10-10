@@ -119,7 +119,7 @@ struct IcalMenuItems: View {
             .disabled(surfaces.ical == nil)
         }
 
-        Menu("Export Calendar") {
+        Menu(L10n.Commands.exportCalendar) {
             ForEach(ExportWindow.menuOrder, id: \.self) { window in
                 Button(window.menuTitle) {
                     Task { await surfaces.exportIcal(window) }

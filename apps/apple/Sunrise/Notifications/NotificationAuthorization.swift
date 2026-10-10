@@ -44,30 +44,22 @@ enum NotificationAuthorization: Equatable, Sendable {
     /// The two-word answer, for a `LabeledContent` value.
     var summary: String {
         switch self {
-        case .notDetermined: "Not asked"
-        case .denied: "Not allowed"
-        case .authorized: "Allowed"
-        case .provisional: "Quiet delivery"
-        case .unavailable: "Unavailable"
+        case .notDetermined: L10n.Notifications.authNotAsked
+        case .denied: L10n.Notifications.authDenied
+        case .authorized: L10n.Notifications.authAllowed
+        case .provisional: L10n.Notifications.authProvisional
+        case .unavailable: L10n.Notifications.authUnavailable
         }
     }
 
     /// The sentence under it. Every one of them says the app still works.
     var explanation: String {
         switch self {
-        case .notDetermined:
-            "Sunrise has not asked yet. Reminders stay off until you allow them; "
-                + "everything else works either way."
-        case .denied:
-            "Notifications are turned off for Sunrise in System Settings. "
-                + "Nothing else is affected — the morning and evening views are still in the sidebar."
-        case .authorized:
-            "Reminders for scheduled tasks and time blocks are delivered by this device."
-        case .provisional:
-            "Reminders arrive quietly, in Notification Centre only, until you allow them properly."
-        case let .unavailable(reason):
-            "The system refused the request (\(reason)). "
-                + "Reminders are off; the rest of Sunrise is unaffected."
+        case .notDetermined: L10n.Notifications.explainNotAsked
+        case .denied: L10n.Notifications.explainDenied
+        case .authorized: L10n.Notifications.explainAllowed
+        case .provisional: L10n.Notifications.explainProvisional
+        case let .unavailable(reason): L10n.Notifications.explainUnavailable(reason: reason)
         }
     }
 

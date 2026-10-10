@@ -73,7 +73,7 @@ struct PrintPageView: View {
                 }
             }
             if document.sections.isEmpty {
-                Text("Nothing to print.")
+                Text(L10n.Print.empty)
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
             }
@@ -154,8 +154,8 @@ enum PrintJob {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.pdf]
         panel.nameFieldStringValue = document.suggestedFilename
-        panel.message = "Choose where to write the PDF."
-        panel.prompt = "Export"
+        panel.message = L10n.Mac.pdfExportMessage
+        panel.prompt = L10n.Mac.pdfExportPrompt
         guard panel.runModal() == .OK, let url = panel.url else { return false }
         do {
             try data.write(to: url, options: .atomic)

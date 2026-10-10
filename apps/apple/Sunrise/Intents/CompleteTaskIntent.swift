@@ -13,11 +13,15 @@ import Foundation
 /// would quietly re-point the automation. The entity carries the core's
 /// `EntityRef`, which is the only thing that does not drift.
 struct CompleteTaskIntent: AppIntent {
-    static let title: LocalizedStringResource = "Complete Task"
+    /// Catalog keys as literals; see the note on ``CaptureTaskIntent/title``.
+    static let title: LocalizedStringResource = LocalizedStringResource(
+        "apple.intents.complete_task.title",
+        table: "Localizable"
+    )
 
     static let description = IntentDescription(
-        "Marks a Sunrise task as done, and says what completing it unblocked.",
-        categoryName: "Tasks",
+        LocalizedStringResource("apple.intents.complete_task.description", table: "Localizable"),
+        categoryName: LocalizedStringResource("apple.intents.category_tasks", table: "Localizable"),
         searchKeywords: ["done", "finish", "complete", "check off"]
     )
 
@@ -30,7 +34,12 @@ struct CompleteTaskIntent: AppIntent {
         Summary("Complete \(\.$task) in Sunrise")
     }
 
-    @Parameter(title: "Task", requestValueDialog: "Which task did you finish?")
+    @Parameter(
+        title: LocalizedStringResource("apple.intents.task_parameter", table: "Localizable"),
+        requestValueDialog: IntentDialog(
+            LocalizedStringResource("apple.intents.complete_task.task_prompt", table: "Localizable")
+        )
+    )
     var task: TaskEntity
 
     init() {}
@@ -63,7 +72,7 @@ struct CompleteTaskIntent: AppIntent {
             guard item.state != .done else {
                 return Completed(
                     task: TaskEntity(item),
-                    message: "“\(item.title)” was already done."
+                    message: L10n.Intents.CompleteTask.alreadyDone(title: item.title)
                 )
             }
             _ = try await bridge.submit(.completeTask(id: id))
@@ -91,10 +100,8 @@ struct CompleteTaskIntent: AppIntent {
     }
 
     static func message(title: String, released: Int) -> String {
-        switch released {
-        case 0: "Completed “\(title)”."
-        case 1: "Completed “\(title)”. That unblocked 1 task."
-        default: "Completed “\(title)”. That unblocked \(released) tasks."
-        }
+        released == 0
+            ? L10n.Intents.CompleteTask.completed(title: title)
+            : L10n.Intents.CompleteTask.completedUnblocked(count: released, title: title)
     }
 }

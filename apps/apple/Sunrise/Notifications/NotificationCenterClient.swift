@@ -91,7 +91,7 @@ struct SystemNotificationCenter: NotificationCenterClient {
             actions.append(
                 UNNotificationAction(
                     identifier: ReminderAction.complete.rawValue,
-                    title: "Mark Done",
+                    title: L10n.Notifications.markDone,
                     options: []
                 )
             )

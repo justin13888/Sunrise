@@ -74,11 +74,7 @@ enum SoftwareUpdate {
     /// all, and `docs/10-cross-cutting/accessibility.md` forbids a state
     /// carried by appearance alone.
     static var unavailable: String? {
-        hasPublicKey
-            ? nil
-            : "This build carries no update-signing public key, so it cannot "
-                + "verify an update. Download a release from the project's "
-                + "Releases page instead."
+        hasPublicKey ? nil : L10n.Update.unavailable
     }
 
     /// Retained here because Sparkle holds its delegate weakly; a local would
@@ -103,16 +99,15 @@ struct SoftwareUpdateMenuItems: View {
     @AppStorage(SoftwareUpdateChannel.includeBetaKey) private var includeBeta = false
 
     var body: some View {
-        Button("Check for Updates…") {
+        Button(L10n.Update.check) {
             SoftwareUpdate.controller?.updater.checkForUpdates()
         }
         .disabled(SoftwareUpdate.unavailable != nil)
         .help(SoftwareUpdate.unavailable ?? "")
         .accessibilityHint(SoftwareUpdate.unavailable ?? "")
 
-        Toggle("Include Beta Updates", isOn: $includeBeta)
+        Toggle(L10n.Update.includeBeta, isOn: $includeBeta)
             .disabled(SoftwareUpdate.unavailable != nil)
-            .help(SoftwareUpdate.unavailable
-                ?? "Offer release candidates and betas as well as stable releases.")
+            .help(SoftwareUpdate.unavailable ?? L10n.Update.includeBetaHelp)
     }
 }

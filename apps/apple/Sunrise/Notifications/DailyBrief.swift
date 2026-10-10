@@ -78,29 +78,30 @@ final class MorningSummaryModel {
         }
         let today = report.completed.filter(finishedToday)
         let yesterday = report.completed.filter { !finishedToday($0) }
+        typealias Strings = L10n.BriefNotification.Morning
         return [
             BriefSection(
                 id: "yesterday",
-                title: "Finished yesterday",
-                emptyMessage: "Nothing was completed yesterday.",
+                title: Strings.yesterdayTitle,
+                emptyMessage: Strings.yesterdayEmpty,
                 tasks: yesterday
             ),
             BriefSection(
                 id: "today",
-                title: "Already done today",
-                emptyMessage: "The day is still ahead of you.",
+                title: Strings.todayTitle,
+                emptyMessage: Strings.todayEmpty,
                 tasks: today
             ),
             BriefSection(
                 id: "triage",
-                title: "To triage",
-                emptyMessage: "Your Inbox is empty.",
+                title: Strings.triageTitle,
+                emptyMessage: Strings.triageEmpty,
                 tasks: report.toTriage
             ),
             BriefSection(
                 id: "due",
-                title: "Landing today",
-                emptyMessage: "Nothing is scheduled or due today.",
+                title: Strings.dueTitle,
+                emptyMessage: Strings.dueEmpty,
                 tasks: report.dueToday
             )
         ]
@@ -108,13 +109,14 @@ final class MorningSummaryModel {
 
     /// The one line the header says.
     var headline: String {
-        guard let report else { return "Reading your morning…" }
+        typealias Strings = L10n.BriefNotification.Morning
+        guard let report else { return Strings.loading }
         let done = report.completed.count
         let ahead = report.dueToday.count
         let triage = report.toTriage.count
-        var parts = ["\(done) completed since yesterday"]
-        if ahead > 0 { parts.append("\(ahead) landing today") }
-        if triage > 0 { parts.append("\(triage) to triage") }
+        var parts = [Strings.completed(count: done)]
+        if ahead > 0 { parts.append(Strings.landing(count: ahead)) }
+        if triage > 0 { parts.append(Strings.triage(count: triage)) }
         return parts.joined(separator: " · ")
     }
 
@@ -190,33 +192,35 @@ final class EndOfDayPlanModel {
 
     var sections: [BriefSection] {
         guard let plan else { return [] }
+        typealias Strings = L10n.BriefNotification.Evening
         return [
             BriefSection(
                 id: "open",
-                title: "Still open today",
-                emptyMessage: "Today is clear. Nothing was left behind.",
+                title: Strings.openTitle,
+                emptyMessage: Strings.openEmpty,
                 tasks: plan.stillOpen
             ),
             BriefSection(
                 id: "week",
-                title: "The week ahead",
-                emptyMessage: "Nothing is scheduled in the next seven days.",
+                title: Strings.weekTitle,
+                emptyMessage: Strings.weekEmpty,
                 tasks: plan.weekAhead
             ),
             BriefSection(
                 id: "backlog",
-                title: "Unscheduled",
-                emptyMessage: "Everything open has a date on it.",
+                title: Strings.backlogTitle,
+                emptyMessage: Strings.backlogEmpty,
                 tasks: plan.unscheduled
             )
         ]
     }
 
     var headline: String {
-        guard let plan else { return "Reading your evening…" }
-        var parts = ["\(plan.stillOpen.count) still open today"]
-        if !plan.weekAhead.isEmpty { parts.append("\(plan.weekAhead.count) this week") }
-        if !plan.unscheduled.isEmpty { parts.append("\(plan.unscheduled.count) unscheduled") }
+        typealias Strings = L10n.BriefNotification.Evening
+        guard let plan else { return Strings.loading }
+        var parts = [Strings.stillOpen(count: plan.stillOpen.count)]
+        if !plan.weekAhead.isEmpty { parts.append(Strings.thisWeek(count: plan.weekAhead.count)) }
+        if !plan.unscheduled.isEmpty { parts.append(Strings.unscheduled(count: plan.unscheduled.count)) }
         return parts.joined(separator: " · ")
     }
 
@@ -275,9 +279,9 @@ extension SnoozeSpan {
     /// What the button says.
     var buttonTitle: String {
         switch self {
-        case .oneHour: "Defer 1 Hour"
-        case .tomorrow: "Snooze Until Tomorrow"
-        case .nextWeek: "Snooze Until Next Week"
+        case .oneHour: L10n.Notifications.snoozeHour
+        case .tomorrow: L10n.Notifications.snoozeTomorrow
+        case .nextWeek: L10n.Notifications.snoozeNextWeek
         }
     }
 }

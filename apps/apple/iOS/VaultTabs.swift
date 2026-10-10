@@ -77,7 +77,7 @@ struct VaultTabs: View {
             Tab(AppTab.calendar.title, systemImage: AppTab.calendar.symbol, value: AppTab.calendar) {
                 NavigationStack {
                     CalendarView(model: models.calendar)
-                        .navigationTitle("Calendar")
+                        .navigationTitle(L10n.Tabs.calendar)
                         .toolbar { captureButton }
                 }
             }
@@ -87,7 +87,7 @@ struct VaultTabs: View {
             Tab(AppTab.focus.title, systemImage: AppTab.focus.symbol, value: AppTab.focus) {
                 NavigationStack {
                     FocusView(model: models.focus)
-                        .navigationTitle("Focus")
+                        .navigationTitle(L10n.Tabs.focus)
                         .toolbar { captureButton }
                 }
             }
@@ -156,7 +156,7 @@ struct VaultTabs: View {
             escapes: escapes,
             focus: $pane
         )
-        .navigationTitle("Today")
+        .navigationTitle(L10n.Tabs.today)
         .navigationDestination(for: Destination.self) { pushed(destination: $0) }
         .toolbar {
             captureButton
@@ -167,7 +167,7 @@ struct VaultTabs: View {
 
     private var browseRoot: some View {
         BrowseSidebar(model: models.browse, selection: browseSelection)
-            .navigationTitle("Browse")
+            .navigationTitle(L10n.Tabs.browse)
             .navigationDestination(for: Destination.self) { pushed(destination: $0) }
             .toolbar {
                 captureButton
@@ -184,7 +184,7 @@ struct VaultTabs: View {
             escapes: escapes,
             focus: $pane
         )
-        .navigationTitle("Search")
+        .navigationTitle(L10n.Tabs.search)
         .toolbar {
             captureButton
             savedViewsButton(for: .search)
@@ -201,8 +201,8 @@ struct VaultTabs: View {
     @ToolbarContentBuilder
     private var overflowMenu: some ToolbarContent {
         ToolbarItem(placement: .topBarLeading) {
-            Menu("More", systemImage: "ellipsis.circle") {
-                Section("Today") {
+            Menu(L10n.Ios.more, systemImage: "ellipsis.circle") {
+                Section(L10n.Ios.sectionToday) {
                     menuLink(to: .morning)
                     menuLink(to: .evening)
                 }
@@ -216,13 +216,13 @@ struct VaultTabs: View {
                 // the system document picker and `exportIcal` the exporter;
                 // the report both produce is `IcalSurfaces`, hung on the shell
                 // exactly as the Mac hangs it on its window.
-                Section("Calendar") {
-                    Button("Import calendar…", systemImage: "square.and.arrow.down") {
+                Section(L10n.Ios.sectionCalendar) {
+                    Button(L10n.Ios.importCalendar, systemImage: "square.and.arrow.down") {
                         importingIcal = true
                     }
                     .disabled(surfaces.ical == nil)
                     .accessibilityIdentifier("ical.import")
-                    Menu("Export calendar", systemImage: "square.and.arrow.up") {
+                    Menu(L10n.Ios.exportCalendar, systemImage: "square.and.arrow.up") {
                         ForEach(ExportWindow.menuOrder, id: \.self) { window in
                             Button(window.menuTitle) {
                                 Task { await beginIcalExport(window) }
@@ -237,7 +237,7 @@ struct VaultTabs: View {
                         Task { await models.undo.undo() }
                     }
                     .disabled(!models.undo.canUndo)
-                    Button("Settings", systemImage: "gearshape") { showingSettings = true }
+                    Button(L10n.Ios.settings, systemImage: "gearshape") { showingSettings = true }
                 }
             }
             .accessibilityIdentifier("more")
@@ -280,17 +280,17 @@ struct VaultTabs: View {
             }
             .task { await models.list.show(kind) }
         case .calendar:
-            CalendarView(model: models.calendar).navigationTitle("Calendar")
+            CalendarView(model: models.calendar).navigationTitle(L10n.Tabs.calendar)
         case .focus:
-            FocusView(model: models.focus).navigationTitle("Focus")
+            FocusView(model: models.focus).navigationTitle(L10n.Tabs.focus)
         case .routines:
-            RoutinesView(model: models.routines).navigationTitle("Routines")
+            RoutinesView(model: models.routines).navigationTitle(L10n.Tabs.routines)
         case .review:
-            ReviewView(model: models.review).navigationTitle("Review")
+            ReviewView(model: models.review).navigationTitle(L10n.Tabs.review)
         case .morning:
-            MorningSummaryView(model: models.morning).navigationTitle("Morning")
+            MorningSummaryView(model: models.morning).navigationTitle(L10n.Tabs.morning)
         case .evening:
-            EndOfDayPlanView(model: models.evening).navigationTitle("Evening")
+            EndOfDayPlanView(model: models.evening).navigationTitle(L10n.Tabs.evening)
         case .search:
             searchRoot
         }
@@ -410,7 +410,7 @@ extension VaultTabs {
     @ToolbarContentBuilder
     private var captureButton: some ToolbarContent {
         ToolbarItem(placement: .primaryAction) {
-            Button("Capture", systemImage: "square.and.pencil", action: openCapture)
+            Button(L10n.Ios.capture, systemImage: "square.and.pencil", action: openCapture)
                 .disabledUnlessEditable(.task)
                 .accessibilityIdentifier("capture")
         }
