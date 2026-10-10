@@ -89,8 +89,8 @@ pub use events::{
 pub use feature::{FeatureScope, MissingFeature};
 pub use keychain::{IdentitySigningKey, KeySource, Keychain, KeychainError, SuccessorPublics};
 pub use queries::{
-    ActionableTask, ContextRow, DeviceRow, FocusPlanRow, FocusSessionRow, Query, QueryResult,
-    StreamRow,
+    ActionableTask, ContextRow, DeviceRow, FocusPlanRow, FocusSessionRow, ParkedOpCount, Query,
+    QueryResult, StreamRow,
 };
 pub use sync_driver::{
     BoxTransport, ConnectFuture, CredentialRead, SyncConfig, TokenSource, TransportFactory,

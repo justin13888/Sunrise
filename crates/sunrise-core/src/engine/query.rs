@@ -15,13 +15,13 @@ use super::routine::read_routine;
 use super::stream::read_stream;
 use super::task::{actionable_scan, read_task, ref_of};
 use super::{Engine, EngineError};
-use crate::queries::{ActionableTask, DeviceRow, IdentityStatus, QueryResult};
+use crate::queries::{ActionableTask, DeviceRow, IdentityStatus, ParkedOpCount, QueryResult};
 use rusqlite::params;
 use std::collections::BTreeMap;
 use sunrise_domain::time::{SunriseTime, PREFILTER_SLACK_MS};
 use sunrise_domain::{effective_state, unblock_cascade, DependencyGraph};
 use sunrise_id::{EntityKind, EntityRef};
-use sunrise_storage::Db;
+use sunrise_storage::{Db, OpLog};
 
 /// Where [`sort_by_landing`] puts a task with neither `scheduled_at` nor
 /// `due_at`.
@@ -320,6 +320,18 @@ impl Engine {
                 r.kind()
             ))),
         }
+    }
+
+    /// The count of parked ops by reason (ADR-0045 §4, "Visibility").
+    pub(super) fn query_parked_ops_summary(db: &Db) -> Result<QueryResult, EngineError> {
+        let counts = OpLog::parked_counts_by_reason(db)?
+            .into_iter()
+            .map(|c| ParkedOpCount {
+                reason: c.reason,
+                count: c.count,
+            })
+            .collect();
+        Ok(QueryResult::ParkedOps(counts))
     }
 
     pub(super) fn query_device_list(&self, db: &Db) -> Result<QueryResult, EngineError> {

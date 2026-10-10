@@ -17,9 +17,9 @@ leaves the device — is in
 > `search_idx` (`crates/sunrise-storage/migrations/0013_baseline.sql:475`),
 > tokenized `porter unicode61 remove_diacritics 2`, written only for tasks
 > (`crates/sunrise-core/src/engine/task.rs:743#ftsr_upsert_task`).
-> `query_search` (`crates/sunrise-core/src/engine/query.rs:363#query_search`)
+> `query_search` (`crates/sunrise-core/src/engine/query.rs:404#query_search`)
 > returns tasks by `bm25`, and `sanitize_fts_query`
-> (`crates/sunrise-core/src/engine/query.rs:412#sanitize_fts_query`) quotes
+> (`crates/sunrise-core/src/engine/query.rs:453#sanitize_fts_query`) quotes
 > every whitespace token, so every operator on this page is searched for as
 > literal text today. §[What ships today](#what-ships-today) describes the
 > build; everything else on this page is the contract [#345](https://github.com/justin13888/Sunrise/issues/345) delivers.
