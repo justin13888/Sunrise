@@ -1257,18 +1257,22 @@ async fn session(
         }
 
         let wake_at = next_deadline(&inflight, &deadlines);
-        // The inbound frame is polled before the timer. A send can hold the
-        // pump for a round trip, and on the SSE transport the ack is already
-        // queued by the time it returns: with the timer first, a deadline that
-        // passed during that wait resent a batch whose ack was sitting unread
-        // (#475). An ack that is here answers the deadline; only one that is
-        // not is evidence of loss.
+        // A frame that has already arrived is read before anything else but
+        // shutdown (#475). A send can hold the pump for a round trip, and on
+        // the SSE transport the ack is already queued by the time it returns.
+        // Behind the timer, a deadline that passed during that wait resent a
+        // batch whose ack sat unread; behind the submit wake, a commit rate
+        // near the send time kept the wake ready on every turn and the acks
+        // were never read at all, until the retry policy gave up. Reading one
+        // costs no round trip and frees the batch it answers, and nothing
+        // queued behind it is lost: submits coalesce into the next outbox
+        // drain, and the timer is still due on the next turn.
         let ev = tokio::select! {
             biased;
             () = shared.shutdown_notified() => SessionEvent::Shutdown,
+            r = transport.recv_frame() => SessionEvent::Recv(r),
             () = shared.submit_notified() => SessionEvent::Submit,
             _ = renewals.changed() => SessionEvent::CredentialRenewed,
-            r = transport.recv_frame() => SessionEvent::Recv(r),
             () = tokio::time::sleep_until(wake_at) => SessionEvent::Timer,
         };
 

@@ -42,12 +42,13 @@ const DEFAULT_OPS: usize = 10_000;
 ///
 /// Before [#475](https://github.com/justin13888/Sunrise/issues/475), this
 /// rate at 80 ms RTT, and 40 a second at 20 ms, collapsed the author's
-/// session: each send blocked for the RTT, the retransmit deadline was
-/// counted from before that wait and polled ahead of the ack it raced, and
-/// the driver resent delivered batches until the retry policy gave up. The
-/// driver now reads a queued ack before its timer and starts a deadline when
-/// the send returns, so a leg that loses an op fails. A local run can push
-/// the rate with `SUNRISE_SYNC_LATENCY_INTERVAL_MS=25`.
+/// session: each send blocked for the RTT, the submit wake and the
+/// retransmit timer were both polled ahead of the ack, the deadline was
+/// counted from before the send's wait, and the driver resent delivered
+/// batches until the retry policy gave up. The driver now reads a queued
+/// frame before either and starts a deadline when the send returns, so a leg
+/// that loses an op fails. A local run can push the rate with
+/// `SUNRISE_SYNC_LATENCY_INTERVAL_MS=25`.
 const INTERVAL: Duration = Duration::from_millis(100);
 
 /// `SUNRISE_SYNC_LATENCY_INTERVAL_MS` overrides the commit spacing.
