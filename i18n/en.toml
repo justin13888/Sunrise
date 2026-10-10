@@ -94,7 +94,6 @@ relay_told = "The relay has been told."
 unwound = "{count, plural, one {The account no longer records a removal of one other device, because the device that removed it was itself removed. It is not back in — it receives no keys and reads nothing written since — but the account does not say it was removed. Remove it again from a device you still trust.} other {The account no longer records a removal of # other devices, because the device that removed them was itself removed. They are not back in — they receive no keys and read nothing written since — but the account does not say they were removed. Remove each of them again from a device you still trust.}}"
 
 # Account, sign-in, pairing, recovery, onboarding and sync status.
-# @@lane-a@@
 
 [apple.account]
 # Settings: the heading of the relay section.
@@ -508,7 +507,6 @@ checklist_done = "Done"
 checklist_not_done = "Not done"
 
 # Planning: the weekly review, calendar blocks, routines and streams.
-# @@lane-b@@
 
 [apple.review]
 # The Review screen's navigation title, and the hidden label of its tab picker.
@@ -798,7 +796,6 @@ export_today = "Today"
 export_this_week = "This Week"
 
 # Tasks: lists, the editor, browse, focus, search, notes and keyboard.
-# @@lane-c@@
 
 [apple.browse]
 # Sidebar section headings. "Streams" and "Contexts" are product terms: a
@@ -1212,7 +1209,6 @@ add_context = "add a context"
 
 # The app's shells and system surfaces: menus, windows, the iOS tabs,
 # widgets, Shortcuts, notifications and printing.
-# @@lane-d@@
 
 [apple.menu]
 # The menu bar extra's dropdown, Mac only. Shown instead of the counts when
