@@ -230,7 +230,10 @@ Focus is on:
 - **Reminders from the other streams are muted.** `ReminderScheduler` withdraws
   them from the OS schedule rather than delivering them silently, so the
   64-alert cap is spent on reminders that can fire, and the reconcile that runs
-  when the Focus ends puts them back. A reminder is let through when its stream
+  when the Focus ends puts them back. The filter's intent runs that reconcile
+  itself, so it happens with no window open: it uses the open vault's
+  scheduler, or opens the vault the way any intent does, re-plans once and
+  closes it again. A reminder is let through when its stream
   cannot be read, and a time block's always is, because a block belongs to no
   stream; dropping an alert over a failed read is the worse mistake.
 

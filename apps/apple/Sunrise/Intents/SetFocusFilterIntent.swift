@@ -56,6 +56,10 @@ struct SunriseFocusFilter: SetFocusFilterIntent {
     func perform() async throws -> some IntentResult {
         let picked = streams?.map { (id: $0.id, name: $0.name) }
         await FocusFilterStore.shared.apply(picked)
+        // The reminders the OS already holds are re-planned now, whether or
+        // not a window is open; Today re-reads the scope when it is next
+        // drawn, and at once if it is on screen (`iOS/VaultSurfaces.swift`).
+        await BackgroundHost.shared.focusFilterChanged()
         return .result()
     }
 }

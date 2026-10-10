@@ -92,13 +92,12 @@ extension VaultTabs {
                 // closing, and its title comes off the Lock Screen with it.
                 .onDisappear { Task { await FocusLiveActivity.endAll() } }
                 .task { await ShareInbox.shared.file(into: bridge) }
-                // A Focus turning on or off re-scopes Today and the reminder
-                // schedule at once, rather than at their next change batch.
+                // A Focus turning on or off re-scopes Today at once, rather
+                // than at its next change batch. The reminder schedule is the
+                // filter intent's to re-plan (`BackgroundHost.focusFilterChanged`),
+                // because it has to happen with no window open too.
                 .onChange(of: FocusFilterStore.shared.streams) {
-                    Task {
-                        await models.list.refresh()
-                        await surfaces.reminders?.reconcile()
-                    }
+                    Task { await models.list.refresh() }
                 }
                 .onChange(of: models.settings.relayURL) { Task { await startSync() } }
                 .onChange(of: models.account.accessToken) { _, token in
