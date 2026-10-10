@@ -539,7 +539,8 @@ pub fn bootstrap_preferences(dir: String) -> Result<Vec<PreferenceItem>, Binding
 }
 
 /// Set one bootstrap preference in `dir`, or remove it with `None`. The file
-/// is written to a sibling and renamed over the old one, so a crash leaves
+/// is written to a sibling, flushed to disk, and renamed over the old one, so
+/// a crash leaves
 /// one whole file or the other.
 ///
 /// # Errors
@@ -559,7 +560,13 @@ pub fn set_bootstrap_preference(
     std::fs::create_dir_all(dir).map_err(io)?;
     let path = dir.join(sunrise_core::BOOTSTRAP_FILE);
     let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, body).map_err(io)?;
+    // Flushed before the rename: without it a power loss can make the rename
+    // durable ahead of the bytes, leaving a truncated file that reads as empty
+    // and loses the relay and sign-in settings.
+    let mut f = std::fs::File::create(&tmp).map_err(io)?;
+    std::io::Write::write_all(&mut f, &body).map_err(io)?;
+    f.sync_all().map_err(io)?;
+    drop(f);
     std::fs::rename(&tmp, &path).map_err(io)
 }
 
