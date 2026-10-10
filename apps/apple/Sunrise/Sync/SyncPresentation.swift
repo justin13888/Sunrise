@@ -37,13 +37,15 @@ struct SyncPresentation: Equatable {
     }
 
     /// No snapshot yet — the first query has not answered.
-    static let unknown = SyncPresentation(
-        label: "Checking…",
-        detail: nil,
-        symbol: "icloud",
-        tone: .idle,
-        isKnownIncomplete: false
-    )
+    static var unknown: SyncPresentation {
+        SyncPresentation(
+            label: L10n.Sync.checking,
+            detail: nil,
+            symbol: "icloud",
+            tone: .idle,
+            isKnownIncomplete: false
+        )
+    }
 
     init(label: String, detail: String?, symbol: String, tone: Tone, isKnownIncomplete: Bool) {
         self.label = label
@@ -58,7 +60,7 @@ struct SyncPresentation: Equatable {
         switch snapshot.state {
         case .live:
             self.init(
-                label: pending == 0 ? "Synced" : "Sending",
+                label: pending == 0 ? L10n.Sync.synced : L10n.Sync.sending,
                 detail: pending == 0 ? nil : Self.pendingPhrase(pending),
                 symbol: pending == 0 ? "checkmark.icloud" : "arrow.up.circle",
                 tone: pending == 0 ? .ok : .working,
@@ -66,17 +68,17 @@ struct SyncPresentation: Equatable {
             )
         case .catchingUp:
             self.init(
-                label: "Catching up",
-                detail: "Replaying changes from your other devices.",
+                label: L10n.Sync.catchingUp,
+                detail: L10n.Sync.catchingUpDetail,
                 symbol: "arrow.trianglehead.2.clockwise.rotate.90.icloud",
                 tone: .working,
                 isKnownIncomplete: false
             )
         case .disconnected:
             self.init(
-                label: "Offline",
+                label: L10n.Sync.offline,
                 detail: pending == 0
-                    ? "Your tasks are on this device and up to date here."
+                    ? L10n.Sync.offlineDetail
                     : Self.pendingPhrase(pending),
                 symbol: "icloud.slash",
                 tone: .idle,
@@ -88,12 +90,8 @@ struct SyncPresentation: Equatable {
             // received and cannot serve them again; only another device that
             // still holds them can close the gap.
             self.init(
-                label: "Changes missing",
-                detail: """
-                    The relay can no longer supply some changes this device never \
-                    received. Another device may hold edits that will not \
-                    arrive over this connection.
-                    """,
+                label: L10n.Sync.changesMissing,
+                detail: L10n.Sync.changesMissingDetail,
                 symbol: "exclamationmark.icloud",
                 tone: .alert,
                 isKnownIncomplete: true
@@ -105,11 +103,8 @@ struct SyncPresentation: Equatable {
             // storage — so the driver waits for the user. Not known
             // incomplete either: nothing was lost, it just is not moving.
             self.init(
-                label: "Sync stopped",
-                detail: """
-                    The relay ended this device's session and will not reconnect \
-                    it on its own. Sign in again or reopen Sunrise to retry.
-                    """,
+                label: L10n.Sync.stopped,
+                detail: L10n.Sync.stoppedDetail,
                 symbol: "xmark.icloud",
                 tone: .alert,
                 isKnownIncomplete: false
@@ -118,6 +113,6 @@ struct SyncPresentation: Equatable {
     }
 
     private static func pendingPhrase(_ count: UInt32) -> String {
-        count == 1 ? "1 change waiting to send" : "\(count) changes waiting to send"
+        L10n.Sync.pending(count: Int(count))
     }
 }

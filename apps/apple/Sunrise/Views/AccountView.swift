@@ -52,28 +52,36 @@ struct AccountView: View {
             }
             vaultSection
 
-            Section("Sync") {
-                TextField("Relay URL", text: $settings.relayURL, prompt: Text("http://127.0.0.1:8443"))
-                    .textInput(.url)
-                    .textContentType(.URL)
-                Text("Leave empty to work entirely on this \(Platform.deviceName).")
+            Section(L10n.Account.sectionSync) {
+                TextField(
+                    L10n.Account.relayUrl,
+                    text: $settings.relayURL,
+                    prompt: Text(verbatim: "http://127.0.0.1:8443")
+                )
+                .textInput(.url)
+                .textContentType(.URL)
+                Text(L10n.Account.relayHint(device: Platform.deviceName))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
-            Section("Account") {
-                TextField("OIDC issuer", text: $settings.oidcIssuer, prompt: Text("https://issuer.example"))
-                    .textInput(.url)
-                TextField("Client ID", text: $settings.oidcClientID)
+            Section(L10n.Account.sectionAccount) {
+                TextField(
+                    L10n.Account.oidcIssuer,
+                    text: $settings.oidcIssuer,
+                    prompt: Text(verbatim: "https://issuer.example")
+                )
+                .textInput(.url)
+                TextField(L10n.Account.clientId, text: $settings.oidcClientID)
                     .textInput(.opaque)
-                LabeledContent("This device", value: String(deviceID.prefix(16)))
+                LabeledContent(L10n.Account.thisDevice, value: String(deviceID.prefix(16)))
                     .monospaced()
                 accountRow
             }
 
             #if os(macOS)
-            Section("Quick capture") {
-                LabeledContent("Shortcut") {
+            Section(L10n.Account.QuickCapture.title) {
+                LabeledContent(L10n.Account.QuickCapture.shortcut) {
                     HStack(spacing: 8) {
                         Text("⌘⇧N").monospaced()
                         Image(systemName: hotkey.isActive
@@ -90,14 +98,18 @@ struct AccountView: View {
                 // `RegisterEventHotKey`, which reserves one combination rather
                 // than observing every keystroke. Saying so is better than a
                 // settings screen that quietly contradicts the documentation.
-                LabeledContent("Accessibility permission") {
+                LabeledContent(L10n.Account.QuickCapture.accessibilityPermission) {
                     HStack(spacing: 8) {
-                        Text(HotkeyCenter.accessibilityIsTrusted ? "Granted" : "Not granted")
-                            .foregroundStyle(.secondary)
-                        Button("Open Settings…") { HotkeyCenter.openAccessibilitySettings() }
+                        Text(
+                            HotkeyCenter.accessibilityIsTrusted
+                                ? L10n.Account.QuickCapture.granted
+                                : L10n.Account.QuickCapture.notGranted
+                        )
+                        .foregroundStyle(.secondary)
+                        Button(L10n.Action.openSettings) { HotkeyCenter.openAccessibilitySettings() }
                     }
                 }
-                Text("Not required for the shortcut above.")
+                Text(L10n.Account.QuickCapture.accessibilityNotRequired)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -113,21 +125,16 @@ struct AccountView: View {
         .sheet(item: $pairing.endingThePairingOnDismiss) { model in
             PairingView(model: model) { pairing = nil }
         }
-        .alert("Add a vault", isPresented: $addingVault) {
-            TextField("Name", text: $newVaultName)
-            Button("Cancel", role: .cancel) { newVaultName = "" }
-            Button("Add") {
+        .alert(L10n.Vaults.addTitle, isPresented: $addingVault) {
+            TextField(L10n.Vaults.name, text: $newVaultName)
+            Button(L10n.Action.cancel, role: .cancel) { newVaultName = "" }
+            Button(L10n.Action.add) {
                 let name = newVaultName
                 newVaultName = ""
                 switchVault { await session?.addVault(named: name) }
             }
         } message: {
-            Text(
-                """
-                A separate, separately encrypted vault with its own key. \
-                Sunrise closes the one that is open before it opens the new one.
-                """
-            )
+            Text(L10n.Vaults.addMessage)
         }
     }
 
@@ -139,8 +146,8 @@ struct AccountView: View {
     @ViewBuilder
     private var vaultSection: some View {
         if let session, let vaults = session.vaults {
-            Section("Vaults") {
-                Picker("Open vault", selection: selection(vaults)) {
+            Section(L10n.Vaults.title) {
+                Picker(L10n.Vaults.openVault, selection: selection(vaults)) {
                     ForEach(vaults.vaults) { vault in
                         Text(vault.name).tag(vault.id)
                     }
@@ -148,41 +155,27 @@ struct AccountView: View {
                 .disabled(switching)
                 .accessibilityIdentifier("account.vaultPicker")
 
-                Text(
-                    """
-                    Only one vault is open at a time. Switching closes the one \
-                    you are in — the core holds a lock on it — and then opens \
-                    the other, so anything unsaved is written first.
-                    """
-                )
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                Text(L10n.Vaults.switchCaption)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
 
                 HStack(spacing: 12) {
-                    Button("Add a vault…") { addingVault = true }
+                    Button(L10n.Vaults.addVault) { addingVault = true }
                         .disabled(switching)
                         .accessibilityIdentifier("account.addVault")
                     if switching {
                         ProgressView().controlSize(.small)
                     }
                     Spacer()
-                    Button("Add a device…") { pairing = makePairing(session) }
+                    Button(L10n.Vaults.addDevice) { pairing = makePairing(session) }
                         .disabled(!canSponsor(session))
                         .accessibilityIdentifier("account.addDevice")
                 }
                 .formRowButtons()
                 Text(
                     canSponsor(session)
-                        ? """
-                        "Add a device" hands this vault's key to another device, after \
-                        you have compared six digits on both screens.
-                        """
-                        : """
-                        This \(Platform.deviceName) was itself added by pairing, so it \
-                        cannot add another. Only the device you first created this \
-                        account on can — which is also what stops a device you have \
-                        removed from letting itself back in.
-                        """
+                        ? L10n.Vaults.addDeviceCaption
+                        : L10n.Vaults.cannotAddDeviceCaption(device: Platform.deviceName)
                 )
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -246,17 +239,14 @@ struct AccountView: View {
     /// and the sheet is already showing the vim section.
     @ViewBuilder
     private var keyboardSection: some View {
-        Section("Keyboard") {
-            Toggle("Vim-style motions", isOn: $keyboard.vimMode)
+        Section(L10n.Account.Keyboard.title) {
+            Toggle(L10n.Account.Keyboard.vimMode, isOn: $keyboard.vimMode)
                 .accessibilityIdentifier("account.vimMode")
-            Text(
-                "h j k l, gg, G, u, ⌃R, / and : in any list. Additive — ⌘N, X and the "
-                    + "rest keep working. Stored on this \(Platform.deviceName) only, never synced."
-            )
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            LabeledContent("Shortcut reference") {
-                Text("Press ? in any view").foregroundStyle(.secondary)
+            Text(L10n.Account.Keyboard.vimModeCaption(device: Platform.deviceName))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            LabeledContent(L10n.Account.Keyboard.shortcutReference) {
+                Text(L10n.Account.Keyboard.shortcutReferenceValue).foregroundStyle(.secondary)
             }
         }
     }
@@ -271,8 +261,8 @@ struct AccountView: View {
     /// and a copy on this screen would be a second place to set one value.
     @ViewBuilder
     private var notificationSections: some View {
-        Section("Notifications") {
-            LabeledContent("System permission") {
+        Section(L10n.Account.Notifications.title) {
+            LabeledContent(L10n.Account.Notifications.systemPermission) {
                 HStack(spacing: 8) {
                     Text(authorization.summary).foregroundStyle(.secondary)
                     Image(systemName: authorization.isActive
@@ -280,9 +270,9 @@ struct AccountView: View {
                         : "exclamationmark.triangle")
                         .foregroundStyle(authorization.isActive ? .green : .orange)
                     if authorization.canRequest {
-                        Button("Allow…") { Task { await allowNotifications() } }
+                        Button(L10n.Account.Notifications.allow) { Task { await allowNotifications() } }
                     } else if !authorization.isActive {
-                        Button("Open Settings…") { Self.openNotificationSettings() }
+                        Button(L10n.Action.openSettings) { Self.openNotificationSettings() }
                     }
                 }
             }
@@ -290,48 +280,42 @@ struct AccountView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            Toggle("Remind me on this \(Platform.deviceName)", isOn: $notifications.isEnabled)
-            Toggle("This is my primary device", isOn: $notifications.isPrimaryDevice)
-            Text(
-                "Only the primary device delivers reminders — the core hands the others "
-                    + "nothing to schedule, so an account with four devices still rings once."
+            Toggle(
+                L10n.Account.Notifications.remindOnDevice(device: Platform.deviceName),
+                isOn: $notifications.isEnabled
             )
-            .font(.caption)
-            .foregroundStyle(.secondary)
+            Toggle(L10n.Account.Notifications.primaryDevice, isOn: $notifications.isPrimaryDevice)
+            Text(L10n.Account.Notifications.primaryCaption)
+                .font(.caption)
+                .foregroundStyle(.secondary)
 
-            Picker("Remind me", selection: $notifications.leadMinutes) {
+            Picker(L10n.Account.Notifications.remindMe, selection: $notifications.leadMinutes) {
                 ForEach(NotificationPreferences.leadChoices, id: \.self) { minutes in
                     Text(Self.leadLabel(minutes)).tag(minutes)
                 }
             }
-            Text(
-                "The fallback. A lead time set on a task wins over one set on its stream, "
-                    + "and either wins over this."
-            )
-            .font(.caption)
-            .foregroundStyle(.secondary)
+            Text(L10n.Account.Notifications.leadCaption)
+                .font(.caption)
+                .foregroundStyle(.secondary)
 
-            LabeledContent("Scheduled now", value: "\(scheduledCount)")
+            LabeledContent(L10n.Account.Notifications.scheduledNow, value: "\(scheduledCount)")
                 .foregroundStyle(.secondary)
         }
 
-        Section("Quiet hours") {
-            Toggle("Silence reminders overnight", isOn: $notifications.quietHoursEnabled)
-            Picker("From", selection: $notifications.quietStartMinutes) { clockChoices }
+        Section(L10n.Account.QuietHours.title) {
+            Toggle(L10n.Account.QuietHours.silence, isOn: $notifications.quietHoursEnabled)
+            Picker(L10n.Account.QuietHours.from, selection: $notifications.quietStartMinutes) { clockChoices }
                 .disabled(!notifications.quietHoursEnabled)
-            Picker("Until", selection: $notifications.quietEndMinutes) { clockChoices }
+            Picker(L10n.Account.QuietHours.until, selection: $notifications.quietEndMinutes) { clockChoices }
                 .disabled(!notifications.quietHoursEnabled)
-            Picker("During quiet hours", selection: $notifications.quietPolicyIsDrop) {
-                Text("Hold until it ends").tag(false)
-                Text("Drop them").tag(true)
+            Picker(L10n.Account.QuietHours.policy, selection: $notifications.quietPolicyIsDrop) {
+                Text(L10n.Account.QuietHours.hold).tag(false)
+                Text(L10n.Account.QuietHours.drop).tag(true)
             }
             .disabled(!notifications.quietHoursEnabled)
-            Text(
-                "A held reminder fires when the window ends, and no more than four hours "
-                    + "after it was due — past that it is dropped rather than delivered late."
-            )
-            .font(.caption)
-            .foregroundStyle(.secondary)
+            Text(L10n.Account.QuietHours.caption)
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -343,7 +327,9 @@ struct AccountView: View {
     }
 
     private static func leadLabel(_ minutes: Int) -> String {
-        minutes == 0 ? "At the scheduled time" : "\(minutes) minutes before"
+        minutes == 0
+            ? L10n.Account.Notifications.leadAtTime
+            : L10n.Account.Notifications.leadMinutes(minutes: minutes)
     }
 
     /// The pane where a refused permission is granted again.
@@ -358,26 +344,26 @@ struct AccountView: View {
     private var accountRow: some View {
         switch account.state {
         case .signedOut:
-            Button("Sign in…") { Task { await signIn() } }
+            Button(L10n.SignIn.signIn) { Task { await signIn() } }
                 .disabled(!settings.canSignIn)
         case .awaitingBrowser:
             HStack(spacing: 8) {
                 ProgressView().controlSize(.small)
-                Text("Finish signing in in your browser…")
+                Text(L10n.SignIn.awaitingBrowser)
             }
         case let .signedIn(expiresAtMs):
-            LabeledContent("Signed in") {
+            LabeledContent(L10n.SignIn.signedIn) {
                 HStack(spacing: 12) {
                     Text(expiry(expiresAtMs))
                         .foregroundStyle(.secondary)
-                    Button("Sign out", role: .destructive) { account.signOut() }
+                    Button(L10n.SignIn.signOut, role: .destructive) { account.signOut() }
                 }
             }
         case let .failed(message):
             VStack(alignment: .leading, spacing: 6) {
                 Label(message, systemImage: "exclamationmark.triangle")
                     .foregroundStyle(.orange)
-                Button("Try again") { Task { await signIn() } }
+                Button(L10n.Action.tryAgain) { Task { await signIn() } }
                     .disabled(!settings.canSignIn)
             }
         }
@@ -397,13 +383,13 @@ struct AccountView: View {
         // The way out of a refusal the user has retired: the one combination
         // the switch says nothing about while the credential is still stored.
         if account.offersBareSignOut {
-            Button("Sign out") { account.signOut() }
+            Button(L10n.SignIn.signOut) { account.signOut() }
         }
     }
 
     private func expiry(_ ms: UInt64) -> String {
         let date = Date(timeIntervalSince1970: Double(ms) / 1000)
-        return "expires \(date.formatted(date: .abbreviated, time: .shortened))"
+        return L10n.SignIn.expires(date: date.formatted(date: .abbreviated, time: .shortened))
     }
 }
 
@@ -419,21 +405,15 @@ enum SignOutCopy {
     /// `UIDevice.current` and is isolated for it.
     @MainActor
     static func incompleteHeadline(message: String) -> String {
-        "Signed out on this \(Platform.deviceName), but the stored credential "
-            + "could not be removed: \(message)"
+        L10n.SignIn.signOutIncompleteHeadline(device: Platform.deviceName, message: message)
     }
 
     /// What it costs, and what to do about it.
-    static let incompleteCaption =
-        "The stored credential is still in the Keychain, so the next launch "
-            + "will sign you back in. Unlock your Keychain, then Sign out here "
-            + "to try removing it again."
+    static var incompleteCaption: String { L10n.SignIn.signOutIncompleteCaption }
 
     /// The same instruction, for the reader who has already acknowledged the
     /// headline and does not need it shouted twice.
-    static let retryCaption =
-        "A credential the last sign-out could not remove is still in the "
-            + "Keychain. Unlock your Keychain, then Sign out here to try again."
+    static var retryCaption: String { L10n.SignIn.signOutRetryCaption }
 }
 
 /// What a sign-out could not do: the Keychain kept the credential.
@@ -463,8 +443,8 @@ private struct SignOutIncompleteRow: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             HStack(spacing: 12) {
-                Button("Sign out") { account.signOut() }
-                Button("Dismiss") { account.dismissSignOutIncomplete() }
+                Button(L10n.SignIn.signOut) { account.signOut() }
+                Button(L10n.Action.dismiss) { account.dismissSignOutIncomplete() }
             }
             .formRowButtons()
         }
@@ -502,8 +482,8 @@ private struct SignOutRetryRow: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             HStack(spacing: 12) {
-                Button("Sign out") { account.signOut() }
-                Button("Dismiss") { account.dismissSignOutRetry() }
+                Button(L10n.SignIn.signOut) { account.signOut() }
+                Button(L10n.Action.dismiss) { account.dismissSignOutRetry() }
             }
             .formRowButtons()
         }

@@ -103,7 +103,7 @@ final class BrowseModel {
             reviewCadence: cadence,
             reminderLeadS: nil
         )
-        await run(.createStream(draft: draft), label: "new stream “\(name.trimmed)”")
+        await run(.createStream(draft: draft), label: L10n.Undo.newStream(name: name.trimmed))
     }
 
     /// The whole stream behind a sidebar row.
@@ -120,7 +120,7 @@ final class BrowseModel {
     }
 
     func updateStream(_ row: StreamListRow, _ edit: StreamEdit) async {
-        await run(.updateStream(id: row.id, edit: edit), label: "edit “\(row.name)”")
+        await run(.updateStream(id: row.id, edit: edit), label: L10n.Undo.editStream(name: row.name))
     }
 
     func setStreamArchived(_ row: StreamListRow, _ archived: Bool) async {
@@ -128,7 +128,9 @@ final class BrowseModel {
         edit.archived = archived
         await run(
             .updateStream(id: row.id, edit: edit),
-            label: archived ? "archive “\(row.name)”" : "unarchive “\(row.name)”"
+            label: archived
+                ? L10n.Undo.archiveStream(name: row.name)
+                : L10n.Undo.unarchiveStream(name: row.name)
         )
     }
 
@@ -137,12 +139,14 @@ final class BrowseModel {
         edit.paused = paused
         await run(
             .updateStream(id: row.id, edit: edit),
-            label: paused ? "pause “\(row.name)”" : "resume “\(row.name)”"
+            label: paused
+                ? L10n.Undo.pauseStream(name: row.name)
+                : L10n.Undo.resumeStream(name: row.name)
         )
     }
 
     func deleteStream(_ row: StreamListRow) async {
-        await run(.deleteStream(id: row.id), label: "delete “\(row.name)”")
+        await run(.deleteStream(id: row.id), label: L10n.Undo.deleteStream(name: row.name))
     }
 
     /// **Reorder the sidebar.** Drag a stream, and it moves everywhere.
@@ -168,7 +172,7 @@ final class BrowseModel {
         for move in moves {
             var edit = StreamEdit()
             edit.sortOrder = move.key
-            await run(.updateStream(id: move.id, edit: edit), label: "reorder streams")
+            await run(.updateStream(id: move.id, edit: edit), label: L10n.Undo.reorderStreams)
         }
         return true
     }
@@ -177,11 +181,11 @@ final class BrowseModel {
 
     func createContext(name: String, description: String?) async {
         let draft = ContextDraftIn(name: name.trimmed, description: description?.nilIfBlank)
-        await run(.createContext(draft: draft), label: "new context @\(name.trimmed)")
+        await run(.createContext(draft: draft), label: L10n.Undo.newContext(name: name.trimmed))
     }
 
     func updateContext(_ row: ContextListRow, _ edit: ContextEdit) async {
-        await run(.updateContext(id: row.id, edit: edit), label: "edit @\(row.name)")
+        await run(.updateContext(id: row.id, edit: edit), label: L10n.Undo.editContext(name: row.name))
     }
 
     func setContextArchived(_ row: ContextListRow, _ archived: Bool) async {
@@ -189,7 +193,9 @@ final class BrowseModel {
         edit.archived = archived
         await run(
             .updateContext(id: row.id, edit: edit),
-            label: archived ? "archive @\(row.name)" : "unarchive @\(row.name)"
+            label: archived
+                ? L10n.Undo.archiveContext(name: row.name)
+                : L10n.Undo.unarchiveContext(name: row.name)
         )
     }
 
@@ -197,7 +203,7 @@ final class BrowseModel {
     /// the same transaction, which is why this is a heavier action than
     /// archiving and is offered behind a confirmation.
     func deleteContext(_ row: ContextListRow) async {
-        await run(.deleteContext(id: row.id), label: "delete @\(row.name)")
+        await run(.deleteContext(id: row.id), label: L10n.Undo.deleteContext(name: row.name))
     }
 
     // MARK: - Writing
@@ -223,7 +229,7 @@ final class BrowseModel {
         let ids = DropPayload.taskIDs(items)
         guard !ids.isEmpty else { return false }
         for id in ids {
-            await run(.promoteToStream(id: id, stream: stream), label: "move to stream")
+            await run(.promoteToStream(id: id, stream: stream), label: L10n.Undo.moveToStream)
         }
         return true
     }
@@ -248,7 +254,7 @@ final class BrowseModel {
             guard let existing = await contexts(of: id), !existing.contains(context) else { continue }
             var edit = TaskEdit()
             edit.contexts = existing + [context]
-            await run(.updateTask(id: id, edit: edit), label: "add a context")
+            await run(.updateTask(id: id, edit: edit), label: L10n.Undo.addContext)
             wrote = true
         }
         return wrote

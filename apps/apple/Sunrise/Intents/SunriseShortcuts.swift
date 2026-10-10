@@ -15,6 +15,12 @@ import AppIntents
 ///
 /// The cap is ten. Six are used, which leaves room for the next verb without
 /// having to argue about which one to drop.
+///
+/// The short titles name string-catalog keys as literals, as the intents'
+/// metadata does (see the note on ``CaptureTaskIntent/title``). The phrases
+/// stay English literals on purpose: Siri matches them, Xcode extracts them
+/// into an `AppShortcuts.xcstrings` of its own keyed by the phrase, and that
+/// mechanism — not `i18n/en.toml` — is what translates them.
 struct SunriseShortcuts: AppShortcutsProvider {
     /// Yellow: the app's mark is a sun.
     static let shortcutTileColor = ShortcutTileColor.orange
@@ -28,7 +34,7 @@ struct SunriseShortcuts: AppShortcutsProvider {
                 "New \(.applicationName) task",
                 "Capture a \(.applicationName) task"
             ],
-            shortTitle: "Capture Task",
+            shortTitle: LocalizedStringResource("apple.intents.shortcuts.capture", table: "Localizable"),
             systemImageName: "square.and.pencil"
         )
         AppShortcut(
@@ -38,7 +44,7 @@ struct SunriseShortcuts: AppShortcutsProvider {
                 "Mark a \(.applicationName) task done",
                 "Finish a task in \(.applicationName)"
             ],
-            shortTitle: "Complete Task",
+            shortTitle: LocalizedStringResource("apple.intents.shortcuts.complete", table: "Localizable"),
             systemImageName: "checkmark.circle"
         )
         AppShortcut(
@@ -48,7 +54,7 @@ struct SunriseShortcuts: AppShortcutsProvider {
                 "\(.applicationName) today",
                 "Show my \(.applicationName) day"
             ],
-            shortTitle: "Today's Tasks",
+            shortTitle: LocalizedStringResource("apple.intents.shortcuts.today", table: "Localizable"),
             systemImageName: "sun.max"
         )
         AppShortcut(
@@ -58,7 +64,7 @@ struct SunriseShortcuts: AppShortcutsProvider {
                 "Show my \(.applicationName) inbox",
                 "\(.applicationName) inbox"
             ],
-            shortTitle: "Inbox",
+            shortTitle: LocalizedStringResource("apple.intents.shortcuts.inbox", table: "Localizable"),
             systemImageName: "tray"
         )
         AppShortcut(
@@ -68,7 +74,7 @@ struct SunriseShortcuts: AppShortcutsProvider {
                 "Focus with \(.applicationName)",
                 "Start focusing in \(.applicationName)"
             ],
-            shortTitle: "Start Focus",
+            shortTitle: LocalizedStringResource("apple.intents.shortcuts.start_focus", table: "Localizable"),
             systemImageName: "timer"
         )
         AppShortcut(
@@ -77,7 +83,7 @@ struct SunriseShortcuts: AppShortcutsProvider {
                 "End my \(.applicationName) focus session",
                 "Stop focusing in \(.applicationName)"
             ],
-            shortTitle: "End Focus",
+            shortTitle: LocalizedStringResource("apple.intents.shortcuts.end_focus", table: "Localizable"),
             systemImageName: "stop.circle"
         )
     }

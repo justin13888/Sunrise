@@ -36,7 +36,7 @@ struct FocusView: View {
                 FocusStatsStrip(stats: stats)
             }
         }
-        .navigationTitle("Focus")
+        .navigationTitle(L10n.Focus.title)
         .task { await model.refresh() }
         .task { await model.follow() }
         .onDisappear { model.stopTicking() }
@@ -91,7 +91,7 @@ struct FocusView: View {
     }
 
     private var energyPicker: some View {
-        Picker("Energy", selection: $model.energy) {
+        Picker(L10n.Focus.energy, selection: $model.energy) {
             Text(energyLabel(energy: nil)).tag(nil as Energy?)
             Text(energyLabel(energy: .low)).tag(Energy.low as Energy?)
             Text(energyLabel(energy: .med)).tag(Energy.med as Energy?)
@@ -100,7 +100,7 @@ struct FocusView: View {
     }
 
     private var sessionPicker: some View {
-        Picker("Session", selection: $model.length) {
+        Picker(L10n.Focus.session, selection: $model.length) {
             ForEach(SessionLength.offered, id: \.self) { option in
                 Text(sessionLengthLabel(length: option)).tag(option)
             }
@@ -117,9 +117,9 @@ struct FocusView: View {
         }
         if model.plan.isEmpty {
             ContentUnavailableView(
-                "Nothing to focus on",
+                L10n.Focus.emptyTitle,
                 systemImage: "timer",
-                description: Text("Every open task is blocked, done, or in another stream.")
+                description: Text(L10n.Focus.emptyMessage)
             )
         } else {
             List(model.plan, id: \.task.id) { row in
@@ -153,7 +153,7 @@ struct PlanRowView: View {
                     // same ranking the same way.
                     Text(row.reason).font(.caption).foregroundStyle(.secondary)
                     if row.priorSessions > 0 {
-                        Text("\(row.priorSessions) prior")
+                        Text(L10n.Focus.priorSessions(count: Int(row.priorSessions)))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .monospacedDigit()
@@ -161,10 +161,10 @@ struct PlanRowView: View {
                 }
             }
             Spacer(minLength: 0)
-            Button("Start") { Task { await start() } }
+            Button(L10n.Focus.start) { Task { await start() } }
                 .buttonStyle(.borderedProminent)
                 .disabledUnlessEditable(.focusSession)
-                .accessibilityLabel("Start a session on “\(row.task.title)”")
+                .accessibilityLabel(L10n.Focus.startLabel(title: row.task.title))
         }
         .padding(.vertical, 3)
     }
@@ -190,10 +190,10 @@ struct RunningSessionView: View {
                     .font(.system(size: 34, weight: .medium, design: .rounded))
                     .monospacedDigit()
                     .foregroundStyle(progress.overran ? .orange : .primary)
-                    .accessibilityLabel("Elapsed \(progress.clock)")
+                    .accessibilityLabel(L10n.Focus.elapsed(clock: progress.clock))
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(title ?? "Focusing")
+                    Text(title ?? L10n.Focus.focusing)
                         .font(.headline)
                     Text(remainingLine)
                         .font(.caption)
@@ -201,15 +201,15 @@ struct RunningSessionView: View {
                 }
                 Spacer()
                 // Done ends the session and completes its task.
-                Button("Done") { Task { await end(true) } }
+                Button(L10n.Focus.done) { Task { await end(true) } }
                     .buttonStyle(.borderedProminent)
                     .disabledUnlessEditable(.focusSession, .task)
-                Button("Stop") { Task { await end(false) } }
+                Button(L10n.Focus.stop) { Task { await end(false) } }
                     .disabledUnlessEditable(.focusSession)
             }
 
             HStack(spacing: 8) {
-                Text("Interrupted by").font(.caption).foregroundStyle(.secondary)
+                Text(L10n.Focus.interruptedBy).font(.caption).foregroundStyle(.secondary)
                 ForEach(Self.reasons, id: \.self) { reason in
                     Button(interruptionLabel(reason: reason)) {
                         Task { await interrupt(reason) }
@@ -219,7 +219,7 @@ struct RunningSessionView: View {
                     .disabledUnlessEditable(.focusSession)
                 }
                 if !session.interruptions.isEmpty {
-                    Text("\(session.interruptions.count) logged")
+                    Text(L10n.Focus.interruptionsLogged(count: session.interruptions.count))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .monospacedDigit()
@@ -233,9 +233,9 @@ struct RunningSessionView: View {
     /// there would read as "you are out of time" for a session that never had
     /// a limit.
     private var remainingLine: String {
-        if progress.overran { return "over the plan" }
-        guard let clock = progress.remainingClock else { return "until done" }
-        return "\(clock) left"
+        if progress.overran { return L10n.Focus.overPlan }
+        guard let clock = progress.remainingClock else { return L10n.Focus.untilDone }
+        return L10n.Focus.timeLeft(clock: clock)
     }
 }
 
@@ -249,7 +249,7 @@ struct CascadeBanner: View {
             Image(systemName: "arrow.triangle.branch")
             Text(summary)
             Spacer()
-            Button("Dismiss", systemImage: "xmark", action: dismiss)
+            Button(L10n.Action.dismiss, systemImage: "xmark", action: dismiss)
                 .labelStyle(.iconOnly)
                 .buttonStyle(.plain)
         }
@@ -262,8 +262,8 @@ struct CascadeBanner: View {
     private var summary: String {
         let released = cascade.released.count
         let blocked = cascade.stillBlocked.count
-        let head = released == 1 ? "Unblocked 1 task" : "Unblocked \(released) tasks"
-        return blocked == 0 ? head : "\(head); \(blocked) still waiting on something else"
+        let head = L10n.Focus.unblocked(count: released)
+        return blocked == 0 ? head : "\(head); \(L10n.Focus.stillWaiting(count: blocked))"
     }
 }
 
@@ -274,11 +274,11 @@ struct FocusStatsStrip: View {
 
     var body: some View {
         HStack(spacing: 20) {
-            stat("Sessions", "\(stats.workSessions)")
-            stat("Focused", shortDuration(secs: stats.totalFocusedMs / 1000))
-            stat("Interruptions", "\(stats.interruptions)")
+            stat(L10n.Focus.statSessions, "\(stats.workSessions)")
+            stat(L10n.Focus.statFocused, shortDuration(secs: stats.totalFocusedMs / 1000))
+            stat(L10n.Focus.statInterruptions, "\(stats.interruptions)")
             if let overall = stats.overall {
-                stat("Estimates run", calibration(overall))
+                stat(L10n.Focus.statEstimates, calibration(overall))
             }
             Spacer()
         }

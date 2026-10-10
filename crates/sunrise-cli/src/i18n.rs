@@ -212,4 +212,65 @@ mod tests {
             "focus started on Write"
         );
     }
+
+    /// The multi-line messages moved out of Rust string continuations, where
+    /// a trailing `\` silently eats the next line's indentation. These are the
+    /// bytes the literals printed, so a catalog edit that changes the layout
+    /// a person reads in their terminal is a decision rather than an accident.
+    #[test]
+    fn multi_line_messages_keep_their_layout() {
+        assert_eq!(
+            strings::recover::aftercare("abc"),
+            "Account abc is restored on this device.\n\n\
+             Two things are worth doing now, and neither is automatic:\n\n\
+             * Revoke the devices you lost. Until you do, anything still\n\
+             holding them can read what this account writes.\n\
+             * Rotate your Stream keys. A recovery means an unknown-state\n\
+             environment, and rotation is what bounds what a lost device\n\
+             keeps reading. See docs/03-crypto/key-rotation.md.\n\n\
+             Your recovery code still works and has not changed. This device now\n\
+             holds ID_D_priv, so it can seal a new one if you ever rotate it."
+        );
+        assert_eq!(
+            strings::pair::offer_written("o.cbor"),
+            "wrote the pairing offer -> o.cbor\nmove it to the device you are adding, \
+             then run:\n  sunrise pair request --offer <that file> --out request.cbor"
+        );
+        assert_eq!(
+            strings::vault::pre_multi_account("/v", "SUNRISE_VAULT_ROOT", "00"),
+            "the vault at /v was created before vaults had their own keys, when every \
+             vault shared one root compiled into this binary. It is not opened by \
+             guessing that root, because that would leave it readable by anyone holding \
+             a copy of `sunrise`. To open it once and move the work somewhere new:\n    \
+             SUNRISE_VAULT_ROOT=00 sunrise export activity json > out.json\n\
+             Otherwise pick a fresh directory; this build makes a new key for it."
+        );
+        assert_eq!(
+            strings::streams::move_usage(),
+            "usage: streams move <id|name> before <id|name>\nstreams move <id|name> last"
+        );
+        let usage = strings::usage::text();
+        assert!(usage.starts_with("sunrise — command-line client for Sunrise\n\nUSAGE:\n"));
+        assert!(usage.contains("\n    sunrise edit tsk_01J… '#work !1 ^next friday'\n"));
+        assert!(usage.ends_with("see `sunrise pair`.\n"));
+        assert!(strings::pair::usage().starts_with("usage:\n  sunrise pair offer    --out"));
+    }
+
+    /// A count reads as a plural, never as "1 devices".
+    #[test]
+    fn counts_are_plurals() {
+        assert_eq!(
+            strings::devices::ambiguous(2, "ab"),
+            "`ab` matches 2 devices; use more characters"
+        );
+        assert_eq!(strings::attachments::written(1, "x"), "1 byte written to x");
+        assert_eq!(
+            strings::recover::replaying(1),
+            "replaying history: 1 change applied"
+        );
+        assert_eq!(
+            strings::vault::bad_root_hex("V", 64, 32, 3),
+            "V must be exactly 64 hex characters (32 bytes); got 3"
+        );
+    }
 }

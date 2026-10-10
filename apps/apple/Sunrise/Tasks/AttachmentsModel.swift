@@ -243,7 +243,7 @@ final class AttachmentsModel {
     func preview(_ row: AttachmentRow) async {
         guard row.isLocal else {
             previewing = nil
-            errorMessage = "\(row.item.filename) is not on this device yet. Use Download."
+            errorMessage = L10n.Attachments.notLocal(filename: row.item.filename)
             return
         }
         do {

@@ -22,16 +22,16 @@ enum NoteBlockKind: String, CaseIterable, Identifiable, Sendable {
 
     var title: String {
         switch self {
-        case .paragraph: "Text"
-        case .heading1: "Heading 1"
-        case .heading2: "Heading 2"
-        case .heading3: "Heading 3"
-        case .bulleted: "Bulleted list"
-        case .numbered: "Numbered list"
-        case .checklist: "Checklist"
-        case .code: "Code"
-        case .quote: "Quote"
-        case .divider: "Divider"
+        case .paragraph: L10n.Notes.Block.paragraph
+        case .heading1: L10n.Notes.Block.headingOne
+        case .heading2: L10n.Notes.Block.headingTwo
+        case .heading3: L10n.Notes.Block.headingThree
+        case .bulleted: L10n.Notes.Block.bulleted
+        case .numbered: L10n.Notes.Block.numbered
+        case .checklist: L10n.Notes.Block.checklist
+        case .code: L10n.Notes.Block.code
+        case .quote: L10n.Notes.Block.quote
+        case .divider: L10n.Notes.Block.divider
         }
     }
 

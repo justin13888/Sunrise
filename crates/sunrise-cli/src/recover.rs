@@ -44,6 +44,7 @@ use sunrise_crypto::recovery::RecoveryPayload;
 use sunrise_onboarding::{RecoveryProgress, RestoreError};
 use sunrise_relay_client::RelayRecovery;
 
+use crate::i18n::strings;
 use crate::{livesync, login, vault};
 
 /// The file whose presence means "there is already a vault here".
@@ -62,17 +63,13 @@ const CATCH_UP_MS: u64 = 60_000;
 #[derive(Debug, thiserror::Error)]
 pub enum RecoverError {
     /// The target directory already holds a vault.
-    #[error(
-        "{} already holds a vault; a recovery creates one and cannot merge into another. \
-         Point SUNRISE_VAULT at an empty directory and run this again.",
-        .0.display()
-    )]
+    #[error("{}", strings::recover::not_empty(&.0.display().to_string()))]
     NotEmpty(PathBuf),
     /// No relay origin.
-    #[error("set {} to the relay origin", livesync::ENV_SYNC_URL)]
+    #[error("{}", strings::bootstrap::needs_relay(livesync::ENV_SYNC_URL))]
     NoRelay,
     /// No recovery code on the command line and nothing on stdin.
-    #[error("a recovery needs the 24-word code: `sunrise recover <word>...`, or pipe it in")]
+    #[error("{}", strings::recover::needs_code())]
     NoCode,
     /// The step-up sign-in could not be run, or the relay origin is unusable.
     #[error("{0}")]
@@ -93,17 +90,10 @@ pub enum RecoverError {
 /// shared flow cannot name.
 fn cli_wording(e: &RestoreError) -> String {
     match e {
-        RestoreError::StepUpRequired(detail) => format!(
-            "the relay will not serve the recovery blob to this session: {detail}. \
-             It requires a fresh sign-in (an OIDC step-up), which is what \
-             `sunrise recover` performs when it runs the login itself — so this \
-             means the token in {} is an ordinary one. Unset it and let this \
-             command sign you in.",
-            livesync::ENV_SYNC_TOKEN
-        ),
-        RestoreError::NeverCaughtUp { .. } => {
-            format!("{e}. Nothing is lost: run `sunrise sync --once` when the network is better.")
+        RestoreError::StepUpRequired(detail) => {
+            strings::recover::step_up_required(detail, livesync::ENV_SYNC_TOKEN)
         }
+        RestoreError::NeverCaughtUp { .. } => strings::recover::never_caught_up(&e.to_string()),
         other => other.to_string(),
     }
 }
@@ -284,21 +274,24 @@ pub async fn rejoin_account(
             drain(&mut *announce);
             match step {
                 RecoveryProgress::DeviceRegistered { relay_device_id } => {
-                    announce("vault rebuilt from the recovery code");
+                    announce(&strings::recover::vault_rebuilt());
                     match livesync::save_relay_device_id(vault_dir, &relay_device_id) {
-                        Ok(()) => announce(&format!("re-keyed as device {relay_device_id}")),
+                        Ok(()) => announce(&strings::recover::rekeyed(&relay_device_id)),
                         Err(e) => {
                             shared_ref
                                 .lock()
                                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                                .unrecorded = Some(format!(
-                                "registered as {relay_device_id} but could not record it: {e}"
+                                .unrecorded = Some(strings::recover::unrecorded(
+                                &relay_device_id,
+                                &e.to_string(),
                             ));
                         }
                     }
                 }
                 RecoveryProgress::Replaying { applied } => {
-                    announce(&format!("replaying history: {applied} changes applied"));
+                    announce(&strings::recover::replaying(
+                        i64::try_from(applied).unwrap_or(i64::MAX),
+                    ));
                 }
                 _ => {}
             }
@@ -330,20 +323,7 @@ pub async fn rejoin_account(
 /// exists.
 #[must_use]
 pub fn aftercare(identity_id: &str) -> String {
-    format!(
-        "Account {identity_id} is restored on this device.\n\
-         \n\
-         Two things are worth doing now, and neither is automatic:\n\
-         \n\
-           * Revoke the devices you lost. Until you do, anything still\n\
-             holding them can read what this account writes.\n\
-           * Rotate your Stream keys. A recovery means an unknown-state\n\
-             environment, and rotation is what bounds what a lost device\n\
-             keeps reading. See docs/03-crypto/key-rotation.md.\n\
-         \n\
-         Your recovery code still works and has not changed. This device now\n\
-         holds ID_D_priv, so it can seal a new one if you ever rotate it."
-    )
+    strings::recover::aftercare(identity_id)
 }
 
 /// This build's platform tag, as `POST /api/v1/devices` names them.
@@ -376,19 +356,19 @@ pub async fn step_up_bearer(
     if let Ok(token) = std::env::var(livesync::ENV_SYNC_TOKEN) {
         let token = token.trim().to_owned();
         if !token.is_empty() {
-            announce(&format!("using the bearer in {}", livesync::ENV_SYNC_TOKEN));
+            announce(&strings::recover::using_bearer(livesync::ENV_SYNC_TOKEN));
             return Ok(token);
         }
     }
     let cfg = login::LoginConfig::from_env().map_err(|e| {
-        RecoverError::Relay(format!(
-            "{e}; set {} and {}, or set {} to a token that carries a fresh sign-in",
+        RecoverError::Relay(strings::recover::needs_config(
+            &e,
             login::ENV_ISSUER,
             login::ENV_CLIENT_ID,
-            livesync::ENV_SYNC_TOKEN
+            livesync::ENV_SYNC_TOKEN,
         ))
     })?;
-    announce("signing in — your provider will ask you to authenticate again, which is what lets the relay release the recovery blob");
+    announce(&strings::recover::signing_in());
     // The device id claim is empty: this device does not exist yet, and the
     // vault that will name it is not created until the blob has been opened.
     let creds = login::step_up_login(&cfg, "", &login::store_for(vault_dir), now_ms, announce)

@@ -12,6 +12,8 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::i18n::strings;
+
 use sunrise_auth::{
     open_in_browser, CredentialStore, Credentials, FileStore, HttpClient, HttpsClient, LoginError,
     OidcClient, DEFAULT_REDIRECT_TIMEOUT,
@@ -38,11 +40,11 @@ impl LoginConfig {
         let issuer = std::env::var(ENV_ISSUER)
             .ok()
             .filter(|v| !v.trim().is_empty())
-            .ok_or_else(|| format!("{ENV_ISSUER} is not set"))?;
+            .ok_or_else(|| strings::login::not_set(ENV_ISSUER))?;
         let client_id = std::env::var(ENV_CLIENT_ID)
             .ok()
             .filter(|v| !v.trim().is_empty())
-            .ok_or_else(|| format!("{ENV_CLIENT_ID} is not set"))?;
+            .ok_or_else(|| strings::login::not_set(ENV_CLIENT_ID))?;
         Ok(Self { issuer, client_id })
     }
 }
@@ -116,7 +118,7 @@ async fn login_with(
     // A browser that will not open is not fatal: the URL was just printed, and
     // a user on a headless box can paste it somewhere that has one.
     if let Err(e) = open_in_browser(session.authorize_url()) {
-        announce(&format!("(could not open a browser: {e})"));
+        announce(&strings::login::no_browser(&e.to_string()));
     }
 
     let capture = session.wait_for_redirect(DEFAULT_REDIRECT_TIMEOUT).await?;
@@ -134,15 +136,13 @@ pub fn logout(store: &dyn CredentialStore) -> Result<(), LoginError> {
 #[must_use]
 pub fn status_line(store: &dyn CredentialStore, now_ms: u64) -> String {
     match store.load() {
-        Ok(Some(c)) if c.is_expired_at(now_ms) => {
-            "logged in, but the access token has expired — run `sunrise login`".into()
-        }
+        Ok(Some(c)) if c.is_expired_at(now_ms) => strings::login::status_expired(),
         Ok(Some(c)) => {
             let secs = (c.expires_at_ms.saturating_sub(now_ms)) / 1000;
-            format!("logged in; access token valid for another {secs}s")
+            strings::login::status_valid(i64::try_from(secs).unwrap_or(i64::MAX))
         }
-        Ok(None) => "not logged in".into(),
-        Err(e) => format!("cannot read stored credentials: {e}"),
+        Ok(None) => strings::login::status_none(),
+        Err(e) => strings::login::status_unreadable(&e.to_string()),
     }
 }
 

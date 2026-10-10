@@ -25,21 +25,21 @@ struct BlockDraftSheetView: View {
 
     var body: some View {
         Form {
-            TextField("Title", text: $title)
+            TextField(L10n.BlockEditor.titleField, text: $title)
                 .accessibilityIdentifier("block-title")
-            DatePicker("Starts", selection: $startsAt)
-            DatePicker("Ends", selection: $endsAt)
+            DatePicker(L10n.BlockEditor.starts, selection: $startsAt)
+            DatePicker(L10n.BlockEditor.ends, selection: $endsAt)
             TimeKindPicker(kind: $kind)
         }
         .formStyle(.grouped)
         .macSheetFrame(width: 420)
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
-                Button("Cancel") { dismiss() }
+                Button(L10n.Action.cancel) { dismiss() }
                     .accessibilityIdentifier("block.cancel")
             }
             ToolbarItem(placement: .confirmationAction) {
-                Button("Add block") {
+                Button(L10n.BlockEditor.addBlock) {
                     Task {
                         await model.createBlock(
                             fromMs: ms(startsAt),
@@ -60,7 +60,7 @@ struct BlockDraftSheetView: View {
         // Applied *after* `.toolbar`, so the items are declared on the content
         // that ends up inside the stack. See `sheetCommitBar` for why a phone
         // showed none of them.
-        .sheetCommitBar(title: "New block")
+        .sheetCommitBar(title: L10n.BlockEditor.newBlock)
     }
 
     private func ms(_ date: Date) -> Int64 { Int64(date.timeIntervalSince1970 * 1000) }
@@ -127,28 +127,28 @@ struct BlockEditorView: View {
     var body: some View {
         Form {
             Section {
-                TextField("Title", text: $title)
+                TextField(L10n.BlockEditor.titleField, text: $title)
                     .accessibilityIdentifier("block-title")
-                Toggle("Follow the bound task's title", isOn: $trackTask)
+                Toggle(L10n.BlockEditor.followTaskTitle, isOn: $trackTask)
                     .disabled(row.block.tasks.count != 1)
                     .help(
                         row.block.tasks.count == 1
-                            ? "Renaming the task renames this block."
-                            : "Only a block bound to exactly one task can follow a title."
+                            ? L10n.BlockEditor.followHelpOn
+                            : L10n.BlockEditor.followHelpOff
                     )
             }
             Section {
-                DatePicker("Starts", selection: $startsAt)
-                DatePicker("Ends", selection: $endsAt)
+                DatePicker(L10n.BlockEditor.starts, selection: $startsAt)
+                DatePicker(L10n.BlockEditor.ends, selection: $endsAt)
                 TimeKindPicker(kind: $kind)
             }
             if !row.taskTitles.isEmpty {
-                Section("Tasks") {
+                Section(L10n.BlockEditor.tasks) {
                     ForEach(Array(zip(row.block.tasks, row.taskTitles)), id: \.0) { task, name in
                         HStack {
                             Text(name)
                             Spacer()
-                            Button("Unbind", systemImage: "minus.circle") {
+                            Button(L10n.BlockEditor.unbind, systemImage: "minus.circle") {
                                 Task { await model.unbind(task: task, from: row.block.id) }
                             }
                             .labelStyle(.iconOnly)
@@ -162,11 +162,11 @@ struct BlockEditorView: View {
         .macSheetFrame(width: 460)
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
-                Button("Cancel") { dismiss() }
+                Button(L10n.Action.cancel) { dismiss() }
                     .accessibilityIdentifier("block.cancel")
             }
             ToolbarItem(placement: .destructiveAction) {
-                Button("Delete", role: .destructive) {
+                Button(L10n.Action.delete, role: .destructive) {
                     Task {
                         await model.delete(row.block.id)
                         dismiss()
@@ -176,7 +176,7 @@ struct BlockEditorView: View {
                 .accessibilityIdentifier("block.delete")
             }
             ToolbarItem(placement: .confirmationAction) {
-                Button("Save") {
+                Button(L10n.Action.save) {
                     Task {
                         await model.apply(edit, to: row.block.id)
                         dismiss()
@@ -189,7 +189,7 @@ struct BlockEditorView: View {
             }
         }
         .padding(.bottom, 8)
-        .sheetCommitBar(title: "Edit block")
+        .sheetCommitBar(title: L10n.BlockEditor.editBlock)
     }
 
     /// Only what changed.
@@ -233,7 +233,7 @@ struct TimeKindPicker: View {
     @Binding var kind: BlockTimeKind
 
     var body: some View {
-        Picker("Time", selection: $kind) {
+        Picker(L10n.BlockEditor.time, selection: $kind) {
             ForEach(BlockTimeKind.allCases) { Text($0.title).tag($0) }
         }
         Text(kind.explanation)
@@ -271,7 +271,7 @@ struct AdjustBlocksView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("These two overlap")
+            Text(L10n.BlockEditor.overlapTitle)
                 .font(.headline)
             Text(shared)
                 .font(.callout)
@@ -285,7 +285,7 @@ struct AdjustBlocksView: View {
             }
             HStack {
                 Spacer()
-                Button("Done") { dismiss() }
+                Button(L10n.Action.done) { dismiss() }
                     .keyboardShortcut(.defaultAction)
             }
         }
@@ -299,7 +299,10 @@ struct AdjustBlocksView: View {
         formatter.dateFormat = "HH:mm"
         let from = Date(timeIntervalSince1970: Double(conflict.fromMs) / 1000)
         let to = Date(timeIntervalSince1970: Double(conflict.toMs) / 1000)
-        return "Shared: \(formatter.string(from: from))–\(formatter.string(from: to))"
+        return L10n.BlockEditor.sharedRange(
+            from: formatter.string(from: from),
+            to: formatter.string(from: to)
+        )
     }
 }
 
@@ -329,10 +332,10 @@ private struct AdjustableBlock: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(row.title ?? "Untitled block").font(.subheadline.weight(.semibold))
-            DatePicker("Starts", selection: $startsAt)
-            DatePicker("Ends", selection: $endsAt)
-            Button("Apply") {
+            Text(row.title ?? L10n.Calendar.untitledBlock).font(.subheadline.weight(.semibold))
+            DatePicker(L10n.BlockEditor.starts, selection: $startsAt)
+            DatePicker(L10n.BlockEditor.ends, selection: $endsAt)
+            Button(L10n.BlockEditor.apply) {
                 Task {
                     await model.moveBlock(
                         row,

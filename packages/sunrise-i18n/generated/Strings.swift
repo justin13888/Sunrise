@@ -94,6 +94,2290 @@ enum L10n {
         }
     }
 
+    enum Account {
+        /// Sync
+        static var sectionSync: String { L10n.tr("apple.account.section_sync") }
+        /// Relay URL
+        static var relayUrl: String { L10n.tr("apple.account.relay_url") }
+        /// Leave empty to work entirely on this {device}.
+        static func relayHint(device: String) -> String {
+            L10n.tr("apple.account.relay_hint", device)
+        }
+        /// Account
+        static var sectionAccount: String { L10n.tr("apple.account.section_account") }
+        /// OIDC issuer
+        static var oidcIssuer: String { L10n.tr("apple.account.oidc_issuer") }
+        /// Client ID
+        static var clientId: String { L10n.tr("apple.account.client_id") }
+        /// This device
+        static var thisDevice: String { L10n.tr("apple.account.this_device") }
+
+        enum QuickCapture {
+            /// Quick capture
+            static var title: String { L10n.tr("apple.account.quick_capture.title") }
+            /// Shortcut
+            static var shortcut: String { L10n.tr("apple.account.quick_capture.shortcut") }
+            /// Accessibility permission
+            static var accessibilityPermission: String { L10n.tr("apple.account.quick_capture.accessibility_permission") }
+            /// Granted
+            static var granted: String { L10n.tr("apple.account.quick_capture.granted") }
+            /// Not granted
+            static var notGranted: String { L10n.tr("apple.account.quick_capture.not_granted") }
+            /// Not required for the shortcut above.
+            static var accessibilityNotRequired: String { L10n.tr("apple.account.quick_capture.accessibility_not_required") }
+        }
+
+        enum Keyboard {
+            /// Keyboard
+            static var title: String { L10n.tr("apple.account.keyboard.title") }
+            /// Vim-style motions
+            static var vimMode: String { L10n.tr("apple.account.keyboard.vim_mode") }
+            /// h j k l, gg, G, u, ⌃R, / and : in any list. Additive — ⌘N, X and the rest keep working. Stored on this {device} only, never synced.
+            static func vimModeCaption(device: String) -> String {
+                L10n.tr("apple.account.keyboard.vim_mode_caption", device)
+            }
+            /// Shortcut reference
+            static var shortcutReference: String { L10n.tr("apple.account.keyboard.shortcut_reference") }
+            /// Press ? in any view
+            static var shortcutReferenceValue: String { L10n.tr("apple.account.keyboard.shortcut_reference_value") }
+        }
+
+        enum Notifications {
+            /// Notifications
+            static var title: String { L10n.tr("apple.account.notifications.title") }
+            /// System permission
+            static var systemPermission: String { L10n.tr("apple.account.notifications.system_permission") }
+            /// Allow…
+            static var allow: String { L10n.tr("apple.account.notifications.allow") }
+            /// Remind me on this {device}
+            static func remindOnDevice(device: String) -> String {
+                L10n.tr("apple.account.notifications.remind_on_device", device)
+            }
+            /// This is my primary device
+            static var primaryDevice: String { L10n.tr("apple.account.notifications.primary_device") }
+            /// Only the primary device delivers reminders — the core hands the others nothing to schedule, so an account with four devices still rings once.
+            static var primaryCaption: String { L10n.tr("apple.account.notifications.primary_caption") }
+            /// Remind me
+            static var remindMe: String { L10n.tr("apple.account.notifications.remind_me") }
+            /// At the scheduled time
+            static var leadAtTime: String { L10n.tr("apple.account.notifications.lead_at_time") }
+            /// {minutes, plural, one {# minute before} other {# minutes before}}
+            static func leadMinutes(minutes: Int) -> String {
+                L10n.tr("apple.account.notifications.lead_minutes", minutes)
+            }
+            /// The fallback. A lead time set on a task wins over one set on its stream, and either wins over this.
+            static var leadCaption: String { L10n.tr("apple.account.notifications.lead_caption") }
+            /// Scheduled now
+            static var scheduledNow: String { L10n.tr("apple.account.notifications.scheduled_now") }
+        }
+
+        enum QuietHours {
+            /// Quiet hours
+            static var title: String { L10n.tr("apple.account.quiet_hours.title") }
+            /// Silence reminders overnight
+            static var silence: String { L10n.tr("apple.account.quiet_hours.silence") }
+            /// From
+            static var from: String { L10n.tr("apple.account.quiet_hours.from") }
+            /// Until
+            static var until: String { L10n.tr("apple.account.quiet_hours.until") }
+            /// During quiet hours
+            static var policy: String { L10n.tr("apple.account.quiet_hours.policy") }
+            /// Hold until it ends
+            static var hold: String { L10n.tr("apple.account.quiet_hours.hold") }
+            /// Drop them
+            static var drop: String { L10n.tr("apple.account.quiet_hours.drop") }
+            /// A held reminder fires when the window ends, and no more than four hours after it was due — past that it is dropped rather than delivered late.
+            static var caption: String { L10n.tr("apple.account.quiet_hours.caption") }
+        }
+    }
+
+    enum SignIn {
+        /// Sign in…
+        static var signIn: String { L10n.tr("apple.sign_in.sign_in") }
+        /// Finish signing in in your browser…
+        static var awaitingBrowser: String { L10n.tr("apple.sign_in.awaiting_browser") }
+        /// Signed in
+        static var signedIn: String { L10n.tr("apple.sign_in.signed_in") }
+        /// expires {date}
+        static func expires(date: String) -> String {
+            L10n.tr("apple.sign_in.expires", date)
+        }
+        /// Sign out
+        static var signOut: String { L10n.tr("apple.sign_in.sign_out") }
+        /// Set an OIDC issuer and client ID before signing in.
+        static var notConfigured: String { L10n.tr("apple.sign_in.not_configured") }
+        /// The identity provider returned an address Sunrise could not open.
+        static var badAuthorizeUrl: String { L10n.tr("apple.sign_in.bad_authorize_url") }
+        /// The identity provider ended this session. Sign in again to keep syncing.
+        static var refusedByIssuer: String { L10n.tr("apple.sign_in.refused_by_issuer") }
+        /// Signed out on this {device}, but the stored credential could not be removed: {message}
+        static func signOutIncompleteHeadline(device: String, message: String) -> String {
+            L10n.tr("apple.sign_in.sign_out_incomplete_headline", device, message)
+        }
+        /// The stored credential is still in the Keychain, so the next launch will sign you back in. Unlock your Keychain, then Sign out here to try removing it again.
+        static var signOutIncompleteCaption: String { L10n.tr("apple.sign_in.sign_out_incomplete_caption") }
+        /// A credential the last sign-out could not remove is still in the Keychain. Unlock your Keychain, then Sign out here to try again.
+        static var signOutRetryCaption: String { L10n.tr("apple.sign_in.sign_out_retry_caption") }
+    }
+
+    enum Vaults {
+        /// Vaults
+        static var title: String { L10n.tr("apple.vaults.title") }
+        /// Open vault
+        static var openVault: String { L10n.tr("apple.vaults.open_vault") }
+        /// Only one vault is open at a time. Switching closes the one you are in — the core holds a lock on it — and then opens the other, so anything unsaved is written first.
+        static var switchCaption: String { L10n.tr("apple.vaults.switch_caption") }
+        /// Add a vault…
+        static var addVault: String { L10n.tr("apple.vaults.add_vault") }
+        /// Add a device…
+        static var addDevice: String { L10n.tr("apple.vaults.add_device") }
+        /// "Add a device" hands this vault's key to another device, after you have compared six digits on both screens.
+        static var addDeviceCaption: String { L10n.tr("apple.vaults.add_device_caption") }
+        /// This {device} was itself added by pairing, so it cannot add another. Only the device you first created this account on can — which is also what stops a device you have removed from letting itself back in.
+        static func cannotAddDeviceCaption(device: String) -> String {
+            L10n.tr("apple.vaults.cannot_add_device_caption", device)
+        }
+        /// Add a vault
+        static var addTitle: String { L10n.tr("apple.vaults.add_title") }
+        /// Name
+        static var name: String { L10n.tr("apple.vaults.name") }
+        /// A separate, separately encrypted vault with its own key. Sunrise closes the one that is open before it opens the new one.
+        static var addMessage: String { L10n.tr("apple.vaults.add_message") }
+        /// My vault
+        static var defaultFirst: String { L10n.tr("apple.vaults.default_first") }
+        /// Vault {number}
+        static func defaultNumbered(number: String) -> String {
+            L10n.tr("apple.vaults.default_numbered", number)
+        }
+        /// "{id}" is not a usable vault identifier.
+        static func unusableIdentifier(id: String) -> String {
+            L10n.tr("apple.vaults.unusable_identifier", id)
+        }
+    }
+
+    enum Identity {
+        /// The core answered a device list with something else.
+        static var deviceListUnexpected: String { L10n.tr("apple.identity.device_list_unexpected") }
+        /// The Keychain item is not in the expected format.
+        static var keychainMalformed: String { L10n.tr("apple.identity.keychain_malformed") }
+        /// Keychain error {status}.
+        static func keychainError(status: String) -> String {
+            L10n.tr("apple.identity.keychain_error", status)
+        }
+        /// This secret is stored under an older, weaker Keychain protection class and the Keychain would not change it: {reason}
+        static func keychainNotRaised(reason: String) -> String {
+            L10n.tr("apple.identity.keychain_not_raised", reason)
+        }
+        /// This secret was saved, but an older copy of it in your other keychain could not be removed: {reason}
+        static func keychainWrittenOtherRefused(reason: String) -> String {
+            L10n.tr("apple.identity.keychain_written_other_refused", reason)
+        }
+        /// A copy of this secret may be in your other keychain, which could not be read: {reason}
+        static func keychainOtherUnreadable(reason: String) -> String {
+            L10n.tr("apple.identity.keychain_other_unreadable", reason)
+        }
+        /// Two different secrets are stored under the same Keychain name, so this app cannot tell which one belongs to your vault. Nothing has been deleted.
+        static var keychainMigrationUnverified: String { L10n.tr("apple.identity.keychain_migration_unverified") }
+        /// A vault key must be {expected, number} bytes; this one is {actual, number}.
+        static func vaultKeyWrongLength(expected: Int, actual: Int) -> String {
+            L10n.tr("apple.identity.vault_key_wrong_length", expected, actual)
+        }
+        /// The system could not generate a new vault key.
+        static var vaultKeyUnavailable: String { L10n.tr("apple.identity.vault_key_unavailable") }
+        /// A relay device id cannot be empty.
+        static var relayDeviceIdEmpty: String { L10n.tr("apple.identity.relay_device_id_empty") }
+    }
+
+    enum Locked {
+        /// Sunrise is locked
+        static var title: String { L10n.tr("apple.locked.title") }
+        /// Sunrise could not read its key from the Keychain. {detail}
+        static func keychainUnavailable(detail: String) -> String {
+            L10n.tr("apple.locked.keychain_unavailable", detail)
+        }
+        /// There is a vault on this device, but its key is not in this Keychain. Pair with a device that still has it, or restore from your recovery code. A new key would not open this data.
+        static var keyMissing: String { L10n.tr("apple.locked.key_missing") }
+        /// Your vault is closed. Nothing was lost — the key is still in your Keychain, and unlocking opens it again.
+        static var lockedByUser: String { L10n.tr("apple.locked.locked_by_user") }
+        /// Unlock
+        static var unlock: String { L10n.tr("apple.locked.unlock") }
+        /// Open Keychain Access
+        static var openKeychainAccess: String { L10n.tr("apple.locked.open_keychain_access") }
+        /// Pair with a device…
+        static var pair: String { L10n.tr("apple.locked.pair") }
+        /// Restore from recovery code…
+        static var restore: String { L10n.tr("apple.locked.restore") }
+        /// Pairing brings the key back from a device that still has it. The data already on this {device} stays where it is — the key is the only thing that was missing. With no device left, the recovery code restores the account from the relay; the unreadable vault is moved aside, not deleted.
+        static func keyMissingCaption(device: String) -> String {
+            L10n.tr("apple.locked.key_missing_caption", device)
+        }
+    }
+
+    enum Onboarding {
+        /// Welcome to Sunrise
+        static var welcome: String { L10n.tr("apple.onboarding.welcome") }
+        /// Your tasks are encrypted on this {device} with a key only you hold. Sunrise stores it in your Keychain — it never leaves the device, and no server can read your data with or without it.
+        static func intro(device: String) -> String {
+            L10n.tr("apple.onboarding.intro", device)
+        }
+        /// Create my vault
+        static var create: String { L10n.tr("apple.onboarding.create") }
+        /// Already using Sunrise on another device?
+        static var alreadyUsing: String { L10n.tr("apple.onboarding.already_using") }
+        /// Pair with that device
+        static var pair: String { L10n.tr("apple.onboarding.pair") }
+        /// Adopts the vault you already have, instead of starting a second one.
+        static var pairCaption: String { L10n.tr("apple.onboarding.pair_caption") }
+        /// Restore from recovery code
+        static var restore: String { L10n.tr("apple.onboarding.restore") }
+        /// No other device left? Your twenty-four words bring the account back.
+        static var restoreCaption: String { L10n.tr("apple.onboarding.restore_caption") }
+    }
+
+    enum Root {
+        /// Opening your vault…
+        static var opening: String { L10n.tr("apple.root.opening") }
+        /// Sunrise could not start
+        static var failedTitle: String { L10n.tr("apple.root.failed_title") }
+    }
+
+    enum Recovery {
+        /// Setting up recovery
+        static var titleSettingUp: String { L10n.tr("apple.recovery.title_setting_up") }
+        /// Your recovery code
+        static var titleShow: String { L10n.tr("apple.recovery.title_show") }
+        /// Type it back
+        static var titleVerify: String { L10n.tr("apple.recovery.title_verify") }
+        /// Recovery is set up
+        static var titleDone: String { L10n.tr("apple.recovery.title_done") }
+        /// Recovery lives on another device
+        static var titleNotThisDevice: String { L10n.tr("apple.recovery.title_not_this_device") }
+        /// Recovery is not set up
+        static var titleFailed: String { L10n.tr("apple.recovery.title_failed") }
+        /// Setting up recovery…
+        static var settingUp: String { L10n.tr("apple.recovery.setting_up") }
+        /// Sunrise is end-to-end encrypted. We cannot reset your account if you lose this code. This is by design — it means we can't read your data, but it also means we can't recover it for you. Save this code somewhere you'll find it years from now.
+        static var warning: String { L10n.tr("apple.recovery.warning") }
+        /// Shown once. Not written to any file, and not in any log.
+        static var shownOnce: String { L10n.tr("apple.recovery.shown_once") }
+        /// Type the code back, to prove it is written down somewhere you can read.
+        static var verifyInstruction: String { L10n.tr("apple.recovery.verify_instruction") }
+        /// That is not the code that was shown. Nothing is wrong with your account — check what you wrote down, or see the code again.
+        static var mismatch: String { L10n.tr("apple.recovery.mismatch") }
+        /// Recovery is set up. Keep that code where you will find it years from now.
+        static var done: String { L10n.tr("apple.recovery.done") }
+        /// This {device} joined an existing account by pairing, so it does not hold the key a recovery code is made from — and does not need to. The device that created the account is the one that showed the code.
+        static func notThisDevice(device: String) -> String {
+            L10n.tr("apple.recovery.not_this_device", device)
+        }
+        /// Recovery could not be set up.
+        static var failed: String { L10n.tr("apple.recovery.failed") }
+        /// Your vault is fine and your tasks are safe on this device. Until this succeeds, though, this device holds the only copy of your account key: if you lose it, the data cannot be recovered by anyone, including us.
+        static var failedCaption: String { L10n.tr("apple.recovery.failed_caption") }
+        /// I have written it down
+        static var written: String { L10n.tr("apple.recovery.written") }
+        /// Show the code again
+        static var showAgain: String { L10n.tr("apple.recovery.show_again") }
+        /// Confirm
+        static var confirm: String { L10n.tr("apple.recovery.confirm") }
+        /// Not now
+        static var notNow: String { L10n.tr("apple.recovery.not_now") }
+        /// The recovery code came back empty.
+        static var codeEmpty: String { L10n.tr("apple.recovery.code_empty") }
+        /// The vault closed before recovery could be set up.
+        static var vaultClosed: String { L10n.tr("apple.recovery.vault_closed") }
+        /// Sunrise needs a relay address and your account email before it can store your recovery blob. Add them in Settings, then set recovery up again.
+        static var notConfigured: String { L10n.tr("apple.recovery.not_configured") }
+        /// Sign in first. Your recovery blob is stored on the relay under your account, and the relay will not take it from a device it cannot identify.
+        static var signedOut: String { L10n.tr("apple.recovery.signed_out") }
+
+        enum Restore {
+            /// Restore from your recovery code
+            static var title: String { L10n.tr("apple.recovery.restore.title") }
+            /// Your account is back
+            static var titleRestored: String { L10n.tr("apple.recovery.restore.title_restored") }
+            /// Your account is back, still catching up
+            static var titleIncomplete: String { L10n.tr("apple.recovery.restore.title_incomplete") }
+            /// Sign in again in your browser…
+            static var signingIn: String { L10n.tr("apple.recovery.restore.signing_in") }
+            /// Fetching your encrypted account…
+            static var fetching: String { L10n.tr("apple.recovery.restore.fetching") }
+            /// Code accepted. Setting up this device…
+            static var identityOpened: String { L10n.tr("apple.recovery.restore.identity_opened") }
+            /// Reading your history…
+            static var deviceRegistered: String { L10n.tr("apple.recovery.restore.device_registered") }
+            /// {count, plural, one {Reading your history: # change so far…} other {Reading your history: # changes so far…}}
+            static func replaying(count: Int) -> String {
+                L10n.tr("apple.recovery.restore.replaying", count)
+            }
+            /// Your vault is restored and open. Part of its history had not arrived yet; it finishes the next time Sunrise syncs.
+            static var incomplete: String { L10n.tr("apple.recovery.restore.incomplete") }
+            /// Type the twenty-four words you saved when you set Sunrise up. Your provider will ask you to sign in again before the relay releases your encrypted account.
+            static var entryInstruction: String { L10n.tr("apple.recovery.restore.entry_instruction") }
+            /// {count, plural, one {Word {positions} is not a recovery-code word.} other {Words {positions} are not recovery-code words.}}
+            static func unknownWords(count: Int, positions: String) -> String {
+                L10n.tr("apple.recovery.restore.unknown_words", count, positions)
+            }
+            /// All twenty-four are real words, but they are not a valid code: {problem}
+            static func invalidChecksum(problem: String) -> String {
+                L10n.tr("apple.recovery.restore.invalid_checksum", problem)
+            }
+            /// {count, number} of 24 words
+            static func wordCount(count: Int) -> String {
+                L10n.tr("apple.recovery.restore.word_count", count)
+            }
+            /// Two things are worth doing now, and neither is automatic. Remove the devices you lost: until you do, anything still holding them can read what this account writes. Then rotate your Stream keys, which bounds what a lost device keeps reading.
+            static var aftercare: String { L10n.tr("apple.recovery.restore.aftercare") }
+            /// Rotate Stream keys
+            static var rotate: String { L10n.tr("apple.recovery.restore.rotate") }
+            /// {count, plural, one {# Stream key rotated.} other {# Stream keys rotated.}}
+            static func rotated(count: Int) -> String {
+                L10n.tr("apple.recovery.restore.rotated", count)
+            }
+            /// Sign in and restore
+            static var submit: String { L10n.tr("apple.recovery.restore.submit") }
+            /// A vault is already open on this device.
+            static var notNow: String { L10n.tr("apple.recovery.restore.not_now") }
+            /// Add your relay address in Settings first. The recovery blob your code opens is stored there.
+            static var relayNotConfigured: String { L10n.tr("apple.recovery.restore.relay_not_configured") }
+            /// Add your sign-in provider in Settings first. The relay releases the recovery blob only after you sign in again.
+            static var signInNotConfigured: String { L10n.tr("apple.recovery.restore.sign_in_not_configured") }
+            /// The restore did not complete, and your existing vault could not be moved back into place. Nothing was deleted: it is at {path}.
+            static func originalNotPutBack(path: String) -> String {
+                L10n.tr("apple.recovery.restore.original_not_put_back", path)
+            }
+        }
+    }
+
+    enum Pairing {
+        /// Pair this {device}
+        static func titleJoin(device: String) -> String {
+            L10n.tr("apple.pairing.title_join", device)
+        }
+        /// Add a device
+        static var titleAdd: String { L10n.tr("apple.pairing.title_add") }
+        /// Step {step, number} of {total, number}
+        static func progress(step: Int, total: Int) -> String {
+            L10n.tr("apple.pairing.progress", step, total)
+        }
+        /// handshaking
+        static var stepHandshaking: String { L10n.tr("apple.pairing.step_handshaking") }
+        /// awaiting SAS
+        static var stepAwaitingConfirmation: String { L10n.tr("apple.pairing.step_awaiting_confirmation") }
+        /// confirmed
+        static var stepConfirmed: String { L10n.tr("apple.pairing.step_confirmed") }
+        /// finished
+        static var stepFinished: String { L10n.tr("apple.pairing.step_finished") }
+        /// Copy and paste instead
+        static var manualInstead: String { L10n.tr("apple.pairing.manual_instead") }
+        /// Show my pairing code
+        static var begin: String { L10n.tr("apple.pairing.begin") }
+        /// I've pasted it
+        static var pastedIt: String { L10n.tr("apple.pairing.pasted_it") }
+        /// Continue
+        static var continueButton: String { L10n.tr("apple.pairing.continue_button") }
+        /// Start over
+        static var startOver: String { L10n.tr("apple.pairing.start_over") }
+        /// Paired
+        static var paired: String { L10n.tr("apple.pairing.paired") }
+        /// The digits did not match
+        static var mismatchTitle: String { L10n.tr("apple.pairing.mismatch_title") }
+        /// Sunrise has thrown this pairing away and no key was sent. Two devices talking directly to each other always show the same six digits, so a mismatch means something was relaying between them. Start again, and if it happens twice, do it on a network you trust.
+        static var mismatchDetail: String { L10n.tr("apple.pairing.mismatch_detail") }
+        /// Pairing stopped
+        static var failedTitle: String { L10n.tr("apple.pairing.failed_title") }
+        /// Which account is this?
+        static var accountQuestion: String { L10n.tr("apple.pairing.account_question") }
+        /// Sunrise puts a four-byte hash of this address in the pairing code so the other device can tell it is being asked about the right account. The address itself does not travel.
+        static var accountExplanation: String { L10n.tr("apple.pairing.account_explanation") }
+        /// Email
+        static var email: String { L10n.tr("apple.pairing.email") }
+        /// Account tag
+        static var accountTag: String { L10n.tr("apple.pairing.account_tag") }
+        /// Pairing QR code
+        static var qrLabel: String { L10n.tr("apple.pairing.qr_label") }
+        /// This {device} could not draw the code. Copy the text instead.
+        static func qrFailed(device: String) -> String {
+            L10n.tr("apple.pairing.qr_failed", device)
+        }
+        /// Scan the code
+        static var scanCode: String { L10n.tr("apple.pairing.scan_code") }
+        /// Paste
+        static var paste: String { L10n.tr("apple.pairing.paste") }
+        /// Copy
+        static var copy: String { L10n.tr("apple.pairing.copy") }
+        /// Copied
+        static var copied: String { L10n.tr("apple.pairing.copied") }
+        /// Do both devices show these digits?
+        static var sasTitle: String { L10n.tr("apple.pairing.sas_title") }
+        /// Pairing digits {digits}
+        static func sasLabel(digits: String) -> String {
+            L10n.tr("apple.pairing.sas_label", digits)
+        }
+        /// Read them aloud, or look at the other screen. Both devices must be showing the same six digits, and both of you have to confirm before anything is sent.
+        static var sasInstruction: String { L10n.tr("apple.pairing.sas_instruction") }
+        /// These digits are derived from every message the two devices have exchanged. If anything were sitting between them, it could not make both screens agree — it would have to guess six digits, once, with you watching.
+        static var sasJoining: String { L10n.tr("apple.pairing.sas_joining") }
+        /// Nothing has left this {device} yet. Your vault key is sealed and sent only after you confirm below, and only for the device on the other end of these digits.
+        static func sasSponsoring(device: String) -> String {
+            L10n.tr("apple.pairing.sas_sponsoring", device)
+        }
+        /// The digits match
+        static var sasMatch: String { L10n.tr("apple.pairing.sas_match") }
+        /// They're different
+        static var sasDiffer: String { L10n.tr("apple.pairing.sas_differ") }
+        /// This {device} is paired. Your vault is open here.
+        static func doneJoined(device: String) -> String {
+            L10n.tr("apple.pairing.done_joined", device)
+        }
+        /// The other device has a certificate from your account and a copy of your vault key.
+        static var doneSponsored: String { L10n.tr("apple.pairing.done_sponsored") }
+        /// Opening your vault on this {device}…
+        static func finishingJoining(device: String) -> String {
+            L10n.tr("apple.pairing.finishing_joining", device)
+        }
+        /// Sealing your vault key for the other device…
+        static var finishingSponsoring: String { L10n.tr("apple.pairing.finishing_sponsoring") }
+        /// Reaching your relay…
+        static var reachingRelay: String { L10n.tr("apple.pairing.reaching_relay") }
+        /// Connecting to the other device through your relay…
+        static var connecting: String { L10n.tr("apple.pairing.connecting") }
+        /// This pairing is over. Start it again from the beginning.
+        static var noSession: String { L10n.tr("apple.pairing.no_session") }
+        /// Sunrise could not produce a pairing code for this device.
+        static var noPayload: String { L10n.tr("apple.pairing.no_payload") }
+        /// There is no open vault on this device to share.
+        static var noOpenVault: String { L10n.tr("apple.pairing.no_open_vault") }
+
+        enum Notice {
+            /// This {device} has no relay set up, so this pairing runs by copy and paste. The other device should choose “Copy and paste instead” too. Add your relay under Settings › Sync to pair by scanning a code instead.
+            static func noRelay(device: String) -> String {
+                L10n.tr("apple.pairing.notice.no_relay", device)
+            }
+            /// Pairing over your relay needs this {device} signed in to your account, so this pairing runs by copy and paste. The other device should choose “Copy and paste instead” too.
+            static func notSignedIn(device: String) -> String {
+                L10n.tr("apple.pairing.notice.not_signed_in", device)
+            }
+            /// If the other device says its pairing runs by copy and paste, choose “Copy and paste instead” here and scan its code again.
+            static var relayCodeFailed: String { L10n.tr("apple.pairing.notice.relay_code_failed") }
+            /// Your relay at {url} did not answer, so this pairing runs by copy and paste. The other device should choose “Copy and paste instead” too.
+            static func relayDidNotAnswer(url: String) -> String {
+                L10n.tr("apple.pairing.notice.relay_did_not_answer", url)
+            }
+            /// Your relay at {url} did not answer from this {device}, so pair by copy and paste: on the device you are adding, choose “Copy and paste instead”, then scan or paste the new code it shows.
+            static func relayDidNotAnswerHere(url: String, device: String) -> String {
+                L10n.tr("apple.pairing.notice.relay_did_not_answer_here", url, device)
+            }
+            /// Your relay could not start this pairing ({error}), so it runs by copy and paste. The other device should choose “Copy and paste instead” too.
+            static func relayRefused(error: String) -> String {
+                L10n.tr("apple.pairing.notice.relay_refused", error)
+            }
+        }
+
+        enum Legs {
+            /// Scan this with the device that has your vault
+            static var relayCodeTitle: String { L10n.tr("apple.pairing.legs.relay_code_title") }
+            /// On that device, open Settings › Vaults › Add a device and choose Scan, or paste the text below there. The code works for five minutes; this screen moves on by itself once it has been read.
+            static var relayCodeInstruction: String { L10n.tr("apple.pairing.legs.relay_code_instruction") }
+            /// Show this to the device that has your vault
+            static var codeTitle: String { L10n.tr("apple.pairing.legs.code_title") }
+            /// Scan the code, or copy the text below and paste it into Settings › Vaults › Add a device on your other device — the one that already has your vault.
+            static var codeInstruction: String { L10n.tr("apple.pairing.legs.code_instruction") }
+            /// Copy this to the other device
+            static var messageTitle: String { L10n.tr("apple.pairing.legs.message_title") }
+            /// Paste it into the field the other device is showing, then come back here and continue.
+            static var messageInstruction: String { L10n.tr("apple.pairing.legs.message_instruction") }
+            /// Copy this to the device you are adding
+            static var offerTitle: String { L10n.tr("apple.pairing.legs.offer_title") }
+            /// This says who your account is. It carries no keys — the other device replies with keys of its own, and only then does anything of yours leave this one.
+            static var offerInstruction: String { L10n.tr("apple.pairing.legs.offer_instruction") }
+            /// Copy this back to the device with your vault
+            static var requestTitle: String { L10n.tr("apple.pairing.legs.request_title") }
+            /// This {device} has just made itself a pair of keys. Only the public halves are in this block; the private ones stay here and are never sent anywhere.
+            static func requestInstruction(device: String) -> String {
+                L10n.tr("apple.pairing.legs.request_instruction", device)
+            }
+            /// Copy this last block to the other device
+            static var grantTitle: String { L10n.tr("apple.pairing.legs.grant_title") }
+            /// This is the certificate admitting that device to your account, and your vault key, sealed so that only the device whose digits you just confirmed can open it. Anything it passes through on the way — a message, a clipboard, a relay — sees nothing usable.
+            static var grantInstruction: String { L10n.tr("apple.pairing.legs.grant_instruction") }
+            /// Scan the code on the device you are adding
+            static var promptCodeTitle: String { L10n.tr("apple.pairing.legs.prompt_code_title") }
+            /// That device is showing a QR code with the same text underneath it. Scan it with the camera, or paste the text here.
+            static var promptCodeInstruction: String { L10n.tr("apple.pairing.legs.prompt_code_instruction") }
+            /// Paste what the other device is showing
+            static var promptMessageTitle: String { L10n.tr("apple.pairing.legs.prompt_message_title") }
+            /// Copy the block from the other device's screen and paste it here.
+            static var promptMessageInstruction: String { L10n.tr("apple.pairing.legs.prompt_message_instruction") }
+            /// Paste the block that names the account
+            static var promptOfferTitle: String { L10n.tr("apple.pairing.legs.prompt_offer_title") }
+            /// The other device is showing a block that says which account you are joining. Pasting it makes this device a pair of keys for that account to certify.
+            static var promptOfferInstruction: String { L10n.tr("apple.pairing.legs.prompt_offer_instruction") }
+            /// Paste the keys from the device you are adding
+            static var promptRequestTitle: String { L10n.tr("apple.pairing.legs.prompt_request_title") }
+            /// That device replied with the public half of the keys it just made. Pasting them here signs a certificate for them.
+            static var promptRequestInstruction: String { L10n.tr("apple.pairing.legs.prompt_request_instruction") }
+            /// Paste the sealed certificate and key
+            static var promptGrantTitle: String { L10n.tr("apple.pairing.legs.prompt_grant_title") }
+            /// The other device is showing one last block, now that you have both confirmed the digits. It is the only thing in this whole exchange that carries your vault key.
+            static var promptGrantInstruction: String { L10n.tr("apple.pairing.legs.prompt_grant_instruction") }
+        }
+
+        enum Scan {
+            /// Scan the pairing code
+            static var title: String { L10n.tr("apple.pairing.scan.title") }
+            /// Paste the code instead
+            static var pasteInstead: String { L10n.tr("apple.pairing.scan.paste_instead") }
+            /// Sunrise cannot use the camera
+            static var refusedTitle: String { L10n.tr("apple.pairing.scan.refused_title") }
+            /// Camera access is off for Sunrise. Paste the text shown under the code instead, or allow the camera in System Settings › Privacy & Security › Camera and choose Scan again.
+            static var refusedDetail: String { L10n.tr("apple.pairing.scan.refused_detail") }
+            /// There is no camera here that can scan
+            static var noCameraTitle: String { L10n.tr("apple.pairing.scan.no_camera_title") }
+            /// Paste the text shown under the code instead.
+            static var noCameraDetail: String { L10n.tr("apple.pairing.scan.no_camera_detail") }
+        }
+    }
+
+    enum Sync {
+        /// Checking…
+        static var checking: String { L10n.tr("apple.sync.checking") }
+        /// Synced
+        static var synced: String { L10n.tr("apple.sync.synced") }
+        /// Sending
+        static var sending: String { L10n.tr("apple.sync.sending") }
+        /// Catching up
+        static var catchingUp: String { L10n.tr("apple.sync.catching_up") }
+        /// Replaying changes from your other devices.
+        static var catchingUpDetail: String { L10n.tr("apple.sync.catching_up_detail") }
+        /// Offline
+        static var offline: String { L10n.tr("apple.sync.offline") }
+        /// Your tasks are on this device and up to date here.
+        static var offlineDetail: String { L10n.tr("apple.sync.offline_detail") }
+        /// Changes missing
+        static var changesMissing: String { L10n.tr("apple.sync.changes_missing") }
+        /// The relay can no longer supply some changes this device never received. Another device may hold edits that will not arrive over this connection.
+        static var changesMissingDetail: String { L10n.tr("apple.sync.changes_missing_detail") }
+        /// Sync stopped
+        static var stopped: String { L10n.tr("apple.sync.stopped") }
+        /// The relay ended this device's session and will not reconnect it on its own. Sign in again or reopen Sunrise to retry.
+        static var stoppedDetail: String { L10n.tr("apple.sync.stopped_detail") }
+        /// {count, plural, one {# change waiting to send} other {# changes waiting to send}}
+        static func pending(count: Int) -> String {
+            L10n.tr("apple.sync.pending", count)
+        }
+        /// {label}. {detail}
+        static func accessibility(label: String, detail: String) -> String {
+            L10n.tr("apple.sync.accessibility", label, detail)
+        }
+        /// Update Sunrise to edit
+        static var readOnlyTitle: String { L10n.tr("apple.sync.read_only_title") }
+        /// This vault uses features a newer version of Sunrise added. You can still read and sync everything here.
+        static var readOnlyAll: String { L10n.tr("apple.sync.read_only_all") }
+        /// Some items in this vault use features a newer version of Sunrise added. You can still read and sync them.
+        static var readOnlySome: String { L10n.tr("apple.sync.read_only_some") }
+    }
+
+    enum Platform {
+        /// Done
+        static var checklistDone: String { L10n.tr("apple.platform.checklist_done") }
+        /// Not done
+        static var checklistNotDone: String { L10n.tr("apple.platform.checklist_not_done") }
+    }
+
+    enum Review {
+        /// Review
+        static var title: String { L10n.tr("apple.review.title") }
+        /// Weekly
+        static var tabWeekly: String { L10n.tr("apple.review.tab_weekly") }
+        /// Daily
+        static var tabDaily: String { L10n.tr("apple.review.tab_daily") }
+        /// Trends
+        static var tabTrends: String { L10n.tr("apple.review.tab_trends") }
+        /// History
+        static var tabHistory: String { L10n.tr("apple.review.tab_history") }
+        /// Export
+        static var export: String { L10n.tr("apple.review.export") }
+        /// Trends
+        static var datasetTrends: String { L10n.tr("apple.review.dataset_trends") }
+        /// Activity
+        static var datasetActivity: String { L10n.tr("apple.review.dataset_activity") }
+        /// Focus
+        static var datasetFocus: String { L10n.tr("apple.review.dataset_focus") }
+        /// Streaks
+        static var datasetStreaks: String { L10n.tr("apple.review.dataset_streaks") }
+        /// Save snapshot
+        static var saveSnapshot: String { L10n.tr("apple.review.save_snapshot") }
+        /// This week is on the record.
+        static var savedNote: String { L10n.tr("apple.review.saved_note") }
+        /// That export could not be produced.
+        static var exportFailed: String { L10n.tr("apple.review.export_failed") }
+        /// This week
+        static var thisWeek: String { L10n.tr("apple.review.this_week") }
+        /// {count, plural, one {Inbox to triage (#)} other {Inbox to triage (#)}}
+        static func inboxToTriage(count: Int) -> String {
+            L10n.tr("apple.review.inbox_to_triage", count)
+        }
+        /// {count, plural, one {Slipped past its date (#)} other {Slipped past its date (#)}}
+        static func slipped(count: Int) -> String {
+            L10n.tr("apple.review.slipped", count)
+        }
+        /// Completed
+        static var completed: String { L10n.tr("apple.review.completed") }
+        /// Deferred
+        static var deferred: String { L10n.tr("apple.review.deferred") }
+        /// Dropped
+        static var dropped: String { L10n.tr("apple.review.dropped") }
+        /// Created
+        static var created: String { L10n.tr("apple.review.created") }
+        /// Reopened
+        static var reopened: String { L10n.tr("apple.review.reopened") }
+        /// Created and untouched
+        static var createdUntouched: String { L10n.tr("apple.review.created_untouched") }
+        /// Focused
+        static var focused: String { L10n.tr("apple.review.focused") }
+        /// Routines drifting
+        static var routinesDrifting: String { L10n.tr("apple.review.routines_drifting") }
+        /// {missed, plural, one {# of {expected, number} missed} other {# of {expected, number} missed}}
+        static func driftMissed(missed: Int, expected: Int) -> String {
+            L10n.tr("apple.review.drift_missed", missed, expected)
+        }
+        /// Streaks
+        static var streaks: String { L10n.tr("apple.review.streaks") }
+        /// {count, plural, one {Just captured (#)} other {Just captured (#)}}
+        static func justCaptured(count: Int) -> String {
+            L10n.tr("apple.review.just_captured", count)
+        }
+        /// {count, plural, one {Today (#)} other {Today (#)}}
+        static func today(count: Int) -> String {
+            L10n.tr("apple.review.today", count)
+        }
+        /// {count, plural, one {Blocked (#)} other {Blocked (#)}}
+        static func blocked(count: Int) -> String {
+            L10n.tr("apple.review.blocked", count)
+        }
+        /// Nothing
+        static var nothing: String { L10n.tr("apple.review.nothing") }
+        /// Weeks
+        static var weeks: String { L10n.tr("apple.review.weeks") }
+        /// Whole vault
+        static var wholeVault: String { L10n.tr("apple.review.whole_vault") }
+        /// Stream
+        static var streamFallback: String { L10n.tr("apple.review.stream_fallback") }
+        /// No trend yet
+        static var noTrendTitle: String { L10n.tr("apple.review.no_trend_title") }
+        /// Complete something and it will show up here.
+        static var noTrendDescription: String { L10n.tr("apple.review.no_trend_description") }
+        /// {count, plural, one {# completed} other {# completed}}
+        static func completedCount(count: Int) -> String {
+            L10n.tr("apple.review.completed_count", count)
+        }
+        /// {count, plural, one {# deferred} other {# deferred}}
+        static func deferredCount(count: Int) -> String {
+            L10n.tr("apple.review.deferred_count", count)
+        }
+        /// {count, plural, one {# created} other {# created}}
+        static func createdCount(count: Int) -> String {
+            L10n.tr("apple.review.created_count", count)
+        }
+        /// No reviews saved
+        static var noSnapshotsTitle: String { L10n.tr("apple.review.no_snapshots_title") }
+        /// Saving a review records that you did it, and what you saw.
+        static var noSnapshotsDescription: String { L10n.tr("apple.review.no_snapshots_description") }
+        /// Save this week's review
+        static var snapshotSheetTitle: String { L10n.tr("apple.review.snapshot_sheet_title") }
+        /// The counts on screen are recorded as they are. That you did the review is the one thing the op log cannot re-derive.
+        static var snapshotSheetBody: String { L10n.tr("apple.review.snapshot_sheet_body") }
+        /// Note (optional)
+        static var snapshotNote: String { L10n.tr("apple.review.snapshot_note") }
+    }
+
+    enum Calendar {
+        /// Span
+        static var span: String { L10n.tr("apple.calendar.span") }
+        /// Day
+        static var spanDay: String { L10n.tr("apple.calendar.span_day") }
+        /// Week
+        static var spanWeek: String { L10n.tr("apple.calendar.span_week") }
+        /// Snap
+        static var snap: String { L10n.tr("apple.calendar.snap") }
+        /// {minutes, plural, one {# min} other {# min}}
+        static func snapMinutes(minutes: Int) -> String {
+            L10n.tr("apple.calendar.snap_minutes", minutes)
+        }
+        /// Previous
+        static var previous: String { L10n.tr("apple.calendar.previous") }
+        /// Today
+        static var today: String { L10n.tr("apple.calendar.today") }
+        /// Next
+        static var next: String { L10n.tr("apple.calendar.next") }
+        /// Untitled block
+        static var untitledBlock: String { L10n.tr("apple.calendar.untitled_block") }
+        /// Edit…
+        static var editEllipsis: String { L10n.tr("apple.calendar.edit_ellipsis") }
+        /// Resolve
+        static var resolve: String { L10n.tr("apple.calendar.resolve") }
+        /// Overlaps {title}
+        static func overlaps(title: String) -> String {
+            L10n.tr("apple.calendar.overlaps", title)
+        }
+        /// Keep both
+        static var keepBoth: String { L10n.tr("apple.calendar.keep_both") }
+        /// Merge
+        static var merge: String { L10n.tr("apple.calendar.merge") }
+        /// Adjust times…
+        static var adjustTimes: String { L10n.tr("apple.calendar.adjust_times") }
+        /// Both blocks kept.
+        static var noteKeptBoth: String { L10n.tr("apple.calendar.note_kept_both") }
+        /// Merged into one block.
+        static var noteMerged: String { L10n.tr("apple.calendar.note_merged") }
+        /// Local time here
+        static var kindZoned: String { L10n.tr("apple.calendar.kind_zoned") }
+        /// Wherever I am
+        static var kindFloating: String { L10n.tr("apple.calendar.kind_floating") }
+        /// A fixed moment
+        static var kindInstant: String { L10n.tr("apple.calendar.kind_instant") }
+        /// 09:00 in this timezone. Flying somewhere else moves it on your day.
+        static var kindZonedExplanation: String { L10n.tr("apple.calendar.kind_zoned_explanation") }
+        /// 09:00 wherever you are. Flying somewhere else keeps it at 09:00.
+        static var kindFloatingExplanation: String { L10n.tr("apple.calendar.kind_floating_explanation") }
+        /// The same instant everywhere. Flying somewhere else changes the clock time.
+        static var kindInstantExplanation: String { L10n.tr("apple.calendar.kind_instant_explanation") }
+        /// create a block
+        static var undoCreateBlock: String { L10n.tr("apple.calendar.undo_create_block") }
+        /// move a block
+        static var undoMoveBlock: String { L10n.tr("apple.calendar.undo_move_block") }
+        /// bind a task
+        static var undoBindTask: String { L10n.tr("apple.calendar.undo_bind_task") }
+        /// unbind a task
+        static var undoUnbindTask: String { L10n.tr("apple.calendar.undo_unbind_task") }
+        /// delete a block
+        static var undoDeleteBlock: String { L10n.tr("apple.calendar.undo_delete_block") }
+        /// edit a block
+        static var undoEditBlock: String { L10n.tr("apple.calendar.undo_edit_block") }
+    }
+
+    enum BlockEditor {
+        /// Title
+        static var titleField: String { L10n.tr("apple.block_editor.title_field") }
+        /// Starts
+        static var starts: String { L10n.tr("apple.block_editor.starts") }
+        /// Ends
+        static var ends: String { L10n.tr("apple.block_editor.ends") }
+        /// New block
+        static var newBlock: String { L10n.tr("apple.block_editor.new_block") }
+        /// Add block
+        static var addBlock: String { L10n.tr("apple.block_editor.add_block") }
+        /// Edit block
+        static var editBlock: String { L10n.tr("apple.block_editor.edit_block") }
+        /// Follow the bound task's title
+        static var followTaskTitle: String { L10n.tr("apple.block_editor.follow_task_title") }
+        /// Renaming the task renames this block.
+        static var followHelpOn: String { L10n.tr("apple.block_editor.follow_help_on") }
+        /// Only a block bound to exactly one task can follow a title.
+        static var followHelpOff: String { L10n.tr("apple.block_editor.follow_help_off") }
+        /// Tasks
+        static var tasks: String { L10n.tr("apple.block_editor.tasks") }
+        /// Unbind
+        static var unbind: String { L10n.tr("apple.block_editor.unbind") }
+        /// Time
+        static var time: String { L10n.tr("apple.block_editor.time") }
+        /// These two overlap
+        static var overlapTitle: String { L10n.tr("apple.block_editor.overlap_title") }
+        /// Shared: {from}–{to}
+        static func sharedRange(from: String, to: String) -> String {
+            L10n.tr("apple.block_editor.shared_range", from, to)
+        }
+        /// Apply
+        static var apply: String { L10n.tr("apple.block_editor.apply") }
+    }
+
+    enum Routines {
+        /// Routines
+        static var title: String { L10n.tr("apple.routines.title") }
+        /// No routines
+        static var emptyTitle: String { L10n.tr("apple.routines.empty_title") }
+        /// A routine generates its task on a cadence you describe.
+        static var emptyDescription: String { L10n.tr("apple.routines.empty_description") }
+        /// New routine
+        static var newRoutine: String { L10n.tr("apple.routines.new_routine") }
+        /// More
+        static var more: String { L10n.tr("apple.routines.more") }
+        /// Show archived
+        static var showArchived: String { L10n.tr("apple.routines.show_archived") }
+        /// Generate now
+        static var generateNow: String { L10n.tr("apple.routines.generate_now") }
+        /// Delete “{title}”?
+        static func deleteConfirmTitle(title: String) -> String {
+            L10n.tr("apple.routines.delete_confirm_title", title)
+        }
+        /// Generation stops and this cannot be undone. Tasks it already made stay. Pause it instead to stop generation and keep it.
+        static var deleteConfirmMessage: String { L10n.tr("apple.routines.delete_confirm_message") }
+        /// Edit…
+        static var editEllipsis: String { L10n.tr("apple.routines.edit_ellipsis") }
+        /// Skip next occurrence
+        static var skipNext: String { L10n.tr("apple.routines.skip_next") }
+        /// Pause
+        static var pause: String { L10n.tr("apple.routines.pause") }
+        /// Resume
+        static var resume: String { L10n.tr("apple.routines.resume") }
+        /// Archive
+        static var archive: String { L10n.tr("apple.routines.archive") }
+        /// Unarchive
+        static var unarchive: String { L10n.tr("apple.routines.unarchive") }
+        /// Delete…
+        static var deleteEllipsis: String { L10n.tr("apple.routines.delete_ellipsis") }
+        /// Paused — generates nothing
+        static var pausedHelp: String { L10n.tr("apple.routines.paused_help") }
+        /// next {day}
+        static func next(day: String) -> String {
+            L10n.tr("apple.routines.next", day)
+        }
+        /// {count, plural, one {streak #} other {streak #}}
+        static func streak(count: Int) -> String {
+            L10n.tr("apple.routines.streak", count)
+        }
+        /// new routine “{title}”
+        static func undoNew(title: String) -> String {
+            L10n.tr("apple.routines.undo_new", title)
+        }
+        /// edit “{title}”
+        static func undoEdit(title: String) -> String {
+            L10n.tr("apple.routines.undo_edit", title)
+        }
+        /// pause “{title}”
+        static func undoPause(title: String) -> String {
+            L10n.tr("apple.routines.undo_pause", title)
+        }
+        /// resume “{title}”
+        static func undoResume(title: String) -> String {
+            L10n.tr("apple.routines.undo_resume", title)
+        }
+        /// archive “{title}”
+        static func undoArchive(title: String) -> String {
+            L10n.tr("apple.routines.undo_archive", title)
+        }
+        /// unarchive “{title}”
+        static func undoUnarchive(title: String) -> String {
+            L10n.tr("apple.routines.undo_unarchive", title)
+        }
+        /// delete “{title}”
+        static func undoDelete(title: String) -> String {
+            L10n.tr("apple.routines.undo_delete", title)
+        }
+        /// skip {occurrence} of “{title}”
+        static func undoSkip(occurrence: String, title: String) -> String {
+            L10n.tr("apple.routines.undo_skip", occurrence, title)
+        }
+        /// materialize routines
+        static var undoMaterialize: String { L10n.tr("apple.routines.undo_materialize") }
+    }
+
+    enum RoutineEditor {
+        /// Title
+        static var titleField: String { L10n.tr("apple.routine_editor.title_field") }
+        /// Water the plants
+        static var titlePrompt: String { L10n.tr("apple.routine_editor.title_prompt") }
+        /// Cadence
+        static var cadence: String { L10n.tr("apple.routine_editor.cadence") }
+        /// Repeats
+        static var repeats: String { L10n.tr("apple.routine_editor.repeats") }
+        /// Timezone
+        static var timezone: String { L10n.tr("apple.routine_editor.timezone") }
+        /// Missed occurrences
+        static var missed: String { L10n.tr("apple.routine_editor.missed") }
+        /// Skip
+        static var catchupSkip: String { L10n.tr("apple.routine_editor.catchup_skip") }
+        /// Merge into one
+        static var catchupMerge: String { L10n.tr("apple.routine_editor.catchup_merge") }
+        /// Queue them all
+        static var catchupQueue: String { L10n.tr("apple.routine_editor.catchup_queue") }
+        /// Unknown
+        static var unknown: String { L10n.tr("apple.routine_editor.unknown") }
+        /// Stops on a date
+        static var stopsOnDate: String { L10n.tr("apple.routine_editor.stops_on_date") }
+        /// Until
+        static var until: String { L10n.tr("apple.routine_editor.until") }
+        /// Each task
+        static var eachTask: String { L10n.tr("apple.routine_editor.each_task") }
+        /// Stream
+        static var stream: String { L10n.tr("apple.routine_editor.stream") }
+        /// Priority
+        static var priority: String { L10n.tr("apple.routine_editor.priority") }
+        /// None
+        static var priorityNone: String { L10n.tr("apple.routine_editor.priority_none") }
+        /// Energy
+        static var energy: String { L10n.tr("apple.routine_editor.energy") }
+        /// Estimate
+        static var estimate: String { L10n.tr("apple.routine_editor.estimate") }
+        /// none
+        static var estimateNone: String { L10n.tr("apple.routine_editor.estimate_none") }
+        /// Create
+        static var create: String { L10n.tr("apple.routine_editor.create") }
+        /// New routine
+        static var newRoutine: String { L10n.tr("apple.routine_editor.new_routine") }
+        /// Edit routine
+        static var editRoutine: String { L10n.tr("apple.routine_editor.edit_routine") }
+    }
+
+    enum StreamEditor {
+        /// Name
+        static var name: String { L10n.tr("apple.stream_editor.name") }
+        /// Colour
+        static var colour: String { L10n.tr("apple.stream_editor.colour") }
+        /// Review cadence
+        static var reviewCadence: String { L10n.tr("apple.stream_editor.review_cadence") }
+        /// None
+        static var cadenceNone: String { L10n.tr("apple.stream_editor.cadence_none") }
+        /// Weekly
+        static var cadenceWeekly: String { L10n.tr("apple.stream_editor.cadence_weekly") }
+        /// Biweekly
+        static var cadenceBiweekly: String { L10n.tr("apple.stream_editor.cadence_biweekly") }
+        /// Monthly
+        static var cadenceMonthly: String { L10n.tr("apple.stream_editor.cadence_monthly") }
+        /// Unknown
+        static var cadenceUnknown: String { L10n.tr("apple.stream_editor.cadence_unknown") }
+        /// Create
+        static var create: String { L10n.tr("apple.stream_editor.create") }
+        /// New stream
+        static var newStream: String { L10n.tr("apple.stream_editor.new_stream") }
+        /// Edit stream
+        static var editStream: String { L10n.tr("apple.stream_editor.edit_stream") }
+        /// “{name}” could not be read.
+        static func unreadable(name: String) -> String {
+            L10n.tr("apple.stream_editor.unreadable", name)
+        }
+        /// errands
+        static var contextNamePrompt: String { L10n.tr("apple.stream_editor.context_name_prompt") }
+        /// Description
+        static var contextDescription: String { L10n.tr("apple.stream_editor.context_description") }
+        /// Optional
+        static var contextDescriptionPrompt: String { L10n.tr("apple.stream_editor.context_description_prompt") }
+        /// New context
+        static var newContext: String { L10n.tr("apple.stream_editor.new_context") }
+        /// Edit context
+        static var editContext: String { L10n.tr("apple.stream_editor.edit_context") }
+    }
+
+    enum Ical {
+        /// {count, plural, one {# event imported} other {# events imported}}
+        static func headlineImported(count: Int) -> String {
+            L10n.tr("apple.ical.headline_imported", count)
+        }
+        /// {count, plural, one {# already up to date} other {# already up to date}}
+        static func headlineUpToDate(count: Int) -> String {
+            L10n.tr("apple.ical.headline_up_to_date", count)
+        }
+        /// {count, plural, one {# could not be read} other {# could not be read}}
+        static func headlineFailed(count: Int) -> String {
+            L10n.tr("apple.ical.headline_failed", count)
+        }
+        /// Everything in the file came across.
+        static var noticesNone: String { L10n.tr("apple.ical.notices_none") }
+        /// {count, plural, one {# thing could not be carried into a time block.} other {# things could not be carried into time blocks.}}
+        static func noticesCount(count: Int) -> String {
+            L10n.tr("apple.ical.notices_count", count)
+        }
+        /// Events not imported
+        static var headingSkipped: String { L10n.tr("apple.ical.heading_skipped") }
+        /// Parts of the file a time block cannot hold
+        static var headingUnsupportedComponent: String { L10n.tr("apple.ical.heading_unsupported_component") }
+        /// Values that could not be read
+        static var headingBadValue: String { L10n.tr("apple.ical.heading_bad_value") }
+        /// Unknown time zones, read as UTC
+        static var headingUnknownTimezone: String { L10n.tr("apple.ical.heading_unknown_timezone") }
+        /// Details that did not come across
+        static var headingUnmappedProperty: String { L10n.tr("apple.ical.heading_unmapped_property") }
+        /// Time blocks written
+        static var blocksWritten: String { L10n.tr("apple.ical.blocks_written") }
+        /// new
+        static var blockNew: String { L10n.tr("apple.ical.block_new") }
+        /// updated
+        static var blockUpdated: String { L10n.tr("apple.ical.block_updated") }
+        /// The calendar could not be read
+        static var readFailedTitle: String { L10n.tr("apple.ical.read_failed_title") }
+        /// OK
+        static var ok: String { L10n.tr("apple.ical.ok") }
+        /// Today
+        static var exportToday: String { L10n.tr("apple.ical.export_today") }
+        /// This Week
+        static var exportThisWeek: String { L10n.tr("apple.ical.export_this_week") }
+    }
+
+    enum Browse {
+        /// Streams
+        static var streamsHeader: String { L10n.tr("apple.browse.streams_header") }
+        /// Contexts
+        static var contextsHeader: String { L10n.tr("apple.browse.contexts_header") }
+        /// New stream
+        static var newStream: String { L10n.tr("apple.browse.new_stream") }
+        /// New context
+        static var newContext: String { L10n.tr("apple.browse.new_context") }
+        /// Show archived
+        static var showArchived: String { L10n.tr("apple.browse.show_archived") }
+        /// Delete “{name}”?
+        static func deleteStreamTitle(name: String) -> String {
+            L10n.tr("apple.browse.delete_stream_title", name)
+        }
+        /// This cannot be undone. Archive it instead to keep its tasks reachable.
+        static var deleteStreamMessage: String { L10n.tr("apple.browse.delete_stream_message") }
+        /// Delete @{name}?
+        static func deleteContextTitle(name: String) -> String {
+            L10n.tr("apple.browse.delete_context_title", name)
+        }
+        /// This removes @{name} from every task carrying it, and cannot be undone.
+        static func deleteContextMessage(name: String) -> String {
+            L10n.tr("apple.browse.delete_context_message", name)
+        }
+        /// The Inbox cannot be edited
+        static var inboxNotEditable: String { L10n.tr("apple.browse.inbox_not_editable") }
+        /// Edit…
+        static var editEllipsis: String { L10n.tr("apple.browse.edit_ellipsis") }
+        /// Pause
+        static var pause: String { L10n.tr("apple.browse.pause") }
+        /// Resume
+        static var resume: String { L10n.tr("apple.browse.resume") }
+        /// Archive
+        static var archive: String { L10n.tr("apple.browse.archive") }
+        /// Unarchive
+        static var unarchive: String { L10n.tr("apple.browse.unarchive") }
+        /// Delete…
+        static var deleteEllipsis: String { L10n.tr("apple.browse.delete_ellipsis") }
+        /// Today
+        static var today: String { L10n.tr("apple.browse.today") }
+        /// {count, plural, one {Today · # context} other {Today · # contexts}}
+        static func todayFiltered(count: Int) -> String {
+            L10n.tr("apple.browse.today_filtered", count)
+        }
+        /// Inbox
+        static var inbox: String { L10n.tr("apple.browse.inbox") }
+        /// Search
+        static var search: String { L10n.tr("apple.browse.search") }
+        /// Calendar
+        static var calendar: String { L10n.tr("apple.browse.calendar") }
+        /// Routines
+        static var routines: String { L10n.tr("apple.browse.routines") }
+        /// Review
+        static var review: String { L10n.tr("apple.browse.review") }
+        /// Nothing is scheduled or due today.
+        static var emptyToday: String { L10n.tr("apple.browse.empty_today") }
+        /// Nothing in those contexts is scheduled or due today.
+        static var emptyTodayFiltered: String { L10n.tr("apple.browse.empty_today_filtered") }
+        /// Your Inbox is empty.
+        static var emptyInbox: String { L10n.tr("apple.browse.empty_inbox") }
+        /// Nothing in {name} yet.
+        static func emptyStream(name: String) -> String {
+            L10n.tr("apple.browse.empty_stream", name)
+        }
+        /// Nothing carries @{name}.
+        static func emptyContext(name: String) -> String {
+            L10n.tr("apple.browse.empty_context", name)
+        }
+        /// Type to search titles and notes.
+        static var emptySearchBlank: String { L10n.tr("apple.browse.empty_search_blank") }
+        /// Nothing matches “{text}”.
+        static func emptySearch(text: String) -> String {
+            L10n.tr("apple.browse.empty_search", text)
+        }
+        /// Press {keys} to capture.
+        static func hintCapture(keys: String) -> String {
+            L10n.tr("apple.browse.hint_capture", keys)
+        }
+        /// Press {keys} to jump to the field.
+        static func hintSearchField(keys: String) -> String {
+            L10n.tr("apple.browse.hint_search_field", keys)
+        }
+        /// Press {keys} to start a new search.
+        static func hintSearchNew(keys: String) -> String {
+            L10n.tr("apple.browse.hint_search_new", keys)
+        }
+
+        enum Color {
+            /// Slate
+            static var slate: String { L10n.tr("apple.browse.color.slate") }
+            /// Rose
+            static var rose: String { L10n.tr("apple.browse.color.rose") }
+            /// Amber
+            static var amber: String { L10n.tr("apple.browse.color.amber") }
+            /// Emerald
+            static var emerald: String { L10n.tr("apple.browse.color.emerald") }
+            /// Sky
+            static var sky: String { L10n.tr("apple.browse.color.sky") }
+            /// Indigo
+            static var indigo: String { L10n.tr("apple.browse.color.indigo") }
+            /// Violet
+            static var violet: String { L10n.tr("apple.browse.color.violet") }
+            /// Pink
+            static var pink: String { L10n.tr("apple.browse.color.pink") }
+            /// Unknown
+            static var unknown: String { L10n.tr("apple.browse.color.unknown") }
+        }
+    }
+
+    enum Tasks {
+        /// Scheduled
+        static var sectionScheduled: String { L10n.tr("apple.tasks.section_scheduled") }
+        /// Due today
+        static var sectionDue: String { L10n.tr("apple.tasks.section_due") }
+        /// Overdue
+        static var sectionOverdue: String { L10n.tr("apple.tasks.section_overdue") }
+        /// Tomorrow
+        static var tomorrow: String { L10n.tr("apple.tasks.tomorrow") }
+        /// Reopen
+        static var reopen: String { L10n.tr("apple.tasks.reopen") }
+        /// Complete
+        static var complete: String { L10n.tr("apple.tasks.complete") }
+        /// Edit…
+        static var editEllipsis: String { L10n.tr("apple.tasks.edit_ellipsis") }
+        /// Defer to tomorrow
+        static var deferTomorrow: String { L10n.tr("apple.tasks.defer_tomorrow") }
+        /// Defer a week
+        static var deferWeek: String { L10n.tr("apple.tasks.defer_week") }
+        /// Schedule…
+        static var scheduleEllipsis: String { L10n.tr("apple.tasks.schedule_ellipsis") }
+        /// Move to stream…
+        static var moveToStreamEllipsis: String { L10n.tr("apple.tasks.move_to_stream_ellipsis") }
+        /// Start focus session
+        static var startFocus: String { L10n.tr("apple.tasks.start_focus") }
+        /// Schedule
+        static var schedule: String { L10n.tr("apple.tasks.schedule") }
+        /// {count, plural, one {Schedule # task} other {Schedule # tasks}}
+        static func scheduleMany(count: Int) -> String {
+            L10n.tr("apple.tasks.schedule_many", count)
+        }
+        /// When
+        static var when: String { L10n.tr("apple.tasks.when") }
+        /// Move to stream
+        static var moveTitle: String { L10n.tr("apple.tasks.move_title") }
+        /// {count, plural, one {Move # task} other {Move # tasks}}
+        static func moveTitleMany(count: Int) -> String {
+            L10n.tr("apple.tasks.move_title_many", count)
+        }
+        /// Stream
+        static var streamPicker: String { L10n.tr("apple.tasks.stream_picker") }
+        /// Move
+        static var move: String { L10n.tr("apple.tasks.move") }
+    }
+
+    enum TaskEditor {
+        /// Pane
+        static var panePicker: String { L10n.tr("apple.task_editor.pane_picker") }
+        /// Details
+        static var paneDetails: String { L10n.tr("apple.task_editor.pane_details") }
+        /// Notes
+        static var paneNotes: String { L10n.tr("apple.task_editor.pane_notes") }
+        /// Attachments
+        static var paneAttachments: String { L10n.tr("apple.task_editor.pane_attachments") }
+        /// Activity
+        static var paneActivity: String { L10n.tr("apple.task_editor.pane_activity") }
+        /// Title
+        static var titleField: String { L10n.tr("apple.task_editor.title_field") }
+        /// Priority
+        static var priority: String { L10n.tr("apple.task_editor.priority") }
+        /// None
+        static var priorityNone: String { L10n.tr("apple.task_editor.priority_none") }
+        /// Energy
+        static var energy: String { L10n.tr("apple.task_editor.energy") }
+        /// Estimate
+        static var estimate: String { L10n.tr("apple.task_editor.estimate") }
+        /// none
+        static var estimateNone: String { L10n.tr("apple.task_editor.estimate_none") }
+        /// Has a deadline
+        static var hasDeadline: String { L10n.tr("apple.task_editor.has_deadline") }
+        /// Due
+        static var due: String { L10n.tr("apple.task_editor.due") }
+    }
+
+    enum TaskRow {
+        /// Completed
+        static var completed: String { L10n.tr("apple.task_row.completed") }
+        /// Complete “{title}”
+        static func complete(title: String) -> String {
+            L10n.tr("apple.task_row.complete", title)
+        }
+        /// Priority {priority, number}
+        static func priority(priority: Int) -> String {
+            L10n.tr("apple.task_row.priority", priority)
+        }
+        /// Waiting on another task
+        static var waiting: String { L10n.tr("apple.task_row.waiting") }
+        /// Selected
+        static var selected: String { L10n.tr("apple.task_row.selected") }
+        /// due {when}
+        static func due(when: String) -> String {
+            L10n.tr("apple.task_row.due", when)
+        }
+        /// {count, plural, one {deferred #×} other {deferred #×}}
+        static func deferred(count: Int) -> String {
+            L10n.tr("apple.task_row.deferred", count)
+        }
+    }
+
+    enum Focus {
+        /// Focus
+        static var title: String { L10n.tr("apple.focus.title") }
+        /// Energy
+        static var energy: String { L10n.tr("apple.focus.energy") }
+        /// Session
+        static var session: String { L10n.tr("apple.focus.session") }
+        /// Nothing to focus on
+        static var emptyTitle: String { L10n.tr("apple.focus.empty_title") }
+        /// Every open task is blocked, done, or in another stream.
+        static var emptyMessage: String { L10n.tr("apple.focus.empty_message") }
+        /// {count, plural, one {# prior} other {# prior}}
+        static func priorSessions(count: Int) -> String {
+            L10n.tr("apple.focus.prior_sessions", count)
+        }
+        /// Start
+        static var start: String { L10n.tr("apple.focus.start") }
+        /// Start a session on “{title}”
+        static func startLabel(title: String) -> String {
+            L10n.tr("apple.focus.start_label", title)
+        }
+        /// Elapsed {clock}
+        static func elapsed(clock: String) -> String {
+            L10n.tr("apple.focus.elapsed", clock)
+        }
+        /// Focusing
+        static var focusing: String { L10n.tr("apple.focus.focusing") }
+        /// Done
+        static var done: String { L10n.tr("apple.focus.done") }
+        /// Stop
+        static var stop: String { L10n.tr("apple.focus.stop") }
+        /// Interrupted by
+        static var interruptedBy: String { L10n.tr("apple.focus.interrupted_by") }
+        /// {count, plural, one {# logged} other {# logged}}
+        static func interruptionsLogged(count: Int) -> String {
+            L10n.tr("apple.focus.interruptions_logged", count)
+        }
+        /// over the plan
+        static var overPlan: String { L10n.tr("apple.focus.over_plan") }
+        /// until done
+        static var untilDone: String { L10n.tr("apple.focus.until_done") }
+        /// {clock} left
+        static func timeLeft(clock: String) -> String {
+            L10n.tr("apple.focus.time_left", clock)
+        }
+        /// {count, plural, one {Unblocked # task} other {Unblocked # tasks}}
+        static func unblocked(count: Int) -> String {
+            L10n.tr("apple.focus.unblocked", count)
+        }
+        /// {count, plural, one {# still waiting on something else} other {# still waiting on something else}}
+        static func stillWaiting(count: Int) -> String {
+            L10n.tr("apple.focus.still_waiting", count)
+        }
+        /// Sessions
+        static var statSessions: String { L10n.tr("apple.focus.stat_sessions") }
+        /// Focused
+        static var statFocused: String { L10n.tr("apple.focus.stat_focused") }
+        /// Interruptions
+        static var statInterruptions: String { L10n.tr("apple.focus.stat_interruptions") }
+        /// Estimates run
+        static var statEstimates: String { L10n.tr("apple.focus.stat_estimates") }
+    }
+
+    enum SavedViews {
+        /// Views
+        static var menu: String { L10n.tr("apple.saved_views.menu") }
+        /// No saved views
+        static var empty: String { L10n.tr("apple.saved_views.empty") }
+        /// Save this view…
+        static var saveEllipsis: String { L10n.tr("apple.saved_views.save_ellipsis") }
+        /// Save this view
+        static var sheetTitle: String { L10n.tr("apple.saved_views.sheet_title") }
+        /// Name
+        static var name: String { L10n.tr("apple.saved_views.name") }
+        /// errands
+        static var namePrompt: String { L10n.tr("apple.saved_views.name_prompt") }
+        /// Saved to the same file `sunrise` reads, so this view is recallable from the command line too.
+        static var footnote: String { L10n.tr("apple.saved_views.footnote") }
+        /// {count, plural, one {# of this view's contexts no longer exists and was not applied.} other {# of this view's contexts no longer exist and were not applied.}}
+        static func missingContexts(count: Int) -> String {
+            L10n.tr("apple.saved_views.missing_contexts", count)
+        }
+    }
+
+    enum Brief {
+        /// Morning
+        static var morningTitle: String { L10n.tr("apple.brief.morning_title") }
+        /// Evening
+        static var eveningTitle: String { L10n.tr("apple.brief.evening_title") }
+        /// What closed yesterday, and what today is asking for.
+        static var morningSubtitle: String { L10n.tr("apple.brief.morning_subtitle") }
+        /// What today did not finish, the week ahead, and the backlog to plan from.
+        static var eveningSubtitle: String { L10n.tr("apple.brief.evening_subtitle") }
+        /// Complete
+        static var complete: String { L10n.tr("apple.brief.complete") }
+        /// Edit…
+        static var editEllipsis: String { L10n.tr("apple.brief.edit_ellipsis") }
+        /// Tomorrow
+        static var tomorrow: String { L10n.tr("apple.brief.tomorrow") }
+        /// Move today to tomorrow
+        static var moveToday: String { L10n.tr("apple.brief.move_today") }
+        /// {count, plural, one {Move # open task to tomorrow?} other {Move # open tasks to tomorrow?}}
+        static func moveConfirm(count: Int) -> String {
+            L10n.tr("apple.brief.move_confirm", count)
+        }
+        /// Move them
+        static var moveThem: String { L10n.tr("apple.brief.move_them") }
+        /// Each task's deferral count goes up. That is the point: it is how a task that keeps slipping becomes visible.
+        static var moveMessage: String { L10n.tr("apple.brief.move_message") }
+    }
+
+    enum Attachments {
+        /// Attachments
+        static var title: String { L10n.tr("apple.attachments.title") }
+        /// No attachments
+        static var emptyTitle: String { L10n.tr("apple.attachments.empty_title") }
+        /// Drop a file here, or use Attach.
+        static var emptyMessage: String { L10n.tr("apple.attachments.empty_message") }
+        /// Attach…
+        static var attach: String { L10n.tr("apple.attachments.attach") }
+        /// Open
+        static var `open`: String { L10n.tr("apple.attachments.open") }
+        /// Download
+        static var download: String { L10n.tr("apple.attachments.download") }
+        /// Download again
+        static var downloadAgain: String { L10n.tr("apple.attachments.download_again") }
+        /// {filename} opens in another app.
+        static func opensElsewhere(filename: String) -> String {
+            L10n.tr("apple.attachments.opens_elsewhere", filename)
+        }
+        /// downloading…
+        static var statusDownloading: String { L10n.tr("apple.attachments.status_downloading") }
+        /// download interrupted
+        static var statusInterrupted: String { L10n.tr("apple.attachments.status_interrupted") }
+        /// not on this device
+        static var statusAbsent: String { L10n.tr("apple.attachments.status_absent") }
+        /// {filename} is not on this device yet. Use Download.
+        static func notLocal(filename: String) -> String {
+            L10n.tr("apple.attachments.not_local", filename)
+        }
+    }
+
+    enum Capture {
+        /// Capture
+        static var field: String { L10n.tr("apple.capture.field") }
+        /// Renew passport #travel ^next saturday !1 ~1h
+        static var prompt: String { L10n.tr("apple.capture.prompt") }
+        /// {count, plural, one {# tag} other {# tags}}
+        static func tags(count: Int) -> String {
+            L10n.tr("apple.capture.tags", count)
+        }
+        /// Captured “{title}”
+        static func captured(title: String) -> String {
+            L10n.tr("apple.capture.captured", title)
+        }
+        /// Not saved: {reason}
+        static func notSaved(reason: String) -> String {
+            L10n.tr("apple.capture.not_saved", reason)
+        }
+        /// No stream called “{name}” — kept in the title.
+        static func unknownStream(name: String) -> String {
+            L10n.tr("apple.capture.unknown_stream", name)
+        }
+        /// No context called “{name}” — kept in the title.
+        static func unknownContext(name: String) -> String {
+            L10n.tr("apple.capture.unknown_context", name)
+        }
+        /// “{typed}” matches {candidates}.
+        static func ambiguous(typed: String, candidates: String) -> String {
+            L10n.tr("apple.capture.ambiguous", typed, candidates)
+        }
+        /// “{text}” is not a date Sunrise understands.
+        static func badDate(text: String) -> String {
+            L10n.tr("apple.capture.bad_date", text)
+        }
+        /// Priority “{text}” is outside 1–5.
+        static func badPriority(text: String) -> String {
+            L10n.tr("apple.capture.bad_priority", text)
+        }
+        /// “{text}” is not a duration.
+        static func badDuration(text: String) -> String {
+            L10n.tr("apple.capture.bad_duration", text)
+        }
+    }
+
+    enum Search {
+        /// Search
+        static var title: String { L10n.tr("apple.search.title") }
+        /// Search
+        static var field: String { L10n.tr("apple.search.field") }
+        /// Titles and notes
+        static var prompt: String { L10n.tr("apple.search.prompt") }
+        /// Clear
+        static var clear: String { L10n.tr("apple.search.clear") }
+        /// {count, plural, one {# match} other {# matches}}
+        static func matches(count: Int) -> String {
+            L10n.tr("apple.search.matches", count)
+        }
+        /// {count, plural, one {First # match — narrow it further} other {First # matches — narrow it further}}
+        static func matchesCapped(count: Int) -> String {
+            L10n.tr("apple.search.matches_capped", count)
+        }
+    }
+
+    enum Activity {
+        /// Activity
+        static var title: String { L10n.tr("apple.activity.title") }
+        /// Nothing recorded yet
+        static var emptyTitle: String { L10n.tr("apple.activity.empty_title") }
+        /// Completions, deferrals and moves show up here.
+        static var emptyMessage: String { L10n.tr("apple.activity.empty_message") }
+        /// {day} {time} · this device
+        static func captionThisDevice(day: String, time: String) -> String {
+            L10n.tr("apple.activity.caption_this_device", day, time)
+        }
+        /// {day} {time} · another device
+        static func captionAnotherDevice(day: String, time: String) -> String {
+            L10n.tr("apple.activity.caption_another_device", day, time)
+        }
+    }
+
+    enum Keyboard {
+        /// Press ? for the keyboard shortcuts, or {palette} for the command palette.
+        static func tipHint(palette: String) -> String {
+            L10n.tr("apple.keyboard.tip_hint", palette)
+        }
+        /// Press ? in any view for the shortcuts, and {shortcut} to capture a thought from whatever app you are in.
+        static func coachmark(shortcut: String) -> String {
+            L10n.tr("apple.keyboard.coachmark", shortcut)
+        }
+        /// Sunrise is keyboard-first
+        static var keyboardFirst: String { L10n.tr("apple.keyboard.keyboard_first") }
+        /// Show keyboard tips as I go
+        static var showTips: String { L10n.tr("apple.keyboard.show_tips") }
+        /// Press {keys} to {purpose}.
+        static func pressHint(keys: String, purpose: String) -> String {
+            L10n.tr("apple.keyboard.press_hint", keys, purpose)
+        }
+        /// space
+        static var keySpace: String { L10n.tr("apple.keyboard.key_space") }
+        /// Keyboard
+        static var cheatSheetTitle: String { L10n.tr("apple.keyboard.cheat_sheet_title") }
+        /// Vim-style motions
+        static var vimToggle: String { L10n.tr("apple.keyboard.vim_toggle") }
+        /// h j k l, gg, G, u, ⌃R, / and : — on this {device} only, never synced.
+        static func vimNote(device: String) -> String {
+            L10n.tr("apple.keyboard.vim_note", device)
+        }
+        /// Vim mode
+        static var vimSection: String { L10n.tr("apple.keyboard.vim_section") }
+        /// Go
+        static var menuGo: String { L10n.tr("apple.keyboard.menu_go") }
+
+        enum Heading {
+            /// Capture
+            static var capture: String { L10n.tr("apple.keyboard.heading.capture") }
+            /// Going places
+            static var navigation: String { L10n.tr("apple.keyboard.heading.navigation") }
+            /// Moving through a list
+            static var list: String { L10n.tr("apple.keyboard.heading.list") }
+            /// Acting on what is selected
+            static var task: String { L10n.tr("apple.keyboard.heading.task") }
+            /// Undo
+            static var edit: String { L10n.tr("apple.keyboard.heading.edit") }
+            /// Files and printing
+            static var document: String { L10n.tr("apple.keyboard.heading.document") }
+            /// Help
+            static var help: String { L10n.tr("apple.keyboard.heading.help") }
+        }
+
+        enum Command {
+            /// Quick Capture (anywhere)
+            static var quickCaptureGlobal: String { L10n.tr("apple.keyboard.command.quick_capture_global") }
+            /// New Task
+            static var quickCapture: String { L10n.tr("apple.keyboard.command.quick_capture") }
+            /// Go to Today
+            static var today: String { L10n.tr("apple.keyboard.command.today") }
+            /// Go to Inbox
+            static var inbox: String { L10n.tr("apple.keyboard.command.inbox") }
+            /// Find in This List
+            static var searchInView: String { L10n.tr("apple.keyboard.command.search_in_view") }
+            /// Search Everything
+            static var searchGlobal: String { L10n.tr("apple.keyboard.command.search_global") }
+            /// Command Palette
+            static var commandPalette: String { L10n.tr("apple.keyboard.command.command_palette") }
+            /// New Stream…
+            static var newStream: String { L10n.tr("apple.keyboard.command.new_stream") }
+            /// Mark Done
+            static var markDone: String { L10n.tr("apple.keyboard.command.mark_done") }
+            /// Defer to Tomorrow
+            static var deferTask: String { L10n.tr("apple.keyboard.command.defer_task") }
+            /// Schedule…
+            static var schedule: String { L10n.tr("apple.keyboard.command.schedule") }
+            /// Move to Stream…
+            static var moveToStream: String { L10n.tr("apple.keyboard.command.move_to_stream") }
+            /// Start Focus Session
+            static var focusMode: String { L10n.tr("apple.keyboard.command.focus_mode") }
+            /// Move Up
+            static var moveUp: String { L10n.tr("apple.keyboard.command.move_up") }
+            /// Move Down
+            static var moveDown: String { L10n.tr("apple.keyboard.command.move_down") }
+            /// Go to Top
+            static var listTop: String { L10n.tr("apple.keyboard.command.list_top") }
+            /// Go to Bottom
+            static var listBottom: String { L10n.tr("apple.keyboard.command.list_bottom") }
+            /// Open
+            static var openDetail: String { L10n.tr("apple.keyboard.command.open_detail") }
+            /// Close
+            static var closeDetail: String { L10n.tr("apple.keyboard.command.close_detail") }
+            /// Toggle Selection
+            static var toggleSelection: String { L10n.tr("apple.keyboard.command.toggle_selection") }
+            /// Extend Selection Up
+            static var extendSelectionUp: String { L10n.tr("apple.keyboard.command.extend_selection_up") }
+            /// Extend Selection Down
+            static var extendSelectionDown: String { L10n.tr("apple.keyboard.command.extend_selection_down") }
+            /// Undo
+            static var undo: String { L10n.tr("apple.keyboard.command.undo") }
+            /// Redo
+            static var redo: String { L10n.tr("apple.keyboard.command.redo") }
+            /// Print…
+            static var printView: String { L10n.tr("apple.keyboard.command.print_view") }
+            /// Export as PDF…
+            static var exportPdf: String { L10n.tr("apple.keyboard.command.export_pdf") }
+            /// Keyboard Shortcuts
+            static var cheatSheet: String { L10n.tr("apple.keyboard.command.cheat_sheet") }
+            /// Morning Summary
+            static var morningSummary: String { L10n.tr("apple.keyboard.command.morning_summary") }
+            /// End of Day
+            static var endOfDay: String { L10n.tr("apple.keyboard.command.end_of_day") }
+            /// Import Calendar…
+            static var importCalendar: String { L10n.tr("apple.keyboard.command.import_calendar") }
+        }
+    }
+
+    enum Palette {
+        /// Command
+        static var field: String { L10n.tr("apple.palette.field") }
+        /// Run a command
+        static var prompt: String { L10n.tr("apple.palette.prompt") }
+        /// No command matches
+        static var emptyTitle: String { L10n.tr("apple.palette.empty_title") }
+        /// Try a shorter word.
+        static var emptyMessage: String { L10n.tr("apple.palette.empty_message") }
+        /// Needs a selected task
+        static var needsSelection: String { L10n.tr("apple.palette.needs_selection") }
+    }
+
+    enum Notes {
+        /// This note was written by a newer version of Sunrise. You can read it here; editing it would drop the parts this version cannot show.
+        static var unreadable: String { L10n.tr("apple.notes.unreadable") }
+        /// This note uses formatting this editor cannot change yet — a reference, a mention, or nested content. You can read it here, and edit it in a later version.
+        static var unsupported: String { L10n.tr("apple.notes.unsupported") }
+        /// This note is at the size limit. Split it into two.
+        static var atLimit: String { L10n.tr("apple.notes.at_limit") }
+        /// This note is getting long. Consider splitting it.
+        static var gettingLong: String { L10n.tr("apple.notes.getting_long") }
+        /// Add block
+        static var addBlock: String { L10n.tr("apple.notes.add_block") }
+        /// Add a block below
+        static var addBlockHelp: String { L10n.tr("apple.notes.add_block_help") }
+        /// Copy as Markdown
+        static var copyMarkdown: String { L10n.tr("apple.notes.copy_markdown") }
+        /// Block
+        static var blockPicker: String { L10n.tr("apple.notes.block_picker") }
+        /// Move up
+        static var moveUp: String { L10n.tr("apple.notes.move_up") }
+        /// Move down
+        static var moveDown: String { L10n.tr("apple.notes.move_down") }
+        /// Delete block
+        static var deleteBlock: String { L10n.tr("apple.notes.delete_block") }
+        /// Language
+        static var language: String { L10n.tr("apple.notes.language") }
+        /// Add row
+        static var addRow: String { L10n.tr("apple.notes.add_row") }
+        /// Done
+        static var rowDone: String { L10n.tr("apple.notes.row_done") }
+        /// Indent
+        static var indent: String { L10n.tr("apple.notes.indent") }
+        /// Outdent
+        static var outdent: String { L10n.tr("apple.notes.outdent") }
+        /// Add row below
+        static var addRowBelow: String { L10n.tr("apple.notes.add_row_below") }
+        /// Delete row
+        static var deleteRow: String { L10n.tr("apple.notes.delete_row") }
+
+        enum Block {
+            /// Text
+            static var paragraph: String { L10n.tr("apple.notes.block.paragraph") }
+            /// Heading 1
+            static var headingOne: String { L10n.tr("apple.notes.block.heading_one") }
+            /// Heading 2
+            static var headingTwo: String { L10n.tr("apple.notes.block.heading_two") }
+            /// Heading 3
+            static var headingThree: String { L10n.tr("apple.notes.block.heading_three") }
+            /// Bulleted list
+            static var bulleted: String { L10n.tr("apple.notes.block.bulleted") }
+            /// Numbered list
+            static var numbered: String { L10n.tr("apple.notes.block.numbered") }
+            /// Checklist
+            static var checklist: String { L10n.tr("apple.notes.block.checklist") }
+            /// Code
+            static var code: String { L10n.tr("apple.notes.block.code") }
+            /// Quote
+            static var quote: String { L10n.tr("apple.notes.block.quote") }
+            /// Divider
+            static var divider: String { L10n.tr("apple.notes.block.divider") }
+        }
+
+        enum Mark {
+            /// Bold
+            static var bold: String { L10n.tr("apple.notes.mark.bold") }
+            /// Italic
+            static var italic: String { L10n.tr("apple.notes.mark.italic") }
+            /// Underline
+            static var underline: String { L10n.tr("apple.notes.mark.underline") }
+            /// Strikethrough
+            static var strike: String { L10n.tr("apple.notes.mark.strike") }
+            /// Code
+            static var code: String { L10n.tr("apple.notes.mark.code") }
+        }
+    }
+
+    enum Undo {
+        /// Undo
+        static var undo: String { L10n.tr("apple.undo.undo") }
+        /// Redo
+        static var redo: String { L10n.tr("apple.undo.redo") }
+        /// Undo {action}
+        static func undoNamed(action: String) -> String {
+            L10n.tr("apple.undo.undo_named", action)
+        }
+        /// Redo {action}
+        static func redoNamed(action: String) -> String {
+            L10n.tr("apple.undo.redo_named", action)
+        }
+        /// Undid {action}
+        static func undid(action: String) -> String {
+            L10n.tr("apple.undo.undid", action)
+        }
+        /// Redid {action}
+        static func redid(action: String) -> String {
+            L10n.tr("apple.undo.redid", action)
+        }
+        /// new stream “{name}”
+        static func newStream(name: String) -> String {
+            L10n.tr("apple.undo.new_stream", name)
+        }
+        /// edit “{name}”
+        static func editStream(name: String) -> String {
+            L10n.tr("apple.undo.edit_stream", name)
+        }
+        /// archive “{name}”
+        static func archiveStream(name: String) -> String {
+            L10n.tr("apple.undo.archive_stream", name)
+        }
+        /// unarchive “{name}”
+        static func unarchiveStream(name: String) -> String {
+            L10n.tr("apple.undo.unarchive_stream", name)
+        }
+        /// pause “{name}”
+        static func pauseStream(name: String) -> String {
+            L10n.tr("apple.undo.pause_stream", name)
+        }
+        /// resume “{name}”
+        static func resumeStream(name: String) -> String {
+            L10n.tr("apple.undo.resume_stream", name)
+        }
+        /// delete “{name}”
+        static func deleteStream(name: String) -> String {
+            L10n.tr("apple.undo.delete_stream", name)
+        }
+        /// reorder streams
+        static var reorderStreams: String { L10n.tr("apple.undo.reorder_streams") }
+        /// new context @{name}
+        static func newContext(name: String) -> String {
+            L10n.tr("apple.undo.new_context", name)
+        }
+        /// edit @{name}
+        static func editContext(name: String) -> String {
+            L10n.tr("apple.undo.edit_context", name)
+        }
+        /// archive @{name}
+        static func archiveContext(name: String) -> String {
+            L10n.tr("apple.undo.archive_context", name)
+        }
+        /// unarchive @{name}
+        static func unarchiveContext(name: String) -> String {
+            L10n.tr("apple.undo.unarchive_context", name)
+        }
+        /// delete @{name}
+        static func deleteContext(name: String) -> String {
+            L10n.tr("apple.undo.delete_context", name)
+        }
+        /// move to stream
+        static var moveToStream: String { L10n.tr("apple.undo.move_to_stream") }
+        /// add a context
+        static var addContext: String { L10n.tr("apple.undo.add_context") }
+    }
+
+    enum Menu {
+        /// Nothing outstanding today.
+        static var nothingOutstanding: String { L10n.tr("apple.menu.nothing_outstanding") }
+        /// Overdue
+        static var overdue: String { L10n.tr("apple.menu.overdue") }
+        /// Due today
+        static var dueToday: String { L10n.tr("apple.menu.due_today") }
+        /// Scheduled
+        static var scheduled: String { L10n.tr("apple.menu.scheduled") }
+        /// Inbox
+        static var inbox: String { L10n.tr("apple.menu.inbox") }
+        /// Done today
+        static var doneToday: String { L10n.tr("apple.menu.done_today") }
+        /// Quick capture
+        static var quickCapture: String { L10n.tr("apple.menu.quick_capture") }
+        /// Open Sunrise
+        static var openApp: String { L10n.tr("apple.menu.open_app") }
+        /// Quit Sunrise
+        static var quitApp: String { L10n.tr("apple.menu.quit_app") }
+        /// Sunrise is not unlocked.
+        static var notUnlocked: String { L10n.tr("apple.menu.not_unlocked") }
+    }
+
+    enum Commands {
+        /// Export Calendar
+        static var exportCalendar: String { L10n.tr("apple.commands.export_calendar") }
+    }
+
+    enum Mac {
+        /// Settings
+        static var settings: String { L10n.tr("apple.mac.settings") }
+        /// Today
+        static var todayFallback: String { L10n.tr("apple.mac.today_fallback") }
+        /// Pick something on the left.
+        static var pickSomething: String { L10n.tr("apple.mac.pick_something") }
+        /// Choose a calendar file to import as time blocks.
+        static var icalImportMessage: String { L10n.tr("apple.mac.ical_import_message") }
+        /// Import
+        static var icalImportPrompt: String { L10n.tr("apple.mac.ical_import_prompt") }
+        /// Choose where to write the calendar.
+        static var icalExportMessage: String { L10n.tr("apple.mac.ical_export_message") }
+        /// Export
+        static var icalExportPrompt: String { L10n.tr("apple.mac.ical_export_prompt") }
+        /// Choose where to write the PDF.
+        static var pdfExportMessage: String { L10n.tr("apple.mac.pdf_export_message") }
+        /// Export
+        static var pdfExportPrompt: String { L10n.tr("apple.mac.pdf_export_prompt") }
+        /// ⌘⇧N opens quick capture from anywhere.
+        static var hotkeyActive: String { L10n.tr("apple.mac.hotkey_active") }
+        /// Another app already uses ⌘⇧N. Quick capture is still on the menu bar.
+        static var hotkeyTaken: String { L10n.tr("apple.mac.hotkey_taken") }
+        /// The system refused the shortcut (error {code}). Quick capture is still on the menu bar.
+        static func hotkeyUnavailable(code: String) -> String {
+            L10n.tr("apple.mac.hotkey_unavailable", code)
+        }
+        /// Not registered.
+        static var hotkeyIdle: String { L10n.tr("apple.mac.hotkey_idle") }
+    }
+
+    enum Ios {
+        /// More
+        static var more: String { L10n.tr("apple.ios.more") }
+        /// Today
+        static var sectionToday: String { L10n.tr("apple.ios.section_today") }
+        /// Calendar
+        static var sectionCalendar: String { L10n.tr("apple.ios.section_calendar") }
+        /// Import calendar…
+        static var importCalendar: String { L10n.tr("apple.ios.import_calendar") }
+        /// Export calendar
+        static var exportCalendar: String { L10n.tr("apple.ios.export_calendar") }
+        /// Settings
+        static var settings: String { L10n.tr("apple.ios.settings") }
+        /// Capture
+        static var capture: String { L10n.tr("apple.ios.capture") }
+    }
+
+    enum Tabs {
+        /// Today
+        static var today: String { L10n.tr("apple.tabs.today") }
+        /// Calendar
+        static var calendar: String { L10n.tr("apple.tabs.calendar") }
+        /// Browse
+        static var browse: String { L10n.tr("apple.tabs.browse") }
+        /// Focus
+        static var focus: String { L10n.tr("apple.tabs.focus") }
+        /// Search
+        static var search: String { L10n.tr("apple.tabs.search") }
+        /// Routines
+        static var routines: String { L10n.tr("apple.tabs.routines") }
+        /// Review
+        static var review: String { L10n.tr("apple.tabs.review") }
+        /// Morning
+        static var morning: String { L10n.tr("apple.tabs.morning") }
+        /// Evening
+        static var evening: String { L10n.tr("apple.tabs.evening") }
+    }
+
+    enum Settings {
+        /// Settings
+        static var title: String { L10n.tr("apple.settings.title") }
+    }
+
+    enum Widget {
+        /// Next Up
+        static var displayName: String { L10n.tr("apple.widget.display_name") }
+        /// What is left on Today, first things first.
+        static var description: String { L10n.tr("apple.widget.description") }
+        /// {count, plural, one {+# more} other {+# more}}
+        static func more(count: Int) -> String {
+            L10n.tr("apple.widget.more", count)
+        }
+        /// {count, plural, one {# left} other {# left}}
+        static func left(count: Int) -> String {
+            L10n.tr("apple.widget.left", count)
+        }
+        /// {count, plural, one {# left today} other {# left today}}
+        static func leftToday(count: Int) -> String {
+            L10n.tr("apple.widget.left_today", count)
+        }
+        /// {count, plural, one {left today} other {left today}}
+        static func leftTodayLabel(count: Int) -> String {
+            L10n.tr("apple.widget.left_today_label", count)
+        }
+        /// {count, plural, one {# overdue} other {# overdue}}
+        static func overdue(count: Int) -> String {
+            L10n.tr("apple.widget.overdue", count)
+        }
+        /// today
+        static var circularToday: String { L10n.tr("apple.widget.circular_today") }
+        /// {count, plural, one {# task left today} other {# tasks left today}}
+        static func circularAccessibility(count: Int) -> String {
+            L10n.tr("apple.widget.circular_accessibility", count)
+        }
+        /// Today is clear
+        static var allClear: String { L10n.tr("apple.widget.all_clear") }
+        /// Updated
+        static var updated: String { L10n.tr("apple.widget.updated") }
+        /// Open Sunrise
+        static var openApp: String { L10n.tr("apple.widget.open_app") }
+        /// Open to show Today
+        static var openToShowToday: String { L10n.tr("apple.widget.open_to_show_today") }
+        /// Open Sunrise to show Today
+        static var openAppToShowToday: String { L10n.tr("apple.widget.open_app_to_show_today") }
+        /// Overdue
+        static var sectionOverdue: String { L10n.tr("apple.widget.section_overdue") }
+        /// Due today
+        static var sectionDue: String { L10n.tr("apple.widget.section_due") }
+        /// Scheduled
+        static var sectionScheduled: String { L10n.tr("apple.widget.section_scheduled") }
+        /// Send the quarterly report
+        static var sampleReport: String { L10n.tr("apple.widget.sample_report") }
+        /// Review Maya's draft
+        static var sampleDraft: String { L10n.tr("apple.widget.sample_draft") }
+        /// Book flights
+        static var sampleFlights: String { L10n.tr("apple.widget.sample_flights") }
+        /// Water the plants
+        static var samplePlants: String { L10n.tr("apple.widget.sample_plants") }
+    }
+
+    enum Intents {
+        /// Capture
+        static var categoryCapture: String { L10n.tr("apple.intents.category_capture") }
+        /// Tasks
+        static var categoryTasks: String { L10n.tr("apple.intents.category_tasks") }
+        /// Focus
+        static var categoryFocus: String { L10n.tr("apple.intents.category_focus") }
+        /// Task
+        static var taskType: String { L10n.tr("apple.intents.task_type") }
+        /// Task
+        static var taskParameter: String { L10n.tr("apple.intents.task_parameter") }
+
+        enum CaptureTask {
+            /// Capture Task
+            static var title: String { L10n.tr("apple.intents.capture_task.title") }
+            /// Adds a task to Sunrise, reading the same #stream, @context, ^when, !priority and ~estimate tags that quick capture reads.
+            static var description: String { L10n.tr("apple.intents.capture_task.description") }
+            /// A capture line, tags and all.
+            static var lineDescription: String { L10n.tr("apple.intents.capture_task.line_description") }
+            /// What would you like to capture?
+            static var linePrompt: String { L10n.tr("apple.intents.capture_task.line_prompt") }
+            /// Captured “{title}”.
+            static func captured(title: String) -> String {
+                L10n.tr("apple.intents.capture_task.captured", title)
+            }
+            /// Captured “{title}”. {issue}
+            static func capturedWithIssue(title: String, issue: String) -> String {
+                L10n.tr("apple.intents.capture_task.captured_with_issue", title, issue)
+            }
+            /// {rest, plural, one {Captured “{title}”. {issue} And # more.} other {Captured “{title}”. {issue} And # more.}}
+            static func capturedWithIssues(rest: Int, title: String, issue: String) -> String {
+                L10n.tr("apple.intents.capture_task.captured_with_issues", rest, title, issue)
+            }
+        }
+
+        enum CompleteTask {
+            /// Complete Task
+            static var title: String { L10n.tr("apple.intents.complete_task.title") }
+            /// Marks a Sunrise task as done, and says what completing it unblocked.
+            static var description: String { L10n.tr("apple.intents.complete_task.description") }
+            /// Which task did you finish?
+            static var taskPrompt: String { L10n.tr("apple.intents.complete_task.task_prompt") }
+            /// “{title}” was already done.
+            static func alreadyDone(title: String) -> String {
+                L10n.tr("apple.intents.complete_task.already_done", title)
+            }
+            /// Completed “{title}”.
+            static func completed(title: String) -> String {
+                L10n.tr("apple.intents.complete_task.completed", title)
+            }
+            /// {count, plural, one {Completed “{title}”. That unblocked # task.} other {Completed “{title}”. That unblocked # tasks.}}
+            static func completedUnblocked(count: Int, title: String) -> String {
+                L10n.tr("apple.intents.complete_task.completed_unblocked", count, title)
+            }
+        }
+
+        enum StartFocus {
+            /// Start Focus Session
+            static var title: String { L10n.tr("apple.intents.start_focus.title") }
+            /// Opens a Sunrise focus session on a task.
+            static var description: String { L10n.tr("apple.intents.start_focus.description") }
+            /// What do you want to focus on?
+            static var taskPrompt: String { L10n.tr("apple.intents.start_focus.task_prompt") }
+            /// Length
+            static var lengthTitle: String { L10n.tr("apple.intents.start_focus.length_title") }
+            /// Focusing on “{title}” — {length}.
+            static func started(title: String, length: String) -> String {
+                L10n.tr("apple.intents.start_focus.started", title, length)
+            }
+        }
+
+        enum EndFocus {
+            /// End Focus Session
+            static var title: String { L10n.tr("apple.intents.end_focus.title") }
+            /// Closes the running Sunrise focus session, optionally marking the task it was on as done.
+            static var description: String { L10n.tr("apple.intents.end_focus.description") }
+            /// Complete the task
+            static var completeTitle: String { L10n.tr("apple.intents.end_focus.complete_title") }
+            /// Session ended after {duration}.
+            static func ended(duration: String) -> String {
+                L10n.tr("apple.intents.end_focus.ended", duration)
+            }
+            /// Session ended after {duration}, task completed.
+            static func endedCompleted(duration: String) -> String {
+                L10n.tr("apple.intents.end_focus.ended_completed", duration)
+            }
+        }
+
+        enum FocusLength {
+            /// Session Length
+            static var typeName: String { L10n.tr("apple.intents.focus_length.type_name") }
+            /// One pomodoro
+            static var pomodoro: String { L10n.tr("apple.intents.focus_length.pomodoro") }
+            /// Sized to the estimate
+            static var estimate: String { L10n.tr("apple.intents.focus_length.estimate") }
+            /// Until it is done
+            static var untilDone: String { L10n.tr("apple.intents.focus_length.until_done") }
+        }
+
+        enum TaskList {
+            /// Get Today's Tasks
+            static var todayTitle: String { L10n.tr("apple.intents.task_list.today_title") }
+            /// Returns the Sunrise tasks scheduled, due, or overdue today.
+            static var todayDescription: String { L10n.tr("apple.intents.task_list.today_description") }
+            /// Get Inbox Tasks
+            static var inboxTitle: String { L10n.tr("apple.intents.task_list.inbox_title") }
+            /// Returns the Sunrise tasks still waiting in the Inbox.
+            static var inboxDescription: String { L10n.tr("apple.intents.task_list.inbox_description") }
+            /// Nothing is on for today.
+            static var todayEmpty: String { L10n.tr("apple.intents.task_list.today_empty") }
+            /// The inbox is empty.
+            static var inboxEmpty: String { L10n.tr("apple.intents.task_list.inbox_empty") }
+            /// {count, plural, one {# task: {titles}.} other {# tasks: {titles}.}}
+            static func summary(count: Int, titles: String) -> String {
+                L10n.tr("apple.intents.task_list.summary", count, titles)
+            }
+        }
+
+        enum Shortcuts {
+            /// Capture Task
+            static var capture: String { L10n.tr("apple.intents.shortcuts.capture") }
+            /// Complete Task
+            static var complete: String { L10n.tr("apple.intents.shortcuts.complete") }
+            /// Today's Tasks
+            static var today: String { L10n.tr("apple.intents.shortcuts.today") }
+            /// Inbox
+            static var inbox: String { L10n.tr("apple.intents.shortcuts.inbox") }
+            /// Start Focus
+            static var startFocus: String { L10n.tr("apple.intents.shortcuts.start_focus") }
+            /// End Focus
+            static var endFocus: String { L10n.tr("apple.intents.shortcuts.end_focus") }
+        }
+
+        enum Failure {
+            /// Sunrise reported an open vault with nothing behind it. Reopen Sunrise and try again.
+            static var vaultUnavailable: String { L10n.tr("apple.intents.failure.vault_unavailable") }
+            /// Sunrise has no vault on this device yet. Open Sunrise once to create or pair one — an automation will not create it for you.
+            static var noVault: String { L10n.tr("apple.intents.failure.no_vault") }
+            /// Sunrise could not open its vault. {summary}
+            static func vaultLocked(summary: String) -> String {
+                L10n.tr("apple.intents.failure.vault_locked", summary)
+            }
+            /// Sunrise already has this vault open and did not offer it to automations. Do this in the Sunrise window, or quit Sunrise and run it again.
+            static var vaultHeld: String { L10n.tr("apple.intents.failure.vault_held") }
+            /// Sunrise could not open its vault: {message}
+            static func vaultFailed(message: String) -> String {
+                L10n.tr("apple.intents.failure.vault_failed", message)
+            }
+            /// Sunrise is still opening its vault. Try again in a moment.
+            static var vaultBusy: String { L10n.tr("apple.intents.failure.vault_busy") }
+            /// There was nothing to capture.
+            static var nothingToCapture: String { L10n.tr("apple.intents.failure.nothing_to_capture") }
+            /// That capture line has no title left once its tags are read.
+            static var emptyTitle: String { L10n.tr("apple.intents.failure.empty_title") }
+            /// That task is no longer in Sunrise ({id}).
+            static func taskNotFound(id: String) -> String {
+                L10n.tr("apple.intents.failure.task_not_found", id)
+            }
+            /// A focus session is already running on “{title}”. End it before starting another.
+            static func focusRunning(title: String) -> String {
+                L10n.tr("apple.intents.failure.focus_running", title)
+            }
+            /// No focus session is running.
+            static var noFocus: String { L10n.tr("apple.intents.failure.no_focus") }
+            /// Sunrise could not complete that: {message}
+            static func core(message: String) -> String {
+                L10n.tr("apple.intents.failure.core", message)
+            }
+        }
+    }
+
+    enum Notifications {
+        /// Not asked
+        static var authNotAsked: String { L10n.tr("apple.notifications.auth_not_asked") }
+        /// Not allowed
+        static var authDenied: String { L10n.tr("apple.notifications.auth_denied") }
+        /// Allowed
+        static var authAllowed: String { L10n.tr("apple.notifications.auth_allowed") }
+        /// Quiet delivery
+        static var authProvisional: String { L10n.tr("apple.notifications.auth_provisional") }
+        /// Unavailable
+        static var authUnavailable: String { L10n.tr("apple.notifications.auth_unavailable") }
+        /// Sunrise has not asked yet. Reminders stay off until you allow them; everything else works either way.
+        static var explainNotAsked: String { L10n.tr("apple.notifications.explain_not_asked") }
+        /// Notifications are turned off for Sunrise in System Settings. Nothing else is affected — the morning and evening views are still in the sidebar.
+        static var explainDenied: String { L10n.tr("apple.notifications.explain_denied") }
+        /// Reminders for scheduled tasks and time blocks are delivered by this device.
+        static var explainAllowed: String { L10n.tr("apple.notifications.explain_allowed") }
+        /// Reminders arrive quietly, in Notification Centre only, until you allow them properly.
+        static var explainProvisional: String { L10n.tr("apple.notifications.explain_provisional") }
+        /// The system refused the request ({reason}). Reminders are off; the rest of Sunrise is unaffected.
+        static func explainUnavailable(reason: String) -> String {
+            L10n.tr("apple.notifications.explain_unavailable", reason)
+        }
+        /// Time block starting
+        static var blockStarting: String { L10n.tr("apple.notifications.block_starting") }
+        /// Held for quiet hours
+        static var quietHoursNote: String { L10n.tr("apple.notifications.quiet_hours_note") }
+        /// due {time}
+        static func dueAt(time: String) -> String {
+            L10n.tr("apple.notifications.due_at", time)
+        }
+        /// Mark Done
+        static var markDone: String { L10n.tr("apple.notifications.mark_done") }
+        /// Defer 1 Hour
+        static var snoozeHour: String { L10n.tr("apple.notifications.snooze_hour") }
+        /// Snooze Until Tomorrow
+        static var snoozeTomorrow: String { L10n.tr("apple.notifications.snooze_tomorrow") }
+        /// Snooze Until Next Week
+        static var snoozeNextWeek: String { L10n.tr("apple.notifications.snooze_next_week") }
+    }
+
+    enum BriefNotification {
+
+        enum Morning {
+            /// Finished yesterday
+            static var yesterdayTitle: String { L10n.tr("apple.brief_notification.morning.yesterday_title") }
+            /// Nothing was completed yesterday.
+            static var yesterdayEmpty: String { L10n.tr("apple.brief_notification.morning.yesterday_empty") }
+            /// Already done today
+            static var todayTitle: String { L10n.tr("apple.brief_notification.morning.today_title") }
+            /// The day is still ahead of you.
+            static var todayEmpty: String { L10n.tr("apple.brief_notification.morning.today_empty") }
+            /// To triage
+            static var triageTitle: String { L10n.tr("apple.brief_notification.morning.triage_title") }
+            /// Your Inbox is empty.
+            static var triageEmpty: String { L10n.tr("apple.brief_notification.morning.triage_empty") }
+            /// Landing today
+            static var dueTitle: String { L10n.tr("apple.brief_notification.morning.due_title") }
+            /// Nothing is scheduled or due today.
+            static var dueEmpty: String { L10n.tr("apple.brief_notification.morning.due_empty") }
+            /// Reading your morning…
+            static var loading: String { L10n.tr("apple.brief_notification.morning.loading") }
+            /// {count, plural, one {# completed since yesterday} other {# completed since yesterday}}
+            static func completed(count: Int) -> String {
+                L10n.tr("apple.brief_notification.morning.completed", count)
+            }
+            /// {count, plural, one {# landing today} other {# landing today}}
+            static func landing(count: Int) -> String {
+                L10n.tr("apple.brief_notification.morning.landing", count)
+            }
+            /// {count, plural, one {# to triage} other {# to triage}}
+            static func triage(count: Int) -> String {
+                L10n.tr("apple.brief_notification.morning.triage", count)
+            }
+        }
+
+        enum Evening {
+            /// Still open today
+            static var openTitle: String { L10n.tr("apple.brief_notification.evening.open_title") }
+            /// Today is clear. Nothing was left behind.
+            static var openEmpty: String { L10n.tr("apple.brief_notification.evening.open_empty") }
+            /// The week ahead
+            static var weekTitle: String { L10n.tr("apple.brief_notification.evening.week_title") }
+            /// Nothing is scheduled in the next seven days.
+            static var weekEmpty: String { L10n.tr("apple.brief_notification.evening.week_empty") }
+            /// Unscheduled
+            static var backlogTitle: String { L10n.tr("apple.brief_notification.evening.backlog_title") }
+            /// Everything open has a date on it.
+            static var backlogEmpty: String { L10n.tr("apple.brief_notification.evening.backlog_empty") }
+            /// Reading your evening…
+            static var loading: String { L10n.tr("apple.brief_notification.evening.loading") }
+            /// {count, plural, one {# still open today} other {# still open today}}
+            static func stillOpen(count: Int) -> String {
+                L10n.tr("apple.brief_notification.evening.still_open", count)
+            }
+            /// {count, plural, one {# this week} other {# this week}}
+            static func thisWeek(count: Int) -> String {
+                L10n.tr("apple.brief_notification.evening.this_week", count)
+            }
+            /// {count, plural, one {# unscheduled} other {# unscheduled}}
+            static func unscheduled(count: Int) -> String {
+                L10n.tr("apple.brief_notification.evening.unscheduled", count)
+            }
+        }
+    }
+
+    enum Print {
+        /// {heading} (continued)
+        static func continued(heading: String) -> String {
+            L10n.tr("apple.print.continued", heading)
+        }
+        /// {heading} ({count, number})
+        static func sectionCount(heading: String, count: Int) -> String {
+            L10n.tr("apple.print.section_count", heading, count)
+        }
+        /// {count, plural, one {# task} other {# tasks}}
+        static func taskCount(count: Int) -> String {
+            L10n.tr("apple.print.task_count", count)
+        }
+        /// Untitled block
+        static var untitledBlock: String { L10n.tr("apple.print.untitled_block") }
+        /// Calendar — Day
+        static var calendarDay: String { L10n.tr("apple.print.calendar_day") }
+        /// Calendar — Week
+        static var calendarWeek: String { L10n.tr("apple.print.calendar_week") }
+        /// Weekly Review
+        static var weeklyReview: String { L10n.tr("apple.print.weekly_review") }
+        /// Daily Review
+        static var dailyReview: String { L10n.tr("apple.print.daily_review") }
+        /// Just captured
+        static var justCaptured: String { L10n.tr("apple.print.just_captured") }
+        /// Today
+        static var today: String { L10n.tr("apple.print.today") }
+        /// Blocked
+        static var blocked: String { L10n.tr("apple.print.blocked") }
+        /// This week
+        static var thisWeek: String { L10n.tr("apple.print.this_week") }
+        /// Completed
+        static var completed: String { L10n.tr("apple.print.completed") }
+        /// Deferred
+        static var deferred: String { L10n.tr("apple.print.deferred") }
+        /// Dropped
+        static var dropped: String { L10n.tr("apple.print.dropped") }
+        /// Created
+        static var created: String { L10n.tr("apple.print.created") }
+        /// Reopened
+        static var reopened: String { L10n.tr("apple.print.reopened") }
+        /// Inbox to triage
+        static var inboxToTriage: String { L10n.tr("apple.print.inbox_to_triage") }
+        /// Slipped past its date
+        static var slipped: String { L10n.tr("apple.print.slipped") }
+        /// By stream
+        static var byStream: String { L10n.tr("apple.print.by_stream") }
+        /// Routines drifting
+        static var routinesDrifting: String { L10n.tr("apple.print.routines_drifting") }
+        /// {completed, plural, one {# completed} other {# completed}}, {deferred, plural, one {# deferred} other {# deferred}}, {untouched, plural, one {# untouched} other {# untouched}}
+        static func streamDetail(completed: Int, deferred: Int, untouched: Int) -> String {
+            L10n.tr("apple.print.stream_detail", completed, deferred, untouched)
+        }
+        /// {missed, plural, one {# of {expected, number} missed} other {# of {expected, number} missed}}
+        static func driftDetail(missed: Int, expected: Int) -> String {
+            L10n.tr("apple.print.drift_detail", missed, expected)
+        }
+        /// due {date}
+        static func dueChip(date: String) -> String {
+            L10n.tr("apple.print.due_chip", date)
+        }
+        /// waiting
+        static var waiting: String { L10n.tr("apple.print.waiting") }
+        /// Nothing to print.
+        static var empty: String { L10n.tr("apple.print.empty") }
+        /// Trends is a chart. Use the CSV or JSON export beside it.
+        static var refusalTrends: String { L10n.tr("apple.print.refusal_trends") }
+        /// History is a list of links. Use the CSV or JSON export beside it.
+        static var refusalHistory: String { L10n.tr("apple.print.refusal_history") }
+        /// Focus is one task and a timer, not a list.
+        static var refusalFocus: String { L10n.tr("apple.print.refusal_focus") }
+        /// Routines are rules rather than things to do. Print a task list instead.
+        static var refusalRoutines: String { L10n.tr("apple.print.refusal_routines") }
+        /// The daily brief is a glance, not a document.
+        static var refusalBrief: String { L10n.tr("apple.print.refusal_brief") }
+        /// Nothing is selected.
+        static var refusalNothingSelected: String { L10n.tr("apple.print.refusal_nothing_selected") }
+    }
+
+    enum App {
+        /// Not running
+        static var routineTimerStopped: String { L10n.tr("apple.app.routine_timer_stopped") }
+        /// Running
+        static var routineTimerRunning: String { L10n.tr("apple.app.routine_timer_running") }
+        /// Failed: {message}
+        static func routineTimerFailed(message: String) -> String {
+            L10n.tr("apple.app.routine_timer_failed", message)
+        }
+        /// No vault is open. Open Sunrise and try again.
+        static var noOpenVault: String { L10n.tr("apple.app.no_open_vault") }
+        /// The core answered a task query with something else.
+        static var widgetQueryMismatch: String { L10n.tr("apple.app.widget_query_mismatch") }
+    }
+
+    enum Update {
+        /// Check for Updates…
+        static var check: String { L10n.tr("apple.update.check") }
+        /// Include Beta Updates
+        static var includeBeta: String { L10n.tr("apple.update.include_beta") }
+        /// Offer release candidates and betas as well as stable releases.
+        static var includeBetaHelp: String { L10n.tr("apple.update.include_beta_help") }
+        /// This build carries no update-signing public key, so it cannot verify an update. Download a release from the project's Releases page instead.
+        static var unavailable: String { L10n.tr("apple.update.unavailable") }
+    }
+
+    enum Action {
+        /// Cancel
+        static var cancel: String { L10n.tr("apple.action.cancel") }
+        /// Done
+        static var done: String { L10n.tr("apple.action.done") }
+        /// Save
+        static var save: String { L10n.tr("apple.action.save") }
+        /// Add
+        static var add: String { L10n.tr("apple.action.add") }
+        /// Delete
+        static var delete: String { L10n.tr("apple.action.delete") }
+        /// Remove
+        static var remove: String { L10n.tr("apple.action.remove") }
+        /// Close
+        static var close: String { L10n.tr("apple.action.close") }
+        /// Dismiss
+        static var dismiss: String { L10n.tr("apple.action.dismiss") }
+        /// Edit
+        static var edit: String { L10n.tr("apple.action.edit") }
+        /// Try again
+        static var tryAgain: String { L10n.tr("apple.action.try_again") }
+        /// Open Settings…
+        static var openSettings: String { L10n.tr("apple.action.open_settings") }
+    }
+
     enum Common {
         /// Sunrise
         static var productName: String { L10n.tr("common.product_name") }

@@ -51,36 +51,36 @@ enum AppAction: String, CaseIterable, Hashable, Sendable {
     /// What the palette, the cheat sheet and the menu all call it.
     var title: String {
         switch self {
-        case .quickCaptureGlobal: "Quick Capture (anywhere)"
-        case .quickCapture: "New Task"
-        case .today: "Go to Today"
-        case .inbox: "Go to Inbox"
-        case .searchInView: "Find in This List"
-        case .searchGlobal: "Search Everything"
-        case .commandPalette: "Command Palette"
-        case .newStream: "New Stream…"
-        case .markDone: "Mark Done"
-        case .deferTask: "Defer to Tomorrow"
-        case .schedule: "Schedule…"
-        case .moveToStream: "Move to Stream…"
-        case .focusMode: "Start Focus Session"
-        case .moveUp: "Move Up"
-        case .moveDown: "Move Down"
-        case .listTop: "Go to Top"
-        case .listBottom: "Go to Bottom"
-        case .openDetail: "Open"
-        case .closeDetail: "Close"
-        case .toggleSelection: "Toggle Selection"
-        case .extendSelectionUp: "Extend Selection Up"
-        case .extendSelectionDown: "Extend Selection Down"
-        case .undo: "Undo"
-        case .redo: "Redo"
-        case .printView: "Print…"
-        case .exportPDF: "Export as PDF…"
-        case .cheatSheet: "Keyboard Shortcuts"
-        case .morningSummary: "Morning Summary"
-        case .endOfDay: "End of Day"
-        case .importCalendar: "Import Calendar…"
+        case .quickCaptureGlobal: L10n.Keyboard.Command.quickCaptureGlobal
+        case .quickCapture: L10n.Keyboard.Command.quickCapture
+        case .today: L10n.Keyboard.Command.today
+        case .inbox: L10n.Keyboard.Command.inbox
+        case .searchInView: L10n.Keyboard.Command.searchInView
+        case .searchGlobal: L10n.Keyboard.Command.searchGlobal
+        case .commandPalette: L10n.Keyboard.Command.commandPalette
+        case .newStream: L10n.Keyboard.Command.newStream
+        case .markDone: L10n.Keyboard.Command.markDone
+        case .deferTask: L10n.Keyboard.Command.deferTask
+        case .schedule: L10n.Keyboard.Command.schedule
+        case .moveToStream: L10n.Keyboard.Command.moveToStream
+        case .focusMode: L10n.Keyboard.Command.focusMode
+        case .moveUp: L10n.Keyboard.Command.moveUp
+        case .moveDown: L10n.Keyboard.Command.moveDown
+        case .listTop: L10n.Keyboard.Command.listTop
+        case .listBottom: L10n.Keyboard.Command.listBottom
+        case .openDetail: L10n.Keyboard.Command.openDetail
+        case .closeDetail: L10n.Keyboard.Command.closeDetail
+        case .toggleSelection: L10n.Keyboard.Command.toggleSelection
+        case .extendSelectionUp: L10n.Keyboard.Command.extendSelectionUp
+        case .extendSelectionDown: L10n.Keyboard.Command.extendSelectionDown
+        case .undo: L10n.Keyboard.Command.undo
+        case .redo: L10n.Keyboard.Command.redo
+        case .printView: L10n.Keyboard.Command.printView
+        case .exportPDF: L10n.Keyboard.Command.exportPdf
+        case .cheatSheet: L10n.Keyboard.Command.cheatSheet
+        case .morningSummary: L10n.Keyboard.Command.morningSummary
+        case .endOfDay: L10n.Keyboard.Command.endOfDay
+        case .importCalendar: L10n.Keyboard.Command.importCalendar
         }
     }
 
@@ -162,13 +162,13 @@ enum KeySection: String, CaseIterable, Hashable, Sendable {
 
     var title: String {
         switch self {
-        case .capture: "Capture"
-        case .navigation: "Going places"
-        case .list: "Moving through a list"
-        case .task: "Acting on what is selected"
-        case .edit: "Undo"
-        case .document: "Files and printing"
-        case .help: "Help"
+        case .capture: L10n.Keyboard.Heading.capture
+        case .navigation: L10n.Keyboard.Heading.navigation
+        case .list: L10n.Keyboard.Heading.list
+        case .task: L10n.Keyboard.Heading.task
+        case .edit: L10n.Keyboard.Heading.edit
+        case .document: L10n.Keyboard.Heading.document
+        case .help: L10n.Keyboard.Heading.help
         }
     }
 }
@@ -313,8 +313,15 @@ extension Keymap {
     /// The sentence an empty state ends on: "Press ⌘N to capture." Empty when
     /// the action has no binding, so the caller never prints "Press  to".
     static func pressHint(_ action: AppAction, to purpose: String) -> String {
+        pressHint(action) { L10n.Keyboard.pressHint(keys: $0, purpose: purpose) }
+    }
+
+    /// The same, worded whole by the caller: `sentence` is handed the keys
+    /// and returns the catalog's sentence for them, so a translation can put
+    /// the keys wherever its grammar wants them.
+    static func pressHint(_ action: AppAction, _ sentence: (String) -> String) -> String {
         let keys = shortcutLabel(for: action)
-        return keys.isEmpty ? "" : "Press \(keys) to \(purpose)."
+        return keys.isEmpty ? "" : sentence(keys)
     }
 
     private static func hinted(_ title: String, _ keys: String) -> String {

@@ -60,13 +60,19 @@ struct RoutineEditorView: View {
 
     var body: some View {
         Form {
-            TextField("Title", text: $title, prompt: Text("Water the plants"))
+            TextField(
+                L10n.RoutineEditor.titleField,
+                text: $title,
+                prompt: Text(L10n.RoutineEditor.titlePrompt)
+            )
 
-            Section("Cadence") {
+            Section(L10n.RoutineEditor.cadence) {
                 TextField(
-                    "Repeats",
+                    L10n.RoutineEditor.repeats,
                     text: $recurrence.text,
-                    prompt: Text("every 2 weeks on tue")
+                    // Grammar the core parses, not prose: it stays English
+                    // because only English phrases parse.
+                    prompt: Text(verbatim: "every 2 weeks on tue")
                 )
                 // A grammar too, and one the core parses word by word: an
                 // autocorrect that turns `tue` into `true` produces a rule
@@ -81,36 +87,36 @@ struct RoutineEditorView: View {
                         .font(.caption)
                         .foregroundStyle(.orange)
                 }
-                Picker("Timezone", selection: $timeZone) {
+                Picker(L10n.RoutineEditor.timezone, selection: $timeZone) {
                     ForEach(Self.zones, id: \.self) { Text($0).tag($0) }
                 }
-                Picker("Missed occurrences", selection: $catchup) {
-                    Text("Skip").tag(RoutineCatchupPolicy.skip)
-                    Text("Merge into one").tag(RoutineCatchupPolicy.merge)
-                    Text("Queue them all").tag(RoutineCatchupPolicy.queue)
+                Picker(L10n.RoutineEditor.missed, selection: $catchup) {
+                    Text(L10n.RoutineEditor.catchupSkip).tag(RoutineCatchupPolicy.skip)
+                    Text(L10n.RoutineEditor.catchupMerge).tag(RoutineCatchupPolicy.merge)
+                    Text(L10n.RoutineEditor.catchupQueue).tag(RoutineCatchupPolicy.queue)
                     // A policy a newer client wrote: offered as itself, so
                     // saving without touching it keeps it.
                     if let held = routine?.catchupPolicy, case .unknown = held {
-                        Text("Unknown").tag(held)
+                        Text(L10n.RoutineEditor.unknown).tag(held)
                     }
                 }
-                Toggle("Stops on a date", isOn: $hasEnd)
+                Toggle(L10n.RoutineEditor.stopsOnDate, isOn: $hasEnd)
                 if hasEnd {
-                    DatePicker("Until", selection: $endsAt, displayedComponents: [.date])
+                    DatePicker(L10n.RoutineEditor.until, selection: $endsAt, displayedComponents: [.date])
                 }
             }
 
-            Section("Each task") {
-                Picker("Stream", selection: $streamID) {
+            Section(L10n.RoutineEditor.eachTask) {
+                Picker(L10n.RoutineEditor.stream, selection: $streamID) {
                     ForEach(streams.streamsByName, id: \.0) { id, name in
                         Text(name).tag(id)
                     }
                 }
-                Picker("Priority", selection: $priority) {
-                    Text("None").tag(0)
+                Picker(L10n.RoutineEditor.priority, selection: $priority) {
+                    Text(L10n.RoutineEditor.priorityNone).tag(0)
                     ForEach(1...5, id: \.self) { Text("!\($0)").tag($0) }
                 }
-                Picker("Energy", selection: $energy) {
+                Picker(L10n.RoutineEditor.energy, selection: $energy) {
                     Text(energyLabel(energy: nil)).tag(nil as Energy?)
                     Text(energyLabel(energy: .low)).tag(Energy.low as Energy?)
                     Text(energyLabel(energy: .med)).tag(Energy.med as Energy?)
@@ -119,14 +125,14 @@ struct RoutineEditorView: View {
                         Text(energyLabel(energy: held)).tag(held as Energy?)
                     }
                 }
-                LabeledContent("Estimate") {
+                LabeledContent(L10n.RoutineEditor.estimate) {
                     HStack {
                         TextField("", value: $estimateMinutes, format: .number)
                             .textInput(.number)
                             .frame(width: 60)
                         Text(estimateMinutes > 0
                             ? shortDuration(secs: UInt64(estimateMinutes * 60))
-                            : "none")
+                            : L10n.RoutineEditor.estimateNone)
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -135,8 +141,8 @@ struct RoutineEditorView: View {
             Section {
                 HStack {
                     Spacer()
-                    Button("Cancel") { dismiss() }
-                    Button(isCreating ? "Create" : "Save", action: save)
+                    Button(L10n.Action.cancel) { dismiss() }
+                    Button(isCreating ? L10n.RoutineEditor.create : L10n.Action.save, action: save)
                         .keyboardShortcut(.defaultAction)
                         .disabled(!canSave)
                         .disabledUnlessEditable(.routine, .task)
@@ -146,7 +152,7 @@ struct RoutineEditorView: View {
         .formStyle(.grouped)
         .macSheetFrame(width: 440)
         .padding(.vertical, 8)
-        .navigationTitle(isCreating ? "New routine" : "Edit routine")
+        .navigationTitle(isCreating ? L10n.RoutineEditor.newRoutine : L10n.RoutineEditor.editRoutine)
     }
 
     /// The device's zone first, then the rest. A routine is nearly always in

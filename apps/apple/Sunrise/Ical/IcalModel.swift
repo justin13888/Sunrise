@@ -76,11 +76,9 @@ struct IcalImportSummary: Equatable, Sendable {
     /// The one line at the top. The same four numbers `ImportReport::
     /// summary_line` gives the CLI, said the way a sheet says them.
     var headline: String {
-        var parts = [created == 1 ? "1 event imported" : "\(created) events imported"]
-        if updated > 0 { parts.append("\(updated) already up to date") }
-        if failed > 0 {
-            parts.append(failed == 1 ? "1 could not be read" : "\(failed) could not be read")
-        }
+        var parts = [L10n.Ical.headlineImported(count: created)]
+        if updated > 0 { parts.append(L10n.Ical.headlineUpToDate(count: updated)) }
+        if failed > 0 { parts.append(L10n.Ical.headlineFailed(count: failed)) }
         return parts.joined(separator: ", ")
     }
 
@@ -94,11 +92,8 @@ struct IcalImportSummary: Equatable, Sendable {
     /// "everything came across" is the answer to the question the sheet is
     /// there to ask, and leaving it blank makes silence ambiguous.
     var noticeSummary: String {
-        guard hasNotices else { return "Everything in the file came across." }
-        let count = noticeCount
-        return count == 1
-            ? "1 thing could not be carried into a time block."
-            : "\(count) things could not be carried into time blocks."
+        guard hasNotices else { return L10n.Ical.noticesNone }
+        return L10n.Ical.noticesCount(count: noticeCount)
     }
 
     /// `docs/09-integrations/icalendar.md` §Edge cases: the whole-item losses
@@ -112,11 +107,11 @@ struct IcalImportSummary: Equatable, Sendable {
 
     private static func heading(for code: NoticeCode) -> String {
         switch code {
-        case .skipped: "Events not imported"
-        case .unsupportedComponent: "Parts of the file a time block cannot hold"
-        case .badValue: "Values that could not be read"
-        case .unknownTimezone: "Unknown time zones, read as UTC"
-        case .unmappedProperty: "Details that did not come across"
+        case .skipped: L10n.Ical.headingSkipped
+        case .unsupportedComponent: L10n.Ical.headingUnsupportedComponent
+        case .badValue: L10n.Ical.headingBadValue
+        case .unknownTimezone: L10n.Ical.headingUnknownTimezone
+        case .unmappedProperty: L10n.Ical.headingUnmappedProperty
         }
     }
 }
@@ -210,8 +205,8 @@ extension ExportWindow {
 
     var menuTitle: String {
         switch self {
-        case .day: "Today"
-        case .week: "This Week"
+        case .day: L10n.Ical.exportToday
+        case .week: L10n.Ical.exportThisWeek
         }
     }
 

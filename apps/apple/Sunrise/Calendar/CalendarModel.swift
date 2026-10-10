@@ -7,7 +7,7 @@ enum CalendarSpan: String, CaseIterable, Identifiable {
     case week
 
     var id: Self { self }
-    var title: String { self == .day ? "Day" : "Week" }
+    var title: String { self == .day ? L10n.Calendar.spanDay : L10n.Calendar.spanWeek }
     /// How many civil days the grid draws.
     var dayCount: Int { self == .day ? 1 : 7 }
 }
@@ -31,17 +31,17 @@ enum BlockTimeKind: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .zoned: "Local time here"
-        case .floating: "Wherever I am"
-        case .instant: "A fixed moment"
+        case .zoned: L10n.Calendar.kindZoned
+        case .floating: L10n.Calendar.kindFloating
+        case .instant: L10n.Calendar.kindInstant
         }
     }
 
     var explanation: String {
         switch self {
-        case .zoned: "09:00 in this timezone. Flying somewhere else moves it on your day."
-        case .floating: "09:00 wherever you are. Flying somewhere else keeps it at 09:00."
-        case .instant: "The same instant everywhere. Flying somewhere else changes the clock time."
+        case .zoned: L10n.Calendar.kindZonedExplanation
+        case .floating: L10n.Calendar.kindFloatingExplanation
+        case .instant: L10n.Calendar.kindInstantExplanation
         }
     }
 }
@@ -251,7 +251,7 @@ final class CalendarModel {
             titleTrackTask: false,
             tasks: tasks
         )
-        await run(.createBlock(draft: draft), label: "create a block")
+        await run(.createBlock(draft: draft), label: L10n.Calendar.undoCreateBlock)
     }
 
     /// Drop an existing task onto the grid.
@@ -273,24 +273,24 @@ final class CalendarModel {
         var edit = BlockEdit()
         edit.startsAt = sameKind(as: row.block.startsAt, ms: toStartMs)
         edit.endsAt = sameKind(as: row.block.endsAt, ms: toEndMs)
-        await run(.updateBlock(id: row.block.id, edit: edit), label: "move a block")
+        await run(.updateBlock(id: row.block.id, edit: edit), label: L10n.Calendar.undoMoveBlock)
     }
 
     func bind(task: EntityRef, to block: EntityRef) async {
-        await run(.bindTask(block: block, task: task), label: "bind a task")
+        await run(.bindTask(block: block, task: task), label: L10n.Calendar.undoBindTask)
     }
 
     func unbind(task: EntityRef, from block: EntityRef) async {
-        await run(.unbindTask(block: block, task: task), label: "unbind a task")
+        await run(.unbindTask(block: block, task: task), label: L10n.Calendar.undoUnbindTask)
     }
 
     func delete(_ block: EntityRef) async {
-        await run(.deleteBlock(id: block), label: "delete a block")
+        await run(.deleteBlock(id: block), label: L10n.Calendar.undoDeleteBlock)
     }
 
     /// Apply an edit from the block editor.
     func apply(_ edit: BlockEdit, to block: EntityRef) async {
-        await run(.updateBlock(id: block, edit: edit), label: "edit a block")
+        await run(.updateBlock(id: block, edit: edit), label: L10n.Calendar.undoEditBlock)
     }
 
     // MARK: - Resolving a conflict
@@ -298,7 +298,7 @@ final class CalendarModel {
     /// **Keep both** — the documented no-op. It exists so the menu has three
     /// entries and the user can say "yes, on purpose"; nothing is written.
     func keepBoth() {
-        note = "Both blocks kept."
+        note = L10n.Calendar.noteKeptBoth
     }
 
     /// **Merge** — tombstone the two blocks and create their union.
@@ -322,7 +322,7 @@ final class CalendarModel {
                 _ = try await bridge.submit(.deleteBlock(id: id))
             }
             _ = try await bridge.submit(.createBlock(draft: draft))
-            note = "Merged into one block."
+            note = L10n.Calendar.noteMerged
             await refresh()
         } catch {
             errorMessage = error.localizedDescription

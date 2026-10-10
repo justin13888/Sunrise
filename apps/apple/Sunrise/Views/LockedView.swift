@@ -28,7 +28,7 @@ struct LockedView: View {
             Image(systemName: "lock.trianglebadge.exclamationmark")
                 .font(.system(size: 44))
                 .foregroundStyle(.orange)
-            Text("Sunrise is locked")
+            Text(L10n.Locked.title)
                 .font(.title.weight(.semibold))
             Text(reason.summary)
                 .font(.callout)
@@ -51,7 +51,7 @@ struct LockedView: View {
                 // button for — so iOS shows the explanation and the retry
                 // above, and stops there rather than pointing at nothing.
                 if case .keychainUnavailable = reason {
-                    Button("Open Keychain Access") {
+                    Button(L10n.Locked.openKeychainAccess) {
                         Platform.openExternal(
                             URL(filePath: "/System/Applications/Utilities/Keychain Access.app")
                         )
@@ -59,10 +59,10 @@ struct LockedView: View {
                 }
                 #endif
                 if reason == .keyMissingForExistingVault {
-                    Button("Pair with a device…") { pairing = makePairing() }
+                    Button(L10n.Locked.pair) { pairing = makePairing() }
                         .accessibilityIdentifier("locked.pair")
                     // For the user with no device left to pair with (#349).
-                    Button("Restore from recovery code…") { session?.beginRestore() }
+                    Button(L10n.Locked.restore) { session?.beginRestore() }
                         .disabled(session == nil)
                         .accessibilityIdentifier("locked.restore")
                 }
@@ -70,19 +70,11 @@ struct LockedView: View {
             .controlSize(.large)
 
             if reason == .keyMissingForExistingVault {
-                Text(
-                    """
-                    Pairing brings the key back from a device that still has it. \
-                    The data already on this \(Platform.deviceName) stays where it is — the key is \
-                    the only thing that was missing. With no device left, the recovery code \
-                    restores the account from the relay; the unreadable vault is moved aside, \
-                    not deleted.
-                    """
-                )
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 460)
+                Text(L10n.Locked.keyMissingCaption(device: Platform.deviceName))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 460)
             }
         }
         .padding(40)

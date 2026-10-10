@@ -18,11 +18,9 @@ enum NoteEditorLock: Equatable {
     var message: String {
         switch self {
         case .unreadable:
-            "This note was written by a newer version of Sunrise. "
-                + "You can read it here; editing it would drop the parts this version cannot show."
+            L10n.Notes.unreadable
         case .unsupported:
-            "This note uses formatting this editor cannot change yet — a reference, a mention, "
-                + "or nested content. You can read it here, and edit it in a later version."
+            L10n.Notes.unsupported
         }
     }
 }
@@ -120,9 +118,9 @@ final class NoteEditorModel {
         let size = UInt64(encodeNoteBody(blocks: noteBlocks).count)
         guard size >= limits.softBytes else { return nil }
         if size >= limits.maxBytes {
-            return "This note is at the size limit. Split it into two."
+            return L10n.Notes.atLimit
         }
-        return "This note is getting long. Consider splitting it."
+        return L10n.Notes.gettingLong
     }
 
     // MARK: - Writing

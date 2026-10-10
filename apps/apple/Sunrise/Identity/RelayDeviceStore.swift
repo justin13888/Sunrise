@@ -229,7 +229,7 @@ enum RelayDeviceIDError: Error, Equatable {
 extension RelayDeviceIDError: LocalizedError {
     var errorDescription: String? {
         switch self {
-        case .empty: "A relay device id cannot be empty."
+        case .empty: L10n.Identity.relayDeviceIdEmpty
         }
     }
 }

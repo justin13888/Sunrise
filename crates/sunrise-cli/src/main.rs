@@ -48,151 +48,6 @@ use sunrise_core::{
 use sunrise_domain::routine_rows;
 use sunrise_id::{EntityKind, EntityRef};
 
-const USAGE: &str = "\
-sunrise — command-line client for Sunrise
-
-USAGE:
-  capture and triage
-    sunrise capture <text>...    parse and commit one task, then exit
-    sunrise edit <id>... <tokens>...
-                                 change a task's fields (see EDIT SYNTAX)
-    sunrise retitle <id> <text>...
-                                 give one task a new title
-    sunrise defer <id>... <when> push tasks out, counting the deferral
-    sunrise done <id>...         complete one or more tasks
-    sunrise drop <id>...         soft-delete one or more tasks
-    sunrise today                list today's tasks
-    sunrise inbox                list inbox tasks
-    sunrise next                 the focus planner's top picks
-    sunrise search <query>...    full-text search
-
-  the vault's shape
-    sunrise streams              list streams with open counts
-    sunrise streams move <id|name> before <id|name>
-    sunrise streams move <id|name> last
-                                 reorder the stream list; syncs to every device
-    sunrise stream <id|name>     list the tasks in one stream
-    sunrise contexts             list contexts with task counts
-    sunrise context <id|name>    list the tasks carrying one context
-    sunrise routines             list routines with cadence and streak
-
-  attachments
-    sunrise attachments <task-id>
-                                 list a task's attachments, marking which are
-                                 on this device
-    sunrise attachment get <attachment-id> [path]
-                                 download one attachment's bytes on demand,
-                                 whatever its size, and write them to `path`
-                                 or to stdout
-    sunrise attachment cancel <attachment-id>
-                                 stop a download this vault has outstanding and
-                                 mark it partial; `get` restarts it from byte 0
-
-  review and reporting
-    sunrise review               print this week's review summary
-    sunrise export <dataset> [json|csv] [path]
-                                 trends | activity | focus | streaks
-
-  calendar interchange (RFC 5545)
-    sunrise ical import <path|-> [--stream <id>] [--source <name>]
-                                 read an .ics file (or stdin) as time blocks
-    sunrise ical export [today|week] [path]
-                                 write .ics to stdout, or to a path
-
-  devices and identity
-    sunrise pair offer --out <file>
-                                 (on the device with the vault) write the
-                                 account's public identity. Carries no key
-    sunrise pair request --offer <file> --out <file>
-                                 (on the device being added) mint this device's
-                                 keys and ask for a certificate
-    sunrise pair issue --request <file> --out <file>
-                                 (on the device with the vault) certify those
-                                 keys and hand over the vault. This file carries
-                                 your vault key
-    sunrise pair accept --response <file>
-                                 (on the device being added) adopt the
-                                 certificate and open the vault
-    sunrise devices              list this account's devices, marking revoked
-                                 and non-current ones distinctly
-    sunrise device revoke <id-prefix> [--reason lost|stolen|retired|compromised]
-                                 revoke a device and rotate every Stream key, so
-                                 it reads nothing written afterwards. Also
-                                 rotates the account identity, on the device
-                                 that created the account. It cannot be
-                                 undone: to use the device again, pair it
-                                 as a new device
-    sunrise identity status      the account's identity chain: its stable name,
-                                 the identity in force, and whether this device
-                                 still speaks for it
-    sunrise identity rotate [--new-recovery-code]
-                                 replace the account identity, keeping every
-                                 current device. --new-recovery-code refuses to
-                                 carry the old code forward, which is what to
-                                 use when the code itself is suspected
-
-  account
-    sunrise vaults               list this machine's vaults, marking the open one
-    sunrise login                sign in via OIDC and store the token
-    sunrise logout               forget the stored token
-    sunrise whoami               report the stored token's state
-    sunrise bootstrap [email]    publish this vault's identity to the relay,
-                                 register this device, and print the 24-word
-                                 recovery code once. Write that code down
-    sunrise recover <word>...    rebuild this account in an EMPTY vault
-                                 directory from the 24-word code. Reads the
-                                 code from stdin if none is given, and signs
-                                 you in again first — the relay only releases
-                                 a recovery blob to a fresh authentication
-
-  plumbing
-    sunrise focus <id>           open a focus session on a task
-    sunrise focus end [--done]   close every running session; --done also
-                                 completes the task it was opened on
-    sunrise sync --once          drain the outbox and exit (cron / CI)
-    sunrise help                 show this message
-
-CAPTURE SYNTAX:
-    #stream  @context  ^when  !priority(1-5)  ~duration  *due:when*
-
-    sunrise capture 'Renew passport #travel ^next saturday !1 ~1h'
-
-EDIT SYNTAX:
-    #stream  @ctx  @-ctx  !priority  %energy  ~duration  ^when  due:when
-    a trailing `-` clears a field:  !-  %-  ~-  ^-  due:-  @-
-
-    sunrise edit tsk_01J… '#work !1 ^next friday'
-    sunrise edit tsk_01J… tsk_01K… '@errands ~30m'
-
-    Bare words are refused: an edit line is not a title, and the whole
-    line is rejected if any token is, so nothing is half-applied.
-    The title is `sunrise retitle`, which is all title and no grammar.
-
-ENVIRONMENT:
-    SUNRISE_VAULT             vault directory (default ~/.sunrise/vault).
-                              Each one is a separate account: the first open
-                              mints a random 32-byte root for it
-    SUNRISE_KEYSTORE          where those roots are kept, mode 0600 and one
-                              file per vault (default
-                              $XDG_DATA_HOME/sunrise/keys). Deliberately not
-                              inside the vault: a vault directory copied on
-                              its own must stay ciphertext. Back both up
-    SUNRISE_VAULT_ROOT        open with this root (64 hex chars) and touch no
-                              keystore — how two vaults share one account
-                              until pairing lands, and how to open a vault
-                              made before per-vault keys
-    SUNRISE_SYNC_URL          relay endpoint; unset means fully offline
-    SUNRISE_SYNC_TOKEN        OIDC bearer for the relay; overrides a stored
-                              login. Unset, with no stored login, only works
-                              against a self-host relay
-    SUNRISE_OIDC_ISSUER       OIDC issuer URL, for `sunrise login`
-    SUNRISE_OIDC_CLIENT_ID    OIDC client id, for `sunrise login`
-    SUNRISE_LOG_FILE          override the NDJSON log destination
-
-  Joining an account is `sunrise pair`, not a variable. The two that used to do
-  it carried the account's signing key in one file; see `sunrise pair`.
-";
-
 /// Returns [`std::process::ExitCode`] rather than a `Result`, because the
 /// `Termination` impl for a `Result` prints the error's **`Debug`** form.
 /// `VaultError` spends most of its length explaining what a user should do
@@ -223,7 +78,7 @@ async fn main() -> std::process::ExitCode {
     let Some(sub) = args.first() else {
         #[allow(clippy::print_stdout)]
         {
-            print!("{USAGE}");
+            print!("{}", strings::usage::text());
         }
         return std::process::ExitCode::SUCCESS;
     };
@@ -233,7 +88,7 @@ async fn main() -> std::process::ExitCode {
             // stderr, because stdout is the contract a script reads.
             #[allow(clippy::print_stderr)]
             {
-                eprintln!("error: {e}");
+                eprintln!("{}", strings::general::error(&e.to_string()));
             }
             std::process::ExitCode::FAILURE
         }
@@ -302,10 +157,10 @@ fn flag_value(args: &[String], name: &str) -> Option<String> {
 async fn resolve_device(core: &Core, prefix: &str) -> Result<[u8; 16], Box<dyn std::error::Error>> {
     let prefix = prefix.trim().to_ascii_lowercase();
     if prefix.is_empty() {
-        return Err("give a device id or a prefix of one".into());
+        return Err(strings::devices::no_prefix().into());
     }
     let QueryResult::Devices(rows) = core.query(Query::DeviceList).await? else {
-        return Err("expected a device list".into());
+        return Err(strings::general::expected_device_list().into());
     };
     let hits: Vec<[u8; 16]> = rows
         .iter()
@@ -314,10 +169,10 @@ async fn resolve_device(core: &Core, prefix: &str) -> Result<[u8; 16], Box<dyn s
         .collect();
     match hits.as_slice() {
         [one] => Ok(*one),
-        [] => Err(format!("no device id starts with `{prefix}`").into()),
-        many => Err(format!(
-            "`{prefix}` matches {} devices; use more characters",
-            many.len()
+        [] => Err(strings::devices::no_match(&prefix).into()),
+        many => Err(strings::devices::ambiguous(
+            i64::try_from(many.len()).unwrap_or(i64::MAX),
+            &prefix,
         )
         .into()),
     }
@@ -371,7 +226,7 @@ async fn run(sub: &str, rest: &[String]) -> Result<(), Box<dyn std::error::Error
     #![allow(clippy::print_stdout)]
     match sub {
         "help" | "--help" | "-h" => {
-            print!("{USAGE}");
+            print!("{}", strings::usage::text());
             return Ok(());
         }
         "--version" | "-V" => {
@@ -486,11 +341,7 @@ async fn dispatch(
     match sub {
         "login" => {
             let cfg = login::LoginConfig::from_env().map_err(|e| {
-                format!(
-                    "{e}; set {} and {} first",
-                    login::ENV_ISSUER,
-                    login::ENV_CLIENT_ID
-                )
+                strings::login::needs_config(&e, login::ENV_ISSUER, login::ENV_CLIENT_ID)
             })?;
             let store = login::store_for(vault_dir);
             let device_id = login::device_id_hex(core);
@@ -526,9 +377,9 @@ async fn dispatch(
         "bootstrap" => {
             let store = login::store_for(vault_dir);
             let creds = sunrise_auth::store::CredentialStore::load(&store)?
-                .ok_or("not signed in; run `sunrise login` first")?;
+                .ok_or_else(strings::bootstrap::not_signed_in)?;
             let url = std::env::var(livesync::ENV_SYNC_URL)
-                .map_err(|_| format!("set {} to the relay origin", livesync::ENV_SYNC_URL))?;
+                .map_err(|_| strings::bootstrap::needs_relay(livesync::ENV_SYNC_URL))?;
 
             let (account, recovery_code) = bootstrap_account(core, rest)?;
             let outcome = sunrise_relay_client::bootstrap(
@@ -544,17 +395,17 @@ async fn dispatch(
             // A client that dropped it would hold a signing key it could not
             // say whose it was.
             if let Err(e) = livesync::save_relay_device_id(vault_dir, &outcome.device_id) {
-                return Err(format!(
-                    "registered as {} but could not record it at {}: {e}",
-                    outcome.device_id,
-                    livesync::relay_device_path(vault_dir).display()
+                return Err(strings::bootstrap::unrecorded(
+                    &outcome.device_id,
+                    &livesync::relay_device_path(vault_dir).display().to_string(),
+                    &e.to_string(),
                 )
                 .into());
             }
 
             println!(
-                "Account {} ({}) ready; this device is {}.",
-                outcome.identity_id, outcome.email, outcome.device_id
+                "{}",
+                strings::bootstrap::ready(&outcome.identity_id, &outcome.email, &outcome.device_id)
             );
             // Printed only after the relay accepted the blob. A second
             // bootstrap that seals a *different* blob is refused with
@@ -566,9 +417,8 @@ async fn dispatch(
                     #[allow(clippy::print_stderr)]
                     {
                         eprintln!(
-                            "note: this vault was paired into an existing account, so it holds no \
-                             identity key and cannot produce a recovery code. The device that \
-                             created the account is the one that can."
+                            "{}",
+                            strings::general::note(&strings::bootstrap::paired_no_code())
                         );
                     }
                 }
@@ -581,7 +431,7 @@ async fn dispatch(
         "capture" => {
             let text = rest.join(" ");
             if text.trim().is_empty() {
-                return Err("capture needs some text; see `sunrise help`".into());
+                return Err(strings::capture::needs_text().into());
             }
             // System zone, so `^tomorrow 9am` means the user's 9am.
             let tz = jiff::tz::TimeZone::system();
@@ -593,7 +443,7 @@ async fn dispatch(
                 // screen, so stderr is safe here and only here.
                 #[allow(clippy::print_stderr)]
                 {
-                    eprintln!("note: {}", unresolved_note(u));
+                    eprintln!("{}", strings::general::note(&unresolved_note(u)));
                 }
             }
             let title = parsed.draft.title.clone();
@@ -630,16 +480,16 @@ async fn dispatch(
         // id, and `current` is the only column that shows it (ADR-0032, #105).
         "devices" => {
             let QueryResult::Devices(rows) = core.query(Query::DeviceList).await? else {
-                return Err("expected a device list".into());
+                return Err(strings::general::expected_device_list().into());
             };
             let me = core.device_id();
             for d in rows {
-                let mut marks: Vec<&str> = Vec::new();
+                let mut marks: Vec<String> = Vec::new();
                 if d.device_id == me {
-                    marks.push("this device");
+                    marks.push(strings::devices::mark_this_device());
                 }
                 if d.revoked {
-                    marks.push("revoked");
+                    marks.push(strings::devices::mark_revoked());
                 } else if d.read_bounded {
                     // The two revocation facts have come apart, which since
                     // ADR-0041 is ordinary rather than exotic: the register is
@@ -649,18 +499,14 @@ async fn dispatch(
                     // Printing only `revoked` hid this device entirely — it
                     // read as a plain member while receiving nothing. The
                     // remedy is named because there is one.
-                    marks.push(
-                        "removed earlier; the account no longer records that, \
-                         but it still receives no keys -- remove it again from \
-                         a device you trust",
-                    );
+                    marks.push(strings::devices::mark_read_bounded());
                 }
                 if !d.current {
                     // Deliberately not "compromised" or "impostor". An honest
                     // device that has not yet applied a rotation reads exactly
                     // the same way for a moment, and nothing on this replica
                     // can separate the two.
-                    marks.push("not active on this account");
+                    marks.push(strings::devices::mark_not_current());
                 }
                 if d.admitted_after_revocation {
                     // The third state, and the only one that is invisible in
@@ -669,7 +515,7 @@ async fn dispatch(
                     // identity in force and reads `revoked: no, current: yes`.
                     // Worded as an event rather than a verdict, because the
                     // ordinary cause is an honest pairing (#144).
-                    marks.push("joined after a device was removed");
+                    marks.push(strings::devices::mark_admitted_after_revocation());
                 }
                 let suffix = if marks.is_empty() {
                     String::new()
@@ -696,38 +542,29 @@ async fn dispatch(
             // every listing is how a warning stops being read.
             if core.holds_identity_key() {
                 println!();
-                println!(
-                    "This device holds the account identity key. A sealed recovery code is \n\
-                     its only other copy: without one, losing this vault destroys the key \n\
-                     permanently and no recovery feature added later can retrieve it."
-                );
-                println!("  - `sunrise bootstrap` seals that second copy");
+                println!("{}", strings::devices::identity_key());
+                println!("  - {}", strings::devices::identity_key_remedy());
             }
             Ok(())
         }
         "device" => {
             let Some(verb) = rest.first().map(String::as_str) else {
-                return Err("usage: sunrise device revoke <id-prefix> [--reason <r>]".into());
+                return Err(strings::devices::revoke_usage().into());
             };
             if verb != "revoke" {
-                return Err(format!("unknown device subcommand `{verb}`").into());
+                return Err(strings::devices::unknown_subcommand(verb).into());
             }
             let args = &rest[1..];
             let prefix = args
                 .iter()
                 .find(|a| !a.starts_with("--"))
-                .ok_or("usage: sunrise device revoke <id-prefix> [--reason <r>]")?;
+                .ok_or_else(strings::devices::revoke_usage)?;
             let reason = match flag_value(args, "--reason").as_deref() {
                 None | Some("lost") => RevokeReason::Lost,
                 Some("stolen") => RevokeReason::Stolen,
                 Some("retired") => RevokeReason::Retired,
                 Some("compromised") => RevokeReason::Compromised,
-                Some(other) => {
-                    return Err(format!(
-                        "unknown reason `{other}`; use lost, stolen, retired or compromised"
-                    )
-                    .into())
-                }
+                Some(other) => return Err(strings::devices::unknown_reason(other).into()),
             };
             let target = resolve_device(core, prefix).await?;
             let outcome = core
@@ -763,54 +600,44 @@ async fn dispatch(
             // held and not sent (`crates/sunrise-core/src/relay_intents.rs`,
             // #257).
             if outcome.revocation_gated {
+                println!("{}", strings::devices::gated_title());
                 println!(
-                    "NOT revoked: this device has itself been revoked, so the account \
-                     discards its revocations of other devices."
+                    "  - {}",
+                    strings::devices::gated_still_current(&hex16(&target))
                 );
-                println!("  - {} is still a current device", hex16(&target));
-                println!("  - this revocation tells the relay nothing");
-                println!(
-                    "  - the op is kept, not dropped: revoke from a device the account \
-                     still trusts, or see `sunrise devices` for which those are"
-                );
-                println!("  - no Stream key was rotated and the account identity is untouched");
+                println!("  - {}", strings::devices::gated_relay());
+                println!("  - {}", strings::devices::gated_kept());
+                println!("  - {}", strings::devices::gated_untouched());
                 print_revocation_unwound(&outcome.revocation_unwound);
                 return Ok(());
             }
-            println!("Revoked {} locally.", hex16(&target));
+            println!("{}", strings::devices::revoked_title(&hex16(&target)));
             // Not "every Stream key rotated" unconditionally: that was a claim
             // this command could not always make. A vault row whose stream id
             // is malformed names no stream to rotate, and the revoked device
             // goes on holding whatever key it was last given for it.
             if outcome.unrotated_streams.is_empty() {
-                println!("  - every Stream key rotated, and the account identity with it");
+                println!("  - {}", strings::devices::revoked_all_rotated());
             } else {
-                println!("  - the account identity rotated, and every Stream key BUT these:");
+                println!("  - {}", strings::devices::revoked_some_unrotated());
+                let row_note = strings::devices::unrotated_row();
                 for raw in &outcome.unrotated_streams {
-                    println!("      {raw}  (not a 16-byte stream id; nothing to rotate)");
+                    println!("      {raw}  {row_note}");
                 }
-                println!(
-                    "    that device may still read them. This is a corrupt row in the \
-                     local vault, not something the revocation can retry."
-                );
+                println!("    {}", strings::devices::unrotated_note());
             }
-            println!("  - that device cannot certify itself back in under a new id");
+            println!("  - {}", strings::devices::no_recertify());
             // Said on the effective branch only: a gated revocation revoked
             // nothing, so there is nothing to be unable to undo. ADR-0056
             // decides a withdrawal by this device, and until #383 builds it,
             // pairing again is the only way back.
-            println!(
-                "  - this cannot be undone: to use that device again, pair it as a new device"
-            );
+            println!("  - {}", strings::devices::irreversible());
             print_revocation_unwound(&outcome.revocation_unwound);
             let pending = core.relay_revocation_pending(&target)?;
             if pending {
-                println!(
-                    "  - the relay has NOT been told yet; it is queued and will be sent \
-                     on the next `sunrise sync`"
-                );
+                println!("  - {}", strings::devices::relay_pending());
             } else {
-                println!("  - the relay has been told");
+                println!("  - {}", strings::devices::relay_told());
             }
             Ok(())
         }
@@ -819,7 +646,7 @@ async fn dispatch(
             match verb {
                 "status" => {
                     let QueryResult::Identity(st) = core.query(Query::IdentityStatus).await? else {
-                        return Err("expected an identity status".into());
+                        return Err(strings::general::expected_identity_status().into());
                     };
                     // The genesis first and labelled "account": it is the
                     // value that does not move, and the one two devices
@@ -831,17 +658,17 @@ async fn dispatch(
                     println!(
                         "this device {}",
                         if st.this_device_is_current {
-                            "speaks for the account"
+                            strings::identity::speaks()
                         } else {
-                            "does NOT speak for the account (no share of the current identity)"
+                            strings::identity::does_not_speak()
                         }
                     );
                     println!(
                         "recovery  {}",
                         if st.holds_recovery_key {
-                            "this device can seal a recovery code"
+                            strings::identity::can_seal()
                         } else {
-                            "this device cannot seal a recovery code"
+                            strings::identity::cannot_seal()
                         }
                     );
                     // The line above and this one look alike and answer
@@ -853,10 +680,9 @@ async fn dispatch(
                     println!(
                         "pairing   {}",
                         if st.can_sponsor {
-                            "this device can add another device"
+                            strings::identity::can_sponsor()
                         } else {
-                            "this device was added by pairing and cannot add another; \
-                             run `sunrise pair` on the device the account was created on"
+                            strings::identity::cannot_sponsor()
                         }
                     );
                     Ok(())
@@ -872,30 +698,27 @@ async fn dispatch(
                     })
                     .await?;
                     let QueryResult::Identity(st) = core.query(Query::IdentityStatus).await? else {
-                        return Err("expected an identity status".into());
+                        return Err(strings::general::expected_identity_status().into());
                     };
                     println!(
-                        "Rotated. The account is still {}.",
-                        hex16(&st.genesis_identity_id)
+                        "{}",
+                        strings::identity::rotated(&hex16(&st.genesis_identity_id))
                     );
                     println!(
-                        "  current identity is now {}",
-                        hex16(&st.current_identity_id)
+                        "  {}",
+                        strings::identity::current_now(&hex16(&st.current_identity_id))
                     );
                     if keep {
-                        println!("  your existing recovery code still works");
+                        println!("  {}", strings::identity::code_kept());
                     } else {
                         #[allow(clippy::print_stderr)]
                         {
-                            eprintln!(
-                                "  your old recovery code no longer opens this account; \
-                                 run `sunrise bootstrap` to mint a new one"
-                            );
+                            eprintln!("  {}", strings::identity::code_retired());
                         }
                     }
                     Ok(())
                 }
-                other => Err(format!("unknown identity subcommand `{other}`").into()),
+                other => Err(strings::identity::unknown_subcommand(other).into()),
             }
         }
         "streams" => {
@@ -933,7 +756,7 @@ async fn dispatch(
         "search" => {
             let text = rest.join(" ");
             if text.trim().is_empty() {
-                return Err("search needs a query".into());
+                return Err(strings::search::needs_query().into());
             }
             let q = Query::Search { text, limit: 100 };
             print_tasks(core.query(q).await?);
@@ -994,7 +817,7 @@ async fn dispatch(
         "attachments" => attachments(core, rest).await,
         "attachment" => attachment(core, rest).await,
         "sync" => sync_once(core, rest).await,
-        other => Err(format!("unknown subcommand {other:?}; try `sunrise help`").into()),
+        other => Err(strings::general::unknown_subcommand(&format!("{other:?}")).into()),
     }
 }
 
@@ -1033,11 +856,11 @@ const DOWNLOAD_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30
 /// attachment id needs a subcommand that prints one.
 async fn attachments(core: &Core, rest: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     #![allow(clippy::print_stdout)]
-    let raw = rest.first().ok_or("usage: attachments <task-id>")?;
+    let raw = rest.first().ok_or_else(strings::attachments::list_usage)?;
     let task = EntityRef::parse(raw, EntityKind::Task)
-        .map_err(|e| format!("not a task id: {raw} ({e})"))?;
+        .map_err(|e| strings::general::not_a_task_id(raw, &e.to_string()))?;
     let QueryResult::Attachments(rows) = core.query(Query::TaskAttachments(task)).await? else {
-        return Err("unexpected query result".into());
+        return Err(strings::general::unexpected_result().into());
     };
     for att in rows {
         println!(
@@ -1059,20 +882,18 @@ async fn attachments(core: &Core, rest: &[String]) -> Result<(), Box<dyn std::er
 fn where_the_bytes_are(
     core: &Core,
     att: &sunrise_domain::Attachment,
-) -> Result<&'static str, Box<dyn std::error::Error>> {
+) -> Result<String, Box<dyn std::error::Error>> {
     if core.attachment_is_local(att)? {
-        return Ok("here");
+        return Ok(strings::attachments::here());
     }
     Ok(match core.attachment_fetch_state(att.id)? {
-        AttachmentFetchState::Requested => "downloading",
-        AttachmentFetchState::Partial => "partial (interrupted; `attachment get` restarts it)",
-        AttachmentFetchState::Idle if att.is_fetchable() => {
-            "not here (`attachment get` fetches it)"
-        }
+        AttachmentFetchState::Requested => strings::attachments::downloading(),
+        AttachmentFetchState::Partial => strings::attachments::partial(),
+        AttachmentFetchState::Idle if att.is_fetchable() => strings::attachments::fetchable(),
         // No `ciphertext_hash`, so this replica cannot name the blob on the
         // relay and no amount of asking will produce it. Said plainly rather
         // than offered as a button that cannot work.
-        AttachmentFetchState::Idle => "not here, and never uploaded",
+        AttachmentFetchState::Idle => strings::attachments::never_uploaded(),
     })
 }
 
@@ -1081,7 +902,7 @@ async fn attachment(core: &Core, rest: &[String]) -> Result<(), Box<dyn std::err
     match rest.first().map(String::as_str) {
         Some("get") => attachment_get(core, &rest[1..]).await,
         Some("cancel") => attachment_cancel(core, &rest[1..]),
-        _ => Err("usage: attachment get <attachment-id> [path] | attachment cancel <id>".into()),
+        _ => Err(strings::attachments::usage().into()),
     }
 }
 
@@ -1096,21 +917,17 @@ async fn attachment_get(core: &Core, rest: &[String]) -> Result<(), Box<dyn std:
     // what keeps `sunrise attachment get att_… > scan.png` a valid file.
     #![allow(clippy::print_stderr)]
     use std::io::Write as _;
-    let raw = rest
-        .first()
-        .ok_or("usage: attachment get <attachment-id> [path]")?;
+    let raw = rest.first().ok_or_else(strings::attachments::get_usage)?;
     let id = EntityRef::parse(raw, EntityKind::Attachment)
-        .map_err(|e| format!("not an attachment id: {raw} ({e})"))?;
+        .map_err(|e| strings::general::not_an_attachment_id(raw, &e.to_string()))?;
 
     match tokio::time::timeout(DOWNLOAD_DEADLINE, core.fetch_attachment(id)).await {
         Ok(r) => r?,
         // Not an error. The row is durable and still says what this device
         // wants, so the honest report is that the work outlived the command.
         Err(_) => {
-            return Err(format!(
-                "the download did not finish within {}s. The request stands: \
-                 `sunrise sync --once` will finish it",
-                DOWNLOAD_DEADLINE.as_secs()
+            return Err(strings::attachments::deadline(
+                i64::try_from(DOWNLOAD_DEADLINE.as_secs()).unwrap_or(i64::MAX),
             )
             .into())
         }
@@ -1120,7 +937,10 @@ async fn attachment_get(core: &Core, rest: &[String]) -> Result<(), Box<dyn std:
     match rest.get(1) {
         Some(path) => {
             std::fs::write(path, &bytes).map_err(|e| format!("{path}: {e}"))?;
-            eprintln!("{} bytes written to {path}", bytes.len());
+            eprintln!(
+                "{}",
+                strings::attachments::written(i64::try_from(bytes.len()).unwrap_or(i64::MAX), path)
+            );
         }
         None => std::io::stdout().write_all(&bytes)?,
     }
@@ -1136,11 +956,13 @@ async fn attachment_get(core: &Core, rest: &[String]) -> Result<(), Box<dyn std:
 fn attachment_cancel(core: &Core, rest: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     // A confirmation, not data: nothing should be piping this.
     #![allow(clippy::print_stderr)]
-    let raw = rest.first().ok_or("usage: attachment cancel <id>")?;
+    let raw = rest
+        .first()
+        .ok_or_else(strings::attachments::cancel_usage)?;
     let id = EntityRef::parse(raw, EntityKind::Attachment)
-        .map_err(|e| format!("not an attachment id: {raw} ({e})"))?;
+        .map_err(|e| strings::general::not_an_attachment_id(raw, &e.to_string()))?;
     core.cancel_attachment_fetch(id)?;
-    eprintln!("{}  download cancelled; marked partial", id.to_str());
+    eprintln!("{}  {}", id.to_str(), strings::attachments::cancelled());
     Ok(())
 }
 
@@ -1152,14 +974,14 @@ fn attachment_cancel(core: &Core, rest: &[String]) -> Result<(), Box<dyn std::er
 fn unresolved_note(u: &sunrise_domain::capture::Unresolved) -> String {
     use sunrise_domain::capture::Unresolved as U;
     match u {
-        U::UnknownStream(t) => format!("no stream matches \"{t}\" (try `sunrise streams`)"),
-        U::UnknownContext(t) => format!("no context matches \"{t}\" (try `sunrise contexts`)"),
+        U::UnknownStream(t) => strings::capture::unknown_stream(t),
+        U::UnknownContext(t) => strings::capture::unknown_context(t),
         U::AmbiguousStream { typed, candidates } | U::AmbiguousContext { typed, candidates } => {
-            format!("\"{typed}\" matches {}", candidates.join(", "))
+            strings::capture::ambiguous(typed, &candidates.join(", "))
         }
-        U::UnparseableDate(t) => format!("could not read the date \"{t}\""),
-        U::PriorityOutOfRange(t) => format!("priority \"{t}\" is not 1-5"),
-        U::UnparseableDuration(t) => format!("could not read the duration \"{t}\""),
+        U::UnparseableDate(t) => strings::capture::unreadable_date(t),
+        U::PriorityOutOfRange(t) => strings::capture::priority_out_of_range(t),
+        U::UnparseableDuration(t) => strings::capture::unreadable_duration(t),
     }
 }
 
@@ -1172,7 +994,7 @@ async fn stream_names(
     archived: Archived,
 ) -> Result<Vec<(EntityRef, String)>, Box<dyn std::error::Error>> {
     let QueryResult::Streams(rows) = core.query(Query::StreamList).await? else {
-        return Err("unexpected query result".into());
+        return Err(strings::general::unexpected_result().into());
     };
     Ok(rows
         .into_iter()
@@ -1187,7 +1009,7 @@ async fn context_names(
     archived: Archived,
 ) -> Result<Vec<(EntityRef, String)>, Box<dyn std::error::Error>> {
     let QueryResult::Contexts(rows) = core.query(Query::Contexts).await? else {
-        return Err("unexpected query result".into());
+        return Err(strings::general::unexpected_result().into());
     };
     Ok(rows
         .into_iter()
@@ -1218,7 +1040,7 @@ async fn resolve_stream(
 ) -> Result<EntityRef, Box<dyn std::error::Error>> {
     let typed = raw.trim().trim_start_matches('#').trim();
     if typed.is_empty() {
-        return Err("usage: stream <id|name>; `sunrise streams` lists them".into());
+        return Err(strings::streams::usage().into());
     }
     if let Ok(id) = EntityRef::parse(typed, EntityKind::Stream) {
         return Ok(id);
@@ -1234,7 +1056,7 @@ async fn resolve_stream(
     .ok_or_else(|| {
         unresolved
             .first()
-            .map_or_else(|| format!("no stream matches \"{typed}\""), unresolved_note)
+            .map_or_else(|| strings::streams::no_match(typed), unresolved_note)
             .into()
     })
 }
@@ -1251,18 +1073,15 @@ async fn resolve_stream(
 /// The Inbox is refused on both sides: it is synthetic, it has no Stream
 /// entity to write a key to, and it is pinned to the top of every listing.
 async fn move_stream(core: &Core, args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    const USAGE: &str = "usage: streams move <id|name> before <id|name>\n\
-                                streams move <id|name> last";
-
     let sep = args
         .iter()
         .position(|a| a == "before" || a == "last")
-        .ok_or(USAGE)?;
+        .ok_or_else(strings::streams::move_usage)?;
     let moved = args[..sep].join(" ");
     let target = args[sep + 1..].join(" ");
     let to_last = args[sep] == "last";
     if moved.trim().is_empty() || to_last != target.trim().is_empty() {
-        return Err(USAGE.into());
+        return Err(strings::streams::move_usage().into());
     }
 
     let moved = resolve_stream(core, &moved, Archived::Include).await?;
@@ -1272,11 +1091,11 @@ async fn move_stream(core: &Core, args: &[String]) -> Result<(), Box<dyn std::er
         Some(resolve_stream(core, &target, Archived::Include).await?)
     };
     if moved == sunrise_domain::inbox_stream_ref() || target == Some(moved) {
-        return Err("the Inbox is not a stream and cannot be reordered".into());
+        return Err(strings::streams::inbox_fixed().into());
     }
 
     let QueryResult::Streams(rows) = core.query(Query::StreamList).await? else {
-        return Err("unexpected query result".into());
+        return Err(strings::general::unexpected_result().into());
     };
     // Everything but the moved row and the synthetic Inbox, in list order.
     // Dropping the moved row first is what makes "move it one place down"
@@ -1290,13 +1109,13 @@ async fn move_stream(core: &Core, args: &[String]) -> Result<(), Box<dyn std::er
         Some(t) => others
             .iter()
             .position(|s| s.id == t)
-            .ok_or("that stream is not in the list")?,
+            .ok_or_else(strings::streams::not_in_list)?,
     };
     let after = at.checked_sub(1).map(|i| others[i].sort_order.as_str());
     let before = others.get(at).map(|s| s.sort_order.as_str());
 
     let key = sunrise_domain::sort_order::between(after, before)
-        .map_err(|e| format!("cannot place that stream: {e}"))?;
+        .map_err(|e| strings::streams::cannot_place(&e.to_string()))?;
     let patch = sunrise_domain::StreamPatch {
         sort_order: Some(key),
         ..Default::default()
@@ -1323,7 +1142,7 @@ async fn resolve_context(
 ) -> Result<EntityRef, Box<dyn std::error::Error>> {
     let typed = raw.trim().trim_start_matches('@').trim();
     if typed.is_empty() {
-        return Err("usage: context <id|name>; `sunrise contexts` lists them".into());
+        return Err(strings::contexts::usage().into());
     }
     if let Ok(id) = EntityRef::parse(typed, EntityKind::Context) {
         return Ok(id);
@@ -1339,10 +1158,7 @@ async fn resolve_context(
     .ok_or_else(|| {
         unresolved
             .first()
-            .map_or_else(
-                || format!("no context matches \"{typed}\""),
-                unresolved_note,
-            )
+            .map_or_else(|| strings::contexts::no_match(typed), unresolved_note)
             .into()
     })
 }
@@ -1351,11 +1167,11 @@ async fn resolve_context(
 async fn done(core: &Core, rest: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     #![allow(clippy::print_stdout)]
     if rest.is_empty() {
-        return Err("done needs at least one task id".into());
+        return Err(strings::done::needs_id().into());
     }
     for raw in rest {
         let id = EntityRef::parse(raw, EntityKind::Task)
-            .map_err(|e| format!("not a task id: {raw} ({e})"))?;
+            .map_err(|e| strings::general::not_a_task_id(raw, &e.to_string()))?;
         core.submit(Command::CompleteTask(id)).await?;
         println!("done  {raw}");
     }
@@ -1389,7 +1205,7 @@ async fn task_contexts(
     id: EntityRef,
 ) -> Result<Vec<EntityRef>, Box<dyn std::error::Error>> {
     let QueryResult::Task(t) = core.query(Query::EntityById(id)).await? else {
-        return Err(format!("no such task: {}", id.to_str()).into());
+        return Err(strings::general::no_such_task(&id.to_str()).into());
     };
     Ok(t.contexts.iter().copied().collect())
 }
@@ -1418,11 +1234,11 @@ async fn edit(core: &Core, rest: &[String]) -> Result<(), Box<dyn std::error::Er
     #![allow(clippy::print_stdout, clippy::print_stderr)]
     let (ids, tail) = split_task_ids(rest);
     if ids.is_empty() {
-        return Err("usage: edit <id>... <tokens>...; see `sunrise help`".into());
+        return Err(strings::edit::usage().into());
     }
     let line = tail.join(" ");
     if line.trim().is_empty() {
-        return Err("edit needs something to change, e.g. `!1 ^tomorrow #work`".into());
+        return Err(strings::edit::needs_change().into());
     }
 
     // Live rows only: an archived Stream or Context stays on the tasks that
@@ -1443,12 +1259,12 @@ async fn edit(core: &Core, rest: &[String]) -> Result<(), Box<dyn std::error::Er
     );
     if !edit.errors.is_empty() {
         for e in &edit.errors {
-            eprintln!("note: {}", e.describe());
+            eprintln!("{}", strings::general::note(&e.describe()));
         }
-        return Err("nothing was changed; fix the line and run it again".into());
+        return Err(strings::edit::nothing_changed().into());
     }
     if edit.is_empty() {
-        return Err("edit needs something to change, e.g. `!1 ^tomorrow #work`".into());
+        return Err(strings::edit::needs_change().into());
     }
 
     let preview = edit.preview(&streams, &contexts, &tz);
@@ -1495,12 +1311,9 @@ async fn retitle(core: &Core, rest: &[String]) -> Result<(), Box<dyn std::error:
     let (ids, tail) = split_task_ids(rest);
     let [id] = ids[..] else {
         if ids.is_empty() {
-            return Err("usage: retitle <id> <text>...; see `sunrise help`".into());
+            return Err(strings::retitle::usage().into());
         }
-        return Err("retitle takes one task: a title is what tells two tasks \
-                    apart, so one title for several of them loses the \
-                    difference rather than saving a command"
-            .into());
+        return Err(strings::retitle::one_task().into());
     };
     // A title is the one field where empty is not a value to store but a line
     // to refuse — `!-` clears a priority, and nothing clears a title.
@@ -1509,12 +1322,12 @@ async fn retitle(core: &Core, rest: &[String]) -> Result<(), Box<dyn std::error:
         "task.title",
         sunrise_domain::MAX_TASK_TITLE_LEN,
     )
-    .map_err(|e| format!("that title will not do: {e}"))?;
+    .map_err(|e| strings::retitle::bad_title(&e.to_string()))?;
 
     // Read first, so a mistyped id fails before anything is written and the
     // old title can be shown beside the new one.
     let QueryResult::Task(before) = core.query(Query::EntityById(id)).await? else {
-        return Err(format!("no such task: {}", id.to_str()).into());
+        return Err(strings::general::no_such_task(&id.to_str()).into());
     };
     let patch = sunrise_domain::TaskPatch {
         title: Some(title.clone()),
@@ -1538,17 +1351,17 @@ async fn defer(core: &Core, rest: &[String]) -> Result<(), Box<dyn std::error::E
     #![allow(clippy::print_stdout)]
     let (ids, tail) = split_task_ids(rest);
     if ids.is_empty() {
-        return Err("usage: defer <id>... <when>; see `sunrise help`".into());
+        return Err(strings::defer::usage().into());
     }
     let phrase = tail.join(" ");
     if phrase.trim().is_empty() {
-        return Err("defer needs a date, e.g. `tomorrow`, `next friday`, `+3d`".into());
+        return Err(strings::defer::needs_date().into());
     }
     let tz = jiff::tz::TimeZone::system();
     let now = sunrise_domain::epoch_ms::from_u64(core.now_ms());
     let to = sunrise_domain::capture::parse_when(&phrase, now, &tz)
-        .ok_or_else(|| format!("could not read the date \"{phrase}\""))?;
-    let to_ms = u64::try_from(to.as_millisecond()).map_err(|_| "that date is before the epoch")?;
+        .ok_or_else(|| strings::capture::unreadable_date(&phrase))?;
+    let to_ms = u64::try_from(to.as_millisecond()).map_err(|_| strings::defer::before_epoch())?;
     for id in ids {
         core.submit(Command::DeferTask { id, to_ms }).await?;
         println!("{}  deferred to {}", id.to_str(), stamp(to, &tz));
@@ -1565,11 +1378,11 @@ async fn defer(core: &Core, rest: &[String]) -> Result<(), Box<dyn std::error::E
 async fn drop_tasks(core: &Core, rest: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     #![allow(clippy::print_stdout)]
     if rest.is_empty() {
-        return Err("drop needs at least one task id".into());
+        return Err(strings::drop::needs_id().into());
     }
     for raw in rest {
         let id = EntityRef::parse(raw, EntityKind::Task)
-            .map_err(|e| format!("not a task id: {raw} ({e})"))?;
+            .map_err(|e| strings::general::not_a_task_id(raw, &e.to_string()))?;
         core.submit(Command::DeleteTask(id)).await?;
         println!("dropped  {raw}");
     }
@@ -1606,7 +1419,7 @@ async fn next(core: &Core, start: bool) -> Result<(), Box<dyn std::error::Error>
         limit: PICKS,
     };
     let QueryResult::FocusPlan(rows) = core.query(q).await? else {
-        return Err("unexpected query result".into());
+        return Err(strings::general::unexpected_result().into());
     };
     if rows.is_empty() {
         println!("{}", strings::focus::nothing_actionable());
@@ -1639,7 +1452,7 @@ async fn next(core: &Core, start: bool) -> Result<(), Box<dyn std::error::Error>
 async fn focus_on(core: &Core, raw: &str) -> Result<(), Box<dyn std::error::Error>> {
     #![allow(clippy::print_stdout)]
     let id = EntityRef::parse(raw, EntityKind::Task)
-        .map_err(|e| format!("not a task id: {raw} ({e})"))?;
+        .map_err(|e| strings::general::not_a_task_id(raw, &e.to_string()))?;
     let res = core
         .submit(Command::StartFocus(FocusStartDraft {
             task_id: id,
@@ -1672,13 +1485,13 @@ async fn end_focus(core: &Core, rest: &[String]) -> Result<(), Box<dyn std::erro
     let completed_task = match rest.first().map(String::as_str) {
         None => false,
         Some("--done") if rest.len() == 1 => true,
-        Some(other) => return Err(format!("usage: focus end [--done]; got {other:?}").into()),
+        Some(other) => return Err(strings::focus::end_usage(&format!("{other:?}")).into()),
     };
     let QueryResult::FocusSessions(rows) = core.query(Query::RunningFocusSessions).await? else {
-        return Err("unexpected query result".into());
+        return Err(strings::general::unexpected_result().into());
     };
     if rows.is_empty() {
-        return Err("no focus session is running; `sunrise focus <id>` opens one".into());
+        return Err(strings::focus::none_running().into());
     }
     for r in rows {
         let id = r.session.start.id;
@@ -1703,7 +1516,7 @@ async fn review(core: &Core) -> Result<(), Box<dyn std::error::Error>> {
         now_ms: core.now_ms(),
     };
     let QueryResult::WeeklyReview(w) = core.query(q).await? else {
-        return Err("unexpected query result".into());
+        return Err(strings::general::unexpected_result().into());
     };
     println!(
         "completed {}  deferred {}  dropped {}  created {}  reopened {}",
@@ -1739,14 +1552,14 @@ async fn export(core: &Core, rest: &[String]) -> Result<(), Box<dyn std::error::
     #![allow(clippy::print_stdout)]
     use sunrise_domain::{ExportDataset, ExportFormat};
     let Some(name) = rest.first() else {
-        return Err("usage: export <trends|activity|focus|streaks> [json|csv] [path]".into());
+        return Err(strings::export::usage().into());
     };
     let dataset = match name.as_str() {
         "trends" | "trend" => ExportDataset::Trends,
         "activity" | "timeline" => ExportDataset::Activity,
         "focus" => ExportDataset::Focus,
         "streaks" | "streak" => ExportDataset::Streaks,
-        other => return Err(format!("unknown dataset: {other}").into()),
+        other => return Err(strings::export::unknown_dataset(other).into()),
     };
     let mut format = ExportFormat::Csv;
     let mut path: Option<String> = None;
@@ -1755,7 +1568,7 @@ async fn export(core: &Core, rest: &[String]) -> Result<(), Box<dyn std::error::
             "json" => format = ExportFormat::Json,
             "csv" => format = ExportFormat::Csv,
             other if path.is_none() => path = Some(other.to_string()),
-            other => return Err(format!("unexpected argument: {other}").into()),
+            other => return Err(strings::general::unexpected_argument(other).into()),
         }
     }
     let q = Query::ExportStats {
@@ -1765,7 +1578,7 @@ async fn export(core: &Core, rest: &[String]) -> Result<(), Box<dyn std::error::
         now_ms: core.now_ms(),
     };
     let QueryResult::Export(body) = core.query(q).await? else {
-        return Err("unexpected query result".into());
+        return Err(strings::general::unexpected_result().into());
     };
     match path {
         Some(p) => {
@@ -1787,8 +1600,8 @@ async fn ical(core: &Core, rest: &[String]) -> Result<(), Box<dyn std::error::Er
     match rest.first().map(String::as_str) {
         Some("import") => ical_import(core, &rest[1..]).await,
         Some("export") => ical_export(core, &rest[1..]).await,
-        Some(other) => Err(format!("unknown ical mode {other:?}; try import or export").into()),
-        None => Err("usage: ical import <path|-> | ical export [today|week] [path]".into()),
+        Some(other) => Err(strings::ical::unknown_mode(&format!("{other:?}")).into()),
+        None => Err(strings::ical::usage().into()),
     }
 }
 
@@ -1814,22 +1627,22 @@ async fn ical_import(core: &Core, rest: &[String]) -> Result<(), Box<dyn std::er
     while let Some(w) = args.next() {
         match w.as_str() {
             "--stream" => {
-                let v = args.next().ok_or("--stream needs a stream id")?;
+                let v = args.next().ok_or_else(strings::ical::stream_needs_id)?;
                 stream = EntityRef::parse(v, EntityKind::Stream)
-                    .map_err(|e| format!("not a stream id: {v} ({e})"))?;
+                    .map_err(|e| strings::general::not_a_stream_id(v, &e.to_string()))?;
             }
             "--source" => {
-                let v = args.next().ok_or("--source needs a name")?;
+                let v = args.next().ok_or_else(strings::ical::source_needs_name)?;
                 if v.trim().is_empty() {
-                    return Err("--source needs a non-empty name".into());
+                    return Err(strings::ical::source_needs_text().into());
                 }
                 source = v.trim().to_string();
             }
             other if path.is_none() => path = Some(other),
-            other => return Err(format!("unexpected argument: {other}").into()),
+            other => return Err(strings::general::unexpected_argument(other).into()),
         }
     }
-    let path = path.ok_or("usage: ical import <path|-> [--stream <id>] [--source <name>]")?;
+    let path = path.ok_or_else(strings::ical::import_usage)?;
 
     // `-` is the conventional spelling of stdin, and it is what makes
     // `curl … | sunrise ical import -` work without a temporary file.
@@ -1845,7 +1658,10 @@ async fn ical_import(core: &Core, rest: &[String]) -> Result<(), Box<dyn std::er
     let report = import(core, &text, stream, &source).await?;
     for n in &report.notices {
         let uid = n.uid.as_deref().unwrap_or("-");
-        eprintln!("note: [{}] {uid}: {}", n.code.as_str(), n.detail);
+        eprintln!(
+            "{}",
+            strings::general::note(&format!("[{}] {uid}: {}", n.code.as_str(), n.detail))
+        );
     }
     for b in &report.blocks {
         let verb = if b.created { "new" } else { "upd" };
@@ -1870,7 +1686,7 @@ async fn ical_export(core: &Core, rest: &[String]) -> Result<(), Box<dyn std::er
             "today" | "day" => window = ExportWindow::Day,
             "week" => window = ExportWindow::Week,
             other if path.is_none() => path = Some(other),
-            other => return Err(format!("unexpected argument: {other}").into()),
+            other => return Err(strings::general::unexpected_argument(other).into()),
         }
     }
     let body = export(core, window, core.now_ms()).await?;
@@ -1897,10 +1713,10 @@ async fn sync_once(core: &Core, rest: &[String]) -> Result<(), Box<dyn std::erro
     const POLL: std::time::Duration = std::time::Duration::from_millis(200);
 
     if !rest.is_empty() && rest[0] != "--once" {
-        return Err("usage: sync --once".into());
+        return Err(strings::sync::usage().into());
     }
     if std::env::var("SUNRISE_SYNC_URL").is_err() {
-        return Err("sync needs SUNRISE_SYNC_URL".into());
+        return Err(strings::sync::needs_url().into());
     }
     // Timed against the core's injected clock rather than `Instant`, which
     // the workspace lint bans so that time is never read from two sources.
@@ -1908,7 +1724,7 @@ async fn sync_once(core: &Core, rest: &[String]) -> Result<(), Box<dyn std::erro
     let mut last = u32::MAX;
     while core.now_ms() < deadline {
         let QueryResult::SyncStatus(s) = core.query(Query::SyncStatus).await? else {
-            return Err("unexpected query result".into());
+            return Err(strings::general::unexpected_result().into());
         };
         if s.outbox_pending == 0 && s.state == sunrise_sync::SyncState::Live {
             println!("{}", strings::sync::live());
@@ -1923,7 +1739,7 @@ async fn sync_once(core: &Core, rest: &[String]) -> Result<(), Box<dyn std::erro
         }
         tokio::time::sleep(POLL).await;
     }
-    Err(format!("sync: outbox did not drain within {}s", DEADLINE_MS / 1000).into())
+    Err(strings::sync::timed_out(i64::try_from(DEADLINE_MS / 1000).unwrap_or(i64::MAX)).into())
 }
 
 fn print_tasks(r: QueryResult) {
@@ -2044,7 +1860,7 @@ async fn recover(rest: &[String]) -> Result<(), Box<dyn std::error::Error>> {
 
     let identity = sunrise_cli::recover::restore_identity(&url, &bearer, &code).await?;
     drop(code);
-    announce("recovery code accepted; the account identity is restored");
+    announce(&strings::recover::code_accepted());
 
     let done = sunrise_cli::recover::rejoin_account(
         &dir,
@@ -2086,15 +1902,7 @@ fn print_recovery_code(code: &sunrise_crypto::bip39::RecoveryCode) {
         println!("    {}", row.join(" "));
     }
     println!();
-    println!(
-        "This code and your devices are the only two ways into this account. \n\
-         Sunrise is end-to-end encrypted: the relay stores your recovery blob \n\
-         as ciphertext it cannot open, and nobody — including us — can reset \n\
-         the account for you. Lose every device and this code, and the data is \n\
-         gone permanently.\n\
-         \n\
-         It is shown once. It is not written to any file and not in any log."
-    );
+    println!("{}", strings::recover::code_footer());
 }
 
 /// How this device introduces itself.

@@ -95,7 +95,7 @@ final class RecoveryCodeModel {
             }
             let parts = Self.normalize(code)
             guard !parts.isEmpty else {
-                phase = .failed("The recovery code came back empty.")
+                phase = .failed(L10n.Recovery.codeEmpty)
                 return
             }
             words = parts
@@ -169,12 +169,7 @@ final class RecoveryCodeModel {
     /// Verbatim because the document says "states verbatim". This sentence is
     /// the whole product promise and its whole cost in one paragraph, and an
     /// app that paraphrased it would be making a different promise.
-    static let warning = """
-        Sunrise is end-to-end encrypted. We cannot reset your account if you \
-        lose this code. This is by design — it means we can't read your data, \
-        but it also means we can't recover it for you. Save this code \
-        somewhere you'll find it years from now.
-        """
+    static var warning: String { L10n.Recovery.warning }
 }
 
 extension SessionModel {
@@ -191,19 +186,11 @@ extension SessionModel {
         var errorDescription: String? {
             switch self {
             case .vaultClosed:
-                "The vault closed before recovery could be set up."
+                L10n.Recovery.vaultClosed
             case .notConfigured:
-                """
-                Sunrise needs a relay address and your account email before it \
-                can store your recovery blob. Add them in Settings, then set \
-                recovery up again.
-                """
+                L10n.Recovery.notConfigured
             case .signedOut:
-                """
-                Sign in first. Your recovery blob is stored on the relay under \
-                your account, and the relay will not take it from a device it \
-                cannot identify.
-                """
+                L10n.Recovery.signedOut
             }
         }
     }

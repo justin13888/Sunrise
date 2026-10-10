@@ -198,10 +198,12 @@ function emitFunction(
             catalog.messages.get(l)?.get(key),
         ])
         .filter((entry): entry is [string, Message] => entry[1] !== undefined);
+    // A multi-line message is fenced as `text`: rustdoc reads any line its
+    // layout indents by four spaces as a doctest, and a usage screen has many.
+    const doc = sourceText(source).split("\n");
+    const fenced = doc.length > 1 ? ["```text", ...doc, "```"] : doc;
     const lines = [
-        ...sourceText(source)
-            .split("\n")
-            .map((l) => `${indent}/// ${l}`.trimEnd()),
+        ...fenced.map((l) => `${indent}/// ${l}`.trimEnd()),
         `${indent}#[must_use]`,
         `${indent}pub fn ${rustIdent(leaf)}(${params}) -> String {`,
         `${indent}    let mut out = String::new();`,
