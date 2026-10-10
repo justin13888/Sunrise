@@ -64,7 +64,11 @@ is added, and an ungated one is ungated on the record.
 
 `UNGATED` is debt in the same sense `BASELINE` is, and it is empty: every
 crate in the tree has a threshold and a `BASELINE` entry for each of its files
-over it. A crate added later goes into `THRESHOLDS`; one listed in `UNGATED`
+over it. A crate added later goes into `THRESHOLDS`, at its own nearest-rank
+p90 if it has ten or more Rust files and at 802 if it has fewer: with
+`UNGATED` empty there is no pool of unmeasured packages left to draw from, so
+a small crate takes the last pool's number rather than one re-derived from
+packages already bounded by thresholds of their own. One listed in `UNGATED`
 instead needs a reason of its own for staying unbounded, not "not measured
 yet". An entry whose crate is gone is reported as bookkeeping, exit 2, like a
 stale baseline entry.
@@ -284,10 +288,11 @@ BASELINE: dict[str, str] = {
     ),
     # --- sunrise-client-core ------------------------------------------------
     "crates/sunrise-client-core/src/undo.rs": (
-        "380 implementation lines; the rest is tests. One concern: the "
-        "inverse command for each command a client submits, which the module "
-        "doc argues is the only undo a client can build without a protocol "
-        "change."
+        "380 implementation lines -- below this package's threshold on its "
+        "own; the rest is tests. One concern: the inverse command for each "
+        "command a client submits, which the module doc argues is the only "
+        "undo a client can build without a protocol change. Not audited for "
+        "a split."
     ),
     # --- sunrise-core-bindings ----------------------------------------------
     "crates/sunrise-core-bindings/src/dto.rs": (
@@ -299,7 +304,8 @@ BASELINE: dict[str, str] = {
     ),
     # --- sunrise-crypto -----------------------------------------------------
     "crates/sunrise-crypto/src/op_envelope.rs": (
-        "862 implementation lines; the rest is tests. The byte-exact CBOR "
+        "862 implementation lines -- below this package's threshold on its "
+        "own; the rest is tests. The byte-exact CBOR "
         "codec, signing, encryption, verification and decryption of one wire "
         "type. Not audited for a split."
     ),
@@ -419,10 +425,11 @@ def main() -> int:
             print(f"  {pkg}")
         print()
         print(
-            "Give each one a threshold (its own p90, or the pooled p90 of the "
-            "UNGATED packages if it has fewer than ten Rust files) in "
-            "THRESHOLDS, or list it in UNGATED with the reason nothing "
-            "measures it, in .github/scripts/file-size-gate.py."
+            "Give each one a threshold in THRESHOLDS -- its own nearest-rank "
+            "p90, or 802 if it has fewer than ten Rust files (the pooled p90 "
+            "of the last packages to leave UNGATED) -- or list it in UNGATED "
+            "with the reason nothing measures it, in "
+            ".github/scripts/file-size-gate.py."
         )
         return 1
 
