@@ -943,7 +943,8 @@ jobs:
     # `sunrise-core` pass with its wall clock recorded, built the way the
     # local task builds it: the first nightly after #403 cleared `-D warnings`
     # for the `Mutate` step, which is also the run that re-records the
-    # crate's floor. Revisit this bound against that run's wall clocks.
+    # crate's floor. Revisit this bound against that run's wall clocks
+    # (#497).
     #
     # The lever if it turns out to be wrong is `sunrise-core`'s shard count,
     # not this number: the longest shard is the only one near the ceiling, and
