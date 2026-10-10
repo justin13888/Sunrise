@@ -224,10 +224,13 @@ can be lost ([#319](https://github.com/justin13888/Sunrise/issues/319)).
 
   *Today:* rule 1 holds for every entity and for the nested value types
   `ScheduleConstraint`, `TimeOfDayRange`, `DateRange`, `RRule` and
-  `TaskTemplate` ([#322](https://github.com/justin13888/Sunrise/issues/322)).
-  `Chunk` (in `FocusStart`) and `ReviewTotals` and `ReviewSnapshotStream` (in
-  `ReviewSnapshot`) have no map yet, nor do the four known `SunriseTime`
-  kinds. Rule 3 holds for every table whose `extra` a write can overwrite: a
+  `TaskTemplate` ([#322](https://github.com/justin13888/Sunrise/issues/322)),
+  `Chunk` (in `FocusStart`), and `ReviewTotals`, `ReviewSnapshotStream` and
+  `StreakRow` (in `ReviewSnapshot`). A `Chunk`'s map is kept on the wire, not
+  in storage, because a `focus.start` op is never re-encoded from its row. The
+  four known `SunriseTime` kinds carry no map: they are closed shapes and the
+  one recorded exception to rule 1
+  ([ADR-0045](../11-adr/0045-schema-identity-and-feature-gating.md) §6). Rule 3 holds for every table whose `extra` a write can overwrite: a
   write whose entity carries no unknown fields keeps a blob this build cannot
   parse, and logs `core.storage.extra_kept_opaque`. Rule 2
   holds for every string-valued enum ([#321](https://github.com/justin13888/Sunrise/issues/321)): `lossy_enum!` in

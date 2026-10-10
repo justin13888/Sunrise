@@ -80,12 +80,36 @@ impl Interruption {
 
 /// "Chunk N of M" — the checkpoint marker shown when a task's estimate exceeds
 /// one session, so a long task shows visible progress *within* a sitting.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Not `Copy`: it carries the unknown-field map every wire struct does
+/// (ADR-0045 §6), because it crosses the wire inside [`FocusStart`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Chunk {
     /// 1-based index of this sitting.
     pub index: u32,
     /// Total sittings the estimate implies.
     pub total: u32,
+    /// Fields written by a newer `DOC_SCHEMA_V` that this build does not
+    /// model, preserved verbatim and re-emitted. See [`crate::unknown`].
+    ///
+    /// Kept on the wire only: the `focus_sessions` row stores the marker as
+    /// two integer columns, so a session read back from storage carries an
+    /// empty map here. A `start` op is immutable and never re-encoded from its
+    /// row, so nothing this build writes loses them.
+    #[serde(flatten)]
+    pub unknown: Unknowns,
+}
+
+impl Chunk {
+    /// "Chunk `index` of `total`", with no unknown fields.
+    #[must_use]
+    pub const fn new(index: u32, total: u32) -> Self {
+        Self {
+            index,
+            total,
+            unknown: Unknowns::new(),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
