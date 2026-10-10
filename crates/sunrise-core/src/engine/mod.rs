@@ -26,7 +26,8 @@
 //! ninety free functions. The split follows what the code *touches*, not what
 //! calls it: `oplog` is everything that writes the log and the outbox, `lww`
 //! the one merge rule and the dispatcher that applies it, `sync` the receive
-//! half, `ids` the shared encode/decode primitives, and one module per entity
+//! half, `park` the ops that half keeps unapplied and replays after an
+//! upgrade, `ids` the shared encode/decode primitives, and one module per entity
 //! family — `task`, `stream`, `context`, `routine`, `focus`, `block`,
 //! `attachment` — plus `review`, `notify` and the cross-entity reads in
 //! `query`.
@@ -91,6 +92,7 @@ mod lww;
 mod merge;
 mod notify;
 mod oplog;
+mod park;
 mod preferences;
 mod query;
 mod review;
@@ -691,6 +693,7 @@ impl Engine {
             Query::DayBlocks { day_ms } => self.query_day_blocks(db, day_ms),
             Query::WeekBlocks { week_ms } => self.query_week_blocks(db, week_ms),
             Query::Search { text, limit } => self.query_search(db, &text, limit),
+            Query::ParkedOpsSummary => Self::query_parked_ops_summary(db),
             Query::Preferences => self.query_preferences(db).map(QueryResult::Preferences),
             // Sync status is owned by `Core` (it reads the live `SyncShared` and
             // the DB outbox count); the engine never serves it.
