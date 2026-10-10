@@ -118,7 +118,7 @@ pub const PREFILTER_SLACK_MS: i64 = 48 * 60 * 60 * 1000;
 const SAME_ZONE_SPAN_SECS: i64 = 20 * 366 * 24 * 60 * 60;
 
 /// Whether a reader in `a` and a reader in `b` resolve every civil time the
-/// same way within [`SAME_ZONE_SPAN_SECS`] of `around`: the same offset at
+/// same way within 20 years of `around`: the same offset at
 /// the start of that span and the same transitions through it.
 ///
 /// Names are not the test. `Asia/Calcutta` is a tzdb link to `Asia/Kolkata`,
