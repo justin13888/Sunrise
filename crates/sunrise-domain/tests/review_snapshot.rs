@@ -47,6 +47,7 @@ fn snapshot(window_start: Timestamp, window_end: Timestamp) -> ReviewSnapshot {
             dropped: 1,
             created: 11,
             reopened: 2,
+            unknown: Unknowns::new(),
         },
         streams: vec![ReviewSnapshotStream {
             stream: eref(EntityKind::Stream, 3),
@@ -54,6 +55,7 @@ fn snapshot(window_start: Timestamp, window_end: Timestamp) -> ReviewSnapshot {
             completed: 5,
             deferred: 2,
             created: 6,
+            unknown: Unknowns::new(),
         }],
         streaks: vec![StreakRow {
             routine: eref(EntityKind::Routine, 4),
