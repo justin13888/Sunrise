@@ -80,10 +80,8 @@ fn capture_commits_and_is_readable_back() {
 #[test]
 fn capture_applies_annotations_end_to_end() {
     let dir = tempfile::tempdir().unwrap();
-    // Today is the device zone's calendar day. `^today` lands on it at any
-    // hour the suite runs; `^+30h` is past the end of every day, since none
-    // is longer than 25h. A relative `^+6h` would cross midnight after 18:00.
-    // This pins the day boundary through the real query path.
+    // Today is the device zone's day: `^today` is on it at any hour, `^+30h`
+    // past its end (no day exceeds 25h). Pins that boundary end to end.
     run(dir.path(), &["capture", "Standup ^today !2"]);
     run(dir.path(), &["capture", "Far future ^+30h"]);
     run(dir.path(), &["capture", "Unscheduled thing"]);
@@ -245,10 +243,8 @@ fn done_refuses_something_that_is_not_a_task_id() {
 
 /// The scheduling facet, observed through the query path rather than through
 /// the write's own output — `^today` lands inside Today and `^-` takes it
-/// back out, which is the same boundary
-/// `capture_applies_annotations_end_to_end` pins. `today` resolves in the
-/// device zone Today is cut in, so the assertion holds in any host zone and
-/// at any hour, where a relative span would cross midnight late in the day.
+/// back out, the boundary `capture_applies_annotations_end_to_end` pins; it
+/// holds in any host zone and at any hour, unlike a relative span.
 #[test]
 fn edit_schedules_a_task_and_can_clear_the_schedule_again() {
     let dir = tempfile::tempdir().unwrap();
