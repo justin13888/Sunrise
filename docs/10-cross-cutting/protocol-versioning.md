@@ -571,9 +571,12 @@ needs three things, and it fails without any one of them:
    An unfamiliar field is then kept rather than discarded by serde's default
    behaviour. The one exception is `Interruption`, whose whole value is its
    primary key. *Today:* this holds for every entity and for the nested
-   constraint, rule and template types; `Chunk`, `ReviewTotals` and
-   `ReviewSnapshotStream` have no map yet
-   ([#322](https://github.com/justin13888/Sunrise/issues/322)).
+   constraint, rule and template types
+   ([#322](https://github.com/justin13888/Sunrise/issues/322)), and for the
+   focus `Chunk` and the review snapshot's `ReviewTotals`,
+   `ReviewSnapshotStream` and `StreakRow`. The four known `SunriseTime` kinds
+   are closed shapes and carry no map
+   ([ADR-0045](../11-adr/0045-schema-identity-and-feature-gating.md) §6).
 2. **Every synced entity's table persists that map in its own `extra BLOB`
    column**, so the field survives materialization rather than living for one
    transaction. This is a contract, not a per-table convenience. The envelope
