@@ -29,7 +29,7 @@ use crate::keychain::{EnvelopeRecipient, KeySource};
 use rusqlite::{params, OptionalExtension, Transaction};
 use std::collections::BTreeSet;
 use sunrise_cbor::hlc::Hlc;
-use sunrise_cbor::version::DOC_SCHEMA_V;
+use sunrise_cbor::version::{doc_schema_fp_prefix, DOC_SCHEMA_V};
 use sunrise_crypto::op_envelope::open_envelope;
 use sunrise_crypto::{
     decode_envelope, identity_id_from_pub, open_envelope_unverified, roster_digest, shares_digest,
@@ -72,6 +72,32 @@ const fn storage_class(e: &EngineError) -> &'static str {
         EngineError::Sqlite(_) => "sqlite",
         EngineError::OpLog(_) => "oplog",
         _ => "other",
+    }
+}
+
+/// Whether `env`'s field 13 disagrees with this build's registry
+/// (ADR-0045 §3): its `doc_schema_v` has an entry here, and field 13 is not
+/// that entry's prefix, including when it is missing. A version with no
+/// entry, one before `DOC_SCHEMA_FP_FIRST` or one newer than this build, never
+/// mismatches: there is nothing here to compare it with.
+fn schema_fp_mismatch(env: &sunrise_crypto::OpEnvelope) -> bool {
+    doc_schema_fp_prefix(env.doc_schema_v).is_some_and(|want| env.schema_fp != Some(want))
+}
+
+/// The variant name an inner op's bytes are tagged with, read without
+/// decoding the payload, for a parked row's diagnostic `kind`; empty when the
+/// bytes are not an externally tagged op. A fingerprint-mismatched op is
+/// parked before it is decoded, because its writer may mean its version
+/// differently, so this is the only name it can be recorded under.
+fn diagnostic_kind(inner_cbor: &[u8]) -> String {
+    use ciborium::value::Value;
+    match ciborium::de::from_reader::<Value, _>(inner_cbor) {
+        Ok(Value::Map(mut entries)) if entries.len() == 1 => match entries.pop() {
+            Some((Value::Text(name), _)) => name,
+            _ => String::new(),
+        },
+        Ok(Value::Text(name)) => name,
+        _ => String::new(),
     }
 }
 
@@ -212,6 +238,11 @@ impl Engine {
     ///    `key_envelope` op carrying it may not have arrived, so the op is
     ///    parked in `deferred_ops` and this returns `Ok(vec![])` without
     ///    reaching any step below. It is retried after every absorbed key.
+    ///    **A schema-fingerprint mismatch is not an error**: an envelope whose
+    ///    `doc_schema_v` this build registers, and whose field 13 differs from
+    ///    that entry's prefix or is missing, is parked by `Engine::park_op_as`
+    ///    with reason `schema_fp_mismatch` before its payload is decoded
+    ///    (ADR-0045 §3), and logged as `core.op.schema_fp_mismatch`.
     ///    **An unknown inner kind is not an error either**: the op verified and
     ///    opened, so it is a newer build's family, and `Engine::park_op` keeps
     ///    it in `ops` and `parked_ops`, counts it toward the cursor, and
@@ -345,6 +376,25 @@ impl Engine {
                     "no key at this (stream, epoch) opens the envelope".into(),
                 )
             })?;
+        //    Field 13 against this build's registry (ADR-0045 §3), before the
+        //    payload is read under a version the writer may mean differently.
+        //    A version this build registers must carry that entry's prefix:
+        //    one that differs, or is missing, is parked rather than applied,
+        //    because the two builds disagree about what the version means. A
+        //    version with no entry (legacy, below `DOC_SCHEMA_FP_FIRST`, or
+        //    newer than this build) is read as it always was.
+        if schema_fp_mismatch(&env) {
+            let kind = diagnostic_kind(&inner_cbor);
+            self.park_op_as(
+                db,
+                envelope_bytes,
+                &env,
+                ParkReason::SchemaFpMismatch,
+                &kind,
+                DOC_SCHEMA_V,
+            )?;
+            return Ok(Vec::new());
+        }
         //    An op of a kind this build does not know verified and opened, so
         //    it is not damage: it is a newer build's family. It is kept and
         //    counted rather than refused (ADR-0045 §4), and replayed once a
@@ -774,6 +824,32 @@ impl Engine {
         kind: &str,
         doc_schema_v: u16,
     ) -> Result<(), EngineError> {
+        self.park_op_as(
+            db,
+            envelope_bytes,
+            env,
+            ParkReason::UnknownKind,
+            kind,
+            doc_schema_v,
+        )
+    }
+
+    /// [`Self::park_op`] for any first-delivery reason: an unknown kind, or a
+    /// schema-fingerprint mismatch (ADR-0045 §3).
+    ///
+    /// A re-delivery of an op that is already parked, with the same bytes,
+    /// writes no new row, and replaces the row's reason with `reason`: it is
+    /// why this build keeps the op now, which is what a replay that still
+    /// cannot apply it must record (ADR-0045 §4).
+    pub(crate) fn park_op_as(
+        &self,
+        db: &mut Db,
+        envelope_bytes: &[u8],
+        env: &sunrise_crypto::OpEnvelope,
+        reason: ParkReason,
+        kind: &str,
+        doc_schema_v: u16,
+    ) -> Result<(), EngineError> {
         self.hlc
             .observe(env.hlc)
             .map_err(|e| EngineError::RemoteOpInvalid(format!("hlc: {e}")))?;
@@ -806,9 +882,11 @@ impl Engine {
             )
             .map_err(oplog_to_sqlite)?;
             // A re-delivery of an op already in the log, parked or not, adds
-            // nothing: the row and its marker are the first delivery's. A
+            // no row: the row and its marker are the first delivery's, and
+            // only a parked marker's reason moves to the cause found now. A
             // different op at that position is fork evidence (ADR-0043 §4).
             if tx.changes() == 0 {
+                OpLog::repark(tx, &op_id, envelope_bytes, reason).map_err(oplog_to_sqlite)?;
                 check_duplicate(tx, env, envelope_bytes, now_ms)?;
                 return Ok(());
             }
@@ -819,7 +897,7 @@ impl Engine {
                 tx,
                 &Parking {
                     op_id: &op_id,
-                    reason: ParkReason::UnknownKind,
+                    reason,
                     kind,
                     hlc_logical: env.hlc.logical,
                     doc_schema_v,
@@ -832,12 +910,29 @@ impl Engine {
             Ok(())
         })?;
         if parked {
-            tracing::info!(
-                ev = "core.op.parked",
-                reason = ParkReason::UnknownKind.as_str(),
-                stream_h = hex_short(&env.stream_id),
-                "kept an op of a kind this build does not know; it replays after an upgrade"
-            );
+            if reason == ParkReason::SchemaFpMismatch {
+                tracing::warn!(
+                    ev = "core.op.schema_fp_mismatch",
+                    stream_h = hex_short(&env.stream_id),
+                    sender_h = hex_short(&env.device_id),
+                    seq = env.seq,
+                    doc_v = env.doc_schema_v,
+                    kind = if env.schema_fp.is_some() {
+                        "differs"
+                    } else {
+                        "missing"
+                    },
+                    "kept an op whose schema fingerprint disagrees with this build's registry; \
+                     it replays when the registry changes"
+                );
+            } else {
+                tracing::info!(
+                    ev = "core.op.parked",
+                    reason = reason.as_str(),
+                    stream_h = hex_short(&env.stream_id),
+                    "kept an op of a kind this build does not know; it replays after an upgrade"
+                );
+            }
         }
         Ok(())
     }
@@ -862,8 +957,9 @@ impl Engine {
     ///
     /// An op this build still cannot apply stays parked, and is re-stamped
     /// with this build so the next open does not try it again. That covers a
-    /// kind this build does not know either (the apply path parks it again,
-    /// which changes nothing, and the reason stays `unknown_kind`) and an op
+    /// kind this build does not know, or a fingerprint this build's registry
+    /// still disagrees with (the apply path parks it again, which writes no
+    /// row and leaves the reason naming the cause found now), and an op
     /// that now decodes but is refused: its bytes verified once and advanced
     /// the cursor, so keeping them is the only answer that loses nothing. Its
     /// reason becomes [`ParkReason::ReplayRefused`], because its kind is no

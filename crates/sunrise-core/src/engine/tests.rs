@@ -18382,6 +18382,228 @@ fn a_known_kind_with_a_damaged_payload_is_still_refused() {
     assert!(parked_rows(&dbb).is_empty());
 }
 
+// --- Schema fingerprint (issue #438, ADR-0045 §3) ----------------------------
+
+/// `env`, an op `sender` emitted, re-sealed and re-signed by `sender` (whose
+/// keychain seed is `sender_seed`) with field 12 set to `doc_schema_v` and
+/// field 13 to `schema_fp`. This is how a writer that disagrees with this
+/// build's registry looks to it: every envelope check passes, and only the
+/// schema binding differs.
+fn reseal_schema(
+    sender: &Engine,
+    sender_seed: [u8; 32],
+    env: &[u8],
+    doc_schema_v: u32,
+    schema_fp: Option<[u8; 8]>,
+) -> Vec<u8> {
+    let mut e = decode_envelope(env).unwrap();
+    let key = sender
+        .keychain
+        .stream_keys_at(&e.stream_id, e.epoch)
+        .into_iter()
+        .next()
+        .expect("the sender holds the key it sealed under");
+    e.payload = sunrise_crypto::open_envelope_unverified(&e, &key).unwrap();
+    e.doc_schema_v = doc_schema_v;
+    e.schema_fp = schema_fp;
+    sunrise_crypto::seal_envelope(
+        e,
+        Some(&key),
+        &sunrise_crypto::DeviceSigningKeyPair::from_secret_bytes(&sender_seed),
+    )
+    .unwrap()
+}
+
+/// A `TaskCreate` from A to B, re-sealed under `(doc_schema_v, schema_fp)`,
+/// with B trusting A. Returns the engines, B's database, the task and the
+/// re-sealed envelope.
+fn schema_bound_create(
+    doc_schema_v: u32,
+    schema_fp: Option<[u8; 8]>,
+) -> (Engine, Engine, Db, EntityRef, Vec<u8>) {
+    let ea = engine_seeded(ROOT, [1u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let eb = engine_seeded(ROOT, [2u8; 32], Arc::new(FakeClock(PLMutex::new(T0))));
+    let mut dba = db_root(ROOT);
+    let mut dbb = db_root(ROOT);
+    trust(&eb, &mut dbb, &ea);
+    let task = new_task(&ea, &mut dba, "schema bound");
+    let env = create_env_for(&dba, task.bytes());
+    let env = reseal_schema(&ea, [1u8; 32], &env, doc_schema_v, schema_fp);
+    (ea, eb, dbb, task, env)
+}
+
+/// ADR-0045 §3, third row: an envelope at a version this build registers,
+/// whose field 13 differs from the entry's prefix or is missing, is parked
+/// with reason `schema_fp_mismatch` rather than applied. It counts toward the
+/// cursor like any parked op, is not refused as damage, and a re-delivery
+/// adds nothing.
+#[test]
+fn a_registered_version_whose_fingerprint_differs_or_is_missing_is_parked() {
+    use sunrise_cbor::version::{DOC_SCHEMA_FP_FIRST, DOC_SCHEMA_V};
+    let cases = [
+        (u32::from(DOC_SCHEMA_V), Some([0xaa; 8]), "differs"),
+        (u32::from(DOC_SCHEMA_V), None, "missing"),
+        (
+            u32::from(DOC_SCHEMA_FP_FIRST),
+            None,
+            "missing at the first entry",
+        ),
+    ];
+    for (doc_schema_v, schema_fp, case) in cases {
+        let (ea, eb, mut dbb, task, env) = schema_bound_create(doc_schema_v, schema_fp);
+        let a_id = ea.keychain.device_id();
+        let op = decode_envelope(&env).unwrap();
+        let op_id = remote_op_id(&op.stream_id, &a_id, op.seq);
+
+        assert!(
+            eb.apply_remote_all(&mut dbb, &env).unwrap().is_empty(),
+            "{case}: parked, not refused, and nothing on screen changed"
+        );
+        assert!(
+            eb.query(&dbb, Query::EntityById(task)).is_err(),
+            "{case}: a mismatched op materializes nothing"
+        );
+        assert_eq!(
+            cursor_for(&dbb, &op.stream_id, &a_id),
+            1,
+            "{case}: the parked op counts"
+        );
+        assert_eq!(op_row(&dbb, &op_id), ("unknown".into(), None), "{case}");
+        let parked = vec![(
+            "schema_fp_mismatch".into(),
+            "TaskCreate".into(),
+            i64::from(DOC_SCHEMA_V),
+        )];
+        assert_eq!(parked_rows(&dbb), parked, "{case}");
+
+        let ops_before = op_count(&dbb);
+        assert!(eb.apply_remote_all(&mut dbb, &env).unwrap().is_empty());
+        assert_eq!(
+            op_count(&dbb),
+            ops_before,
+            "{case}: a re-delivery adds nothing"
+        );
+        assert_eq!(parked_rows(&dbb), parked, "{case}");
+    }
+}
+
+/// ADR-0045 §3, the other three rows: a legacy version with no field 13, a
+/// registered version whose field 13 matches (here an older entry than this
+/// build's own), and a version newer than this build, which has no entry to
+/// compare with whatever field 13 says, all apply as they did before.
+#[test]
+fn an_envelope_with_no_entry_here_or_a_matching_fingerprint_applies() {
+    use sunrise_cbor::version::{doc_schema_fp_prefix, DOC_SCHEMA_FP_FIRST, DOC_SCHEMA_V};
+    let first = u32::from(DOC_SCHEMA_FP_FIRST);
+    let cases = [
+        (first - 1, None, "legacy"),
+        (first, doc_schema_fp_prefix(first), "matches an older entry"),
+        (
+            u32::from(DOC_SCHEMA_V),
+            doc_schema_fp_prefix(u32::from(DOC_SCHEMA_V)),
+            "matches this build's entry",
+        ),
+        (u32::from(DOC_SCHEMA_V) + 1, Some([0xaa; 8]), "newer"),
+    ];
+    for (doc_schema_v, schema_fp, case) in cases {
+        let (_ea, eb, mut dbb, task, env) = schema_bound_create(doc_schema_v, schema_fp);
+        assert!(
+            eb.apply_remote(&mut dbb, &env).unwrap().is_some(),
+            "{case}: applied"
+        );
+        assert_eq!(read_task_t(&eb, &dbb, task).title, "schema bound", "{case}");
+        assert!(parked_rows(&dbb).is_empty(), "{case}: nothing parked");
+    }
+}
+
+/// The replay is what retries a `schema_fp_mismatch` op once the registry
+/// changes, and the registry changes only with a `DOC_SCHEMA_V` bump. A retry
+/// against the same registry, from a row another build's stamp makes due,
+/// leaves the op parked with its reason unchanged and re-stamps it.
+#[test]
+fn a_fingerprint_mismatch_retried_against_the_same_registry_stays_parked() {
+    use sunrise_cbor::version::DOC_SCHEMA_V;
+    let (_ea, eb, mut dbb, task, env) =
+        schema_bound_create(u32::from(DOC_SCHEMA_V), Some([0xaa; 8]));
+    assert!(eb.apply_remote_all(&mut dbb, &env).unwrap().is_empty());
+    let parked = vec![(
+        "schema_fp_mismatch".into(),
+        "TaskCreate".into(),
+        i64::from(DOC_SCHEMA_V),
+    )];
+    assert_eq!(parked_rows(&dbb), parked);
+    assert!(
+        OpLog::parked_for_replay(&dbb, DOC_SCHEMA_V)
+            .unwrap()
+            .is_empty(),
+        "parked by this build, so this build does not retry it"
+    );
+
+    dbb.conn()
+        .execute(
+            "UPDATE parked_ops SET parked_under_doc_schema_v = ?",
+            params![DOC_SCHEMA_V - 1],
+        )
+        .unwrap();
+    assert_eq!(
+        OpLog::parked_for_replay(&dbb, DOC_SCHEMA_V).unwrap().len(),
+        1
+    );
+    assert!(eb.replay_parked_ops(&mut dbb).is_empty());
+    assert_eq!(
+        parked_rows(&dbb),
+        parked,
+        "still parked, reason unchanged, stamped by this build"
+    );
+    assert!(eb.query(&dbb, Query::EntityById(task)).is_err());
+}
+
+/// A retry moves the reason to the cause it finds now (ADR-0045 §4). An op an
+/// older build parked as an unknown kind, whose field 13 this build's registry
+/// disagrees with, stays parked as `schema_fp_mismatch`; and an op parked as
+/// `schema_fp_mismatch` by a build whose registry disagreed is applied by one
+/// whose registry agrees, and its marker released.
+#[test]
+fn a_replay_reparks_for_the_fingerprint_or_releases_once_the_registry_agrees() {
+    use sunrise_cbor::version::{doc_schema_fp_prefix, DOC_SCHEMA_V};
+    let current = u32::from(DOC_SCHEMA_V);
+    let older = DOC_SCHEMA_V - 1;
+
+    let (_ea, eb, mut dbb, task, env) = schema_bound_create(current, Some([0xaa; 8]));
+    let op = decode_envelope(&env).unwrap();
+    eb.park_op(&mut dbb, &env, &op, "TaskCreate", older)
+        .unwrap();
+    assert_eq!(parked_rows(&dbb)[0].0, "unknown_kind", "the premise");
+    assert!(eb.replay_parked_ops(&mut dbb).is_empty());
+    assert_eq!(
+        parked_rows(&dbb),
+        vec![(
+            "schema_fp_mismatch".into(),
+            "TaskCreate".into(),
+            i64::from(DOC_SCHEMA_V)
+        )]
+    );
+    assert!(eb.query(&dbb, Query::EntityById(task)).is_err());
+
+    let (_ea, eb, mut dbb, task, env) = schema_bound_create(current, doc_schema_fp_prefix(current));
+    let op = decode_envelope(&env).unwrap();
+    eb.park_op_as(
+        &mut dbb,
+        &env,
+        &op,
+        sunrise_storage::ParkReason::SchemaFpMismatch,
+        "TaskCreate",
+        older,
+    )
+    .unwrap();
+    let events = eb.replay_parked_ops(&mut dbb);
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, DomainEvent::Created(r) if *r == task)));
+    assert_eq!(read_task_t(&eb, &dbb, task).title, "schema bound");
+    assert!(parked_rows(&dbb).is_empty(), "the marker is released");
+}
+
 /// ADR-0045 §6: a rule holding a `FREQ` and a `BYDAY` token this build does
 /// not know is kept — including raw values the RFC 5545 text cannot hold —
 /// generates no occurrences, and survives an unrelated edit byte for byte.
