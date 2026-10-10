@@ -47,6 +47,7 @@ fn snapshot(window_start: Timestamp, window_end: Timestamp) -> ReviewSnapshot {
             dropped: 1,
             created: 11,
             reopened: 2,
+            unknown: Unknowns::new(),
         },
         streams: vec![ReviewSnapshotStream {
             stream: eref(EntityKind::Stream, 3),
@@ -54,12 +55,14 @@ fn snapshot(window_start: Timestamp, window_end: Timestamp) -> ReviewSnapshot {
             completed: 5,
             deferred: 2,
             created: 6,
+            unknown: Unknowns::new(),
         }],
         streaks: vec![StreakRow {
             routine: eref(EntityKind::Routine, 4),
             title: "Stretch".into(),
             streak: 12,
             last_completed_at_ms: Some(u64::try_from(MON + 3 * 86_400_000).unwrap()),
+            unknown: Unknowns::new(),
         }],
         note: Some("felt scattered".into()),
         unknown: Unknowns::new(),
