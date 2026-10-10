@@ -459,7 +459,7 @@ async fn blobs_from_before_the_index_are_indexed_at_launch() {
     v.core
         .db()
         .conn()
-        .execute("DELETE FROM blob_cache", [])
+        .execute_batch("DELETE FROM blob_cache; DELETE FROM blob_cache_backfill;")
         .unwrap();
     assert_eq!(v.core.attachment_cache_usage().unwrap().used_bytes, 0);
     v.core.enforce_attachment_cache().unwrap();
@@ -468,4 +468,33 @@ async fn blobs_from_before_the_index_are_indexed_at_launch() {
         sealed_size(1000)
     );
     assert!(v.local(&att));
+}
+
+/// The pass that indexes blobs from before the index runs once per vault.
+/// After it, every blob is indexed by the attach or fetch that stored it, so
+/// a later launch does not probe the store again for each attachment whose
+/// bytes are not here.
+#[tokio::test]
+async fn the_launch_indexing_pass_runs_once_per_vault() {
+    let v = Vault::open().await;
+    let done: i64 = v
+        .core
+        .db()
+        .conn()
+        .query_row("SELECT COUNT(*) FROM blob_cache_backfill", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(done, 1, "Core::open ran the pass");
+
+    v.uploaded("old", 1000).await;
+    v.core
+        .db()
+        .conn()
+        .execute("DELETE FROM blob_cache", [])
+        .unwrap();
+    v.core.enforce_attachment_cache().unwrap();
+    assert_eq!(
+        v.core.attachment_cache_usage().unwrap().used_bytes,
+        0,
+        "a second pass would have indexed the blob again"
+    );
 }

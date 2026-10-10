@@ -798,6 +798,11 @@ pub(super) const SEED: &[SeedRow] = &[
             ("evicted_at_ms", I(276)),
         ],
     },
+    // The launch pass that indexes blobs from before the index has run.
+    SeedRow {
+        table: "blob_cache_backfill",
+        values: &[("id", I(1)), ("done_at_ms", I(277))],
+    },
 ];
 
 /// The columns `table` has in `conn`'s schema, or `None` if it has no such

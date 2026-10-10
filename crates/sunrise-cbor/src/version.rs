@@ -470,6 +470,8 @@ pub const CRYPTO_SUITE_V: u16 = 5;
 ///
 /// `38` is migration `0038_attachment_thumbnails.sql` (issue #346, ADR-0053):
 /// eight nullable `attachments` columns for the thumbnail and dimensions, and
-/// the device-local `blob_cache` index the LRU reads. Schema-only: every new
-/// column is NULL and the index starts empty.
+/// the device-local `blob_cache` index the LRU reads, with
+/// `blob_cache_backfill`, the record that the one pass indexing blobs from
+/// before the index has run. Schema-only: every new column is NULL and both
+/// tables start empty.
 pub const STORAGE_V: u16 = 38;

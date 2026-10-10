@@ -17,6 +17,12 @@
 -- decide what to evict and what the cache holds. It is never an op and never
 -- synced. It starts empty; the core indexes the blobs already on disk the
 -- first time it enforces the limit.
+--
+-- `blob_cache_backfill` records that this first pass has run, in its one row.
+-- The pass probes the blob store for every attachment, so it runs once per
+-- vault: every blob that reaches the store after it is indexed by the path
+-- that wrote it, and a scan repeated at every launch would probe each
+-- never-fetched remote original again, forever.
 
 ALTER TABLE attachments ADD COLUMN width INTEGER;
 ALTER TABLE attachments ADD COLUMN height INTEGER;
@@ -36,3 +42,8 @@ CREATE TABLE blob_cache (
 );
 
 CREATE INDEX blob_cache_by_access ON blob_cache (last_access_ms, blob_id);
+
+CREATE TABLE blob_cache_backfill (
+    id          INTEGER PRIMARY KEY CHECK (id = 1),
+    done_at_ms  INTEGER NOT NULL
+);

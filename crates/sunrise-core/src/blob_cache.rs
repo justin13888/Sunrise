@@ -336,9 +336,9 @@ impl Core {
     /// Evict, least recently opened first, until the cache is under its limit.
     /// Returns the sealed bytes freed.
     ///
-    /// Run at launch, and by every path that adds to the cache. At launch it
-    /// first indexes any blob on disk the index does not know, which is every
-    /// blob of a vault from before the index existed.
+    /// Run at launch, and by every path that adds to the cache. The first time
+    /// it runs in a vault it indexes any blob on disk the index does not know,
+    /// which is every blob of a vault from before the index existed.
     ///
     /// # Errors
     /// Storage or blob store failures.
@@ -389,7 +389,21 @@ impl Core {
     /// Index every blob on disk the index does not know, as opened at time
     /// zero: older than anything opened since, so a vault upgraded with a full
     /// store evicts what predates the index first.
+    ///
+    /// Once per vault, recorded in `blob_cache_backfill`. Only a vault from
+    /// before the index holds blobs it does not know: every later attach and
+    /// fetch indexes what it stores. Run at every launch it would probe the
+    /// store for every remote original never fetched, a cost that grows with
+    /// the vault, under the database lock.
     fn index_untracked_blobs(&self) -> Result<(), CoreError> {
+        let done: bool = self.db().conn().query_row(
+            "SELECT EXISTS (SELECT 1 FROM blob_cache_backfill)",
+            [],
+            |r| r.get(0),
+        )?;
+        if done {
+            return Ok(());
+        }
         let ids: Vec<Vec<u8>> = {
             let db = self.db();
             let mut stmt = db.conn().prepare(
@@ -428,6 +442,10 @@ impl Core {
                 }
             }
         }
+        db.conn().execute(
+            "INSERT OR IGNORE INTO blob_cache_backfill (id, done_at_ms) VALUES (1, ?)",
+            [i64::try_from(self.now_ms()).unwrap_or(i64::MAX)],
+        )?;
         Ok(())
     }
 }
