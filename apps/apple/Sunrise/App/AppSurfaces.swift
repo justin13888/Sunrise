@@ -61,6 +61,11 @@ final class AppSurfaces {
     /// until there is something to read it from.
     private(set) var reminders: ReminderScheduler?
 
+    /// What reports the OS time zone to the open vault. Absent until a vault
+    /// opens, and rebuilt with every vault, like the reminder schedule: the
+    /// zone is the core's to hold, so a vault switch has to report it again.
+    private(set) var timeZone: TimeZoneWatch?
+
     /// The iCalendar import/export surface. Owned here rather than by the
     /// window because the File menu is a *scene* command: it exists with every
     /// window closed, and it has to reach whichever vault is open now.
@@ -172,6 +177,7 @@ final class AppSurfaces {
         menuBar = MenuBarModel(bridge: bridge)
         widgets?.start(bridge: bridge)
         ical = IcalModel(bridge: bridge)
+        timeZone = TimeZoneWatch(bridge: bridge)
         #if os(macOS)
         // The panel owns the field on macOS because it owns the window the
         // field lives in — see `macOS/QuickCapturePanel.swift`.
@@ -460,6 +466,8 @@ final class AppSurfaces {
         menuBar = nil
         reminders = nil
         ical = nil
+        timeZone?.stop()
+        timeZone = nil
         // The timer lives on the `Core` and goes down with it. Recording that
         // here is what stops ``routineTimerIsRunning(against:)`` from claiming
         // the *next* vault is covered because the previous one was.

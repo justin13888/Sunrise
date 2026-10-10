@@ -45,6 +45,9 @@ struct RootView: View {
                         // core that has been shut down.
                         .task(id: ObjectIdentifier(bridge)) {
                             surfaces.attach(bridge: bridge)
+                            // The OS zone first, so the first schedule and
+                            // every screen read in the zone the device is in.
+                            await surfaces.timeZone?.start()
                             await surfaces.reminders?.start()
                             // Recurrence, from here on, without anyone opening
                             // a screen. Keyed on the same bridge identity as

@@ -139,6 +139,12 @@ actor CoreBridge {
     /// rows in the same list cannot disagree about what "today" is.
     func nowMs() -> UInt64 { core.nowMs() }
 
+    /// Tell the core which zone the OS says this device is in. See
+    /// ``TimeZoneWatch``, the one caller.
+    func reportTimeZone(_ zone: String) throws -> TimeZoneChange {
+        try core.onTimeZoneChanged(zone: zone)
+    }
+
     // MARK: - Attachments
 
     /// Seal a file's bytes into the vault and record them against a task.

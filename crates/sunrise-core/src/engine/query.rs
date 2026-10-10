@@ -168,6 +168,52 @@ impl Engine {
         Ok(QueryResult::Tasks(tasks))
     }
 
+    /// What moving the reader from `from` to `to` at `now_ms` changes, for
+    /// [`crate::Core::on_time_zone_changed`] (`docs/10-cross-cutting/time.md`
+    /// §7). Reads only; nothing stored is rewritten.
+    ///
+    /// Counts the open tasks whose `scheduled_at` or `due_at` resolves to a
+    /// different instant in the two zones, or whose deadline is overdue in
+    /// one and not the other, and reports whether the
+    /// `notifications.timezone_changed.enabled` preference asks for a
+    /// notification.
+    pub(crate) fn time_zone_impact(
+        &self,
+        db: &Db,
+        from: &jiff::tz::TimeZone,
+        to: &jiff::tz::TimeZone,
+        now_ms: u64,
+    ) -> Result<(u32, bool), EngineError> {
+        let moved =
+            |v: Option<&SunriseTime>| v.is_some_and(|v| v.resolve_in(from) != v.resolve_in(to));
+        let late_moved = |v: Option<&SunriseTime>| {
+            v.is_some_and(|v| {
+                sunrise_domain::is_overdue(v, now_ms, from)
+                    != sunrise_domain::is_overdue(v, now_ms, to)
+            })
+        };
+        let affected = super::review::read_live_tasks(db.conn())?
+            .iter()
+            .filter(|t| {
+                !t.archived
+                    && matches!(
+                        t.state.effective(),
+                        sunrise_domain::TaskState::Todo | sunrise_domain::TaskState::InProgress
+                    )
+            })
+            .filter(|t| {
+                moved(t.scheduled_at.as_ref())
+                    || moved(t.due_at.as_ref())
+                    || late_moved(t.due_at.as_ref())
+            })
+            .count();
+        let notify = matches!(
+            self.resolved_preference(db, "notifications.timezone_changed.enabled")?,
+            Some(sunrise_domain::PrefValue::Bool(true))
+        );
+        Ok((u32::try_from(affected).unwrap_or(u32::MAX), notify))
+    }
+
     /// Open tasks with their derived dependency state, ranked for a planner.
     ///
     /// Neither `blocked` nor `blocks_others` is stored on a Task — both are

@@ -371,6 +371,38 @@ pub struct FocusStartDraft {
     pub energy: Option<Energy>,
 }
 
+/// What [`crate::Core::on_time_zone_changed`] did: the one core entry point a
+/// client calls when the OS reports a new zone
+/// (`docs/10-cross-cutting/time.md` §7).
+///
+/// It is not a [`Command`]: a zone change is not an edit, writes no op and
+/// rewrites nothing stored. Everything derived from the reader's zone — Today,
+/// lateness and the triage queue, the calendar windows, the reminder schedule
+/// — is computed on read, so it is re-evaluated by being read again, and the
+/// core says so on [`crate::Core::changes`] with
+/// [`crate::DomainEvent::TimeZoneChanged`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TimeZoneChange {
+    /// The reader's zone before the call.
+    pub previous: String,
+    /// The reader's zone now.
+    pub zone: String,
+    /// Whether the zone is different from `previous`. A client that reports
+    /// the zone on every foreground gets `false` most of the time, and
+    /// nothing else happens.
+    pub changed: bool,
+    /// Open tasks whose resolved time or lateness the change moved: a
+    /// floating or all-day `scheduled_at` or `due_at` now resolves elsewhere,
+    /// or a deadline is overdue in one zone and not the other. A `zoned` or
+    /// `instant` value never counts; it does not move.
+    pub affected_tasks: u32,
+    /// Whether the client should post the one local notification naming the
+    /// new zone and `affected_tasks`: the zone changed and the
+    /// `notifications.timezone_changed.enabled` preference, off by default,
+    /// is on.
+    pub notify: bool,
+}
+
 /// Result of a command, returned synchronously to the caller after the
 /// in-process apply step.
 #[derive(Debug, Clone, Serialize, Deserialize)]
