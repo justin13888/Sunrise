@@ -1457,7 +1457,8 @@ fn span_of(src: &Source, span: (usize, usize), takes_level: bool) -> ScannedSpan
     }
 }
 
-/// Offsets of every `#[instrument]` or `#[tracing::instrument]` attribute.
+/// Offsets of every `#[instrument]`, `#[tracing::instrument]` or
+/// `#[tracing_attributes::instrument]` attribute, with or without a leading `::`.
 ///
 /// Found, not read. An `#[instrument]` records every argument of the function
 /// it decorates as a span field unless `skip`/`skip_all` says otherwise, names
@@ -1471,12 +1472,22 @@ fn instrument_attributes(structural: &str) -> Vec<usize> {
         .into_iter()
         .filter(|&at| {
             let mut before = structural[..at].trim_end();
+            // The attribute is reached as `instrument`, `tracing::instrument`
+            // or `tracing_attributes::instrument`, each with or without a
+            // leading `::`. A renamed import (`use tracing::instrument as
+            // traced;`) is refused by the import gate instead, because a
+            // renamed attribute cannot be recognised by shape.
             if let Some(head) = before.strip_suffix("::") {
                 let head = head.trim_end();
-                let Some(prefix) = head.strip_suffix("tracing") else {
+                let Some(prefix) = ["tracing_attributes", "tracing"]
+                    .iter()
+                    .find_map(|krate| head.strip_suffix(krate))
+                    .filter(|p| !p.as_bytes().last().copied().is_some_and(is_ident_byte))
+                else {
                     return false;
                 };
-                before = prefix.trim_end();
+                let prefix = prefix.trim_end();
+                before = prefix.strip_suffix("::").unwrap_or(prefix).trim_end();
             }
             before
                 .strip_suffix('[')
@@ -1910,6 +1921,30 @@ fn every_catalogued_event_name_is_grammatical() {
     }
 }
 
+/// Every level or span macro invocation in `text` that is not reached as
+/// `tracing::<macro>!`, described.
+///
+/// The gate and the test that proves the gate both call this, as they do
+/// [`tracing_import_problem`], so dropping a macro family from it fails a test.
+fn unqualified_macro_calls(text: &str) -> Vec<String> {
+    let src = normalise(text);
+    let mut aliased = Vec::new();
+    for lvl in LEVELS.iter().chain(SPAN_MACROS) {
+        for (at, _) in word_bang_hits(&src.structural, lvl) {
+            let before = src.structural[..at].trim_end();
+            if is_tracing_qualified(before) {
+                continue;
+            }
+            if before.ends_with("::") {
+                aliased.push(format!("a `…::{lvl}!` that is not `tracing::{lvl}!`"));
+            } else {
+                aliased.push(format!("a bare `{lvl}!`"));
+            }
+        }
+    }
+    aliased
+}
+
 #[test]
 fn every_tracing_macro_is_called_by_its_full_path() {
     // The scan keys on the `tracing::` qualifier, so an invocation that reaches
@@ -1917,21 +1952,8 @@ fn every_tracing_macro_is_called_by_its_full_path() {
     // `use tracing as t`, or a `self::`/`crate::` re-export.
     let mut aliased = Vec::new();
     for (rel_path, text) in shipped_sources() {
-        let src = normalise(&text);
-        for lvl in LEVELS.iter().chain(SPAN_MACROS) {
-            for (at, _) in word_bang_hits(&src.structural, lvl) {
-                let before = src.structural[..at].trim_end();
-                if is_tracing_qualified(before) {
-                    continue;
-                }
-                if before.ends_with("::") {
-                    aliased.push(format!(
-                        "{rel_path}: a `…::{lvl}!` that is not `tracing::{lvl}!`"
-                    ));
-                } else {
-                    aliased.push(format!("{rel_path}: a bare `{lvl}!`"));
-                }
-            }
+        for why in unqualified_macro_calls(&text) {
+            aliased.push(format!("{rel_path}: {why}"));
         }
     }
     assert!(
@@ -1976,15 +1998,18 @@ fn tracing_import_problem(stmt: &str) -> Option<&'static str> {
     // `tracing::span` is a module as well as a macro, and `use tracing::span;`
     // imports both. A path *through* it (`tracing::span::Id`) imports neither,
     // so `span` counts only where no `::` follows it.
-    let imports_span_macro = |mac: &str| {
+    let imports_macro = |mac: &str| {
         word_hits(rest, mac)
             .into_iter()
             .any(|at| !rest[at + mac.len()..].trim_start().starts_with("::"))
     };
-    SPAN_MACROS
-        .iter()
-        .any(|mac| imports_span_macro(mac))
-        .then_some("imports a span macro")
+    if SPAN_MACROS.iter().any(|mac| imports_macro(mac)) {
+        return Some("imports a span macro");
+    }
+    // `tracing::instrument` is likewise a module and an attribute. Imported,
+    // the attribute can be renamed (`use tracing::instrument as traced;`), and
+    // `#[traced]` is a shape the `#[instrument]` refusal cannot recognise.
+    imports_macro("instrument").then_some("imports the `#[instrument]` attribute")
 }
 
 #[test]
@@ -2165,6 +2190,14 @@ fn the_span_scanner_refuses_the_forms_it_cannot_read() {
             "#[tracing::instrument(skip_all, fields(task_h))]\nfn f() {}",
             "an `#[instrument]` attribute",
         ),
+        (
+            "#[::tracing::instrument]\nfn f(task_title: &str) {}",
+            "an `#[instrument]` attribute",
+        ),
+        (
+            "#[tracing_attributes::instrument]\nfn f(task_title: &str) {}",
+            "an `#[instrument]` attribute",
+        ),
     ] {
         assert!(
             why(src).contains(expected),
@@ -2189,11 +2222,25 @@ fn an_aliased_span_macro_is_refused_by_the_path_gates() {
             scan_spans(src).is_empty(),
             "the span scan cannot see {src:?} — which is why the path gates cover spans"
         );
+        assert_eq!(
+            unqualified_macro_calls(src).len(),
+            1,
+            "{src:?} must be refused by the path gate"
+        );
     }
+    assert!(
+        unqualified_macro_calls(
+            "fn f() { tracing::info_span!(\"s\"); tracing::span!(Level::INFO, \"s\"); }"
+        )
+        .is_empty(),
+        "a fully-qualified span macro must pass the path gate"
+    );
     for stmt in [
         "use tracing::info_span;",
         "use tracing::{span, Level};",
         "use tracing::span;",
+        "use tracing::instrument as traced;",
+        "use tracing::{instrument, Level};",
     ] {
         assert!(
             tracing_import_problem(stmt).is_some(),
@@ -2203,6 +2250,10 @@ fn an_aliased_span_macro_is_refused_by_the_path_gates() {
     // A path through the `span` module imports no macro, and
     // `sunrise-log`'s own `test_util.rs` has exactly that import.
     assert!(tracing_import_problem("use tracing::span::{Attributes, Id, Record};").is_none());
+    // Likewise a path through the `instrument` module, which `sunrise-core`'s
+    // tests import, and the `Instrument` trait.
+    assert!(tracing_import_problem("use tracing::instrument::WithSubscriber as _;").is_none());
+    assert!(tracing_import_problem("use tracing::Instrument;").is_none());
 }
 
 // ---------------------------------------------------------------------------
