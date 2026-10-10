@@ -1,10 +1,11 @@
 //! Shared server state, held as the kynos `Service`'s context.
 
 use crate::auth::{NullVerifier, TokenVerifier};
+use crate::blob::{BlobBackend, FsBlobs};
 use crate::config::ServerConfig;
 use crate::metrics::Metrics;
 use crate::relay::RelayHub;
-use crate::store::{Store, StoreError};
+use crate::store::{MetadataStore, Store, StoreError};
 use std::sync::Arc;
 
 /// Pluggable wall-clock; tests inject a fake.
@@ -69,12 +70,16 @@ pub struct ServerState {
     pub clock: Arc<dyn Clock>,
     /// Token verifier used by authenticated routes.
     pub token_verifier: Arc<dyn TokenVerifier>,
-    /// Account + device persistence.
-    pub store: Arc<Store>,
+    /// Accounts, devices, push tokens, cursors, tombstones, deletion tokens
+    /// and the durable relay log: ADR-0062's `MetadataStore`. The SQLite
+    /// [`Store`] unless [`ServerState::with_metadata_store`] replaced it.
+    pub store: Arc<dyn MetadataStore>,
     /// Metric registry; cheap to clone.
     pub metrics: Metrics,
-    /// Blob store root (self-host filesystem path).
-    pub blob_root: Arc<std::path::PathBuf>,
+    /// Attachment ciphertext: ADR-0062's `BlobBackend`. The filesystem tree
+    /// under `[storage] blob_root` unless [`ServerState::with_blob_backend`]
+    /// replaced it.
+    pub blobs: Arc<dyn BlobBackend>,
     /// Retention bounds for the durable relay op log.
     pub durable_caps: crate::relay_log::DurableCaps,
     /// Live sync sessions. Empty until `POST /sync/session` files one; held
@@ -141,7 +146,7 @@ impl ServerState {
     fn assemble(
         config: ServerConfig,
         clock: Arc<dyn Clock>,
-        store: Arc<Store>,
+        store: Arc<dyn MetadataStore>,
         push: crate::push::Dispatcher,
     ) -> Self {
         // An issuer beside an explicit `require_device_sig = false` is the one
@@ -169,7 +174,7 @@ impl ServerState {
             token_verifier: Arc::new(NullVerifier),
             store,
             metrics,
-            blob_root: Arc::new(blob_root),
+            blobs: Arc::new(FsBlobs::new(blob_root)),
             durable_caps: crate::relay_log::DurableCaps::default(),
             sessions: crate::sync_session::SessionStore::new(),
             drain: crate::drain::Drain::new(),
@@ -239,6 +244,30 @@ impl ServerState {
         self
     }
 
+    /// Keep metadata in `store` instead of the SQLite database the config
+    /// names.
+    ///
+    /// The seam ADR-0062 §1 puts Postgres behind; today an embedding's and a
+    /// test's. The SQLite-only operator commands (`admin backup`, `rekey`,
+    /// the doctor's database check) and the shutdown checkpoint find no
+    /// SQLite store behind it and skip.
+    #[must_use]
+    pub fn with_metadata_store(mut self, store: Arc<dyn MetadataStore>) -> Self {
+        self.store = store;
+        self
+    }
+
+    /// Keep blobs in `blobs` instead of the filesystem tree under
+    /// `[storage] blob_root`.
+    ///
+    /// The seam ADR-0062 §7 puts an object store behind; today an
+    /// embedding's and a test's.
+    #[must_use]
+    pub fn with_blob_backend(mut self, blobs: Arc<dyn BlobBackend>) -> Self {
+        self.blobs = blobs;
+        self
+    }
+
     /// Keep live sessions in `backend` instead of the in-process map.
     ///
     /// The seam ADR-0062 §3 puts a shared table behind; today an embedding's
@@ -297,6 +326,8 @@ mod tests {
         let busy = |state: &ServerState| -> i64 {
             state
                 .store
+                .as_sqlite()
+                .expect("the configured store is SQLite")
                 .conn
                 .lock()
                 .query_row("PRAGMA busy_timeout", [], |r| r.get(0))

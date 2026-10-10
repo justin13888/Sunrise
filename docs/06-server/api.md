@@ -603,7 +603,7 @@ The envelope `ApiError` actually renders carries two members and no
 
 A `429` is always `RATE_LIMITED` with a `Retry-After` header; see §Rate limits.
 
-Codes are **stable** (clients map them to translated strings). New codes can be added; clients see unknown codes as a generic error. Messages never quote a token, a key, or a subject: a JWKS transport failure and a forged signature both render as the same opaque `401`, and a SQLite error renders as `500 FATAL_INTERNAL` with the message `"internal error"`.
+Codes are **stable** (clients map them to translated strings). New codes can be added; clients see unknown codes as a generic error. Messages never quote a token, a key, or a subject: a JWKS transport failure and a forged signature both render as the same opaque `401`, and a storage failure — the metadata store or the blob backend not answering — renders as a retryable `503 RELAY_STORAGE_UNAVAILABLE` naming only which store, never the backend's own message (ADR-0062 §1).
 
 ### Quota responses — REMOVED
 

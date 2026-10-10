@@ -127,7 +127,7 @@ pub async fn ops(
     let (_, session) = resolve(&state, &header, &caller, now_ms).await?;
     // A session opened before the deletion was confirmed must not keep
     // writing into a log the erasure is about to remove.
-    crate::api::account_deletion::refuse_if_pending_deletion(&state, &session.account_id)?;
+    crate::api::account_deletion::refuse_if_pending_deletion(&state, &session.account_id).await?;
     let stream_id = parse_id(&body.stream_id, "stream_id")?;
     // Per op, before anything is stored: a refused batch stays in the outbox.
     let (limiter, n_ops) = (&state.limiter, body.ops.len() as u64);
@@ -170,6 +170,7 @@ pub async fn ops(
     let stored_heads = state
         .store
         .relay_device_heads((session.account, stream_id))
+        .await
         .unwrap_or_default();
 
     let appended = append(
@@ -180,6 +181,7 @@ pub async fn ops(
         &batch,
         now_ms,
     )
+    .await
     .map_err(|e| {
         tracing::error!(
             ev = "srv.relay.append_failed",
@@ -265,14 +267,15 @@ fn fan_out(
 /// append is its sibling under the request rather than its child. It carries
 /// the batch's op count and frame size, and how the append ended; nothing
 /// about which stream or whose.
-fn append(
+async fn append(
     state: &ServerState,
     key: crate::relay::StreamKey,
     frame: &[u8],
     heads: &[FrameHead],
     batch: &OpBatchPayload,
     now_ms: u64,
-) -> Result<Appended, crate::store::StoreError> {
+) -> Result<Appended, crate::store::MetadataError> {
+    use sunrise_telemetry::FutureExt as _;
     let span = sunrise_telemetry::span(
         "relay.append",
         [
@@ -280,16 +283,20 @@ fn append(
             Attr::count(Count::Bytes, frame.len() as u64),
         ],
     );
-    let _current = span.enter();
-    let appended = state.store.relay_append(
-        key,
-        frame,
-        heads,
-        batch_ops_hash(&batch.ops).as_ref(),
-        batch.batch_id,
-        now_ms,
-        state.durable_caps,
-    );
+    let ops_h = batch_ops_hash(&batch.ops);
+    let appended = state
+        .store
+        .relay_append(
+            key,
+            frame,
+            heads,
+            ops_h.as_ref(),
+            batch.batch_id,
+            now_ms,
+            state.durable_caps,
+        )
+        .with_context(span.context())
+        .await;
     match &appended {
         Ok(Appended::Fresh { .. }) => span.set(Attr::result("fresh")),
         Ok(Appended::Duplicate { .. }) => span.set(Attr::result("duplicate")),

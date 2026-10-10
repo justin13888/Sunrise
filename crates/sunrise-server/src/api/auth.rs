@@ -151,8 +151,24 @@ async fn verify_and_resolve(state: &ServerState, bearer: &str) -> Result<Princip
             state.config.allow_signup,
             state.clock.now_ms(),
         )
+        .await
         .map_err(|e| match e {
-            crate::store::StoreError::SignupDisabled => AuthRejection::forbidden(),
+            crate::store::MetadataError::SignupDisabled => AuthRejection::forbidden(),
+            // kynos's `AuthRejection` carries a 401 or a 403 and nothing else,
+            // so a store that did not answer cannot be the `503` it is on
+            // every other request path. It is logged as the storage failure
+            // it is, and the 401 it becomes is what it has always been.
+            crate::store::MetadataError::Unavailable(_) => {
+                tracing::error!(
+                    ev = "srv.store.failed",
+                    err_code = %sunrise_error::ErrorCode::RelayStorageUnavailable,
+                    err_kind = "transient",
+                    retryable = true,
+                    cause = %e,
+                    "storage error"
+                );
+                AuthRejection::unauthenticated()
+            }
             _ => AuthRejection::unauthenticated(),
         })?;
     Ok(Principal {

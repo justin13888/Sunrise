@@ -61,7 +61,9 @@ pub mod codes {
     /// Mirrors [`sunrise_error::ErrorCode::SyncResumeConflict`] (registry id
     /// 513).
     pub const SYNC_RESUME_CONFLICT: &str = "SYNC_RESUME_CONFLICT";
-    /// The relay could not read or write its durable op log.
+    /// The relay could not read or write its storage: the durable op log, the
+    /// metadata store behind it, the session store, or the blob backend
+    /// (ADR-0062 §1). Retryable.
     pub const RELAY_STORAGE_UNAVAILABLE: &str = "RELAY_STORAGE_UNAVAILABLE";
     /// No live pairing session under that `pair_id` for this account: it was
     /// never opened, expired, was aborted, overflowed its per-role buffer, or
@@ -387,35 +389,44 @@ impl From<AuthRejection> for ApiError {
     }
 }
 
-impl From<crate::store::StoreError> for ApiError {
-    fn from(e: crate::store::StoreError) -> Self {
+impl From<crate::store::MetadataError> for ApiError {
+    /// The refusals keep the codes they always had; a backend that did not
+    /// answer is `503 RELAY_STORAGE_UNAVAILABLE`, which the client retries
+    /// (ADR-0062 §1). The cause is logged and never sent: a SQLite error
+    /// string can name columns and constraints.
+    fn from(e: crate::store::MetadataError) -> Self {
+        use crate::store::MetadataError;
         match e {
             // A server-policy refusal, not a caller failure: 403 with its own
             // code, matching what the surface this replaces returned.
-            crate::store::StoreError::SignupDisabled => Self::signup_disabled(),
-            crate::store::StoreError::RecoveryBlobExists => Self::conflict(
+            MetadataError::SignupDisabled => Self::signup_disabled(),
+            MetadataError::RecoveryBlobExists => Self::conflict(
                 codes::RECOVERY_BLOB_EXISTS,
                 "this account already holds a different recovery blob".to_owned(),
             ),
-            crate::store::StoreError::NotFound => Self::not_found(
+            MetadataError::NotFound => Self::not_found(
                 codes::DEVICE_NOT_FOUND,
                 "no such record on this account".to_owned(),
             ),
-            // Everything else is raised only by `Store::open` and the
-            // operator's `admin` commands, before or outside any route, so a
-            // request reaching one would be a defect.
-            crate::store::StoreError::Sqlite(_)
-            | crate::store::StoreError::SchemaTooNew { .. }
-            | crate::store::StoreError::BusyTimeoutTooLong { .. }
-            | crate::store::StoreError::KeyFile { .. }
-            | crate::store::StoreError::KeyPermissions { .. }
-            | crate::store::StoreError::KeyInDataDir { .. }
-            | crate::store::StoreError::KeyConfig(_)
-            | crate::store::StoreError::KeyRequired { .. }
-            | crate::store::StoreError::WrongKey { .. }
-            | crate::store::StoreError::InUse { .. }
-            | crate::store::StoreError::NotEncrypted
-            | crate::store::StoreError::Io { .. } => {
+            MetadataError::Unavailable(_) => {
+                storage_failed(&e);
+                Self::unavailable("the relay's metadata store is unavailable")
+            }
+        }
+    }
+}
+
+impl From<crate::blob::BlobError> for ApiError {
+    /// A blob backend that did not answer is `503 RELAY_STORAGE_UNAVAILABLE`,
+    /// like the metadata store's; a manifest that does not parse is the
+    /// server's own fault and stays `500`.
+    fn from(e: crate::blob::BlobError) -> Self {
+        match e {
+            crate::blob::BlobError::Unavailable(_) => {
+                storage_failed(&e);
+                Self::unavailable("the relay's blob store is unavailable")
+            }
+            crate::blob::BlobError::Corrupt(_) => {
                 tracing::error!(
                     ev = "srv.store.failed",
                     err_kind = "internal",
@@ -426,4 +437,16 @@ impl From<crate::store::StoreError> for ApiError {
             }
         }
     }
+}
+
+/// `srv.store.failed`, once, wherever a storage failure becomes a response.
+fn storage_failed(cause: &dyn std::fmt::Display) {
+    tracing::error!(
+        ev = "srv.store.failed",
+        err_code = %sunrise_error::ErrorCode::RelayStorageUnavailable,
+        err_kind = "transient",
+        retryable = true,
+        cause = %cause,
+        "storage error"
+    );
 }

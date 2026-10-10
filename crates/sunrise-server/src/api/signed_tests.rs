@@ -299,3 +299,59 @@ async fn a_bootstrap_route_still_checks_a_binding_that_is_offered() {
     .await
     .assert_status(StatusCode::UNAUTHORIZED);
 }
+
+/// A metadata store that does not answer while a bearer is resolved is a
+/// storage failure, not a bad credential: kynos's rejection can only carry a
+/// 401 or a 403, so the caller sees the 401 it always has, and the outage is
+/// logged as the transient `srv.store.failed` it is. The bearer is resolved
+/// before the binding is read, so the signature never comes into it.
+///
+/// A plain `#[test]` with its own runtime, because the dispatcher has to wrap
+/// the whole request.
+#[test]
+fn an_unreachable_store_during_bearer_resolution_is_logged_and_refused() {
+    use sunrise_log::{build_subscriber, Capture, LogConfig, LogFormat, LogTarget};
+
+    let cap = Capture::new();
+    let dispatch = build_subscriber(LogConfig {
+        target: LogTarget::Capture(cap.clone()),
+        filter: "info".to_owned(),
+        format: LogFormat::Ndjson,
+    })
+    .expect("subscriber builds");
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    tracing::dispatcher::with_default(&dispatch, || {
+        rt.block_on(async {
+            let state = ServerState::new(ServerConfig::default())
+                .with_metadata_store(Arc::new(crate::store::conformance::Unreachable));
+            let client = Client::from_state(state);
+            let sk = SigningKey::from_bytes(&[31u8; 32]);
+            let res = send_signed(
+                &client,
+                "GET",
+                "/api/v1/accounts/me",
+                "01J8ZQ7X9K3M5N7P9R1T3V5W7Y",
+                &sk,
+                None::<&serde_json::Value>,
+            )
+            .await;
+            res.assert_status(StatusCode::UNAUTHORIZED);
+        });
+    });
+
+    let out = cap.contents();
+    assert!(!out.is_empty(), "the capture received no records at all");
+    let failed: Vec<serde_json::Value> = out
+        .lines()
+        .filter(|l| l.contains(r#""ev":"srv.store.failed""#))
+        .map(|l| serde_json::from_str(l).expect("record is JSON"))
+        .collect();
+    assert!(!failed.is_empty(), "no storage failure was logged: {out}");
+    for record in &failed {
+        assert_eq!(record["err_kind"], serde_json::json!("transient"), "{out}");
+        assert_eq!(record["retryable"], serde_json::json!(true), "{out}");
+    }
+}

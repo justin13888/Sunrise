@@ -110,13 +110,13 @@ pub struct AccountInfo {
     pub created_at_ms: u64,
 }
 
-fn info(state: &ServerState, account: &Account) -> Result<AccountInfo, ApiError> {
+async fn info(state: &ServerState, account: &Account) -> Result<AccountInfo, ApiError> {
     Ok(AccountInfo {
         identity_id: account.account_id.clone(),
         identity_signing_pub: account.identity_pub_s.clone(),
         email: account.email.clone().unwrap_or_default(),
         tier: account.tier.clone(),
-        device_count: state.store.active_device_count(&account.account_id)?,
+        device_count: state.store.active_device_count(&account.account_id).await?,
         created_at_ms: account.created_at_ms,
     })
 }
@@ -147,16 +147,19 @@ pub async fn create(
         return Err(ApiError::validation("identity keys required"));
     }
 
-    let account = state.store.set_identity(
-        &principal.account.account_id,
-        body.identity_signing_pub.trim(),
-        body.identity_dh_pub.trim(),
-        Some(body.recovery_blob.as_str()).filter(|b| !b.is_empty()),
-        body.terms_at_ms,
-    )?;
+    let account = state
+        .store
+        .set_identity(
+            &principal.account.account_id,
+            body.identity_signing_pub.trim(),
+            body.identity_dh_pub.trim(),
+            Some(body.recovery_blob.as_str()).filter(|b| !b.is_empty()),
+            body.terms_at_ms,
+        )
+        .await?;
 
     state.metrics.incr("sunrise_account_create_total");
-    let mut out = info(&state, &account)?;
+    let mut out = info(&state, &account).await?;
     // The IdP owns the email; the body's copy is the self-host fallback.
     out.email = principal
         .subject
@@ -172,7 +175,7 @@ pub async fn me(
     Inject(state): Inject<ServerState>,
     SignedParts(caller): SignedParts,
 ) -> Result<Json<AccountInfo>, ApiError> {
-    Ok(Json(info(&state, &caller.principal.account)?))
+    Ok(Json(info(&state, &caller.principal.account).await?))
 }
 
 /// The calling account's sealed recovery blob.
@@ -225,7 +228,8 @@ pub async fn recovery_blob(
 
     let blob = state
         .store
-        .recovery_blob(&principal.account.account_id)?
+        .recovery_blob(&principal.account.account_id)
+        .await?
         .ok_or_else(|| {
             ApiError::not_found(
                 crate::api::error::codes::RECOVERY_BLOB_NOT_FOUND,

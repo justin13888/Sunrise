@@ -48,7 +48,7 @@ use sunrise_core::{Clock, Command, RevokeReason, SystemClock};
 use sunrise_e2e::{open_paired_core, open_synced_core, spawn_relay_with, wait_live};
 use sunrise_id::{EntityKind, EntityRef};
 use sunrise_server::store::NewDevice;
-use sunrise_server::{ServerConfig, Store, Subject};
+use sunrise_server::{MetadataStore, ServerConfig, Store, Subject};
 
 const ROOT: [u8; 32] = [0x41; 32];
 const TIMEOUT: Duration = Duration::from_secs(30);
@@ -84,13 +84,14 @@ async fn wait_relay_revoked(store: &Store, account_id: &str, relay_device_id: &s
 /// Revoking B on A makes the relay stop treating B as an active device.
 #[tokio::test(flavor = "multi_thread")]
 async fn revoking_a_device_reaches_the_relay() {
-    let mut captured: Option<Arc<Store>> = None;
+    let mut captured: Option<Arc<dyn MetadataStore>> = None;
     let (addr, relay) = spawn_relay_with(ServerConfig::default(), |state| {
         captured = Some(state.store.clone());
         state
     })
     .await;
-    let store = captured.expect("the harness hands back the relay's own store");
+    let held = captured.expect("the harness hands back the relay's own store");
+    let store = held.as_sqlite().expect("the default store is SQLite");
 
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);
     let dir_a = tempfile::tempdir().expect("temp dir");
@@ -132,7 +133,7 @@ async fn revoking_a_device_reaches_the_relay() {
     .await
     .expect("revoke B");
 
-    wait_relay_revoked(&store, &account.account_id, &row.device_id).await;
+    wait_relay_revoked(store, &account.account_id, &row.device_id).await;
 
     relay.abort();
 }
