@@ -192,7 +192,14 @@ url = { version = "2.5", default-features = false }
 # resolves IANA zones identically (deterministic routine expansion), independent
 # of the host OS tzdb. `default-features = false` also disables `tzdb-zoneinfo`,
 # so without an explicit bundle no named zone would resolve at all.
-jiff = { version = "0.2", default-features = false, features = ["std", "serde", "tzdb-bundle-always"] }
+# `tz-system` is what lets `TimeZone::system()` ask the OS at all: without it
+# the call fails on every platform and `SystemClock::timezone` (sunrise-core
+# `config.rs`) falls back to reading `/etc/localtime` by hand, which Windows
+# does not have, so every Windows device claimed UTC. With it, jiff reads `TZ`
+# and `/etc/localtime` on Unix and maps the registry's zone to IANA on Windows.
+# The zone *data* still comes from the bundle above; only the device's zone
+# name comes from the OS.
+jiff = { version = "0.2", default-features = false, features = ["std", "serde", "tzdb-bundle-always", "tz-system"] }
 
 # --- internationalization ---
 # CLDR plural rules and integer formatting for the CLI's generated string

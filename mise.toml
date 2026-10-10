@@ -1029,6 +1029,103 @@ depends = ["apple-xcframework"]
 dir = "apps/apple"
 run = "xcodegen generate --quiet && open Sunrise.xcodeproj"
 
+# --- Android seam (Kotlin / UniFFI) ---
+
+# The UniFFI seam's Kotlin half, checked on a JVM: build the seam crate for the
+# host, generate Kotlin from it, compile that Kotlin and `tools/kotlin-smoke/
+# Smoke.kt` against JNA, and run the result with the host library on JNA's
+# path. It opens a fresh vault and queries it. CI's `kotlin-smoke` job is this
+# task, on Linux; it runs on macOS too.
+#
+# What it catches is a seam change the Swift side accepts and Kotlin does not —
+# an exported name that collides with a Kotlin member, a type the Kotlin
+# generator refuses, a checksum JNA and the library disagree on. What it does
+# not prove is anything about Android: no Android target is compiled and no
+# ART, Bionic or NDK linker is involved (`docs/07-clients/mobile-android.md`).
+#
+# Needs `java` (17 or later) on PATH. The Kotlin compiler, JNA and
+# kotlinx-coroutines are downloaded into `<target>/kotlin-smoke/tools`, each
+# pinned by version and SHA-256, so nothing is installed outside the checkout.
+# `--no-format` because the generator otherwise shells out to `ktlint` when one
+# is on PATH, and whether one is should not change what gets compiled.
+[tasks.kotlin-smoke]
+description = "Generate Kotlin from the UniFFI seam, compile it, and open a vault through it on a JVM"
+shell = "bash -c"
+run = """
+set -euo pipefail
+command -v java >/dev/null \\
+  || { echo "kotlin-smoke: java is not on PATH; install a JDK, 17 or later" >&2; exit 1; }
+
+kotlin_version=2.4.21
+kotlin_sha256=7cc140e76daf416a0424a5557f99afd7ca89ebd463ea1101261e3e01c33e75cd
+jna_version=5.19.1
+jna_sha256=4fb141dd8ef6b0585ffceea4bc49602fbc6312fa977e2c488794ea3e6aafecae
+coroutines_version=1.11.0
+coroutines_sha256=d1d75aa01dffbb4d1c520e67e4c4e7f5f6174718e7cb4632412503f2f0e604fa
+
+# Where cargo writes, asked rather than assumed, as `apple-xcframework` does
+# and for the same reason.
+target_directory() {
+  python3 -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])'
+}
+target_dir=$(cargo metadata --format-version 1 --no-deps | target_directory)
+bindgen_target_dir=$(cargo metadata --format-version 1 --no-deps \\
+  --manifest-path tools/uniffi-bindgen/Cargo.toml | target_directory)
+work="$target_dir/kotlin-smoke"
+tools="$work/tools"
+mkdir -p "$tools"
+
+# A file already present is reused only if it still matches its pin.
+fetch() {
+  local url="$1" sum="$2" dest="$3"
+  if [ -f "$dest" ] && echo "$sum  $dest" | shasum -a 256 -c --status; then
+    return
+  fi
+  curl -fsSL --retry 3 -o "$dest.part" "$url"
+  if ! echo "$sum  $dest.part" | shasum -a 256 -c --status; then
+    rm -f "$dest.part"
+    echo "kotlin-smoke: $url does not match its pinned SHA-256" >&2
+    exit 1
+  fi
+  mv "$dest.part" "$dest"
+}
+maven=https://repo1.maven.org/maven2
+fetch "https://github.com/JetBrains/kotlin/releases/download/v$kotlin_version/kotlin-compiler-$kotlin_version.zip" \\
+  "$kotlin_sha256" "$tools/kotlin-compiler-$kotlin_version.zip"
+fetch "$maven/net/java/dev/jna/jna/$jna_version/jna-$jna_version.jar" \\
+  "$jna_sha256" "$tools/jna-$jna_version.jar"
+fetch "$maven/org/jetbrains/kotlinx/kotlinx-coroutines-core-jvm/$coroutines_version/kotlinx-coroutines-core-jvm-$coroutines_version.jar" \\
+  "$coroutines_sha256" "$tools/kotlinx-coroutines-core-jvm-$coroutines_version.jar"
+kotlinc="$tools/kotlin-$kotlin_version/kotlinc/bin/kotlinc"
+if [ ! -x "$kotlinc" ]; then
+  rm -rf "$tools/kotlin-$kotlin_version"
+  unzip -q "$tools/kotlin-compiler-$kotlin_version.zip" -d "$tools/kotlin-$kotlin_version"
+fi
+classpath="$tools/jna-$jna_version.jar:$tools/kotlinx-coroutines-core-jvm-$coroutines_version.jar"
+
+# The seam, as a host cdylib. A debug build: the smoke run measures nothing,
+# and the `rust` job's cache already holds most of a debug graph.
+cargo build -p "$ffi_crate"
+case "$(uname -s)" in
+  Darwin) lib="$target_dir/debug/lib$ffi_lib.dylib" ;;
+  *) lib="$target_dir/debug/lib$ffi_lib.so" ;;
+esac
+[ -f "$lib" ] || { echo "kotlin-smoke: cargo built no cdylib at $lib" >&2; exit 1; }
+
+cargo build --locked --release --manifest-path tools/uniffi-bindgen/Cargo.toml
+rm -rf "$work/gen" "$work/smoke.jar"
+"$bindgen_target_dir/release/uniffi-bindgen" generate \\
+  --library "$lib" --language kotlin --no-format --out-dir "$work/gen"
+
+# `-nowarn`: the generated file draws warnings (unused expressions, at
+# uniffi 0.32) that are the generator's style and not ours to fix. An error
+# still fails here.
+"$kotlinc" "$work/gen" tools/kotlin-smoke/Smoke.kt \\
+  -nowarn -classpath "$classpath" -include-runtime -d "$work/smoke.jar"
+java -Djna.library.path="$(dirname "$lib")" \\
+  -cp "$work/smoke.jar:$classpath" SmokeKt
+"""
+
 # --- Running the apps ---
 #
 # The three tasks above build and *test*; none of them puts an app on screen,
