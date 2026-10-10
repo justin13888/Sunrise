@@ -34,7 +34,7 @@ enum L10n {
         }
         /// Remove this device?
         static var removeConfirmTitleUnnamed: String { L10n.tr("apple.devices.remove_confirm_title_unnamed") }
-        /// Every Stream key is rotated, so this device reads nothing written afterwards. It can still read what it already has — revocation is forward-only.
+        /// Every Stream key is rotated, so this device reads nothing written afterwards. It can still read what it already has — revocation is forward-only. This cannot be undone: to use this device again, pair it as a new device.
         static var removeConfirmMessage: String { L10n.tr("apple.devices.remove_confirm_message") }
         /// I lost it
         static var reasonLost: String { L10n.tr("apple.devices.reason_lost") }

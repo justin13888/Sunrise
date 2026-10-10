@@ -127,8 +127,11 @@ What exists today, read from the tree:
   `ReminderSettings` the Apple client builds from its own `UserDefaults`, until
   that client reads through the core ([#489](https://github.com/justin13888/Sunrise/issues/489))
   and the planner reads the keys itself ([#347](https://github.com/justin13888/Sunrise/issues/347)).
-- **On iOS**, on-event kinds need a background wake, which does not exist yet
-  ([#367](https://github.com/justin13888/Sunrise/issues/367)); until it does they fire when the app next runs.
+- **On iOS**, on-event kinds need a background wake. The scheduler reconciles
+  at the end of every background run — each refresh task and silent push
+  ([`mobile-ios.md`](../07-clients/mobile-ios.md#background-sync), #367) — so
+  an event a peer wrote is scheduled at the next such run rather than at the
+  next launch; how soon that is, the OS decides.
 
 ## Details
 

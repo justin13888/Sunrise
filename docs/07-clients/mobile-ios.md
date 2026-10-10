@@ -109,13 +109,13 @@ SwiftUI scenes ──▶ ViewModels (ObservableObject) ──▶ CoreClient (Swi
 
 ## Platform surfaces (not built)
 
-> **Apart from two exceptions, none of the surfaces in this section, in [Background sync](#background-sync), or in [Push handling](#push-handling) exists yet.** Grepping `apps/apple` finds no
-> `BGAppRefreshTask`, `BGProcessingTask`, `ActivityKit`,
-> `WatchConnectivity`, `INFocusStatus` or `SecureEnclave`, and `project.yml`
-> declares no share or watch extension target. This section is the
-> specification these surfaces will be built to, not a description of the app.
-> Tracked in [#368](https://github.com/justin13888/Sunrise/issues/368) and
-> [#367](https://github.com/justin13888/Sunrise/issues/367).
+> **Apart from two exceptions, none of the surfaces in this section exists
+> yet.** [Background sync](#background-sync) and [Push handling](#push-handling)
+> are built and described in their own sections. Grepping `apps/apple` finds no
+> `ActivityKit`, `WatchConnectivity`, `INFocusStatus` or `SecureEnclave`, and
+> `project.yml` declares no share or watch extension target. This section is
+> the specification these surfaces will be built to, not a description of the
+> app. Tracked in [#368](https://github.com/justin13888/Sunrise/issues/368).
 >
 > The two exceptions:
 >
@@ -202,10 +202,10 @@ something different**, because iOS budgets reloads. The widget's timeline is
 one entry with a `.never` policy: nothing in the extension can compute a new
 state, so only a write from the app can produce one.
 
-While the app is suspended, nothing refreshes the snapshot. On the Home
-Screen sizes, the age stamp shows how old it is. A `BGAppRefreshTask` that opens the vault in
-the background and republishes belongs to background sync
-([#367](https://github.com/justin13888/Sunrise/issues/367)).
+While the app is suspended, the snapshot is refreshed only by a background
+run ([Background sync](#background-sync)): every refresh task and silent push
+ends by republishing it from the vault it just synced. Between runs, the age
+stamp on the Home Screen sizes shows how old it is.
 
 #### Not built
 
@@ -248,26 +248,100 @@ If shipped: a glance for Today, ability to capture via voice. Syncs to phone via
 
 ## Background sync
 
-- `BGAppRefreshTask` scheduled by the OS at OS-decided times.
-- During the budget window:
-  1. Open a sync session and its event stream (`POST /api/v1/sync/session`,
-     then `GET /api/v1/sync/events` — [ADR-0023](../11-adr/0023-sse-sync-transport.md)
-     replaced the WebSocket this step used to name).
-  2. Drain inbox + outbox.
-  3. Commit.
-  4. Schedule local notifications for any new reminders within the next horizon.
-  5. Disconnect cleanly.
-- A second `BGProcessingTask` for heavier maintenance (compaction, attachment cleanup).
+**Built** ([#367](https://github.com/justin13888/Sunrise/issues/367)). Three
+OS entry points run one sync, and never two at once:
+
+| Entry point | Identifier | When the OS runs it |
+|---|---|---|
+| `BGAppRefreshTask` | `dev.sunrise.SunriseiOS.refresh` | no sooner than 15 minutes after the request; the OS decides when |
+| `BGProcessingTask` | `dev.sunrise.SunriseiOS.maintenance` | on external power and a network, no sooner than a day after the request |
+| silent push | — | when the relay's dispatcher sends one ([Push handling](#push-handling)) |
+
+The app asks for the next refresh and maintenance window whenever it goes to
+the background, and re-arms the refresh at the start of every refresh it runs,
+so a run the OS cuts short still leaves one pending. `project.yml` declares
+the `fetch`, `processing` and `remote-notification` background modes and both
+task identifiers in `BGTaskSchedulerPermittedIdentifiers`.
+
+Each run (`SessionModel.backgroundSync`, `apps/apple/Sunrise/Sync/`):
+
+1. **Opens the vault if the OS launched the app with no window.** It opens
+   only from the two states nobody chose: the launch that has opened nothing
+   yet, and a Keychain that would not answer, which before the first unlock
+   after a restart is expected. A vault the user locked stays locked, a failed
+   open is not retried, and a device with no vault has nothing to sync; each
+   answers "no data". The open is single-flight, so a window appearing during
+   it joins it rather than racing it into the vault lock.
+2. **Renews the account token if it is due**, binds the relay device as a
+   foreground start does, and builds the same `SyncPlan`. A plan that is off
+   answers "no data".
+3. **Calls `SunriseCore::sync_once(url, bearer, relay_device_id, budget_ms, cancel)`**
+   with what is left of a 25-second budget the whole run shares: the vault
+   open, the renewal and the device binding come out of it first. The core
+   starts the sync driver if nothing has, ends any session that was up before
+   the app was suspended — a session that looks live over a socket that died
+   while suspended is the failure this prevents — cuts short a reconnect delay
+   the driver was suspended in, and waits for a session dialled after the call to report `Live`
+   with an empty outbox: every stream caught up, every local op acked. It
+   returns whether that happened, how many changes the vault published
+   meanwhile, and the driver's state. The driver keeps running afterwards; a
+   suspended process simply stops scheduling it.
+4. **Re-plans local notifications and republishes the widget snapshot** from
+   the vault it just synced, binding the app's surfaces to it first on a cold
+   launch.
+5. **Files the push token** if the relay does not hold it
+   ([Push handling](#push-handling)).
+
+**Expiry.** When the OS ends the budget — the task's expiration handler, or
+28 seconds after the run began, which is the only bound a silent push has —
+`BackgroundSync` answers the OS `.failed` at once, whatever step the run is
+in, and cancels the run behind that answer. The cancel reaches Rust through
+the `SyncCancel` handle `CoreBridge.syncOnce` passes in, because UniFFI's
+async glue does not forward a Swift task's cancellation; `sync_once` returns
+as soon as it sees it, and nothing after the sync (the re-plan, the token
+upload) runs. Nothing is half applied: the
+wait holds no transaction, and the driver commits each inbound op whole while
+the database lock is held, never across an await. The next run resumes from
+the cursors the committed ops advanced.
+
+**What the OS is told.** A run that changed the vault reports new data — even
+one cut short, since what landed landed whole. A run that finished with
+nothing new, or had nothing it was allowed to do, reports no data. A run that
+could not finish reports failure, and a refresh task completes unsuccessfully.
+
+**Maintenance** runs the same sync today. Compaction and the attachment cache
+trim join it once the core has them.
 
 ## Push handling
 
+**Built** ([#367](https://github.com/justin13888/Sunrise/issues/367)). The
 APNs payload is content-less:
 
 ```json
 { "aps": { "content-available": 1 } }
 ```
 
-The app is woken silently, runs sync, optionally raises a local notification if state warrants one (e.g. a shared peer added a task that mentions the user).
+`application(_:didReceiveRemoteNotification:)` runs the background sync
+above — joining it if a refresh is already running — and answers the fetch
+handler with `.newData`, `.noData` or `.failed` as that section describes.
+Nothing is shown: a peer's change reaches the user as the reminders the
+re-plan schedules.
+
+**The token.** The app calls `registerForRemoteNotifications()` at launch;
+a silent push needs no permission prompt. `project.yml` gives the target the
+`aps-environment` entitlement, `development` in Debug and `production` in
+Release, which must match the relay's `[push.apns]` gateway. The token goes
+to the relay as lowercase hex through `SunriseCore::register_push_token`,
+which calls `sunrise_relay_client::register_push_token`: a
+`POST /api/v1/devices/push-tokens` signed with the ADR-0022 device binding
+over the canonical body, filed under the relay device id the request is
+signed as. The app uploads when the (relay, relay device id, token) triple
+differs from the last one the relay accepted: on a new token, on a rotated
+one, and after a re-pairing mints a new relay device id. It checks on token
+delivery, at every foreground sync start, on sign-in, and after every
+background run. A refused upload is not recorded, so the next check retries
+it. A device with no relay device id yet, or no account bearer, uploads
+nothing until it has both.
 
 ## OS keystore
 
