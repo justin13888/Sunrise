@@ -162,7 +162,7 @@ Revocation today is a **register plus a read bound**:
   comparison in the path, and `is_revoked`'s own doc explains at length why a
   correct comparison is indistinguishable from presence and an incorrect one
   collapses to a bare wall clock after a restart, which `HlcClock::peek` makes
-  easy to reach (`crates/sunrise-core/src/config.rs:120-128#peek`).
+  easy to reach (`crates/sunrise-core/src/config.rs:123-131#peek`).
 - **Entity writes are bounded at the relay, conditionally.** This bullet said
   until [#80](https://github.com/justin13888/Sunrise/issues/80) landed that
   nothing bounds writes and that `Command::RevokeDevice` *cannot* ask the relay

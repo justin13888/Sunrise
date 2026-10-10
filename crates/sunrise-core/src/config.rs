@@ -61,8 +61,11 @@ impl ReportedZoneClock {
     /// Make `zone` the reader's zone from now on, and return the one it
     /// replaces. The caller checks the name resolves; this stores it.
     pub fn report(&self, zone: &str) -> String {
-        let previous = self.timezone();
-        *self.reported.write() = Some(zone.to_string());
+        // Read and replace under one lock, so two reports racing each other
+        // each see the zone the other replaced, never the same one twice.
+        let mut reported = self.reported.write();
+        let previous = reported.clone().unwrap_or_else(|| self.inner.timezone());
+        *reported = Some(zone.to_string());
         previous
     }
 }
