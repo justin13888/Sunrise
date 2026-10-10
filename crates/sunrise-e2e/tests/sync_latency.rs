@@ -28,8 +28,10 @@ use sunrise_e2e::chaos::{seed_from_env, DEFAULT_FUZZ_SEED};
 use sunrise_e2e::latency::{measure, LatencyRun, P99_BUDGET};
 
 /// The RTTs the issue names. 0 and 20 ms are inside the budget's stated
-/// conditions (at most 50 ms to the relay) and are held to it; 80 ms is
-/// reported, to show where the tail goes past them.
+/// conditions (at most 50 ms to the relay) and their p99 is held to it; 80 ms
+/// is an ordinary LTE round trip, outside them, so its tail is reported and
+/// not judged. Every leg fails on an op that never arrives: a slow link may
+/// be slow, but it may not lose ops.
 const RTTS_MS: [u64; 3] = [0, 20, 80];
 
 /// The budget asks for a p99 over at least this many ops.
@@ -38,15 +40,14 @@ const DEFAULT_OPS: usize = 10_000;
 /// Ten commits a second, sustained: faster than anyone types, and the rate a
 /// bulk edit reaches.
 ///
-/// Not faster, because faster does not measure propagation. At 40 a second
-/// and 20 ms RTT, or 10 a second and 80 ms, the author's sync driver stops
-/// getting its acks: its `select!` is biased with the inbound frame last, the
-/// sends block for the RTT, and the 100 ms retransmit deadline fires before
-/// the ack is read, which sends again and blocks again, until the retry
-/// policy gives up and the session is torn down. That collapse is the
-/// driver's, tracked in
-/// [#475](https://github.com/justin13888/Sunrise/issues/475); here it is
-/// what an 80 ms leg reports as `missing`.
+/// Before [#475](https://github.com/justin13888/Sunrise/issues/475), this
+/// rate at 80 ms RTT, and 40 a second at 20 ms, collapsed the author's
+/// session: each send blocked for the RTT, the retransmit deadline was
+/// counted from before that wait and polled ahead of the ack it raced, and
+/// the driver resent delivered batches until the retry policy gave up. The
+/// driver now reads a queued ack before its timer and starts a deadline when
+/// the send returns, so a leg that loses an op fails. A local run can push
+/// the rate with `SUNRISE_SYNC_LATENCY_INTERVAL_MS=25`.
 const INTERVAL: Duration = Duration::from_millis(100);
 
 /// `SUNRISE_SYNC_LATENCY_INTERVAL_MS` overrides the commit spacing.
@@ -119,26 +120,26 @@ async fn sync_propagation_meets_the_p99_budget() {
     for leg in legs {
         let report = leg.await.expect("a latency leg panicked");
         println!("{}", report.summary());
+        let rtt = report.run.rtt.as_millis();
         if report.missing > 0 {
             println!("  stalled: {}", report.diagnosis);
-        }
-        if !report.in_budget_conditions() {
-            continue;
-        }
-        let rtt = report.run.rtt.as_millis();
-        let p99 = report.percentile(99.0);
-        if report.missing > 0 {
             failures.push(format!(
                 "rtt={rtt}ms: {} ops never reached B",
                 report.missing
             ));
-        } else if p99 >= P99_BUDGET {
-            failures.push(format!("rtt={rtt}ms: p99={p99:?}"));
+            continue;
+        }
+        if !report.in_budget_conditions() {
+            continue;
+        }
+        let p99 = report.percentile(99.0);
+        if p99 >= P99_BUDGET {
+            failures.push(format!("rtt={rtt}ms: p99={p99:?} against {P99_BUDGET:?}"));
         }
     }
     assert!(
         failures.is_empty(),
-        "outside the {P99_BUDGET:?} p99 budget: {}",
+        "sync propagation failed: {}",
         failures.join("; ")
     );
 }
