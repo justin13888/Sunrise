@@ -512,9 +512,16 @@ A receiver checks field 13 against its registry:
 | Case | Outcome |
 |---|---|
 | A known version whose fingerprint matches | Applied. |
-| A known version whose fingerprint differs, or is missing | Parked. |
+| A known version whose fingerprint differs, or is missing | Parked, reason `schema_fp_mismatch`. |
 | A newer version | Accepted. |
 | A version older than the first fingerprinted one | Read as legacy. |
+
+`crates/sunrise-core/src/engine/sync.rs#apply_remote_all` makes the check
+after the signature and the AEAD open, and before the payload is decoded. A
+mismatched op is parked like any other (§7.2) and logged as
+`core.op.schema_fp_mismatch`. The registry changes only with a
+`DOC_SCHEMA_V` bump, and that bump is what makes the open-time replay retry
+the op.
 
 Field 13 is additive: every build in the field already preserves an unknown
 envelope field and includes it in the AAD and the signature. So it needs no
@@ -525,11 +532,6 @@ and no other use may claim them. A reader that meets either preserves it like
 any unknown field. Their meaning is assigned only when
 [ADR-0043](../11-adr/0043-commit-tree.md), now proposed, is accepted; being
 additive, they will need no `ENVELOPE_FORMAT_V` bump either.
-
-*Today:* writers stamp field 13 and the decoder reads it, but no receiver
-compares it with the registry yet. A known version whose fingerprint differs
-is applied, not parked
-([#438](https://github.com/justin13888/Sunrise/issues/438)).
 
 ### 7.2 Parking
 
@@ -553,11 +555,12 @@ Only envelope-level failures are corruption: a bad magic, non-canonical CBOR, a
 failed signature, or a failed AEAD tag. *Today:* the first reason parks
 ([#320](https://github.com/justin13888/Sunrise/issues/320)): `parked_ops`
 marks the op, `Engine::replay_parked_ops` retries it from `Core::open`, and
-`crates/sunrise-core/src/sync_driver.rs#is_corruption` never sees it. The
-others do not exist yet. A field-op kind arrives with ADR-0044, the
-fingerprint check with [#438](https://github.com/justin13888/Sunrise/issues/438),
-and until then every other inner decode failure is still `RemoteOpInvalid`
-and dropped as corruption.
+`crates/sunrise-core/src/sync_driver.rs#is_corruption` never sees it. A
+fingerprint mismatch parks too
+([#438](https://github.com/justin13888/Sunrise/issues/438)), under reason
+`schema_fp_mismatch`. The others do not exist yet. A field-op kind arrives
+with ADR-0044, and until then every other inner decode failure is still
+`RemoteOpInvalid` and dropped as corruption.
 
 ### 7.3 Unknown map keys round-trip unchanged, at every level
 
