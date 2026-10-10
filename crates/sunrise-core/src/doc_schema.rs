@@ -627,9 +627,10 @@ mod tests {
     }
 
     /// The types the schema names without describing: scalars, byte arrays,
-    /// the id and time types every record shares, and `Unknowns`, a map
-    /// kept as raw CBOR.
+    /// the id and time types every record shares, `Unknowns`, a map kept as
+    /// raw CBOR, and `CborValue`, any CBOR value (a Preferences entry).
     const LEAF_TYPES: &[&str] = &[
+        "CborValue",
         "bool",
         "u8",
         "u32",
@@ -649,6 +650,27 @@ mod tests {
     /// The containers a type may be written in, each with one parameter.
     const WRAPPERS: &[&str] = &["Option", "Vec", "BTreeSet", "Box"];
 
+    /// The containers a type may be written in with a key and a value.
+    const MAPS: &[&str] = &["BTreeMap"];
+
+    /// `inner` split at its top-level commas: `A,B<C,D>` is `A` and `B<C,D>`.
+    fn type_params(inner: &str) -> Vec<&str> {
+        let (mut depth, mut start, mut out) = (0usize, 0, Vec::new());
+        for (i, c) in inner.char_indices() {
+            match c {
+                '<' | '[' => depth += 1,
+                '>' | ']' => depth -= 1,
+                ',' if depth == 0 => {
+                    out.push(&inner[start..i]);
+                    start = i + 1;
+                }
+                _ => {}
+            }
+        }
+        out.push(&inner[start..]);
+        out
+    }
+
     /// The named types inside `ty` (already through [`type_name`]), past
     /// every container. A byte array `[u8;N]` names none.
     fn named_types(ty: &str) -> Vec<String> {
@@ -658,9 +680,15 @@ mod tests {
         }
         match ty.split_once('<') {
             Some((outer, rest)) => {
-                assert!(WRAPPERS.contains(&outer), "unexpected container in {ty}");
                 let inner = rest.strip_suffix('>').expect("a closed container");
-                named_types(inner)
+                let params = type_params(inner);
+                if MAPS.contains(&outer) {
+                    assert_eq!(params.len(), 2, "{outer} takes a key and a value in {ty}");
+                } else {
+                    assert!(WRAPPERS.contains(&outer), "unexpected container in {ty}");
+                    assert_eq!(params.len(), 1, "{outer} takes one parameter in {ty}");
+                }
+                params.into_iter().flat_map(named_types).collect()
             }
             None => vec![ty.to_owned()],
         }

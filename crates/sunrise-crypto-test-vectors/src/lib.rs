@@ -275,7 +275,10 @@ pub const ENVELOPE_INNER: &[u8] = b"inner-op-canonical-cbor";
 /// nothing else: the map header and every byte before the signature are
 /// unchanged.
 ///
-/// The 10 → 11 re-freeze (issue #439, the canonical schema describing value
+/// The 10 → 11 re-freeze (ADR-0050, issue #337, the `prf_` Preferences
+/// entity) moved the same three regions and nothing else.
+///
+/// The 11 → 12 re-freeze (issue #439, the canonical schema describing value
 /// types and op payloads) moved the same three regions and nothing else.
 ///
 /// `encode_envelope(ENVELOPE_INNER, STREAM_ID, DEVICE_ID, seq = 7,
@@ -295,10 +298,10 @@ pub mod signed_only_envelope {
         "5352020003ad010302502222222222222222222222222222222203503333",
         "3333333333333333333333333333040705821b0000018bcfe56800000600",
         "070108000958180000000000000000000000000000000000000000000000",
-        "000a57696e6e65722d6f702d63616e6f6e6963616c2d63626f720b5840f0",
-        "0a5271c5bdbe9d758ff0883b7cd71a9444e4cc43dec5c2130b28eb061834",
-        "7cfba107c15b83d9abe8ed3bdd2bb8ebdc179787ddd1c0da62646375bf10",
-        "9db00b0c0b0d484d8ee0f82b530444",
+        "000a57696e6e65722d6f702d63616e6f6e6963616c2d63626f720b584089",
+        "0b9b0befc97745e3b098f50ca2dc2fd590afd4ade14ff473bafd28dd6326",
+        "44db2aebc5af5ce43c21251a330623410a693dbabbb5cfac7515f5ec70dc",
+        "955e030c0c0d486e5433540c45c77b",
     ));
 }
 
@@ -333,7 +336,10 @@ pub mod signed_only_envelope {
 /// The 9 → 10 re-freeze (ADR-0045 §7) moved the same four regions. The
 /// ciphertext at `[94..117]` is again untouched.
 ///
-/// The 10 → 11 re-freeze (issue #439) moved the same four regions. The
+/// The 10 → 11 re-freeze (ADR-0050, issue #337) moved the same four regions.
+/// The ciphertext at `[94..117]` is again untouched.
+///
+/// The 11 → 12 re-freeze (issue #439) moved the same four regions. The
 /// ciphertext at `[94..117]` is again untouched.
 ///
 /// `encode_envelope(ENVELOPE_INNER, STREAM_ID, DEVICE_ID, seq = 9,
@@ -355,11 +361,11 @@ pub mod sealed_envelope {
         "5352020003ad010302502222222222222222222222222222222203503333",
         "3333333333333333333333333333040905821b0000018bcfe56801000601",
         "070108030958185555555555555555555555555555555555555555555555",
-        "550a58276416c4bb3e46b71d10c45af51e2462649e7331f6d5bbb81f0ab7",
-        "4a56764cedbfb4f8a012bfaa610b58404cfd8db4010e50a9eb7e12a3ec16",
-        "a30b8daddd00d5511de064e066ae2c379b52fa95d78066bd6165f5cbbe3f",
-        "2d558c7b3fed5f557d59a00502817690aa1c1f0d0c0b0d484d8ee0f82b53",
-        "0444",
+        "550a58276416c4bb3e46b71d10c45af51e2462649e7331f6d5bbb83334cb",
+        "a15953f8b3e5c2db33fdcff08c0b58409e1a51571119dd23f92696c014aa",
+        "b33f2aeba1457d708e3845805c9ec73a9444dcdb33b98f0c4c6ac6f5dc6a",
+        "288cf01a4d7dfce9b8617adc710e9df020e603050c0c0d486e5433540c45",
+        "c77b",
     ));
 }
 

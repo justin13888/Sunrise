@@ -138,7 +138,7 @@ mise run fix
 - **Field defaults are not in the schema**. They wait for
   [#319](https://github.com/justin13888/Sunrise/issues/319).
 
-Value types and op payloads are covered from `DOC_SCHEMA_V` 11
+Value types and op payloads are covered from `DOC_SCHEMA_V` 12
 ([#439](https://github.com/justin13888/Sunrise/issues/439)). The schema's
 `values` list describes every value type a record carries
 (`ScheduleConstraint`, `RRule`, `SunriseTime`, `NoteBody`, `Chunk`, the review

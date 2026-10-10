@@ -502,6 +502,42 @@
             "tag": "person"
         },
         {
+            "features": ["preferences.entity"],
+            "merge": "lww",
+            "ops": [],
+            "owner": "meta",
+            "prefix": "prf_",
+            "records": [
+                {
+                    "fields": [
+                        {
+                            "crdt": "register",
+                            "name": "created_at",
+                            "type": "Timestamp"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "id",
+                            "type": "EntityRef"
+                        },
+                        {
+                            "crdt": "register",
+                            "name": "updated_at",
+                            "type": "Timestamp"
+                        },
+                        {
+                            "crdt": "map",
+                            "name": "values",
+                            "type": "BTreeMap<String,CborValue>"
+                        }
+                    ],
+                    "keeps_unknowns": true,
+                    "name": "Preferences"
+                }
+            ],
+            "tag": "preferences"
+        },
+        {
             "features": [],
             "merge": "append_only",
             "ops": [
@@ -1099,7 +1135,18 @@
             "variants": ["FR", "MO", "SA", "SU", "TH", "TU", "WE"]
         }
     ],
-    "features": [],
+    "features": [
+        {
+            "field_op_kinds": [],
+            "fields": [],
+            "id": "preferences.entity",
+            "op_kinds": [],
+            "scope": {
+                "entity": "preferences"
+            },
+            "since": 11
+        }
+    ],
     "format": 1,
     "op_kinds": [
         "AttachmentCreate",

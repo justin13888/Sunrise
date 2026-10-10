@@ -38,6 +38,7 @@ pub mod notify;
 pub mod person;
 pub mod phrase;
 pub mod planning;
+pub mod preferences;
 pub mod recur;
 pub mod registry;
 pub mod review;
@@ -106,6 +107,11 @@ pub use phrase::{
     length_label, plan_reason, relative_day, short_duration,
 };
 pub use planning::{is_overdue, today_section, TodaySection};
+pub use preferences::{
+    pref_spec, preferences_ref, resolve as resolve_preference, resolve_all as resolve_preferences,
+    DeviceClass, PrefDefault, PrefScope, PrefSource, PrefSpec, PrefTarget, PrefType, PrefValue,
+    Preferences, ResolvedPref, PREFERENCES_BYTES, PREFERENCE_KEYS,
+};
 pub use recur::parse_recurrence;
 pub use review::{
     build_daily_review, build_weekly_review, DailyReview, ReviewSnapshot, ReviewSnapshotDraft,

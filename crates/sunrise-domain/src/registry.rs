@@ -22,15 +22,16 @@
 // and only in type position.
 #[allow(unused_imports)]
 use crate::{
-    Attachment, Block, Chunk, Context, Energy, FocusEnd, FocusKind, FocusStart, Interruption,
-    InterruptionReason, Note, NoteBody, Person, RRule, ReviewSnapshot, ReviewSnapshotStream,
-    ReviewTotals, Routine, RoutineCatchupPolicy, ScheduleConstraint, StreakRow, Stream,
-    StreamColor, StreamReviewCadence, SunriseTime, Task, TaskState, TaskTemplate, Unknowns,
+    Attachment, Block, CborValue, Chunk, Context, Energy, FocusEnd, FocusKind, FocusStart,
+    Interruption, InterruptionReason, Note, NoteBody, Person, Preferences, RRule, ReviewSnapshot,
+    ReviewSnapshotStream, ReviewTotals, Routine, RoutineCatchupPolicy, ScheduleConstraint,
+    StreakRow, Stream, StreamColor, StreamReviewCadence, SunriseTime, Task, TaskState,
+    TaskTemplate, Unknowns,
 };
 #[allow(unused_imports)]
 use jiff::Timestamp;
 #[allow(unused_imports)]
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 #[allow(unused_imports)]
 use sunrise_id::EntityRef;
 
@@ -483,6 +484,21 @@ mod tests {
         );
     }
 
+    #[test]
+    fn preferences_write_their_registered_names() {
+        assert_wire_names(
+            "Preferences",
+            &Preferences {
+                id: crate::preferences_ref(),
+                created_at: ts(),
+                updated_at: ts(),
+                values: BTreeMap::new(),
+                unknown: Unknowns::new(),
+            },
+            &[],
+        );
+    }
+
     /// The map keys serde writes for `value`, against the fields
     /// [`VALUE_TYPES`] describes for `name`, less the ones `skipped` names.
     fn assert_value_wire_names<T: serde::Serialize>(name: &str, value: &T, skipped: &[&str]) {
@@ -711,6 +727,7 @@ mod tests {
             "FocusEnd",
             "Interruption",
             "ReviewSnapshot",
+            "Preferences",
         ];
         for r in ENTITIES.iter().flat_map(|e| e.records.iter()) {
             assert!(

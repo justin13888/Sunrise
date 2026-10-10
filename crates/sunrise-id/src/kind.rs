@@ -36,6 +36,7 @@ mod tests {
                 "\"identity\"",
                 "\"focussession\"",
                 "\"reviewsnapshot\"",
+                "\"preferences\"",
             ]
         );
     }
@@ -48,7 +49,7 @@ mod tests {
             prefixes,
             [
                 "tsk_", "str_", "ctx_", "rtn_", "blk_", "not_", "att_", "prs_", "dev_", "idn_",
-                "fcs_", "rvw_",
+                "fcs_", "rvw_", "prf_",
             ]
         );
     }
