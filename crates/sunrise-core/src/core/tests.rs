@@ -1141,6 +1141,15 @@ async fn reporting_a_time_zone_moves_the_readers_zone_and_writes_nothing() {
     assert_eq!(same.affected_tasks, 0);
     assert!(events.try_recv().is_err());
 
+    // The same zone under an alias is no change either: no event, nothing
+    // counted, so no spurious notification.
+    let alias = core.on_time_zone_changed("Asia/Calcutta").unwrap();
+    assert_eq!(alias.previous, "Asia/Kolkata");
+    assert!(!alias.changed);
+    assert_eq!(alias.affected_tasks, 0);
+    assert!(events.try_recv().is_err());
+    core.on_time_zone_changed("Asia/Kolkata").unwrap();
+
     // A name the tzdb does not know is refused and changes nothing.
     assert!(core.on_time_zone_changed("Mars/Olympus").is_err());
     assert_eq!(
@@ -1159,5 +1168,21 @@ async fn reporting_a_time_zone_moves_the_readers_zone_and_writes_nothing() {
     assert!(back.changed);
     assert!(back.notify);
 
+    core.close().await.unwrap();
+}
+
+/// The first report of the zone the injected clock already names, under
+/// another spelling, is no change: a vault open must not count as a zone
+/// change, nor ask for a notification, on every launch.
+#[tokio::test]
+async fn the_first_report_of_the_clocks_zone_under_another_name_is_no_change() {
+    let dir = tempfile::tempdir().unwrap();
+    let core = Core::open(cfg(dir.path()), unlock()).await.unwrap();
+    let mut events = core.changes();
+    let first = core.on_time_zone_changed("Etc/UTC").unwrap();
+    assert_eq!(first.previous, "UTC");
+    assert!(!first.changed);
+    assert!(!first.notify);
+    assert!(events.try_recv().is_err());
     core.close().await.unwrap();
 }

@@ -298,21 +298,28 @@ impl Core {
             return Err(EngineError::Invalid(format!("time zone: unknown zone {zone:?}")).into());
         };
         let previous = self.reader_clock.report(zone);
-        let changed = previous != zone;
-        let (affected_tasks, notify) = if changed {
-            let from = jiff::tz::TimeZone::get(&previous).unwrap_or(jiff::tz::TimeZone::UTC);
-            let db = self.db.lock();
-            self.engine
-                .time_zone_impact(&db, &from, &to, self.now_ms())?
-        } else {
-            (0, false)
-        };
+        let from = jiff::tz::TimeZone::get(&previous).unwrap_or(jiff::tz::TimeZone::UTC);
+        let now_ms = self.now_ms();
+        let around = jiff::Timestamp::from_millisecond(i64::try_from(now_ms).unwrap_or(i64::MAX))
+            .unwrap_or(jiff::Timestamp::UNIX_EPOCH);
+        // The zones, not their names: an alias, or UTC under another
+        // spelling, resolves every time the same way, so nothing moved.
+        let changed = !sunrise_domain::time::same_zone(&from, &to, around);
         if changed {
+            // Published as soon as the new zone is the reader's, before the
+            // impact read: views must re-read even when that read fails,
+            // because the next report of this zone answers `changed: false`.
             // Nobody listening is not an error.
             let _ = self.changes_tx.send(DomainEvent::TimeZoneChanged {
                 zone: zone.to_string(),
             });
         }
+        let (affected_tasks, notify) = if changed {
+            let db = self.db.lock();
+            self.engine.time_zone_impact(&db, &from, &to, now_ms)?
+        } else {
+            (0, false)
+        };
         Ok(crate::commands::TimeZoneChange {
             previous,
             zone: zone.to_string(),

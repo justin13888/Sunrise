@@ -253,7 +253,11 @@ whose resolved time or lateness moved, reports whether the notification
 preference is on, and publishes `DomainEvent::TimeZoneChanged`, on which every
 view re-reads; that re-read is the re-evaluation, since every derived view is
 computed on read. A client may report the zone on every foreground: the same
-zone again is `changed: false` and does nothing. The Apple apps report it from
+zone again is `changed: false` and does nothing. "The same zone" is decided on
+the zones' rules, not their names (`sunrise_domain::time::same_zone`): an alias
+such as `Asia/Calcutta` for `Asia/Kolkata`, or `Etc/UTC` for `UTC`, is no
+change. The event is published before the count is read, so a view re-reads
+even when that read fails. The Apple apps report it from
 `apps/apple/Sunrise/Core/TimeZoneWatch.swift` on vault open, on
 `NSSystemTimeZoneDidChange` and on every foreground. Flagging hard constraint
 violations in the new zone is [#333](https://github.com/justin13888/Sunrise/issues/333)'s.

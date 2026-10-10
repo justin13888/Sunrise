@@ -387,7 +387,8 @@ pub struct TimeZoneChange {
     pub previous: String,
     /// The reader's zone now.
     pub zone: String,
-    /// Whether the zone is different from `previous`. A client that reports
+    /// Whether the zone resolves times differently from `previous`; a name
+    /// that differs only in spelling (an alias) is no change. A client that reports
     /// the zone on every foreground gets `false` most of the time, and
     /// nothing else happens.
     pub changed: bool,
