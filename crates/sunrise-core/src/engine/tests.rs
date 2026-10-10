@@ -304,6 +304,9 @@ mod testutil {
             chunk_count: 2,
             content_hash: [11u8; 32],
             ciphertext_hash: [13u8; 32],
+            width: None,
+            height: None,
+            thumbnail: None,
         }
     }
 

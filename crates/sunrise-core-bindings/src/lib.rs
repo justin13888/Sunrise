@@ -48,7 +48,9 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use sunrise_core::{AttachmentFetchState, Command, Core, CoreConfig, CoreError, Unlock};
+use sunrise_core::{
+    AttachmentFetchState, Command, Core, CoreConfig, CoreError, NetworkClass, Unlock,
+};
 use sunrise_crypto::keys::VaultRootKey;
 use sunrise_id::EntityRef;
 use thiserror::Error;
@@ -327,6 +329,14 @@ pub enum AttachmentFetchState {
     Idle,
     Requested,
     Partial,
+}
+
+/// See [`sunrise_core::NetworkClass`].
+#[uniffi::remote(Enum)]
+pub enum NetworkClass {
+    Unmetered,
+    Cellular,
+    Constrained,
 }
 
 /// A live vault.
@@ -765,22 +775,103 @@ impl SunriseCore {
     /// knows that `.heic` is `image/heic`, and reimplementing that in the core
     /// would be a worse answer that also had to be maintained.
     ///
+    /// `preview` is what the platform could tell about the file: the
+    /// original's dimensions and a JPEG or PNG thumbnail it rendered
+    /// (ADR-0053 §1). The core seals the thumbnail as a blob of its own. Pass
+    /// [`dto::AttachPreviewIn`] with every field `None` when there is nothing.
+    ///
     /// # Errors
     ///
-    /// [`BindingError::Attachment`] for an empty or oversized file, an unknown
-    /// parent task, or a blob store that could not be written.
+    /// [`BindingError::Attachment`] for an empty or oversized file, a
+    /// thumbnail that is not a JPEG or PNG of one chunk, an unknown parent
+    /// task, or a blob store that could not be written.
     pub async fn attach_file(
         &self,
         task: EntityRef,
         filename: String,
         mime_type: String,
         bytes: Vec<u8>,
+        preview: dto::AttachPreviewIn,
     ) -> Result<dto::AttachmentItem, BindingError> {
         let att = self
             .inner
-            .attach_file(task, filename, mime_type, &bytes)
+            .attach_file_with(task, filename, mime_type, &bytes, preview.into())
             .await?;
         Ok(dto::AttachmentItem::from(&att))
+    }
+
+    /// One attachment's thumbnail, verified, or `None` when it has none.
+    ///
+    /// # Errors
+    ///
+    /// [`BindingError::AttachmentNotHere`] when the thumbnail has not been
+    /// fetched yet. Everything else is [`BindingError::Attachment`].
+    pub async fn thumbnail_bytes(
+        &self,
+        id: EntityRef,
+    ) -> Result<Option<dto::ThumbnailOut>, BindingError> {
+        Ok(self
+            .inner
+            .thumbnail_bytes(id)
+            .await?
+            .map(|(mime_type, bytes)| dto::ThumbnailOut { mime_type, bytes }))
+    }
+
+    /// Report the class of network this device is on, whenever the OS says
+    /// it changed. The fetch drain decides from it what to fetch unasked.
+    pub fn set_network_class(&self, class: NetworkClass) {
+        self.inner.set_network_class(class);
+    }
+
+    /// Hold an attachment's bytes in the cache while a preview of them is
+    /// open. Release with [`SunriseCore::unpin_attachment`].
+    ///
+    /// # Errors
+    ///
+    /// [`BindingError::Attachment`] for an unknown or tombstoned id.
+    pub async fn pin_attachment(&self, id: EntityRef) -> Result<(), BindingError> {
+        Ok(self.inner.pin_attachment(id).await?)
+    }
+
+    /// Release one pin [`SunriseCore::pin_attachment`] took.
+    ///
+    /// # Errors
+    ///
+    /// [`BindingError::Attachment`] for an unknown or tombstoned id.
+    pub async fn unpin_attachment(&self, id: EntityRef) -> Result<(), BindingError> {
+        Ok(self.inner.unpin_attachment(id).await?)
+    }
+
+    /// What this device's attachment cache holds and its limit, for
+    /// Settings → Storage.
+    ///
+    /// # Errors
+    ///
+    /// [`BindingError::Attachment`] if the vault could not be read.
+    pub fn attachment_cache_usage(&self) -> Result<dto::CacheUsageItem, BindingError> {
+        Ok(self.inner.attachment_cache_usage()?.into())
+    }
+
+    /// Evict every evictable blob: **Clear cache**. Returns the bytes freed.
+    /// Blobs not yet uploaded, thumbnails and open previews stay.
+    ///
+    /// # Errors
+    ///
+    /// [`BindingError::Attachment`] if the vault or the blob store could not
+    /// be written.
+    pub fn clear_attachment_cache(&self) -> Result<u64, BindingError> {
+        Ok(self.inner.clear_attachment_cache()?)
+    }
+
+    /// Bring the cache under its limit now: after the limit was lowered.
+    /// Returns the bytes freed.
+    ///
+    /// # Errors
+    ///
+    /// [`BindingError::Attachment`] if the vault or the blob store could not
+    /// be written.
+    pub fn enforce_attachment_cache(&self) -> Result<u64, BindingError> {
+        Ok(self.inner.enforce_attachment_cache()?)
     }
 
     /// One attachment's plaintext, reassembled and verified.
