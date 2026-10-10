@@ -419,7 +419,35 @@ struct InflightBatch {
     /// unlucky batch does not consume another's attempts.
     backoff: Backoff,
     /// When this batch is considered lost and worth sending again.
-    due_at: Instant,
+    due_at: Due,
+}
+
+/// A batch's retransmit deadline, which starts when its send returns.
+///
+/// Not when the batch is built: a send can hold the pump for a whole round
+/// trip (the SSE transport's is a `POST` whose reply is the ack), and a
+/// deadline counted from before that wait is spent on the wait itself. At a
+/// round trip near the first delay that collapses the session (#475): the
+/// deadline passes while the send is still blocking, the batch is resent, the
+/// resend blocks again, and the retry policy runs out on a link that
+/// delivered every frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Due {
+    /// Queued and not sent yet; the deadline is this long after the send
+    /// returns.
+    AfterSend(Duration),
+    /// Sent; considered lost at this instant.
+    At(Instant),
+}
+
+/// One frame the pump owes the transport, in the order it was queued.
+#[derive(Debug, PartialEq, Eq)]
+enum Outgoing {
+    /// A frame sent as it is.
+    Frame(Vec<u8>),
+    /// An in-flight batch's frame, named by its `batch_id`. Sending it arms
+    /// the batch's [`Due`] deadline from the moment the send returns.
+    Batch(u64),
 }
 
 enum SessionEnd {
@@ -1174,7 +1202,7 @@ async fn session(
     let mut inflight: HashMap<u64, InflightBatch> = HashMap::new();
     let mut inflight_ops: HashSet<[u8; 16]> = HashSet::new();
     let mut batch_counter: u64 = 0;
-    let mut pending_sends: Vec<Vec<u8>> = Vec::new();
+    let mut pending_sends: Vec<Outgoing> = Vec::new();
     let mut deadlines = Deadlines::new(schedule.resync_interval, schedule.clock);
     // Ops this vault knows it lacks (ADR-0043). The session's own first
     // Subscribe already asks for everything past the cursors, so only growth
@@ -1191,7 +1219,6 @@ async fn session(
         &mut batch_counter,
         &mut pending_sends,
         rng,
-        deadlines.now(),
     )
     .is_err()
     {
@@ -1217,20 +1244,36 @@ async fn session(
     // Sends happen sequentially at the top of the loop (no recv future alive),
     // so the transport is never mutably borrowed by two branches at once.
     loop {
-        for frame in pending_sends.drain(..) {
-            if transport.send_frame(frame).await.is_err() {
-                return SessionEnd::Disconnected;
-            }
+        if send_pending(
+            transport.as_mut(),
+            &mut pending_sends,
+            &mut inflight,
+            &deadlines,
+        )
+        .await
+        .is_err()
+        {
+            return SessionEnd::Disconnected;
         }
 
         let wake_at = next_deadline(&inflight, &deadlines);
+        // A frame that has already arrived is read before anything else but
+        // shutdown (#475). A send can hold the pump for a round trip, and on
+        // the SSE transport the ack is already queued by the time it returns.
+        // Behind the timer, a deadline that passed during that wait resent a
+        // batch whose ack sat unread; behind the submit wake, a commit rate
+        // near the send time kept the wake ready on every turn and the acks
+        // were never read at all, until the retry policy gave up. Reading one
+        // costs no round trip and frees the batch it answers, and nothing
+        // queued behind it is lost: submits coalesce into the next outbox
+        // drain, and the timer is still due on the next turn.
         let ev = tokio::select! {
             biased;
             () = shared.shutdown_notified() => SessionEvent::Shutdown,
+            r = transport.recv_frame() => SessionEvent::Recv(r),
             () = shared.submit_notified() => SessionEvent::Submit,
             _ = renewals.changed() => SessionEvent::CredentialRenewed,
             () = tokio::time::sleep_until(wake_at) => SessionEvent::Timer,
-            r = transport.recv_frame() => SessionEvent::Recv(r),
         };
 
         match ev {
@@ -1259,7 +1302,6 @@ async fn session(
                     &mut batch_counter,
                     &mut pending_sends,
                     rng,
-                    deadlines.now(),
                 )
                 .is_err()
                 {
@@ -1295,7 +1337,7 @@ async fn session(
                     // every interval is what makes either bound hold.
                     core.sync_publish_due_digests();
                     match encode_subscribe_all(core) {
-                        Ok(frame) => pending_sends.push(frame),
+                        Ok(frame) => pending_sends.push(Outgoing::Frame(frame)),
                         Err(()) => return SessionEnd::Disconnected,
                     }
                     // Anti-entropy for bytes, on the same backstop that covers
@@ -1361,7 +1403,7 @@ async fn session(
 fn on_credential_renewed(
     refresh_negotiated: bool,
     credential: &TokenSource,
-    pending_sends: &mut Vec<Vec<u8>>,
+    pending_sends: &mut Vec<Outgoing>,
 ) {
     if !refresh_negotiated {
         tracing::debug!(
@@ -1371,7 +1413,7 @@ fn on_credential_renewed(
         return;
     }
     if let Some(frame) = encode_refresh_token(credential) {
-        pending_sends.push(frame);
+        pending_sends.push(Outgoing::Frame(frame));
     }
 }
 
@@ -1407,12 +1449,47 @@ fn encode_refresh_token(credential: &TokenSource) -> Option<Vec<u8>> {
     Some(frame)
 }
 
+/// Hand every queued frame to the transport, in order.
+///
+/// A batch's retransmit deadline is armed here, from the clock reading after
+/// its send returns, so the time a send spends blocked is not counted against
+/// the ack it is waiting for. A batch that is no longer in flight has been
+/// acked since it was queued, and there is nothing left to send for it.
+async fn send_pending(
+    transport: &mut dyn Transport,
+    pending_sends: &mut Vec<Outgoing>,
+    inflight: &mut HashMap<u64, InflightBatch>,
+    deadlines: &Deadlines,
+) -> Result<(), TransportError> {
+    for out in pending_sends.drain(..) {
+        match out {
+            Outgoing::Frame(frame) => transport.send_frame(frame).await?,
+            Outgoing::Batch(batch_id) => {
+                let Some(frame) = inflight.get(&batch_id).map(|b| b.frame.clone()) else {
+                    continue;
+                };
+                transport.send_frame(frame).await?;
+                if let Some(batch) = inflight.get_mut(&batch_id) {
+                    if let Due::AfterSend(delay) = batch.due_at {
+                        batch.due_at = Due::At(deadlines.now() + delay);
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// When the pump next has something to do on its own: the soonest retransmit
-/// deadline, or the next resync, whichever comes first.
+/// deadline, or the next resync, whichever comes first. A batch still waiting
+/// for its send has no deadline yet.
 fn next_deadline(inflight: &HashMap<u64, InflightBatch>, deadlines: &Deadlines) -> Instant {
     inflight
         .values()
-        .map(|b| b.due_at)
+        .filter_map(|b| match b.due_at {
+            Due::At(at) => Some(at),
+            Due::AfterSend(_) => None,
+        })
         .min()
         .map_or(deadlines.resync_at, |d| d.min(deadlines.resync_at))
 }
@@ -1424,7 +1501,7 @@ fn next_deadline(inflight: &HashMap<u64, InflightBatch>, deadlines: &Deadlines) 
 /// delivering.
 fn retransmit_due(
     inflight: &mut HashMap<u64, InflightBatch>,
-    out: &mut Vec<Vec<u8>>,
+    out: &mut Vec<Outgoing>,
     deadlines: &mut Deadlines,
     rng: &dyn Rng,
 ) -> bool {
@@ -1433,14 +1510,19 @@ fn retransmit_due(
     // is faked.
     let now = deadlines.now();
     for (batch_id, batch) in inflight.iter_mut() {
-        if batch.due_at > now {
+        // A batch queued and not yet sent is not overdue, whatever the clock
+        // says: its deadline has not started.
+        let Due::At(due_at) = batch.due_at else {
+            continue;
+        };
+        if due_at > now {
             continue;
         }
         let Some(delay) = batch.backoff.next_delay(rng_unit(rng)) else {
             return false;
         };
         batch.backoff.record_attempt();
-        batch.due_at = now + delay;
+        batch.due_at = Due::AfterSend(delay);
         tracing::debug!(
             ev = "sync.op.retransmit",
             batch_id = *batch_id,
@@ -1448,7 +1530,7 @@ fn retransmit_due(
             n_ops = batch.op_ids.len() as u64,
             "op batch unacked; sending again"
         );
-        out.push(batch.frame.clone());
+        out.push(Outgoing::Batch(*batch_id));
         // An ack that never came is the clearest evidence this link drops
         // frames, and the inbound direction has no ack of its own to miss.
         deadlines.note_loss(LossEvidence::Retransmit);
@@ -1467,7 +1549,7 @@ async fn handle_frame(
     caught_up: &mut HashSet<[u8; 16]>,
     inflight: &mut HashMap<u64, InflightBatch>,
     inflight_ops: &mut HashSet<[u8; 16]>,
-    pending_sends: &mut Vec<Vec<u8>>,
+    pending_sends: &mut Vec<Outgoing>,
     deadlines: &mut Deadlines,
 ) -> Result<(), SessionEnd> {
     let Ok((header, payload)) = decode_frame(bytes) else {
@@ -1537,7 +1619,7 @@ async fn handle_frame(
         }
         MsgKind::Ping => {
             if let Ok(frame) = encode_frame(MsgKind::Pong, FrameFlags::EMPTY, &[]) {
-                pending_sends.push(frame);
+                pending_sends.push(Outgoing::Frame(frame));
             }
         }
         // Server-initiated close. Its code decides whether to reconnect:
@@ -1605,9 +1687,8 @@ fn build_outbox_frames(
     inflight_ops: &mut HashSet<[u8; 16]>,
     inflight: &mut HashMap<u64, InflightBatch>,
     batch_counter: &mut u64,
-    out: &mut Vec<Vec<u8>>,
+    out: &mut Vec<Outgoing>,
     rng: &dyn Rng,
-    now: Instant,
 ) -> Result<(), ()> {
     let groups = core.sync_outbox_grouped(inflight_ops).map_err(|_| ())?;
     for (stream_id, ops) in groups {
@@ -1616,7 +1697,7 @@ fn build_outbox_frames(
         }
         if subscribed.insert(stream_id) {
             let frame = encode_subscribe_one(stream_id)?;
-            out.push(frame);
+            out.push(Outgoing::Frame(frame));
         }
         *batch_counter += 1;
         let batch_id = *batch_counter;
@@ -1638,18 +1719,19 @@ fn build_outbox_frames(
         }
         let backoff = Backoff::canonical();
         // First deadline uses the policy's own initial delay, without consuming
-        // an attempt: attempt 0 is the original send.
-        let due_at = now + backoff.next_delay(rng_unit(rng)).unwrap_or(MIN_RESYNC_GAP);
+        // an attempt: attempt 0 is the original send. It starts when that send
+        // returns, not now.
+        let delay = backoff.next_delay(rng_unit(rng)).unwrap_or(MIN_RESYNC_GAP);
         inflight.insert(
             batch_id,
             InflightBatch {
                 op_ids,
-                frame: frame.clone(),
+                frame,
                 backoff,
-                due_at,
+                due_at: Due::AfterSend(delay),
             },
         );
-        out.push(frame);
+        out.push(Outgoing::Batch(batch_id));
     }
     Ok(())
 }
@@ -2022,7 +2104,7 @@ fn encode_subscribe_all(core: &Core) -> Result<Vec<u8>, ()> {
 fn subscribe_to_new_streams(
     events: &[DomainEvent],
     subscribed: &mut HashSet<[u8; 16]>,
-    pending_sends: &mut Vec<Vec<u8>>,
+    pending_sends: &mut Vec<Outgoing>,
 ) {
     for ev in events {
         let DomainEvent::Created(r) = ev else {
@@ -2034,7 +2116,7 @@ fn subscribe_to_new_streams(
         let sid = *r.bytes();
         if subscribed.insert(sid) {
             if let Ok(frame) = encode_subscribe_one(sid) {
-                pending_sends.push(frame);
+                pending_sends.push(Outgoing::Frame(frame));
             }
         }
     }
@@ -2092,14 +2174,16 @@ mod scheduling {
     //! either reddens this module rather than the docs drifting.
 
     use super::{
-        backoff_sleep, next_backoff_delay, next_deadline, retransmit_due, Backoff, Deadlines,
-        InflightBatch, LossEvidence, MonotonicClock, SyncShared, MIN_RESYNC_GAP,
+        backoff_sleep, next_backoff_delay, next_deadline, retransmit_due, send_pending, Backoff,
+        Deadlines, Due, InflightBatch, LossEvidence, MonotonicClock, Outgoing, SyncShared,
+        MIN_RESYNC_GAP,
     };
     use crate::config::Rng;
     use parking_lot::Mutex;
     use std::collections::HashMap;
     use std::sync::Arc;
     use std::time::Duration;
+    use sunrise_sync::{Transport, TransportError};
     use tokio::sync::broadcast;
     use tokio::time::Instant;
 
@@ -2358,7 +2442,7 @@ mod scheduling {
                 op_ids: vec![[7u8; 16]],
                 frame: vec![0xde, 0xad],
                 backoff: Backoff::canonical(),
-                due_at: start + Duration::from_millis(100),
+                due_at: Due::At(start + Duration::from_millis(100)),
             },
         );
 
@@ -2379,8 +2463,11 @@ mod scheduling {
             &mut deadlines,
             &rng
         ));
-        assert_eq!(out.len(), 1, "the frame goes out at the deadline");
-        assert_eq!(out[0], vec![0xde, 0xad], "byte for byte, not re-read");
+        assert_eq!(
+            out,
+            vec![Outgoing::Batch(1)],
+            "the batch goes out at the deadline, as its own frame and not a re-read"
+        );
         assert!(
             deadlines.resync_due(),
             "an unacked batch is loss evidence, so a resync is pulled forward"
@@ -2390,9 +2477,111 @@ mod scheduling {
         assert_eq!(batch.backoff.attempt(), 1, "one attempt consumed");
         assert_eq!(
             batch.due_at,
-            clock.now() + Duration::from_millis(100),
-            "respaced by the policy's first delay"
+            Due::AfterSend(Duration::from_millis(100)),
+            "respaced by the policy's first delay, counted from the resend"
         );
+    }
+
+    /// A transport whose send holds the caller for a round trip, on a clock
+    /// the test owns, and records what it was handed.
+    struct BlockingSend {
+        clock: Arc<ManualClock>,
+        hold: Duration,
+        sent: Vec<Vec<u8>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Transport for BlockingSend {
+        async fn send_frame(&mut self, frame: Vec<u8>) -> Result<(), TransportError> {
+            self.clock.advance(self.hold);
+            self.sent.push(frame);
+            Ok(())
+        }
+        async fn recv_frame(&mut self) -> Result<Option<Vec<u8>>, TransportError> {
+            Ok(None)
+        }
+        async fn close(&mut self) -> Result<(), TransportError> {
+            Ok(())
+        }
+    }
+
+    /// A batch's deadline starts when its send returns, so a send that blocks
+    /// for longer than the first delay does not make the batch overdue the
+    /// moment it lands (#475). Two batches queued together each get their own
+    /// send's return as the start.
+    #[tokio::test]
+    async fn a_batch_deadline_starts_when_its_send_returns() {
+        let clock = ManualClock::started();
+        let rng = MidJitterRng;
+        let mut deadlines = Deadlines::new(
+            Duration::from_secs(300),
+            Arc::clone(&clock) as Arc<dyn MonotonicClock>,
+        );
+        let start = clock.now();
+        let mut inflight = HashMap::new();
+        for (id, byte) in [(1, 0xa1), (2, 0xa2)] {
+            inflight.insert(
+                id,
+                InflightBatch {
+                    op_ids: vec![[byte; 16]],
+                    frame: vec![byte],
+                    backoff: Backoff::canonical(),
+                    due_at: Due::AfterSend(Duration::from_millis(100)),
+                },
+            );
+        }
+        assert_eq!(
+            next_deadline(&inflight, &deadlines),
+            start + Duration::from_secs(300),
+            "an unsent batch has no deadline to wake for"
+        );
+        clock.advance(Duration::from_secs(1));
+        let mut out = Vec::new();
+        assert!(retransmit_due(
+            &mut inflight,
+            &mut out,
+            &mut deadlines,
+            &rng
+        ));
+        assert!(out.is_empty(), "an unsent batch is never overdue");
+
+        let mut transport = BlockingSend {
+            clock: Arc::clone(&clock),
+            hold: Duration::from_millis(300),
+            sent: Vec::new(),
+        };
+        let mut pending = vec![
+            Outgoing::Batch(1),
+            Outgoing::Frame(vec![0xff]),
+            Outgoing::Batch(2),
+            // Acked between being queued and being sent: nothing to send.
+            Outgoing::Batch(3),
+        ];
+        let before = clock.now();
+        send_pending(&mut transport, &mut pending, &mut inflight, &deadlines)
+            .await
+            .unwrap();
+        assert!(pending.is_empty(), "everything queued was handed over");
+        assert_eq!(
+            transport.sent,
+            vec![vec![0xa1], vec![0xff], vec![0xa2]],
+            "in the order queued, each batch byte for byte"
+        );
+        let hold = Duration::from_millis(300);
+        let delay = Duration::from_millis(100);
+        assert_eq!(inflight[&1].due_at, Due::At(before + hold + delay));
+        assert_eq!(inflight[&2].due_at, Due::At(before + hold * 3 + delay));
+
+        // Batch 1 is overdue now, because the two sends after it took longer
+        // than its delay; the wait on its own send was not counted.
+        let mut out = Vec::new();
+        assert!(retransmit_due(
+            &mut inflight,
+            &mut out,
+            &mut deadlines,
+            &rng
+        ));
+        assert_eq!(out, vec![Outgoing::Batch(1)]);
     }
 
     /// Exhausting a batch's policy is reported to the caller, which tears the
@@ -2417,7 +2606,7 @@ mod scheduling {
                 op_ids: vec![[7u8; 16]],
                 frame: vec![0xde, 0xad],
                 backoff,
-                due_at: clock.now(),
+                due_at: Due::At(clock.now()),
             },
         );
 
@@ -2450,7 +2639,7 @@ mod scheduling {
                 op_ids: Vec::new(),
                 frame: Vec::new(),
                 backoff: Backoff::canonical(),
-                due_at: start + Duration::from_millis(100),
+                due_at: Due::At(start + Duration::from_millis(100)),
             },
         );
         inflight.insert(
@@ -2459,7 +2648,17 @@ mod scheduling {
                 op_ids: Vec::new(),
                 frame: Vec::new(),
                 backoff: Backoff::canonical(),
-                due_at: start + Duration::from_millis(50),
+                due_at: Due::At(start + Duration::from_millis(50)),
+            },
+        );
+        inflight.insert(
+            3,
+            InflightBatch {
+                op_ids: Vec::new(),
+                frame: Vec::new(),
+                backoff: Backoff::canonical(),
+                // Still queued: shorter than either, and not a deadline yet.
+                due_at: Due::AfterSend(Duration::from_millis(10)),
             },
         );
         assert_eq!(
@@ -2846,14 +3045,25 @@ mod tests {
     struct ChannelTransport {
         tx: mpsc::UnboundedSender<Vec<u8>>,
         rx: mpsc::UnboundedReceiver<Vec<u8>>,
+        /// How long an `OpBatch` send holds the caller after the frame is
+        /// delivered. Zero is an ordinary channel. Non-zero is the SSE
+        /// transport's shape: the send is a `POST` whose reply is the ack, so
+        /// the ack is already queued by the time the send returns.
+        batch_send_hold: Duration,
     }
 
     #[async_trait]
     impl Transport for ChannelTransport {
         async fn send_frame(&mut self, frame: Vec<u8>) -> Result<(), TransportError> {
+            let is_batch = !self.batch_send_hold.is_zero()
+                && decode_frame(&frame).is_ok_and(|(h, _)| h.msg_kind == MsgKind::OpBatch);
             self.tx
                 .send(frame)
-                .map_err(|_| TransportError::Unavailable("peer gone".into()))
+                .map_err(|_| TransportError::Unavailable("peer gone".into()))?;
+            if is_batch {
+                tokio::time::sleep(self.batch_send_hold).await;
+            }
+            Ok(())
         }
         async fn recv_frame(&mut self) -> Result<Option<Vec<u8>>, TransportError> {
             Ok(self.rx.recv().await)
@@ -2868,8 +3078,16 @@ mod tests {
         let (a_tx, b_rx) = mpsc::unbounded_channel();
         let (b_tx, a_rx) = mpsc::unbounded_channel();
         (
-            ChannelTransport { tx: a_tx, rx: a_rx },
-            ChannelTransport { tx: b_tx, rx: b_rx },
+            ChannelTransport {
+                tx: a_tx,
+                rx: a_rx,
+                batch_send_hold: Duration::ZERO,
+            },
+            ChannelTransport {
+                tx: b_tx,
+                rx: b_rx,
+                batch_send_hold: Duration::ZERO,
+            },
         )
     }
 
@@ -2890,6 +3108,9 @@ mod tests {
         /// Send a `SYNC_CURSOR_GAP` Error before `CaughtUp`, exactly as the
         /// relay does when a subscriber's cursor predates the retained ring.
         gap_on_subscribe: bool,
+        /// Hold every client `OpBatch` send this long after the relay has it,
+        /// as a `POST` over a link with this round trip does.
+        client_batch_send_hold: Duration,
     }
 
     struct ServerInner {
@@ -2979,7 +3200,8 @@ mod tests {
                 s.scripts.pop_front().unwrap_or_default()
             };
             let fut = async move {
-                let (client_end, server_end) = duplex();
+                let (mut client_end, server_end) = duplex();
+                client_end.batch_send_hold = script.client_batch_send_hold;
                 tokio::spawn(run_fake_server(
                     server_end,
                     script,
@@ -4545,6 +4767,55 @@ mod tests {
             connects_before,
             "recovered in-session: the link was never cycled"
         );
+    }
+
+    // ---- Test (f2): a slow send does not turn a delivered batch into a loss ----
+    //
+    // Issue #475. Each `OpBatch` send holds the driver for 300 ms, three times
+    // the first retransmit delay, with the ack queued while it waits: the SSE
+    // transport's shape over a link with that round trip. A fresh vault with
+    // one task owes two streams, so the first drain sends two batches back to
+    // back, and by the time the second send returns the first batch's
+    // deadline has passed with its ack sitting unread. The driver must read
+    // that ack rather than resend: a resend here is a retransmit of a batch
+    // the relay already acked, and under a sustained commit rate it is the
+    // loop that exhausted the retry policy and tore the session down.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_ack_queued_during_a_slow_send_is_read_before_the_batch_is_resent() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = open_arc(dir.path()).await;
+        core.submit(Command::CreateTask(TaskDraft {
+            title: "slow link".into(),
+            ..Default::default()
+        }))
+        .await
+        .unwrap();
+
+        let script = Script {
+            client_batch_send_hold: Duration::from_millis(300),
+            ..Default::default()
+        };
+        let (factory, server, mut batch_rx) = harness(vec![script]);
+        core.start_sync(factory).unwrap();
+
+        wait_pending_zero(&core).await;
+        // Long enough for any resend already queued to have reached the relay.
+        tokio::time::sleep(Duration::from_millis(400)).await;
+
+        let mut seen: Vec<Vec<Vec<u8>>> = Vec::new();
+        while let Ok(batch) = batch_rx.try_recv() {
+            assert!(
+                !seen.contains(&batch.ops),
+                "a batch whose ack was already queued was sent again"
+            );
+            seen.push(batch.ops);
+        }
+        assert!(
+            seen.len() >= 2,
+            "two batches back to back is the case this is about, saw {}",
+            seen.len()
+        );
+        assert_eq!(server.lock().connect_count, 1, "one session throughout");
     }
 
     // ---- Test (g): loss evidence pulls a resync forward, in-session ----

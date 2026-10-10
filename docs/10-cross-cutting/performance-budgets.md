@@ -73,24 +73,24 @@ commits 10 000 tasks, ten a second. Each sample runs from A's `submit` returning
 task's `Created`, both timestamps read from one monotonic clock, and the p99 is nearest-rank over
 every op. An op that never arrives is reported, not dropped from the sample.
 `crates/sunrise-e2e/tests/sync_latency.rs` runs that at 0, 20 and 80 ms RTT in the nightly
-`Sync latency` CI job, and fails if, at 0 or 20 ms, any op is missing or the p99 reaches 500 ms. The
-80 ms leg falls outside the budget's conditions and is reported only.
+`Sync latency` CI job. It fails if any op is missing at any RTT, or if the p99 reaches 500 ms at 0
+or 20 ms. The 80 ms leg falls outside the budget's conditions, so its percentiles are reported and
+not judged.
 
 Measured on an Apple M3 Pro, release build, at this revision:
 
 | RTT | Ops arrived | p50 | p95 | p99 | max |
 |---|---|---|---|---|---|
-| 0 ms | 10 000 of 10 000 | 12.3 ms | 23.9 ms | 31.0 ms | 60.2 ms |
-| 20 ms | 10 000 of 10 000 | 36.3 ms | 62.0 ms | 74.3 ms | 111.3 ms |
-| 80 ms | 1 910 of 10 000 | — | — | — | — |
+| 0 ms | 10 000 of 10 000 | 9.3 ms | 27.0 ms | 51.9 ms | 163.6 ms |
+| 20 ms | 10 000 of 10 000 | 33.6 ms | 63.9 ms | 89.6 ms | 377.8 ms |
+| 80 ms | 10 000 of 10 000 | 150.6 ms | 236.0 ms | 271.3 ms | 576.5 ms |
 
-At 80 ms the author's session collapsed partway through ([#475](https://github.com/justin13888/Sunrise/issues/475)),
-so that row has no distribution to report.
-
-Ten commits a second is not an arbitrary ceiling. At 40 a second and 20 ms, or 10 a second and
-80 ms, the author's sync driver stops reading its acks and tears its session down
-([#475](https://github.com/justin13888/Sunrise/issues/475)). Until that is fixed, a faster harness
-would measure that collapse and not propagation.
+Ten commits a second is the rate a bulk edit reaches, and the harness is not limited to it. Until
+[#475](https://github.com/justin13888/Sunrise/issues/475), 40 a second at 20 ms, or 10 a second at
+80 ms, collapsed the author's session: the driver polled its submit wake and its retransmit timer
+ahead of the acks those sends had already queued, so it resent delivered batches until the retry
+policy gave up. It now reads a queued frame first. On the same machine,
+`SUNRISE_SYNC_LATENCY_INTERVAL_MS=25` at 20 ms delivered 4 000 of 4 000 ops with a p99 of 74.2 ms.
 
 The wider-network rows in [`../05-sync/overview.md`](../05-sync/overview.md) §Latency targets (LTE, a
 phone woken by push) are budgets for those conditions, not relaxations of this one.
