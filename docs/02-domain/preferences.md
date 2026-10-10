@@ -230,13 +230,19 @@ overlay, the bootstrap store, `Command::SetPreference`,
 
 Not built yet:
 
-- **No client reads or writes through it.** The Apple `AppSettings` and
-  `NotificationPreferences` still hold their values in `UserDefaults`, and the
-  one-time migration out of it has not run. That is
+- **Clients read and write only the two attachment keys through it.** Apple's
+  Settings → Storage writes `attachments.cache_limit_bytes` and
+  `attachments.auto_fetch_on_cellular` to this device's overlay
+  ([#346](https://github.com/justin13888/Sunrise/issues/346)). The Apple
+  `AppSettings` and `NotificationPreferences` still hold their values in
+  `UserDefaults`, and the one-time migration out of it has not run. That is
   [#489](https://github.com/justin13888/Sunrise/issues/489).
-- **No core reader consumes a key yet.** `week_start` reaches the week views
-  with [#336](https://github.com/justin13888/Sunrise/issues/336), the
-  notification keys reach the reminder planner with
+- **The attachment cache is the only core reader.** It resolves the two
+  attachment keys when it enforces its limit and when the fetch drain decides
+  what to fetch on cellular (`crates/sunrise-core/src/blob_cache.rs`).
+  `week_start` reaches the week views with
+  [#336](https://github.com/justin13888/Sunrise/issues/336), the notification
+  keys reach the reminder planner with
   [#347](https://github.com/justin13888/Sunrise/issues/347), and `day_schedule`
   is [#338](https://github.com/justin13888/Sunrise/issues/338).
 - **No cross-version run covers the entity.** The baseline build the
