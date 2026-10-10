@@ -410,6 +410,43 @@ async fn dedup_survives_closing_and_reopening_the_vault() {
     core.shutdown().await;
 }
 
+/// An inverted event whose bounds are of two kinds is that event's failure,
+/// never the import's: a TZID start after a UTC end is refused by the mapper,
+/// and a floating start after a UTC end (inverted only for this UTC reader)
+/// is refused by the vault. Both are counted and reported, and the good event
+/// after them is still written.
+#[tokio::test]
+async fn an_inverted_mixed_kind_event_fails_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let core = open(dir.path()).await;
+    let text = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//test//EN\r\n\
+        BEGIN:VEVENT\r\nUID:tzid-utc\r\nSUMMARY:Inverted across zones\r\n\
+        DTSTART;TZID=America/New_York:20260302T090000\r\nDTEND:20260302T120000Z\r\nEND:VEVENT\r\n\
+        BEGIN:VEVENT\r\nUID:floating-utc\r\nSUMMARY:Inverted here\r\n\
+        DTSTART:20260302T130000\r\nDTEND:20260302T120000Z\r\nEND:VEVENT\r\n\
+        BEGIN:VEVENT\r\nUID:good\r\nSUMMARY:Fine\r\n\
+        DTSTART:20260302T140000Z\r\nDTEND:20260302T150000Z\r\nEND:VEVENT\r\n\
+        END:VCALENDAR\r\n";
+    let report = import(&core, text, inbox_stream_ref(), ICS_SOURCE)
+        .await
+        .expect("one bad event does not fail the import");
+    assert_eq!(report.failed, 2);
+    assert_eq!(report.blocks.len(), 1);
+    assert_eq!(report.blocks[0].uid, "good");
+    for uid in ["tzid-utc", "floating-utc"] {
+        assert!(
+            report
+                .notices
+                .iter()
+                .any(|n| n.uid.as_deref() == Some(uid) && n.code == ical::NoticeCode::Skipped),
+            "{uid}: {:?}",
+            report.notices
+        );
+    }
+    assert_eq!(week_blocks(&core).await.len(), 1);
+    core.shutdown().await;
+}
+
 /// Exporting an empty week is a valid, empty document — not an error and not
 /// an empty string a caller would have to special-case.
 #[tokio::test]
