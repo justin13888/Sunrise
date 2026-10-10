@@ -807,12 +807,12 @@ pub(super) fn ops_run_end(
 ///
 /// This function decides nothing and refuses nothing: it writes the end of the
 /// run already in the log, and all three of its call sites reach it having put
-/// the op row in first — `crates/sunrise-core/src/engine/sync.rs:409#apply_remote_all`
+/// the op row in first — `crates/sunrise-core/src/engine/sync.rs:479#apply_remote_all`
 /// at its step g, past an idempotence gate that returns early when the insert
 /// changed no row and released no parked op;
 /// `crates/sunrise-core/src/engine/oplog.rs:159#ops_insert_at` at the tail of
 /// this device's own emit, after the op-log insert and the outbox enqueue; and
-/// `crates/sunrise-core/src/engine/sync.rs:769#park_op`, after inserting the
+/// `crates/sunrise-core/src/engine/park.rs:190#park_op_as`, after inserting the
 /// unapplied row of an op whose kind this build does not know. That last one
 /// is why a parked op counts toward the prefix: its row is in `ops` like any
 /// other, and this function reads nothing else (issue #320).
