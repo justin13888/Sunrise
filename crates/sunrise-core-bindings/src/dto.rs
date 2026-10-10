@@ -2536,6 +2536,28 @@ impl From<&sunrise_core::SyncStatus> for SyncSnapshot {
     }
 }
 
+/// How many ops are parked under one reason (ADR-0045 §4, "Visibility").
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct ParkedReasonCount {
+    /// The stored reason, e.g. `unknown_kind` (a newer device wrote a kind
+    /// this build does not know) or `replay_refused`. A string, not an enum:
+    /// a vault opened by an older build than the one that parked into it can
+    /// hold a reason this build has no name for, and the count still counts.
+    pub reason: String,
+    /// How many ops are parked under it. Never zero.
+    pub count: u64,
+}
+
+impl From<&sunrise_core::ParkedOpCount> for ParkedReasonCount {
+    fn from(c: &sunrise_core::ParkedOpCount) -> Self {
+        let sunrise_core::ParkedOpCount { reason, count } = c;
+        Self {
+            reason: reason.clone(),
+            count: *count,
+        }
+    }
+}
+
 /// What a command did.
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct CommandOutcome {

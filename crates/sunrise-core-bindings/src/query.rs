@@ -10,8 +10,8 @@ use sunrise_id::EntityRef;
 use crate::dto::{
     hex16, ActionableTaskRow, ActivityRow, AttachmentItem, BlockGridRow, Cascade, ContextItem,
     ContextListRow, DailyReviewReport, DeviceListRow, EveningReport, FocusTotals, MorningReport,
-    NotificationSettings, PlanRow, Reminder, RoutineItem, SessionRow, Snapshot, StreamItem,
-    StreamListRow, SyncSnapshot, TaskItem, TrendReport, WeeklyReviewReport,
+    NotificationSettings, ParkedReasonCount, PlanRow, Reminder, RoutineItem, SessionRow, Snapshot,
+    StreamItem, StreamListRow, SyncSnapshot, TaskItem, TrendReport, WeeklyReviewReport,
 };
 
 /// A read query.
@@ -188,6 +188,9 @@ pub enum CoreQuery {
         /// Row cap.
         limit: u32,
     },
+    /// How many ops this device holds parked, by reason: ops it keeps but
+    /// cannot apply yet, most often because a newer device wrote them.
+    ParkedOpsSummary,
 }
 
 impl CoreQuery {
@@ -267,6 +270,7 @@ impl CoreQuery {
             Self::DayBlocks { day_ms } => Query::DayBlocks { day_ms },
             Self::WeekBlocks { week_ms } => Query::WeekBlocks { week_ms },
             Self::Search { text, limit } => Query::Search { text, limit },
+            Self::ParkedOpsSummary => Query::ParkedOpsSummary,
         }
     }
 }
@@ -427,6 +431,12 @@ pub enum CoreQueryResult {
         /// The document.
         body: String,
     },
+    /// Parked-op counts.
+    ParkedOps {
+        /// One row per reason with at least one parked op, in reason order.
+        /// Empty when nothing is parked.
+        counts: Vec<ParkedReasonCount>,
+    },
 }
 
 impl CoreQueryResult {
@@ -522,6 +532,50 @@ impl CoreQueryResult {
                 attachments: a.iter().map(AttachmentItem::from).collect(),
             },
             QueryResult::Export(body) => Self::Export { body },
+            QueryResult::ParkedOps(c) => Self::ParkedOps {
+                counts: c.iter().map(ParkedReasonCount::from).collect(),
+            },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The parked-op count lowers to the core's query and lifts back with
+    /// every row, a reason this build has no name for included.
+    #[test]
+    fn parked_op_counts_cross_the_seam_by_reason() {
+        assert!(matches!(
+            CoreQuery::ParkedOpsSummary.into_core(),
+            Query::ParkedOpsSummary
+        ));
+        let core = QueryResult::ParkedOps(vec![
+            sunrise_core::ParkedOpCount {
+                reason: "a_reason_from_a_newer_build".into(),
+                count: 2,
+            },
+            sunrise_core::ParkedOpCount {
+                reason: "unknown_kind".into(),
+                count: 3,
+            },
+        ]);
+        let CoreQueryResult::ParkedOps { counts } = CoreQueryResult::from_core(core) else {
+            panic!("ParkedOps lifted into another variant");
+        };
+        assert_eq!(
+            counts,
+            vec![
+                ParkedReasonCount {
+                    reason: "a_reason_from_a_newer_build".into(),
+                    count: 2,
+                },
+                ParkedReasonCount {
+                    reason: "unknown_kind".into(),
+                    count: 3,
+                },
+            ]
+        );
     }
 }

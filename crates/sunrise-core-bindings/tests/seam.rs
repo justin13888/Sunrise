@@ -577,6 +577,7 @@ async fn the_whole_read_surface_answers() {
             text: "something".into(),
             limit: 10,
         },
+        CoreQuery::ParkedOpsSummary,
     ];
     for q in queries {
         let label = format!("{q:?}");
@@ -584,6 +585,22 @@ async fn the_whole_read_surface_answers() {
             .await
             .unwrap_or_else(|e| panic!("{label} failed: {e}"));
     }
+    core.shutdown().await;
+}
+
+/// A vault that has parked nothing answers with no rows, not with a zero row
+/// per known reason: a client renders "nothing waiting" from the empty list.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_vault_with_nothing_parked_answers_no_parked_counts() {
+    let (_dir, core) = open_core().await;
+    let CoreQueryResult::ParkedOps { counts } = core
+        .query(CoreQuery::ParkedOpsSummary)
+        .await
+        .expect("query")
+    else {
+        panic!("ParkedOpsSummary answered another variant");
+    };
+    assert!(counts.is_empty());
     core.shutdown().await;
 }
 
