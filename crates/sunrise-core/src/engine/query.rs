@@ -10,7 +10,7 @@
 use super::attachment::read_attachment;
 use super::block::{block_row, read_block};
 use super::context::read_context;
-use super::ids::require_kind;
+use super::ids::{ms_to_ts, require_kind};
 use super::routine::read_routine;
 use super::stream::read_stream;
 use super::task::{actionable_scan, read_task, ref_of};
@@ -18,9 +18,47 @@ use super::{Engine, EngineError};
 use crate::queries::{ActionableTask, DeviceRow, IdentityStatus, ParkedOpCount, QueryResult};
 use rusqlite::params;
 use std::collections::BTreeMap;
+use sunrise_domain::time::{SunriseTime, PREFILTER_SLACK_MS};
 use sunrise_domain::{effective_state, unblock_cascade, DependencyGraph};
 use sunrise_id::{EntityKind, EntityRef};
 use sunrise_storage::{Db, OpLog};
+
+/// Where [`sort_by_landing`] puts a task with neither `scheduled_at` nor
+/// `due_at`.
+#[derive(Clone, Copy)]
+pub(super) enum Unlanded {
+    /// Before every task that has a time: a Stream or Context listing, which
+    /// leads with what is still unplanned.
+    First,
+    /// After every task that has a time: Today, which leads with what is due.
+    Last,
+}
+
+/// Order a task list by when each task lands (`scheduled_at`, else
+/// `due_at`) as a reader in `tz` sees it, with [`SunriseTime::cmp_in`]
+/// (`docs/10-cross-cutting/time.md` §2 rule 3), then by id.
+///
+/// The one ordering every user-visible task list uses. The storage index
+/// cannot stand in for it: a floating or all-day value is indexed in UTC, so
+/// `ORDER BY` on it puts a floating 09:00 and a New York 09:00 in an order
+/// that is wrong for every reader west of Greenwich.
+pub(super) fn sort_by_landing(
+    tasks: &mut [sunrise_domain::Task],
+    tz: &jiff::tz::TimeZone,
+    unlanded: Unlanded,
+) {
+    let lands = |t: &sunrise_domain::Task| t.scheduled_at.clone().or_else(|| t.due_at.clone());
+    tasks.sort_by(|a, b| {
+        match (lands(a), lands(b)) {
+            (Some(x), Some(y)) => x.cmp_in(&y, tz),
+            (x, y) => match unlanded {
+                Unlanded::First => y.is_none().cmp(&x.is_none()),
+                Unlanded::Last => x.is_none().cmp(&y.is_none()),
+            },
+        }
+        .then_with(|| a.id.cmp(&b.id))
+    });
+}
 
 impl Engine {
     /// What completing `task` released — the mid-session unblock cascade.
@@ -70,16 +108,39 @@ impl Engine {
         ))))
     }
 
+    /// Today: every open task scheduled or due on or before the reader's
+    /// civil day (`docs/10-cross-cutting/time.md` §4).
+    ///
+    /// Today is the civil day containing `now_ms` in the device zone, not a
+    /// rolling 24 hours, and a task belongs to it by the date the reader sees
+    /// its time on ([`SunriseTime::day_in`]): an all-day value occupies its
+    /// whole day, so a task due "today" is here until midnight. Overdue and
+    /// slipped tasks stay, as before; `today_section` sorts them out.
+    ///
+    /// The SQL reads the storage index up to the end of the day plus
+    /// [`PREFILTER_SLACK_MS`], and membership is then decided in Rust on the
+    /// resolved value (§2 rule 2). Rows come back by their resolved time
+    /// (`scheduled_at`, else `due_at`) with [`SunriseTime::cmp_in`], then id.
+    /// With a day schedule (#338) the day's bounds become its planner day's.
     pub(super) fn query_today(
         &self,
         db: &Db,
         now_ms: u64,
         contexts: &[EntityRef],
     ) -> Result<QueryResult, EngineError> {
-        // Today = (a) tasks scheduled within today's local-day window OR
-        //         (b) tasks due_at <= now + 24h, AND not done/deleted.
-        // Currently we use a simple rolling 24h window forward from `now_ms`.
-        let window_end = now_ms.saturating_add(24 * 60 * 60 * 1000);
+        let tz = self.device_zone();
+        let today = ms_to_ts(i64::try_from(now_ms).unwrap_or(i64::MAX))
+            .to_zoned(tz.clone())
+            .date();
+        let day_end_ms = today
+            .tomorrow()
+            .ok()
+            .and_then(|d| {
+                tz.to_zoned(d.to_datetime(jiff::civil::Time::midnight()))
+                    .ok()
+            })
+            .map_or(i64::MAX, |z| z.timestamp().as_millisecond());
+        let window_end = day_end_ms.saturating_add(PREFILTER_SLACK_MS);
 
         // `contexts` is an OR-set filter per docs/02-domain/contexts-and-tags.md:
         // an empty slice means "no filter", and a non-empty one keeps tasks
@@ -103,8 +164,7 @@ impl Engine {
              WHERE deleted = 0 AND archived = 0
                AND state != 'done' AND state != 'cancelled'
                AND ((scheduled_at_ms IS NOT NULL AND scheduled_at_ms <= ?)
-                 OR (due_at_ms IS NOT NULL AND due_at_ms <= ?)){ctx_clause}
-             ORDER BY COALESCE(scheduled_at_ms, due_at_ms) ASC"
+                 OR (due_at_ms IS NOT NULL AND due_at_ms <= ?)){ctx_clause}"
         );
         let mut stmt = db.conn().prepare(&sql)?;
 
@@ -128,7 +188,59 @@ impl Engine {
                 tasks.push(t);
             }
         }
+        let on_or_before_today =
+            |v: Option<&SunriseTime>| v.and_then(|v| v.day_in(&tz)).is_some_and(|d| d <= today);
+        tasks.retain(|t| {
+            on_or_before_today(t.scheduled_at.as_ref()) || on_or_before_today(t.due_at.as_ref())
+        });
+        sort_by_landing(&mut tasks, &tz, Unlanded::Last);
         Ok(QueryResult::Tasks(tasks))
+    }
+
+    /// What moving the reader from `from` to `to` at `now_ms` changes, for
+    /// [`crate::Core::on_time_zone_changed`] (`docs/10-cross-cutting/time.md`
+    /// §7). Reads only; nothing stored is rewritten.
+    ///
+    /// Counts the open tasks whose `scheduled_at` or `due_at` resolves to a
+    /// different instant in the two zones, or whose deadline is overdue in
+    /// one and not the other, and reports whether the
+    /// `notifications.timezone_changed.enabled` preference asks for a
+    /// notification.
+    pub(crate) fn time_zone_impact(
+        &self,
+        db: &Db,
+        from: &jiff::tz::TimeZone,
+        to: &jiff::tz::TimeZone,
+        now_ms: u64,
+    ) -> Result<(u32, bool), EngineError> {
+        let moved =
+            |v: Option<&SunriseTime>| v.is_some_and(|v| v.resolve_in(from) != v.resolve_in(to));
+        let late_moved = |v: Option<&SunriseTime>| {
+            v.is_some_and(|v| {
+                sunrise_domain::is_overdue(v, now_ms, from)
+                    != sunrise_domain::is_overdue(v, now_ms, to)
+            })
+        };
+        let affected = super::review::read_live_tasks(db.conn())?
+            .iter()
+            .filter(|t| {
+                !t.archived
+                    && matches!(
+                        t.state.effective(),
+                        sunrise_domain::TaskState::Todo | sunrise_domain::TaskState::InProgress
+                    )
+            })
+            .filter(|t| {
+                moved(t.scheduled_at.as_ref())
+                    || moved(t.due_at.as_ref())
+                    || late_moved(t.due_at.as_ref())
+            })
+            .count();
+        let notify = matches!(
+            self.resolved_preference(db, "notifications.timezone_changed.enabled")?,
+            Some(sunrise_domain::PrefValue::Bool(true))
+        );
+        Ok((u32::try_from(affected).unwrap_or(u32::MAX), notify))
     }
 
     /// Open tasks with their derived dependency state, ranked for a planner.

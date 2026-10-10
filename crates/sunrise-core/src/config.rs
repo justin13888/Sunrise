@@ -16,18 +16,70 @@ pub trait Clock: Send + Sync + std::fmt::Debug {
     /// Current unix time in milliseconds.
     fn now_ms(&self) -> u64;
 
-    /// IANA name of the *device-local* timezone, used to pin the civil
-    /// (zone-less) window dimensions of a Task's scheduling constraints to real
-    /// instants — per `docs/02-domain/scheduling-constraints.md` §Evaluation
-    /// timezone, a Task evaluates in the device zone (a Routine evaluates in
-    /// its own).
+    /// IANA name of the *device-local* timezone: the **reader's zone** of
+    /// `docs/10-cross-cutting/time.md` §2, which every comparison of two
+    /// times, Today, the calendar windows, lateness and a Task's scheduling
+    /// constraints resolve in (a Routine evaluates in its own).
     ///
     /// Defaulted to `"UTC"` so existing implementors keep compiling and so a
     /// test that injects only a clock still gets a deterministic zone. Ambient
     /// timezone state is as much a determinism hazard as an ambient clock, so
     /// it enters the core through this one injected seam and nowhere else.
+    /// A client that observes the OS zone change reports it through
+    /// [`crate::Core::on_time_zone_changed`], which [`ReportedZoneClock`]
+    /// then answers with.
     fn timezone(&self) -> String {
         "UTC".to_string()
+    }
+}
+
+/// The [`Clock`] a [`crate::Core`] reads, with the zone a client last
+/// reported in front of the injected clock's own.
+///
+/// `docs/10-cross-cutting/time.md` §7: each client observes the OS zone change
+/// and forwards it to the core. The OS's answer is the authority, because the
+/// core's own reading can lag it or be unavailable (a sandboxed process that
+/// cannot read `/etc/localtime`), and a reader's zone that disagrees with the
+/// one the client renders in puts tasks on the wrong day. Until a client
+/// reports one, the injected clock's zone is used.
+#[derive(Debug)]
+pub struct ReportedZoneClock {
+    inner: Arc<dyn Clock>,
+    reported: parking_lot::RwLock<Option<String>>,
+}
+
+impl ReportedZoneClock {
+    /// Wrap `inner`, with no zone reported yet.
+    #[must_use]
+    pub fn new(inner: Arc<dyn Clock>) -> Self {
+        Self {
+            inner,
+            reported: parking_lot::RwLock::new(None),
+        }
+    }
+
+    /// Make `zone` the reader's zone from now on, and return the one it
+    /// replaces. The caller checks the name resolves; this stores it.
+    pub fn report(&self, zone: &str) -> String {
+        // Read and replace under one lock, so two reports racing each other
+        // each see the zone the other replaced, never the same one twice.
+        let mut reported = self.reported.write();
+        let previous = reported.clone().unwrap_or_else(|| self.inner.timezone());
+        *reported = Some(zone.to_string());
+        previous
+    }
+}
+
+impl Clock for ReportedZoneClock {
+    fn now_ms(&self) -> u64 {
+        self.inner.now_ms()
+    }
+
+    fn timezone(&self) -> String {
+        self.reported
+            .read()
+            .clone()
+            .unwrap_or_else(|| self.inner.timezone())
     }
 }
 

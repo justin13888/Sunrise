@@ -35,9 +35,10 @@
 //! **live** rows only: an archived Stream or Context stays on the Tasks that
 //! carry it but must never be a target for new input.
 
-use crate::capture::{parse_energy, parse_when, NamedRef};
+use crate::capture::{parse_energy, parse_when_time, NamedRef};
 use crate::common::Energy;
 use crate::task::TaskPatch;
+use crate::time::SunriseTime;
 use jiff::tz::TimeZone;
 use jiff::Timestamp;
 use sunrise_id::EntityRef;
@@ -99,8 +100,8 @@ pub struct TaskEdit {
     priority: Option<Set<u8>>,
     energy: Option<Set<Energy>>,
     duration_s: Option<Set<u64>>,
-    scheduled: Option<Set<Timestamp>>,
-    due: Option<Set<Timestamp>>,
+    scheduled: Option<Set<SunriseTime>>,
+    due: Option<Set<SunriseTime>>,
     /// Tokens that could not be applied.
     pub errors: Vec<EditError>,
 }
@@ -158,15 +159,15 @@ impl TaskEdit {
                 Set::Clear => None,
             });
         }
-        if let Some(set) = self.scheduled {
+        if let Some(set) = &self.scheduled {
             patch.scheduled_at = Some(match set {
-                Set::To(t) => Some(t.into()),
+                Set::To(t) => Some(t.clone()),
                 Set::Clear => None,
             });
         }
-        if let Some(set) = self.due {
+        if let Some(set) = &self.due {
             patch.due_at = Some(match set {
-                Set::To(t) => Some(t.into()),
+                Set::To(t) => Some(t.clone()),
                 Set::Clear => None,
             });
         }
@@ -225,11 +226,11 @@ impl TaskEdit {
         push_set(&mut parts, self.duration_s, "estimate", |s| {
             format!("~{}", duration_label(s))
         });
-        push_set(&mut parts, self.scheduled, "schedule", |t| {
-            format!("^{}", stamp(t, tz))
+        push_set(&mut parts, self.scheduled.clone(), "schedule", |t| {
+            format!("^{}", stamp(&t, tz))
         });
-        push_set(&mut parts, self.due, "due", |t| {
-            format!("due {}", stamp(t, tz))
+        push_set(&mut parts, self.due.clone(), "due", |t| {
+            format!("due {}", stamp(&t, tz))
         });
         if parts.is_empty() {
             return "nothing to change".into();
@@ -372,7 +373,7 @@ fn take_date(
     head: &str,
     now: Timestamp,
     tz: &TimeZone,
-) -> (usize, Option<Set<Timestamp>>) {
+) -> (usize, Option<Set<SunriseTime>>) {
     /// Words a date expression may span, matching the capture parser.
     const MAX_DATE_WORDS: usize = 3;
     if head == "-" {
@@ -385,8 +386,8 @@ fn take_date(
             text.push(' ');
             text.push_str(w);
         }
-        if let Some(ts) = parse_when(&text, now, tz) {
-            return (extra, Some(Set::To(ts)));
+        if let Some(at) = parse_when_time(&text, now, tz) {
+            return (extra, Some(Set::To(at)));
         }
     }
     (0, None)
@@ -464,9 +465,12 @@ fn duration_label(secs: u64) -> String {
     }
 }
 
-/// `2026-01-02 09:00` in the user's zone.
-fn stamp(ts: Timestamp, tz: &TimeZone) -> String {
-    let dt = ts.to_zoned(tz.clone()).datetime();
+/// `2026-01-02 09:00` in the user's zone, or `2026-01-02` for a whole day.
+fn stamp(t: &SunriseTime, tz: &TimeZone) -> String {
+    if let SunriseTime::AllDay { date } = t {
+        return format!("{:04}-{:02}-{:02}", date.year(), date.month(), date.day());
+    }
+    let dt = t.to_instant(tz).to_zoned(tz.clone()).datetime();
     format!(
         "{:04}-{:02}-{:02} {:02}:{:02}",
         dt.year(),

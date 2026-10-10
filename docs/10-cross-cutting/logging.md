@@ -197,10 +197,15 @@ Neither defence covers `message`. A format string is arbitrary text by
 construction; keeping plaintext out of it is what the `.expose()` CI grep is
 for.
 
-Spans are not gated: `on_new_span` has no veto and a span cannot be rewritten
-once created. Sunrise spans are built only by this workspace's own
-`#[instrument]` / `info_span!` sites with allowlisted field names, and defence 1
-still applies to their values.
+`RedactionLayer` does not gate spans: `on_new_span` has no veto and a span
+cannot be rewritten once created. Span field names are gated at the source
+instead. `crates/sunrise-log/tests/event_catalog.rs` reads every
+`tracing::*_span!` and `tracing::span!` call in the files compiled into a
+shipped target and fails, naming the file, the span and the field, on a span
+field name outside the allowlist above. It refuses a span it cannot read, and
+refuses `#[instrument]` outright, since that attribute records the function's
+arguments as span fields without naming them. `mise run log-fields` runs it.
+Defence 1 still applies to span field values.
 
 ### 6.1 Email addresses
 

@@ -72,8 +72,10 @@ pub mod vault_lock;
 pub use attach::{AttachError, AttachPreview, ThumbnailImage};
 pub use blob_cache::{auto_fetch_policy, AutoFetchPolicy, CacheUsage, NetworkClass};
 pub use blob_sync::AUTO_FETCH_MAX_BYTES;
-pub use commands::{Command, CommandResult, FocusStartDraft};
-pub use config::{Clock, CoreConfig, HlcClock, MonotonicHlc, Rng, SystemClock, SystemRng};
+pub use commands::{Command, CommandResult, FocusStartDraft, TimeZoneChange};
+pub use config::{
+    Clock, CoreConfig, HlcClock, MonotonicHlc, ReportedZoneClock, Rng, SystemClock, SystemRng,
+};
 pub use control_op::{
     DeviceFeaturesPayload, DeviceRevokePayload, IdentityTransitionPayload, KeyEnvelopePayload,
     KeyShare, Recipient, RevokeReason, RosterEntry, VaultRequiresPayload,
