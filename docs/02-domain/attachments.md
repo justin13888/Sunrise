@@ -239,7 +239,8 @@ verifies and keeps the sealed chunks in its local blob store.
 
   A requested fetch (`Core::fetch_attachment`) ignores the table. The Apple
   app reports the class from `NWPathMonitor` (`isConstrained`, then
-  `isExpensive`), and its Download asks first, naming the size, when the
+  `isExpensive`) to every bridge as `CoreBridge` makes it, before any sync,
+  including a background one with no window, can drain; and its Download asks first, naming the size, when the
   attachment is over the threshold and the path is cellular.
 
 **What is built** ([#176](https://github.com/justin13888/Sunrise/issues/176)).
@@ -308,12 +309,21 @@ thumbnail, and when it was evicted. Specifically:
   the database lock that indexed the new blob, so fetches finishing together
   cannot leave the cache over its limit. That pass spares the blob it just
   indexed, so a file larger than the whole limit is still there when its
-  Download returns, and goes on the next pass. Eviction also runs at launch, when `Core::open`
-  first indexes any blob on disk the index does not know, as opened at time
-  zero. "An upload pending or unfinished" is any `blob_uploads` row, including
-  one past its attempt ceiling, since its blob may exist nowhere else. "Open in
-  a preview" is `Core::pin_attachment`, counted, released by
-  `Core::unpin_attachment`.
+  Download returns, and goes on the next pass. Eviction also runs at launch, in
+  `Core::open`. The first launch of a vault after migration 0038 first indexes
+  any blob on disk the index does not know, as opened at time zero, and records
+  in `blob_cache_backfill` that it has; later launches skip that pass, because
+  every attach and fetch indexes what it stores. A failure at launch is logged
+  as `core.attachment.cache_enforce_failed` and the vault opens. "An upload
+  pending or unfinished" is any `blob_uploads` row, including one past its
+  attempt ceiling, since its blob may exist nowhere else. "Open in a preview" is
+  `Core::pin_attachment`, counted and keyed by the attachment, released by
+  `Core::unpin_attachment`, which reads no row, so a preview closed by a delete
+  still releases it.
+- **The limit** is `attachments.cache_limit_bytes` as resolved. When the
+  vault's preferences cannot be read, it is the key's default for the class of
+  the platform the build runs on, the value a device with no `devices` row
+  resolves to.
 - **An evicted blob stays evicted** until somebody asks for it: the automatic
   fetch drain skips an original whose row records an eviction, because
   fetching it back unasked would hold the cache at its limit by churning it.
