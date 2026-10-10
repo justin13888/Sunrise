@@ -24,7 +24,7 @@ them together: `estimated_duration_s`
 (`crates/sunrise-domain/src/task.rs:140#Task`), `scheduling_constraints`
 (`crates/sunrise-domain/src/task.rs:125#Task`, with a per-constraint severity in
 `crates/sunrise-domain/src/constraint.rs:273#ScheduleConstraint`) and block
-overlap detection (`crates/sunrise-domain/src/block/conflict.rs:44#overlaps`). Focus's
+overlap detection (`crates/sunrise-domain/src/block/conflict.rs:46#overlaps`). Focus's
 ranked queue (`crates/sunrise-core/src/engine/focus.rs:356#query_focus_plan`)
 orders tasks and places none of them.
 

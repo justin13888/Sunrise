@@ -18,7 +18,7 @@ with account deletion ([#359](https://github.com/justin13888/Sunrise/issues/359)
 The byte path works end to end: chunks are sealed on attach, uploaded by the
 sync driver, and fetched on demand
 (`crates/sunrise-core/src/blob_fetch.rs:207#fetch_attachment`); anything under
-`AUTO_FETCH_MAX_BYTES` (`crates/sunrise-core/src/blob_sync.rs:164#AUTO_FETCH_MAX_BYTES`,
+`AUTO_FETCH_MAX_BYTES` (`crates/sunrise-core/src/blob_sync.rs:166#AUTO_FETCH_MAX_BYTES`,
 10 MiB) is fetched unasked. What is missing is everything that makes
 attachments pleasant and bounded:
 
@@ -128,7 +128,12 @@ until then validation still refuses them.
 
 - `Attachment` gains seven optional fields through the entity registry, gated
   by a new feature id, `attachment.thumbnail`, in `vault_requires` (ADR-0045).
-  An older build round-trips them unchanged.
+  An older build round-trips them unchanged. Building it
+  ([#346](https://github.com/justin13888/Sunrise/issues/346)) added an eighth,
+  `thumbnail_ciphertext_hash`: the relay names a committed blob by its
+  ciphertext hash, which a receiver holding only the op cannot compute, so
+  without it the thumbnail could not be fetched. It is the thumbnail's
+  `ciphertext_hash`, for the reason `Attachment` already carries one.
 - `AttachFile` takes an optional thumbnail the client produced; the core seals
   it as a second blob and queues both uploads.
 - The Apple pane replaces its hand-picked image/PDF branches with QuickLook for

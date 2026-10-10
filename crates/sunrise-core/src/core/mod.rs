@@ -105,6 +105,9 @@ pub struct Core {
     /// any one session — that is the reason it is a table at all — while
     /// `SyncShared` is scoped to the driver's own connection state.
     blob_fetch: Arc<crate::blob_fetch::BlobFetchSignals>,
+    /// The network class the client last reported and the blobs open
+    /// previews hold, which the attachment cache and the fetch drain read.
+    cache: crate::blob_cache::CacheSignals,
     /// What [`Core::compact_op_log`] may fold (ADR-0059). Set by
     /// [`Core::set_compaction_policy`]; the design of record's numbers until
     /// then.
@@ -112,6 +115,9 @@ pub struct Core {
     /// When the sync driver's tick last ran compaction, so it runs at most
     /// once per [`COMPACT_EVERY_MS`] rather than on every tick.
     last_compaction_ms: Mutex<Option<u64>>,
+    /// The clock the engine reads, holding the zone a client last reported
+    /// through [`Core::on_time_zone_changed`].
+    reader_clock: Arc<crate::config::ReportedZoneClock>,
     closed: Mutex<bool>,
 }
 
@@ -151,8 +157,11 @@ impl Core {
             cfg.rng.as_ref(),
             &identity_seed,
         )?);
+        // The engine reads the reader's zone through the zone a client last
+        // reported, ahead of the injected clock's own (time.md §7).
+        let reader_clock = Arc::new(crate::config::ReportedZoneClock::new(cfg.clock.clone()));
         let engine = Engine::new(
-            cfg.clock.clone(),
+            reader_clock.clone(),
             cfg.hlc.clone(),
             cfg.rng.clone(),
             keychain,
@@ -246,7 +255,7 @@ impl Core {
             .sync
             .as_ref()
             .map_or_else(TokenSource::empty, |s| s.credential.clone());
-        Ok(Self {
+        let core = Self {
             cfg,
             db: Mutex::new(db),
             _vault_lock: lock,
@@ -258,9 +267,80 @@ impl Core {
             sync_handle: Mutex::new(None),
             routine_handle: Mutex::new(None),
             blob_fetch: Arc::new(crate::blob_fetch::BlobFetchSignals::new()),
+            cache: crate::blob_cache::CacheSignals::default(),
             compaction_policy: Mutex::new(crate::engine::CompactionPolicy::default()),
             last_compaction_ms: Mutex::new(None),
+            reader_clock,
             closed: Mutex::new(false),
+        };
+        // ADR-0053 §5: eviction runs at launch. A cache over its limit is not
+        // a reason to refuse to open the vault, so a failure here is logged
+        // and the open goes on.
+        if let Err(e) = core.enforce_attachment_cache() {
+            tracing::warn!(
+                ev = "core.attachment.cache_enforce_failed",
+                cause = %e,
+                "the attachment cache could not be brought under its limit at launch"
+            );
+        }
+        Ok(core)
+    }
+
+    /// The one core entry point for a time-zone change
+    /// (`docs/10-cross-cutting/time.md` §7).
+    ///
+    /// A client calls it when the OS reports a new zone
+    /// (`NSSystemTimeZoneDidChange` on Apple platforms) and on every
+    /// foreground, with the IANA name the OS gives it. From then on `zone` is
+    /// the reader's zone every query resolves in. Nothing stored changes: a
+    /// zone change is not an edit, so no op is written. When the zone did
+    /// change, [`DomainEvent::TimeZoneChanged`] tells every subscriber to read
+    /// its views again, and the result says how many open tasks moved and
+    /// whether the user asked to be notified.
+    ///
+    /// # Errors
+    ///
+    /// [`EngineError::Invalid`] for a name the tzdb does not know; the reader's
+    /// zone is then left as it was. [`CoreError::Closed`] after close.
+    pub fn on_time_zone_changed(
+        &self,
+        zone: &str,
+    ) -> Result<crate::commands::TimeZoneChange, CoreError> {
+        if *self.closed.lock() {
+            return Err(CoreError::Closed);
+        }
+        let Ok(to) = jiff::tz::TimeZone::get(zone) else {
+            return Err(EngineError::Invalid(format!("time zone: unknown zone {zone:?}")).into());
+        };
+        let previous = self.reader_clock.report(zone);
+        let from = jiff::tz::TimeZone::get(&previous).unwrap_or(jiff::tz::TimeZone::UTC);
+        let now_ms = self.now_ms();
+        let around = jiff::Timestamp::from_millisecond(i64::try_from(now_ms).unwrap_or(i64::MAX))
+            .unwrap_or(jiff::Timestamp::UNIX_EPOCH);
+        // The zones, not their names: an alias, or UTC under another
+        // spelling, resolves every time the same way, so nothing moved.
+        let changed = !sunrise_domain::time::same_zone(&from, &to, around);
+        if changed {
+            // Published as soon as the new zone is the reader's, before the
+            // impact read: views must re-read even when that read fails,
+            // because the next report of this zone answers `changed: false`.
+            // Nobody listening is not an error.
+            let _ = self.changes_tx.send(DomainEvent::TimeZoneChanged {
+                zone: zone.to_string(),
+            });
+        }
+        let (affected_tasks, notify) = if changed {
+            let db = self.db.lock();
+            self.engine.time_zone_impact(&db, &from, &to, now_ms)?
+        } else {
+            (0, false)
+        };
+        Ok(crate::commands::TimeZoneChange {
+            previous,
+            zone: zone.to_string(),
+            changed,
+            affected_tasks,
+            notify,
         })
     }
 
@@ -703,6 +783,25 @@ impl Core {
     /// unrepeatable.
     pub(crate) fn rng(&self) -> &dyn crate::config::Rng {
         self.cfg.rng.as_ref()
+    }
+
+    /// The reported network and the open previews behind the attachment
+    /// cache ([`crate::blob_cache`]).
+    pub(crate) fn cache_signals(&self) -> &crate::blob_cache::CacheSignals {
+        &self.cache
+    }
+
+    /// One preference, resolved as [`Query::Preferences`] resolves it, or
+    /// `None` when it resolves to an absent default or cannot be read.
+    pub(crate) fn resolved_preference(&self, key: &str) -> Option<sunrise_domain::PrefValue> {
+        let db = self.db.lock();
+        match self.engine.query(&db, Query::Preferences) {
+            Ok(QueryResult::Preferences(prefs)) => prefs
+                .into_iter()
+                .find(|p| p.key == key)
+                .and_then(|p| p.value),
+            _ => None,
+        }
     }
 
     /// Copy this vault's root key out, for handing to a device being paired.

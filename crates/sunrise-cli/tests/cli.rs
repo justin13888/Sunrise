@@ -80,9 +80,9 @@ fn capture_commits_and_is_readable_back() {
 #[test]
 fn capture_applies_annotations_end_to_end() {
     let dir = tempfile::tempdir().unwrap();
-    // `^+6h` lands inside Today's rolling 24h window; `^+30h` does not. This
-    // pins the window boundary through the real query path.
-    run(dir.path(), &["capture", "Standup ^+6h !2"]);
+    // Today is the device zone's day: `^today` is on it at any hour, `^+30h`
+    // past its end (no day exceeds 25h). Pins that boundary end to end.
+    run(dir.path(), &["capture", "Standup ^today !2"]);
     run(dir.path(), &["capture", "Far future ^+30h"]);
     run(dir.path(), &["capture", "Unscheduled thing"]);
 
@@ -242,10 +242,9 @@ fn done_refuses_something_that_is_not_a_task_id() {
 // ---------------------------------------------------------------------------
 
 /// The scheduling facet, observed through the query path rather than through
-/// the write's own output — `^+6h` lands inside Today's rolling window and
-/// `^-` takes it back out, which is the same boundary
-/// `capture_applies_annotations_end_to_end` pins. Relative spans, not
-/// `tomorrow`, so the assertion does not depend on the host's zone.
+/// the write's own output — `^today` lands inside Today and `^-` takes it
+/// back out, the boundary `capture_applies_annotations_end_to_end` pins; it
+/// holds in any host zone and at any hour, unlike a relative span.
 #[test]
 fn edit_schedules_a_task_and_can_clear_the_schedule_again() {
     let dir = tempfile::tempdir().unwrap();
@@ -255,7 +254,7 @@ fn edit_schedules_a_task_and_can_clear_the_schedule_again() {
         "an unscheduled task must not start in Today"
     );
 
-    let out = run(dir.path(), &["edit", &id, "^+6h"]);
+    let out = run(dir.path(), &["edit", &id, "^today"]);
     assert!(out.status.success(), "edit failed: {out:?}");
     assert!(
         stdout(&out).starts_with(&id),
@@ -408,7 +407,7 @@ fn edit_defer_and_drop_all_take_several_ids() {
     let a = id_of(&run(dir.path(), &["capture", "First thing"]));
     let b = id_of(&run(dir.path(), &["capture", "Second thing"]));
 
-    let out = run(dir.path(), &["edit", &a, &b, "^+6h"]);
+    let out = run(dir.path(), &["edit", &a, &b, "^today"]);
     assert!(out.status.success(), "bulk edit failed: {out:?}");
     assert_eq!(stdout(&out).lines().count(), 2, "one line per task");
     let today = stdout(&run(dir.path(), &["today"]));

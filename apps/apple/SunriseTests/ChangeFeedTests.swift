@@ -127,6 +127,20 @@ struct ChangeCoalescingTests {
         #expect(CoreChange(.deleted(entity: "tsk_a")) == .entity("tsk_a"))
         #expect(CoreChange(.forgotten(entity: "tsk_a")) == .entity("tsk_a"))
     }
+
+    /// A zone change names no entity: everything derived from the zone moved,
+    /// so the batch it lands in is incomplete and every screen re-reads.
+    @Test
+    func aZoneChangeMakesTheBatchIncomplete() {
+        #expect(CoreChange(.timeZoneChanged(zone: "Asia/Kolkata")) == .zoneChanged)
+        var accumulator = ChangeAccumulator()
+        accumulator.record(.entity("tsk_a"))
+        accumulator.record(.zoneChanged)
+
+        let batch = accumulator.drain()
+        #expect(batch?.touched == ["tsk_a"])
+        #expect(batch?.isComplete == false)
+    }
 }
 
 /// Detaching a consumer costs an actor hop, so there is no synchronous moment

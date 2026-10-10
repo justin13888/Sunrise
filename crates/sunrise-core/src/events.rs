@@ -15,6 +15,13 @@ pub enum DomainEvent {
     Deleted(EntityRef),
     /// An entity is fully gone (post-compaction).
     Forgotten(EntityRef),
+    /// The reader's zone changed (`docs/10-cross-cutting/time.md` §7). No
+    /// entity changed, and every view derived from the zone — Today,
+    /// lateness, the calendar, the reminder schedule — must be read again.
+    TimeZoneChanged {
+        /// The new IANA zone.
+        zone: String,
+    },
 }
 
 /// Snapshot of sync status. Streamed via `Core::sync_status()`.

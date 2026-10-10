@@ -5,6 +5,7 @@ use crate::constraint::{validate_list as validate_constraint_list, ScheduleConst
 use crate::time::SunriseTime;
 use crate::unknown::{UnknownVariant, Unknowns};
 use crate::validation::{validate_title, ValidationError, MAX_TASK_TITLE_LEN};
+use jiff::tz::TimeZone;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -235,16 +236,13 @@ impl TaskDraft {
     /// Does NOT enforce the 1.25 MiB envelope cap (that's done in the core
     /// after CRDT encoding) or `blocked_by` cycles (done at submit time
     /// once the full graph is known).
-    pub fn validate(&self) -> Result<(), ValidationError> {
+    ///
+    /// `tz` is the reader's zone, which resolves the kinds of time that carry
+    /// none of their own (`docs/10-cross-cutting/time.md` §2).
+    pub fn validate(&self, tz: &TimeZone) -> Result<(), ValidationError> {
         let _ = validate_title(&self.title, "task.title", MAX_TASK_TITLE_LEN)?;
         if let (Some(s), Some(d)) = (self.scheduled_at.as_ref(), self.due_at.as_ref()) {
-            // Compared on the storage index key, which is the same key SQL
-            // orders on — so "the deadline is before the plan" means the same
-            // thing to the validator and to a `WHERE due_at_ms < ?` query,
-            // whatever kinds the two values are. A kind this build cannot
-            // place on the timeline is compared with nothing: its stand-in
-            // key would invent a violation.
-            if matches!((d.index_key(), s.index_key()), (Some(d), Some(s)) if d < s) {
+            if due_before_scheduled(s, d, tz) {
                 return Err(ValidationError::DueBeforeScheduled);
             }
         }
@@ -267,22 +265,34 @@ impl Task {
     /// Enforced after applying a patch (a patch that sets only `due_at` earlier
     /// than an existing `scheduled_at` would otherwise silently break the
     /// deadline invariant): `scheduled_at ≤ due_at` when both are present, and
-    /// the scheduling-constraint list is valid.
-    pub fn validate_invariants(&self) -> Result<(), ValidationError> {
+    /// the scheduling-constraint list is valid. `tz` is the reader's zone, as
+    /// for [`TaskDraft::validate`].
+    pub fn validate_invariants(&self, tz: &TimeZone) -> Result<(), ValidationError> {
         if let (Some(s), Some(d)) = (self.scheduled_at.as_ref(), self.due_at.as_ref()) {
-            // Compared on the storage index key, which is the same key SQL
-            // orders on — so "the deadline is before the plan" means the same
-            // thing to the validator and to a `WHERE due_at_ms < ?` query,
-            // whatever kinds the two values are. A kind this build cannot
-            // place on the timeline is compared with nothing: its stand-in
-            // key would invent a violation.
-            if matches!((d.index_key(), s.index_key()), (Some(d), Some(s)) if d < s) {
+            if due_before_scheduled(s, d, tz) {
                 return Err(ValidationError::DueBeforeScheduled);
             }
         }
         validate_constraint_list(&self.scheduling_constraints)?;
         Ok(())
     }
+}
+
+/// Whether the deadline `due` is missed before the plan `scheduled` starts,
+/// for a reader in `tz`.
+///
+/// Both resolve in the reader's zone (`docs/10-cross-cutting/time.md` §2 rule
+/// 1), never on the storage index, which puts a floating or all-day value up
+/// to 14 hours from where any reader sees it. The deadline resolves as a
+/// deadline, to the END of an all-day date (ADR-0047 §Due instant), so a task
+/// planned for 09:00 Friday and due "Friday" is consistent. A kind this build
+/// cannot place is compared with nothing: its stand-in would invent a
+/// violation.
+fn due_before_scheduled(scheduled: &SunriseTime, due: &SunriseTime, tz: &TimeZone) -> bool {
+    matches!(
+        (due.due_in(tz), scheduled.resolve_in(tz)),
+        (Some(d), Some(s)) if d < s
+    )
 }
 
 impl TaskPatch {
@@ -315,6 +325,70 @@ mod tests {
         EntityRef::new(EntityKind::Stream, [1u8; 16])
     }
 
+    fn utc() -> TimeZone {
+        TimeZone::UTC
+    }
+
+    fn zone(name: &str) -> TimeZone {
+        TimeZone::get(name).expect("zone")
+    }
+
+    fn timed(scheduled_at: SunriseTime, due_at: SunriseTime) -> TaskDraft {
+        TaskDraft {
+            title: "x".into(),
+            scheduled_at: Some(scheduled_at),
+            due_at: Some(due_at),
+            ..Default::default()
+        }
+    }
+
+    /// A deadline "Friday" is missed at the END of Friday, so a plan for
+    /// 09:00 Friday is before it in every zone — on the storage index the
+    /// all-day value sat at 00:00 UTC and this was refused everywhere.
+    #[test]
+    fn a_plan_inside_an_all_day_deadline_is_not_after_it() {
+        let friday = jiff::civil::date(2026, 3, 6);
+        let d = timed(
+            SunriseTime::floating(friday.at(9, 0, 0, 0)),
+            SunriseTime::all_day(friday),
+        );
+        for tz in [
+            "UTC",
+            "Pacific/Honolulu",
+            "Pacific/Kiritimati",
+            "Asia/Kolkata",
+        ] {
+            d.validate(&zone(tz))
+                .unwrap_or_else(|e| panic!("{tz}: {e:?}"));
+        }
+        // The day after is still refused.
+        let late = timed(
+            SunriseTime::floating(friday.tomorrow().unwrap().at(9, 0, 0, 0)),
+            SunriseTime::all_day(friday),
+        );
+        assert_eq!(
+            late.validate(&utc()),
+            Err(ValidationError::DueBeforeScheduled)
+        );
+    }
+
+    /// A zoned plan and a floating deadline are compared where the reader
+    /// is: 09:00 New York is before an 11:00 floating deadline read in New
+    /// York, and after it read in Kolkata, where 11:00 is the night before.
+    #[test]
+    fn mixed_kinds_are_compared_in_the_readers_zone() {
+        let day = jiff::civil::date(2026, 6, 1);
+        let d = timed(
+            SunriseTime::zoned(day.at(9, 0, 0, 0), "America/New_York"),
+            SunriseTime::floating(day.at(11, 0, 0, 0)),
+        );
+        d.validate(&zone("America/New_York")).unwrap();
+        assert_eq!(
+            d.validate(&zone("Asia/Kolkata")),
+            Err(ValidationError::DueBeforeScheduled)
+        );
+    }
+
     #[test]
     fn task_state_transitions() {
         assert!(TaskState::Todo.can_transition_to(&TaskState::InProgress));
@@ -341,9 +415,9 @@ mod tests {
             stream_id: Some(ref_t()),
             ..Default::default()
         };
-        d.validate().unwrap();
+        d.validate(&utc()).unwrap();
         d.title = String::new();
-        assert_eq!(d.validate(), Err(ValidationError::InvalidTitle));
+        assert_eq!(d.validate(&utc()), Err(ValidationError::InvalidTitle));
     }
 
     #[test]
@@ -356,7 +430,7 @@ mod tests {
             due_at: Some(now.into()),
             ..Default::default()
         };
-        assert_eq!(d.validate(), Err(ValidationError::DueBeforeScheduled));
+        assert_eq!(d.validate(&utc()), Err(ValidationError::DueBeforeScheduled));
     }
 
     /// A time kind this build cannot place is compared with nothing, on
@@ -378,7 +452,7 @@ mod tests {
                 due_at,
                 ..Default::default()
             };
-            d.validate().unwrap();
+            d.validate(&utc()).unwrap();
         }
     }
 
@@ -390,7 +464,7 @@ mod tests {
             ..Default::default()
         };
         assert!(matches!(
-            d.validate(),
+            d.validate(&utc()),
             Err(ValidationError::Field {
                 constraint: "range_1_5",
                 ..

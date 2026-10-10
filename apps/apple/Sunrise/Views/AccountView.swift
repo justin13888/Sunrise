@@ -39,6 +39,10 @@ struct AccountView: View {
     /// is: a preview stands this screen up without an open vault, and a device
     /// list with no core behind it would render an empty list as a fact.
     let devices: DeviceListModel?
+    /// The attachment cache, for Settings → Storage. Optional, and defaulted,
+    /// for the reason `devices` is optional: a screen with no open vault has
+    /// no cache to describe.
+    var storage: AttachmentCacheModel?
 
     @State private var pairing: PairingModel?
     @State private var newVaultName = ""
@@ -51,6 +55,9 @@ struct AccountView: View {
                 DeviceListSection(model: devices)
             }
             vaultSection
+            if let storage {
+                StorageSection(model: storage)
+            }
 
             Section("Sync") {
                 TextField("Relay URL", text: $settings.relayURL, prompt: Text("http://127.0.0.1:8443"))

@@ -90,11 +90,17 @@ without changing this section reddens that module.
 
 **Per-batch retransmit.** Each in-flight `OpBatch` carries its own timer and
 `Backoff`; when the deadline passes the batch frame is sent again
-(`sync_driver.rs:1214-1246`, `ev = "sync.op.retransmit"`). Exhausting the policy
-here *does* escalate: the driver tears the session down and reconnects
-(`sync_driver.rs:1082-1093`, `SYNC_NETWORK_UNAVAILABLE`), because a batch that
-went unacked through the full policy is evidence the link is not carrying ops at
-all. A fresh session re-drains the outbox from scratch.
+(`sync_driver::retransmit_due`, `ev = "sync.op.retransmit"`). Each deadline
+starts when that batch's send returns, not when the batch is built: on the SSE
+transport a send is a `POST` that holds the driver for a round trip, and its
+reply is the ack. The session pump also reads an inbound frame that has already
+arrived before it reacts to a submit or to the timer
+([#475](https://github.com/justin13888/Sunrise/issues/475)). Without both, a
+sustained commit rate at a real round trip resent batches whose acks sat unread
+until the policy ran out. Exhausting the policy here *does* escalate: the driver
+tears the session down and reconnects (`SYNC_NETWORK_UNAVAILABLE`), because a
+batch that went unacked through the full policy is evidence the link is not
+carrying ops at all. A fresh session re-drains the outbox from scratch.
 
 Neither timer is persisted. After a restart every unacked row is simply drained
 again, at attempt zero.
