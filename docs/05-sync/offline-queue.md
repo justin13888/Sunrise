@@ -64,6 +64,14 @@ handshake — however briefly — starts the next reconnect from 100 ms.
 drives the driver itself through unanswered and answered reconnects and asserts
 the `attempt` and `delay_ms` of every `sync.backoff` it emits.
 
+One caller may cut a delay short: `Core::wake_sync`, which a mobile background
+run (`SunriseCore::sync_once`, [mobile-ios.md](../07-clients/mobile-ios.md#background-sync))
+calls so that a driver suspended partway through the flat 30 s does not spend
+the run's whole budget waiting. It ends the delay being waited out, or the next
+one, and skips that one delay only: the attempt it was taken for still advances
+the schedule, and at most one wake is held however many land.
+`a_reconnect_wake_cuts_the_backoff_short` asserts both.
+
 One consequence worth naming because it looks like a bug and is not: the
 `min(30_000)` cap inside `next_delay` (`crates/sunrise-sync/src/backoff.rs:52`)
 is **unreachable on this policy**. With `max_retries = 5` the largest base is
@@ -156,4 +164,5 @@ The outbox row commits in the same SQLite transaction as the op insert
 reachability — and the sync layer would subscribe to them (per-platform,
 provided by the UI shell to the core via callbacks) and trigger an immediate
 drain rather than waiting for the next backoff tick. No such callback exists on
-the seam today; reconnection is driven entirely by the backoff timer above.
+the seam today; reconnection is driven by the backoff timer above, and by the
+background run's `wake_sync`.
