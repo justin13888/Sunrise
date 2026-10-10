@@ -100,6 +100,8 @@ See [`logging.md`](./logging.md) for the record schema and grammar, and
 | `db.backup.ok` | info | The vault was copied to `<vault>.pre-v<from_v>.bak` before a migration; `from_v`. |
 | `db.backup.failed` | error | The pre-migration copy could not be written, so nothing was migrated; `from_v`, `err_code`, `cause`. The vault stays at `from_v`. |
 | `db.backup.remove_failed` | warn | A pre-migration copy could not be deleted after the vault proved usable at its new version; `cause`. Costs disk only; the next open retries. |
+| `db.auto_vacuum.convert` | info | A vault created before `auto_vacuum` was set in the right order reported it off, and the open is rewriting it once with a `VACUUM` so freed pages can be returned to the filesystem ([`local-database.md`](../04-storage/local-database.md) §Vacuum / maintenance). |
+| `db.auto_vacuum.convert_failed` | warn | That rewrite failed, most likely for want of disk; `cause`. The vault opens as it was, its freed pages stay on the free list, and the next open tries again. |
 | `db.integrity.failed` | error | `PRAGMA quick_check`, or SQLCipher's page check after a page would not read, found the vault file damaged. On the check before a migration, the open is refused and nothing is migrated; `err_code`. |
 
 ### `sync` — `sunrise-core::sync_driver`, `sunrise-cli::livesync`
