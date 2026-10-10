@@ -52,20 +52,20 @@
 //! which is the property the blob store's hash verification and this signature
 //! are asserting from two different directions.
 //!
-//! # The rule that makes re-serialisation safe to sign
+//! # What the server canonicalizes
 //!
-//! A signature over a re-serialisation verifies only if the parse is lossless,
-//! and a silently-dropped field is exactly a lossy parse. So request bodies on
-//! this surface **must** reject unknown fields (`#[serde(deny_unknown_fields)]`).
-//! That turns what would be an inscrutable signature mismatch into a typed 400
-//! naming the offending member.
+//! A signature over a re-serialisation of a parsed *type* verifies only if the
+//! parse is lossless, and a silently-dropped field is exactly a lossy parse. So
+//! the server does not canonicalize its typed value: it canonicalizes the JSON
+//! value it received, every member included, and reads its type from that value
+//! afterwards (ADR-0022, amended 2026-10). The client signs the value it sends,
+//! so the two sides hash the same thing whether or not the server's type knows
+//! every member — which is what lets the sync request bodies ignore a field a
+//! newer client adds, while that field stays inside the signature.
 //!
-//! This is the opposite of the op log's rule, deliberately. Ops are end-to-end
-//! encrypted peer data an *older* client must merge without destroying a newer
-//! one's fields, so unknown keys round-trip verbatim there. API requests are a
-//! versioned client/server contract in which the server is never behind the
-//! client — it is the thing being deployed to — so an undocumented member is a
-//! client bug or an attack, not a newer peer.
+//! Whether a body refuses unknown fields is therefore that body's own contract,
+//! not this crate's: the sync bodies accept them, and the account, device,
+//! pairing and blob bodies keep `#[serde(deny_unknown_fields)]`.
 //!
 //! # Replay
 //!
@@ -313,10 +313,10 @@ pub fn check_date(date: &str, now_ms: u64) -> Result<(), SigError> {
 
 /// Verify a `header_sig_v2` signature against an already-canonicalized body.
 ///
-/// The server calls this after its framework has parsed the body into the
-/// operation's declared type, with `canonical_body` recomputed from that value
-/// by [`canonical_json`] — which is sound precisely because the request types
-/// reject unknown fields, so nothing was dropped between the wire and here.
+/// The server calls this after its framework has parsed the body, with
+/// `canonical_body` recomputed by [`canonical_json`] from the JSON value as
+/// received — not from the operation's declared type, which may ignore a member
+/// the client signed.
 ///
 /// # Errors
 /// See [`SigError`]. Every failure mode is distinguishable to the *server* for

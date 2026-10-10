@@ -39,7 +39,7 @@ ADRs are numbered sequentially (`0001`, `0002`, …) and never renumbered.
 | 0019 | [SwiftUI macOS client over a UniFFI seam](./0019-swiftui-macos-client.md) | accepted (supersedes 0006; replaces the Tauri desktop spec; revisit trigger 1 fired — see 0028; amended by 0026: the bindgen quarantine survives, but on feature unification rather than MSRV) |
 | 0020 | [Three capabilities leave the v1 MUST set](./0020-v1-must-demotions.md) | accepted (amends the client parity matrix); amended by 0042: the demoted rows are ranked MUSTs again |
 | 0021 | [`kynos` + an authoritative OpenAPI 3.2 document replace hand-written axum routing](./0021-kynos-openapi-server.md) | accepted (amended by 0026: its "the workspace pins 1.88.0" is now historical; `spargen`'s floor still clears the pin) |
-| 0022 | [`header_sig_v2` signs canonical JSON (RFC 8785)](./0022-device-signature-canonical-json.md) | accepted (forced by 0021) |
+| 0022 | [`header_sig_v2` signs canonical JSON (RFC 8785)](./0022-device-signature-canonical-json.md) | accepted (forced by 0021; amended 2026-10: the received value is what is verified, and the sync bodies accept unknown fields) |
 | 0023 | [Sync moves to SSE downstream and typed POST upstream](./0023-sse-sync-transport.md) | accepted (supersedes 0005) |
 | 0024 | [Stream keys are random and wrapped, not derived from the vault root](./0024-key-hierarchy.md) | accepted (amended by 0046: a private key domain for stream-less data) |
 | 0025 | [Integration credentials are a synced entity, not a Stream field](./0025-integration-account-entity.md) | accepted (depends on 0024); amended by 0049: tokens stay on the device that minted them |
