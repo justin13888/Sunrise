@@ -206,6 +206,9 @@ pub enum StoreError {
     },
 }
 
+/// The count [`busy_total`] reads.
+static BUSY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// Statements that failed with `SQLITE_BUSY` once the busy timeout ran out,
 /// across every store in this process.
 ///
@@ -217,9 +220,6 @@ pub enum StoreError {
 /// Process-wide rather than per store because the contention is: a second
 /// connection to the file is another process (`admin`, a backup), not another
 /// [`Store`] in this one. `/metrics` copies it into `sunrise_db_busy_total`.
-static BUSY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-/// The process's `SQLITE_BUSY` failures so far ([`BUSY`]).
 #[must_use]
 pub fn busy_total() -> u64 {
     BUSY.load(std::sync::atomic::Ordering::Relaxed)

@@ -12,7 +12,6 @@
 //! What still takes `conn.lock()` directly is off the request paths: the
 //! readiness probe's bounded `try_lock_for`, the shutdown checkpoint, the
 //! admin CLI, opening and migrating, and the key and backup operations.
-
 //!
 //! The same seam meters a request's time in the store, for
 //! `sunrise_db_query_duration_seconds`: [`metered`] runs a request's future
