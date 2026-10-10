@@ -38,7 +38,6 @@ final class AttachmentCacheModel {
         // ADR-0053 §5: plaintext handed to a previewer is deleted at the next
         // launch. A vault opening is that launch.
         PreviewFiles.sweep()
-        NetworkClassMonitor.shared.report(to: bridge)
     }
 
     /// The choices to show, with the current limit among them even when it
@@ -131,11 +130,19 @@ final class NetworkClassMonitor {
     }
 
     /// Tell `bridge` the current class now and on every change.
-    func report(to bridge: CoreBridge) {
+    ///
+    /// Called by `CoreBridge` as it makes each bridge, before anything can
+    /// run the fetch drain, and not by a view: an iOS background launch
+    /// (BGAppRefresh, a silent push) syncs with no scene on screen, and a
+    /// bridge never told would drain as `Unmetered` on cellular or Low Data
+    /// Mode (ADR-0053 §6). Awaited, so the class is set when this returns.
+    func report(to bridge: CoreBridge) async {
         bridges.removeAll { $0.bridge == nil }
         bridges.append(WeakBridge(bridge: bridge))
-        let network = current
-        Task { await bridge.setNetworkClass(network) }
+        // The monitor's path, not `current`: the first path update reaches
+        // `current` through a hop to the main actor, which a launch can beat.
+        let network = Self.classify(monitor.currentPath)
+        await bridge.setNetworkClass(network)
     }
 
     private func update(_ network: NetworkClass) {

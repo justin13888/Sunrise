@@ -54,7 +54,7 @@ actor CoreBridge {
             appVersion: appVersion,
             pairedBundle: pairedBundle
         )
-        return CoreBridge(core: core)
+        return await made(core)
     }
 
     /// Restore an account from its recovery code into the empty `directory`,
@@ -91,11 +91,23 @@ actor CoreBridge {
             nickname: recovery.nickname,
             listener: RecoveryStepForwarder(onStep: onStep)
         )
-        return CoreBridge(core: core)
+        return await made(core)
     }
 
     private init(core: SunriseCore) {
         self.core = core
+    }
+
+    /// A bridge over `core`, told the network class before anyone holds it.
+    ///
+    /// Here, where every bridge is made, rather than in a view: an iOS
+    /// background launch syncs with no scene on screen, and a bridge never
+    /// told would drain as `Unmetered` on cellular or Low Data Mode
+    /// (ADR-0053 §6).
+    private static func made(_ core: SunriseCore) async -> CoreBridge {
+        let bridge = CoreBridge(core: core)
+        await NetworkClassMonitor.shared.report(to: bridge)
+        return bridge
     }
 
     // MARK: - Reads and writes

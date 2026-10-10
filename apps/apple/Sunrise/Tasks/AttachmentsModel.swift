@@ -95,6 +95,10 @@ final class AttachmentsModel {
     /// them; a row without one draws its type's symbol.
     private(set) var thumbnails: [EntityRef: Data] = [:]
     private(set) var isBusy = false
+    /// Bumped by every ``preview(_:)`` and ``closePreview()``. A preview load
+    /// that resumes from an await to find it moved was superseded: it
+    /// releases what it took instead of overwriting the newer selection.
+    @ObservationIgnored private var previewGeneration = 0
 
     private let bridge: CoreBridge
     private let task: EntityRef
@@ -294,9 +298,19 @@ final class AttachmentsModel {
         }
         guard previewing?.id != row.id else { return }
         closePreview()
+        // Two taps can both pass the guard above before either load returns.
+        // Each load checks after every await that it is still the latest, so
+        // the later tap wins and the earlier one leaves no pin behind.
+        let generation = previewGeneration
+        var pinned = false
         do {
             let bytes = try await bridge.attachmentBytes(row.id)
-            try? await bridge.pinAttachment(row.id)
+            guard generation == previewGeneration else { return }
+            pinned = (try? await bridge.pinAttachment(row.id)) != nil
+            guard generation == previewGeneration else {
+                if pinned { await bridge.unpinAttachment(row.id) }
+                return
+            }
             switch row.previewKind {
             case .image:
                 previewing = .image(id: row.id, data: bytes)
@@ -306,18 +320,22 @@ final class AttachmentsModel {
             }
             errorMessage = nil
         } catch {
+            if pinned { await bridge.unpinAttachment(row.id) }
+            guard generation == previewGeneration else { return }
             previewing = nil
             errorMessage = error.localizedDescription
         }
     }
 
     /// End the current preview: delete its plaintext copy and release its pin.
+    /// Also supersedes a preview still loading, which then releases its own.
     func closePreview() {
+        previewGeneration += 1
         guard let current = previewing else { return }
         previewing = nil
         if case let .file(_, url) = current { PreviewFiles.remove(url) }
         let bridge = self.bridge
-        _Concurrency.Task { try? await bridge.unpinAttachment(current.id) }
+        _Concurrency.Task { await bridge.unpinAttachment(current.id) }
     }
 
     /// Write an attachment to this launch's preview directory and hand it to
