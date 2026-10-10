@@ -36,6 +36,7 @@
 //! private `blob_fetch` module, asks for one named attachment whatever its
 //! size, and is what a client's "Download" button calls.
 
+use crate::blob_cache::BlobRef;
 use crate::commands::Command;
 use crate::core::{Core, CoreError};
 use crate::queries::{Query, QueryResult};
@@ -44,7 +45,7 @@ use sunrise_crypto::blob_chunk::{
     CiphertextHasher, CHUNK_PLAINTEXT_LEN,
 };
 use sunrise_domain::validation::MAX_ATTACHMENT_BYTES;
-use sunrise_domain::{Attachment, AttachmentDraft};
+use sunrise_domain::{Attachment, AttachmentDraft, Thumbnail, MAX_THUMBNAIL_BYTES};
 use sunrise_id::EntityRef;
 use sunrise_storage::{BlobStore, BlobStoreError};
 use thiserror::Error;
@@ -109,6 +110,12 @@ pub enum AttachError {
         /// The attachment.
         id: EntityRef,
     },
+    /// The thumbnail a client supplied is not one ADR-0053 §1 allows: not a
+    /// JPEG or PNG, bytes that are not the format named, or over one chunk.
+    /// Refused before anything is written; the client attaches again without
+    /// it.
+    #[error("the thumbnail is not a JPEG or PNG of at most one chunk: {0}")]
+    BadThumbnail(&'static str),
     /// Chunk crypto failed: a wrong key, a chunk from another blob, or an
     /// altered one.
     #[error(transparent)]
@@ -127,7 +134,69 @@ impl From<CoreError> for AttachError {
     }
 }
 
+/// A thumbnail image a client rendered from the original (ADR-0053 §1).
+///
+/// The client renders it, because only the platform can decode the original;
+/// the core seals it, because the blob format is the core's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThumbnailImage {
+    /// `image/jpeg` or `image/png`.
+    pub mime_type: String,
+    /// The encoded image, at most one chunk.
+    pub bytes: Vec<u8>,
+}
+
+impl ThumbnailImage {
+    /// Refuse a thumbnail of a type a receiver may not be able to decode, of
+    /// bytes that are not the type they claim, or over one chunk.
+    fn check(&self) -> Result<(), AttachError> {
+        const JPEG: &[u8] = &[0xFF, 0xD8, 0xFF];
+        const PNG: &[u8] = &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+        let magic = match self.mime_type.as_str() {
+            "image/jpeg" => JPEG,
+            "image/png" => PNG,
+            _ => return Err(AttachError::BadThumbnail("not image/jpeg or image/png")),
+        };
+        if self.bytes.is_empty() || self.bytes.len() > MAX_THUMBNAIL_BYTES as usize {
+            return Err(AttachError::BadThumbnail("empty or over one chunk"));
+        }
+        if !self.bytes.starts_with(magic) {
+            return Err(AttachError::BadThumbnail("bytes do not match the type"));
+        }
+        Ok(())
+    }
+}
+
+/// What a client may record about an attachment beyond its bytes: the
+/// original's dimensions and a thumbnail (ADR-0053 §1–§2).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AttachPreview {
+    /// The original's width in pixels, when known.
+    pub width: Option<u32>,
+    /// The original's height in pixels, when known.
+    pub height: Option<u32>,
+    /// The thumbnail, when the platform could render one.
+    pub thumbnail: Option<ThumbnailImage>,
+}
+
 impl Core {
+    /// Seal `bytes`, store them in this vault's blob store, and record the
+    /// attachment against `parent`, with no thumbnail or dimensions.
+    ///
+    /// # Errors
+    ///
+    /// As [`Core::attach_file_with`].
+    pub async fn attach_file(
+        &self,
+        parent: EntityRef,
+        filename: String,
+        mime_type: String,
+        bytes: &[u8],
+    ) -> Result<Attachment, AttachError> {
+        self.attach_file_with(parent, filename, mime_type, bytes, AttachPreview::default())
+            .await
+    }
+
     /// Seal `bytes`, store them in this vault's blob store, and record the
     /// attachment against `parent`.
     ///
@@ -141,16 +210,25 @@ impl Core {
     /// reader racing the write would see [`AttachError::BytesNotHere`] for
     /// something that is in fact here.
     ///
+    /// A thumbnail is sealed as a second blob under its own fresh key and id
+    /// (ADR-0053 §2) and queued for upload beside the original. When the
+    /// vault cannot take the `attachment.thumbnail` feature yet, because a
+    /// paired device does not support it, the attachment is recorded without
+    /// the thumbnail and the dimensions, and the thumbnail's chunks are
+    /// discarded.
+    ///
     /// # Errors
     ///
-    /// [`AttachError::Empty`] or [`AttachError::TooLarge`] before anything is
-    /// written; a store or command error after.
-    pub async fn attach_file(
+    /// [`AttachError::Empty`], [`AttachError::TooLarge`] or
+    /// [`AttachError::BadThumbnail`] before anything is written; a store or
+    /// command error after.
+    pub async fn attach_file_with(
         &self,
         parent: EntityRef,
         filename: String,
         mime_type: String,
         bytes: &[u8],
+        preview: AttachPreview,
     ) -> Result<Attachment, AttachError> {
         let size_bytes = bytes.len() as u64;
         if bytes.is_empty() {
@@ -158,6 +236,9 @@ impl Core {
         }
         if size_bytes > MAX_ATTACHMENT_BYTES {
             return Err(AttachError::TooLarge { size: size_bytes });
+        }
+        if let Some(t) = &preview.thumbnail {
+            t.check()?;
         }
 
         let mut blob_key = [0u8; 32];
@@ -180,6 +261,10 @@ impl Core {
             store.put_chunk(&blob_id, idx, &sealed)?;
         }
         let ciphertext_hash = ciphertext.finish();
+        let thumbnail = match &preview.thumbnail {
+            Some(image) => Some(self.seal_thumbnail(&store, image, &blob_key, &blob_id)?),
+            None => None,
+        };
 
         let draft = AttachmentDraft {
             parent,
@@ -191,6 +276,9 @@ impl Core {
             chunk_count,
             content_hash: content_hash(bytes),
             ciphertext_hash,
+            width: preview.width,
+            height: preview.height,
+            thumbnail: thumbnail.clone(),
         };
         let result = self.submit(Command::AttachFile(draft)).await?;
         let att = self.attachment_row(result.entity).await?;
@@ -199,8 +287,80 @@ impl Core {
         // push bytes nothing references; an op whose upload was never queued is
         // an attachment that stays local, which is precisely the state this
         // vault was already in and which the user can resolve by re-attaching.
-        self.enqueue_blob_upload(&att)?;
+        let original = BlobRef::original(&att);
+        self.enqueue_blob_upload(att.parent, &original, &att.ciphertext_hash)?;
+        self.note_blob_cached(&original)?;
+        match (BlobRef::thumbnail(&att), thumbnail) {
+            (Some(thumb), Some(sealed)) => {
+                self.enqueue_blob_upload(att.parent, &thumb, &sealed.ciphertext_hash)?;
+                self.note_blob_cached(&thumb)?;
+            }
+            // The engine wrote the attachment without it: nothing references
+            // these chunks, so nothing will ever upload or read them.
+            (None, Some(sealed)) => store.delete_all(&sealed.blob_id)?,
+            _ => {}
+        }
         Ok(att)
+    }
+
+    /// Seal `image` as a one-chunk blob under a fresh key and id, and store
+    /// it. The key and id are drawn until neither equals the original's: a
+    /// shared key is a nonce reuse, and a shared id would file both blobs'
+    /// chunks in one directory.
+    fn seal_thumbnail(
+        &self,
+        store: &BlobStore,
+        image: &ThumbnailImage,
+        original_key: &[u8; 32],
+        original_id: &[u8; 16],
+    ) -> Result<Thumbnail, AttachError> {
+        let mut blob_key = *original_key;
+        while blob_key == *original_key {
+            self.rng().fill_bytes(&mut blob_key);
+        }
+        let mut blob_id = *original_id;
+        while blob_id == *original_id {
+            self.rng().fill_bytes(&mut blob_id);
+        }
+        let sealed = seal_chunk(&blob_key, &blob_id, 0, 1, &image.bytes)?;
+        let mut hasher = CiphertextHasher::new();
+        hasher.update(&sealed);
+        store.put_chunk(&blob_id, 0, &sealed)?;
+        Ok(Thumbnail {
+            blob_id,
+            blob_key,
+            mime_type: image.mime_type.clone(),
+            size_bytes: u32::try_from(image.bytes.len()).unwrap_or(u32::MAX),
+            content_hash: content_hash(&image.bytes),
+            ciphertext_hash: hasher.finish(),
+        })
+    }
+
+    /// One attachment's thumbnail: its MIME type and its plaintext, verified.
+    ///
+    /// `Ok(None)` for an attachment with no usable thumbnail, which a client
+    /// draws as the file-type icon.
+    ///
+    /// # Errors
+    ///
+    /// [`AttachError::NotFound`] for an unknown or tombstoned id,
+    /// [`AttachError::BytesNotHere`] when the thumbnail has not been fetched
+    /// yet, and [`AttachError::Chunk`] when what is stored does not open.
+    pub async fn thumbnail_bytes(
+        &self,
+        id: EntityRef,
+    ) -> Result<Option<(String, Vec<u8>)>, AttachError> {
+        let att = self.attachment_row(id).await?;
+        let Some(thumb) = att.thumbnail() else {
+            return Ok(None);
+        };
+        let store = BlobStore::new(self.vault_dir())?;
+        let sealed = store
+            .get_chunk(&thumb.blob_id, 0)?
+            .ok_or(AttachError::BytesNotHere { id })?;
+        let plain = open_chunk(&thumb.blob_key, &thumb.blob_id, 0, 1, &sealed)?;
+        verify_content(&plain, &thumb.content_hash)?;
+        Ok(Some((thumb.mime_type, plain)))
     }
 
     /// Reassemble one attachment's plaintext from this vault's blob store.
@@ -236,6 +396,9 @@ impl Core {
             )?);
         }
         verify_content(&out, &att.content_hash)?;
+        // Every preview and every open reads through here, so this is where
+        // the cache learns what was used last (ADR-0053 §5).
+        self.touch_blob(&att.blob_id)?;
         Ok(out)
     }
 

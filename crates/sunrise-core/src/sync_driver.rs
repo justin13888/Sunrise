@@ -1894,15 +1894,12 @@ async fn fetch_missing_blobs<T: Transport + ?Sized>(core: &Core, transport: &mut
         return;
     };
     for att in wanted {
-        let Some(relay_id) = att.relay_blob_id() else {
-            continue;
-        };
-        match transport.blob_fetch(&relay_id).await {
+        match transport.blob_fetch(&att.relay_id).await {
             // Not committed yet, or not this account's. Either way there is
             // nothing to hold on to: the attachment row is already the durable
             // record of what to ask for, so the next drain asks again.
             Ok(None) => {}
-            Ok(Some(body)) => match core.store_fetched_blob(&att, &body) {
+            Ok(Some(body)) => match core.store_fetched(&att, &body) {
                 Ok(true) => tracing::info!(
                     ev = "sync.blob.fetched",
                     blob_h = hex_short(&att.blob_id),
