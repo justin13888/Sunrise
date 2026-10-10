@@ -120,8 +120,11 @@ What exists today, read from the tree:
   (`apps/apple/Sunrise/Notifications/NotificationPreferences.swift:31`), not a
   toggle per kind. No request sets an interruption level, and nothing observes a
   time-zone change.
-- **On iOS**, on-event kinds need a background wake, which does not exist yet
-  ([#367](https://github.com/justin13888/Sunrise/issues/367)); until it does they fire when the app next runs.
+- **On iOS**, on-event kinds need a background wake. The scheduler reconciles
+  at the end of every background run — each refresh task and silent push
+  ([`mobile-ios.md`](../07-clients/mobile-ios.md#background-sync), #367) — so
+  an event a peer wrote is scheduled at the next such run rather than at the
+  next launch; how soon that is, the OS decides.
 
 ## Details
 
