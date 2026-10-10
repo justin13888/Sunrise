@@ -310,15 +310,18 @@ fn spawn_stream(
                     return;
                 }
             }
-            for (seq, bytes) in frames {
+            for frame in frames {
                 let event = Event::new(SyncEvent::Ops {
                     stream_id: hex::encode(sid),
-                    frame: base64::engine::general_purpose::STANDARD.encode(&bytes),
+                    frame: base64::engine::general_purpose::STANDARD.encode(&frame.bytes),
                 })
-                .id(seq.to_string());
+                .id(frame.id.to_string());
                 if tx.send(event).await.is_err() {
                     return;
                 }
+                state
+                    .metrics
+                    .add("sunrise_sync_ops_delivered_total", frame.n_ops);
             }
             let caught_up = Event::new(SyncEvent::CaughtUp {
                 stream_id: hex::encode(sid),
@@ -417,6 +420,9 @@ async fn live_loop(
                 if tx.send(event).await.is_err() {
                     return "peer_gone";
                 }
+                state
+                    .metrics
+                    .add("sunrise_sync_ops_delivered_total", frame.n_ops);
                 // Handed to this subscriber's response stream. That is as far
                 // as the relay can see: the socket write belongs to the HTTP
                 // stack, behind a buffer of `STREAM_BUFFER` events.

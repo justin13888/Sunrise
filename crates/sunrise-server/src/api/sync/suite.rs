@@ -563,6 +563,84 @@ mod tests {
         );
     }
 
+    /// #435: the ops written to a stream are counted on both paths — the
+    /// durable replay a stream opens with and the live fan-out after it — and
+    /// a stream is counted as open while it is open.
+    #[tokio::test]
+    async fn delivered_ops_and_open_streams_reach_the_scrape() {
+        const DELIVERED: &str = "sunrise_sync_ops_delivered_total";
+        let client = Client::new(ServerConfig {
+            bind: "127.0.0.1:8443".to_owned(),
+            ..ServerConfig::default()
+        });
+        let writer = establish(&client).await;
+        let reader = establish(&client).await;
+        subscribe(&client, &reader, None).await;
+        let device = [7u8; 16];
+        // Stored before the stream opens, so the stream replays it.
+        assert_eq!(
+            publish(
+                &client,
+                &writer,
+                vec![envelope(device, 1), envelope(device, 2)],
+                1
+            )
+            .await,
+            StatusCode::OK
+        );
+
+        let (body, published, scrape) = tokio::join!(
+            read(&client, &reader, &[]),
+            async {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                publish(&client, &writer, vec![envelope(device, 3)], 2).await
+            },
+            async {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                client.send_as(Method::GET, "/metrics", None, None).await
+            }
+        );
+        assert_eq!(published, StatusCode::OK);
+        assert_eq!(body.matches("\"kind\":\"ops\"").count(), 2, "{body}");
+        assert_eq!(client.metrics.get(DELIVERED), 3, "two replayed, one live");
+        let text = String::from_utf8_lossy(&scrape.bytes);
+        assert!(
+            text.contains("sunrise_sync_streams_active 1\n"),
+            "the reader's stream was open during the scrape:\n{text}"
+        );
+        assert!(
+            text.contains("# TYPE sunrise_sync_ops_delivered_total counter\n"),
+            "{text}"
+        );
+    }
+
+    /// #435: a batch that pushes the channel past its durable budget evicts
+    /// the oldest frame, and the eviction is counted.
+    #[tokio::test]
+    async fn a_retention_eviction_is_counted() {
+        let state = ServerState::new(ServerConfig::default()).with_durable_caps(DurableCaps {
+            max_bytes: 1,
+            max_age_ms: u64::MAX,
+        });
+        let client = Client::from_state(state);
+        let writer = establish(&client).await;
+        for batch_id in 1..=3u64 {
+            assert_eq!(
+                publish(
+                    &client,
+                    &writer,
+                    vec![envelope([7u8; 16], batch_id)],
+                    batch_id
+                )
+                .await,
+                StatusCode::OK
+            );
+        }
+        // A one-byte budget keeps only the newest frame: each append after
+        // the first evicts the one before it.
+        assert_eq!(client.metrics.get("sunrise_relay_log_evicted_total"), 2);
+    }
+
     /// A writer that also holds a live stream is one of the receivers the
     /// publish counts. Its stream skips its own batch, and that skip has to
     /// close its copy on the clock: otherwise the count never reaches zero and

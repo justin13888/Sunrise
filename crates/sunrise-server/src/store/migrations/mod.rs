@@ -75,6 +75,11 @@ pub(super) const MIGRATIONS: &[Migration] = &[
         name: "account_and_blob_deletion",
         apply: account_and_blob_deletion,
     },
+    Migration {
+        id: 4,
+        name: "relay_frames_n_ops",
+        apply: relay_frames_n_ops,
+    },
 ];
 
 /// The version this binary migrates to, and the newest it will open.
@@ -122,6 +127,37 @@ fn devices_vault_device_id(conn: &Connection) -> rusqlite::Result<()> {
 /// `store::lifecycle` declares beside the statements over it.
 fn account_and_blob_deletion(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(super::lifecycle::SCHEMA)
+}
+
+/// 0004: `relay_frames.n_ops`, the ops each stored frame carries, so a replay
+/// counts what it delivers into `sunrise_sync_ops_delivered_total` without
+/// decoding the frame.
+///
+/// The frames already stored are counted here, once each, by decoding them:
+/// retention bounds how many there are, and leaving them at the column's
+/// default would under-count every replay of them for up to the 30 days
+/// retention keeps them.
+fn relay_frames_n_ops(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch("ALTER TABLE relay_frames ADD COLUMN n_ops INTEGER NOT NULL DEFAULT 0;")?;
+    // Counted first and written after, so no row is updated while the read
+    // that found it is still stepping; only the counts are held, one frame's
+    // bytes at a time.
+    let mut counts: Vec<(i64, i64)> = Vec::new();
+    {
+        let mut read = conn.prepare("SELECT id, bytes FROM relay_frames")?;
+        let mut rows = read.query([])?;
+        while let Some(row) = rows.next()? {
+            let n_ops = crate::relay_log::frame_op_count(&row.get::<_, Vec<u8>>(1)?);
+            if n_ops > 0 {
+                counts.push((row.get(0)?, i64::try_from(n_ops).unwrap_or(i64::MAX)));
+            }
+        }
+    }
+    let mut write = conn.prepare("UPDATE relay_frames SET n_ops = ?2 WHERE id = ?1")?;
+    for (id, n_ops) in counts {
+        write.execute(rusqlite::params![id, n_ops])?;
+    }
+    Ok(())
 }
 
 /// The database's `user_version`.
@@ -453,6 +489,45 @@ mod tests {
             );
         }
         assert_eq!(LATEST, u32::try_from(MIGRATIONS.len()).unwrap());
+    }
+
+    /// 0004 counts the ops of the frames stored before it, so a replay of
+    /// them is counted as a replay of a frame stored after it would be; a
+    /// frame that is not an op batch counts none.
+    #[test]
+    fn relay_frames_n_ops_counts_the_frames_already_stored() {
+        use sunrise_wire_protocol::{encode_frame, FrameFlags, MsgKind, OpBatchPayload};
+        let batch = OpBatchPayload {
+            ops: vec![vec![1; 8], vec![2; 8], vec![3; 8]],
+            batch_id: 1,
+            stream_id: [0x11; 16],
+        };
+        let frame = encode_frame(
+            MsgKind::OpBatch,
+            FrameFlags::EMPTY,
+            &batch.encode().unwrap(),
+        )
+        .unwrap();
+
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate_to(&mut conn, 3).unwrap();
+        for bytes in [frame.as_slice(), b"not a frame".as_slice()] {
+            conn.execute(
+                "INSERT INTO relay_frames (account_h, stream_id, bytes, n_bytes, created_ms)
+                 VALUES (x'00', x'11', ?1, 0, 0)",
+                [bytes],
+            )
+            .unwrap();
+        }
+        migrate(&mut conn).unwrap();
+        let counts: Vec<i64> = conn
+            .prepare("SELECT n_ops FROM relay_frames ORDER BY id")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(counts, [3, 0]);
     }
 
     /// Running the runner twice is the restart case, and must change nothing.
