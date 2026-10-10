@@ -78,9 +78,9 @@ Before it deletes, it folds any entity row a local command wrote and the merge
 had not folded yet, because that fold reads the op's stream and kind back from
 the log (by the `ops_by_target` index migration 0035 adds).
 
-The pages the deleted rows held go on SQLite's free list and are reused by
-later writes. The file does not shrink, because the vault's `auto_vacuum`
-pragma does not take effect ([#461](https://github.com/justin13888/Sunrise/issues/461)).
+A run that deleted any row ends with an incremental vacuum, which returns the
+pages the deleted rows held to the filesystem, so the file shrinks
+([`local-database.md`](./local-database.md) §Vacuum / maintenance).
 
 ### Acknowledgement and known devices
 
