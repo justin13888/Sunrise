@@ -51,6 +51,11 @@ pub struct StreakRow {
     pub streak: i64,
     /// Last completion (ms since epoch).
     pub last_completed_at_ms: Option<u64>,
+    /// Fields written by a newer `DOC_SCHEMA_V` that this build does not
+    /// model, preserved verbatim and re-emitted (ADR-0045 §6): a row crosses
+    /// the wire inside a saved review snapshot.
+    #[serde(flatten)]
+    pub unknown: crate::unknown::Unknowns,
 }
 
 /// What a completion did to the streak.

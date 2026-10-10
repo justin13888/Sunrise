@@ -1216,7 +1216,11 @@ pub struct ChunkMarker {
 
 impl From<&Chunk> for ChunkMarker {
     fn from(c: &Chunk) -> Self {
-        let Chunk { index, total } = c;
+        let Chunk {
+            index,
+            total,
+            unknown: _,
+        } = c;
         Self {
             index: *index,
             total: *total,
@@ -1326,10 +1330,7 @@ impl From<&SessionStart> for FocusStart {
             planned_ms: s.planned_ms,
             energy: s.energy.clone(),
             kind: s.kind.clone(),
-            chunk: s.chunk.map(|c| Chunk {
-                index: c.index,
-                total: c.total,
-            }),
+            chunk: s.chunk.map(|c| Chunk::new(c.index, c.total)),
             unknown: sunrise_domain::Unknowns::new(),
         }
     }
@@ -1877,6 +1878,7 @@ impl From<&ReviewTotals> for ReviewCounts {
             dropped,
             created,
             reopened,
+            unknown: _,
         } = t;
         Self {
             completed: *completed,
@@ -1896,6 +1898,7 @@ impl From<ReviewCounts> for ReviewTotals {
             dropped: c.dropped,
             created: c.created,
             reopened: c.reopened,
+            unknown: sunrise_domain::Unknowns::new(),
         }
     }
 }
@@ -1920,6 +1923,7 @@ impl From<&sunrise_domain::StreakRow> for StreakEntry {
             title,
             streak,
             last_completed_at_ms,
+            unknown: _,
         } = s;
         Self {
             routine: *routine,
@@ -1937,6 +1941,7 @@ impl From<StreakEntry> for sunrise_domain::StreakRow {
             title: s.title,
             streak: s.streak,
             last_completed_at_ms: s.last_completed_at_ms,
+            unknown: sunrise_domain::Unknowns::new(),
         }
     }
 }
@@ -2089,6 +2094,7 @@ impl From<&ReviewSnapshotStream> for SnapshotStream {
             completed,
             deferred,
             created,
+            unknown: _,
         } = s;
         Self {
             stream: *stream,
@@ -2108,6 +2114,7 @@ impl From<SnapshotStream> for ReviewSnapshotStream {
             completed: s.completed,
             deferred: s.deferred,
             created: s.created,
+            unknown: sunrise_domain::Unknowns::new(),
         }
     }
 }
