@@ -1098,6 +1098,34 @@ Until it is filled in, the app starts no updater at all and both menu items are
 disabled with the reason attached — fail-closed, because an updater that cannot
 verify what it downloads is worse than none.
 
+## Windows
+
+There is no Windows client. The portable core a Windows client would link is
+built and tested on Windows by CI's `rust-windows` job
+([dependencies.md](../01-architecture/dependencies.md) §Windows), and the
+`sunrise` CLI is part of it. Two things about secrets there differ from macOS
+and Linux, and both are decided here.
+
+**Writes are staged and renamed.** Every secret the CLI writes (the vault key,
+the parked pairing secret, the exported pairing grant) and the credential file
+`sunrise_auth::FileStore` keeps go through a sibling file that is renamed over
+the target. A crash mid-write leaves the previous file whole on every platform.
+Before issue #369 the CLI's Windows branch truncated the target in place. A
+hard-link test in each crate tells a rename from an in-place rewrite and runs
+on Windows too.
+
+**Files are not owner-only.** On Unix those files are created mode `0600`. On
+Windows they take the ACL their directory hands down. Under the user's profile
+that is the user, `SYSTEM` and `Administrators`, which is the protection the
+rest of that profile has. A vault directory elsewhere may hand down a wider
+one: a new folder at `C:\` grants `Authenticated Users` modify. Restricting the
+DACL to the current user needs Win32 calls whose Rust bindings are all
+`unsafe`, and the workspace forbids `unsafe_code`. The Windows Credential
+Manager is not the answer for the credential file either, because it caps a
+blob at 2560 bytes and a bearer plus a refresh token can exceed that. Issue
+#486 decides where the one exception lives and sets the DACL. Until it lands,
+keep a Windows vault directory under the user's profile.
+
 ## Telemetry
 
 Off by default. If the user opts in: minimal anonymous metrics (launches, crash
