@@ -128,10 +128,16 @@ profile names it.
 
 1. [developer.apple.com](https://developer.apple.com/account/resources/identifiers/list)
    → Identifiers → **+** → **App IDs** → *App*. Description `Sunrise`,
-   **Explicit** Bundle ID `dev.sunrise.Sunrise`. No capability needs ticking:
-   a macOS profile grants the team's keychain groups (`<TEAMID>.*`) by
-   default, and the App Group the app uses is team-prefixed, which Developer
-   ID grants without a profile. Skip this step if the App ID exists.
+   **Explicit** Bundle ID `dev.sunrise.Sunrise`. No capability is expected
+   to need ticking: a macOS profile grants the team's keychain groups
+   (`<TEAMID>.*`) by default, and the App Group the app uses is
+   team-prefixed, which Developer ID grants without a profile. That second
+   half is unverified against a real profile: once the archive names a
+   manual profile, Xcode may check `com.apple.security.application-groups`
+   against it and refuse. It would refuse at archive, before anything is
+   signed or shipped; the troubleshooting row for
+   `… doesn't include the com.apple.security.application-groups entitlement`
+   says what to do. Skip this step if the App ID exists.
 2. Profiles → **+** → under *Distribution*, **Developer ID** → App ID
    `dev.sunrise.Sunrise` → the **Developer ID Application** certificate whose
    `.p12` is `MACOS_CERTIFICATE_P12` → name it, e.g. `Sunrise Developer ID`.
@@ -528,6 +534,7 @@ correct behaviour and it is why the file name says `UNSIGNED`.
 | `No signing certificate "Developer ID Application" found` from `xcodebuild` | Usually a valid identity that does not match `MACOS_TEAM_ID`, since the assertion above intercepts the missing-private-key case earlier under its own message. Check the team in the identity's name against the secret; a keychain search-list or partition-list problem affecting the `xcodebuild` step alone can also reach here. |
 | `The provisioning profile is for a different app or team`, `… is not a Developer ID profile`, `… grants no keychain access group`, or `… has expired` | The profile step's assertions, each naming the one check that failed. Regenerate the profile as [`MACOS_PROVISIONING_PROFILE`](#macos_provisioning_profile) describes — Developer ID type, App ID `dev.sunrise.Sunrise`, the same team as `MACOS_TEAM_ID` — and replace the secret. |
 | `xcodebuild archive` reports the profile does not include the signing certificate | The profile was generated against a different Developer ID Application certificate than the one in `MACOS_CERTIFICATE_P12`, usually after a certificate renewal. Regenerate the profile against the current certificate. |
+| `xcodebuild archive` reports the profile `doesn't include the com.apple.security.application-groups entitlement` | Xcode checked the App Group against the manual profile, which the runbook could not confirm before the first signed tag. On the App ID `dev.sunrise.Sunrise`, enable **App Groups**, regenerate the Developer ID profile, confirm with the step-3 command (add `application-groups` to its pattern) that it lists the team-prefixed group `<TEAMID>.dev.sunrise`, replace `MACOS_PROVISIONING_PROFILE`, and re-push the tag. Then correct step 1 of [`MACOS_PROVISIONING_PROFILE`](#macos_provisioning_profile) to say the capability is required. |
 | `The exported app does not carry its keychain access group` or `… embeds no provisioning profile` | The export's post-condition. The archive and export ran, but the bundle they produced would either run on the login keychain or be killed by AMFI on launch. The signed entitlements are printed above the error. Check that `apps/apple/project.yml` still points the `Sunrise` target's Release `CODE_SIGN_ENTITLEMENTS` at `macOS/Sunrise.entitlements`, and that the export options plist's `provisioningProfiles` key is the app's bundle id. |
 | notarytool: `Team is not yet configured for notarization` | The Apple Developer Program membership is not active, or the account has not accepted the current agreements. |
 | notarytool status `Invalid`, log says `The executable does not have the hardened runtime enabled` | `ENABLE_HARDENED_RUNTIME: YES` is missing from `apps/apple/project.yml`'s `settings.base`, or a target overrode it back to `NO`. |
