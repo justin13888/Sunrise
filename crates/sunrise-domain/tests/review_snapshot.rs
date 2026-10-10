@@ -62,6 +62,7 @@ fn snapshot(window_start: Timestamp, window_end: Timestamp) -> ReviewSnapshot {
             title: "Stretch".into(),
             streak: 12,
             last_completed_at_ms: Some(u64::try_from(MON + 3 * 86_400_000).unwrap()),
+            unknown: Unknowns::new(),
         }],
         note: Some("felt scattered".into()),
         unknown: Unknowns::new(),

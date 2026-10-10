@@ -343,6 +343,7 @@ pub fn build_weekly_review(input: WeeklyReviewInput) -> WeeklyReview {
             title: r.template.title.clone(),
             streak: r.streak_counter,
             last_completed_at_ms: r.last_completed_at.and_then(ts_to_ms),
+            unknown: Unknowns::new(),
         })
         .collect();
     streaks.sort_by(|a, b| {

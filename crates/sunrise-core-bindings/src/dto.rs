@@ -1922,6 +1922,7 @@ impl From<&sunrise_domain::StreakRow> for StreakEntry {
             title,
             streak,
             last_completed_at_ms,
+            unknown: _,
         } = s;
         Self {
             routine: *routine,
@@ -1939,6 +1940,7 @@ impl From<StreakEntry> for sunrise_domain::StreakRow {
             title: s.title,
             streak: s.streak,
             last_completed_at_ms: s.last_completed_at_ms,
+            unknown: sunrise_domain::Unknowns::new(),
         }
     }
 }

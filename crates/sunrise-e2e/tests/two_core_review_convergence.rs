@@ -173,6 +173,7 @@ fn draft(note: &str, phantom_stream: EntityRef, completed: u32) -> ReviewSnapsho
             title: "Stretch".into(),
             streak: 9,
             last_completed_at_ms: Some(WINDOW_START_MS),
+            unknown: Unknowns::new(),
         }],
         note: Some(note.to_string()),
     }
