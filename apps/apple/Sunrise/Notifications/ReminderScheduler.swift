@@ -278,12 +278,25 @@ final class ReminderScheduler {
     private func streams(of reminders: [Reminder]) async -> [EntityRef: EntityRef] {
         var streams: [EntityRef: EntityRef] = [:]
         for entity in Set(reminders.map(\.entity)) {
-            switch try? await bridge.query(.entityById(id: entity)) {
-            case let .task(item)?: streams[entity] = item.streamId
-            case let .routine(item)?: streams[entity] = item.template.streamId
-            default: break
+            if let row = try? await bridge.query(.entityById(id: entity)) {
+                streams[entity] = Self.stream(of: row)
             }
         }
         return streams
+    }
+
+    /// The stream a reminder's entity is filed in: a task's own, a routine's
+    /// template's, and none for anything else (a time block belongs to no
+    /// stream, and the Focus filter lets it through).
+    ///
+    /// The core emits no routine reminder yet (`ReminderKind::Routine` is
+    /// constructed nowhere but its own tests), so the routine case is ready for
+    /// when it does, rather than the Focus filter letting every routine through.
+    nonisolated static func stream(of row: CoreQueryResult) -> EntityRef? {
+        switch row {
+        case let .task(item): item.streamId
+        case let .routine(item): item.template.streamId
+        default: nil
+        }
     }
 }

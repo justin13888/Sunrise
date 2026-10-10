@@ -6,6 +6,9 @@ import Testing
 
 private typealias Surface = SystemSurfaceFixture
 
+/// The vault refusing to open, as it does before the first unlock.
+private struct VaultShut: Error {}
+
 /// The two intents `mobile-ios.md` §Shortcuts and App Intents listed and the
 /// app did not have — defer and stream-summary — and the stream entity both
 /// the summary and the Focus filter pick from.
@@ -107,6 +110,58 @@ struct SystemIntentTests {
             _ = try await StreamSummaryIntent.summarise("str_gone", in: vault.bridge)
         }
         await vault.bridge.shutdown()
+    }
+
+    /// An archived stream is in neither the picker nor the summary: scoping a
+    /// Focus or a summary to it would point at a stream nothing is filed into.
+    @Test
+    func anArchivedStreamIsNotOffered() async throws {
+        let vault = try await TestVault()
+        let kept = try await Surface.stream("Garden", in: vault.bridge)
+        let archived = try await Surface.stream("Old job", in: vault.bridge)
+        var edit = StreamEdit()
+        edit.archived = true
+        _ = try await vault.bridge.submit(.updateStream(id: archived, edit: edit))
+
+        guard case let .streams(listed) = try await vault.bridge.query(.streamList) else {
+            Issue.record("expected the stream list")
+            return
+        }
+        #expect(listed.contains { $0.id == archived && $0.archived }, "the core lists it, the lookup not")
+        let offered = try await StreamLookup.all(in: vault.bridge).map(\.id)
+        #expect(offered.contains(kept))
+        #expect(!offered.contains(archived))
+        await #expect(throws: IntentError.streamNotFound(archived)) {
+            _ = try await StreamSummaryIntent.summarise(archived, in: vault.bridge)
+        }
+        await vault.bridge.shutdown()
+    }
+
+    /// Decision 9: when the vault cannot be opened — iOS resolving a Focus
+    /// filter before the first unlock — the streams the filter was configured
+    /// with are answered from its record, and anything it does not name still
+    /// fails.
+    @Test
+    func aFocusFilterResolvesFromItsRecordWhenTheVaultIsShut() async throws {
+        let (defaults, name) = Surface.scratchDefaults()
+        defer { Surface.discard(name) }
+        let store = FocusFilterStore(defaults: defaults)
+        store.apply([(id: "str_work", name: "Work")])
+
+        let found = try await StreamEntityQuery.resolve(["str_work", "str_gone"], remembering: store) {
+            throw VaultShut()
+        }
+        #expect(found == [StreamEntity(id: "str_work", name: "Work")])
+
+        await #expect(throws: VaultShut.self) {
+            _ = try await StreamEntityQuery.resolve(["str_gone"], remembering: store) { throw VaultShut() }
+        }
+
+        // An open vault is the answer, whatever the record says.
+        let read = try await StreamEntityQuery.resolve(["str_work"], remembering: store) {
+            [StreamEntity(id: "str_work", name: "Work, renamed")]
+        }
+        #expect(read.map(\.name) == ["Work, renamed"])
     }
 
     @Test

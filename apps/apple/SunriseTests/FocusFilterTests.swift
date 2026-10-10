@@ -140,4 +140,38 @@ struct FocusFilterTests {
         #expect(Set(scheduler.scheduled.map(\.title)) == ["Standup", "Dentist"])
         await vault.bridge.shutdown()
     }
+
+    /// A reminder carries its entity, not its stream. A task's stream is its
+    /// own and a routine's is its template's, so a Focus mutes a routine of a
+    /// muted stream rather than letting every routine through.
+    @Test
+    func aReminderIsFiledUnderItsTasksOrItsRoutinesStream() async throws {
+        let vault = try await TestVault()
+        let work = try await Surface.stream("Work", in: vault.bridge)
+        let task = try await Surface.task("Standup", stream: work, in: vault.bridge)
+        let routine = try await vault.bridge.submit(.createRoutine(draft: RoutineDraftIn(
+            template: Template(
+                title: "Weekly report",
+                streamId: work,
+                contexts: [],
+                energy: nil,
+                priority: nil,
+                estimatedDurationS: nil,
+                body: nil
+            ),
+            rrule: try #require(RecurrenceField(text: "every week").rule),
+            timezone: "UTC",
+            startsAt: Timestamp(Date().timeIntervalSince1970 * 1000),
+            endsAt: nil,
+            schedulingConstraints: [],
+            catchupPolicy: .skip
+        ))).entity
+
+        for entity in [task, routine] {
+            let row = try await vault.bridge.query(.entityById(id: entity))
+            #expect(ReminderScheduler.stream(of: row) == work, "\(row)")
+        }
+        #expect(ReminderScheduler.stream(of: .tasks(tasks: [])) == nil)
+        await vault.bridge.shutdown()
+    }
 }

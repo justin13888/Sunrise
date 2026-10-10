@@ -79,15 +79,27 @@ struct StreamEntityQuery: EntityStringQuery {
     /// was configured with are answered from ``FocusFilterStore``'s record of
     /// them instead. Anything that record does not name still fails.
     func entities(for identifiers: [StreamEntity.ID]) async throws -> [StreamEntity] {
-        do {
-            return try await IntentVault.withVault { bridge in
+        try await Self.resolve(identifiers, remembering: FocusFilterStore.shared) {
+            try await IntentVault.withVault { bridge in
                 let wanted = Set(identifiers)
                 return try await StreamLookup.all(in: bridge)
                     .filter { wanted.contains($0.id) }
                     .map(StreamEntity.init)
             }
+        }
+    }
+
+    /// ``entities(for:)``'s rule, with the vault read and the store handed in
+    /// so that a test can make the read fail.
+    static func resolve(
+        _ identifiers: [StreamEntity.ID],
+        remembering store: FocusFilterStore,
+        reading: @Sendable () async throws -> [StreamEntity]
+    ) async throws -> [StreamEntity] {
+        do {
+            return try await reading()
         } catch {
-            let remembered = await FocusFilterStore.shared.names
+            let remembered = await store.names
             let known = identifiers.compactMap { id in
                 remembered[id].map { StreamEntity(id: id, name: $0) }
             }
