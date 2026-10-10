@@ -208,6 +208,10 @@ pub(crate) struct CacheSignals {
     network: AtomicU8,
     /// Blob ids an open preview holds, with how many previews hold each.
     pins: Mutex<HashMap<[u8; 16], u32>>,
+    /// A limit below the preference's 100 MB floor, so a test can fill the
+    /// cache with a few kilobytes.
+    #[cfg(test)]
+    limit_override: Mutex<Option<u64>>,
 }
 
 impl CacheSignals {
@@ -280,6 +284,10 @@ impl Core {
 
     /// The cache's limit: `attachments.cache_limit_bytes`, resolved.
     fn cache_limit_bytes(&self) -> u64 {
+        #[cfg(test)]
+        if let Some(n) = *self.cache_signals().limit_override.lock() {
+            return n;
+        }
         match self.resolved_preference(CACHE_LIMIT_KEY) {
             Some(PrefValue::Uint(n)) => n,
             _ => FALLBACK_LIMIT_BYTES,
@@ -500,3 +508,6 @@ fn evict(conn: &rusqlite::Connection, core: &Core, limit: u64) -> Result<u64, Co
     }
     Ok(freed)
 }
+
+#[cfg(test)]
+mod tests;

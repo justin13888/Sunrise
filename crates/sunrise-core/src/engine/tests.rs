@@ -18967,3 +18967,6 @@ mod op_chain;
 /// Op-log compaction below an acknowledged floor, and stream snapshots
 /// (ADR-0059).
 mod compaction;
+
+/// An attachment's thumbnail and dimensions (ADR-0053, issue #346).
+mod attachment_thumbnail;
