@@ -272,9 +272,10 @@ document's intent, not yet implemented).
   Migration Assistant or restored from Time Machine carries all three items
   with it. iOS enforces the class; see
   [`../03-crypto/recovery.md`](../03-crypto/recovery.md#device-backups-do-not-carry-the-vault-root).
-- **built — App Intents / Shortcuts.** Six intents — capture, complete, today,
-  inbox, start focus, end focus — plus a `TaskEntity` with an
-  `EntityStringQuery` and an `AppShortcutsProvider`, which is what puts them in
+- **built — App Intents / Shortcuts.** Eight intents — capture, complete,
+  defer, today, inbox, stream summary, start focus, end focus — plus a
+  `TaskEntity` and a `StreamEntity`, each with an `EntityStringQuery`, and an
+  `AppShortcutsProvider`, which is what puts them in
   Shortcuts, Spotlight and Siri without the user assembling anything. Capture
   calls the same `previewCapture` as ⌘⇧N, so capture semantics are identical
   across every surface. An intent **adopts the app's open vault** when there is
