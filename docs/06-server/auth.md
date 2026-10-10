@@ -217,11 +217,15 @@ from the party presenting it, and does hide everything about the account behind
 it.** Which accounts exist, which devices are on one, and whether a named device
 id is one of them all stay `AUTH_TOKEN_INVALID`.
 
-**Request bodies reject unknown fields** (`serde(deny_unknown_fields)`). This is
-the load-bearing half: a signature over a re-serialisation verifies only if the
-parse was lossless, and a silently-dropped field is exactly a lossy parse.
-Rejecting the field turns a would-be signature mismatch into a typed `400` that
-names the offending member. Floats stay forbidden, matching
+**The server verifies the JSON value it received**, every member included, and
+reads the operation's type from that same value afterwards
+([ADR-0022 §Amendment 2026-10](../11-adr/0022-device-signature-canonical-json.md#amendment-2026-10-the-received-value-is-what-is-verified)).
+A type that ignores a member therefore cannot make the signature cover less than
+the client signed, and an ignored member still cannot be altered in flight. The
+sync request bodies accept unknown fields, so a newer client can add one
+([protocol versioning §6](../10-cross-cutting/protocol-versioning.md)); the
+account, device, pairing and blob bodies keep `serde(deny_unknown_fields)`, so a
+misspelt member there is a `422`. Floats stay forbidden, matching
 `sunrise_cbor::CborValue`'s existing refusal, so JCS's number rules are never
 exercised on a value the codebase treats as inadmissible anyway.
 

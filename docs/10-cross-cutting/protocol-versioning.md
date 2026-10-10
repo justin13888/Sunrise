@@ -311,11 +311,21 @@ Negotiation rules:
 Once negotiated, the chosen versions are immutable for the lifetime of the
 session. A client that wants to upgrade opens a new session.
 
-*Today:* `SessionRequest` and `SessionResponse` are
-`#[serde(deny_unknown_fields)]`. So a new `Hello` field is refused by a server
-that predates it, and is **not** the minor change §6 describes. A new `Hello`
-field needs either a capability bit agreed in an earlier exchange, or the deny
-relaxed on both sides first.
+**Both bodies are open to extension.** A server ignores a `Hello` field it
+predates, and a client ignores a `HelloAck` field it predates, so adding one is
+the minor change §6 describes. Neither side may make understanding a field a
+condition of decoding: where a peer must understand a new field before it can
+rely on it (ADR-0045's schema fingerprint, a `vault_requires` feature list, a
+relay floor), that requirement is a capability bit or a version the other side
+compares, and the refusal is that comparison's typed error code (§10) rather
+than a decode failure. A misspelt *required* field still fails, as a missing
+one; a misspelt optional field is ignored like any unknown one, which is why an
+optional field may only ever widen what a peer does, never guard it. The
+server's side is pinned by the `a_newer_client*` tests in
+`crates/sunrise-server/src/api/sync/suite.rs`; the client's by
+`crates/sunrise-relay-client/tests/unknown_response_fields.rs` and by
+`sunrise-sync`'s transport, which reads the reply as an untyped JSON value and
+looks up only the fields it uses (§12).
 
 ---
 
@@ -412,8 +422,18 @@ For `WIRE_PROTO_V`:
 
 1. **Minor change (no version bump).** Adding a new optional field to an
    existing message, a new error code, or a new capability bit. Old peers
-   ignore unknown fields, codes and bits. The exception is the session
-   request and response, which today reject unknown fields (§4).
+   ignore unknown fields, codes and bits. This holds for every sync body
+   (`/sync/session`, `/sync/session/refresh`, `/sync/subscribe`, `/sync/ops`,
+   requests and responses), the session request and response included: none is
+   `deny_unknown_fields`, and a body that has to be understood says so with a
+   capability bit or a compared version (§4), never with a decode failure. A
+   device-signed request's unknown field is covered by its signature, because
+   the relay verifies the value it received rather than its own parse
+   ([ADR-0022](../11-adr/0022-device-signature-canonical-json.md), amended
+   2026-10). The exception is the REST bodies outside the sync surface —
+   account, device, pairing and blob requests — which keep
+   `deny_unknown_fields`: they are not the negotiation path, and a field added
+   to one is a new OpenAPI document version, not a minor change.
 2. **Major change (version bump).** Anything that changes how an existing
    field is interpreted, removes a field, changes the frame layout, changes the
    compression scheme, or changes error semantics. A version bump requires:
@@ -753,6 +773,7 @@ The crypto spec describes byte-exact test vectors. This spec adds:
 - `tests/fixtures/forward-compat/v1-reads-v2.cbor` — a synthetic envelope at `DOC_SCHEMA_V + 1`, with a field 13 this build has no registry entry to check, carrying two envelope fields this build does not know (ids 23 and 40: 23 is the largest single-byte CBOR key, and 40 needs two bytes). The round trip preserves them byte-for-byte. The small id was 13 until [ADR-0045](../11-adr/0045-schema-identity-and-feature-gating.md) assigned field 13 and reserved 14–15. `crates/sunrise-crypto/tests/forward_compat.rs` also seals an envelope at `ENVELOPE_FORMAT_V + 1` with a field this build does not know, and asserts that it decodes, verifies, opens, re-encodes byte-identically and is routed by the relay's header decoder (ADR-0045 §5).
 
   CBOR, not the JSON this section originally named: the artefact under test is a signed, canonically encoded envelope, and JSON cannot represent one without a re-encoding step that would be the thing actually being tested.
+- The JSON sync bodies' openness (§4, §6), in both directions. `crates/sunrise-server/src/api/sync/suite.rs` sends each request body (`/sync/session`, `/sync/session/refresh`, `/sync/subscribe` at all three nesting levels, `/sync/ops`) with fields a newer client might add and asserts the request still did its job. `crates/sunrise-relay-client/tests/unknown_response_fields.rs` decodes each response body (`SessionResponse`, `RefreshResponse`, `OpsResponse`) with fields a newer relay might add into the generated client's types, and asserts every known field survives. These fixtures are inline JSON rather than committed files: the shape under test is "a field this build has never seen", which no committed byte string can pin better than a literal can.
 
 These fixtures are checked into the repo. Any change to them must be a deliberate version bump — which is why regeneration sits behind `SUNRISE_REGEN_FIXTURES=1` rather than happening automatically.
 
