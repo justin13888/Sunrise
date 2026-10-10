@@ -29,7 +29,9 @@
 //! vault's database lock, so two fetches finishing together cannot each see
 //! the other's blob missing from the total: after any store returns, the
 //! index is under the limit, or every blob still in it is one eviction never
-//! touches.
+//! touches or the one just stored. That one is spared by its own pass, so a
+//! blob larger than the whole limit is still there when the Download that
+//! asked for it returns.
 //!
 //! # The network gate
 //!
@@ -349,6 +351,12 @@ impl Core {
     /// Record that `blob`'s chunks are here, opened now, and bring the cache
     /// back under its limit, in one hold of the database lock.
     ///
+    /// The blob just stored is spared by this pass. It is the most recently
+    /// opened, so it would go last anyway, but a blob larger than the limit
+    /// would otherwise be evicted the moment its download finished, and the
+    /// Download that asked for it would return with nothing to open. It is
+    /// evicted by a later pass, once something newer has been opened.
+    ///
     /// # Errors
     /// Storage or blob store failures.
     pub(crate) fn note_blob_cached(&self, blob: &BlobRef) -> Result<(), CoreError> {
@@ -356,7 +364,7 @@ impl Core {
         let now_ms = i64::try_from(self.now_ms()).unwrap_or(i64::MAX);
         let db = self.db();
         upsert_cached(db.conn(), blob, now_ms)?;
-        evict(db.conn(), self, limit)?;
+        evict(db.conn(), self, limit, Some(&blob.blob_id))?;
         Ok(())
     }
 
@@ -375,7 +383,7 @@ impl Core {
 
     fn evict_down_to(&self, limit: u64) -> Result<u64, CoreError> {
         let db = self.db();
-        evict(db.conn(), self, limit)
+        evict(db.conn(), self, limit, None)
     }
 
     /// Index every blob on disk the index does not know, as opened at time
@@ -473,8 +481,14 @@ fn evictable(
 }
 
 /// Evict least recently opened first until the cache holds at most `limit`
-/// sealed bytes, or nothing evictable is left. Returns the bytes freed.
-fn evict(conn: &rusqlite::Connection, core: &Core, limit: u64) -> Result<u64, CoreError> {
+/// sealed bytes, or nothing evictable is left, sparing `keep`. Returns the
+/// bytes freed.
+fn evict(
+    conn: &rusqlite::Connection,
+    core: &Core,
+    limit: u64,
+    keep: Option<&[u8; 16]>,
+) -> Result<u64, CoreError> {
     let used: i64 = conn.query_row(
         "SELECT COALESCE(SUM(sealed_bytes), 0) FROM blob_cache WHERE evicted_at_ms IS NULL",
         [],
@@ -490,6 +504,9 @@ fn evict(conn: &rusqlite::Connection, core: &Core, limit: u64) -> Result<u64, Co
     for (blob_id, n) in evictable(conn, core.cache_signals())? {
         if used <= limit {
             break;
+        }
+        if keep == Some(&blob_id) {
+            continue;
         }
         store.delete_all(&blob_id)?;
         conn.execute(

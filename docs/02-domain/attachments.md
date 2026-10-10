@@ -306,7 +306,9 @@ thumbnail, and when it was evicted. Specifically:
   open reads through, and by every store.
 - **Eviction** runs after each attach and each fetch, under the same hold of
   the database lock that indexed the new blob, so fetches finishing together
-  cannot leave the cache over its limit; and at launch, when `Core::open`
+  cannot leave the cache over its limit. That pass spares the blob it just
+  indexed, so a file larger than the whole limit is still there when its
+  Download returns, and goes on the next pass. Eviction also runs at launch, when `Core::open`
   first indexes any blob on disk the index does not know, as opened at time
   zero. "An upload pending or unfinished" is any `blob_uploads` row, including
   one past its attempt ceiling, since its blob may exist nowhere else. "Open in

@@ -389,6 +389,33 @@ async fn a_blob_fetched_again_after_eviction_opens_and_is_counted_again() {
     );
 }
 
+/// A Download of a blob larger than the whole limit returns with the bytes
+/// here: the pass its own store runs spares it, and the next store evicts it.
+#[tokio::test]
+async fn a_blob_larger_than_the_limit_survives_its_own_fetch() {
+    let v = Vault::open().await;
+    let big = v.uploaded("big", 4000).await;
+    let body = v
+        .core
+        .sealed_chunks(&big.blob_id, big.chunk_count)
+        .unwrap()
+        .unwrap()
+        .concat();
+    v.core.clear_attachment_cache().unwrap();
+    v.limit(sealed_size(1000));
+
+    v.at(10);
+    assert!(v.core.store_fetched_blob(&big, &body).unwrap());
+    assert!(
+        v.local(&big),
+        "the Download that asked for it has something to open"
+    );
+
+    v.at(20);
+    let small = v.uploaded("small", 500).await;
+    assert!(!v.local(&big) && v.local(&small));
+}
+
 /// Fetches finishing together each record their blob and enforce the limit
 /// under one hold of the database lock, so none of them can leave the cache
 /// over it.
