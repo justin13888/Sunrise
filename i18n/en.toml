@@ -1806,8 +1806,8 @@ needs_query = "search needs a query"
 usage = "usage: stream <id|name>; `sunrise streams` lists them"
 # {text} is the name the user typed.
 no_match = "no stream matches \"{text}\""
-# Two lines; the second is aligned under the first's command.
-move_usage = "usage: streams move <id|name> before <id|name>\n                                streams move <id|name> last"
+# Two lines; the second starts at the left margin, as the CLI has always printed it.
+move_usage = "usage: streams move <id|name> before <id|name>\nstreams move <id|name> last"
 inbox_fixed = "the Inbox is not a stream and cannot be reordered"
 not_in_list = "that stream is not in the list"
 cannot_place = "cannot place that stream: {error}"

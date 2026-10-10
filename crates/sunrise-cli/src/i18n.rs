@@ -247,8 +247,7 @@ mod tests {
         );
         assert_eq!(
             strings::streams::move_usage(),
-            "usage: streams move <id|name> before <id|name>\n                                \
-             streams move <id|name> last"
+            "usage: streams move <id|name> before <id|name>\nstreams move <id|name> last"
         );
         let usage = strings::usage::text();
         assert!(usage.starts_with("sunrise — command-line client for Sunrise\n\nUSAGE:\n"));

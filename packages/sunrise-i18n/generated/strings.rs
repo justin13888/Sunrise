@@ -558,12 +558,12 @@ pub mod streams {
 
     /// ```text
     /// usage: streams move <id|name> before <id|name>
-    ///                                 streams move <id|name> last
+    /// streams move <id|name> last
     /// ```
     #[must_use]
     pub fn move_usage() -> String {
         let mut out = String::new();
-        out.push_str("usage: streams move <id|name> before <id|name>\n                                streams move <id|name> last");
+        out.push_str("usage: streams move <id|name> before <id|name>\nstreams move <id|name> last");
         out
     }
 
