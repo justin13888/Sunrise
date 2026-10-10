@@ -56,6 +56,7 @@ use tokio::runtime::Handle;
 use tokio::sync::broadcast::error::RecvError;
 use zeroize::Zeroize as _;
 
+pub mod background;
 pub mod client;
 pub mod command;
 pub mod dto;
@@ -68,6 +69,7 @@ pub mod recovery;
 pub mod types;
 pub mod vocab;
 
+pub use background::{SyncCancel, SyncOnceOutcome};
 pub use client::{
     PrimaryView, SavedView, SavedViewFile, SavedViews, UndoRefusal, UndoState, UndoableOutcome,
 };
@@ -351,6 +353,10 @@ pub struct SunriseCore {
     /// has shown since. It is also **not** synced — undo is this device's
     /// record of what *it* did.
     undo_stacks: Mutex<client::UndoStacks>,
+    /// The kick and dial count every sync transport this vault dials shares,
+    /// so [`SunriseCore::sync_once`] can tell a session dialled for it from one
+    /// that was up before the app was suspended. See [`background`].
+    sync_link: background::SyncLink,
 }
 
 #[uniffi::export(async_runtime = "tokio")]
@@ -474,7 +480,9 @@ impl SunriseCore {
         let start_sync = move |core: &Arc<Core>, relay_device_id: &str| {
             core.sync_credential().set(Some(bearer.clone()));
             let signer = core.device_signer(relay_device_id);
-            core.start_sync(ws_factory(&url, Some(signer)))
+            // A link of its own: this core is shut down before the handle the
+            // caller gets is opened, and nothing ever kicks it.
+            core.start_sync(ws_factory(&url, Some(signer), background::SyncLink::new()))
                 .map_err(|e| e.to_string())
         };
 
@@ -1231,7 +1239,8 @@ impl SunriseCore {
         let signer = relay_device_id
             .filter(|id| !id.trim().is_empty())
             .map(|id| self.inner.device_signer(id.trim()));
-        self.inner.start_sync(ws_factory(&url, signer))?;
+        self.inner
+            .start_sync(ws_factory(&url, signer, self.sync_link.clone()))?;
         Ok(())
     }
 
@@ -1285,6 +1294,7 @@ impl SunriseCore {
             inner: Arc::new(core),
             rt: Handle::current(),
             undo_stacks: Mutex::new(client::UndoStacks::default()),
+            sync_link: background::SyncLink::new(),
         })
     }
 
@@ -1358,21 +1368,26 @@ fn vault_root_bytes(vault_root: &[u8]) -> Result<[u8; 32], BindingError> {
 ///
 /// The same shape as `sunrise_cli::livesync::ws_factory`; the driver is
 /// transport-agnostic and calls this once per connection attempt.
+///
+/// Every transport goes out through `link`, which counts it and lets
+/// [`SunriseCore::sync_once`] end it later — see [`background`].
 fn ws_factory(
     url: &str,
     signer: Option<Arc<dyn sunrise_sync::DeviceSigner>>,
+    link: background::SyncLink,
 ) -> sunrise_core::TransportFactory {
     let url = url.to_string();
     Arc::new(move |read: sunrise_core::CredentialRead| {
         let url = url.clone();
         let signer = signer.clone();
+        let link = link.clone();
         Box::pin(async move {
             let t = sunrise_sync::SseTransport::connect_with_bearer(&url, read.bearer());
             let t = match signer {
                 Some(s) => t.with_device_signer(s),
                 None => t,
             };
-            Ok(Box::new(t) as sunrise_core::BoxTransport)
+            Ok(link.wrap(Box::new(t)))
         }) as sunrise_core::ConnectFuture
     })
 }

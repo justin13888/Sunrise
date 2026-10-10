@@ -237,6 +237,10 @@ pub(crate) struct SyncShared {
     /// Poked by `Core::submit` (when sync is active) so the driver drains the
     /// outbox immediately instead of waiting for the next inbound frame.
     submit: Notify,
+    /// Poked by `Core::wake_sync` so a driver waiting out a reconnect delay
+    /// dials now. `notify_one`, so a wake that lands just before the driver
+    /// starts waiting is kept rather than lost.
+    reconnect: Notify,
     shutdown_notify: Notify,
     shutdown: AtomicBool,
     active: AtomicBool,
@@ -253,6 +257,7 @@ impl SyncShared {
             }),
             sync_tx,
             submit: Notify::new(),
+            reconnect: Notify::new(),
             shutdown_notify: Notify::new(),
             shutdown: AtomicBool::new(false),
             active: AtomicBool::new(false),
@@ -357,6 +362,13 @@ impl SyncShared {
 
     async fn submit_notified(&self) {
         self.submit.notified().await;
+    }
+
+    /// End the reconnect delay the driver is waiting out, or the next one it
+    /// starts. One permit at most, however many wakes land: each skips one
+    /// delay, never the schedule.
+    pub(crate) fn wake_reconnect(&self) {
+        self.reconnect.notify_one();
     }
 
     pub(crate) fn request_shutdown(&self) {
@@ -936,8 +948,9 @@ const fn error_kind_str(kind: ErrorKind) -> &'static str {
     }
 }
 
-/// Sleep for the next backoff delay, interruptible by shutdown. Returns
-/// `false` if shutdown was requested (caller should stop).
+/// Sleep for the next backoff delay, interruptible by shutdown and cut short
+/// by [`SyncShared::wake_reconnect`]. Returns `false` if shutdown was
+/// requested (caller should stop).
 async fn backoff_sleep(backoff: &mut Backoff, rng: &dyn Rng, shared: &SyncShared) -> bool {
     if shared.is_shutdown() {
         return false;
@@ -952,6 +965,7 @@ async fn backoff_sleep(backoff: &mut Backoff, rng: &dyn Rng, shared: &SyncShared
     tokio::select! {
         biased;
         () = shared.shutdown_notified() => false,
+        () = shared.reconnect.notified() => true,
         () = tokio::time::sleep(delay) => true,
     }
 }
@@ -2078,14 +2092,15 @@ mod scheduling {
     //! either reddens this module rather than the docs drifting.
 
     use super::{
-        next_backoff_delay, next_deadline, retransmit_due, Backoff, Deadlines, InflightBatch,
-        LossEvidence, MonotonicClock, MIN_RESYNC_GAP,
+        backoff_sleep, next_backoff_delay, next_deadline, retransmit_due, Backoff, Deadlines,
+        InflightBatch, LossEvidence, MonotonicClock, SyncShared, MIN_RESYNC_GAP,
     };
     use crate::config::Rng;
     use parking_lot::Mutex;
     use std::collections::HashMap;
     use std::sync::Arc;
     use std::time::Duration;
+    use tokio::sync::broadcast;
     use tokio::time::Instant;
 
     /// A clock a test moves by hand. No timer, no runtime, no waiting.
@@ -2174,6 +2189,35 @@ mod scheduling {
             );
             assert_eq!(backoff.attempt(), 0, "the exhausted arm resets the counter");
         }
+    }
+
+    /// A wake ends the flat thirty-second wait at once, and the backoff still
+    /// advances: the wake skips one delay, not the schedule.
+    #[tokio::test]
+    async fn a_reconnect_wake_cuts_the_backoff_short() {
+        let (status_tx, _status_rx) = broadcast::channel(4);
+        let shared = SyncShared::new(status_tx, 0);
+        let mut backoff = Backoff::canonical();
+        for _ in 0..5 {
+            let _ = next_backoff_delay(&mut backoff, 0.5);
+        }
+        assert!(
+            backoff.exhausted(),
+            "the next wait is the flat thirty seconds"
+        );
+        shared.wake_reconnect();
+        let woke = tokio::time::timeout(
+            Duration::from_secs(5),
+            backoff_sleep(&mut backoff, &MidJitterRng, &shared),
+        )
+        .await
+        .expect("a woken backoff returns at once");
+        assert!(woke, "a wake is not a shutdown");
+        assert_eq!(
+            backoff.attempt(),
+            0,
+            "the delay was still taken from the schedule"
+        );
     }
 
     /// The wrapper passes the jitter unit straight through to the policy

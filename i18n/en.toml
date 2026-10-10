@@ -60,7 +60,7 @@ remove_confirm_title = "Remove {name}?"
 # Confirmation dialog title when the device has no nickname.
 remove_confirm_title_unnamed = "Remove this device?"
 # Confirmation dialog body. "Stream" is a product term (a list of tasks).
-remove_confirm_message = "Every Stream key is rotated, so this device reads nothing written afterwards. It can still read what it already has — revocation is forward-only."
+remove_confirm_message = "Every Stream key is rotated, so this device reads nothing written afterwards. It can still read what it already has — revocation is forward-only. This cannot be undone: to use this device again, pair it as a new device."
 # The four removal reasons, as confirmation dialog buttons.
 reason_lost = "I lost it"
 reason_stolen = "It was stolen"

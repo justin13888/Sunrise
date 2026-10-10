@@ -494,6 +494,9 @@ extension VaultTabs {
             relayDeviceID: session.relayDeviceID(relayURL: relayURL, bearer: token)
         ) else { return }
         try? await bridge.startSync(url: url, bearer: bearer, relayDeviceID: relayDeviceID)
+        // After the binding above, so a relay device id that registration or
+        // a re-pairing just minted is the one the token is filed under.
+        await BackgroundHost.shared.uploadPushToken()
     }
 }
 
