@@ -1,6 +1,6 @@
 //! Shared server state, held as the kynos `Service`'s context.
 
-use crate::auth::{NullVerifier, TokenVerifier};
+use crate::auth::{Metered, NullVerifier, TokenVerifier};
 use crate::config::ServerConfig;
 use crate::metrics::Metrics;
 use crate::relay::RelayHub;
@@ -73,6 +73,10 @@ pub struct ServerState {
     pub store: Arc<Store>,
     /// Metric registry; cheap to clone.
     pub metrics: Metrics,
+    /// Requests inside the handler stack right now, each held by the guard
+    /// `api::observe::RequestMeter` keeps for the request's whole future.
+    /// Sampled into `sunrise_http_in_flight_requests` at scrape time.
+    pub in_flight: crate::metrics::Occupancy,
     /// Blob store root (self-host filesystem path).
     pub blob_root: Arc<std::path::PathBuf>,
     /// Retention bounds for the durable relay op log.
@@ -166,9 +170,10 @@ impl ServerState {
             config: Arc::new(config),
             relay: RelayHub::new(),
             clock,
-            token_verifier: Arc::new(NullVerifier),
+            token_verifier: Arc::new(Metered::new(Arc::new(NullVerifier), metrics.clone())),
             store,
             metrics,
+            in_flight: crate::metrics::Occupancy::new(),
             blob_root: Arc::new(blob_root),
             durable_caps: crate::relay_log::DurableCaps::default(),
             sessions: crate::sync_session::SessionStore::new(),
@@ -253,9 +258,12 @@ impl ServerState {
     }
 
     /// Replace the token verifier (production wiring, and tests).
+    ///
+    /// Installed behind [`Metered`], so every verification it answers is
+    /// counted in `sunrise_auth_verify_total`.
     #[must_use]
     pub fn with_verifier(mut self, verifier: Arc<dyn TokenVerifier>) -> Self {
-        self.token_verifier = verifier;
+        self.token_verifier = Arc::new(Metered::new(verifier, self.metrics.clone()));
         self
     }
 

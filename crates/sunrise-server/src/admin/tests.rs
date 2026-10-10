@@ -203,17 +203,17 @@ async fn a_deleted_account_is_erased_completely_after_the_grace_period() {
     let (device_id, _key) = register_device(&h.client, 7, "phone", None).await;
     let _second = register_device(&h.client, 8, "laptop", None).await;
     let account_id = h.account_id();
-    h.state
-        .store
+    let store = &h.state.store;
+    store
         .upsert_push_token(&device_id, "apns", "tok", T0_MS)
         .unwrap();
     let account_h = crate::relay_log::account_key(&account_id);
-    h.state
-        .store
+    store
         .relay_append(
             (account_h, [0x11; 16]),
             b"ciphertext",
             &[],
+            0,
             None,
             1,
             T0_MS,
