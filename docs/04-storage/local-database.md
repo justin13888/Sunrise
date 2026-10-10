@@ -17,12 +17,14 @@ SQLite (via SQLCipher) holds:
 SQLite (via SQLCipher) is opened in WAL mode with:
 
 ```
+PRAGMA auto_vacuum    = INCREMENTAL;
 PRAGMA journal_mode   = WAL;
 PRAGMA synchronous    = NORMAL;
 PRAGMA foreign_keys   = ON;
 PRAGMA busy_timeout   = 5000;
-PRAGMA auto_vacuum    = INCREMENTAL;
 ```
+
+`auto_vacuum` comes first. It takes effect only on a file with no header page yet, and setting `journal_mode = WAL` writes that header, so issued after it the pragma is silently ignored ([#461](https://github.com/justin13888/Sunrise/issues/461)).
 
 All multi-row writes are wrapped in a single `BEGIN IMMEDIATE … COMMIT`. Reads outside transactions see snapshots at the time of statement start (SQLite default). The op-application loop holds `BEGIN IMMEDIATE` for the entire batch; concurrent reads continue to see the pre-batch snapshot until commit.
 
@@ -213,5 +215,6 @@ The vault DB is suitable for binary backup (file copy while not actively writing
 
 ## Vacuum / maintenance
 
-- `PRAGMA auto_vacuum = INCREMENTAL` is issued on every open, but a vault opened by `Db::open` reports `auto_vacuum = 0`, so it does not take effect and no incremental vacuum runs ([#461](https://github.com/justin13888/Sunrise/issues/461)). The pages a compaction run frees ([`compaction.md`](./compaction.md)) stay on SQLite's free list, where later writes reuse them.
+- A new vault is created with `auto_vacuum = INCREMENTAL` in effect. A vault created before [#461](https://github.com/justin13888/Sunrise/issues/461) reports `auto_vacuum = 0`; `Db::open` rewrites it once with a full `VACUUM` (logged as `db.auto_vacuum.convert`), after any migration and its backup, and every later open finds the mode set. The rewrite needs free disk space about the size of the vault. One that fails changes nothing: it is logged as `db.auto_vacuum.convert_failed`, the open goes on with the vault as it was, and the next open tries again.
+- `Db::incremental_vacuum` returns every page on the free list to the filesystem. A compaction run that deleted any row ([`compaction.md`](./compaction.md)) ends with it, so the pages the fold freed leave the file rather than waiting on the free list for later writes.
 - WAL checkpointing is automatic.

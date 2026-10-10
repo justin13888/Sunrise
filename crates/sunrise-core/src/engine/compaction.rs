@@ -371,8 +371,8 @@ impl Engine {
     ///
     /// Each stream is folded in its own transaction, so a failure leaves
     /// every stream before it compacted and every stream after it as it was.
-    /// The pages a fold frees go on SQLite's free list, which later writes
-    /// reuse; they are not returned to the filesystem.
+    /// A run that deleted any row ends with [`Db::incremental_vacuum`], which
+    /// returns the pages the folds freed to the filesystem.
     ///
     /// # Errors
     /// Storage failures.
@@ -402,6 +402,11 @@ impl Engine {
             {
                 report.snapshots_written += 1;
             }
+        }
+        if report.ops_removed > 0 {
+            // Every stream's deletes have committed; hand the pages they
+            // freed back to the filesystem so the file shrinks (#461).
+            db.incremental_vacuum()?;
         }
         if report.ops_removed > 0 || report.snapshots_written > 0 {
             tracing::info!(
