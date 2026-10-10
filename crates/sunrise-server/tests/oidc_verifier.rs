@@ -467,7 +467,13 @@ async fn every_key_set_fetch_is_counted_by_how_it_ended() {
         }
     }
 
-    let metrics = sunrise_server::Metrics::new();
+    // The server's own registry, so the counts can be read back off the
+    // scrape the operator reads rather than only off the registry.
+    let state = sunrise_server::ServerState::new(sunrise_server::ServerConfig {
+        bind: "127.0.0.1:0".to_owned(),
+        ..sunrise_server::ServerConfig::default()
+    });
+    let metrics = state.metrics.clone();
     let idp = FakeIdp::new(rsa_jwks("k1", KEY_A_N));
     let v = verifier(idp, TestClock::new(T0_MS)).with_metrics(metrics.clone());
     let token = mint_rs256(KEY_A_DER_B64, "k1", &good_claims());
@@ -487,6 +493,24 @@ async fn every_key_set_fetch_is_counted_by_how_it_ended() {
         Err(AuthError::Transport(_))
     ));
     assert_eq!(metrics.get_with(NAME, &[("result", "failed")]), 1);
+
+    let service = sunrise_server::build_service(state).expect("the surface builds");
+    let mut request = kynos::http::Request::new(kynos::http::body::Body::empty());
+    *request.uri_mut() = "/metrics".parse().expect("a target");
+    let response = service.call(request).await;
+    assert_eq!(response.status(), kynos::http::StatusCode::OK);
+    let bytes = http_body_util::BodyExt::collect(response.into_body())
+        .await
+        .expect("collects")
+        .to_bytes();
+    let text = String::from_utf8_lossy(&bytes);
+    for line in [
+        "# TYPE sunrise_oidc_jwks_fetch_total counter\n",
+        "sunrise_oidc_jwks_fetch_total{result=\"ok\"} 1\n",
+        "sunrise_oidc_jwks_fetch_total{result=\"failed\"} 1\n",
+    ] {
+        assert!(text.contains(line), "missing {line:?} in:\n{text}");
+    }
 }
 
 // ---------------------------------------------------------------------------

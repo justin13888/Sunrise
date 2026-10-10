@@ -219,6 +219,46 @@ mod tests {
         );
     }
 
+    /// `process_*` is sampled by the scrape from this very process, where
+    /// `/proc/self` exists to read it from.
+    #[tokio::test]
+    #[cfg(target_os = "linux")]
+    async fn a_scrape_carries_the_process_collector() {
+        let client = Client::new(ServerConfig {
+            bind: "127.0.0.1:8443".to_owned(),
+            ..ServerConfig::default()
+        });
+        let res = client.send_as(Method::GET, "/metrics", None, None).await;
+        res.assert_status(StatusCode::OK);
+        let body = String::from_utf8_lossy(&res.bytes);
+        for prefix in [
+            "# TYPE process_cpu_seconds_total counter\nprocess_cpu_seconds_total ",
+            "process_resident_memory_bytes ",
+            "process_virtual_memory_bytes ",
+            "process_threads ",
+            "process_open_fds ",
+            "process_max_fds ",
+            "process_start_time_seconds ",
+        ] {
+            assert!(body.contains(prefix), "missing {prefix:?} in:\n{body}");
+        }
+    }
+
+    /// Elsewhere there is no `/proc/self`, and the scrape carries no
+    /// `process_*` series rather than zeros that read as facts.
+    #[tokio::test]
+    #[cfg(not(target_os = "linux"))]
+    async fn a_scrape_off_linux_carries_no_process_series() {
+        let client = Client::new(ServerConfig {
+            bind: "127.0.0.1:8443".to_owned(),
+            ..ServerConfig::default()
+        });
+        let res = client.send_as(Method::GET, "/metrics", None, None).await;
+        res.assert_status(StatusCode::OK);
+        let body = String::from_utf8_lossy(&res.bytes);
+        assert!(!body.contains("process_"), "{body}");
+    }
+
     /// A file-backed store reports its size; the WAL is part of it.
     #[tokio::test]
     async fn a_file_backed_store_reports_its_size() {

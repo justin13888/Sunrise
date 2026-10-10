@@ -639,6 +639,16 @@ mod tests {
         // A one-byte budget keeps only the newest frame: each append after
         // the first evicts the one before it.
         assert_eq!(client.metrics.get("sunrise_relay_log_evicted_total"), 2);
+
+        let scrape = client.send_as(Method::GET, "/metrics", None, None).await;
+        scrape.assert_status(StatusCode::OK);
+        let text = String::from_utf8_lossy(&scrape.bytes);
+        assert!(
+            text.contains(
+                "# TYPE sunrise_relay_log_evicted_total counter\nsunrise_relay_log_evicted_total 2\n"
+            ),
+            "the evictions are not on /metrics:\n{text}"
+        );
     }
 
     /// A writer that also holds a live stream is one of the receivers the
