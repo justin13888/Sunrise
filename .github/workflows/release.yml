@@ -148,11 +148,17 @@ jobs:
           MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 != '' }}
           MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD != '' }}
           MACOS_TEAM_ID: ${{ secrets.MACOS_TEAM_ID != '' }}
+          # The profile that grants the Release entitlements'
+          # `keychain-access-groups`. Without it the signed app is `Killed: 9`
+          # by AMFI before `main` (docs/07-clients/desktop.md §The
+          # data-protection keychain is not a one-line entitlement), so it is a
+          # signing secret like the certificate and is gated the same way.
+          MACOS_PROVISIONING_PROFILE: ${{ secrets.MACOS_PROVISIONING_PROFILE != '' }}
           APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 != '' }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID != '' }}
           APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID != '' }}
-          # The appcast signing key. A seventh secret in the same step, and two
-          # messages rather than one: the six above are about the `.dmg` a
+          # The appcast signing key. An eighth secret in the same step, and two
+          # messages rather than one: the seven above are about the `.dmg` a
           # stranger downloads, and this one is about the feed every *already
           # installed* copy reads. They are created in different places, they
           # fail in different ways, and an operator who fixes one and re-pushes
@@ -166,6 +172,7 @@ jobs:
           # between shells often enough that it should behave the same in both.
           missing=""
           for s in MACOS_CERTIFICATE_P12 MACOS_CERTIFICATE_PASSWORD MACOS_TEAM_ID \
+                   MACOS_PROVISIONING_PROFILE \
                    APPLE_API_KEY_P8 APPLE_API_KEY_ID APPLE_API_ISSUER_ID; do
             eval "have=\${$s}"
             [ "$have" = "true" ] || missing="$missing $s"
@@ -188,7 +195,7 @@ jobs:
             fail=1
           fi
           [ "$fail" -eq 0 ] || exit 1
-          echo "all seven macOS release secrets are present"
+          echo "all eight macOS release secrets are present"
       # Not a gate. ADR-0039 builds the App Store Connect plumbing *before* the
       # account records exist, on the owner's decision that the mechanism
       # should be reviewable now and enrolled later, so a missing secret here
@@ -608,6 +615,71 @@ jobs:
             echo "::error title=Developer ID identity belongs to the wrong team::The keychain holds a valid Developer ID Application identity, but its team is not MACOS_TEAM_ID. The identity listing above names the team the certificate actually carries. xcodebuild -exportArchive would fail on this about twenty minutes from here, which is the failure this step exists to catch. Nothing is signed, notarized or published."
             exit 1
           fi
+      # The Developer ID profile that grants `macOS/Sunrise.entitlements`'
+      # `keychain-access-groups`, a restricted entitlement: a binary carrying
+      # it without a profile from the signing team that grants it is
+      # `Killed: 9` by AMFI before `main`, and a Developer ID signature is
+      # not such a grant on its own. Modelled on `ios-release`'s `Install the
+      # provisioning profile`, and a secret for the same reason it is there:
+      # `-allowProvisioningUpdates` would make a tag push mutate the team's
+      # signing assets on Apple's side.
+      #
+      # Asserted here, not discovered after the archive. A profile for the
+      # wrong bundle, the wrong team, the wrong distribution type, or one that
+      # has expired passes `base64 --decode` and then fails `xcodebuild` --
+      # or worse, a profile that grants no keychain group signs and exports
+      # fine and ships an app that is killed on launch. The Name is what the
+      # archive and export refer to, and the UUID is the file name Xcode
+      # looks the profile up by, so both are read out of the profile rather
+      # than carried as further secrets that could disagree with it.
+      #
+      # PlistBuddy rather than `plutil -extract`, which this file uses
+      # elsewhere: `com.apple.application-identifier` has dots in it, and
+      # `plutil`'s key paths are dot-separated with no escape.
+      - name: Install the Developer ID provisioning profile
+        if: needs.verify.outputs.dry_run != 'true'
+        env:
+          MACOS_PROVISIONING_PROFILE: ${{ secrets.MACOS_PROVISIONING_PROFILE }}
+          MACOS_TEAM_ID: ${{ secrets.MACOS_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          profiles="$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"
+          mkdir -p "$profiles"
+          printf '%s' "$MACOS_PROVISIONING_PROFILE" | base64 --decode > "$RUNNER_TEMP/macos.provisionprofile"
+          plist="$RUNNER_TEMP/macos-profile.plist"
+          security cms -D -i "$RUNNER_TEMP/macos.provisionprofile" > "$plist"
+          pb() { /usr/libexec/PlistBuddy -c "Print :$1" "$plist" 2>/dev/null || true; }
+          uuid=$(pb UUID)
+          name=$(pb Name)
+          expires=$(plutil -extract ExpirationDate raw -o - "$plist")
+          echo "profile: $name ($uuid), expires $expires"
+          fail=0
+          # The team-prefixed bundle id the `Sunrise` target signs as
+          # (apps/apple/project.yml). A profile for any other App ID cannot be
+          # applied to it.
+          if [ "$(pb Entitlements:com.apple.application-identifier)" != "${MACOS_TEAM_ID}.dev.sunrise.Sunrise" ]; then
+            echo "::error title=The provisioning profile is for a different app or team::MACOS_PROVISIONING_PROFILE is not a profile for the App ID dev.sunrise.Sunrise on team MACOS_TEAM_ID. docs/07-clients/releasing.md says how to create the right one. Nothing is signed, notarized or published."
+            fail=1
+          fi
+          # Developer ID profiles provision every Mac; a development profile
+          # names devices and would launch on those alone.
+          if [ "$(pb ProvisionsAllDevices)" != "true" ]; then
+            echo "::error title=The provisioning profile is not a Developer ID profile::MACOS_PROVISIONING_PROFILE does not provision all devices, so it is a development profile rather than a Developer ID distribution profile. Nothing is signed, notarized or published."
+            fail=1
+          fi
+          if [ -z "$(pb Entitlements:keychain-access-groups:0)" ]; then
+            echo "::error title=The provisioning profile grants no keychain access group::MACOS_PROVISIONING_PROFILE grants no keychain-access-groups, so the app this release signs would be killed by AMFI on launch. Nothing is signed, notarized or published."
+            fail=1
+          fi
+          # ISO 8601 in UTC on both sides, so a string comparison is a date
+          # comparison.
+          if [[ "$expires" < "$(date -u +%Y-%m-%dT%H:%M:%SZ)" ]]; then
+            echo "::error title=The provisioning profile has expired::MACOS_PROVISIONING_PROFILE expired at $expires. Regenerate it as docs/07-clients/releasing.md describes. Nothing is signed, notarized or published."
+            fail=1
+          fi
+          [ "$fail" -eq 0 ] || exit 1
+          cp "$RUNNER_TEMP/macos.provisionprofile" "$profiles/$uuid.provisionprofile"
+          echo "MACOS_PROFILE_NAME=$name" >> "$GITHUB_ENV"
       # The repository's own task, not a re-expression of it. It builds the
       # three-slice `out/SunriseCore.xcframework` and
       # `out/swift/sunrise_core_bindings.swift`, and `xcodegen` below needs the
@@ -682,7 +754,17 @@ jobs:
             # `--timestamp` is what makes the signature outlive the
             # certificate: without a secure timestamp the app stops verifying
             # the day the Developer ID certificate expires.
-            # shellcheck disable=SC2086
+            #
+            # The profile is named for the `Sunrise` target alone. A plain
+            # `PROVISIONING_PROFILE_SPECIFIER=` on the command line reaches
+            # every target the scheme builds, including the embedded
+            # `SunriseWidgets` extension, whose bundle id the profile does not
+            # match. So the specifier is a reference resolved in each
+            # target's own context: `$(SUNRISE_PROFILE_$(TARGET_NAME))` is
+            # the profile's Name for `Sunrise` and empty -- no profile, as
+            # before -- for everything else. Single-quoted so the shell
+            # passes the reference to xcodebuild unexpanded.
+            # shellcheck disable=SC2086,SC2016
             xcodebuild archive $common \
               -destination 'generic/platform=macOS' \
               -archivePath "$RUNNER_TEMP/Sunrise.xcarchive" \
@@ -693,6 +775,8 @@ jobs:
               CODE_SIGN_STYLE=Manual \
               CODE_SIGN_IDENTITY="Developer ID Application" \
               DEVELOPMENT_TEAM="$MACOS_TEAM_ID" \
+              PROVISIONING_PROFILE_SPECIFIER='$(SUNRISE_PROFILE_$(TARGET_NAME))' \
+              SUNRISE_PROFILE_Sunrise="$MACOS_PROFILE_NAME" \
               OTHER_CODE_SIGN_FLAGS="--timestamp"
           fi
       - name: Export the archive
@@ -713,16 +797,16 @@ jobs:
             echo "::warning title=Unsigned dry run::xcodebuild -exportArchive was skipped; the .app was copied out of the archive unsigned."
             exit 0
           fi
-          # `signingStyle: manual` with no `provisioningProfiles` entry, which
-          # is correct rather than incomplete: a Developer ID Application
-          # signature needs a profile only for capabilities that are
-          # profile-gated (iCloud, Push, `group.` App Groups, and the App
-          # Sandbox's network and file entitlements). This app declares none
-          # of those. Its one App Group is team-prefixed
-          # (`$(TeamIdentifierPrefix)dev.sunrise`, apps/apple/project.yml),
-          # which Developer ID grants without a profile. Its widget
-          # extension's plain `app-sandbox` needs no profile either. So the
-          # identity is the whole credential.
+          # `signingStyle: manual` with one `provisioningProfiles` entry, for
+          # the app. Its Release entitlements carry `keychain-access-groups`
+          # (apps/apple/macOS/Sunrise.entitlements), which is restricted: the
+          # export re-signs, and a re-signature that embeds no profile ships
+          # an app AMFI kills on launch. Nothing else in the bundle needs one.
+          # The App Group is team-prefixed (`$(TeamIdentifierPrefix)dev.sunrise`,
+          # apps/apple/project.yml), which Developer ID grants without a
+          # profile, and the widget extension's plain `app-sandbox` needs no
+          # profile either, so `dev.sunrise.Sunrise.Widgets` is signed by the
+          # identity alone, as before.
           cat > "$RUNNER_TEMP/ExportOptions.plist" <<PLIST
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -733,6 +817,10 @@ jobs:
             <key>teamID</key><string>${MACOS_TEAM_ID}</string>
             <key>signingStyle</key><string>manual</string>
             <key>signingCertificate</key><string>Developer ID Application</string>
+            <key>provisioningProfiles</key>
+            <dict>
+              <key>dev.sunrise.Sunrise</key><string>${MACOS_PROFILE_NAME}</string>
+            </dict>
             <key>stripSwiftSymbols</key><true/>
           </dict>
           </plist>
@@ -742,6 +830,27 @@ jobs:
             -archivePath "$RUNNER_TEMP/Sunrise.xcarchive" \
             -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
             -exportPath "$RUNNER_TEMP/export"
+
+          # A profile that silently failed to embed signs, exports, notarizes
+          # and staples without complaint, and the first to notice is a user
+          # whose Mac kills the app before it draws a window. So the exported
+          # bundle is checked for both halves here, before notarization: the
+          # signed entitlements hold the keychain group the app was built for,
+          # and the profile that grants it is in the bundle.
+          app="$RUNNER_TEMP/export/Sunrise.app"
+          codesign -d --entitlements - --xml "$app" > "$RUNNER_TEMP/signed-entitlements.plist" 2>/dev/null
+          group=$(/usr/libexec/PlistBuddy -c "Print :keychain-access-groups:0" \
+            "$RUNNER_TEMP/signed-entitlements.plist" 2>/dev/null || true)
+          if [ "$group" != "${MACOS_TEAM_ID}.dev.sunrise.Sunrise" ]; then
+            plutil -p "$RUNNER_TEMP/signed-entitlements.plist" || true
+            echo "::error title=The exported app does not carry its keychain access group::The signed entitlements printed above do not hold keychain-access-groups = <team>.dev.sunrise.Sunrise, so the app would run on the login keychain rather than the data-protection keychain (docs/07-clients/desktop.md). Nothing is notarized or published."
+            exit 1
+          fi
+          if [ ! -f "$app/Contents/embedded.provisionprofile" ]; then
+            echo "::error title=The exported app embeds no provisioning profile::Sunrise.app carries keychain-access-groups but no Contents/embedded.provisionprofile, so AMFI would kill it on launch. Nothing is notarized or published."
+            exit 1
+          fi
+          echo "keychain-access-groups and embedded.provisionprofile are both present"
       # The half of the update mechanism that lives in the bundle rather than
       # in this workflow, checked here because the two can be configured
       # independently and either one alone is useless.
@@ -963,6 +1072,7 @@ jobs:
         if: always()
         run: |
           security delete-keychain "$RUNNER_TEMP/sunrise-signing.keychain-db" 2>/dev/null || true
+          rm -f "$RUNNER_TEMP/macos.provisionprofile" "$RUNNER_TEMP/macos-profile.plist"
           # `sparkle_ed.key` is removed by the step that writes it; it is named
           # again here for the path where that step dies between the two.
           rm -f "$RUNNER_TEMP/cert.p12" "$RUNNER_TEMP/AuthKey.p8" "$RUNNER_TEMP/sparkle_ed.key"

@@ -71,7 +71,15 @@ struct StartFocusIntent: AppIntent {
         let target = task.id
         let size = length
         let message = try await IntentVault.withVault { bridge in
-            try await Self.start(on: target, length: size, in: bridge)
+            let message = try await Self.start(on: target, length: size, in: bridge)
+            // Inside the lease: a vault this intent opened itself is closed
+            // the moment the closure returns, and the Live Activity has to be
+            // read from it first. With the app open its change feed would get
+            // there too; reconciling twice changes nothing the second time.
+            #if os(iOS)
+            await FocusLiveActivity.reconcile(in: bridge)
+            #endif
+            return message
         }
         return .result(dialog: IntentDialog("\(message)"))
     }
@@ -145,7 +153,12 @@ struct EndFocusIntent: AppIntent {
     func perform() async throws -> some IntentResult & ProvidesDialog {
         let completing = completingTask
         let message = try await IntentVault.withVault { bridge in
-            try await Self.end(completingTask: completing, in: bridge)
+            let message = try await Self.end(completingTask: completing, in: bridge)
+            // See ``StartFocusIntent/perform()``.
+            #if os(iOS)
+            await FocusLiveActivity.reconcile(in: bridge)
+            #endif
+            return message
         }
         return .result(dialog: IntentDialog("\(message)"))
     }
