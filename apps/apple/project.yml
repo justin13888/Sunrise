@@ -522,6 +522,11 @@ targets:
         BGTaskSchedulerPermittedIdentifiers:
           - dev.sunrise.SunriseiOS.refresh
           - dev.sunrise.SunriseiOS.maintenance
+        # The focus Live Activity (`mobile-ios.md` §Live Activities). Without
+        # it `Activity.request` throws and a session has no Lock Screen timer.
+        # Drawn by `SunriseWidgetsiOS`; started and ended by
+        # `iOS/FocusLiveActivity.swift`.
+        NSSupportsLiveActivities: true
     # The App Group. iOS's `containerURL` answers `nil` to a process the
     # group was not granted to, so without this the app would have nowhere
     # to write and every widget would say "Open Sunrise" forever.
@@ -589,6 +594,10 @@ targets:
         com.apple.security.application-groups:
           - $(SUNRISE_APP_GROUP)
 
+  # The iOS build also draws the focus Live Activity, which is why it — and
+  # not the Mac's — links ActivityKit. `Widgets/Shared/FocusActivity.swift`
+  # carries the attributes both it and the app compile; the app starts and
+  # ends the activity, and this target only draws it.
   SunriseWidgetsiOS:
     type: app-extension
     platform: iOS
@@ -597,6 +606,7 @@ targets:
     dependencies:
       - sdk: WidgetKit.framework
       - sdk: SwiftUI.framework
+      - sdk: ActivityKit.framework
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.sunrise.SunriseiOS.Widgets
