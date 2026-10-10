@@ -27,8 +27,8 @@ use sunrise_domain::{
     fold_activity, fold_trends, inbox_stream_ref, routine_drift, streaks_table, trends_table,
     ActivityEvent, ExportDataset, ExportFormat, OpPayload, OpRecord, ReviewSnapshot,
     ReviewSnapshotDraft, ReviewStream, ReviewWindow, RoutineDrift, StreakRow, Task, Trends,
-    WeekGrid, Weekday, WeeklyReview, WeeklyReviewInput, DEFAULT_DRIFT_THRESHOLD,
-    DRIFT_WINDOW_WEEKS, TREND_WEEKS,
+    WeekGrid, WeeklyReview, WeeklyReviewInput, DEFAULT_DRIFT_THRESHOLD, DRIFT_WINDOW_WEEKS,
+    TREND_WEEKS,
 };
 use sunrise_id::{EntityKind, EntityRef};
 use sunrise_storage::Db;
@@ -242,13 +242,15 @@ impl Engine {
         Ok(self.decode_op_records(&keys, rows))
     }
 
-    /// The device-local week grid, anchored on Monday.
+    /// The device-local week grid, each week beginning on the `week_start`
+    /// preference (`docs/10-cross-cutting/time.md` §4).
     ///
     /// The timezone comes from the injected clock — the same seam scheduling
     /// constraints use — so a week boundary is never read from ambient state.
-    fn week_grid(&self, now_ms: u64, weeks: u32) -> Result<WeekGrid, EngineError> {
-        let tz = jiff::tz::TimeZone::get(&self.clock.timezone()).unwrap_or(jiff::tz::TimeZone::UTC);
-        WeekGrid::trailing(now_ms, weeks.clamp(1, MAX_TREND_WEEKS), &tz, &Weekday::Mo)
+    fn week_grid(&self, db: &Db, now_ms: u64, weeks: u32) -> Result<WeekGrid, EngineError> {
+        let tz = self.device_zone();
+        let week_start = self.week_start(db)?;
+        WeekGrid::trailing(now_ms, weeks.clamp(1, MAX_TREND_WEEKS), &tz, &week_start)
             .map_err(|e| EngineError::Invalid(format!("week grid: {e}")))
     }
 
@@ -264,7 +266,7 @@ impl Engine {
     }
 
     fn trends(&self, db: &Db, weeks: u32, now_ms: u64) -> Result<Trends, EngineError> {
-        let grid = self.week_grid(now_ms, weeks)?;
+        let grid = self.week_grid(db, now_ms, weeks)?;
         let ops = self.task_history_ops(db, grid.starts().first().copied().unwrap_or(0))?;
         Ok(fold_trends(&ops, &grid))
     }
@@ -311,7 +313,7 @@ impl Engine {
         week_start_ms: Option<u64>,
         now_ms: u64,
     ) -> Result<WeeklyReview, EngineError> {
-        let grid = self.week_grid(now_ms, TREND_WEEKS)?;
+        let grid = self.week_grid(db, now_ms, TREND_WEEKS)?;
         let start = week_start_ms.unwrap_or_else(|| grid.last_start_ms());
         let end = grid
             .starts()
@@ -461,7 +463,7 @@ impl Engine {
         let table = match dataset {
             ExportDataset::Trends => trends_table(&self.trends(db, weeks, now_ms)?, &names),
             ExportDataset::Activity => {
-                let grid = self.week_grid(now_ms, weeks)?;
+                let grid = self.week_grid(db, now_ms, weeks)?;
                 let start = grid.starts().first().copied().unwrap_or(0);
                 let ops = self.task_history_ops(db, start)?;
                 let mut events = fold_activity(&ops);
@@ -471,7 +473,7 @@ impl Engine {
                 activity_table(&events)
             }
             ExportDataset::Focus => {
-                let grid = self.week_grid(now_ms, weeks)?;
+                let grid = self.week_grid(db, now_ms, weeks)?;
                 let QueryResult::FocusStats(stats) =
                     self.query_focus_stats(db, None, grid.starts().first().copied(), now_ms)?
                 else {

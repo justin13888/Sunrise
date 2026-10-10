@@ -70,7 +70,8 @@ pub struct ImportReport {
 pub enum ExportWindow {
     /// The civil day containing the given instant.
     Day,
-    /// The Monday-first civil week containing the given instant.
+    /// The civil week containing the given instant, starting on the
+    /// `week_start` preference as `Query::WeekBlocks` does.
     Week,
 }
 

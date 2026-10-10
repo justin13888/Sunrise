@@ -272,22 +272,33 @@ struct CalendarModelTests {
         await vault.bridge.shutdown()
     }
 
-    /// A week grid draws seven Monday-first columns, and `Query::WeekBlocks`
-    /// is Monday-first too. A mismatch would put the right blocks in the wrong
+    /// A week grid draws seven columns starting on the `week_start`
+    /// preference, Sunday by default, which is the day `Query::WeekBlocks`
+    /// starts on too. A mismatch would put the right blocks in the wrong
     /// column, which reads as a sync failure.
     @Test
-    func aWeekGridIsSevenMondayFirstDays() async throws {
+    func aWeekGridStartsOnTheWeekStartPreference() async throws {
         let vault = try await TestVault()
         let model = await model(vault)
         model.span = .week
         await model.refresh()
 
-        #expect(model.windowEndMs - model.windowStartMs == 7 * 86_400_000)
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: model.timeZone) ?? .current
         let first = Date(timeIntervalSince1970: Double(model.windowStartMs) / 1000)
-        #expect(calendar.component(.weekday, from: first) == 2, "Monday")
+        let last = Date(timeIntervalSince1970: Double(model.windowEndMs) / 1000)
+        #expect(calendar.dateComponents([.day], from: first, to: last).day == 7)
+        #expect(model.weekStart == .su)
+        #expect(calendar.component(.weekday, from: first) == 1, "Sunday")
         await vault.bridge.shutdown()
+    }
+
+    /// Every preference day maps to the `Calendar.firstWeekday` it names, and
+    /// a token this build does not know falls back to the default, Sunday.
+    @Test
+    func everyWeekStartMapsToItsCalendarWeekday() {
+        let days: [Weekday] = [.su, .mo, .tu, .we, .th, .fr, .sa]
+        #expect(days.map(CalendarModel.firstWeekday) == Array(1...7))
     }
 
     /// Keep both is a documented no-op. It writes nothing and says so.

@@ -39,7 +39,7 @@ use std::collections::BTreeMap;
 use sunrise_domain::preferences::{check_write, is_pref_key};
 use sunrise_domain::{
     pref_spec, preferences_ref, resolve_preferences, CborValue, DeviceClass, PrefTarget, PrefValue,
-    Preferences, ResolvedPref, Unknowns, PREFERENCE_KEYS,
+    Preferences, ResolvedPref, Unknowns, Weekday, PREFERENCE_KEYS,
 };
 use sunrise_storage::Db;
 
@@ -167,6 +167,31 @@ impl super::Engine {
             &vault,
             self.device_class(conn)?,
         ))
+    }
+
+    /// One key's resolved value, through the same resolver
+    /// [`Self::query_preferences`] uses. `None` when it resolves to an absent
+    /// default or the key is not in the table.
+    pub(super) fn resolved_preference(
+        &self,
+        db: &Db,
+        key: &str,
+    ) -> Result<Option<PrefValue>, EngineError> {
+        Ok(self
+            .query_preferences(db)?
+            .into_iter()
+            .find(|p| p.key == key)
+            .and_then(|p| p.value))
+    }
+
+    /// The `week_start` preference: the first day of every week the core
+    /// builds (`docs/10-cross-cutting/time.md` §4). Sunday when unset, the
+    /// table's default.
+    pub(super) fn week_start(&self, db: &Db) -> Result<Weekday, EngineError> {
+        Ok(match self.resolved_preference(db, "week_start")? {
+            Some(PrefValue::Weekday(day)) => day,
+            _ => Weekday::Su,
+        })
     }
 
     /// `Command::SetPreference` (`Some`) and `Command::ClearPreference`
