@@ -76,11 +76,15 @@ day; each document that uses the type says what an unknown value does there
 | `Routine.paused_until`, `Stream.paused_until` | all four | `all_day` for "pause until Monday" | resumes at the start of that planner day |
 | `Task.reminder_lead_s` and other durations | not a time; seconds | — | a duration is not a point |
 
-Before [#336](https://github.com/justin13888/Sunrise/issues/336), `Routine.starts_at`, `ends_at`, `paused_until` and `RRule.until`
-are bare `Timestamp`s (`crates/sunrise-domain/src/routine.rs#Routine`,
-`crates/sunrise-domain/src/rrule.rs#RRule`), and capture writes every phrase as
-an instant (`crates/sunrise-domain/src/capture.rs#parse`). Both are defects
-against this table.
+Capture writes the kinds in the third column through one function,
+`crates/sunrise-domain/src/capture.rs#parse_when_time`, which `capture::parse`
+and the annotate line both use. No capture phrase names a zone yet, so capture
+never writes `zoned`.
+
+`Routine.starts_at`, `ends_at`, `paused_until` and `RRule.until` are still bare
+`Timestamp`s (`crates/sunrise-domain/src/routine.rs#Routine`,
+`crates/sunrise-domain/src/rrule.rs#RRule`), a defect against this table that
+[#506](https://github.com/justin13888/Sunrise/issues/506) migrates.
 
 ## 2. Comparisons resolve through the reader's zone, never through `index_ms`
 
@@ -109,19 +113,25 @@ it is.
    before timed on the same instant), then by id. `Ord for SunriseTime` on the
    index key (**amends ADR-0017**, which defined it there) is retained only as
    an implementation detail of storage ordering and MUST NOT be used for a
-   domain decision. A lint-style test greps for `index_ms()` and
-   `SunriseTime` comparisons outside `sunrise-storage` and the prefilter
-   helpers.
+   domain decision. A lint-style test
+   (`crates/sunrise-domain/tests/index_ms_lint.rs`) fails on any use of
+   `index_ms` or `index_key` outside `sunrise-storage`, the value's own
+   definition and codec, and the named storage projections it lists with
+   their reasons. A comparison through `Ord` cannot be told apart by a grep
+   from any other `<`, so that half of the rule is held by review.
 
-Today `index_ms` still decides the `due ≥ scheduled` invariant
-(`crates/sunrise-domain/src/task.rs#validate_invariants`), block overlap
-(`crates/sunrise-domain/src/block/conflict.rs#overlaps`) and the Today window
-(`crates/sunrise-core/src/engine/query.rs#query_today`). Each is a defect against
-this rule.
+The comparisons are `SunriseTime`'s own (`crates/sunrise-domain/src/time.rs`):
+`resolve_in(tz)` is rule 1's instant, `due_in(tz)` its deadline exception,
+`day_in(tz)` the date a reader sees a value on (§4), `cmp_in(other, tz)` rule
+3's order, and `PREFILTER_SLACK_MS` rule 2's 48 hours. The `due ≥ scheduled`
+invariant compares the deadline as a deadline, so a task planned for 09:00
+Friday and due "Friday" is consistent.
 
 **The reader's zone** is the zone `Clock::timezone` reports
-(`crates/sunrise-core/src/config.rs#timezone`) at the moment of the read. It is
-always passed in explicitly; no domain function reads an ambient zone.
+(`crates/sunrise-core/src/config.rs#timezone`) at the moment of the read: the
+zone a client last reported through `on_time_zone_changed` (§7), and the
+injected clock's own until one has. It is always passed in explicitly; no
+domain function reads an ambient zone.
 
 ## 3. One DST rule
 
@@ -234,6 +244,20 @@ first revisit trigger ("recurring blocks or tasks with a floating anchor").
   and differs from the new zone, views show times in both zones for `zoned`
   values.
 
+In the tree, the entry point is `Core::on_time_zone_changed`
+(`crates/sunrise-core/src/core/mod.rs`), which returns a `TimeZoneChange`
+(`crates/sunrise-core/src/commands.rs`): it is not a `Command`, because it
+writes no op. It makes the reported zone the reader's zone
+(`crates/sunrise-core/src/config.rs#ReportedZoneClock`), counts the open tasks
+whose resolved time or lateness moved, reports whether the notification
+preference is on, and publishes `DomainEvent::TimeZoneChanged`, on which every
+view re-reads; that re-read is the re-evaluation, since every derived view is
+computed on read. A client may report the zone on every foreground: the same
+zone again is `changed: false` and does nothing. The Apple apps report it from
+`apps/apple/Sunrise/Core/TimeZoneWatch.swift` on vault open, on
+`NSSystemTimeZoneDidChange` and on every foreground. Flagging hard constraint
+violations in the new zone is [#333](https://github.com/justin13888/Sunrise/issues/333)'s.
+
 ## 8. Test matrix
 
 Every row runs against tasks (lateness, Today membership), blocks (overlap,
@@ -260,3 +284,13 @@ value is recomputed:
 | Los Angeles → New York with a `floating` 09:00 routine | occurrences fire at 09:00 NY; keys unchanged; no occurrence duplicated or lost on the travel day |
 | `Pacific/Apia` ↔ `Pacific/Pago_Pago` (same longitude, 24 hours apart) | an `all_day` deadline is late in one zone and on track in the other at the same instant, and both answers are the reader's |
 | A zone change on a spring-forward night | a `hard` constraint window that became empty is flagged, and nothing is rewritten |
+
+Where the rows run: resolution, the DST rule, validation, lateness, overlap
+and the prefilter bound in `crates/sunrise-domain/tests/time_matrix.rs`; Today
+and the calendar windows at the UTC−10 and UTC+14 extremes in
+`crates/sunrise-core/src/engine/tests/time_zones.rs`; the entry point in
+`crates/sunrise-core/src/core/tests.rs`. The routine rows wait on the routine
+fields becoming `stime`s ([#506](https://github.com/justin13888/Sunrise/issues/506),
+then [#331](https://github.com/justin13888/Sunrise/issues/331)), the constraint
+rows on [#333](https://github.com/justin13888/Sunrise/issues/333), and the day
+schedule's on [#338](https://github.com/justin13888/Sunrise/issues/338).

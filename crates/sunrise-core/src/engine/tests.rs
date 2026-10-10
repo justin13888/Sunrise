@@ -282,7 +282,9 @@ mod testutil {
     /// The instant a floating civil time on the test date resolves to under the
     /// engine's device zone (UTC in tests).
     pub(super) fn day_ms() -> u64 {
-        SunriseTime::floating(jiff::civil::date(2026, 3, 4).at(12, 0, 0, 0)).index_ms() as u64
+        SunriseTime::floating(jiff::civil::date(2026, 3, 4).at(12, 0, 0, 0))
+            .to_instant(&jiff::tz::TimeZone::UTC)
+            .as_millisecond() as u64
     }
 
     pub(super) fn import(source: &str, uid: &str, draft: BlockDraft) -> Command {

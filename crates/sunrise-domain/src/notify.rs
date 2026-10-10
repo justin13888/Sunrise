@@ -344,6 +344,9 @@ pub struct EndOfDayPlan {
 
 /// Build the morning summary from every live task, the civil bounds the caller
 /// resolved, and the Inbox's id.
+///
+/// `tz` is the reader's zone: every task time is resolved in it before it is
+/// compared with the bounds (`docs/10-cross-cutting/time.md` §2).
 #[must_use]
 pub fn build_morning_summary(
     tasks: &[Task],
@@ -351,21 +354,20 @@ pub fn build_morning_summary(
     today_start: Timestamp,
     today_end: Timestamp,
     inbox: EntityRef,
+    tz: &TimeZone,
 ) -> MorningSummary {
     let mut completed: Vec<Task> = tasks
         .iter()
         .filter(|t| {
             !t.deleted
                 && t.state == TaskState::Done
-                && t.completed_at
-                    .as_ref()
-                    .is_some_and(|c| c.index_ms() >= since.as_millisecond())
+                && completion_ms(t, tz) >= since.as_millisecond()
         })
         .cloned()
         .collect();
     completed.sort_by(|a, b| {
-        completion_ms(b)
-            .cmp(&completion_ms(a))
+        completion_ms(b, tz)
+            .cmp(&completion_ms(a, tz))
             .then_with(|| a.id.cmp(&b.id))
     });
 
@@ -382,10 +384,10 @@ pub fn build_morning_summary(
 
     let mut due_today: Vec<Task> = tasks
         .iter()
-        .filter(|t| is_open(t) && lands_in(t, i64::MIN, today_end.as_millisecond()))
+        .filter(|t| is_open(t) && lands_in(t, i64::MIN, today_end.as_millisecond(), tz))
         .cloned()
         .collect();
-    due_today.sort_by(plan_order);
+    due_today.sort_by(|a, b| plan_order(a, b, tz));
 
     MorningSummary {
         since,
@@ -397,27 +399,30 @@ pub fn build_morning_summary(
 }
 
 /// Build the end-of-day plan from every live task and the civil bounds the
-/// caller resolved.
+/// caller resolved, resolving every task time in the reader's zone `tz`.
 #[must_use]
 pub fn build_end_of_day_plan(
     tasks: &[Task],
     day_start: Timestamp,
     day_end: Timestamp,
     week_end: Timestamp,
+    tz: &TimeZone,
 ) -> EndOfDayPlan {
     let mut still_open: Vec<Task> = tasks
         .iter()
-        .filter(|t| is_open(t) && lands_in(t, i64::MIN, day_end.as_millisecond()))
+        .filter(|t| is_open(t) && lands_in(t, i64::MIN, day_end.as_millisecond(), tz))
         .cloned()
         .collect();
-    still_open.sort_by(plan_order);
+    still_open.sort_by(|a, b| plan_order(a, b, tz));
 
     let mut week_ahead: Vec<Task> = tasks
         .iter()
-        .filter(|t| is_open(t) && lands_in(t, day_end.as_millisecond(), week_end.as_millisecond()))
+        .filter(|t| {
+            is_open(t) && lands_in(t, day_end.as_millisecond(), week_end.as_millisecond(), tz)
+        })
         .cloned()
         .collect();
-    week_ahead.sort_by(plan_order);
+    week_ahead.sort_by(|a, b| plan_order(a, b, tz));
 
     let mut unscheduled: Vec<Task> = tasks
         .iter()
@@ -448,30 +453,35 @@ fn is_open(t: &Task) -> bool {
     !t.deleted && matches!(t.state.effective(), TaskState::Todo | TaskState::InProgress)
 }
 
-fn completion_ms(t: &Task) -> i64 {
+/// When a task was completed, resolved in `tz`; `i64::MIN` for none, or for a
+/// kind this build cannot place.
+fn completion_ms(t: &Task, tz: &TimeZone) -> i64 {
     t.completed_at
         .as_ref()
-        .map_or(i64::MIN, SunriseTime::index_ms)
+        .and_then(|c| c.resolve_in(tz))
+        .map_or(i64::MIN, Timestamp::as_millisecond)
 }
 
-/// The instant a task "lands" on: its scheduled time, or its deadline when it
-/// has no scheduled time. `None` for a task with neither.
-fn lands_at(t: &Task) -> Option<i64> {
+/// The instant a task "lands" on in `tz`: its scheduled time, or its deadline
+/// when it has no scheduled time. `None` for a task with neither, or with a
+/// kind this build cannot place.
+fn lands_at(t: &Task, tz: &TimeZone) -> Option<i64> {
     t.scheduled_at
         .as_ref()
         .or(t.due_at.as_ref())
-        .map(SunriseTime::index_ms)
+        .and_then(|v| v.resolve_in(tz))
+        .map(Timestamp::as_millisecond)
 }
 
-fn lands_in(t: &Task, from_ms: i64, to_ms: i64) -> bool {
-    lands_at(t).is_some_and(|ms| ms >= from_ms && ms < to_ms)
+fn lands_in(t: &Task, from_ms: i64, to_ms: i64, tz: &TimeZone) -> bool {
+    lands_at(t, tz).is_some_and(|ms| ms >= from_ms && ms < to_ms)
 }
 
 /// Earliest first, then most urgent, then by id so two devices agree.
-fn plan_order(a: &Task, b: &Task) -> std::cmp::Ordering {
-    lands_at(a)
+fn plan_order(a: &Task, b: &Task, tz: &TimeZone) -> std::cmp::Ordering {
+    lands_at(a, tz)
         .unwrap_or(i64::MAX)
-        .cmp(&lands_at(b).unwrap_or(i64::MAX))
+        .cmp(&lands_at(b, tz).unwrap_or(i64::MAX))
         .then_with(|| {
             a.priority
                 .unwrap_or(u8::MAX)
@@ -875,6 +885,7 @@ mod tests {
             ts(day),
             ts(day + DAY_MS),
             inbox_stream_ref(),
+            &TimeZone::UTC,
         );
         assert_eq!(
             s.completed.iter().map(|t| t.id).collect::<Vec<_>>(),
@@ -905,6 +916,7 @@ mod tests {
             ts(day),
             ts(day + DAY_MS),
             ts(day + 8 * DAY_MS),
+            &TimeZone::UTC,
         );
         assert_eq!(
             plan.still_open.iter().map(|t| t.id).collect::<Vec<_>>(),
@@ -917,6 +929,7 @@ mod tests {
             ts(day),
             ts(day + DAY_MS),
             inbox_stream_ref(),
+            &TimeZone::UTC,
         );
         assert_eq!(
             summary.due_today.iter().map(|t| t.id).collect::<Vec<_>>(),
@@ -948,6 +961,7 @@ mod tests {
             ts(day),
             ts(day + DAY_MS),
             ts(day + 8 * DAY_MS),
+            &TimeZone::UTC,
         );
         assert_eq!(
             plan.still_open.iter().map(|t| t.id).collect::<Vec<_>>(),
@@ -1014,7 +1028,13 @@ mod tests {
             t.id = EntityRef::new(EntityKind::Task, [t.id.bytes()[0] + 10; 16]);
             t
         }));
-        let plan = build_end_of_day_plan(&tasks, ts(day), ts(day + DAY_MS), ts(day + 8 * DAY_MS));
+        let plan = build_end_of_day_plan(
+            &tasks,
+            ts(day),
+            ts(day + DAY_MS),
+            ts(day + 8 * DAY_MS),
+            &TimeZone::UTC,
+        );
 
         assert_eq!(
             plan.still_open.iter().map(|t| t.id).collect::<Vec<_>>(),
@@ -1042,6 +1062,7 @@ mod tests {
             ts(day),
             ts(day + DAY_MS),
             inbox_stream_ref(),
+            &TimeZone::UTC,
         );
         assert_eq!(
             s.due_today.iter().map(|t| t.id).collect::<Vec<_>>(),
@@ -1066,6 +1087,7 @@ mod tests {
             ts(day),
             ts(day + DAY_MS),
             ts(day + 8 * DAY_MS),
+            &TimeZone::UTC,
         );
         assert_eq!(
             plan.still_open.iter().map(|t| t.id).collect::<Vec<_>>(),
@@ -1089,6 +1111,7 @@ mod tests {
             ts(day),
             ts(day + DAY_MS),
             inbox_stream_ref(),
+            &TimeZone::UTC,
         );
         assert!(s.to_triage.is_empty());
     }

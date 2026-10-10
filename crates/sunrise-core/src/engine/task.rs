@@ -299,16 +299,19 @@ impl Engine {
         let Some(at) = task.scheduled_at.as_ref() else {
             return Ok(Vec::new());
         };
-        // A time kind this build cannot place on the timeline is checked
-        // against nothing: its stand-in instant would invent a violation.
-        if task.scheduling_constraints.is_empty() || at.index_key().is_none() {
-            return Ok(Vec::new());
-        }
-        let tz = jiff::tz::TimeZone::get(&self.clock.timezone()).unwrap_or(jiff::tz::TimeZone::UTC);
+        let tz = self.device_zone();
         // Constraints are civil windows, so a zone-less `scheduled_at` must be
         // resolved in the DEVICE zone before they can be evaluated — which is
-        // exactly what `to_instant` does, and the reason it takes a zone.
-        let zdt = at.to_instant(&tz).to_zoned(tz);
+        // exactly what `resolve_in` does, and the reason it takes a zone. A
+        // time kind this build cannot place on the timeline is checked against
+        // nothing: its stand-in instant would invent a violation.
+        let Some(at) = at.resolve_in(&tz) else {
+            return Ok(Vec::new());
+        };
+        if task.scheduling_constraints.is_empty() {
+            return Ok(Vec::new());
+        }
+        let zdt = at.to_zoned(tz);
         let (hard, soft) = violations_by_severity(&task.scheduling_constraints, &zdt);
         if !hard.is_empty() {
             return Err(ValidationError::HardScheduleConstraint.into());

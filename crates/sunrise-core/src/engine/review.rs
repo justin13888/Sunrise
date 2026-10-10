@@ -372,6 +372,7 @@ impl Engine {
             drift,
             focus: *focus,
             trends,
+            zone: self.device_zone(),
         }))
     }
 

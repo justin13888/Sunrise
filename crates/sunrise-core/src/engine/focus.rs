@@ -368,6 +368,12 @@ impl Engine {
         let priors = work_session_counts(db.conn())?;
         let mut tasks: BTreeMap<EntityRef, Task> = BTreeMap::new();
         let mut candidates = Vec::with_capacity(scan.len());
+        // Both times resolve in the reader's zone; the deadline as a deadline,
+        // missed at the end of an all-day date (`docs/10-cross-cutting/time.md`
+        // §2 rule 1, ADR-0047 §Due instant).
+        let tz = self.device_zone();
+        let ms =
+            |t: Option<jiff::Timestamp>| t.and_then(|t| u64::try_from(t.as_millisecond()).ok());
         for (bytes, open_blockers, unblocks) in scan {
             let Some(task) = read_task(db.conn(), &bytes)? else {
                 continue;
@@ -378,14 +384,8 @@ impl Engine {
                 unblocks,
                 open_blockers,
                 priority: task.priority,
-                due_at_ms: task
-                    .due_at
-                    .as_ref()
-                    .and_then(|t| u64::try_from(t.index_ms()).ok()),
-                scheduled_at_ms: task
-                    .scheduled_at
-                    .as_ref()
-                    .and_then(|t| u64::try_from(t.index_ms()).ok()),
+                due_at_ms: ms(task.due_at.as_ref().and_then(|t| t.due_in(&tz))),
+                scheduled_at_ms: ms(task.scheduled_at.as_ref().and_then(|t| t.resolve_in(&tz))),
                 estimated_duration_s: task.estimated_duration_s,
             });
             tasks.insert(task.id, task);

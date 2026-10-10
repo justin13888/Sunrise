@@ -80,11 +80,19 @@ pub fn event_to_block(ev: &ICalEvent, stream_id: EntityRef) -> Result<MappedEven
 
     let starts_at = to_sunrise(start);
     let ends_at = to_sunrise(&end);
-    if ends_at.index_ms() <= starts_at.index_ms() {
+    // Two bounds of one kind (and one zone) order the same for every reader,
+    // so the event can be judged here, with no reader at all: in UTC, which
+    // has no transitions, a civil order and its resolved order agree. Bounds
+    // of two kinds order differently in different zones
+    // (`docs/10-cross-cutting/time.md` §2); those are left to the core, which
+    // validates the draft in the reader's zone when it is written.
+    let same_kind = match (&starts_at, &ends_at) {
+        (SunriseTime::Zoned { tz: a, .. }, SunriseTime::Zoned { tz: b, .. }) => a == b,
+        (a, b) => a.kind_str() == b.kind_str(),
+    };
+    if same_kind && ends_at.cmp_in(&starts_at, &TimeZone::UTC).is_le() {
         return Err(skip(format!(
-            "DTEND is not after DTSTART ({} .. {})",
-            starts_at.index_ms(),
-            ends_at.index_ms()
+            "DTEND is not after DTSTART ({starts_at} .. {ends_at})"
         )));
     }
 

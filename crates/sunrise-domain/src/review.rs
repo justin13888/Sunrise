@@ -43,7 +43,6 @@ use crate::routine::Routine;
 use crate::stats::{RoutineDrift, Trends, WeekBucket};
 use crate::stream::Stream;
 use crate::task::{Task, TaskState};
-use crate::time::SunriseTime;
 use crate::unknown::Unknowns;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -193,6 +192,10 @@ pub struct WeeklyReviewInput {
     pub focus: FocusStats,
     /// Trend fold.
     pub trends: Trends,
+    /// The reader's zone, which a task's floating or all-day times resolve in
+    /// before they are compared with the window
+    /// (`docs/10-cross-cutting/time.md` §2).
+    pub zone: jiff::tz::TimeZone,
 }
 
 /// Assemble the weekly review.
@@ -212,6 +215,7 @@ pub fn build_weekly_review(input: WeeklyReviewInput) -> WeeklyReview {
         drift,
         focus,
         trends,
+        zone,
     } = input;
 
     let mut totals = ReviewTotals::default();
@@ -312,12 +316,12 @@ pub fn build_weekly_review(input: WeeklyReviewInput) -> WeeklyReview {
         .iter()
         .filter(|t| !t.deleted && !t.archived)
         .filter(|t| !matches!(t.state, TaskState::Done | TaskState::Cancelled))
-        .filter(|t| commitment_at(t).is_some_and(|m| m < window.end_ms))
+        .filter(|t| commitment_at(t, &zone).is_some_and(|m| m < window.end_ms))
         .cloned()
         .collect();
     // Earliest commitment first: the thing that slipped furthest is the first
     // decision the user is asked to make.
-    slipped.sort_by_key(|t| (commitment_at(t), t.id));
+    slipped.sort_by_key(|t| (commitment_at(t, &zone), t.id));
 
     let mut drifting_routines: Vec<RoutineDrift> =
         drift.into_iter().filter(|d| d.over_threshold).collect();
@@ -523,13 +527,17 @@ impl WeeklyReview {
     }
 }
 
-/// When a Task was committed to: the earlier of its deadline and its planned
-/// slot. `None` means the Task carries no commitment at all.
-fn commitment_at(t: &Task) -> Option<u64> {
-    let ms = |v: &SunriseTime| u64::try_from(v.index_ms()).ok();
-    match (t.due_at.as_ref(), t.scheduled_at.as_ref()) {
-        (Some(due), Some(sched)) => ms(due).zip(ms(sched)).map(|(d, s)| d.min(s)),
-        (due, sched) => due.and_then(ms).or_else(|| sched.and_then(ms)),
+/// When a Task was committed to, for a reader in `tz`: the earlier of its
+/// deadline (missed at the end of an all-day date, ADR-0047 §Due instant) and
+/// its planned slot. `None` means the Task carries no commitment this build
+/// can place.
+fn commitment_at(t: &Task, tz: &jiff::tz::TimeZone) -> Option<u64> {
+    let ms = |v: Option<jiff::Timestamp>| v.and_then(|v| u64::try_from(v.as_millisecond()).ok());
+    let due = t.due_at.as_ref().and_then(|v| ms(v.due_in(tz)));
+    let sched = t.scheduled_at.as_ref().and_then(|v| ms(v.resolve_in(tz)));
+    match (due, sched) {
+        (Some(d), Some(s)) => Some(d.min(s)),
+        (d, s) => d.or(s),
     }
 }
 
@@ -724,6 +732,7 @@ mod tests {
             drift: Vec::new(),
             focus: empty_focus(),
             trends: fold_trends(&f.ops, &grid),
+            zone: grid.zone().clone(),
         })
     }
 
@@ -833,6 +842,7 @@ mod tests {
             drift: Vec::new(),
             focus: empty_focus(),
             trends: fold_trends(&f.ops, &grid),
+            zone: grid.zone().clone(),
         });
         assert_eq!(r.totals, ReviewTotals::default());
         assert!(r.streams[0].completed.is_empty());
@@ -996,6 +1006,7 @@ mod tests {
             ],
             focus: empty_focus(),
             trends: fold_trends(&f.ops, &grid),
+            zone: grid.zone().clone(),
         });
 
         assert_eq!(

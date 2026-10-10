@@ -69,16 +69,31 @@ pub struct WeekGrid {
     starts: Vec<u64>,
     /// Exclusive end of the last bucket.
     end_ms: u64,
+    /// The reader's zone the grid was built in, which a time with no zone of
+    /// its own (an all-day completion) resolves in before it is bucketed
+    /// (`docs/10-cross-cutting/time.md` §2).
+    zone: TimeZone,
 }
 
 impl WeekGrid {
-    /// Build directly from ascending week starts and an exclusive end.
+    /// Build directly from ascending week starts and an exclusive end, in
+    /// UTC.
     ///
     /// Used by tests and by callers that already know their boundaries; the
     /// normal constructor is [`WeekGrid::trailing`].
     #[must_use]
     pub fn from_starts(starts: Vec<u64>, end_ms: u64) -> Self {
-        Self { starts, end_ms }
+        Self {
+            starts,
+            end_ms,
+            zone: TimeZone::UTC,
+        }
+    }
+
+    /// The zone the grid's weeks are civil weeks in.
+    #[must_use]
+    pub const fn zone(&self) -> &TimeZone {
+        &self.zone
     }
 
     /// The `weeks` civil weeks ending with the one containing `now_ms`.
@@ -113,6 +128,7 @@ impl WeekGrid {
         Ok(Self {
             starts,
             end_ms: zone_start_ms(next, tz)?,
+            zone: tz.clone(),
         })
     }
 
@@ -308,7 +324,8 @@ pub fn fold_trends(ops: &[OpRecord], grid: &WeekGrid) -> Trends {
             let done_at = task
                 .completed_at
                 .as_ref()
-                .and_then(|t| u64::try_from(t.index_ms()).ok())
+                .and_then(|t| t.resolve_in(grid.zone()))
+                .and_then(|t| u64::try_from(t.as_millisecond()).ok())
                 .unwrap_or(op.at_ms);
             if let Some(i) = grid.index_of(done_at) {
                 bump(
