@@ -76,7 +76,10 @@ pub type ApiRouter = kynos::Router<
             kynos::middleware::limits::BodySize,
             kynos::middleware::stack::Cons<
                 ratelimit::Admission,
-                kynos::middleware::stack::Cons<observe::TraceRequest, ()>,
+                kynos::middleware::stack::Cons<
+                    observe::RequestMeter,
+                    kynos::middleware::stack::Cons<observe::TraceRequest, ()>,
+                >,
             >,
         >,
     >,
@@ -148,6 +151,10 @@ pub fn router(config: &crate::ServerConfig, metrics: &crate::Metrics) -> ApiRout
         // it. Declares nothing, so the description is unchanged; does nothing
         // at all without `[observability]`.
         .intercept(observe::TraceRequest)
+        // Inside the root span and outside everything that can refuse, so a
+        // request the limiter turns away was still in flight while it was
+        // being turned away, and its store reads are under its span.
+        .intercept(observe::RequestMeter)
         // Next, so outside the rest: a flood is refused before `BodySize` reads a
         // chunked body into memory to measure it. Covering every operation is
         // also what puts `429` in every operation's description.

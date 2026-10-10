@@ -68,13 +68,14 @@ pub use cipher::{pre_encryption_copy, DbKey};
 pub use devices::{Device, NewDevice};
 pub use lifecycle::{AccountSummary, DeclaredCursor, NewTombstone, StoreStats};
 pub use pragmas::DEFAULT_BUSY_TIMEOUT;
+pub use tx::{metered, StoreTime};
 
 /// Why a store operation failed.
 #[derive(Debug, Error)]
 pub enum StoreError {
     /// Underlying SQLite failure.
     #[error("sqlite: {0}")]
-    Sqlite(#[from] rusqlite::Error),
+    Sqlite(#[source] rusqlite::Error),
     /// The caller's `(iss, sub)` has no account and `allow_signup` is false.
     #[error("sign-up is disabled on this server")]
     SignupDisabled,
@@ -203,6 +204,34 @@ pub enum StoreError {
         /// The operating system's reason.
         cause: String,
     },
+}
+
+/// Statements that failed with `SQLITE_BUSY` once the busy timeout ran out,
+/// across every store in this process.
+///
+/// Counted where a `rusqlite` error becomes a [`StoreError`], the one place
+/// every store failure passes and none of them holds a registry. That point
+/// is reached only after SQLite's busy handler has retried for the whole
+/// `[storage] busy_timeout_ms`, so a count here is a write another connection
+/// held off for longer than the operator allowed, not a retry that succeeded.
+/// Process-wide rather than per store because the contention is: a second
+/// connection to the file is another process (`admin`, a backup), not another
+/// [`Store`] in this one. `/metrics` copies it into `sunrise_db_busy_total`.
+static BUSY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The process's `SQLITE_BUSY` failures so far ([`BUSY`]).
+#[must_use]
+pub fn busy_total() -> u64 {
+    BUSY.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+impl From<rusqlite::Error> for StoreError {
+    fn from(e: rusqlite::Error) -> Self {
+        if e.sqlite_error_code() == Some(rusqlite::ErrorCode::DatabaseBusy) {
+            BUSY.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        Self::Sqlite(e)
+    }
 }
 
 /// SQLite-backed account/device store.

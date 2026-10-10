@@ -88,6 +88,10 @@ pub type Labels<'a> = &'a [(&'static str, &'a str)];
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Kind {
     Counter,
+    /// A counter whose authoritative count lives outside the registry and is
+    /// copied in at scrape time ([`Metrics::set_counter`]). Renders as
+    /// `counter`; held as `f64` bits, because the kernel's CPU time is one.
+    SampledCounter,
     Gauge,
     Histogram,
 }
@@ -95,10 +99,54 @@ enum Kind {
 impl Kind {
     const fn as_str(self) -> &'static str {
         match self {
-            Self::Counter => "counter",
+            Self::Counter | Self::SampledCounter => "counter",
             Self::Gauge => "gauge",
             Self::Histogram => "histogram",
         }
+    }
+}
+
+pub mod process;
+
+/// How many holders of an [`Occupant`] are alive right now.
+///
+/// The one gauge shape `metrics.md` §Rules allows besides a scrape-time
+/// measurement: the count moves only through [`Occupancy::enter`] and the
+/// [`Occupant`]'s `Drop`, so every exit from the scope that holds one —
+/// completion, an early return, a panic unwinding, a dropped future —
+/// releases it. Nothing has to remember to decrement, so nothing can forget
+/// to, which is the drift Rule 2 forbids.
+#[derive(Debug, Clone, Default)]
+pub struct Occupancy(Arc<AtomicU64>);
+
+impl Occupancy {
+    /// An empty occupancy.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Count one holder until the returned guard drops.
+    #[must_use]
+    pub fn enter(&self) -> Occupant {
+        self.0.fetch_add(1, Ordering::Relaxed);
+        Occupant(Arc::clone(&self.0))
+    }
+
+    /// How many guards are alive.
+    #[must_use]
+    pub fn count(&self) -> u64 {
+        self.0.load(Ordering::Relaxed)
+    }
+}
+
+/// Holds one place in an [`Occupancy`] for as long as it lives.
+#[derive(Debug)]
+pub struct Occupant(Arc<AtomicU64>);
+
+impl Drop for Occupant {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
     }
 }
 
@@ -353,6 +401,19 @@ impl Metrics {
         }
     }
 
+    /// Set a counter from the count that is authoritative for it.
+    ///
+    /// For a counter the registry cannot see incremented: the kernel's CPU
+    /// time for this process, or a count kept beside a call site that holds
+    /// no registry. `metrics.md` §Rules: the source only goes up, so the
+    /// series does too; it is copied at scrape time, never decremented. A name
+    /// set here is never also [`incr`](Self::incr)ed: one name, one source.
+    pub fn set_counter(&self, name: &'static str, labels: Labels<'_>, value: f64) {
+        if let Some(s) = self.series(name, labels, Kind::SampledCounter, &[]) {
+            s.value.store(value.to_bits(), Ordering::Relaxed);
+        }
+    }
+
     /// Record one observation in a histogram with the bucket set `bounds`.
     ///
     /// `bounds` is one of [`LATENCY_BUCKETS`], [`TRANSFER_BUCKETS`] or
@@ -421,7 +482,7 @@ impl Metrics {
             }
             match (&s.hist, s.kind) {
                 (Some(h), _) => render_histogram(&mut out, s, h),
-                (None, Kind::Gauge) => {
+                (None, Kind::Gauge | Kind::SampledCounter) => {
                     out.push_str(s.name);
                     label_set(&mut out, &s.labels, None);
                     out.push(' ');
@@ -708,6 +769,43 @@ mod tests {
         assert!(m
             .render()
             .contains("sunrise_metrics_series_dropped_total 1\n"));
+    }
+
+    /// A counter copied from its source renders as a counter, carries the
+    /// source's value as it is, and is one source: incrementing the same name
+    /// is refused rather than mixing two counts in one series.
+    #[test]
+    fn a_sampled_counter_is_a_counter_with_one_source() {
+        let m = Metrics::new();
+        m.set_counter("test_cpu_seconds_total", &[], 1.25);
+        m.set_counter("test_cpu_seconds_total", &[], 2.5);
+        m.incr("test_cpu_seconds_total");
+        let s = m.render();
+        assert!(s.contains("# TYPE test_cpu_seconds_total counter\n"), "{s}");
+        assert!(s.contains("test_cpu_seconds_total 2.5\n"), "{s}");
+        assert!(
+            s.contains("sunrise_metrics_series_dropped_total 1\n"),
+            "{s}"
+        );
+    }
+
+    /// An occupancy counts exactly the guards alive, however each one ends.
+    #[test]
+    fn an_occupancy_counts_the_guards_alive() {
+        let o = Occupancy::new();
+        let a = o.enter();
+        let b = o.clone().enter();
+        assert_eq!(o.count(), 2);
+        drop(a);
+        assert_eq!(o.count(), 1);
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _c = o.enter();
+            panic!("the holder fails");
+        }));
+        assert!(unwound.is_err());
+        assert_eq!(o.count(), 1, "a panicking holder still releases");
+        drop(b);
+        assert_eq!(o.count(), 0);
     }
 
     /// Concurrent first touches of one series land in one slot.

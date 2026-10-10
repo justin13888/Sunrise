@@ -449,6 +449,47 @@ async fn a_discovery_document_naming_a_different_issuer_is_refused() {
 }
 
 // ---------------------------------------------------------------------------
+// Metrics
+// ---------------------------------------------------------------------------
+
+/// `sunrise_oidc_jwks_fetch_total{result}`: a cold cache's fetch is `ok`, a
+/// cached key costs no fetch, and an issuer that cannot be read is `failed`.
+#[tokio::test]
+async fn every_key_set_fetch_is_counted_by_how_it_ended() {
+    const NAME: &str = "sunrise_oidc_jwks_fetch_total";
+
+    #[derive(Debug)]
+    struct Unreachable;
+    #[async_trait]
+    impl HttpFetch for Unreachable {
+        async fn get(&self, url: &str) -> Result<HttpResponse, AuthError> {
+            Err(AuthError::Transport(format!("no route to {url}")))
+        }
+    }
+
+    let metrics = sunrise_server::Metrics::new();
+    let idp = FakeIdp::new(rsa_jwks("k1", KEY_A_N));
+    let v = verifier(idp, TestClock::new(T0_MS)).with_metrics(metrics.clone());
+    let token = mint_rs256(KEY_A_DER_B64, "k1", &good_claims());
+    v.verify(&token).await.expect("verifies");
+    v.verify(&token).await.expect("verifies from the cache");
+    assert_eq!(metrics.get_with(NAME, &[("result", "ok")]), 1);
+    assert_eq!(metrics.get_with(NAME, &[("result", "failed")]), 0);
+
+    let down = OidcVerifier::new(
+        OidcConfig::new(ISSUER, CLIENT_ID),
+        Arc::new(Unreachable),
+        TestClock::new(T0_MS),
+    )
+    .with_metrics(metrics.clone());
+    assert!(matches!(
+        down.verify(&token).await,
+        Err(AuthError::Transport(_))
+    ));
+    assert_eq!(metrics.get_with(NAME, &[("result", "failed")]), 1);
+}
+
+// ---------------------------------------------------------------------------
 // Caching
 // ---------------------------------------------------------------------------
 

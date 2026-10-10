@@ -199,6 +199,56 @@ impl Interceptor<ServerState> for TraceRequest {
     }
 }
 
+/// Holds a request's place in `sunrise_http_in_flight_requests` and meters
+/// its time in the store into `sunrise_db_query_duration_seconds{endpoint}`.
+///
+/// An interceptor, because both facts belong to the request's *future*, which
+/// only an interceptor wraps. The in-flight guard lives in that future, so it is
+/// released however the future ends: the response, a panic unwinding, or a
+/// client that left while the handler ran and had the future dropped — the
+/// case no [`Observer`] hook reports, which is why the count could not be kept
+/// there. The store time is every `Store` operation the handler took, lock
+/// waits included, summed per request; a request that took none is not
+/// observed, so the histogram reads as "requests that touched the store".
+///
+/// `endpoint` is the matched route's template in the description's `{param}`
+/// spelling, the value `sunrise_http_requests_total` carries. Declares nothing,
+/// so the published description is unchanged.
+///
+/// For the SSE `events` operation both end with the response head, as the
+/// HTTP duration does: an open stream is `sunrise_sync_streams_active`, and
+/// its replay reads are its own task's, not the request's.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RequestMeter;
+
+impl Interceptor<ServerState> for RequestMeter {
+    type Reads = ();
+    type Adds = ();
+    type Short = std::convert::Infallible;
+
+    async fn intercept(
+        &self,
+        request: Request,
+        reads: (),
+        state: &ServerState,
+        next: Next<'_, ServerState>,
+    ) -> Result<Continued<()>, std::convert::Infallible> {
+        let () = reads;
+        let endpoint = next.route().path();
+        let _in_flight = state.in_flight.enter();
+        let (continued, time) = crate::store::metered(next.run(request)).await;
+        if let Some(spent) = time.spent() {
+            state.metrics.observe(
+                "sunrise_db_query_duration_seconds",
+                &[("endpoint", endpoint)],
+                crate::metrics::LATENCY_BUCKETS,
+                spent.as_secs_f64(),
+            );
+        }
+        Ok(continued)
+    }
+}
+
 /// Records `sunrise_http_requests_total` and
 /// `sunrise_http_request_duration_seconds`.
 ///

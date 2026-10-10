@@ -220,7 +220,7 @@ async fn run(args: Vec<String>) -> Result<(), u8> {
             return Err(EX_CONFIG);
         }
     };
-    if let Some(oidc) = OidcVerifier::from_server_config(&state.config, state.clock.clone()) {
+    if let Some(oidc) = OidcVerifier::from_server_state(&state) {
         state = state.with_verifier(Arc::new(oidc));
     }
     // Validating against the *installed* verifier is the point: binding a

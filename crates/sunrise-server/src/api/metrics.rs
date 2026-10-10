@@ -60,6 +60,60 @@ async fn sample_gauges(state: &ServerState) {
             .metrics
             .set_gauge("sunrise_db_size_bytes", &[], db_size_bytes(path) as f64);
     }
+
+    sample_counts(state);
+
+    // The guards alive right now: one per request inside the handler stack,
+    // this scrape included, and one per open event stream.
+    #[allow(clippy::cast_precision_loss)]
+    {
+        let m = &state.metrics;
+        m.set_gauge(
+            "sunrise_http_in_flight_requests",
+            &[],
+            state.in_flight.count() as f64,
+        );
+        m.set_gauge(
+            "sunrise_sync_streams_active",
+            &[],
+            state.drain.open_streams() as f64,
+        );
+        m.set_counter(
+            "sunrise_db_busy_total",
+            &[],
+            crate::store::busy_total() as f64,
+        );
+    }
+
+    if let Some(sample) = crate::metrics::process::sample() {
+        crate::metrics::process::record(&state.metrics, &sample);
+    }
+}
+
+/// The row counts: accounts, devices by state, and the durable relay log's
+/// bytes, in one read of the store.
+///
+/// A store that does not answer leaves each gauge at its last reading, as the
+/// session gauge above does; the failure is the store's to log.
+fn sample_counts(state: &ServerState) {
+    let Ok(stats) = state.store.stats() else {
+        return;
+    };
+    #[allow(clippy::cast_precision_loss)]
+    let n = |v: u64| v as f64;
+    let m = &state.metrics;
+    m.set_gauge("sunrise_accounts", &[], n(stats.accounts));
+    m.set_gauge(
+        "sunrise_devices",
+        &[("state", "active")],
+        n(stats.devices_active),
+    );
+    m.set_gauge(
+        "sunrise_devices",
+        &[("state", "revoked")],
+        n(stats.devices_revoked),
+    );
+    m.set_gauge("sunrise_relay_log_bytes", &[], n(stats.relay_bytes));
 }
 
 /// The main database file plus its write-ahead log, in bytes.
@@ -112,6 +166,56 @@ mod tests {
         assert!(
             body.contains("# TYPE sunrise_start_time_seconds gauge\n"),
             "{body}"
+        );
+    }
+
+    /// The scrape-time readings `metrics.md` lists for #435, each after the
+    /// action it measures: the bearer verified, the account and its devices
+    /// counted by state, the store time of the route that read them, the
+    /// scrape itself in flight, and the series that are always present.
+    #[tokio::test]
+    async fn a_scrape_reads_what_the_requests_before_it_did() {
+        let state = crate::ServerState::new(ServerConfig {
+            bind: "127.0.0.1:8443".to_owned(),
+            ..ServerConfig::default()
+        });
+        let store = std::sync::Arc::clone(&state.store);
+        let client = crate::api::testing::Client::from_state(state);
+        let (kept, _) = crate::api::testing::register_device(&client, 1, "kept", None).await;
+        let (gone, _) = crate::api::testing::register_device(&client, 2, "gone", None).await;
+        let account = store.device_owner(&gone).unwrap().expect("an owner");
+        assert_eq!(
+            store.device_owner(&kept).unwrap().as_deref(),
+            Some(&*account)
+        );
+        store.revoke_device(&account, &gone, 1).unwrap();
+        client
+            .send(Method::GET, "/api/v1/devices", None)
+            .await
+            .assert_status(StatusCode::OK);
+
+        let res = client.send_as(Method::GET, "/metrics", None, None).await;
+        res.assert_status(StatusCode::OK);
+        let body = String::from_utf8_lossy(&res.bytes);
+        for line in [
+            "sunrise_auth_verify_total{result=\"ok\"} 3\n",
+            "# TYPE sunrise_accounts gauge\nsunrise_accounts 1\n",
+            "sunrise_devices{state=\"active\"} 1\n",
+            "sunrise_devices{state=\"revoked\"} 1\n",
+            "sunrise_relay_log_bytes 0\n",
+            "sunrise_sync_streams_active 0\n",
+            // This scrape, which is inside the handler stack while it samples.
+            "sunrise_http_in_flight_requests 1\n",
+            "# TYPE sunrise_db_busy_total counter\n",
+            "sunrise_db_query_duration_seconds_count{endpoint=\"/api/v1/devices\"} 3\n",
+        ] {
+            assert!(body.contains(line), "missing {line:?} in:\n{body}");
+        }
+        // Once the scrape has ended it is no longer in flight.
+        let again = client.send_as(Method::GET, "/metrics", None, None).await;
+        assert!(
+            String::from_utf8_lossy(&again.bytes).contains("sunrise_http_in_flight_requests 1\n"),
+            "only the second scrape is in flight"
         );
     }
 
