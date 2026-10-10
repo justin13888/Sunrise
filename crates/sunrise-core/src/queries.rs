@@ -248,6 +248,14 @@ pub enum Query {
         /// Maximum number of results to return.
         limit: u32,
     },
+    /// How many ops this replica holds parked, by reason (ADR-0045 §4,
+    /// "Visibility").
+    ///
+    /// A parked op is one this build cannot apply yet, most often because a
+    /// newer device wrote a kind this build does not know. It is kept, counted
+    /// toward the sync cursor, and replayed after an upgrade, so nothing is
+    /// lost — but until this query it was visible only as a log event.
+    ParkedOpsSummary,
     /// Every preference key except the bootstrap ones, resolved
     /// (`docs/02-domain/preferences.md` §Scope and resolution), each with
     /// where its value came from. Bootstrap keys are read without the vault,
@@ -321,8 +329,24 @@ pub enum QueryResult {
     Reminders(Vec<ReminderIntent>),
     /// `ExportStats` returns the rendered document.
     Export(String),
+    /// `ParkedOpsSummary` returns one row per reason with at least one parked
+    /// op, in reason order. Empty when nothing is parked.
+    ParkedOps(Vec<ParkedOpCount>),
     /// `Preferences` returns every non-bootstrap key, in key-table order.
     Preferences(Vec<ResolvedPref>),
+}
+
+/// One row of [`Query::ParkedOpsSummary`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ParkedOpCount {
+    /// The stored `parked_ops.reason`, e.g. `unknown_kind`.
+    ///
+    /// A string rather than [`sunrise_storage::ParkReason`]: a vault a newer
+    /// build parked ops in can be opened by an older one, and a count under a
+    /// reason this build has no name for is still a count to show.
+    pub reason: String,
+    /// How many ops are parked under it. Never zero.
+    pub count: u64,
 }
 
 /// One row of [`Query::DayBlocks`] / [`Query::WeekBlocks`].
