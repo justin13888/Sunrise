@@ -6,6 +6,14 @@
 //! and [`resolve`] is the ownership check every other operation in this surface
 //! performs before it touches a session. [`account_hash`] is here because the
 //! relay channel namespace is fixed at establishment and nowhere else.
+//!
+//! Every body on this surface — here, in `cursors` and in `publish` — is open
+//! to extension: none is `deny_unknown_fields`, so a field a newer client adds
+//! is ignored by a relay that predates it rather than refused before the
+//! capability bitfield is ever read. Something a peer must understand is
+//! expressed as a capability bit or a version the relay compares, never as a
+//! decode failure (protocol-versioning.md §4 and §6; issue #370). The suite's
+//! `a_newer_client*` tests pin it for each request body.
 
 use crate::api::error::ApiError;
 use crate::api::ratelimit::policy::Budget;
@@ -25,7 +33,6 @@ use sunrise_wire_protocol::{
 
 /// `POST /api/v1/sync/session` request body — the `Hello` fields.
 #[derive(Debug, Clone, Serialize, Deserialize, kynos::Schema)]
-#[serde(deny_unknown_fields)]
 pub struct SessionRequest {
     /// Client app version.
     pub client_app_v: String,
@@ -47,7 +54,6 @@ pub struct SessionRequest {
 
 /// `POST /api/v1/sync/session` response body — `HelloAck` plus the id.
 #[derive(Debug, Clone, Serialize, Deserialize, kynos::Schema)]
-#[serde(deny_unknown_fields)]
 pub struct SessionResponse {
     /// The session id, presented as `X-Sunrise-Session` on every later call.
     pub session_id: String,
@@ -213,7 +219,6 @@ pub async fn session(
 
 /// `POST /api/v1/sync/session/refresh` request body.
 #[derive(Debug, Clone, Serialize, Deserialize, kynos::Schema)]
-#[serde(deny_unknown_fields)]
 pub struct RefreshRequest {
     /// The replacement bearer.
     pub token: String,
@@ -221,7 +226,6 @@ pub struct RefreshRequest {
 
 /// `POST /api/v1/sync/session/refresh` response body.
 #[derive(Debug, Clone, Serialize, Deserialize, kynos::Schema)]
-#[serde(deny_unknown_fields)]
 pub struct RefreshResponse {
     /// The new deadline, or 0 where the verifier issues none.
     pub expires_at_ms: u64,
