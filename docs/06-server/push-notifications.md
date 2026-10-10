@@ -17,10 +17,11 @@ status: accepted
 > `apns.rs` (the provider). Without `[push]` nothing is sent, and the server
 > logs `srv.push.disabled` once at startup.
 >
-> No client registers a token yet: `POST /api/v1/devices/push-tokens` is
-> live and nothing in `apps/apple` calls it
-> ([#367](https://github.com/justin13888/Sunrise/issues/367)). Sections below
-> say per section what is built.
+> The iOS app registers its APNs token through
+> `POST /api/v1/devices/push-tokens`, signed as the device it files the token
+> under, and syncs on the wake
+> ([`mobile-ios.md`](../07-clients/mobile-ios.md#push-handling), #367). No
+> other client registers one. Sections below say per section what is built.
 
 Push is **only** a wake-up signal. The server never sends content in pushes; the client wakes, connects, syncs, and decides whether and what to display.
 

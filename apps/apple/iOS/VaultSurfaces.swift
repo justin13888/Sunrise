@@ -84,7 +84,12 @@ extension VaultTabs {
                 .task { await models.savedViews.load() }
                 .onChange(of: models.settings.relayURL) { Task { await startSync() } }
                 .onChange(of: models.account.accessToken) { _, token in
-                    Task { await bridge.setSyncCredential(token) }
+                    Task {
+                        await bridge.setSyncCredential(token)
+                        // A first sign-in is the first moment the push token
+                        // has an account to be filed under.
+                        await BackgroundHost.shared.uploadPushToken()
+                    }
                 }
         }
     }
