@@ -13,6 +13,7 @@ use super::ids::{
     ExtraTable,
 };
 use super::lww::LwwStamp;
+use super::query::{sort_by_landing, Unlanded};
 use super::task::read_task;
 use super::{Engine, EngineError, META_STREAM};
 use crate::commands::CommandResult;
@@ -237,6 +238,8 @@ impl Engine {
         Ok(CommandResult::new(id, None, op_id, seq))
     }
 
+    /// Live tasks in one Stream, unscheduled first and then by when each
+    /// lands in the reader's zone ([`sort_by_landing`]).
     pub(super) fn query_stream_tasks(
         &self,
         db: &Db,
@@ -244,8 +247,7 @@ impl Engine {
     ) -> Result<QueryResult, EngineError> {
         let mut stmt = db.conn().prepare(
             "SELECT id FROM tasks
-             WHERE stream_id = ? AND deleted = 0
-             ORDER BY COALESCE(scheduled_at_ms, due_at_ms) ASC, id ASC",
+             WHERE stream_id = ? AND deleted = 0",
         )?;
         let stream_blob: Vec<u8> = stream.bytes().to_vec();
         let ids = stmt
@@ -263,6 +265,7 @@ impl Engine {
                 tasks.push(t);
             }
         }
+        sort_by_landing(&mut tasks, &self.device_zone(), Unlanded::First);
         Ok(QueryResult::StreamTasks(tasks))
     }
 

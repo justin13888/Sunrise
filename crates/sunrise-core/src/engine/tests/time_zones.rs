@@ -237,3 +237,53 @@ fn due_before_scheduled_is_decided_in_the_readers_zone() {
         "{err:?}"
     );
 }
+
+/// A Stream and a Context list their tasks in the order the reader sees them
+/// land (`docs/10-cross-cutting/time.md` §2 rule 3), not in index order. In
+/// Los Angeles a floating 09:00 is 17:00Z, after New York's 09:00 (14:00Z),
+/// though the index, which anchors the floating value in UTC, puts it first.
+/// A task with no time leads, as it did.
+#[test]
+fn stream_and_context_lists_order_in_the_readers_zone() {
+    let (e, _) = engine_at("America/Los_Angeles", date(2026, 3, 4).at(8, 0, 0, 0));
+    let mut db = db();
+    let ctx = e
+        .apply(
+            &mut db,
+            Command::CreateContext(sunrise_domain::ContextDraft {
+                name: "errands".into(),
+                ..Default::default()
+            }),
+        )
+        .unwrap()
+        .entity;
+    let d = date(2026, 3, 4);
+    for (title, at) in [
+        ("floats", Some(SunriseTime::floating(d.at(9, 0, 0, 0)))),
+        (
+            "pinned",
+            Some(SunriseTime::zoned(d.at(9, 0, 0, 0), "America/New_York")),
+        ),
+        ("unplanned", None),
+    ] {
+        e.apply(
+            &mut db,
+            Command::CreateTask(TaskDraft {
+                title: title.into(),
+                scheduled_at: at,
+                contexts: vec![ctx],
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+    }
+    let titles = |q: Query| match e.query(&db, q).unwrap() {
+        QueryResult::StreamTasks(v) => v.into_iter().map(|t| t.title).collect::<Vec<_>>(),
+        other => panic!("expected tasks, got {other:?}"),
+    };
+    assert_eq!(titles(Query::Inbox), ["unplanned", "pinned", "floats"]);
+    assert_eq!(
+        titles(Query::ContextTasks(ctx)),
+        ["unplanned", "pinned", "floats"]
+    );
+}

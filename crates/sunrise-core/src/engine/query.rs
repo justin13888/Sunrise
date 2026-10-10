@@ -23,6 +23,43 @@ use sunrise_domain::{effective_state, unblock_cascade, DependencyGraph};
 use sunrise_id::{EntityKind, EntityRef};
 use sunrise_storage::Db;
 
+/// Where [`sort_by_landing`] puts a task with neither `scheduled_at` nor
+/// `due_at`.
+#[derive(Clone, Copy)]
+pub(super) enum Unlanded {
+    /// Before every task that has a time: a Stream or Context listing, which
+    /// leads with what is still unplanned.
+    First,
+    /// After every task that has a time: Today, which leads with what is due.
+    Last,
+}
+
+/// Order a task list by when each task lands (`scheduled_at`, else
+/// `due_at`) as a reader in `tz` sees it, with [`SunriseTime::cmp_in`]
+/// (`docs/10-cross-cutting/time.md` §2 rule 3), then by id.
+///
+/// The one ordering every user-visible task list uses. The storage index
+/// cannot stand in for it: a floating or all-day value is indexed in UTC, so
+/// `ORDER BY` on it puts a floating 09:00 and a New York 09:00 in an order
+/// that is wrong for every reader west of Greenwich.
+pub(super) fn sort_by_landing(
+    tasks: &mut [sunrise_domain::Task],
+    tz: &jiff::tz::TimeZone,
+    unlanded: Unlanded,
+) {
+    let lands = |t: &sunrise_domain::Task| t.scheduled_at.clone().or_else(|| t.due_at.clone());
+    tasks.sort_by(|a, b| {
+        match (lands(a), lands(b)) {
+            (Some(x), Some(y)) => x.cmp_in(&y, tz),
+            (x, y) => match unlanded {
+                Unlanded::First => y.is_none().cmp(&x.is_none()),
+                Unlanded::Last => x.is_none().cmp(&y.is_none()),
+            },
+        }
+        .then_with(|| a.id.cmp(&b.id))
+    });
+}
+
 impl Engine {
     /// What completing `task` released — the mid-session unblock cascade.
     ///
@@ -156,15 +193,7 @@ impl Engine {
         tasks.retain(|t| {
             on_or_before_today(t.scheduled_at.as_ref()) || on_or_before_today(t.due_at.as_ref())
         });
-        tasks.sort_by(|a, b| {
-            let lands =
-                |t: &sunrise_domain::Task| t.scheduled_at.clone().or_else(|| t.due_at.clone());
-            match (lands(a), lands(b)) {
-                (Some(x), Some(y)) => x.cmp_in(&y, &tz),
-                (x, y) => x.is_none().cmp(&y.is_none()),
-            }
-            .then_with(|| a.id.cmp(&b.id))
-        });
+        sort_by_landing(&mut tasks, &tz, Unlanded::Last);
         Ok(QueryResult::Tasks(tasks))
     }
 
