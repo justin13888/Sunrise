@@ -254,6 +254,10 @@ extension BlockTimeKind {
         case .zoned: self = .zoned
         case .floating: self = .floating
         case .allDay: self = .zoned
+        // A kind a newer build wrote reads as local time too. Saving without
+        // touching the time or the kind sends neither, so the stored value
+        // is kept as it arrived.
+        case .unknown: self = .zoned
         }
     }
 }

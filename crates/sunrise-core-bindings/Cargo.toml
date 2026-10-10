@@ -41,6 +41,10 @@ thiserror = { workspace = true }
 # `time` for the pairing rendezvous, which polls the relay between messages.
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "sync", "time"] }
 sunrise-auth = { workspace = true }
+# The mirrors carry a nested value's unknown fields, and an unknown time kind's
+# raw fields, to the client as opaque canonical CBOR, so a value the client
+# hands back keeps them (#431).
+sunrise-cbor = { workspace = true }
 sunrise-client-core = { workspace = true }
 sunrise-core = { workspace = true }
 sunrise-crypto = { workspace = true }

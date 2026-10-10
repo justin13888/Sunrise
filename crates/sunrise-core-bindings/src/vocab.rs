@@ -45,7 +45,8 @@ pub enum TodaySection {
 /// exactly the restatement this module exists to prevent.
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct RelativeDay {
-    /// `yesterday` / `today` / `tomorrow` / `+3d` / `-3d`.
+    /// `yesterday` / `today` / `tomorrow` / `+3d` / `-3d`, or `unknown` for a
+    /// time kind this build does not know.
     pub text: String,
     /// Whether the day is behind the caller's `now_ms`.
     pub is_past: bool,
@@ -80,6 +81,14 @@ pub fn today_section(
 #[uniffi::export]
 #[must_use]
 pub fn relative_day(at: TimeValue, now_ms: u64, tz: String) -> RelativeDay {
+    // A kind this build does not know reads as unknown, not as the day it
+    // happens to be indexed at (ADR-0045 §6).
+    if let TimeValue::Unknown { .. } = at {
+        return RelativeDay {
+            text: "unknown".to_string(),
+            is_past: false,
+        };
+    }
     let zone = zone_or_utc(&tz);
     let at = SunriseTime::from(at).to_instant(&zone);
     let (text, is_past) = sunrise_domain::relative_day(at, now_ms, &zone);

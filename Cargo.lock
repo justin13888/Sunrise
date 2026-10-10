@@ -3221,6 +3221,7 @@ dependencies = [
  "base64",
  "jiff",
  "sunrise-auth",
+ "sunrise-cbor",
  "sunrise-client-core",
  "sunrise-core",
  "sunrise-crypto",

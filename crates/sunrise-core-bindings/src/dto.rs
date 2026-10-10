@@ -10,8 +10,11 @@
 //!   three of them.
 //! * `Unknowns` — the forward-compatibility map. It exists so a field written
 //!   by a newer schema survives a round trip through this build; it is not
-//!   something a UI reads, and putting it on the wire would invite a client to
-//!   treat it as data.
+//!   something a UI reads, and exposing its structure would invite a client to
+//!   treat it as data. A mirror that a client hands back whole (a constraint,
+//!   a rule, a template, a time) carries it as an opaque `extra` blob of
+//!   canonical CBOR instead, which the client passes through and never reads
+//!   (ADR-0045 §6, #431).
 //! * `[u8; 16]` — op and device ids. UniFFI has no fixed-size array type at
 //!   all.
 //!
@@ -66,6 +69,30 @@ fn hex32(bytes: &[u8; 32]) -> String {
     s
 }
 
+/// A nested value's unknown fields, as the opaque blob its mirror carries:
+/// canonical CBOR of the map, or `None` when there are none.
+///
+/// The client never reads the blob; it only hands it back, which is what lets
+/// a constraint, rule or template it edits keep the fields a newer build wrote
+/// (ADR-0045 §6).
+fn extra_out(unknown: &sunrise_domain::Unknowns) -> Option<Vec<u8>> {
+    if unknown.is_empty() {
+        return None;
+    }
+    // A map that decoded can be encoded; on the impossible failure the fields
+    // are dropped, exactly as the mirror did before it carried them.
+    sunrise_cbor::encode_canonical(unknown).ok()
+}
+
+/// The inverse of [`extra_out`]. Absent, or bytes that are not a CBOR map
+/// (only a client that built the blob itself can send those), read as no
+/// unknown fields.
+fn extra_in(extra: Option<&[u8]>) -> sunrise_domain::Unknowns {
+    extra
+        .and_then(|bytes| sunrise_cbor::decode_lenient(bytes).ok())
+        .unwrap_or_default()
+}
+
 // ---------------------------------------------------------------------------
 // Time
 // ---------------------------------------------------------------------------
@@ -97,6 +124,16 @@ pub enum TimeValue {
         /// The date.
         date: jiff::civil::Date,
     },
+    /// A kind this build does not know (ADR-0045 §6). A client renders it as
+    /// unknown rather than as a date, and hands it back unchanged to keep it;
+    /// [`crate::vocab::time_value_ms`] still places it where the core does.
+    Unknown {
+        /// The `kind` string exactly as it arrived.
+        kind: String,
+        /// Every other field of the value, as opaque canonical CBOR. Never
+        /// read by a client; only handed back.
+        raw: Vec<u8>,
+    },
 }
 
 impl From<&SunriseTime> for TimeValue {
@@ -109,11 +146,9 @@ impl From<&SunriseTime> for TimeValue {
             },
             SunriseTime::Floating { civil } => Self::Floating { civil: *civil },
             SunriseTime::AllDay { date } => Self::AllDay { date: *date },
-            // The mirror has no case for a kind this build does not know; a
-            // client sees the instant it resolves to. A value a client hands
-            // back replaces the stored one, as for any explicit set.
-            SunriseTime::Unknown { .. } => Self::Instant {
-                at: t.to_instant(&jiff::tz::TimeZone::UTC),
+            SunriseTime::Unknown { kind, raw } => Self::Unknown {
+                kind: kind.clone(),
+                raw: extra_out(raw).unwrap_or_default(),
             },
         }
     }
@@ -126,6 +161,11 @@ impl From<TimeValue> for SunriseTime {
             TimeValue::Zoned { civil, tz } => Self::Zoned { civil, tz },
             TimeValue::Floating { civil } => Self::Floating { civil },
             TimeValue::AllDay { date } => Self::AllDay { date },
+            // Empty `raw` is the empty map: `extra_out` sends one as no bytes.
+            TimeValue::Unknown { kind, raw } => Self::Unknown {
+                kind,
+                raw: extra_in(Some(&raw)),
+            },
         }
     }
 }
@@ -141,6 +181,10 @@ pub struct TimeWindow {
     pub start: jiff::civil::Time,
     /// Exclusive end (local wall clock).
     pub end: jiff::civil::Time,
+    /// Fields this build does not know, opaque; hand it back unchanged. See
+    /// the module docs.
+    #[uniffi(default = None)]
+    pub extra: Option<Vec<u8>>,
 }
 
 /// See [`sunrise_domain::DateRange`].
@@ -150,6 +194,10 @@ pub struct DateWindow {
     pub start: jiff::civil::Date,
     /// Inclusive end; open-ended when absent.
     pub end: Option<jiff::civil::Date>,
+    /// Fields this build does not know, opaque; hand it back unchanged. See
+    /// the module docs.
+    #[uniffi(default = None)]
+    pub extra: Option<Vec<u8>>,
 }
 
 /// See [`sunrise_domain::ScheduleConstraint`]. `days_of_week` is a list rather
@@ -165,6 +213,10 @@ pub struct Constraint {
     pub date_range: Option<DateWindow>,
     /// Whether violating this rejects the write or only demotes it.
     pub severity: ConstraintSeverity,
+    /// Fields this build does not know, opaque; hand it back unchanged. See
+    /// the module docs.
+    #[uniffi(default = None)]
+    pub extra: Option<Vec<u8>>,
 }
 
 impl From<&ScheduleConstraint> for Constraint {
@@ -174,23 +226,38 @@ impl From<&ScheduleConstraint> for Constraint {
             days_of_week,
             date_range,
             severity,
-            // The mirror does not carry fields this build does not know; a
-            // value a client hands back replaces the stored one whole.
-            unknown: _,
+            unknown,
         } = c;
         Self {
-            time_of_day: time_of_day.as_ref().map(|w| TimeWindow {
-                start: w.start,
-                end: w.end,
+            time_of_day: time_of_day.as_ref().map(|w| {
+                let TimeOfDayRange {
+                    start,
+                    end,
+                    unknown,
+                } = w;
+                TimeWindow {
+                    start: *start,
+                    end: *end,
+                    extra: extra_out(unknown),
+                }
             }),
             // Monday-first, then any day token this build does not know, so a
             // client that hands the list back carries it through.
             days_of_week: days_of_week.iter().collect(),
-            date_range: date_range.as_ref().map(|r| DateWindow {
-                start: r.start,
-                end: r.end,
+            date_range: date_range.as_ref().map(|r| {
+                let DateRange {
+                    start,
+                    end,
+                    unknown,
+                } = r;
+                DateWindow {
+                    start: *start,
+                    end: *end,
+                    extra: extra_out(unknown),
+                }
             }),
             severity: severity.clone(),
+            extra: extra_out(unknown),
         }
     }
 }
@@ -198,11 +265,19 @@ impl From<&ScheduleConstraint> for Constraint {
 impl From<Constraint> for ScheduleConstraint {
     fn from(c: Constraint) -> Self {
         Self {
-            time_of_day: c.time_of_day.map(|w| TimeOfDayRange::new(w.start, w.end)),
+            time_of_day: c.time_of_day.map(|w| TimeOfDayRange {
+                start: w.start,
+                end: w.end,
+                unknown: extra_in(w.extra.as_deref()),
+            }),
             days_of_week: sunrise_domain::WeekdaySet::from_days(c.days_of_week),
-            date_range: c.date_range.map(|r| DateRange::new(r.start, r.end)),
+            date_range: c.date_range.map(|r| DateRange {
+                start: r.start,
+                end: r.end,
+                unknown: extra_in(r.extra.as_deref()),
+            }),
             severity: c.severity,
-            unknown: sunrise_domain::Unknowns::new(),
+            unknown: extra_in(c.extra.as_deref()),
         }
     }
 }
@@ -232,6 +307,10 @@ pub struct Recurrence {
     pub until: Option<jiff::Timestamp>,
     /// Week start.
     pub wkst: Option<Weekday>,
+    /// Fields this build does not know, opaque; hand it back unchanged. See
+    /// the module docs.
+    #[uniffi(default = None)]
+    pub extra: Option<Vec<u8>>,
 }
 
 impl From<&RRule> for Recurrence {
@@ -246,8 +325,7 @@ impl From<&RRule> for Recurrence {
             count,
             until,
             wkst,
-            // Not mirrored; see `Constraint`.
-            unknown: _,
+            unknown,
         } = r;
         Self {
             freq: freq.clone(),
@@ -259,6 +337,7 @@ impl From<&RRule> for Recurrence {
             count: *count,
             until: *until,
             wkst: wkst.clone(),
+            extra: extra_out(unknown),
         }
     }
 }
@@ -275,7 +354,7 @@ impl From<Recurrence> for RRule {
             count: r.count,
             until: r.until,
             wkst: r.wkst,
-            unknown: sunrise_domain::Unknowns::new(),
+            unknown: extra_in(r.extra.as_deref()),
         }
     }
 }
@@ -900,6 +979,10 @@ pub struct Template {
     pub estimated_duration_s: Option<u64>,
     /// Body.
     pub body: Option<NoteBody>,
+    /// Fields this build does not know, opaque; hand it back unchanged. See
+    /// the module docs.
+    #[uniffi(default = None)]
+    pub extra: Option<Vec<u8>>,
 }
 
 impl From<&TaskTemplate> for Template {
@@ -912,8 +995,7 @@ impl From<&TaskTemplate> for Template {
             priority,
             estimated_duration_s,
             body,
-            // Not mirrored; see `Constraint`.
-            unknown: _,
+            unknown,
         } = t;
         Self {
             title: title.clone(),
@@ -923,6 +1005,7 @@ impl From<&TaskTemplate> for Template {
             priority: *priority,
             estimated_duration_s: *estimated_duration_s,
             body: body.clone(),
+            extra: extra_out(unknown),
         }
     }
 }
@@ -937,7 +1020,7 @@ impl From<Template> for TaskTemplate {
             priority: t.priority,
             estimated_duration_s: t.estimated_duration_s,
             body: t.body,
-            unknown: sunrise_domain::Unknowns::new(),
+            unknown: extra_in(t.extra.as_deref()),
         }
     }
 }
