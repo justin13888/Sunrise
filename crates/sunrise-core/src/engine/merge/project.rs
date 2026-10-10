@@ -15,6 +15,7 @@ use crate::engine::context::{
 };
 use crate::engine::ids::{blob16, ms_to_ts};
 use crate::engine::lww::{read_row_lww, LwwStamp, RowLww};
+use crate::engine::preferences::{read_preferences, upsert_preferences_row};
 use crate::engine::routine::{insert_routine_row, read_routine, update_routine_row};
 use crate::engine::stream::{ensure_stream_row, insert_stream_row, read_stream, update_stream_row};
 use crate::engine::task::{
@@ -26,7 +27,7 @@ use ciborium::value::Value;
 use rusqlite::{params, OptionalExtension, Transaction};
 use std::collections::{BTreeMap, BTreeSet};
 use sunrise_domain::{
-    inbox_stream_ref, Attachment, Block, Context, Routine, Stream, Task, TaskState,
+    inbox_stream_ref, Attachment, Block, Context, Preferences, Routine, Stream, Task, TaskState,
 };
 use sunrise_id::registry::{Crdt, EntitySpec, Owner};
 use sunrise_id::{EntityKind, EntityRef};
@@ -356,6 +357,7 @@ pub(super) fn read_row_state(
         EntityKind::Routine => read_routine(tx, id)?.map(|r| Value::serialized(&r)),
         EntityKind::Block => read_block(tx, id)?.map(|b| Value::serialized(&b)),
         EntityKind::Attachment => read_attachment(tx, id)?.map(|a| Value::serialized(&a)),
+        EntityKind::Preferences => read_preferences(tx, id)?.map(|p| Value::serialized(&p)),
         _ => None,
     };
     value
@@ -529,6 +531,10 @@ pub(super) fn write_projection(
         EntityKind::Attachment => {
             let a: Attachment = decode!(Attachment);
             upsert_attachment_row(tx, &a, head)?;
+        }
+        EntityKind::Preferences => {
+            let p: Preferences = decode!(Preferences);
+            upsert_preferences_row(tx, &p, head)?;
         }
         _ => return Ok(false),
     }

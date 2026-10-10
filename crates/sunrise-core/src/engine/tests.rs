@@ -19177,6 +19177,9 @@ mod feature_gate;
 /// Per-field merge (ADR-0044): `Patch` ops and their convergence.
 mod field_merge;
 
+/// The Preferences entity and the device overlay (ADR-0050).
+mod preferences;
+
 /// Per-device op chains, fork evidence and the stream digest (ADR-0043).
 mod op_chain;
 

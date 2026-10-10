@@ -34,10 +34,11 @@
 //! list, so adding a feature is a `DOC_SCHEMA_V` bump, as ADR-0045 §1 says a
 //! feature id is.
 //!
-//! The list is empty: no shipped feature needs gating yet. The first one,
-//! ADR-0044's `core.field_ops` (#319), adds its entry here, emits
-//! `VaultRequires` through [`crate::Engine::require_features`] before its
-//! first op, and needs nothing else from this module.
+//! A feature adds its entry here and emits `VaultRequires` through
+//! [`crate::Engine::require_features`] before its first op. The first is
+//! `preferences.entity` (ADR-0050). An `<entity>.entity` feature is used by
+//! every `Patch` on that entity, read off the `ref`'s prefix, so an entity
+//! written only by `Patch` needs no op kind or field to be gated.
 
 use sunrise_id::registry::Merge;
 use sunrise_id::EntityKind;
@@ -60,9 +61,19 @@ pub struct Feature {
     pub since: u16,
 }
 
-/// Every feature this build supports. See the [module docs](self) for why it
-/// is empty.
-pub static FEATURES: &[Feature] = &[];
+/// Every feature this build supports.
+pub static FEATURES: &[Feature] = &[
+    // The vault's Preferences entity (ADR-0050, issue #337). It has no op
+    // kind or field of its own: every op on it is a `Patch` whose `ref` is a
+    // `prf_` id, which `features_used` reads as this feature.
+    Feature {
+        id: "preferences.entity",
+        op_kinds: &[],
+        fields: &[],
+        field_op_kinds: &[],
+        since: 11,
+    },
+];
 
 /// What a feature locks when a build lacks it.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -169,6 +180,18 @@ pub(crate) fn features_used(registry: &[Feature], inner: &[u8]) -> Vec<&'static 
     let Some((Value::Text(variant), payload)) = entries.pop() else {
         return Vec::new();
     };
+    // A `Patch` names its entity by the prefix of its `ref`; the entity's
+    // `<tag>.entity` feature is used by every one of them.
+    let patched_entity: Option<String> = match (&*variant, &payload) {
+        ("Patch", Value::Map(fields)) => fields
+            .iter()
+            .find(|(k, _)| k.as_text() == Some("ref"))
+            .and_then(|(_, v)| v.as_text())
+            .and_then(|r| r.get(..4))
+            .and_then(EntityKind::from_prefix)
+            .map(|k| format!("{}.entity", k.tag())),
+        _ => None,
+    };
     let carried: Vec<String> = match payload {
         Value::Map(fields) => fields
             .into_iter()
@@ -187,6 +210,7 @@ pub(crate) fn features_used(registry: &[Feature], inner: &[u8]) -> Vec<&'static 
                 || f.fields
                     .iter()
                     .any(|name| carried.iter().any(|c| c == name))
+                || patched_entity.as_deref() == Some(f.id)
         })
         .map(|f| f.id)
         .collect()

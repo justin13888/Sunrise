@@ -422,7 +422,7 @@ fn device_features_keeps_each_devices_latest_and_clears_the_enable_guard() {
 #[test]
 fn a_build_advertises_its_features_once_per_change() {
     let mut db = db_root(ROOT);
-    let none = engine_seeded(ROOT, [1u8; 32], clock());
+    let none = engine_seeded(ROOT, [1u8; 32], clock()).with_features(&[]);
     assert!(!none.advertise_features(&mut db).unwrap());
     assert!(envs_of_kind(&db, "device.features").is_empty());
 
