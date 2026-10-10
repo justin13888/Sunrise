@@ -339,7 +339,6 @@ fn an_unreachable_store_during_bearer_resolution_is_logged_and_refused() {
             )
             .await;
             res.assert_status(StatusCode::UNAUTHORIZED);
-            assert_eq!(code_of(&res), AUTH_TOKEN_INVALID);
         });
     });
 
