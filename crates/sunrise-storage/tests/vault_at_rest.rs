@@ -365,6 +365,93 @@ fn storage_v_boundary_one_below_the_baseline_is_refused_as_pre_baseline() {
     );
 }
 
+/// `PRAGMA auto_vacuum` as the file reports it: 2 is INCREMENTAL.
+fn auto_vacuum(db: &Db) -> i64 {
+    db.conn()
+        .query_row("PRAGMA auto_vacuum", [], |r| r.get(0))
+        .expect("read auto_vacuum")
+}
+
+fn freelist_count(db: &Db) -> i64 {
+    db.conn()
+        .query_row("PRAGMA freelist_count", [], |r| r.get(0))
+        .expect("read freelist_count")
+}
+
+fn page_count(db: &Db) -> i64 {
+    db.conn()
+        .query_row("PRAGMA page_count", [], |r| r.get(0))
+        .expect("read page_count")
+}
+
+/// A new file vault is created with `auto_vacuum = INCREMENTAL` in effect,
+/// and keeps it across a re-open (`local-database.md` §Pragmas, issue #461).
+/// Read back from the file: an in-memory database has no header to lose it
+/// from.
+#[test]
+fn a_new_file_vault_is_created_with_incremental_auto_vacuum() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("vault.db");
+    let db = Db::open(&path, &root(0x61)).expect("create the vault");
+    assert_eq!(auto_vacuum(&db), 2, "a fresh vault must be INCREMENTAL");
+    drop(db);
+    let db = Db::open(&path, &root(0x61)).expect("re-open the vault");
+    assert_eq!(auto_vacuum(&db), 2, "the mode must persist in the file");
+}
+
+/// A vault created before #461 reports `auto_vacuum = 0`. The next open moves
+/// it to INCREMENTAL, and its rows survive the rewrite.
+#[test]
+fn an_existing_vault_without_auto_vacuum_is_converted_on_open() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("vault.db");
+    let key = root(0x62);
+    let db = Db::open(&path, &key).expect("create the vault");
+    insert_stream(&db, 1, "kept across the rewrite");
+    // Put it back the way every pre-#461 vault was.
+    db.conn()
+        .execute_batch("PRAGMA auto_vacuum = NONE; VACUUM;")
+        .expect("downgrade auto_vacuum");
+    assert_eq!(auto_vacuum(&db), 0, "the downgrade must have taken");
+    drop(db);
+
+    let db = Db::open(&path, &key).expect("re-open the vault");
+    assert_eq!(auto_vacuum(&db), 2, "the open must convert it");
+    assert_eq!(
+        stream_names(&db),
+        vec!["kept across the rewrite".to_string()]
+    );
+}
+
+/// `Db::incremental_vacuum` returns the pages a large delete freed to the
+/// filesystem: the free list empties and the file has fewer pages.
+#[test]
+fn incremental_vacuum_returns_freed_pages_after_a_large_delete() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("vault.db");
+    let db = Db::open(&path, &root(0x63)).expect("create the vault");
+    let filler = "x".repeat(2_000);
+    for i in 0..200u8 {
+        insert_stream(&db, i, &format!("{i:03}{filler}"));
+    }
+    db.conn()
+        .execute("DELETE FROM streams", [])
+        .expect("delete every stream");
+    let freed = freelist_count(&db);
+    assert!(freed > 0, "the delete must have freed pages");
+    let pages = page_count(&db);
+
+    let returned = db.incremental_vacuum().expect("incremental vacuum");
+    assert_eq!(returned, u64::try_from(freed).unwrap());
+    assert_eq!(freelist_count(&db), 0, "the free list must be empty");
+    assert_eq!(page_count(&db), pages - freed, "the file must have shrunk");
+    assert_eq!(
+        db.incremental_vacuum().expect("a second run"),
+        0,
+        "nothing is left to return"
+    );
+}
+
 /// `Db::with_tx` documents that returning `Err` rolls back. Nothing pinned it,
 /// and the whole op-application loop is built on it: a batch that fails partway
 /// must leave the vault exactly as it was, or a replica materializes half an op

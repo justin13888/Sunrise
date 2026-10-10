@@ -345,9 +345,316 @@ pub struct DeviceFeaturesPayload {
     pub unknown: sunrise_domain::Unknowns,
 }
 
+// The payloads above, and the two `inner_op` keeps beside the op family it
+// defines, described field by field for the canonical document schema
+// (`crate::doc_schema`). A field or variant added to one of these types and
+// not described here fails this crate's build.
+#[allow(unused_imports)]
+use crate::inner_op::{FrontierWire, InnerOp, PatchPayload, StreamDigestPayload};
+#[allow(unused_imports)]
+use sunrise_domain::Unknowns;
+#[allow(unused_imports)]
+use sunrise_id::EntityRef;
+
+sunrise_id::describe_value_types! {
+    /// Every value type an `InnerOp` payload the entity registry does not
+    /// declare carries, field by field. Read only by the test-only
+    /// `crate::doc_schema`; the checks against each type run in every build.
+    #[cfg(test)]
+    pub(crate) static PAYLOAD_VALUE_TYPES;
+    records: [
+        KeyEnvelopePayload {
+            stream_id: [u8; 16];
+            epoch: u32;
+            recipient: Recipient;
+            key_id: [u8; 8];
+            hpke_ciphertext: Vec<u8>;
+        }
+        DeviceRevokePayload {
+            revoked_device_id: [u8; 16];
+            reason_code: RevokeReason;
+        }
+        RosterEntry {
+            cert: Vec<u8>;
+        }
+        KeyShare {
+            device_id: [u8; 16];
+            hpke_ciphertext: Vec<u8>;
+        }
+        IdentityTransitionPayload {
+            from_identity_id: [u8; 16];
+            to_identity_id: [u8; 16];
+            to_id_s_pub: [u8; 32];
+            to_id_d_pub: [u8; 32];
+            roster: Vec<RosterEntry>;
+            device_shares: Vec<KeyShare>;
+            identity_share: Option<ByteBuf>;
+            prev_sig: [u8; 64];
+            next_sig: [u8; 64];
+        }
+        VaultRequiresPayload {
+            features: Vec<String>;
+            ..unknown
+        }
+        DeviceFeaturesPayload {
+            features: Vec<String>;
+            ..unknown
+        }
+        PatchPayload {
+            target as "ref": EntityRef;
+            create: bool;
+            origin: Option<String>;
+            fields: Unknowns;
+            ..unknown
+        }
+        StreamDigestPayload {
+            frontier: Vec<FrontierWire>;
+            digest: [u8; 32];
+            ..unknown
+        }
+    ],
+    newtypes: [],
+    aliases: [],
+    tuples: [
+        FrontierWire([u8; 16], u64, [u8; 32]);
+    ],
+    variants: [
+        Recipient external {
+            Device = ([u8; 16]);
+            Identity = ([u8; 16]);
+        }
+        RevokeReason external {
+            Lost = unit;
+            Stolen = unit;
+            Retired = unit;
+            Compromised = unit;
+        }
+    ],
+}
+
+/// Declares `OP_PAYLOADS` and checks each payload type against the
+/// variant: the constructor must coerce to `fn(Payload) -> InnerOp`.
+macro_rules! op_payloads {
+    ($( $variant:ident($payload:ty) ),* $(,)?) => {
+        /// Every `InnerOp` variant the entity registry does not declare, with
+        /// its payload type as written. A test in `crate::doc_schema` holds
+        /// this list to the decoder's own variant list, so it is test-only,
+        /// as that module is; the check below runs in every build.
+        #[cfg(test)]
+        pub(crate) const OP_PAYLOADS: &[(&str, &str)] = &[
+            $( (::core::stringify!($variant), ::core::stringify!($payload)), )*
+        ];
+
+        const _: () = {
+            #[allow(dead_code)]
+            fn described_payloads_are_the_variant_payloads() {
+                $( let _: fn($payload) -> InnerOp = InnerOp::$variant; )*
+            }
+        };
+    };
+}
+
+op_payloads! {
+    KeyEnvelope(KeyEnvelopePayload),
+    DeviceRevoke(DeviceRevokePayload),
+    DeviceCertPublish(Vec<u8>),
+    IdentityTransition(Box<IdentityTransitionPayload>),
+    Patch(Box<PatchPayload>),
+    StreamDigest(StreamDigestPayload),
+    VaultRequires(VaultRequiresPayload),
+    DeviceFeatures(DeviceFeaturesPayload),
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
+    use sunrise_id::registry::{Tagging, ValueShape, VariantShape};
+
+    fn encode<T: Serialize>(value: &T) -> ciborium::value::Value {
+        let mut buf = Vec::new();
+        ciborium::ser::into_writer(value, &mut buf).unwrap();
+        ciborium::de::from_reader(buf.as_slice()).unwrap()
+    }
+
+    fn described(name: &str) -> ValueShape {
+        PAYLOAD_VALUE_TYPES
+            .iter()
+            .find(|v| v.name == name)
+            .unwrap_or_else(|| panic!("{name} is not described"))
+            .shape
+    }
+
+    /// The map keys serde writes for `value` are the fields described for
+    /// `name`, less the ones `skipped` names.
+    fn assert_wire_names<T: Serialize>(name: &str, value: &T, skipped: &[&str]) {
+        let ValueShape::Record { fields, .. } = described(name) else {
+            panic!("{name} is described as a record");
+        };
+        let ciborium::value::Value::Map(entries) = encode(value) else {
+            panic!("{name} must encode as a map");
+        };
+        let written: BTreeSet<String> = entries
+            .into_iter()
+            .map(|(k, _)| k.into_text().expect("text key"))
+            .collect();
+        let names: BTreeSet<String> = fields.iter().map(|f| f.name.to_owned()).collect();
+        let expected: BTreeSet<String> = names
+            .iter()
+            .filter(|n| !skipped.contains(&n.as_str()))
+            .cloned()
+            .collect();
+        assert_eq!(written, expected, "{name}'s wire names drifted");
+        for s in skipped {
+            assert!(names.contains(*s), "{name}: `{s}` is not described");
+        }
+    }
+
+    #[test]
+    fn payload_records_write_their_described_names() {
+        use crate::inner_op::PatchPayload;
+        assert_wire_names(
+            "KeyEnvelopePayload",
+            &KeyEnvelopePayload {
+                stream_id: [2u8; 16],
+                epoch: 7,
+                recipient: Recipient::Identity([3u8; 16]),
+                key_id: [4u8; 8],
+                hpke_ciphertext: vec![5u8; 80],
+            },
+            &[],
+        );
+        assert_wire_names(
+            "DeviceRevokePayload",
+            &DeviceRevokePayload {
+                revoked_device_id: [6u8; 16],
+                reason_code: RevokeReason::Lost,
+            },
+            &[],
+        );
+        let t = a_transition();
+        assert_wire_names("IdentityTransitionPayload", &t, &[]);
+        assert_wire_names("RosterEntry", &t.roster[0], &[]);
+        assert_wire_names("KeyShare", &t.device_shares[0], &[]);
+        assert_wire_names(
+            "VaultRequiresPayload",
+            &VaultRequiresPayload {
+                features: Vec::new(),
+                unknown: Unknowns::new(),
+            },
+            &[],
+        );
+        assert_wire_names(
+            "DeviceFeaturesPayload",
+            &DeviceFeaturesPayload {
+                features: Vec::new(),
+                unknown: Unknowns::new(),
+            },
+            &[],
+        );
+        assert_wire_names(
+            "PatchPayload",
+            &PatchPayload {
+                target: EntityRef::new(sunrise_id::EntityKind::Task, [1u8; 16]),
+                create: true,
+                origin: Some(PatchPayload::GENERATED.into()),
+                fields: Unknowns::new(),
+                unknown: Unknowns::new(),
+            },
+            &[],
+        );
+        assert_wire_names(
+            "StreamDigestPayload",
+            &StreamDigestPayload {
+                frontier: vec![FrontierWire([1u8; 16], 2, [3u8; 32])],
+                digest: [4u8; 32],
+                unknown: Unknowns::new(),
+            },
+            &[],
+        );
+    }
+
+    /// Every described record is reached by the wire test above.
+    #[test]
+    fn every_described_payload_record_is_checked_on_the_wire() {
+        let checked = [
+            "KeyEnvelopePayload",
+            "DeviceRevokePayload",
+            "IdentityTransitionPayload",
+            "RosterEntry",
+            "KeyShare",
+            "VaultRequiresPayload",
+            "DeviceFeaturesPayload",
+            "PatchPayload",
+            "StreamDigestPayload",
+        ];
+        for v in PAYLOAD_VALUE_TYPES {
+            if matches!(v.shape, ValueShape::Record { .. }) {
+                assert!(
+                    checked.contains(&v.name),
+                    "{} has no wire-name check",
+                    v.name
+                );
+            }
+        }
+    }
+
+    /// The externally tagged enums write their described variant names: a
+    /// unit variant as its name, a newtype variant as a one-entry map.
+    #[test]
+    fn payload_enums_write_their_described_variants() {
+        use ciborium::value::Value;
+        let variants = |name: &str| {
+            let ValueShape::Variants {
+                tagging: Tagging::External,
+                variants,
+                keeps_unknowns: false,
+            } = described(name)
+            else {
+                panic!("{name} is externally tagged and refuses an unknown variant");
+            };
+            variants
+        };
+        let reasons = [
+            RevokeReason::Lost,
+            RevokeReason::Stolen,
+            RevokeReason::Retired,
+            RevokeReason::Compromised,
+        ];
+        let described_reasons = variants("RevokeReason");
+        assert_eq!(described_reasons.len(), reasons.len());
+        for (reason, spec) in reasons.iter().zip(described_reasons) {
+            assert!(matches!(spec.shape, VariantShape::Unit));
+            assert_eq!(encode(reason), Value::Text(spec.name.into()));
+            assert_eq!(reason.as_str(), spec.name);
+        }
+        let recipients = [Recipient::Device([1u8; 16]), Recipient::Identity([1u8; 16])];
+        let described_recipients = variants("Recipient");
+        assert_eq!(described_recipients.len(), recipients.len());
+        for (recipient, spec) in recipients.iter().zip(described_recipients) {
+            assert!(matches!(spec.shape, VariantShape::Newtype(_)));
+            assert_eq!(
+                encode(recipient),
+                Value::Map(vec![(
+                    Value::Text(spec.name.into()),
+                    Value::Bytes(vec![1u8; 16])
+                )])
+            );
+        }
+    }
+
+    /// A frontier entry is a three-item array, in its described order.
+    #[test]
+    fn frontier_wire_is_a_described_tuple() {
+        use ciborium::value::Value;
+        let ValueShape::Tuple(items) = described("FrontierWire") else {
+            panic!("FrontierWire is described as a tuple");
+        };
+        let Value::Array(written) = encode(&FrontierWire([1u8; 16], 2, [3u8; 32])) else {
+            panic!("FrontierWire must encode as an array");
+        };
+        assert_eq!(written.len(), items.len());
+    }
 
     /// `{ "features": [...], unknown-fields }`, as ADR-0045 §7's CDDL says,
     /// and a field a later build adds survives the round trip.
