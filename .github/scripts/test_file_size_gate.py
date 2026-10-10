@@ -75,7 +75,7 @@ class GateCase(unittest.TestCase):
         Rewriting the literals rather than importing and patching keeps the
         subprocess boundary — which is what CI runs, and where the exit code
         lives — while letting a case describe a tree of three files instead
-        of the twenty-five packages the real tables name.
+        of the twenty-six packages the real tables name.
         """
         text = GATE.read_text()
         for name, value in (
@@ -183,6 +183,19 @@ class AFileGrew(GateCase):
         result = self.run_gate({"crates/small": 100, "crates/large": 1000}, {})
         self.assert_code(result, GREW, "crates/small/src/lib.rs: 500 lines, over 100")
         self.assertNotIn("crates/large", result.stdout)
+
+    def test_a_baseline_entry_is_judged_by_its_own_package_not_a_prefix(self):
+        # `crates/sunrise-cli` is a string prefix of `crates/sunrise-client-core`,
+        # and `crates/sunrise-core` of `crates/sunrise-core-bindings`. Looking a
+        # file's package up by prefix judged `client-core/src/undo.rs` against
+        # the CLI's threshold and reported it stale while it was over its own.
+        rust_file(self.tmp / "crates/a/src/lib.rs", 10)
+        rust_file(self.tmp / "crates/a-b/src/big.rs", 500)
+        result = self.run_gate(
+            {"crates/a": 1000, "crates/a-b": 100},
+            {"crates/a-b/src/big.rs": "debt"},
+        )
+        self.assert_code(result, OK, "1 file(s) on the shrinking baseline")
 
     def test_a_regression_outranks_a_stale_entry(self):
         # Both conditions at once. The code has to be 1: it is the one that
