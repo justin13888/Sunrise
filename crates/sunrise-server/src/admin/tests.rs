@@ -443,6 +443,25 @@ async fn an_orphaned_account_directory_is_swept() {
     assert!(h.area(Area::Committed).exists());
 }
 
+/// A stale directory whose name is 32 uppercase hex characters is not one the
+/// backend could have written, which only writes lowercase, so the sweep
+/// leaves it in place rather than decoding it as an account.
+#[tokio::test]
+async fn an_uppercase_account_directory_is_not_swept() {
+    let h = Harness::new();
+    h.upload(b"keep me").await;
+    let foreign = h.dir.path().join("committed").join("AB".repeat(16));
+    std::fs::create_dir_all(foreign.join("manifests")).unwrap();
+    let newest = newest_ms(&foreign);
+
+    let report = maintenance::run(&h.state, newest + 25 * 60 * 60 * 1000, false)
+        .await
+        .unwrap();
+    assert_eq!(report.orphans_swept, 0);
+    assert_eq!(report.failures, 0);
+    assert!(foreign.exists(), "an uppercase-named directory was swept");
+}
+
 /// An account tree goes manifests first, so a removal that stops part-way
 /// never leaves a manifest naming chunks already gone: a chunk directory that
 /// cannot be emptied stops it, and the manifests are already removed.
