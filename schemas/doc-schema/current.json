@@ -1225,7 +1225,7 @@
                     "type": "u32"
                 }
             ],
-            "keeps_unknowns": false,
+            "keeps_unknowns": true,
             "name": "Chunk",
             "shape": "record"
         },
@@ -1470,7 +1470,7 @@
                     "type": "EntityRef"
                 }
             ],
-            "keeps_unknowns": false,
+            "keeps_unknowns": true,
             "name": "ReviewSnapshotStream",
             "shape": "record"
         },
@@ -1497,7 +1497,7 @@
                     "type": "u32"
                 }
             ],
-            "keeps_unknowns": false,
+            "keeps_unknowns": true,
             "name": "ReviewTotals",
             "shape": "record"
         },
@@ -1574,7 +1574,7 @@
                     "type": "String"
                 }
             ],
-            "keeps_unknowns": false,
+            "keeps_unknowns": true,
             "name": "StreakRow",
             "shape": "record"
         },

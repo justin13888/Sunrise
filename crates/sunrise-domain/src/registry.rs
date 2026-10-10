@@ -123,6 +123,7 @@ sunrise_id::describe_value_types! {
         Chunk {
             index: u32;
             total: u32;
+            ..unknown
         }
         ReviewTotals {
             completed: u32;
@@ -130,6 +131,7 @@ sunrise_id::describe_value_types! {
             dropped: u32;
             created: u32;
             reopened: u32;
+            ..unknown
         }
         ReviewSnapshotStream {
             stream: EntityRef;
@@ -137,12 +139,14 @@ sunrise_id::describe_value_types! {
             completed: u32;
             deferred: u32;
             created: u32;
+            ..unknown
         }
         StreakRow {
             routine: EntityRef;
             title: String;
             streak: i64;
             last_completed_at_ms: Option<u64>;
+            ..unknown
         }
     ],
     newtypes: [
@@ -581,7 +585,7 @@ mod tests {
             &DateRange::new(date(2024, 1, 1), Some(date(2024, 2, 1))),
             &[],
         );
-        assert_value_wire_names("Chunk", &Chunk { index: 1, total: 2 }, &[]);
+        assert_value_wire_names("Chunk", &Chunk::new(1, 2), &[]);
         assert_value_wire_names("ReviewTotals", &ReviewTotals::default(), &[]);
         assert_value_wire_names(
             "ReviewSnapshotStream",
@@ -591,6 +595,7 @@ mod tests {
                 completed: 0,
                 deferred: 0,
                 created: 0,
+                unknown: Unknowns::new(),
             },
             &[],
         );
@@ -601,6 +606,7 @@ mod tests {
                 title: "r".into(),
                 streak: 0,
                 last_completed_at_ms: None,
+                unknown: Unknowns::new(),
             },
             &[],
         );
