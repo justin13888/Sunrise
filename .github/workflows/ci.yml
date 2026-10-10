@@ -875,93 +875,56 @@ jobs:
   mutants:
     name: Mutation coverage
     runs-on: ubuntu-latest
-    # Measured rather than derived, finally. The per-mutant cost was previously
-    # assumed to transfer between crates from a `sunrise-sync` figure, with a
-    # note saying that assumption wanted replacing. It does not transfer: it
-    # spans a factor of eight. Full local passes at `--jobs 1` on an Apple
-    # silicon laptop, 2026-09-16 at `1d4b484`:
+    # Measured on a runner, at last (#497). The scheduled nightly 38044938836
+    # ran this matrix on 2026-10-10 at `5948c54`, the first with #403's fix
+    # (every mutant built without `-D warnings`, so body replacements are
+    # tested rather than scored unviable). Wall clock per shard, whole job:
     #
-    #   sunrise-crypto    519 mutants   16m    ~1.9 s/mutant
-    #   sunrise-sync      135 mutants    7m    ~3.1 s/mutant
-    #   sunrise-domain   1356 mutants    2h    ~5.3 s/mutant
-    #   sunrise-core     1259 mutants     -    ~15.4 s/mutant, over the first 76
+    #   sunrise-domain   6 shards   1447 mutants   24-33 min each
+    #   sunrise-crypto   2 shards    548 mutants   10-13 min each
+    #   sunrise-sync     1 shard     171 mutants   61 min
+    #   sunrise-core     4 shards   2502 mutants   all four cancelled at 120
     #
-    # `sunrise-core` is the only one not run to completion; its rate is a
-    # partial sample and projects to roughly 5.4 hours whole. That is what sets
-    # this ceiling, not `sunrise-domain`: core's largest shard is 315 mutants at
-    # ~15.4 s, about 81 minutes, where domain's 226 at ~5.3 s is about 20. A
-    # hosted runner is slower than the laptop these came from, and 120 is set
-    # to absorb that — but by how much is not derivable from what is written
-    # here, because three terms under it are unmeasured. State all three.
+    # `sunrise-core` is what sets this bound, and on that run it broke it.
+    # Its population was 2502 at `5948c54` (626, 626, 626 and 624 per shard,
+    # from each shard's "Found N mutants to test"), not the 1313 nightly
+    # 35978884844 counted at `d9566ad`: the crate nearly doubled in sixteen
+    # days. The four shards got through 197, 168, 187 and 214 mutants before
+    # the cancel, at 35.8, 42.1, 37.7 and 33.1 s a mutant after the baseline
+    # (a 76-102 s build plus a 26-33 s test, unmutated, once per shard). A
+    # mutant that builds pays an incremental rebuild of about 13 s and a
+    # 26-33 s test run; with `-D warnings` gone, most of them now build, which
+    # is why this is so far above the ~15.4 s laptop figure this comment used
+    # to work from. At those rates a 626-mutant shard is 6.1-7.3 hours, past
+    # the 6-hour ceiling GitHub puts on any hosted job, so no bound fixes four
+    # shards. The job around the run is small: checkout, toolchain, cache
+    # restore and the cargo-mutants install took about 20 s before the
+    # baseline started.
     #
-    # The first is the runner ratio. 81 minutes holds at the laptop's
-    # per-mutant cost; `ubuntu-latest` is slower by a factor nobody has
-    # written down. At 1.5x, core's largest shard is 121 minutes of mutants
-    # alone and this job times out; every other shard survives a much worse
-    # ratio. Nobody has timed a shard on a runner, because the matrix has
-    # never completed one — so the ratio is unrecorded rather than measured
-    # and generous.
+    # So the shard count moved, not this number, as the lever this comment
+    # always named said it should: `sunrise-core` now runs in 24 shards. At
+    # 2514 mutants (`cargo mutants --list -p sunrise-core --all-features` at
+    # `9d9451c`) that is 105 a shard, which is 74 minutes at the slowest
+    # observed 42.1 s plus about 2.5 minutes of baseline and setup — roughly
+    # 1.5x of headroom under 120. Each split pays one more baseline, about
+    # 2 minutes of runner time, which is small beside the mutants themselves.
+    # The other three crates' longest shard is 61 minutes and needs nothing.
     #
-    # The second is what `315 x 15.4 s` leaves out, which is the job around
-    # the run rather than the run: `actions/checkout`, the toolchain action,
-    # a `Swatinem/rust-cache` that is cold on a nightly, and the cargo-mutants
-    # install. Those are additive, none is timed here, and each pushes the
-    # break-even ratio below 1.5x.
-    #
-    # What it does not leave out is the baseline build, and an earlier
-    # revision of this comment claimed it did. `cargo mutants` does build and
-    # test the tree unmutated once per invocation — in a fresh tree that
-    # compiles SQLCipher from source through `rusqlite`'s `bundled-sqlcipher`,
-    # as `.cargo/mutants.toml` records and `crates/sunrise-core/Cargo.toml`
-    # pulls — but the per-mutant figures above are full-pass wall clock
-    # divided by mutants, so every one of them already contains it.
-    # `docs/10-cross-cutting/testing.md` defines the column that way and its
-    # three completed rows divide out. Adding it here would count it twice,
-    # and the correction is not cosmetic: the lever this comment
-    # ends on is more shards, and more shards buys more baseline builds, not
-    # fewer.
-    #
-    # The third term is `15.4` itself, and it is the one that decides which
-    # way the bound points. `sunrise-core`'s only completed pass is nightly
-    # 35978884844's four shards at d9566ad (54-90 min each), and 812 of its
-    # 1313 mutants failed to build under the workflow-level `-D warnings`
-    # that the `Mutate` step below now clears (#403), so those wall clocks do
-    # not price a mutant that builds and runs its tests. Nothing in this repository says whether 15.4
-    # is that same full-pass average taken over its first 76 mutants or a
-    # marginal rate off cargo-mutants' own output. If it is the average, it
-    # carries 1/76th of a baseline build and `315 x 15.4` charges that build
-    # 315/76 times — about four — so the arithmetic **over**-counts fixed
-    # cost. If it is marginal, it carries none and the arithmetic
-    # under-counts.
-    #
-    # So ~1.5x is not a measured break-even, and it is not established as a
-    # bound in either direction: the second term pushes it down, the third
-    # pushes it up if 15.4 is an average, and no completed shard settles
-    # which dominates, for the reason above. No corrected figure is offered: a
-    # second number derived from the same missing measurement is exactly what
-    # this comment exists to stop. What would settle it is one completed
-    # `sunrise-core` pass with its wall clock recorded, built the way the
-    # local task builds it: the first nightly after #403 cleared `-D warnings`
-    # for the `Mutate` step, which is also the run that re-records the
-    # crate's floor. Revisit this bound against that run's wall clocks
-    # (#497).
-    #
-    # The lever if it turns out to be wrong is `sunrise-core`'s shard count,
-    # not this number: the longest shard is the only one near the ceiling, and
-    # raising `timeout-minutes` only lets a bad ratio cost more. Splitting
-    # core further does shorten the longest shard, but **sub**-proportionally
-    # — each new shard pays another baseline build — and total runner minutes
-    # rise with every split. And the failure is no longer cheap. Until #272
-    # recorded `sunrise-core`'s floor, the gate failed that crate as unfloored
-    # whatever its shards did, so a timed-out shard cost runner minutes and
-    # nothing else. Now the crate is compared against a floor, and a shard
-    # that times out puts that comparison at stake.
-    #
-    # If core's shard count rises, this can come down with it.
+    # The rates are shard averages over the first third of each slice, not
+    # over the whole crate: cargo-mutants' default `slice` sharding gives each
+    # shard a contiguous run of files, so a slice whose files have slower tests
+    # costs more. And the headroom goes with the population: at 42.1 s, a shard
+    # crosses 120 minutes at about 165 mutants, which this split reaches when
+    # the crate passes about 3,950. Re-count when it grows, and raise the
+    # shard count before then rather than this bound — a larger bound only
+    # lets a slow shard cost more. A shard that does time out is not harmless:
+    # the upload step below still publishes its partial outcomes, and the gate
+    # counts it as an arrived shard. Nightly 38044938836 passed
+    # `sunrise-core` on 766 of its 2502 mutants that way (#517).
     timeout-minutes: 120
     # Nightly and on demand, never on a pull request. The four scoped crates
-    # generate 3,269 mutants — the sum of the four populations recorded on
-    # the matrix below — and each one is an incremental rebuild plus a test
+    # generate 4,668 mutants — the sum of the four populations recorded
+    # on the matrix below — and each one is an incremental rebuild plus a test
     # run; a full pass is hours, which is exactly why
     # docs/10-cross-cutting/testing.md scopes this to release candidates rather
     # than to every commit.
@@ -974,18 +937,18 @@ jobs:
       matrix:
         # Sharded by crate rather than one shard-space across the workspace,
         # because the gate scores per crate and a shard that straddles two
-        # crates makes a partial denominator. Populations, re-counted at
-        # `1d4b484` with `cargo mutants --list -p <crate> --all-features`:
-        # sunrise-domain 1356, sunrise-core 1259, sunrise-crypto 519,
-        # sunrise-sync 135. The figures here were 1352/740/296/94 and had
-        # drifted with the crates.
+        # crates makes a partial denominator. Populations as nightly
+        # 38044938836 counted them at `5948c54`: sunrise-domain 1447,
+        # sunrise-core 2502, sunrise-crypto 548, sunrise-sync 171; the
+        # earlier figures here, 1356/1259/519/135 at `1d4b484`, had drifted
+        # with the crates.
         #
         # Shard counts are not proportional to those populations, and should
-        # not be: per-mutant cost spans a factor of eight across the four, so
-        # the population is not the cost. The table above is what they balance
-        # against — sunrise-core at 4 shards is 315 mutants at ~15.4 s, the
-        # longest shard at about 81 minutes, where sunrise-domain at 6 is 226
-        # at ~5.3 s, about 20.
+        # not be: per-mutant cost differs across the four, so the population is
+        # not the cost. The wall clocks above are what they balance against —
+        # sunrise-core at 24 shards is about 105 mutants at up to 42.1 s, about
+        # 76 minutes a shard; sunrise-domain at 6 is about 241 and took 24-33
+        # minutes; sunrise-sync whole took 61.
         #
         # `--shard k/n` is zero-based: cargo-mutants requires k < n and rejects
         # n/n outright ("shard k must be less than n"). So a crate split n ways
@@ -997,10 +960,30 @@ jobs:
           - { crate: sunrise-domain, shard: 3/6 }
           - { crate: sunrise-domain, shard: 4/6 }
           - { crate: sunrise-domain, shard: 5/6 }
-          - { crate: sunrise-core, shard: 0/4 }
-          - { crate: sunrise-core, shard: 1/4 }
-          - { crate: sunrise-core, shard: 2/4 }
-          - { crate: sunrise-core, shard: 3/4 }
+          - { crate: sunrise-core, shard: 0/24 }
+          - { crate: sunrise-core, shard: 1/24 }
+          - { crate: sunrise-core, shard: 2/24 }
+          - { crate: sunrise-core, shard: 3/24 }
+          - { crate: sunrise-core, shard: 4/24 }
+          - { crate: sunrise-core, shard: 5/24 }
+          - { crate: sunrise-core, shard: 6/24 }
+          - { crate: sunrise-core, shard: 7/24 }
+          - { crate: sunrise-core, shard: 8/24 }
+          - { crate: sunrise-core, shard: 9/24 }
+          - { crate: sunrise-core, shard: 10/24 }
+          - { crate: sunrise-core, shard: 11/24 }
+          - { crate: sunrise-core, shard: 12/24 }
+          - { crate: sunrise-core, shard: 13/24 }
+          - { crate: sunrise-core, shard: 14/24 }
+          - { crate: sunrise-core, shard: 15/24 }
+          - { crate: sunrise-core, shard: 16/24 }
+          - { crate: sunrise-core, shard: 17/24 }
+          - { crate: sunrise-core, shard: 18/24 }
+          - { crate: sunrise-core, shard: 19/24 }
+          - { crate: sunrise-core, shard: 20/24 }
+          - { crate: sunrise-core, shard: 21/24 }
+          - { crate: sunrise-core, shard: 22/24 }
+          - { crate: sunrise-core, shard: 23/24 }
           - { crate: sunrise-crypto, shard: 0/2 }
           - { crate: sunrise-crypto, shard: 1/2 }
           - { crate: sunrise-sync, shard: 0/1 }
@@ -1027,9 +1010,10 @@ jobs:
           # contents until the next manifest change — and cargo-mutants copies
           # the tree into temporary directories and builds there, so a leg's
           # `target/` at job end holds the baseline build and nothing else, the
-          # least representative snapshot of the thirteen. The other question is
-          # that there are thirteen legs: left saving, they would race for one
-          # immutable key, and twelve would upload ~700 MiB apiece to lose it.
+          # least representative snapshot of the thirty-three. The other
+          # question is that there are thirty-three legs: left saving, they
+          # would race for one immutable key, and thirty-two would upload
+          # ~700 MiB apiece to lose it.
           save-if: false
       - name: Install cargo-mutants
         uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73  # v2.87.17
@@ -1076,7 +1060,7 @@ jobs:
           # it from there, so the floor a nightly's artifacts produce is
           # stamped with the revision the mutants actually ran against
           # rather than with whatever HEAD was when someone downloaded
-          # them. Thirteen shards write thirteen stamps and the gate
+          # them. Thirty-three shards write thirty-three stamps and the gate
           # refuses if they do not agree on a revision.
           .github/scripts/mutants-gate.py \
             --record-revision out/mutants/revision.json
@@ -1117,7 +1101,7 @@ jobs:
   mutants-gate:
     name: Mutation coverage gate
     runs-on: ubuntu-latest
-    # Downloads thirteen small artefacts and runs one Python script over them.
+    # Downloads thirty-three small artefacts and runs one Python script over them.
     # Seconds of work; the artefact download is the only part that can stall.
     timeout-minutes: 10
     needs: mutants
@@ -1138,7 +1122,7 @@ jobs:
         # a short crate is reported as a broken run and left unscored.
         run: |
           .github/scripts/mutants-gate.py outcomes/*/outcomes.json \
-            --expect-shards sunrise-domain=6,sunrise-core=4,sunrise-crypto=2,sunrise-sync=1
+            --expect-shards sunrise-domain=6,sunrise-core=24,sunrise-crypto=2,sunrise-sync=1
 
   mutants-gate-contract:
     name: Mutation gate contract
