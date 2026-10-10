@@ -22,7 +22,9 @@ mod tests {
     //! response rather than a frame exchange.
 
     use crate::api::error::codes;
-    use crate::api::testing::{register_device, send_signed, send_signed_with, Client, BEARER};
+    use crate::api::testing::{
+        code_of, now_rfc2822, register_device, send_signed, send_signed_with, Client, BEARER,
+    };
     use crate::relay::RingCaps;
     use crate::relay_log::DurableCaps;
     use crate::state::{Clock, ServerState};
@@ -1505,7 +1507,7 @@ mod tests {
 
     // -- a newer client's extra fields (issue #370) -------------------------
     //
-    // Every JSON body on the wire is open to extension
+    // Every sync body on the wire is open to extension
     // (protocol-versioning.md §4, §6): a field this relay predates is ignored,
     // never a decode failure. Each request body is pinned here with the field
     // a plausible newer client would add, and each test asserts the request
@@ -1624,6 +1626,138 @@ mod tests {
         let ack = res.json();
         assert_eq!(ack["batch_id"], 7, "{ack}");
         assert_eq!(ack["stream_id"], stream_hex(), "{ack}");
+    }
+
+    /// A relay that demands device signatures, which is the default once an
+    /// OIDC issuer is configured.
+    fn signing_relay() -> Client {
+        Client::new(ServerConfig {
+            require_device_sig: Some(true),
+            ..ServerConfig::default()
+        })
+    }
+
+    /// The four request bodies again, each **signed** by a registered device
+    /// on a relay that requires the binding, the way a real newer client
+    /// sends them.
+    ///
+    /// The unsigned tests above cannot see this failure: the signature covers
+    /// the client's whole value, the extra field included, so a relay that
+    /// re-canonicalised the parsed `T` — which has dropped that field — would
+    /// hash something the client never signed and refuse every one of these as
+    /// `AUTH_DEVICE_SIG_INVALID`.
+    #[tokio::test]
+    async fn a_newer_clients_signed_requests_with_unknown_fields_are_verified() {
+        let client = signing_relay();
+        let (phone, key) =
+            register_device(&client, 60, "phone", Some(SESSION_PHONE_VAULT_ID)).await;
+
+        let mut hello = hello();
+        hello["schema_fingerprint"] = serde_json::json!("b3:0123456789abcdef");
+        hello["relay_floor"] = serde_json::json!({ "wire_proto": 2, "features": ["x"] });
+        let opened = send_signed(
+            &client,
+            "POST",
+            "/api/v1/sync/session",
+            &phone,
+            &key,
+            Some(&hello),
+        )
+        .await;
+        opened.assert_status(StatusCode::CREATED);
+        let session = opened.json()["session_id"]
+            .as_str()
+            .expect("a session id")
+            .to_owned();
+        let on_session = [("x-sunrise-session", session.as_str())];
+
+        send_signed_with(
+            &client,
+            "POST",
+            "/api/v1/sync/subscribe",
+            &phone,
+            &key,
+            Some(&serde_json::json!({
+                "priority": "foreground",
+                "streams": [{
+                    "stream_id": stream_hex(),
+                    "doc_schema": 99,
+                    "cursors": [{
+                        "device_id": hex::encode([7u8; 16]),
+                        "last_applied_seq": 0,
+                        "last_applied_hlc": 12345,
+                    }],
+                }],
+            })),
+            &on_session,
+        )
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+
+        let published = send_signed_with(
+            &client,
+            "POST",
+            "/api/v1/sync/ops",
+            &phone,
+            &key,
+            Some(&serde_json::json!({
+                "stream_id": stream_hex(),
+                "batch_id": 7,
+                "ops": [envelope([7u8; 16], 1)],
+                "compression": "zstd-dict-3",
+            })),
+            &on_session,
+        )
+        .await;
+        published.assert_status(StatusCode::OK);
+        assert_eq!(published.json()["batch_id"], 7, "{}", published.json());
+
+        send_signed_with(
+            &client,
+            "POST",
+            "/api/v1/sync/session/refresh",
+            &phone,
+            &key,
+            Some(&serde_json::json!({ "token": "anything", "token_kind": "dpop" })),
+            &on_session,
+        )
+        .await
+        .assert_status(StatusCode::OK);
+    }
+
+    /// The other half of the property: the unknown field is *inside* the
+    /// signature, not merely tolerated beside it. A field this relay ignores
+    /// still cannot be altered in flight.
+    #[tokio::test]
+    async fn an_unknown_field_altered_in_flight_fails_the_signature() {
+        let client = signing_relay();
+        let (phone, key) =
+            register_device(&client, 61, "phone", Some(SESSION_PHONE_VAULT_ID)).await;
+
+        let mut signed = hello();
+        signed["relay_floor"] = serde_json::json!({ "wire_proto": 2 });
+        let mut sent = signed.clone();
+        sent["relay_floor"] = serde_json::json!({ "wire_proto": 3 });
+
+        let date = now_rfc2822(&client);
+        let signature =
+            sunrise_http_sig::sign(&key, "POST", "/api/v1/sync/session", &date, Some(&signed))
+                .expect("the client half signs");
+        let res = client
+            .send_with(
+                Method::POST,
+                "/api/v1/sync/session",
+                Some(BEARER),
+                Some(&sent),
+                &[
+                    ("x-sunrise-device", phone.as_str()),
+                    ("x-sunrise-device-sig", signature.as_str()),
+                    ("date", date.as_str()),
+                ],
+            )
+            .await;
+        res.assert_status(StatusCode::UNAUTHORIZED);
+        assert_eq!(code_of(&res), codes::AUTH_DEVICE_SIG_INVALID);
     }
 
     // -- the surface's own invariants ---------------------------------------

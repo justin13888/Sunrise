@@ -1,6 +1,6 @@
 //! A newer relay's extra response fields decode in this client (issue #370).
 //!
-//! Every JSON body on the wire is open to extension
+//! Every sync body on the wire is open to extension
 //! (`docs/10-cross-cutting/protocol-versioning.md` §4, §6), in both directions:
 //! the relay ignores a field a newer client adds, and this client ignores a
 //! field a newer relay adds. The generated models are only as tolerant as the
