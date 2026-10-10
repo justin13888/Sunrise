@@ -351,6 +351,24 @@ back into the record before it attaches anything, and removes each image as it
 lands, so an interrupted filing resumes on the same task. An image the record
 lists and the folder no longer holds is dropped rather than retried forever.
 
+**An image the core would refuse on every attempt is refused once.** The
+extension turns away an empty image and one over 100 MB (decimal, the core's
+`MAX_ATTACHMENT_BYTES`) while the user is still on the share sheet. Should one
+reach the app anyway, it is dropped from the capture before the task is
+created, and the task's note gets a "Not attached" line naming it. A name
+longer than the core's 256-character limit is shortened, extension kept,
+rather than refused. Any other failure leaves the capture for the next pass.
+
+**A pending share belongs to no vault until it is filed, and it is filed into
+the next vault the app opens.** The extension cannot say which vault the share
+was meant for: it never opens one, and the App Group holds one queue for the
+device. So a share made while one vault was open, and filed after the user
+switched to another, lands in the second vault's Inbox. The window is narrow:
+the open vault files a share as soon as the app comes forward. Tagging each capture with the vault open at share time was rejected:
+the extension would have to read which vault is open, which is the app's
+state, and a capture tagged with a vault that never reopens would wait
+forever.
+
 ### Printing
 
 **Built on iOS** ([#368](https://github.com/justin13888/Sunrise/issues/368)).
