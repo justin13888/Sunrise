@@ -608,6 +608,7 @@ mod tests {
                 key,
                 b"frame",
                 &[],
+                0,
                 None,
                 1,
                 NOW,

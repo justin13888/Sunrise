@@ -80,7 +80,7 @@ it is under the database key at rest:
 | `devices.nickname`, `devices.platform`, `devices.app_version` | **plaintext** | user-set name and client-reported platform/version |
 | `devices.device_pub_s` / `device_pub_d` / `device_cert` | public keys | |
 | `push_tokens.token` | **plaintext** | see [`push-notifications.md`](./push-notifications.md) |
-| `relay_frames.bytes` | **verbatim ciphertext** | the wire frame as received, alongside `n_bytes` and `created_ms` |
+| `relay_frames.bytes` | **verbatim ciphertext** | the wire frame as received, alongside `n_bytes`, `created_ms` and `n_ops` (how many ops the batch carries, which `sunrise_sync_ops_delivered_total` adds on replay) |
 | `relay_frames.account_h` | BLAKE3-truncated | first 16 bytes of `BLAKE3(account_id)`, derived server-side from the verified token — never from the client |
 | `relay_frames.stream_id` | **raw 16-byte id** | as the subscriber named it |
 | `relay_frame_heads.device_id` | **raw 16-byte id** | read from the envelope's cleartext routing header |
@@ -129,6 +129,7 @@ how far along it is in `PRAGMA user_version`. On open, `Store::open`:
 | 0001 `baseline` | The `accounts`, `devices`, `push_tokens` and `relay_*` tables, as every pre-versioning release created them. Still `CREATE … IF NOT EXISTS`, so a database those releases wrote, which is at version 0, adopts it without change. |
 | 0002 `devices_vault_device_id` | Adds `devices.vault_device_id` where a database predates it, then the `devices_by_vault_id` index. |
 | 0003 `account_and_blob_deletion` | Adds `accounts.delete_requested_at_ms` and the tables deletion keeps: `account_delete_tokens`, `blob_tombstones`, and `device_cursors` (the cursors each device declared on subscribe, which a tombstone's quorum reads). Each cascades from its account or device row. |
+| 0004 `relay_frames_n_ops` | Adds `relay_frames.n_ops`, the ops each stored frame carries, and counts them for the frames already stored by reading each frame's op list (the same depth the publish path reads; no envelope is opened). |
 
 A shipped migration is never edited: migration 0001 executes the tenants'
 `SCHEMA` constants, so those are frozen with it, and a test builds a database

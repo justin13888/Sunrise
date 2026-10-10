@@ -194,8 +194,19 @@ pub async fn ops(
     })?;
 
     let first_seen_ms = match appended {
-        Appended::Fresh { first_seen_ms } => {
-            fan_out(&state, &session, stream_id, (frame, heads), accepted);
+        Appended::Fresh {
+            first_seen_ms,
+            evicted,
+        } => {
+            // What retention deleted to make room, in the same transaction
+            // that stored this batch.
+            if evicted > 0 {
+                state
+                    .metrics
+                    .add("sunrise_relay_log_evicted_total", evicted);
+            }
+            let n_ops = batch.ops.len() as u64;
+            fan_out(&state, &session, stream_id, (frame, heads, n_ops), accepted);
             wake_offline_peers(&state, &session, stream_id);
             // Fresh by the whole-batch key, and yet carrying ops this channel
             // already holds: the re-partitioned re-send ADR-0033 accepted and
@@ -236,7 +247,7 @@ fn fan_out(
     state: &ServerState,
     session: &crate::sync_session::Session,
     stream_id: [u8; 16],
-    (frame, heads): (Vec<u8>, Vec<FrameHead>),
+    (frame, heads, n_ops): (Vec<u8>, Vec<FrameHead>, u64),
     accepted: tokio::time::Instant,
 ) {
     tracing::debug!(
@@ -250,6 +261,7 @@ fn fan_out(
         RelayFrame {
             from: session.conn,
             bytes: frame,
+            n_ops,
             heads,
             fanout: Some(FanoutClock::start(accepted, state.metrics.clone())),
         },
@@ -283,6 +295,7 @@ fn append(
         key,
         frame,
         heads,
+        batch.ops.len() as u64,
         batch_ops_hash(&batch.ops).as_ref(),
         batch.batch_id,
         now_ms,
