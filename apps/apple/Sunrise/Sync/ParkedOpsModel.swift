@@ -52,16 +52,22 @@ final class ParkedOpsModel {
         switch reason {
         case "unknown_kind": "From a newer version of Sunrise"
         case "replay_refused": "Refused after an update"
+        case "schema_fp_mismatch": "Read differently by this version of Sunrise"
         default: reason
         }
     }
 
     /// What the section's caption says, given what is parked.
+    ///
+    /// Not "each update": the core retries parked changes only when a build
+    /// whose document schema version (`DOC_SCHEMA_V`) differs opens the vault
+    /// (ADR-0045 §3, §4), so an update that keeps the schema retries nothing.
     nonisolated static func caption(for rows: [Row]) -> String {
         if rows.isEmpty {
             return "Every change this device has received has been applied."
         }
         return "Changes another device made that this one keeps but cannot apply yet. "
-            + "Nothing is lost: each update of Sunrise on this device tries them again."
+            + "Nothing is lost: they are tried again when an update of Sunrise "
+            + "changes the format this device reads."
     }
 }

@@ -27,11 +27,26 @@ struct ParkedOpsModelTests {
     func knownReasonsAreWordedAndUnknownOnesKeepTheirName() {
         let rows = [
             ParkedReasonCount(reason: "unknown_kind", count: 3),
-            ParkedReasonCount(reason: "a_reason_from_a_newer_build", count: 1),
+            ParkedReasonCount(reason: "a_reason_from_a_newer_build", count: 1)
         ].map(ParkedOpsModel.row)
 
         #expect(rows.map(\.label) == ["From a newer version of Sunrise", "a_reason_from_a_newer_build"])
         #expect(rows.map(\.count) == [3, 1])
         #expect(ParkedOpsModel.caption(for: rows) != ParkedOpsModel.caption(for: []))
+    }
+
+    /// The reason #504's receive path parks a fingerprint-mismatched op under
+    /// (`ParkReason::SchemaFpMismatch`) is worded, not shown raw, and the
+    /// caption does not promise that any update retries it: only a build
+    /// with a different `DOC_SCHEMA_V` does.
+    @Test
+    func aSchemaFingerprintMismatchIsWordedAndTheCaptionPromisesNoRetryOnEveryUpdate() {
+        let rows = [ParkedReasonCount(reason: "schema_fp_mismatch", count: 2)].map(ParkedOpsModel.row)
+
+        #expect(rows.map(\.label) == ["Read differently by this version of Sunrise"])
+        #expect(rows.map(\.count) == [2])
+        let caption = ParkedOpsModel.caption(for: rows)
+        #expect(!caption.contains("each update"))
+        #expect(caption.contains("changes the format this device reads"))
     }
 }
