@@ -110,11 +110,21 @@ enum SharedCapture {
             try store.update(capture)
         }
         while let image = capture.images.first {
+            let bytes: Data
+            do {
+                bytes = try store.imageData(image, of: capture)
+            } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
+                // Listed and not there: nothing a later pass could attach, so
+                // it is dropped rather than retried on every open forever.
+                capture.images.removeFirst()
+                try store.update(capture)
+                continue
+            }
             _ = try await bridge.attachFile(
                 to: task,
                 filename: image.name,
                 mimeType: mimeType(of: image.name),
-                bytes: try store.imageData(image, of: capture)
+                bytes: bytes
             )
             capture.images.removeFirst()
             try store.update(capture)
