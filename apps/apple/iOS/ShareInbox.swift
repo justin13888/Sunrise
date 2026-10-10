@@ -29,6 +29,9 @@ final class ShareInbox {
             await running.value
             return
         }
+        // The report's failures are all ones a later pass can clear, so the
+        // next trigger is their retry. What would fail forever is not in it:
+        // `SharedCapture.file` drops it and says so in the task's note.
         let pass = _Concurrency.Task { _ = await SharedCapture.fileAll(from: store, into: bridge) }
         running = pass
         await pass.value

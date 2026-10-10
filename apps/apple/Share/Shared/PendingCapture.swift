@@ -18,6 +18,16 @@ struct PendingCapture: Codable, Equatable, Sendable, Identifiable {
     /// is left where it is rather than misread.
     static let currentVersion = 1
 
+    /// The core's attachment ceiling, `MAX_ATTACHMENT_BYTES` in
+    /// `crates/sunrise-domain/src/validation.rs`. Decimal megabytes, as
+    /// `docs/02-domain/attachments.md` writes it: 100 MiB would let through an
+    /// image the core then refuses on every open.
+    static let maxImageBytes = 100_000_000
+
+    /// The core's `MAX_FILENAME_LEN`, which it counts in Unicode scalars after
+    /// trimming whitespace.
+    static let maxImageNameLength = 256
+
     /// One image, copied beside the record.
     struct Image: Codable, Equatable, Sendable {
         /// The copy's name inside the capture's directory.
@@ -130,6 +140,13 @@ struct PendingCaptureStore: Sendable {
     /// One image's bytes.
     func imageData(_ image: PendingCapture.Image, of capture: PendingCapture) throws -> Data {
         try Data(contentsOf: folder(for: capture.id).appending(path: image.file))
+    }
+
+    /// One image's size in bytes, or `nil` where the file system cannot say
+    /// (the file is gone, say), which leaves the read to report it.
+    func imageSize(_ image: PendingCapture.Image, of capture: PendingCapture) -> Int? {
+        let file = folder(for: capture.id).appending(path: image.file)
+        return try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize
     }
 
     /// Record progress: the task it was filed as, and the images still to go.

@@ -12,15 +12,16 @@ enum ShareReceiver {
     /// share it would cut short.
     static let imageLimit = 10
 
-    /// The core's attachment ceiling (`MAX_ATTACHMENT_BYTES`). An image past
-    /// it is refused here, while the user is still looking, rather than by the
-    /// core on the next open, where it would never succeed.
-    static let maxImageBytes = 100 * 1024 * 1024
+    /// The core's attachment ceiling. An image past it, or one with no bytes
+    /// at all, is refused here, while the user is still looking, rather than
+    /// by the core on the next open, where it would never succeed.
+    static let maxImageBytes = PendingCapture.maxImageBytes
 
     enum Failure: Error, LocalizedError {
         case noAppGroup
         case nothingUsable
         case imageTooLarge(String)
+        case imageEmpty(String)
 
         var errorDescription: String? {
             switch self {
@@ -30,6 +31,8 @@ enum ShareReceiver {
                 "There was no text, link or image to add."
             case let .imageTooLarge(name):
                 "“\(name)” is larger than the 100 MB an attachment can be."
+            case let .imageEmpty(name):
+                "“\(name)” is empty, so there is nothing to attach."
             }
         }
     }
@@ -139,8 +142,12 @@ enum ShareReceiver {
                     let base = suggested.map { ($0 as NSString).deletingPathExtension }
                         ?? "Image \(index + 1)"
                     let name = "\(base).\(ext)"
-                    let size = (try url.resourceValues(forKeys: [.fileSizeKey])).fileSize ?? 0
-                    guard size <= maxImageBytes else { throw Failure.imageTooLarge(name) }
+                    // A size the file system will not report is left to the
+                    // app, which reads the bytes and refuses the same two.
+                    if let size = (try url.resourceValues(forKeys: [.fileSizeKey])).fileSize {
+                        guard size > 0 else { throw Failure.imageEmpty(name) }
+                        guard size <= maxImageBytes else { throw Failure.imageTooLarge(name) }
+                    }
                     let file = "image-\(index).\(ext)"
                     let copy = partial.appending(path: file)
                     try FileManager.default.copyItem(at: url, to: copy)

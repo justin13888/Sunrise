@@ -211,4 +211,135 @@ struct SharedCaptureTests {
         #expect(try await Surface.inbox(vault.bridge).map(\.title) == ["Photo of the whiteboard"])
         await vault.bridge.shutdown()
     }
+
+    // MARK: - Refusals that would recur
+
+    /// The core's ceiling is 100 MB in decimal (`MAX_ATTACHMENT_BYTES`), and
+    /// it refuses an empty file. An image between 100 MB and 100 MiB passed
+    /// the share sheet and was refused on every open.
+    @Test
+    func theRefusalsAreTheCoresOwn() {
+        #expect(PendingCapture.maxImageBytes == 100_000_000)
+        #expect(SharedCapture.refusal(size: 0) == .empty)
+        #expect(SharedCapture.refusal(size: 1) == nil)
+        #expect(SharedCapture.refusal(size: 100_000_000) == nil)
+        #expect(SharedCapture.refusal(size: 100_000_001) == .tooLarge)
+        #expect(SharedCapture.refusal(size: 100 * 1024 * 1024) == .tooLarge)
+    }
+
+    /// An image the core would refuse on every open leaves the capture before
+    /// the task is made, and the note says it is not coming. The capture is
+    /// filed, not failed, so nothing is retried forever.
+    @Test
+    func anImageTheCoreWouldAlwaysRefuseIsNotedAndNotRetried() async throws {
+        let vault = try await TestVault()
+        let directory = Surface.scratchDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = PendingCaptureStore(directory: directory)
+
+        let empty = PendingCapture.Image(file: "image-0.jpg", name: "Scan.jpg")
+        let kept = PendingCapture.Image(file: "image-1.jpg", name: "Page.jpg")
+        let shared = capture(text: "Scanned letter", images: [empty, kept])
+        try share(shared, images: ["image-0.jpg": Data(), "image-1.jpg": Data("jpeg".utf8)], into: store)
+
+        let report = await SharedCapture.fileAll(from: store, into: vault.bridge)
+        #expect(report.failures.isEmpty, "a refusal that would recur is not a failure to retry")
+        #expect(report.filed.count == 1)
+        #expect(store.pending().isEmpty)
+
+        let filed = try #require(try await Surface.inbox(vault.bridge).first)
+        let note = decodeNoteBody(body: try #require(filed.body))
+        #expect(note.blocks == [paragraph(SharedCapture.notice("Scan.jpg", .empty))])
+        let attached = try await vault.bridge.query(.taskAttachments(task: filed.id))
+        guard case let .attachments(items) = attached else {
+            Issue.record("expected the task's attachments")
+            return
+        }
+        #expect(items.map(\.filename) == ["Page.jpg"])
+        await vault.bridge.shutdown()
+    }
+
+    /// A resumed filing drops the refused image from the record too, so the
+    /// next pass does not meet it again.
+    @Test
+    func aResumedFilingDropsARefusedImage() async throws {
+        let vault = try await TestVault()
+        let directory = Surface.scratchDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = PendingCaptureStore(directory: directory)
+
+        let task = try await Surface.task("Shared image", in: vault.bridge)
+        var halfway = capture(images: [PendingCapture.Image(file: "image-0.jpg", name: "Blank.jpg")])
+        halfway.filedAs = task
+        try share(halfway, images: ["image-0.jpg": Data()], into: store)
+
+        let report = await SharedCapture.fileAll(from: store, into: vault.bridge)
+        #expect(report.failures.isEmpty)
+        #expect(report.filed == [task])
+        #expect(store.pending().isEmpty)
+        await vault.bridge.shutdown()
+    }
+
+    /// A name past the core's 256 is shortened with its extension kept, not
+    /// refused: the core would refuse it on every open.
+    @Test
+    func aLongImageNameIsShortenedNotRefused() async throws {
+        let long = String(repeating: "a", count: 300) + ".png"
+        let fitted = SharedCapture.attachmentName(long)
+        #expect(fitted.unicodeScalars.count == PendingCapture.maxImageNameLength)
+        #expect(fitted.hasSuffix(".png"))
+        #expect(SharedCapture.attachmentName("  Receipt.png ") == "Receipt.png")
+        #expect(SharedCapture.attachmentName("   ") == "Shared image")
+        let emoji = String(repeating: "🌅", count: 300)
+        #expect(SharedCapture.attachmentName(emoji).unicodeScalars.count == PendingCapture.maxImageNameLength)
+
+        let vault = try await TestVault()
+        let directory = Surface.scratchDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = PendingCaptureStore(directory: directory)
+        let shared = capture(images: [PendingCapture.Image(file: "image-0.png", name: long)])
+        try share(shared, images: ["image-0.png": Data("png".utf8)], into: store)
+
+        let report = await SharedCapture.fileAll(from: store, into: vault.bridge)
+        #expect(report.failures.isEmpty)
+        let task = try #require(report.filed.first)
+        guard case let .attachments(items) = try await vault.bridge.query(.taskAttachments(task: task)) else {
+            Issue.record("expected the task's attachments")
+            return
+        }
+        #expect(items.map(\.filename) == [fitted])
+        #expect(items.map(\.mimeType) == ["image/png"])
+        await vault.bridge.shutdown()
+    }
 }
+
+#if os(iOS)
+/// When the app files what was shared (`iOS/ShareInbox.swift`): a vault
+/// opening and the scene becoming active usually fire together, and the two
+/// passes must not file one share twice.
+@MainActor
+struct ShareInboxTests {
+    @Test
+    func twoTriggersTogetherFileAShareOnce() async throws {
+        let vault = try await TestVault()
+        let directory = Surface.scratchDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = PendingCaptureStore(directory: directory)
+        let shared = PendingCapture(id: UUID(), createdAtMs: 1_760_000_000_000, text: "Shared once")
+        try store.commit(shared, from: try store.begin(shared.id))
+
+        let inbox = ShareInbox(store: store)
+        async let opened: Void = inbox.file(into: vault.bridge)
+        async let active: Void = inbox.file(into: vault.bridge)
+        _ = await (opened, active)
+
+        #expect(try await Surface.inbox(vault.bridge).map(\.title) == ["Shared once"])
+        #expect(store.pending().isEmpty)
+
+        // A later trigger with nothing waiting files nothing more.
+        await inbox.file(into: vault.bridge)
+        #expect(try await Surface.inbox(vault.bridge).count == 1)
+        await vault.bridge.shutdown()
+    }
+}
+#endif
