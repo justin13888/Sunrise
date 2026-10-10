@@ -18,7 +18,6 @@ use super::credential::{resolve, SessionHeader};
 
 /// One device's position in a stream.
 #[derive(Debug, Clone, Serialize, Deserialize, kynos::Schema)]
-#[serde(deny_unknown_fields)]
 pub struct DeviceCursor {
     /// The originating device, 32 lowercase hex characters.
     #[schema(pattern = "^[0-9a-f]{32}$")]
@@ -29,7 +28,6 @@ pub struct DeviceCursor {
 
 /// One stream to receive on, with the subscriber's cursors.
 #[derive(Debug, Clone, Serialize, Deserialize, kynos::Schema)]
-#[serde(deny_unknown_fields)]
 pub struct StreamSubscription {
     /// The stream, 32 lowercase hex characters.
     #[schema(pattern = "^[0-9a-f]{32}$")]
@@ -41,7 +39,6 @@ pub struct StreamSubscription {
 
 /// `POST /api/v1/sync/subscribe` request body.
 #[derive(Debug, Clone, Serialize, Deserialize, kynos::Schema)]
-#[serde(deny_unknown_fields)]
 pub struct SubscribeRequest {
     /// The streams this session wants. **Replaces** the current set rather than
     /// adding to it, which is what a re-sent `Subscribe` frame did.

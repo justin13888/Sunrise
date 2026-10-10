@@ -66,7 +66,9 @@ pub mod api {
 }
 
 mod bootstrap;
+mod push;
 mod recovery;
 
 pub use bootstrap::{bootstrap, register_device, BootstrapError, BootstrapOutcome, DeviceIdentity};
+pub use push::{register_push_token, PushTokenError, PushTokenRegistration};
 pub use recovery::RelayRecovery;

@@ -491,6 +491,14 @@ targets:
         INFOPLIST_KEY_NSCameraUsageDescription: >-
           Sunrise uses the camera only to scan the pairing code another of
           your devices shows. Nothing it sees is stored or sent.
+      # Which APNs gateway the token belongs to. A development-signed build
+      # gets sandbox tokens, a distribution-signed one production tokens, and
+      # the relay's `[push.apns]` table has to name the same one.
+      configs:
+        Debug:
+          SUNRISE_APS_ENVIRONMENT: development
+        Release:
+          SUNRISE_APS_ENVIRONMENT: production
     info:
       path: Generated/Info-iOS.plist
       properties:
@@ -504,14 +512,30 @@ targets:
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         SunriseAppGroup: $(SUNRISE_APP_GROUP)
+        # Background sync (`docs/07-clients/mobile-ios.md` §Background sync,
+        # §Push handling): `fetch` for the app refresh task, `processing` for
+        # the maintenance window, `remote-notification` for the silent push
+        # that wakes a suspended app. Without the mode the OS never runs the
+        # matching handler.
+        UIBackgroundModes: [fetch, processing, remote-notification]
+        # Every `BGTaskScheduler` identifier the app submits. A request for
+        # one missing here throws; these are `BackgroundSync.refreshTaskID`
+        # and `BackgroundSync.maintenanceTaskID`.
+        BGTaskSchedulerPermittedIdentifiers:
+          - dev.sunrise.SunriseiOS.refresh
+          - dev.sunrise.SunriseiOS.maintenance
     # The App Group. iOS's `containerURL` answers `nil` to a process the
     # group was not granted to, so without this the app would have nowhere
     # to write and every widget would say "Open Sunrise" forever.
+    #
+    # `aps-environment` is what lets `registerForRemoteNotifications` hand
+    # out a token at all; without it the silent push has no address.
     entitlements:
       path: Generated/SunriseiOS.entitlements
       properties:
         com.apple.security.application-groups:
           - $(SUNRISE_APP_GROUP)
+        aps-environment: $(SUNRISE_APS_ENVIRONMENT)
     postCompileScripts:
       - name: SwiftLint
         basedOnDependencyAnalysis: false

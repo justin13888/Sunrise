@@ -216,7 +216,7 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Every Stream key is rotated, so this device reads nothing written afterwards. It can still read what it already has — revocation is forward-only."
+            "value": "Every Stream key is rotated, so this device reads nothing written afterwards. It can still read what it already has — revocation is forward-only. This cannot be undone: to use this device again, pair it as a new device."
           }
         }
       }
