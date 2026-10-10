@@ -129,12 +129,14 @@ SUNRISE_REGEN_FIXTURES=1 cargo test -p sunrise-core --lib doc_schema
 mise run fix
 ```
 
-*Today:* two parts of the design are not built yet.
+The receiver is `crates/sunrise-core/src/engine/sync.rs#apply_remote_all`
+([#438](https://github.com/justin13888/Sunrise/issues/438)). After the
+signature and the AEAD open, and before the payload is decoded, it parks an
+op at a registered version whose field 13 differs or is missing, with reason
+`schema_fp_mismatch`, and logs `core.op.schema_fp_mismatch`.
 
-- **No receiver compares field 13 with its registry**
-  ([#438](https://github.com/justin13888/Sunrise/issues/438)). The decoder
-  reads field 13 and keeps it under the signature, but a mismatch is applied
-  rather than parked.
+*Today:* one part of the design is not built yet.
+
 - **The schema does not yet cover every shape**
   ([#439](https://github.com/justin13888/Sunrise/issues/439)). Value types that
   are not registry records appear only as a type name. These are
@@ -188,10 +190,12 @@ can be lost ([#319](https://github.com/justin13888/Sunrise/issues/319)).
   See [ADR-0045](../11-adr/0045-schema-identity-and-feature-gating.md) §4.
   *Today:* an unknown op kind parks
   ([#320](https://github.com/justin13888/Sunrise/issues/320), `STORAGE_V` 31),
-  and the replay runs at `Core::open` when the `DOC_SCHEMA_V` that parked or
-  last tried an op differs from the build's. The other three reasons do not
-  exist yet, so any other inner decode failure is still `RemoteOpInvalid`,
-  classed as corruption and dropped.
+  and so does a schema-fingerprint mismatch
+  ([#438](https://github.com/justin13888/Sunrise/issues/438)). The replay runs
+  at `Core::open` when the `DOC_SCHEMA_V` that parked or last tried an op
+  differs from the build's. The other two reasons do not exist yet, so any
+  other inner decode failure is still `RemoteOpInvalid`, classed as corruption
+  and dropped.
 - **Document schema: unknowns are lossless at every level.** Three rules, all
   required:
   1. **Every struct that crosses the wire keeps an unknown map.** That means
