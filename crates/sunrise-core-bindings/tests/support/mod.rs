@@ -1,7 +1,7 @@
 //! What every seam test file opens a vault with.
 //!
-//! A directory module rather than `tests/support.rs`, so Cargo does not build
-//! it as a test target of its own.
+//! A directory module rather than a `support.rs` file at the top of `tests/`,
+//! so Cargo does not build it as a test target of its own.
 
 use std::sync::Arc;
 
