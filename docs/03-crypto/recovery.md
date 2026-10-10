@@ -71,8 +71,8 @@ device's UID key, so an encrypted backup cannot re-key it for other hardware.
   keychain, so none of it changes what a Mac does today — **this bullet is still exactly true**.
   (On iOS it answers the data-protection keychain, because that is the only one iOS has; this
   bullet is about the Mac, which is where the gap is.) What is outstanding is the team that
-  signs a Release, the Developer ID provisioning profile that grants the entitlement, and the
-  release pipeline that installs it
+  signs a Release and the Developer ID provisioning profile that grants the entitlement; the
+  release pipeline already installs that profile and refuses a tag without it
   ([#389](https://github.com/justin13888/Sunrise/issues/389)). The first signed Release to
   launch on a Mac moves each item on its first `load`, and from then on the guarantee holds there.
 

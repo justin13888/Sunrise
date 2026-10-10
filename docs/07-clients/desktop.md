@@ -393,10 +393,12 @@ ship; a team-less Release build that is wanted anyway adds
 
 What is still missing is outside this repository's files: an Apple Developer
 Program team for `DEVELOPMENT_TEAM`, and a Developer ID provisioning profile
-that grants the group. The release pipeline does not yet install one, and the
-signed path cannot produce a launchable app until it does; that is
-[#389](https://github.com/justin13888/Sunrise/issues/389), and it has to land
-before the macOS signing secrets are created.
+that grants the group. The release pipeline installs that profile from the
+`MACOS_PROVISIONING_PROFILE` secret, refuses a tag without it, and checks the
+exported app carries both the group and the embedded profile before
+notarizing ([#389](https://github.com/justin13888/Sunrise/issues/389);
+[`releasing.md`](./releasing.md#macos_provisioning_profile) says how to create
+it).
 
 #### Debug and Release keep separate keychains
 
@@ -817,8 +819,8 @@ for explicitly and the tests pin, because a migration that missed it would
 verify that item against itself and then delete it.
 
 The entitlements file is in, on Release. What is left for whoever holds an
-Apple team is `DEVELOPMENT_TEAM`, the Developer ID profile and the release
-pipeline that installs it (#389), which together turn the probe's answer over
+Apple team is `DEVELOPMENT_TEAM` and the Developer ID profile, which the
+release pipeline already installs (#389) and which together turn the probe's answer over
 on a shipped Mac. The *shipping* code needs no further change on this side;
 the suite does, and "no further code change is needed" said without that
 qualification is not exact.

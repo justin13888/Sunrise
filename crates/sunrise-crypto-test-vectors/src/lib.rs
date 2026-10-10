@@ -275,6 +275,9 @@ pub const ENVELOPE_INNER: &[u8] = b"inner-op-canonical-cbor";
 /// nothing else: the map header and every byte before the signature are
 /// unchanged.
 ///
+/// The 10 → 11 re-freeze (ADR-0050, issue #337, the `prf_` Preferences
+/// entity) moved the same three regions and nothing else.
+///
 /// `encode_envelope(ENVELOPE_INNER, STREAM_ID, DEVICE_ID, seq = 7,
 /// hlc = [1_700_000_000_000, 0], AeadAlgId::None, epoch = 0, nonce = [0; 24],
 /// stream_key = None, DEVICE_SIGNING_SECRET)`.
@@ -292,10 +295,10 @@ pub mod signed_only_envelope {
         "5352020003ad010302502222222222222222222222222222222203503333",
         "3333333333333333333333333333040705821b0000018bcfe56800000600",
         "070108000958180000000000000000000000000000000000000000000000",
-        "000a57696e6e65722d6f702d63616e6f6e6963616c2d63626f720b584041",
-        "4f04533142f7fe4644f49a17d0d3fc57c0137a7a21319c25f0b081a0eb56",
-        "0d23f2b2d077cd2de4b3c81096a522b02e6bdb302654c78379e0ece22d07",
-        "6131010c0a0d48e9a6d82f484ef86b",
+        "000a57696e6e65722d6f702d63616e6f6e6963616c2d63626f720b5840cb",
+        "755eadabbc9a0493ffa9a27d42f5f62616e094c1b8b966a393e8e56322b9",
+        "fd628b09b514ec595c04e6d1b2b18e3634417263032e9efabbef8268806e",
+        "c7fb080c0b0d483c75fc18c3369d04",
     ));
 }
 
@@ -330,6 +333,9 @@ pub mod signed_only_envelope {
 /// The 9 → 10 re-freeze (ADR-0045 §7) moved the same four regions. The
 /// ciphertext at `[94..117]` is again untouched.
 ///
+/// The 10 → 11 re-freeze (ADR-0050, issue #337) moved the same four regions.
+/// The ciphertext at `[94..117]` is again untouched.
+///
 /// `encode_envelope(ENVELOPE_INNER, STREAM_ID, DEVICE_ID, seq = 9,
 /// hlc = [1_700_000_000_001, 0], AeadAlgId::XChaCha20Poly1305, epoch = 3,
 /// nonce = [0x55; 24], stream_key = STREAM_KEY, DEVICE_SIGNING_SECRET)`.
@@ -349,11 +355,11 @@ pub mod sealed_envelope {
         "5352020003ad010302502222222222222222222222222222222203503333",
         "3333333333333333333333333333040905821b0000018bcfe56801000601",
         "070108030958185555555555555555555555555555555555555555555555",
-        "550a58276416c4bb3e46b71d10c45af51e2462649e7331f6d5bbb864d34d",
-        "f89e916d7a948d0dc2bf6a6b950b584027ad91c9ee374e7b6dc1ff9ee7c4",
-        "72b958d32e39a375e87b73579df16364e87733870b1063ad5a42b6e7ce06",
-        "b9fe906e95b1aa82e530b6e0d4a994f925a044060c0a0d48e9a6d82f484e",
-        "f86b",
+        "550a58276416c4bb3e46b71d10c45af51e2462649e7331f6d5bbb88aa685",
+        "abdc3936dfe4d3fb4b1ea45bcf0b5840bdc8b16518a9e23760f410bab381",
+        "729c4e63dd06f4b425b0a213c89b270b1422e077ddc35dbc3ee17c03c443",
+        "e8648e4cc38e24822c120aa1cddbbeb311fc7c040c0b0d483c75fc18c336",
+        "9d04",
     ));
 }
 
