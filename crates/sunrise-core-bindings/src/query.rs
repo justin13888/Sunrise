@@ -177,7 +177,8 @@ pub enum CoreQuery {
         /// Any instant inside the day (epoch ms).
         day_ms: u64,
     },
-    /// The calendar grid for one week, Monday-first, in the device's zone.
+    /// The calendar grid for one week, starting on the `week_start`
+    /// preference, in the device's zone.
     WeekBlocks {
         /// Any instant inside the week (epoch ms).
         week_ms: u64,

@@ -141,7 +141,8 @@ struct IcalModelTests {
         let calendar = CalendarModel(bridge: vault.bridge)
         await calendar.refresh()
         let today = calendar.dayStartMs(offset: 0)
-        // The model's own week window is Monday-first and anchored on the same
+        // The model's own week window starts on the core's `week_start` and is
+        // anchored on the same
         // instant the export is, so a day taken from it is a day the week
         // export covers — whichever weekday the test happens to run on.
         calendar.span = .week

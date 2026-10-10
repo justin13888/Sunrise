@@ -727,7 +727,7 @@ pub(super) fn ops_run_end(
 /// removes it, so the cursor counts the op whatever answer it got. Refusals
 /// above it return before the transaction opens and leave no op row and no
 /// cursor, the half pinned by
-/// `crates/sunrise-core/src/engine/tests.rs:8646#a_stranger_cert_through_apply_remote_is_refused_and_writes_no_cursor`.
+/// `crates/sunrise-core/src/engine/tests.rs:8728#a_stranger_cert_through_apply_remote_is_refused_and_writes_no_cursor`.
 ///
 /// That is a weaker claim than "the apply path does not consult revocation",
 /// and deliberately so, because the apply path does consult it — in three
@@ -780,9 +780,9 @@ pub(super) fn ops_run_end(
 /// Whether the number this writes actually moves is a question about the seqs
 /// *below* that op and never about the answer the op got — see the
 /// out-of-order paragraph at the end.
-/// `crates/sunrise-core/src/engine/tests.rs:8117#a_revoked_device_cert_through_apply_remote_seals_no_keys`
+/// `crates/sunrise-core/src/engine/tests.rs:8199#a_revoked_device_cert_through_apply_remote_seals_no_keys`
 /// walks that trace from the envelope down to the early return, and
-/// `crates/sunrise-core/src/engine/tests.rs:8377#a_failed_backfill_is_logged_and_the_cert_delivery_still_applies`
+/// `crates/sunrise-core/src/engine/tests.rs:8459#a_failed_backfill_is_logged_and_the_cert_delivery_still_applies`
 /// holds the backfill-error answer: the error is logged, the cert stands, and
 /// this still runs.
 ///
@@ -798,9 +798,9 @@ pub(super) fn ops_run_end(
 /// (`docs/11-adr/0034-revocation-bounds-reads-not-writes.md`) is where that
 /// was decided — revocation bounds what a device may *read*, not whether what
 /// it writes lands.
-/// `crates/sunrise-core/src/engine/tests.rs:7714#a_revoked_devices_ops_still_apply_at_the_replica`
+/// `crates/sunrise-core/src/engine/tests.rs:7796#a_revoked_devices_ops_still_apply_at_the_replica`
 /// holds the admitting half, and
-/// `crates/sunrise-core/src/engine/tests.rs:8646#a_stranger_cert_through_apply_remote_is_refused_and_writes_no_cursor`
+/// `crates/sunrise-core/src/engine/tests.rs:8728#a_stranger_cert_through_apply_remote_is_refused_and_writes_no_cursor`
 /// the refusing one, which never reaches this function at all.
 ///
 /// # Where this sits relative to the op row
@@ -824,7 +824,7 @@ pub(super) fn ops_run_end(
 /// `crates/sunrise-core/src/engine/oplog.rs:129#ops_insert_at`, and the
 /// `Outbox::enqueue` at
 /// `crates/sunrise-core/src/engine/oplog.rs:152#ops_insert_at` — and
-/// `crates/sunrise-core/src/engine/tests.rs:8513#a_failed_local_emit_leaves_the_cursor_where_it_was`
+/// `crates/sunrise-core/src/engine/tests.rs:8595#a_failed_local_emit_leaves_the_cursor_where_it_was`
 /// walks the second and the third, inside the transaction rather than after
 /// the rollback. The seal is the one it does not walk. Nor could any of them
 /// move the number if it did: the prefix is read out of `ops`, never off the
@@ -850,7 +850,7 @@ pub(super) fn ops_run_end(
 /// still runs afterwards and counts that op toward the prefix like any other.
 /// A reader arrives here expecting the opposite, which is why it is named, and
 /// why
-/// `crates/sunrise-core/src/engine/tests.rs:7803#a_self_refused_revoke_still_advances_the_cursor`
+/// `crates/sunrise-core/src/engine/tests.rs:7885#a_self_refused_revoke_still_advances_the_cursor`
 /// holds both halves — for a delivery at seq 1, where the contiguous prefix is
 /// that op alone — and observes the log line rather than assuming it.
 ///
@@ -869,7 +869,7 @@ pub(super) fn ops_run_end(
 /// `crates/sunrise-core/src/engine/revocation.rs:650#is_read_bounded` and
 /// tolerates that predicate being per-replica
 /// ([#411](https://github.com/justin13888/Sunrise/issues/411)).
-/// `crates/sunrise-core/src/engine/tests.rs:7974#a_read_bounded_senders_recipient_claim_is_refused_and_the_cursor_counts_the_op`
+/// `crates/sunrise-core/src/engine/tests.rs:8056#a_read_bounded_senders_recipient_claim_is_refused_and_the_cursor_counts_the_op`
 /// delivers one through `apply_remote_all` — the only route that can see this
 /// half at all — and holds all three: the declined hint row, the op row, and
 /// the cursor.
@@ -895,9 +895,9 @@ pub(super) fn ops_run_end(
 /// a resent op carries the op log's same primary key, collides on insert, and
 /// [`Engine::apply_remote_all`] returns at its idempotence gate without
 /// re-running materialization or [`Engine::apply_control_op`] at all. That is
-/// `crates/sunrise-core/src/engine/tests.rs:5889#apply_remote_is_idempotent`
+/// `crates/sunrise-core/src/engine/tests.rs:5971#apply_remote_is_idempotent`
 /// for an entity op, and the tail of
-/// `crates/sunrise-core/src/engine/tests.rs:7803#a_self_refused_revoke_still_advances_the_cursor`
+/// `crates/sunrise-core/src/engine/tests.rs:7885#a_self_refused_revoke_still_advances_the_cursor`
 /// for a control one, which resends *different* payload bytes under the same
 /// `(stream, device, seq)` and observes that the control arm never sees them.
 ///
@@ -915,7 +915,7 @@ pub(super) fn ops_run_end(
 /// no call site triggers is an *extra* run for the devices whose revocations
 /// that fold unwound, and none is needed, because their cursors are facts
 /// about `ops` that the fold did not touch.
-/// `crates/sunrise-core/src/engine/tests.rs:8755#a_refold_that_unwinds_a_revocation_moves_no_cursor`
+/// `crates/sunrise-core/src/engine/tests.rs:8837#a_refold_that_unwinds_a_revocation_moves_no_cursor`
 /// pins all of it, including the half that does *not* unwind:
 /// `device_read_bounds` keeps the device it bounded, which is the asymmetry
 /// `crates/sunrise-core/src/engine/revocation.rs:650#is_read_bounded` exists
@@ -943,7 +943,7 @@ pub(super) fn ops_run_end(
 /// the prefix: with the log holding `{2}` the `ELSE ?3 - 1` arm writes 0, and with
 /// it holding `{1, 3}` the run ends at 1. Refused or applied makes no
 /// difference to either, which is what
-/// `crates/sunrise-core/src/engine/tests.rs:8258#a_self_refused_revoke_out_of_order_leaves_the_cursor_short`
+/// `crates/sunrise-core/src/engine/tests.rs:8340#a_self_refused_revoke_out_of_order_leaves_the_cursor_short`
 /// pins.
 ///
 /// # The chain root moves with it

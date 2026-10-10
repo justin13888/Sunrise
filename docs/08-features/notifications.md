@@ -111,7 +111,7 @@ What exists today, read from the tree:
   `Routine` variant that only a test constructs. The morning summary and
   end-of-day plan are queries
   (`crates/sunrise-core/src/engine/notify.rs:22#query_morning_summary`,
-  `crates/sunrise-core/src/engine/notify.rs:43#query_end_of_day_plan`) that
+  `crates/sunrise-core/src/engine/notify.rs:44#query_end_of_day_plan`) that
   nothing schedules.
 - **The Apple clients** share one scheduler: `ReminderScheduler` follows the
   change feed and reconciles against the OS's pending requests, and two
