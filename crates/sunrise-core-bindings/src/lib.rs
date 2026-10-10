@@ -819,8 +819,8 @@ impl SunriseCore {
 
     /// Report the class of network this device is on, whenever the OS says
     /// it changed. The fetch drain decides from it what to fetch unasked.
-    pub fn set_network_class(&self, class: NetworkClass) {
-        self.inner.set_network_class(class);
+    pub fn set_network_class(&self, network: NetworkClass) {
+        self.inner.set_network_class(network);
     }
 
     /// Hold an attachment's bytes in the cache while a preview of them is

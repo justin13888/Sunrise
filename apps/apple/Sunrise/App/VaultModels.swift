@@ -29,6 +29,9 @@ final class VaultModels {
     /// What has access to this account, and the three signals about it that
     /// reached no user before #144.
     let devices: DeviceListModel
+    /// This device's attachment cache and the network gate (ADR-0053 §5–§6),
+    /// for Settings → Storage.
+    let storage: AttachmentCacheModel
 
     /// Per-device and vault-independent, so they are built here too rather
     /// than by each shell: settings, the sync banner and the saved-view list
@@ -62,6 +65,7 @@ final class VaultModels {
         evening = EndOfDayPlanModel(bridge: bridge)
         undo = UndoModel(bridge: bridge)
         devices = DeviceListModel(bridge: bridge)
+        storage = AttachmentCacheModel(bridge: bridge)
     }
 }
 
