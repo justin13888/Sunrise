@@ -591,8 +591,8 @@ pub(super) fn insert_focus_start_row(
             f.planned_ms.map(|v| v as i64),
             f.energy.as_ref().map(energy_str),
             f.kind.as_str(),
-            f.chunk.map(|c| i64::from(c.index)),
-            f.chunk.map(|c| i64::from(c.total)),
+            f.chunk.as_ref().map(|c| i64::from(c.index)),
+            f.chunk.as_ref().map(|c| i64::from(c.total)),
             extra_blob,
             lww.hlc.physical_ms as i64,
             lww.hlc.logical,
@@ -772,10 +772,10 @@ pub(super) fn read_focus_sessions(
     for v in rows {
         let id = ref_of(EntityKind::FocusSession, &v.0);
         let chunk = match (v.7, v.8) {
-            (Some(index), Some(total)) => Some(Chunk {
-                index: u32::try_from(index.max(0)).unwrap_or(0),
-                total: u32::try_from(total.max(0)).unwrap_or(0),
-            }),
+            (Some(index), Some(total)) => Some(Chunk::new(
+                u32::try_from(index.max(0)).unwrap_or(0),
+                u32::try_from(total.max(0)).unwrap_or(0),
+            )),
             _ => None,
         };
         let start = FocusStart {

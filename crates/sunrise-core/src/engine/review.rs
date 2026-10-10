@@ -490,6 +490,7 @@ impl Engine {
                         last_completed_at_ms: r
                             .last_completed_at
                             .and_then(|t| u64::try_from(t.as_millisecond()).ok()),
+                        unknown: sunrise_domain::Unknowns::new(),
                     })
                     .collect();
                 streaks_table(&rows)

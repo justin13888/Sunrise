@@ -924,9 +924,9 @@ jobs:
     # The third term is `15.4` itself, and it is the one that decides which
     # way the bound points. `sunrise-core`'s only completed pass is nightly
     # 35978884844's four shards at d9566ad (54-90 min each), and 812 of its
-    # 1313 mutants failed to build under this workflow's `-D warnings` (#403),
-    # so those wall clocks do not price a mutant that builds and runs its
-    # tests. Nothing in this repository says whether 15.4
+    # 1313 mutants failed to build under the workflow-level `-D warnings`
+    # that the `Mutate` step below now clears (#403), so those wall clocks do
+    # not price a mutant that builds and runs its tests. Nothing in this repository says whether 15.4
     # is that same full-pass average taken over its first 76 mutants or a
     # marginal rate off cargo-mutants' own output. If it is the average, it
     # carries 1/76th of a baseline build and `315 x 15.4` charges that build
@@ -941,8 +941,10 @@ jobs:
     # second number derived from the same missing measurement is exactly what
     # this comment exists to stop. What would settle it is one completed
     # `sunrise-core` pass with its wall clock recorded, built the way the
-    # local task builds it: the first run after #403 aligns the two builds,
-    # which is also the run that re-records the crate's floor.
+    # local task builds it: the first nightly after #403 cleared `-D warnings`
+    # for the `Mutate` step, which is also the run that re-records the
+    # crate's floor. Revisit this bound against that run's wall clocks
+    # (#497).
     #
     # The lever if it turns out to be wrong is `sunrise-core`'s shard count,
     # not this number: the longest shard is the only one near the ceiling, and
@@ -1034,6 +1036,23 @@ jobs:
         with:
           tool: cargo-mutants
       - name: Mutate ${{ matrix.crate }} (shard ${{ matrix.shard }})
+        # Builds every mutant the way `mise run mutants` does, which sets no
+        # `RUSTFLAGS`. Under the workflow-level `-D warnings` a mutant that
+        # replaces a function body leaves its parameters unused, the
+        # `unused_variables` warning becomes an error, and cargo-mutants scores
+        # it `unviable` instead of running the tests against it. The gate
+        # drops `unviable` from the denominator, so a missed body replacement
+        # vanished from the rate rather than counting against it (#403): 812
+        # of `sunrise-core`'s 1313 mutants on nightly 35978884844. Warning
+        # discipline is the `rust` job's clippy step, not this one's.
+        #
+        # Cleared on this step, not on the job, because rust-cache folds every
+        # `RUST*` variable into the env hash at its own step: a job-level
+        # override would change that hash and lose the prefix hit on the
+        # `rust` entry the cache step above relies on. A step's `env` is not
+        # in the environment the cache step hashes.
+        env:
+          RUSTFLAGS: ""
         # `--jobs 1` here for the same reason the mise task pins it: each job
         # is a full copy of the tree plus a resident rustc, and a hosted runner
         # has less headroom than the laptop the figure was measured on.

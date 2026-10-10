@@ -41,6 +41,9 @@ enum SunriseTimeRepr {
     Unknown(UnknownTagged),
 }
 
+/// The four known kinds. Closed shapes: a key one of them does not know is
+/// ignored and not re-emitted, the one recorded exception to lossless unknowns
+/// (ADR-0045 §6). A newer build that needs another field adds a kind instead.
 #[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum Tagged {

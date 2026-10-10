@@ -37,12 +37,14 @@ final class BackgroundHost {
     /// The refresh, maintenance and push runs, once a session is attached.
     private(set) var sync: BackgroundSync?
     private var session: SessionModel?
+    private var surfaces: AppSurfaces?
 
     /// Bind to the app's session and surfaces. The run each background task
     /// performs: sync the vault, re-plan reminders from what arrived, redraw
     /// the widgets, and file the push token if the relay does not hold it.
     func attach(session: SessionModel, surfaces: AppSurfaces) {
         self.session = session
+        self.surfaces = surfaces
         let push = push
         sync = BackgroundSync(scheduler: SystemBackgroundScheduler()) {
             let result = await session.backgroundSync { bridge in
@@ -61,6 +63,29 @@ final class BackgroundHost {
     /// what catches a relay device id minted by re-pairing.
     func uploadPushToken() async {
         await push.uploadIfNeeded(to: session?.pushUploadTarget())
+    }
+
+    /// Re-plan reminders under the Focus filter now in force.
+    ///
+    /// iOS runs the filter's intent when a Focus turns on or off, often with
+    /// Sunrise suspended or not running at all, and the reminders the OS is
+    /// already holding are what a Focus has to mute. With a vault bound to
+    /// the surfaces, its scheduler reconciles. Without one, the vault is
+    /// opened the way an intent opens it, re-planned once, and closed again.
+    func focusFilterChanged() async {
+        if let reminders = surfaces?.reminders {
+            await reminders.reconcile()
+            return
+        }
+        _ = try? await IntentVault.withVault { bridge in
+            await Self.replanReminders(from: bridge)
+        }
+    }
+
+    private static func replanReminders(from bridge: CoreBridge) async {
+        let reminders = ReminderScheduler(bridge: bridge, preferences: NotificationPreferences()) { _ in }
+        await reminders.refreshAuthorization()
+        await reminders.reconcile()
     }
 
     /// Register the two task handlers. Must run before launch finishes —

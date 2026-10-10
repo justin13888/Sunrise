@@ -82,6 +82,23 @@ extension VaultTabs {
                 .task { await surfaces.reminders?.follow() }
                 .task { await models.undo.follow() }
                 .task { await models.savedViews.load() }
+                // The focus Live Activity follows the running session, and
+                // whatever the share extension left waiting is filed into the
+                // Inbox now that a vault is open (`mobile-ios.md` §Live
+                // Activities, §Sharing extension).
+                .task { await FocusLiveActivity.follow(bridge) }
+                // This shell is replaced only when the session leaves
+                // `.unlocked` — backgrounding does not — so this is the vault
+                // closing, and its title comes off the Lock Screen with it.
+                .onDisappear { Task { await FocusLiveActivity.endAll() } }
+                .task { await ShareInbox.shared.file(into: bridge) }
+                // A Focus turning on or off re-scopes Today at once, rather
+                // than at its next change batch. The reminder schedule is the
+                // filter intent's to re-plan (`BackgroundHost.focusFilterChanged`),
+                // because it has to happen with no window open too.
+                .onChange(of: FocusFilterStore.shared.streams) {
+                    Task { await models.list.refresh() }
+                }
                 .onChange(of: models.settings.relayURL) { Task { await startSync() } }
                 .onChange(of: models.account.accessToken) { _, token in
                     Task {

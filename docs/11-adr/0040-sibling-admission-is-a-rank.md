@@ -186,11 +186,22 @@ permanent it would never reach them.
 
 ## What would force revisiting this
 
-1. **The residual being exercised, or a bound on member writes landing.**
+1. **The residual being exercised, or a bound on a current member's writes
+   landing.** This item used to name
    [#82](https://github.com/justin13888/Sunrise/issues/82) (a convergent
-   peer-side check) or [#80](https://github.com/justin13888/Sunrise/issues/80)
-   (a relay-side write bound) would each remove the current-member half. Failing
-   those, alternative 2 is the next mechanism to price.
+   peer-side check) and [#80](https://github.com/justin13888/Sunrise/issues/80)
+   (a relay-side write bound) as what would remove the current-member half.
+   Both have landed, and neither removed it, because neither reaches a member
+   that is still current. The relay bound applies only to a *revoked* device,
+   and only under the three conditions
+   [`key-rotation.md`](../03-crypto/key-rotation.md) §Implementation status
+   states. [ADR-0041](./0041-peer-side-revocation-is-a-fold.md) refuses only
+   `device_revoke` and a read-bounded sender's third-party `key_envelope`
+   claim. The member the residual describes is neither revoked nor
+   read-bounded, and `admit_sibling` still counts against the predecessor,
+   not the emitter. So the residual in §Consequences still holds. Alternative
+   2 is the next mechanism to price, and item 2 is the condition it depends
+   on.
 2. **A device legitimately emitting two transitions from one predecessor.**
    Nothing produces it today — `rotate_identity` refuses unless the emitter's own
    identity is the head, and it adopts in the same transaction — and alternative

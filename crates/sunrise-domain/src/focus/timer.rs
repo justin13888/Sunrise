@@ -115,8 +115,8 @@ pub fn chunk_count(estimated_ms: u64, session_ms: u64) -> Option<u32> {
 }
 
 /// The sizing decision for one session: how long to run, and whether to show a
-/// "chunk N of M" checkpoint.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// "chunk N of M" checkpoint. Not `Copy`, because [`Chunk`] is not.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionPlan {
     /// Planned length, `None` for `until done`.
     pub planned_ms: Option<u64>,
@@ -160,10 +160,8 @@ pub fn plan_session(
     // chunk marker even for a large estimate.
     let chunk = match planned_ms {
         None => None,
-        Some(session_ms) => chunk_count(estimated_ms, session_ms).map(|total| Chunk {
-            index: work_sessions_done.saturating_add(1).min(total),
-            total,
-        }),
+        Some(session_ms) => chunk_count(estimated_ms, session_ms)
+            .map(|total| Chunk::new(work_sessions_done.saturating_add(1).min(total), total)),
     };
     SessionPlan { planned_ms, chunk }
 }
@@ -206,7 +204,7 @@ mod tests {
             POMODORO_MS,
         );
         assert_eq!(p.planned_ms, Some(POMODORO_MS));
-        assert_eq!(p.chunk, Some(Chunk { index: 1, total: 4 }));
+        assert_eq!(p.chunk, Some(Chunk::new(1, 4)));
         // Third sitting of the same task.
         let p3 = plan_session(
             SessionLength::SizedToEstimate,
@@ -214,7 +212,7 @@ mod tests {
             2,
             POMODORO_MS,
         );
-        assert_eq!(p3.chunk, Some(Chunk { index: 3, total: 4 }));
+        assert_eq!(p3.chunk, Some(Chunk::new(3, 4)));
         // Overrunning the estimate clamps rather than reading "5 of 4".
         let p9 = plan_session(
             SessionLength::SizedToEstimate,
@@ -222,7 +220,7 @@ mod tests {
             8,
             POMODORO_MS,
         );
-        assert_eq!(p9.chunk, Some(Chunk { index: 4, total: 4 }));
+        assert_eq!(p9.chunk, Some(Chunk::new(4, 4)));
     }
 
     #[test]

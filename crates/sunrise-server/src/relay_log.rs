@@ -148,11 +148,36 @@ impl Default for DurableCaps {
     }
 }
 
-/// One replayed frame: its durable `relay_frames.id` and its verbatim bytes.
+/// One replayed frame.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplayFrame {
+    /// Its durable `relay_frames.id`.
+    ///
+    /// The id is what an SSE `id:` field carries, so `Last-Event-ID` resumes
+    /// from a position the server can act on rather than one it has to guess.
+    pub id: u64,
+    /// The frame, verbatim.
+    pub bytes: Vec<u8>,
+    /// The ops it carries, as counted when it was stored, so a replay adds
+    /// them to `sunrise_sync_ops_delivered_total` without decoding it.
+    pub n_ops: u64,
+}
+
+/// How many ops a stored frame carries: the length of its `OpBatch`
+/// payload's op list, and 0 for any other frame or one that does not decode.
 ///
-/// The id is what an SSE `id:` field carries, so `Last-Event-ID` resumes from a
-/// position the server can act on rather than one it has to guess.
-pub type ReplayFrame = (u64, Vec<u8>);
+/// Used once per frame, by the migration that gave `relay_frames` its
+/// `n_ops` column, for the frames stored before it. Every frame stored since
+/// is counted by its publisher, which has already decoded the batch.
+pub(crate) fn frame_op_count(bytes: &[u8]) -> u64 {
+    use sunrise_wire_protocol::{decode_frame, MsgKind, OpBatchPayload};
+    match decode_frame(bytes) {
+        Ok((header, payload)) if header.msg_kind == MsgKind::OpBatch => {
+            OpBatchPayload::decode(&payload).map_or(0, |batch| batch.ops.len() as u64)
+        }
+        _ => 0,
+    }
+}
 
 /// What a replay yields: the frames to send, and the gaps retention made
 /// unrecoverable.
@@ -172,6 +197,9 @@ pub enum Appended {
     Fresh {
         /// Server wall-clock at which this batch was stored.
         first_seen_ms: u64,
+        /// Frames retention deleted from the channel to make room, by either
+        /// bound, in the same transaction: `sunrise_relay_log_evicted_total`.
+        evicted: u64,
     },
     /// The batch is already stored. Nothing was written and nothing must be
     /// republished: the subscribers that were live for the first copy already
@@ -201,14 +229,19 @@ impl Store {
     /// deliberately not part of the key — see the `relay_batches` comment in
     /// [`crate::store`] for why keying on it loses data.
     ///
+    /// `n_ops` is how many ops the frame carries, stored beside it so a
+    /// replay can count what it delivers without decoding the frame.
+    ///
     /// # Errors
     /// [`StoreError::Sqlite`] if the transaction cannot be committed, in which
     /// case nothing was written and the caller must refuse to ack.
+    #[allow(clippy::too_many_arguments)]
     pub fn relay_append(
         &self,
         key: StreamKey,
         bytes: &[u8],
         heads: &[FrameHead],
+        n_ops: u64,
         ops_h: Option<&[u8; 32]>,
         batch_id: u64,
         now_ms: u64,
@@ -240,14 +273,15 @@ impl Store {
         }
 
         tx.execute(
-            "INSERT INTO relay_frames (account_h, stream_id, bytes, n_bytes, created_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO relay_frames (account_h, stream_id, bytes, n_bytes, created_ms, n_ops)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![
                 &account_h[..],
                 &stream_id[..],
                 bytes,
                 i64::try_from(bytes.len()).unwrap_or(i64::MAX),
                 i64::try_from(now_ms).unwrap_or(i64::MAX),
+                i64::try_from(n_ops).unwrap_or(i64::MAX),
             ],
         )?;
         let frame_id = tx.last_insert_rowid();
@@ -281,10 +315,11 @@ impl Store {
         // budget the eviction enforces. The cascade takes the batch rows of
         // whatever it deletes, which is what keeps the dedup window and the
         // retention window the same window.
-        evict(&tx, account_h, stream_id, now_ms, caps)?;
+        let evicted = evict(&tx, account_h, stream_id, now_ms, caps)?;
         tx.commit()?;
         Ok(Appended::Fresh {
             first_seen_ms: now_ms,
+            evicted,
         })
     }
 
@@ -302,7 +337,7 @@ impl Store {
         cursors: &HashMap<[u8; 16], u64>,
     ) -> Result<(Vec<Vec<u8>>, Vec<CursorGap>), StoreError> {
         let (frames, gaps) = self.relay_replay_after(key, 0, cursors)?;
-        Ok((frames.into_iter().map(|(_, bytes)| bytes).collect(), gaps))
+        Ok((frames.into_iter().map(|f| f.bytes).collect(), gaps))
     }
 
     /// [`relay_replay`](Self::relay_replay), keeping each frame's durable id and
@@ -338,27 +373,35 @@ impl Store {
         let conn = self.tx("store.relay_replay_after");
 
         let mut stmt = conn.prepare(
-            "SELECT f.id, f.bytes FROM relay_frames f
+            "SELECT f.id, f.bytes, f.n_ops FROM relay_frames f
              WHERE f.account_h = ?1 AND f.stream_id = ?2
              ORDER BY f.id",
         )?;
         let rows = stmt
             .query_map(params![&account_h[..], &stream_id[..]], |r| {
-                Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?))
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, Vec<u8>>(1)?,
+                    r.get::<_, i64>(2)?,
+                ))
             })?
             .collect::<Result<Vec<_>, _>>()?;
 
         let mut heads_stmt =
             conn.prepare("SELECT device_id, max_seq FROM relay_frame_heads WHERE frame_id = ?1")?;
         let mut out = Vec::new();
-        for (id, bytes) in rows {
-            let seq = u64::try_from(id).unwrap_or(0);
+        for (id, bytes, n_ops) in rows {
+            let frame = ReplayFrame {
+                id: u64::try_from(id).unwrap_or(0),
+                bytes,
+                n_ops: u64::try_from(n_ops).unwrap_or(0),
+            };
             // A reconnect that names where it got to has said everything the
             // cursors would: it is reporting delivery on this stream rather
             // than application in its op log, which is the stricter of the two.
             if after_id > 0 {
-                if seq > after_id {
-                    out.push((seq, bytes));
+                if frame.id > after_id {
+                    out.push(frame);
                 }
                 continue;
             }
@@ -370,7 +413,7 @@ impl Store {
             if covered(&heads, cursors) {
                 continue;
             }
-            out.push((seq, bytes));
+            out.push(frame);
         }
 
         let mut gap_stmt = conn.prepare(
@@ -469,14 +512,15 @@ impl Store {
 }
 
 /// Enforce both retention bounds for one channel, raising `evicted_through`
-/// for every device carried by a frame that is deleted.
+/// for every device carried by a frame that is deleted, and return how many
+/// frames went.
 fn evict(
     tx: &rusqlite::Transaction<'_>,
     account_h: [u8; 16],
     stream_id: [u8; 16],
     now_ms: u64,
     caps: DurableCaps,
-) -> Result<(), StoreError> {
+) -> Result<u64, StoreError> {
     let cutoff = i64::try_from(now_ms.saturating_sub(caps.max_age_ms)).unwrap_or(0);
     let mut doomed: Vec<i64> = {
         let mut s = tx.prepare(
@@ -521,6 +565,7 @@ fn evict(
         }
     }
 
+    let evicted = doomed.len() as u64;
     for id in doomed {
         let heads: Vec<(Vec<u8>, i64)> = {
             let mut s =
@@ -546,7 +591,7 @@ fn evict(
         }
         tx.execute("DELETE FROM relay_frames WHERE id = ?1", params![id])?;
     }
-    Ok(())
+    Ok(evicted)
 }
 
 /// The relay's namespace for an account: the first 16 bytes of
@@ -659,6 +704,7 @@ mod tests {
                 KEY,
                 &[u8::try_from(seq).unwrap(); 8],
                 &head(seq),
+                1,
                 None,
                 0,
                 1000,
@@ -671,6 +717,19 @@ mod tests {
         assert!(gaps.is_empty());
     }
 
+    /// A replayed frame carries the op count it was stored with, so a replay
+    /// counts what it delivers without decoding it.
+    #[test]
+    fn a_replayed_frame_carries_the_op_count_it_was_stored_with() {
+        let s = store();
+        s.relay_append(KEY, b"three", &head(1), 3, None, 0, 1000, big())
+            .unwrap();
+        s.relay_append(KEY, b"opaque", &[], 0, None, 0, 1000, big())
+            .unwrap();
+        let (frames, _) = s.relay_replay_after(KEY, 0, &HashMap::new()).unwrap();
+        assert_eq!(frames.iter().map(|f| f.n_ops).collect::<Vec<_>>(), [3, 0]);
+    }
+
     #[test]
     fn a_cursor_narrows_the_replay_to_what_was_missed() {
         let s = store();
@@ -679,6 +738,7 @@ mod tests {
                 KEY,
                 &[u8::try_from(seq).unwrap(); 8],
                 &head(seq),
+                1,
                 None,
                 0,
                 1000,
@@ -694,10 +754,10 @@ mod tests {
     #[test]
     fn channels_do_not_bleed_into_each_other() {
         let s = store();
-        s.relay_append(KEY, b"mine", &head(1), None, 0, 1000, big())
+        s.relay_append(KEY, b"mine", &head(1), 1, None, 0, 1000, big())
             .unwrap();
         let other = (ACC, [0x99; 16]);
-        s.relay_append(other, b"theirs", &head(1), None, 0, 1000, big())
+        s.relay_append(other, b"theirs", &head(1), 1, None, 0, 1000, big())
             .unwrap();
         let (frames, _) = s.relay_replay(KEY, &HashMap::new()).unwrap();
         assert_eq!(frames, vec![b"mine".to_vec()]);
@@ -711,19 +771,28 @@ mod tests {
             max_age_ms: u64::MAX,
         };
         // Each frame is 8 bytes, so a 20-byte budget holds two.
+        let mut evicted = Vec::new();
         for seq in 1..=5 {
-            s.relay_append(
-                KEY,
-                &[u8::try_from(seq).unwrap(); 8],
-                &head(seq),
-                None,
-                0,
-                1000,
-                caps,
-            )
-            .unwrap();
+            let appended = s
+                .relay_append(
+                    KEY,
+                    &[u8::try_from(seq).unwrap(); 8],
+                    &head(seq),
+                    1,
+                    None,
+                    0,
+                    1000,
+                    caps,
+                )
+                .unwrap();
+            let Appended::Fresh { evicted: n, .. } = appended else {
+                panic!("a batch with no content key is never a duplicate");
+            };
+            evicted.push(n);
         }
         assert_eq!(s.relay_len(KEY).unwrap(), 2, "budget holds two frames");
+        // Each append past the second deletes exactly the oldest, and says so.
+        assert_eq!(evicted, [0, 0, 1, 1, 1]);
 
         // A subscriber at seq 1 has lost 2 and 3 for good.
         let (_, gaps) = s.relay_replay(KEY, &cursors(1)).unwrap();
@@ -745,6 +814,7 @@ mod tests {
                 KEY,
                 &[u8::try_from(seq).unwrap(); 8],
                 &head(seq),
+                1,
                 None,
                 0,
                 1000,
@@ -766,10 +836,10 @@ mod tests {
             max_bytes: u64::MAX,
             max_age_ms: 1000,
         };
-        s.relay_append(KEY, b"old", &head(1), None, 0, 1_000, caps)
+        s.relay_append(KEY, b"old", &head(1), 1, None, 0, 1_000, caps)
             .unwrap();
         // Far enough past the bound that the first frame is out of window.
-        s.relay_append(KEY, b"new", &head(2), None, 0, 10_000, caps)
+        s.relay_append(KEY, b"new", &head(2), 1, None, 0, 10_000, caps)
             .unwrap();
         assert_eq!(s.relay_len(KEY).unwrap(), 1);
         let (_, gaps) = s.relay_replay(KEY, &HashMap::new()).unwrap();
@@ -781,7 +851,7 @@ mod tests {
     fn an_unparseable_frame_is_never_filtered_out() {
         let s = store();
         // No heads: the relay could not read the routing header.
-        s.relay_append(KEY, b"opaque", &[], None, 0, 1000, big())
+        s.relay_append(KEY, b"opaque", &[], 0, None, 0, 1000, big())
             .unwrap();
         let (frames, _) = s.relay_replay(KEY, &cursors(u64::MAX)).unwrap();
         assert_eq!(
@@ -798,9 +868,9 @@ mod tests {
             max_bytes: 8,
             max_age_ms: u64::MAX,
         };
-        s.relay_append(KEY, b"opaque12", &[], None, 0, 1000, caps)
+        s.relay_append(KEY, b"opaque12", &[], 0, None, 0, 1000, caps)
             .unwrap();
-        s.relay_append(KEY, b"opaque34", &[], None, 0, 1000, caps)
+        s.relay_append(KEY, b"opaque34", &[], 0, None, 0, 1000, caps)
             .unwrap();
         let (_, gaps) = s.relay_replay(KEY, &HashMap::new()).unwrap();
         assert!(
@@ -816,7 +886,7 @@ mod tests {
             max_bytes: 1,
             max_age_ms: u64::MAX,
         };
-        s.relay_append(KEY, &[7u8; 64], &head(1), None, 0, 1000, caps)
+        s.relay_append(KEY, &[7u8; 64], &head(1), 1, None, 0, 1000, caps)
             .unwrap();
         assert_eq!(s.relay_len(KEY).unwrap(), 1);
     }
@@ -837,19 +907,19 @@ mod tests {
         let b: [u8; 32] = [0xbb; 32];
 
         assert!(matches!(
-            s.relay_append(KEY, &[1u8; 16], &head(1), Some(&a), 1, 1000, caps)
+            s.relay_append(KEY, &[1u8; 16], &head(1), 1, Some(&a), 1, 1000, caps)
                 .unwrap(),
             Appended::Fresh { .. }
         ));
         assert!(matches!(
-            s.relay_append(KEY, &[1u8; 16], &head(1), Some(&a), 1, 1000, caps)
+            s.relay_append(KEY, &[1u8; 16], &head(1), 1, Some(&a), 1, 1000, caps)
                 .unwrap(),
             Appended::Duplicate { .. }
         ));
 
         // 16-byte frames under a 20-byte budget: appending B evicts A.
         assert!(matches!(
-            s.relay_append(KEY, &[3u8; 16], &head(3), Some(&b), 2, 2000, caps)
+            s.relay_append(KEY, &[3u8; 16], &head(3), 1, Some(&b), 2, 2000, caps)
                 .unwrap(),
             Appended::Fresh { .. }
         ));
@@ -857,7 +927,7 @@ mod tests {
 
         assert!(
             matches!(
-                s.relay_append(KEY, &[1u8; 16], &head(1), Some(&a), 1, 3000, caps)
+                s.relay_append(KEY, &[1u8; 16], &head(1), 1, Some(&a), 1, 3000, caps)
                     .unwrap(),
                 Appended::Fresh { .. }
             ),
@@ -871,19 +941,20 @@ mod tests {
         let s = store();
         let h: [u8; 32] = [0xcc; 32];
         let first = s
-            .relay_append(KEY, b"batch", &head(1), Some(&h), 1, 1_000, big())
+            .relay_append(KEY, b"batch", &head(1), 1, Some(&h), 1, 1_000, big())
             .unwrap();
         assert_eq!(
             first,
             Appended::Fresh {
-                first_seen_ms: 1_000
+                first_seen_ms: 1_000,
+                evicted: 0,
             }
         );
 
         // A reconnect re-drains the outbox under a fresh counter, so the same
         // ops arrive again as batch 1 of a new session.
         let again = s
-            .relay_append(KEY, b"batch", &head(1), Some(&h), 1, 9_000, big())
+            .relay_append(KEY, b"batch", &head(1), 1, Some(&h), 1, 9_000, big())
             .unwrap();
         assert_eq!(
             again,
@@ -900,7 +971,7 @@ mod tests {
         let s = store();
         for _ in 0..3 {
             assert!(matches!(
-                s.relay_append(KEY, b"same", &[], None, 0, 1000, big())
+                s.relay_append(KEY, b"same", &[], 0, None, 0, 1000, big())
                     .unwrap(),
                 Appended::Fresh { .. }
             ));

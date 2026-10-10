@@ -109,5 +109,27 @@ struct TabRouteTests {
         let outside = Set(AppTab.allCases).subtracting(AppTab.bar)
         #expect(outside == [.search])
     }
+
+    /// What ⌘P prints is the screen on show: the top of the tab's stack, or
+    /// the tab's root — and nothing for Browse's stream list, which has no
+    /// paper shape.
+    @Test
+    func theScreenOnShowIsTheTopOfTheTabsStack() {
+        let stream = Destination.list(.stream(id: "str_1", name: "Errands"))
+        #expect(TabRoute.showing(tab: .today, todayPath: [], browsePath: [stream]) == .list(.todayAll))
+        #expect(TabRoute.showing(tab: .browse, todayPath: [], browsePath: [stream]) == stream)
+        #expect(TabRoute.showing(tab: .browse, todayPath: [], browsePath: []) == nil)
+        #expect(TabRoute.showing(tab: .calendar, todayPath: [], browsePath: []) == .calendar)
+        #expect(TabRoute.showing(tab: .search, todayPath: [], browsePath: []) == .search)
+        for destination in Destination.fixed {
+            let route = TabRoute.route(to: destination)
+            let back = TabRoute.showing(
+                tab: route.tab,
+                todayPath: route.tab == .today ? route.path : [],
+                browsePath: route.tab == .browse ? route.path : []
+            )
+            #expect(back == destination, "\(destination) does not read back as itself")
+        }
+    }
 }
 #endif

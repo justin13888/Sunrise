@@ -135,7 +135,15 @@ pub const ENVELOPE_FORMAT_FLOOR: u16 = 3;
 /// refuses it as an invalid op; it never receives one, because a vault write
 /// waits until every device has advertised `preferences.entity`. Every v1..v10
 /// payload shape is unchanged, so the floor still does not move.
-pub const DOC_SCHEMA_V: u16 = 11;
+///
+/// `12` changes no shape on the wire. It is the version at which the
+/// canonical schema describes what it only named before (issue #439): every
+/// value type a record carries (`RRule`, `SunriseTime`, `ScheduleConstraint`
+/// and the rest) and every op payload the entity registry does not declare,
+/// field by field. A field added to one of them now moves the fingerprint.
+/// The payloads a v11 build writes are the payloads a v12 build writes, so
+/// the floor does not move.
+pub const DOC_SCHEMA_V: u16 = 12;
 
 /// The first [`DOC_SCHEMA_V`] that has a fingerprint (ADR-0045 §3, `N_fp`).
 ///
@@ -184,6 +192,10 @@ pub const DOC_SCHEMA_FINGERPRINTS: &[(u16, [u8; 32])] = &[
     (
         11,
         hex32("3c75fc18c3369d0481d746a3534a34028ad1068a02ee6816e3062b830e6debd4"),
+    ),
+    (
+        12,
+        hex32("1be56767d868335916e893ff50e7a6097d942957f1687109b8cc17fb4e2176f1"),
     ),
 ];
 

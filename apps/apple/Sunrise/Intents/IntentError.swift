@@ -33,6 +33,12 @@ enum IntentError: Swift.Error, CustomLocalizedStringResourceConvertible, Equatab
     case emptyTitle
     /// A task id that no longer resolves — deleted between picking and running.
     case taskNotFound(String)
+    /// A stream id that no longer resolves — deleted or archived since it was
+    /// picked.
+    case streamNotFound(String)
+    /// A finished task asked to be deferred. Deferring it would give a done
+    /// task a new date, which is the automation reopening it by the back door.
+    case taskAlreadyFinished(String)
     /// A focus session is already open on this vault.
     case focusAlreadyRunning(String)
     /// No focus session to end.
@@ -67,6 +73,10 @@ enum IntentError: Swift.Error, CustomLocalizedStringResourceConvertible, Equatab
             "That capture line has no title left once its tags are read."
         case let .taskNotFound(id):
             "That task is no longer in Sunrise (\(id))."
+        case let .streamNotFound(id):
+            "That stream is no longer in Sunrise (\(id))."
+        case let .taskAlreadyFinished(title):
+            "“\(title)” is already finished, so there is nothing to defer."
         case let .focusAlreadyRunning(title):
             "A focus session is already running on “\(title)”. End it before starting another."
         case .noFocusRunning:

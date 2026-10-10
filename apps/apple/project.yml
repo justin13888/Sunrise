@@ -218,6 +218,10 @@ targets:
       # The widgets' snapshot format, which the app writes and the widget
       # extension reads — so both compile the one file.
       - path: Widgets/Shared
+      # The share extension's pending-capture record. Only the iOS app has a
+      # share extension; the Mac compiles the record so the filing logic in
+      # `Sunrise/Tasks/SharedCapture.swift`, and its tests, are shared.
+      - path: Share/Shared
       # Generated from the Rust crate on every build; never edited, and
       # excluded from SwiftLint for the same reason.
       - path: ../../out/swift/sunrise_core_bindings.swift
@@ -445,6 +449,7 @@ targets:
       - path: iOS
       # See the macOS target.
       - path: Widgets/Shared
+      - path: Share/Shared
       - path: ../../out/swift/sunrise_core_bindings.swift
         group: Generated
       # The same committed, drift-checked token file the macOS target compiles.
@@ -466,8 +471,11 @@ targets:
       # link but are never offered by Shortcuts or Siri. `Sunrise/Intents/` is
       # shared, so this surface is the Mac's, unchanged.
       - sdk: AppIntents.framework
-      # Embedded under `PlugIns`; the Home and Lock Screen widgets.
+      # Embedded under `PlugIns`; the Home and Lock Screen widgets, and the
+      # focus Live Activity.
       - target: SunriseWidgetsiOS
+      # Embedded under `PlugIns`; the share sheet's Sunrise entry.
+      - target: SunriseShare
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.sunrise.SunriseiOS
@@ -524,6 +532,11 @@ targets:
         BGTaskSchedulerPermittedIdentifiers:
           - dev.sunrise.SunriseiOS.refresh
           - dev.sunrise.SunriseiOS.maintenance
+        # The focus Live Activity (`mobile-ios.md` §Live Activities). Without
+        # it `Activity.request` throws and a session has no Lock Screen timer.
+        # Drawn by `SunriseWidgetsiOS`; started and ended by
+        # `iOS/FocusLiveActivity.swift`.
+        NSSupportsLiveActivities: true
     # The App Group. iOS's `containerURL` answers `nil` to a process the
     # group was not granted to, so without this the app would have nowhere
     # to write and every widget would say "Open Sunrise" forever.
@@ -591,6 +604,10 @@ targets:
         com.apple.security.application-groups:
           - $(SUNRISE_APP_GROUP)
 
+  # The iOS build also draws the focus Live Activity, which is why it — and
+  # not the Mac's — links ActivityKit. `Widgets/Shared/FocusActivity.swift`
+  # carries the attributes both it and the app compile; the app starts and
+  # ends the activity, and this target only draws it.
   SunriseWidgetsiOS:
     type: app-extension
     platform: iOS
@@ -599,6 +616,7 @@ targets:
     dependencies:
       - sdk: WidgetKit.framework
       - sdk: SwiftUI.framework
+      - sdk: ActivityKit.framework
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.sunrise.SunriseiOS.Widgets
@@ -617,6 +635,56 @@ targets:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
     entitlements:
       path: Generated/SunriseWidgets-iOS.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - $(SUNRISE_APP_GROUP)
+
+  # The share sheet's Sunrise entry (`docs/07-clients/mobile-ios.md`
+  # §Sharing extension), iOS only.
+  #
+  # **No Rust in here either, and for the widgets' reasons.** The extension
+  # never opens the vault: the app holds its lock, its root is in the app's
+  # Keychain items, and an extension's memory ceiling is far below what
+  # `Core::open` needs. It copies what it was handed into the App Group as a
+  # `PendingCapture` (`Share/Shared/`), which the app files into the Inbox the
+  # next time it opens a vault. It therefore holds no key to the vault at all.
+  SunriseShare:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: Share
+    dependencies:
+      - sdk: UIKit.framework
+      - sdk: SwiftUI.framework
+      - sdk: UniformTypeIdentifiers.framework
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.sunrise.SunriseiOS.Share
+        PRODUCT_NAME: SunriseShare
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Sunrise
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SKIP_INSTALL: YES
+    info:
+      path: Generated/Info-Share.plist
+      properties:
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        SunriseAppGroup: $(SUNRISE_APP_GROUP)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.share-services
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ShareViewController
+          NSExtensionAttributes:
+            # Offered for text, one web link, and up to ten images — the
+            # `ShareReceiver.imageLimit` the extension files. Not for files of
+            # other kinds, which would arrive as attachments with no task
+            # text to say what they were.
+            NSExtensionActivationRule:
+              NSExtensionActivationSupportsText: true
+              NSExtensionActivationSupportsWebURLWithMaxCount: 1
+              NSExtensionActivationSupportsImageWithMaxCount: 10
+    entitlements:
+      path: Generated/SunriseShare.entitlements
       properties:
         com.apple.security.application-groups:
           - $(SUNRISE_APP_GROUP)

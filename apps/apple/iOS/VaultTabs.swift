@@ -161,6 +161,7 @@ struct VaultTabs: View {
         .toolbar {
             captureButton
             savedViewsButton(for: .list(.todayAll))
+            PrintToolbarItem { printable(.list(.todayAll)) }
         }
         .task { await models.list.show(.todayAll) }
     }
@@ -277,6 +278,7 @@ struct VaultTabs: View {
             .toolbar {
                 captureButton
                 savedViewsButton(for: .list(kind))
+                PrintToolbarItem { printable(.list(kind)) }
             }
             .task { await models.list.show(kind) }
         case .calendar:
@@ -398,9 +400,21 @@ extension VaultTabs {
         case .quickCaptureGlobal: surfaces.openQuickCapture()
         case .undo: Task { await models.undo.undo() }
         case .redo: Task { await models.undo.redo() }
+        case .printView: PrintCommand.run(action, document: printable(
+            TabRoute.showing(tab: tab, todayPath: todayPath, browsePath: browsePath)
+        ))
         default: return false
         }
         return true
+    }
+
+    /// What ⌘P and a list's Print button would produce for `destination` —
+    /// the Mac's ``PrintDocument/forDestination(_:list:search:calendar:review:)``.
+    private func printable(_ destination: Destination?) -> PrintDocument? {
+        PrintDocument.forDestination(
+            destination, list: activeList, search: models.search,
+            calendar: models.calendar, review: models.review
+        )
     }
 
     private var activeList: TaskListModel {

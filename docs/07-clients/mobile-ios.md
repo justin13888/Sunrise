@@ -28,8 +28,9 @@ iOS caller — now have one: a **Views** menu on the toolbar of the screens a
 saved view can name, and **Import calendar…** / **Export calendar** in Browse's
 overflow, where the Mac has a File menu.
 
-The platform surfaces below are still specification rather than description.
-Read [Platform surfaces](#platform-surfaces-not-built) with that in mind.
+The platform surfaces below are built, except the Apple Watch app, the
+Secure Enclave binding and two widgets; [Platform surfaces](#platform-surfaces)
+says which is which.
 
 What exists today:
 
@@ -107,25 +108,23 @@ SwiftUI scenes ──▶ ViewModels (ObservableObject) ──▶ CoreClient (Swi
                                             sunrise-core (Rust)
 ```
 
-## Platform surfaces (not built)
+## Platform surfaces
 
-> **Apart from two exceptions, none of the surfaces in this section exists
-> yet.** [Background sync](#background-sync) and [Push handling](#push-handling)
-> are built and described in their own sections. Grepping `apps/apple` finds no
-> `ActivityKit`, `WatchConnectivity`, `INFocusStatus` or `SecureEnclave`, and
-> `project.yml` declares no share or watch extension target. This section is
-> the specification these surfaces will be built to, not a description of the
-> app. Tracked in [#368](https://github.com/justin13888/Sunrise/issues/368).
+> **Built:** the Next Up widget, the focus Live Activity, Focus Filters, the
+> share extension, printing, and the Shortcuts and App Intents surface, each in
+> its own section below, as are [Background sync](#background-sync) and
+> [Push handling](#push-handling)
+> ([#368](https://github.com/justin13888/Sunrise/issues/368)).
 >
-> The two exceptions:
+> **Not built:** the Apple Watch app (`apps/apple` has no
+> `WatchConnectivity` and `project.yml` no watch target), the Secure Enclave
+> binding ([OS keystore](#os-keystore)), and the capture widget and the Stream
+> tile ([#376](https://github.com/justin13888/Sunrise/issues/376)).
 >
-> - **Shortcuts and App Intents.** Six intents live in
->   `apps/apple/Sunrise/Intents/` and are shared with macOS. The set differs
->   from the list below: there is no "defer" or "stream-summary" intent, and
->   there are "today" and "inbox" intents that this page does not mention.
-> - **The Next Up widget** ([Widgets](#widgets)), on the Home Screen and the
->   Lock Screen. The capture widget and the Stream tile are not built
->   ([#376](https://github.com/justin13888/Sunrise/issues/376)).
+> Every extension Sunrise ships — the widgets, which also draw the Live
+> Activity, and the share extension — runs **without the vault**. None links the
+> core, none holds a key, and each one meets the app only through a file in the
+> App Group container whose contents are bounded in its section.
 
 
 ### Widgets
@@ -220,15 +219,70 @@ These are tracked in [#376](https://github.com/justin13888/Sunrise/issues/376):
 
 ### Focus Filters
 
-When the user enters an iOS Focus mode (Work, Personal, …), Sunrise responds:
+**Built** ([#368](https://github.com/justin13888/Sunrise/issues/368)). Settings
+▸ Focus ▸ a Focus ▸ Focus Filters ▸ Sunrise offers **Set Sunrise Streams**
+(`SunriseFocusFilter`, `apps/apple/Sunrise/Intents/SetFocusFilterIntent.swift`),
+a `SetFocusFilterIntent` with a multi-select of the vault's streams. While that
+Focus is on:
 
-- Shows only the configured Streams in Today.
-- Mutes notifications from non-matching Streams.
-- Communicates via the Intent we register in `Info.plist`.
+- **Today shows only the picked streams.** No other list is narrowed: the
+  Inbox, a stream or a context the user opens by name is a list they asked for.
+- **Reminders from the other streams are muted.** `ReminderScheduler` withdraws
+  them from the OS schedule rather than delivering them silently, so the
+  64-alert cap is spent on reminders that can fire, and the reconcile that runs
+  when the Focus ends puts them back. The filter's intent runs that reconcile
+  itself, so it happens with no window open: it uses the open vault's
+  scheduler, or opens the vault the way any intent does, re-plans once and
+  closes it again. A reminder is let through when its stream
+  cannot be read, and a time block's always is, because a block belongs to no
+  stream; dropping an alert over a failed read is the worse mistake.
+
+These rules are normative for any client that adds a Focus filter:
+
+- **The scope is device-local and never synced.** A Focus is a fact about one
+  device at one moment. `FocusFilterStore` keeps it in `UserDefaults`, persisted
+  because iOS runs the filter's intent when the Focus changes, which may launch
+  Sunrise in the background and end it again long before anyone opens it.
+- **No streams picked means no filter.** A Focus whose filter names nothing
+  filters nothing, rather than emptying Today and silencing the phone.
+- **The rules live in one place** (`FocusFilter`, `apps/apple/Sunrise/Focus/`),
+  so Today and the scheduler cannot disagree about what a Focus lets through.
+
+iOS resolves the picked streams when the Focus changes. If the vault cannot be
+opened then — before the first unlock after a restart — the streams the filter
+was configured with are answered from the store's record of their names, so the
+filter still applies.
+
+The filter is iOS-only for now. macOS has the API, but
+[desktop.md](./desktop.md) specifies no Focus filter and the Mac window does
+not re-read Today when the scope changes.
 
 ### Shortcuts and App Intents
 
-Donate intents for: capture, mark-done, defer, start-focus, stream-summary. Users compose Shortcuts that capture into Sunrise from anywhere.
+**Built.** `apps/apple/Sunrise/Intents/` is shared with macOS, and
+`SunriseShortcuts` offers eight App Shortcuts, each runnable without bringing
+Sunrise forward:
+
+| Intent | Does |
+|---|---|
+| Capture Task | captures a line through the same parser as quick capture |
+| Complete Task | marks a task done and says what it unblocked |
+| Defer Task | pushes a task out by an hour, to tomorrow or to next week |
+| Get Today's Tasks / Get Inbox Tasks | reads one of the two fixed lists |
+| Get Stream Summary | says how many tasks are open in a stream and names the first three |
+| Start Focus Session / End Focus Session | opens and closes a focus session |
+
+**Defer** sends the same `DeferTask` command as the row's Defer menu and a
+reminder's snooze buttons, so the task's deferral count goes up. The target
+instant is the seam's `snooze_target_ms`, which makes "tomorrow" a date rather
+than 24 hours. The plan-time semantics of
+[ADR-0047](../11-adr/0047-deadlines-and-lateness.md) change this command,
+not the intent ([#334](https://github.com/justin13888/Sunrise/issues/334)). A
+finished task is refused rather than given a date.
+
+**Stream Summary** takes a `StreamEntity`. Unlike the task picker, the stream
+picker opens the vault to list its streams, because the Focus filter's settings
+page has no typed search to fall back on.
 
 ### Siri
 
@@ -236,11 +290,97 @@ Donate intents for: capture, mark-done, defer, start-focus, stream-summary. User
 
 ### Live Activities
 
-When a focus session starts, a Live Activity shows the timer in the Dynamic Island and on the Lock Screen.
+**Built** ([#368](https://github.com/justin13888/Sunrise/issues/368)). A
+running focus session shows its task's title and its timer on the Lock Screen
+and in the Dynamic Island. A session with a planned length counts down to its
+end; one that runs until the task is done counts up. The system draws the
+timer, so it keeps time while Sunrise is suspended and the activity is never
+updated once a second.
+
+- **The content state is the title and two instants, and nothing else**
+  (`FocusActivityState`, `apps/apple/Widgets/Shared/FocusActivity.swift`).
+  The activity is drawn by another process on the Lock Screen, so the title is
+  plaintext outside SQLCipher for as long as the session runs, the same trade
+  a reminder and the widget snapshot make. The session id is a static attribute.
+- **It follows the vault, not the buttons.** `FocusLiveActivity`
+  (`apps/apple/iOS/`) reconciles against `Query::RunningFocusSessions` on every
+  change batch while the vault is open, and the two focus intents reconcile
+  before they return. So a session started from the Focus screen, a
+  `sunrise://focus` link, Siri, or another device all get the same activity,
+  and a session ended anywhere loses it. Activities for any other session are
+  ended. The decisions are `FocusActivityPlan`, which is shared and tested
+  without ActivityKit.
+- **The intents may start it from the background.** `StartFocusIntent` and
+  `EndFocusIntent` are `LiveActivityIntent`s on iOS, which is what lets a
+  Shortcut or a spoken phrase put the timer on the Lock Screen with Sunrise
+  never opened.
+- **It goes when the vault closes.** A lock, a sign-out or a vault switch ends
+  every focus activity, as the widget snapshot is erased. The next vault to
+  open shows whatever its own running session calls for.
+
+The activity is drawn by `SunriseWidgetsiOS`, the widget extension, and the
+app's `Info.plist` carries `NSSupportsLiveActivities`.
 
 ### Sharing extension
 
-System share sheet → Sunrise → captures the shared text/URL/image as an attached note in the Inbox.
+**Built** ([#368](https://github.com/justin13888/Sunrise/issues/368)). The
+system share sheet offers **Sunrise** (`SunriseShare`, `apps/apple/Share/`) for
+text, a web link, and up to ten images. What is shared becomes one task in the
+Inbox:
+
+- the **title** is the first line of the text, else the link's host and path,
+  else "Shared image";
+- the **note** holds the rest of the text, and the link last;
+- each **image** is an attachment, under the name the sharing app gave it.
+
+Nothing is parsed for tags: a shared paragraph is somebody else's prose, and a
+`#` in it is not a stream.
+
+**The extension never opens the vault, and that bounds its key access to
+none.** It links no Rust, holds no vault root and reads no Keychain item. It
+copies what it was handed into the App Group container as a `PendingCapture`
+(`apps/apple/Share/Shared/`), written with complete file protection, and says
+"Added to your Inbox". The app files it through the ordinary seam the next time
+it opens a vault or comes to the foreground (`SharedCapture`,
+`apps/apple/Sunrise/Tasks/`). So until then, the shared item is outside the
+vault, readable only while the phone is unlocked.
+
+Filing is resumable. The extension publishes a capture with one atomic rename,
+so the app never sees half of one. The app writes the id of the task it created
+back into the record before it attaches anything, and removes each image as it
+lands, so an interrupted filing resumes on the same task. An image the record
+lists and the folder no longer holds is dropped rather than retried forever.
+
+**An image the core would refuse on every attempt is refused once.** The
+extension turns away an empty image and one over 100 MB (decimal, the core's
+`MAX_ATTACHMENT_BYTES`) while the user is still on the share sheet. Should one
+reach the app anyway, it is dropped from the capture before the task is
+created, and the task's note gets a "Not attached" line naming it. A name
+longer than the core's 256-character limit is shortened, extension kept,
+rather than refused. Any other failure leaves the capture for the next pass.
+
+**A pending share belongs to no vault until it is filed, and it is filed into
+the next vault the app opens.** The extension cannot say which vault the share
+was meant for: it never opens one, and the App Group holds one queue for the
+device. So a share made while one vault was open, and filed after the user
+switched to another, lands in the second vault's Inbox. The window is narrow:
+the open vault files a share as soon as the app comes forward. Tagging each capture with the vault open at share time was rejected:
+the extension would have to read which vault is open, which is the app's
+state, and a capture tagged with a vault that never reopens would wait
+forever.
+
+### Printing
+
+**Built on iOS** ([#368](https://github.com/justin13888/Sunrise/issues/368)).
+A **Print…** button on the toolbar of Today and of every pushed task list, and
+⌘P on an attached keyboard, hand the shared `PrintDocument` to
+`UIPrintInteractionController` (`apps/apple/iOS/PrintController.swift`). The
+pages are the same pages the Mac prints: `PrintPageView` and the PDF it renders
+to are shared (`apps/apple/Sunrise/Print/PrintPage.swift`). So are which
+screens print and where a page breaks. An empty list is refused with the
+refusal haptic rather than printed as a blank sheet, as the Mac beeps. There is
+no separate Export as PDF, because the print sheet saves the same pages to
+Files.
 
 ### Apple Watch (MAY)
 

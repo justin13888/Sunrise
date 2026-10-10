@@ -5,6 +5,7 @@ included:
   - macOS
   - iOS
   - Widgets
+  - Share
   - SunriseTests
   - SunriseUITests
   - SunriseiOSUITests

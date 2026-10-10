@@ -116,14 +116,17 @@ struct KeymapReachTests {
         #expect(Set(CommandMenus.all).count == CommandMenus.all.count)
     }
 
-    /// Printing is the Mac's. Offered greyed on an iPad it would be a command
-    /// nothing on that device can ever make work.
+    /// Print is offered on both platforms; Export as PDF on the Mac only,
+    /// because iOS's print sheet already saves the PDF. Offered greyed on an
+    /// iPad it would be a command nothing on that device can ever make work.
     @Test
-    func printingIsOfferedOnTheMacOnly() {
-        #if os(macOS)
+    func printingIsOfferedEverywhereAndExportOnTheMacOnly() {
         #expect(AppAction.printView.isOffered)
+        #expect(CommandPaletteModel.catalogue.contains(.printView))
+        #if os(macOS)
+        #expect(AppAction.exportPDF.isOffered)
         #else
-        #expect(!AppAction.printView.isOffered)
+        #expect(!AppAction.exportPDF.isOffered)
         #expect(!CommandPaletteModel.catalogue.contains(.exportPDF))
         #endif
     }

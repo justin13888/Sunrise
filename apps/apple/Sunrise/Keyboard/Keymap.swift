@@ -137,15 +137,18 @@ enum AppAction: String, CaseIterable, Hashable, Sendable {
 
     /// Whether this platform can run the action at all.
     ///
-    /// Printing is the Mac's alone (`macOS/PrintJob.swift`), so on iOS and
-    /// iPadOS it is left out of the palette, the cheat sheet and the key
-    /// commands rather than offered greyed: unlike a row command waiting for a
-    /// selection, there is nothing the user could do here to make it work.
+    /// Export as PDF is the Mac's alone: iOS prints through
+    /// `UIPrintInteractionController` (`iOS/PrintController.swift`), whose
+    /// sheet already saves the same pages to Files, so a second command for it
+    /// would be the same sheet under another name. It is left out of the
+    /// palette, the cheat sheet and the key commands rather than offered
+    /// greyed: unlike a row command waiting for a selection, there is nothing
+    /// the user could do here to make it work.
     var isOffered: Bool {
         #if os(macOS)
         true
         #else
-        self != .printView && self != .exportPDF
+        self != .exportPDF
         #endif
     }
 }

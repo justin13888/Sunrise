@@ -36,7 +36,7 @@ use std::time::Duration;
 use sunrise_core::{Clock, Command, Core, Query, QueryResult, SystemClock};
 use sunrise_domain::{
     ActivityEvent, ActivityKind, ReviewSnapshot, ReviewSnapshotDraft, ReviewSnapshotStream,
-    ReviewTotals, StreakRow, TaskDraft, TaskPatch, TaskState,
+    ReviewTotals, StreakRow, TaskDraft, TaskPatch, TaskState, Unknowns,
 };
 use sunrise_id::{EntityKind, EntityRef};
 
@@ -158,6 +158,7 @@ fn draft(note: &str, phantom_stream: EntityRef, completed: u32) -> ReviewSnapsho
             dropped: 0,
             created: 2,
             reopened: 0,
+            unknown: Unknowns::new(),
         },
         streams: vec![ReviewSnapshotStream {
             stream: phantom_stream,
@@ -165,12 +166,14 @@ fn draft(note: &str, phantom_stream: EntityRef, completed: u32) -> ReviewSnapsho
             completed,
             deferred: 1,
             created: 2,
+            unknown: Unknowns::new(),
         }],
         streaks: vec![StreakRow {
             routine: EntityRef::new(EntityKind::Routine, [0xC3; 16]),
             title: "Stretch".into(),
             streak: 9,
             last_completed_at_ms: Some(WINDOW_START_MS),
+            unknown: Unknowns::new(),
         }],
         note: Some(note.to_string()),
     }

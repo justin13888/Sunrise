@@ -114,4 +114,25 @@ struct TabRoute: Equatable, Sendable {
             TabRoute(tab: .browse, path: [destination])
         }
     }
+
+    /// The screen on show, as a destination — the other direction from
+    /// ``route(to:)``, and what ⌘P asks to print.
+    ///
+    /// The top of the tab's stack, or the tab's own root. Browse's root is the
+    /// stream list, which is a sidebar rather than a screen with a paper shape,
+    /// so it is `nil` — the "Nothing is selected" the Mac says when its
+    /// sidebar has no selection.
+    static func showing(
+        tab: AppTab,
+        todayPath: [Destination],
+        browsePath: [Destination]
+    ) -> Destination? {
+        switch tab {
+        case .today: todayPath.last ?? .list(.todayAll)
+        case .browse: browsePath.last
+        case .calendar: .calendar
+        case .focus: .focus
+        case .search: .search
+        }
+    }
 }

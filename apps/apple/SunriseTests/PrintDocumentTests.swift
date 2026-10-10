@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 import Testing
 
@@ -60,15 +61,14 @@ struct PrintDocumentTests {
 
         let document = PrintDocument.taskList(list)
         #expect(document.isEmpty)
-        #if os(macOS)
-        // `PrintCommand` drives `NSPrintOperation` and an `NSSavePanel`, so it
-        // is macOS-only. What it *decides* — that a blank sheet is refused —
-        // is `PrintDocument.isEmpty` above, which is shared and asserted on
-        // both platforms. iOS's own print path is `UIPrintInteractionController`
-        // and is exercised separately.
+        // Each platform has its own `PrintCommand` — `NSPrintOperation` in
+        // `macOS/PrintJob.swift`, `UIPrintInteractionController` in
+        // `iOS/PrintController.swift` — under one name, so this asks both the
+        // same question: an empty document, or none, never reaches a print
+        // panel. Both refuse before presenting anything, which is what lets a
+        // unit test call them at all.
         #expect(!PrintCommand.run(.printView, document: document), "a blank sheet costs paper")
         #expect(!PrintCommand.run(.printView, document: nil))
-        #endif
 
         await vault.bridge.shutdown()
     }
@@ -330,5 +330,19 @@ struct PrintPaginationTests {
         )
         #expect(PrintDocument(title: "—", subtitle: "", sections: []).suggestedFilename
             == "sunrise.pdf")
+    }
+
+    /// The shared renderer both print paths hand to their panel: one PDF page
+    /// per paginated sheet, at the sheet's size, on either platform.
+    @Test @MainActor
+    func theRenderedPdfHasOnePagePerSheet() throws {
+        let doc = document(sections: [PrintSection(heading: "Now", rows: rows(40, prefix: "a"))])
+        let data = try #require(PrintPage.pdfData(for: doc))
+        let provider = try #require(CGDataProvider(data: data as CFData))
+        let pdf = try #require(CGPDFDocument(provider))
+        #expect(pdf.numberOfPages == doc.paginated().count)
+        #expect(pdf.numberOfPages == 2)
+        let box = try #require(pdf.page(at: 1)).getBoxRect(.mediaBox)
+        #expect(box.size == PrintPage.size)
     }
 }

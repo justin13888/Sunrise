@@ -1,0 +1,167 @@
+name: Docker image
+
+# Builds the `sunrise-server` image from the `Dockerfile`, starts it, waits for
+# Docker's own `HEALTHCHECK` to report `healthy`, then stops it the way an
+# operator would and asserts the drain finished. Nothing else exercises the
+# image before a release: `release.yml` is the only other workflow that runs
+# `docker`, and it runs on a tag, after the merge that broke it.
+#
+# A file of its own rather than a job in `ci.yml`, because it needs a path
+# filter and `ci.yml` is deliberately unfiltered (see its `on:` block). A
+# `paths:` filter only works on a whole workflow.
+#
+# The filter is the image's build context, which `.dockerignore` fixes as an
+# allowlist: the three workspace manifests and `crates/**`. `crates/**` rather
+# than `crates/sunrise-server/**`, because the server links ten other
+# workspace crates (`sunrise-log` writes the very `srv.stop` line asserted
+# below) and a list of them would go stale the day it gains an eleventh, with
+# the image then unchecked against exactly the change that broke it.
+#
+# The two lists below are the same list; change them together.
+on:
+  push:
+    branches: [master]
+    paths:
+      - Dockerfile
+      - .dockerignore
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
+      - "crates/**"
+      - .github/workflows/docker-image.yml
+  pull_request:
+    paths:
+      - Dockerfile
+      - .dockerignore
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
+      - "crates/**"
+      - .github/workflows/docker-image.yml
+  workflow_dispatch:
+
+# Checkout is the only thing here that reads the token. The `gha` build cache
+# authenticates with the runtime token the runner injects, not `GITHUB_TOKEN`.
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  health-and-drain:
+    name: Image health and drain
+    runs-on: ubuntu-24.04
+    # The compile is `cargo build --release -p sunrise-server` inside the
+    # builder stage, cold on every run that changed a crate: the `gha` cache
+    # holds image layers, and the cargo target directory is a BuildKit cache
+    # mount, which no layer cache exports. `release.yml`'s `image` job gives
+    # the same build 70 minutes with a registry push and an attestation on
+    # top; this one has neither.
+    timeout-minutes: 60
+    env:
+      IMAGE: sunrise-server:ci
+      CONTAINER: sunrise-server-ci
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3.12.0
+      - name: Build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8  # v6.19.2
+        with:
+          context: .
+          # Into the local daemon, so `docker run` below runs exactly this.
+          load: true
+          push: false
+          platforms: linux/amd64
+          tags: ${{ env.IMAGE }}
+          build-args: |
+            VCS_REF=${{ github.sha }}
+          # A scope of its own, so this job's layers never evict the release
+          # image's.
+          cache-from: type=gha,scope=docker-image-check
+          cache-to: type=gha,mode=max,scope=docker-image-check
+
+      # The image's own defaults, with one config file mounted where the
+      # server and the probe both look for it implicitly. `data_dir` puts the
+      # store on the image's `VOLUME`, so the drain below checkpoints a real
+      # WAL as the non-root user rather than an in-memory store that has
+      # nothing to flush. The bind stays the default loopback one: the probe
+      # runs inside the container, so no port is published, and a single-
+      # tenant server refuses a routable bind anyway.
+      - name: Start
+        run: |
+          config="$RUNNER_TEMP/sunrise.toml"
+          printf '[storage]\ndata_dir = "/var/lib/sunrise"\n' > "$config"
+          chmod 0644 "$config"
+          docker run --detach --name "$CONTAINER" \
+            --stop-timeout 30 \
+            -v "$config:/etc/sunrise/sunrise.toml:ro" \
+            "$IMAGE"
+
+      # The image's `HEALTHCHECK` as written, timings included: the first
+      # probe lands one 30 s interval after start, and Docker declares
+      # `unhealthy` only after the 30 s start period plus three failed 30 s
+      # intervals. 180 s covers all of that with room for a slow runner;
+      # past it the image is not becoming healthy.
+      - name: Wait for Docker to report healthy
+        run: |
+          started=$SECONDS
+          deadline=$((started + 180))
+          while :; do
+            state=$(docker inspect --format '{{.State.Status}}' "$CONTAINER")
+            health=$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$CONTAINER")
+            case "$state/$health" in
+              running/healthy)
+                echo "healthy after $((SECONDS - started)) s"
+                exit 0 ;;
+              running/starting) ;;
+              running/none)
+                echo "::error::the image declares no HEALTHCHECK"
+                exit 1 ;;
+              *)
+                echo "::error::container is $state, health $health"
+                docker inspect --format '{{json .State.Health}}' "$CONTAINER" || true
+                exit 1 ;;
+            esac
+            if (( SECONDS >= deadline )); then
+              echo "::error::not healthy within 180 s (health: $health)"
+              docker inspect --format '{{json .State.Health}}' "$CONTAINER" || true
+              exit 1
+            fi
+            sleep 2
+          done
+
+      # `SIGTERM`, then up to 30 s for the drain, which the default
+      # `shutdown_grace_secs` of 25 fits inside. `docker stop` exits 0 even
+      # when it had to fall back to `SIGKILL`, so the container's own exit
+      # code is what proves the drain finished, and `srv.stop` is what says
+      # how.
+      - name: Stop and assert the drain
+        run: |
+          docker stop --time 30 "$CONTAINER"
+          code=$(docker inspect --format '{{.State.ExitCode}}' "$CONTAINER")
+          if [[ "$code" != 0 ]]; then
+            echo "::error::the server exited $code on SIGTERM, not 0"
+            exit 1
+          fi
+          stop=$(docker logs "$CONTAINER" 2>&1 \
+            | jq -Rc 'fromjson? | select(.ev == "srv.stop")')
+          echo "srv.stop: ${stop:-<none>}"
+          if [[ -z "$stop" ]]; then
+            echo "::error::no srv.stop line in the logs"
+            exit 1
+          fi
+          if ! jq -e 'select(.result == "drained" and .status == "store_flushed")' \
+              <<<"$stop" > /dev/null; then
+            echo "::error::srv.stop did not report result=drained and status=store_flushed"
+            exit 1
+          fi
+
+      - name: Logs
+        if: always()
+        run: docker logs "$CONTAINER" 2>&1 || true
+
+      - name: Remove the container
+        if: always()
+        run: docker rm --force --volumes "$CONTAINER" || true

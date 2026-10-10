@@ -102,7 +102,7 @@ pub fn plan_reason(unblocks: u32, energy_fit: EnergyFit, suggested: &SessionPlan
         Some(ms) => fmt_duration_ms(ms),
         None => "until done".into(),
     });
-    if let Some(c) = suggested.chunk {
+    if let Some(c) = &suggested.chunk {
         parts.push(format!("chunk {} of {}", c.index, c.total));
     }
     parts.join(" · ")
@@ -232,7 +232,7 @@ mod tests {
     fn a_chunked_session_says_which_chunk() {
         let plan = SessionPlan {
             planned_ms: Some(1_500_000),
-            chunk: Some(Chunk { index: 3, total: 4 }),
+            chunk: Some(Chunk::new(3, 4)),
         };
         assert!(plan_reason(0, EnergyFit::Over, &plan).contains("chunk 3 of 4"));
     }
