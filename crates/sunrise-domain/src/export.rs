@@ -789,6 +789,7 @@ mod tests {
             title: "Stretch".into(),
             streak: 12,
             last_completed_at_ms: None,
+            unknown: crate::Unknowns::new(),
         }];
         let parsed = parse_csv(&streaks_table(&rows).to_csv());
         assert_eq!(parsed[1][2], "12");

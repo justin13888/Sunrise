@@ -40,14 +40,27 @@ final class TaskListModel {
     /// ``ListOrderStore`` for why it is a device fact and not a vault one.
     private let order: ListOrderStore
 
+    /// The Focus filter in force, which narrows Today and nothing else. See
+    /// ``FocusFilter``.
+    private let focusFilter: FocusFilterStore
+
     init(
         bridge: CoreBridge,
         kind: TaskListKind = .todayAll,
-        order: ListOrderStore = ListOrderStore()
+        order: ListOrderStore = ListOrderStore(),
+        focusFilter: FocusFilterStore = .shared
     ) {
         self.bridge = bridge
         self.kind = kind
         self.order = order
+        self.focusFilter = focusFilter
+    }
+
+    /// The streams a Focus filter has narrowed this list to, or `nil` when it
+    /// shows everything. Only Today is ever narrowed: a stream or a context the
+    /// user opened by name is a list they asked for.
+    var focusScope: Set<EntityRef>? {
+        kind.isToday ? focusFilter.streams : nil
     }
 
     func show(_ kind: TaskListKind) async {
@@ -67,11 +80,12 @@ final class TaskListModel {
             return
         }
         do {
-            guard case let .tasks(rows) = try await bridge.query(kind.query(nowMs: nowMs)) else {
+            guard case let .tasks(queried) = try await bridge.query(kind.query(nowMs: nowMs)) else {
                 tasks = []
                 groups = []
                 return
             }
+            let rows = FocusFilter.scoping(queried, to: focusScope)
             // The remembered arrangement, laid over the query. A list nobody
             // has dragged in is returned exactly as the core ordered it.
             tasks = order.apply(rows, for: kind)
