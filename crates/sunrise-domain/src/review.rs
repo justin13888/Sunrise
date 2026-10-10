@@ -127,7 +127,10 @@ pub struct StreamReview {
 }
 
 /// Step 5 — the counts on the summary screen.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Not `Copy`: it carries the unknown-field map every wire struct does
+/// (ADR-0045 §6), because it crosses the wire inside [`ReviewSnapshot`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReviewTotals {
     /// Tasks completed in the window.
     pub completed: u32,
@@ -140,6 +143,10 @@ pub struct ReviewTotals {
     /// Tasks re-opened in the window. Not in the spec's list, but a review
     /// that reports 8 completions while hiding 3 resurrections is misleading.
     pub reopened: u32,
+    /// Fields written by a newer `DOC_SCHEMA_V` that this build does not
+    /// model, preserved verbatim and re-emitted. See [`crate::unknown`].
+    #[serde(flatten)]
+    pub unknown: Unknowns,
 }
 
 /// The assembled weekly review — one value per spec step.
@@ -340,6 +347,7 @@ pub fn build_weekly_review(input: WeeklyReviewInput) -> WeeklyReview {
             title: r.template.title.clone(),
             streak: r.streak_counter,
             last_completed_at_ms: r.last_completed_at.and_then(ts_to_ms),
+            unknown: Unknowns::new(),
         })
         .collect();
     streaks.sort_by(|a, b| {
@@ -425,6 +433,10 @@ pub struct ReviewSnapshotStream {
     pub deferred: u32,
     /// Created in the window.
     pub created: u32,
+    /// Fields written by a newer `DOC_SCHEMA_V` that this build does not
+    /// model, preserved verbatim and re-emitted. See [`crate::unknown`].
+    #[serde(flatten)]
+    pub unknown: Unknowns,
 }
 
 /// Step 5's saved artifact: *"a review snapshot stored as an opaque entity
@@ -509,7 +521,7 @@ impl WeeklyReview {
         ReviewSnapshotDraft {
             window_start_ms: self.window.start_ms,
             window_end_ms: self.window.end_ms,
-            totals: self.totals,
+            totals: self.totals.clone(),
             streams: self
                 .streams
                 .iter()
@@ -519,6 +531,7 @@ impl WeeklyReview {
                     completed: u32::try_from(s.completed.len()).unwrap_or(u32::MAX),
                     deferred: u32::try_from(s.deferred.len()).unwrap_or(u32::MAX),
                     created: u32::try_from(s.created_untouched.len()).unwrap_or(u32::MAX),
+                    unknown: Unknowns::new(),
                 })
                 .collect(),
             streaks: self.streaks.clone(),
@@ -779,6 +792,7 @@ mod tests {
                 dropped: 0,
                 created: 4,
                 reopened: 0,
+                unknown: Unknowns::new(),
             }
         );
     }

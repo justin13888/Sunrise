@@ -15983,7 +15983,7 @@ fn a_long_estimate_chunks_and_the_index_advances_with_prior_sessions() {
         .into_iter()
         .find(|r| r.session.start.id == first)
         .unwrap();
-    assert_eq!(row.session.start.chunk, Some(Chunk { index: 1, total: 4 }));
+    assert_eq!(row.session.start.chunk, Some(Chunk::new(1, 4)));
     assert_eq!(row.session.start.planned_ms, Some(POMODORO_MS));
 
     set_clock(&clock, POMODORO_MS);
@@ -16004,7 +16004,7 @@ fn a_long_estimate_chunks_and_the_index_advances_with_prior_sessions() {
         .unwrap();
     assert_eq!(
         row.session.start.chunk,
-        Some(Chunk { index: 2, total: 4 }),
+        Some(Chunk::new(2, 4)),
         "the second sitting reads chunk 2 of 4"
     );
 }
@@ -16130,7 +16130,7 @@ fn planner_rows_carry_the_session_it_would_open() {
     let row = rows.iter().find(|r| r.task.id == task).unwrap();
     assert_eq!(row.prior_sessions, 0);
     assert_eq!(row.suggested.planned_ms, Some(POMODORO_MS));
-    assert_eq!(row.suggested.chunk, Some(Chunk { index: 1, total: 3 }));
+    assert_eq!(row.suggested.chunk, Some(Chunk::new(1, 3)));
 
     // After one sitting the proposal advances the chunk index.
     let s = start_work(&e, &mut db, task, SessionLength::OnePomodoro);
@@ -16146,7 +16146,7 @@ fn planner_rows_carry_the_session_it_would_open() {
     let rows = plan(&e, &db, None);
     let row = rows.iter().find(|r| r.task.id == task).unwrap();
     assert_eq!(row.prior_sessions, 1);
-    assert_eq!(row.suggested.chunk, Some(Chunk { index: 2, total: 3 }));
+    assert_eq!(row.suggested.chunk, Some(Chunk::new(2, 3)));
 }
 
 // ---- calibration + cascade ----
@@ -18865,7 +18865,7 @@ fn an_unknown_focus_kind_counts_as_a_work_session() {
         .unwrap();
     assert_eq!(
         row.session.start.chunk,
-        Some(Chunk { index: 2, total: 3 }),
+        Some(Chunk::new(2, 3)),
         "the next sitting counts it as a prior work session"
     );
 }

@@ -384,6 +384,7 @@ mod tests {
                     dropped: 0,
                     created: 0,
                     reopened: 0,
+                    unknown: Unknowns::new(),
                 },
                 streams: Vec::new(),
                 streaks: Vec::new(),
