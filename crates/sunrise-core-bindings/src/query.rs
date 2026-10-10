@@ -10,8 +10,8 @@ use sunrise_id::EntityRef;
 use crate::dto::{
     hex16, ActionableTaskRow, ActivityRow, AttachmentItem, BlockGridRow, Cascade, ContextItem,
     ContextListRow, DailyReviewReport, DeviceListRow, EveningReport, FocusTotals, MorningReport,
-    NotificationSettings, PlanRow, Reminder, RoutineItem, SessionRow, Snapshot, StreamItem,
-    StreamListRow, SyncSnapshot, TaskItem, TrendReport, WeeklyReviewReport,
+    NotificationSettings, PlanRow, PreferenceItem, Reminder, RoutineItem, SessionRow, Snapshot,
+    StreamItem, StreamListRow, SyncSnapshot, TaskItem, TrendReport, WeeklyReviewReport,
 };
 
 /// A read query.
@@ -188,6 +188,10 @@ pub enum CoreQuery {
         /// Row cap.
         limit: u32,
     },
+    /// Every preference but the bootstrap ones, resolved, each with where
+    /// its value came from. The bootstrap keys are read without the vault,
+    /// by `bootstrap_preferences`.
+    Preferences,
 }
 
 impl CoreQuery {
@@ -267,6 +271,7 @@ impl CoreQuery {
             Self::DayBlocks { day_ms } => Query::DayBlocks { day_ms },
             Self::WeekBlocks { week_ms } => Query::WeekBlocks { week_ms },
             Self::Search { text, limit } => Query::Search { text, limit },
+            Self::Preferences => Query::Preferences,
         }
     }
 }
@@ -427,6 +432,11 @@ pub enum CoreQueryResult {
         /// The document.
         body: String,
     },
+    /// Every non-bootstrap preference, resolved, in key-table order.
+    Preferences {
+        /// The keys.
+        preferences: Vec<PreferenceItem>,
+    },
 }
 
 impl CoreQueryResult {
@@ -522,6 +532,9 @@ impl CoreQueryResult {
                 attachments: a.iter().map(AttachmentItem::from).collect(),
             },
             QueryResult::Export(body) => Self::Export { body },
+            QueryResult::Preferences(p) => Self::Preferences {
+                preferences: p.into_iter().map(PreferenceItem::from).collect(),
+            },
         }
     }
 }

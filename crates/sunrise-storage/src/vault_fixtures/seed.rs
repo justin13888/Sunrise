@@ -756,6 +756,29 @@ pub(super) const SEED: &[SeedRow] = &[
             ("recorded_at_ms", I(270)),
         ],
     },
+    // The one Preferences row, under the zero id, with a CBOR map holding a
+    // key this build knows and one it does not.
+    SeedRow {
+        table: "preferences",
+        values: &[
+            ("id", B(&[0u8; 16])),
+            (
+                "values_cbor",
+                B(b"\xa2\x6afuture.key\x01\x6aweek_start\x62MO"),
+            ),
+            ("created_at_ms", I(271)),
+            ("updated_at_ms", I(272)),
+            ("lww_hlc_ms", I(HLC_MS + 52)),
+            ("lww_hlc_logical", I(273)),
+            ("lww_seq", I(274)),
+            ("lww_device", B(&DEVICE_LAPTOP)),
+            ("extra", B(b"\xa1\x63new\x01")),
+        ],
+    },
+    SeedRow {
+        table: "device_preferences",
+        values: &[("key", T(b"keyboard.vim_mode")), ("value", B(b"\xf5"))],
+    },
 ];
 
 /// The columns `table` has in `conn`'s schema, or `None` if it has no such

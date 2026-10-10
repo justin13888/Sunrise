@@ -31,7 +31,6 @@ const OPS: &str = "/api/v1/sync/ops";
 
 /// `POST /api/v1/sync/ops` request body — one `OpBatch`.
 #[derive(Debug, Clone, Serialize, Deserialize, kynos::Schema)]
-#[serde(deny_unknown_fields)]
 pub struct OpsRequest {
     /// The stream the batch targets, 32 lowercase hex characters.
     #[schema(pattern = "^[0-9a-f]{32}$")]
@@ -46,7 +45,6 @@ pub struct OpsRequest {
 
 /// `POST /api/v1/sync/ops` response body — the `Ack`.
 #[derive(Debug, Clone, Serialize, Deserialize, kynos::Schema)]
-#[serde(deny_unknown_fields)]
 pub struct OpsResponse {
     /// Echoes the acked batch's `batch_id`.
     pub batch_id: u64,

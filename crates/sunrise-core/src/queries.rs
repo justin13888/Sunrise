@@ -4,8 +4,8 @@ use serde::{Deserialize, Serialize};
 use sunrise_domain::{
     ActivityEvent, Attachment, Block, Context, DailyReview, EffectiveTaskState, EndOfDayPlan,
     Energy, EnergyFit, ExportDataset, ExportFormat, FocusSession, FocusStats, MorningSummary,
-    ReminderIntent, ReminderSettings, ReviewSnapshot, Routine, SessionPlan, Stream, StreamColor,
-    Task, Trends, UnblockCascade, WeeklyReview,
+    ReminderIntent, ReminderSettings, ResolvedPref, ReviewSnapshot, Routine, SessionPlan, Stream,
+    StreamColor, Task, Trends, UnblockCascade, WeeklyReview,
 };
 use sunrise_id::EntityRef;
 
@@ -248,6 +248,11 @@ pub enum Query {
         /// Maximum number of results to return.
         limit: u32,
     },
+    /// Every preference key except the bootstrap ones, resolved
+    /// (`docs/02-domain/preferences.md` §Scope and resolution), each with
+    /// where its value came from. Bootstrap keys are read without the vault,
+    /// through `BootstrapPreferences`.
+    Preferences,
 }
 
 /// Query result. (Not `Deserialize`: some inner types use Cow/static
@@ -316,6 +321,8 @@ pub enum QueryResult {
     Reminders(Vec<ReminderIntent>),
     /// `ExportStats` returns the rendered document.
     Export(String),
+    /// `Preferences` returns every non-bootstrap key, in key-table order.
+    Preferences(Vec<ResolvedPref>),
 }
 
 /// One row of [`Query::DayBlocks`] / [`Query::WeekBlocks`].

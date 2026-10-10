@@ -6,6 +6,10 @@
 //! is what makes a combined extractor the right shape rather than a convenience:
 //! parsing and verifying are one step, so they are one type.
 //!
+//! The value verified is the JSON value as received, every member included, and
+//! `T` is read from it afterwards: a body type that ignores unknown fields — the
+//! sync bodies do — would otherwise drop part of what the client signed.
+//!
 //! # Why the value and the check travel together
 //!
 //! [`Signed<T>`] hands a handler the parsed body, the authenticated
@@ -94,7 +98,9 @@ pub struct DeviceSig {
 
 /// Check a request's device signature and resolve the signing device.
 ///
-/// `value` is the parsed request body, or `None` for an operation with no body
+/// `value` is the request body as the JSON value received — not the operation's
+/// type re-serialised, which may have dropped a member the client signed — or
+/// `None` for an operation with no body
 /// — which hashes the empty string, so stripping a body is not a way to produce
 /// a signature that verifies.
 ///
@@ -282,8 +288,9 @@ pub struct Caller {
 
 /// A verified request body, with the caller that sent it.
 ///
-/// The body is parsed and the signature checked over its canonical form before
-/// this exists, so `value` has never been reachable unverified.
+/// The body is parsed and the signature checked over the canonical form of the
+/// JSON value received before this exists, so `value` — read from that same
+/// value — has never been reachable unverified.
 #[derive(Debug, Clone)]
 pub struct Signed<T> {
     /// Who sent it.
@@ -406,12 +413,29 @@ where
 
     // The body is read *after* the credential, so an unauthenticated caller
     // cannot make the server parse an arbitrary document.
-    let Json(value) = Json::<T>::from_request(Request::from_parts(parts, body), state).await?;
+    //
+    // Read as a JSON value first, and the signature checked over *that*, not
+    // over `T` re-serialised. The two agree for a body whose type refuses
+    // unknown fields, and differ exactly where it matters: the sync bodies are
+    // open to extension (protocol-versioning.md §4, §6), so `T` drops a field a
+    // newer client added, and a signature over `T` would no longer cover what
+    // the client signed. The client signs the value it sends, so the value as
+    // received is the one thing both sides can canonicalize identically. `T` is
+    // then built from that same value, so everything the handler acts on is a
+    // projection of what was verified. See ADR-0022's 2026-10 amendment.
+    let Json(received) =
+        Json::<serde_json::Value>::from_request(Request::from_parts(parts, body), state).await?;
+    // A value that does not fit `T` is the same 422 `Json<T>` renders, its
+    // failure attributed to the root pointer as kynos does.
+    let value =
+        <T as serde::Deserialize>::deserialize(&received).map_err(|e| BodyRejection::Schema {
+            failures: std::collections::BTreeMap::from([(String::new(), e.to_string())]),
+        })?;
 
     let device = if binding == Binding::Bootstrap && sig.device.is_none() {
         None
     } else {
-        verify(state, &principal, &sig, &method, &target, Some(&value))?
+        verify(state, &principal, &sig, &method, &target, Some(&received))?
     };
     Ok((Caller { principal, device }, value))
 }
