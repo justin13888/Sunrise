@@ -90,7 +90,7 @@ pub static FEATURES: &[Feature] = &[
             "thumbnail_ciphertext_hash",
         ],
         field_op_kinds: &[],
-        since: 12,
+        since: 13,
     },
 ];
 

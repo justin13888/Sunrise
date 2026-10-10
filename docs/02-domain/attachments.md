@@ -42,7 +42,7 @@ Additive fields, registered through the entity registry, gated by the feature
 id `attachment.thumbnail` in `vault_requires`, and preserved by an older build
 ([ADR-0045](../11-adr/0045-schema-identity-and-feature-gating.md),
 [ADR-0053](../11-adr/0053-attachment-thumbnails-and-native-rendering.md),
-`DOC_SCHEMA_V` 12). They are fields of
+`DOC_SCHEMA_V` 13). They are fields of
 `crates/sunrise-domain/src/attachment.rs:23#Attachment`:
 
 ```cddl

@@ -44,6 +44,7 @@ fn append(store: &Store, seq: u64) {
                 device_id: DEV,
                 max_seq: seq,
             }],
+            1,
             None,
             seq,
             NOW + seq,
@@ -127,7 +128,7 @@ fn frame_ids(store: &Store, after: u64) -> (Vec<u64>, usize) {
     let (frames, gaps) = store
         .relay_replay_after(CHANNEL, after, &HashMap::new())
         .unwrap();
-    (frames.into_iter().map(|(id, _)| id).collect(), gaps.len())
+    (frames.into_iter().map(|f| f.id).collect(), gaps.len())
 }
 
 #[test]

@@ -304,6 +304,14 @@ async fn an_op_an_older_build_parked_is_materialized_when_the_vault_reopens() {
     }
     assert_eq!(task_rows(&joiner), 0, "parked, so not materialized");
     assert_eq!(parked_rows(&joiner), 1);
+    // ADR-0045 §4 "Visibility": the count crosses the read surface, by reason.
+    assert_eq!(
+        parked_summary(&joiner).await,
+        vec![crate::ParkedOpCount {
+            reason: "unknown_kind".into(),
+            count: 1,
+        }]
+    );
     a_failing_replay_never_fails_the_open(joiner, joiner_dir.path(), &joiner_root, task).await;
 
     let upgraded = Core::open(
@@ -317,7 +325,20 @@ async fn an_op_an_older_build_parked_is_materialized_when_the_vault_reopens() {
     .unwrap();
     assert_eq!(task_rows(&upgraded), 1, "the open replayed it");
     assert_eq!(parked_rows(&upgraded), 0, "and released the marker");
+    assert!(
+        parked_summary(&upgraded).await.is_empty(),
+        "a reason with nothing parked has no row"
+    );
     upgraded.close().await.unwrap();
+}
+
+/// `Query::ParkedOpsSummary` through `Core::query`, the path every client's
+/// read takes.
+async fn parked_summary(core: &Core) -> Vec<crate::ParkedOpCount> {
+    match core.query(Query::ParkedOpsSummary).await.unwrap() {
+        QueryResult::ParkedOps(counts) => counts,
+        other => panic!("ParkedOpsSummary answered {other:?}"),
+    }
 }
 
 /// A storage fault that fails the parked op's replay on every open, installed

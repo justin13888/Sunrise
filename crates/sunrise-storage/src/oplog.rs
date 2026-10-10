@@ -147,6 +147,26 @@ impl OpLog {
         Ok(())
     }
 
+    /// Replace the reason an already parked op is kept for, when it is
+    /// delivered again with the **same envelope bytes** and parks for a
+    /// different cause than the one it was parked with (ADR-0045 §4, "stays
+    /// parked with its reason updated"). A no-op for an op that is not parked,
+    /// and for a different envelope at the same id, which is fork evidence and
+    /// says nothing about why the held op is kept.
+    pub fn repark(
+        tx: &rusqlite::Transaction<'_>,
+        op_id: &[u8; 16],
+        envelope: &[u8],
+        reason: ParkReason,
+    ) -> Result<(), OpLogError> {
+        tx.execute(
+            "UPDATE parked_ops SET reason = ?1 WHERE op_id = ?2
+               AND EXISTS (SELECT 1 FROM ops WHERE op_id = ?2 AND envelope = ?3)",
+            params![reason.as_str(), op_id, envelope],
+        )?;
+        Ok(())
+    }
+
     /// Take `op_id` out of `parked_ops` and record it as applied, returning
     /// whether it was parked at all.
     ///
@@ -241,6 +261,39 @@ impl OpLog {
         )?;
         Ok(())
     }
+
+    /// How many ops are parked, grouped by `parked_ops.reason`, in reason
+    /// order. A reason with no parked op has no row (ADR-0045 §4,
+    /// "Visibility").
+    ///
+    /// The reason is the stored string rather than a [`ParkReason`]: a vault a
+    /// newer build parked ops in can be opened by an older one, and a count
+    /// under a reason this build has no name for is still a count to show.
+    pub fn parked_counts_by_reason(db: &Db) -> Result<Vec<ParkedCount>, OpLogError> {
+        let mut stmt = db
+            .conn()
+            .prepare("SELECT reason, count(*) FROM parked_ops GROUP BY reason ORDER BY reason")?;
+        let rows = stmt.query_map([], |row| {
+            Ok(ParkedCount {
+                reason: row.get(0)?,
+                count: row.get(1)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+}
+
+/// One row of [`OpLog::parked_counts_by_reason`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParkedCount {
+    /// The `parked_ops.reason` string, e.g. [`ParkReason::as_str`].
+    pub reason: String,
+    /// How many ops are parked under it. Never zero.
+    pub count: u64,
 }
 
 /// The `ops.inner_kind` and `ops.target_kind` a parked op is stored under
@@ -249,14 +302,19 @@ pub const PARKED_KIND: &str = "unknown";
 
 /// Why an op is parked rather than applied (ADR-0045 §4).
 ///
-/// One reason parks an op on first delivery today, and one more is written
+/// Two reasons park an op on first delivery today, and one more is written
 /// only by a replay. The others that ADR lists (an unknown field-op kind, a
-/// payload undecodable at a newer `doc_schema_v`, a schema-fingerprint
-/// mismatch) arrive with the issues that introduce what they detect.
+/// payload undecodable at a newer `doc_schema_v`) arrive with the issues that
+/// introduce what they detect.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParkReason {
     /// The inner op's variant name is not one this build knows.
     UnknownKind,
+    /// The envelope's `doc_schema_v` has an entry in this build's registry,
+    /// and its field 13 differs from that entry's prefix or is missing
+    /// (ADR-0045 §3). The writer and this build disagree about what that
+    /// version means, so applying the op would be a guess.
+    SchemaFpMismatch,
     /// A replay decoded the op, because this build knows its kind, and the
     /// apply path refused it. The kind is no longer missing, so the
     /// `unknown_kind` it was parked under would misstate why it is kept.
@@ -269,6 +327,7 @@ impl ParkReason {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::UnknownKind => "unknown_kind",
+            Self::SchemaFpMismatch => "schema_fp_mismatch",
             Self::ReplayRefused => "replay_refused",
         }
     }
@@ -522,6 +581,78 @@ mod tests {
         };
         assert_eq!(reason(1), ("unknown_kind".into(), 6));
         assert_eq!(reason(2), ("replay_refused".into(), 6));
+    }
+
+    #[test]
+    fn parked_counts_group_by_reason_and_omit_empty_reasons() {
+        let mut db = Db::open_memory(&vault_key()).unwrap();
+        assert!(OpLog::parked_counts_by_reason(&db).unwrap().is_empty());
+        park(&mut db, 1, 2, 1, 100, 0, 5);
+        park(&mut db, 2, 2, 2, 100, 0, 5);
+        park(&mut db, 3, 2, 3, 100, 0, 5);
+        db.with_tx(|tx| {
+            OpLog::restamp_parked(tx, &[3u8; 16], 6, Some(ParkReason::ReplayRefused)).map_err(sq)
+        })
+        .unwrap();
+        let counts = |db: &Db| {
+            OpLog::parked_counts_by_reason(db)
+                .unwrap()
+                .into_iter()
+                .map(|c| (c.reason, c.count))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            counts(&db),
+            vec![
+                ("replay_refused".to_owned(), 1),
+                ("unknown_kind".to_owned(), 2)
+            ]
+        );
+        // A released op leaves the count, and a reason whose last op leaves
+        // has no row rather than a zero.
+        db.with_tx(|tx| {
+            OpLog::unpark(tx, &[3u8; 16], &[3u8; 8], "task.create", "task", None, 2).map_err(sq)
+        })
+        .unwrap();
+        assert_eq!(counts(&db), vec![("unknown_kind".to_owned(), 2)]);
+    }
+
+    #[test]
+    fn a_repark_moves_the_reason_only_for_the_envelope_it_parked() {
+        let mut db = Db::open_memory(&vault_key()).unwrap();
+        park(&mut db, 1, 2, 1, 100, 0, 5);
+        let op_id = [1u8; 16];
+        let reason = |db: &Db| -> (String, i64) {
+            db.conn()
+                .query_row(
+                    "SELECT reason, parked_under_doc_schema_v FROM parked_ops WHERE op_id = ?",
+                    params![op_id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap()
+        };
+
+        db.with_tx(|tx| {
+            OpLog::repark(tx, &op_id, b"other bytes", ParkReason::SchemaFpMismatch).map_err(sq)
+        })
+        .unwrap();
+        assert_eq!(
+            reason(&db),
+            ("unknown_kind".into(), 5),
+            "a second payload under the same id says nothing about the held op"
+        );
+
+        db.with_tx(|tx| {
+            OpLog::repark(tx, &op_id, &[1u8; 8], ParkReason::SchemaFpMismatch).map_err(sq)?;
+            // An id with no marker is a no-op, not an error.
+            OpLog::repark(tx, &[8u8; 16], &[8u8; 8], ParkReason::SchemaFpMismatch).map_err(sq)
+        })
+        .unwrap();
+        assert_eq!(
+            reason(&db),
+            ("schema_fp_mismatch".into(), 5),
+            "the reason moves, and the stamp is the replay's to write"
+        );
     }
 
     #[test]

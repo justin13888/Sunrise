@@ -113,6 +113,10 @@ struct AccountView: View {
             keyboardSection
 
             notificationSections
+
+            if let bridge = session?.bridge {
+                ParkedOpsSection(bridge: bridge)
+            }
         }
         .formStyle(.grouped)
         .macSheetFrame(width: 520)

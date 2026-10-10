@@ -278,7 +278,10 @@ pub const ENVELOPE_INNER: &[u8] = b"inner-op-canonical-cbor";
 /// The 10 → 11 re-freeze (ADR-0050, issue #337, the `prf_` Preferences
 /// entity) moved the same three regions and nothing else.
 ///
-/// The 11 → 12 re-freeze (ADR-0053, issue #346, the `attachment.thumbnail`
+/// The 11 → 12 re-freeze (issue #439, the canonical schema describing value
+/// types and op payloads) moved the same three regions and nothing else.
+///
+/// The 12 → 13 re-freeze (ADR-0053, issue #346, the `attachment.thumbnail`
 /// fields) moved the same three regions and nothing else.
 ///
 /// `encode_envelope(ENVELOPE_INNER, STREAM_ID, DEVICE_ID, seq = 7,
@@ -298,10 +301,10 @@ pub mod signed_only_envelope {
         "5352020003ad010302502222222222222222222222222222222203503333",
         "3333333333333333333333333333040705821b0000018bcfe56800000600",
         "070108000958180000000000000000000000000000000000000000000000",
-        "000a57696e6e65722d6f702d63616e6f6e6963616c2d63626f720b5840c2",
-        "f2616dd535e54c52da6cd8df1a7bc632c955944a2b4f5111c112ce2d7e53",
-        "2a359a015dee4d07dbde6653745e1fa0e65b53b28a0918ae7349f8dd55c8",
-        "d544020c0c0d48cc5a19c8a27d72b1",
+        "000a57696e6e65722d6f702d63616e6f6e6963616c2d63626f720b584067",
+        "49eb3ecb116fc159cb4c4e49f364cb867209ad3bd4f20fa8deb45b304116",
+        "c458effaef28989688a13dc9a954fc581798764ae508f26a3676b39589b2",
+        "45db080c0d0d4809ede17ec2962b1b",
     ));
 }
 
@@ -339,7 +342,10 @@ pub mod signed_only_envelope {
 /// The 10 → 11 re-freeze (ADR-0050, issue #337) moved the same four regions.
 /// The ciphertext at `[94..117]` is again untouched.
 ///
-/// The 11 → 12 re-freeze (ADR-0053, issue #346) moved the same four regions.
+/// The 11 → 12 re-freeze (issue #439) moved the same four regions. The
+/// ciphertext at `[94..117]` is again untouched.
+///
+/// The 12 → 13 re-freeze (ADR-0053, issue #346) moved the same four regions.
 /// The ciphertext at `[94..117]` is again untouched.
 ///
 /// `encode_envelope(ENVELOPE_INNER, STREAM_ID, DEVICE_ID, seq = 9,
@@ -361,11 +367,11 @@ pub mod sealed_envelope {
         "5352020003ad010302502222222222222222222222222222222203503333",
         "3333333333333333333333333333040905821b0000018bcfe56801000601",
         "070108030958185555555555555555555555555555555555555555555555",
-        "550a58276416c4bb3e46b71d10c45af51e2462649e7331f6d5bbb81cc3a5",
-        "97f1125851ac929b2deab2745a0b5840de406db9fd00e5577d914e5ead14",
-        "427daae3427527ca557d7ee4db5c1797a0cf30a99ac3048205c3c8f022bf",
-        "873c81f1c34e01af195b7b3dca0910df282e3c0c0c0c0d48cc5a19c8a27d",
-        "72b1",
+        "550a58276416c4bb3e46b71d10c45af51e2462649e7331f6d5bbb82ab23e",
+        "3b168d4a576027ae3ba7da7b740b5840821419419b37d2534613ab1a1047",
+        "3aa30546e24c5a67d6776ad6ac7a7b6950870974f1aff12c05091fdced99",
+        "d40a89055655572af4168f7033daa454b21d700d0c0d0d4809ede17ec296",
+        "2b1b",
     ));
 }
 

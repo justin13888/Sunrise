@@ -136,14 +136,22 @@ pub const ENVELOPE_FORMAT_FLOOR: u16 = 3;
 /// waits until every device has advertised `preferences.entity`. Every v1..v10
 /// payload shape is unchanged, so the floor still does not move.
 ///
-/// `12` adds eight optional fields to the Attachment record, the original's
+/// `12` changes no shape on the wire. It is the version at which the
+/// canonical schema describes what it only named before (issue #439): every
+/// value type a record carries (`RRule`, `SunriseTime`, `ScheduleConstraint`
+/// and the rest) and every op payload the entity registry does not declare,
+/// field by field. A field added to one of them now moves the fingerprint.
+/// The payloads a v11 build writes are the payloads a v12 build writes, so
+/// the floor does not move.
+///
+/// `13` adds eight optional fields to the Attachment record, the original's
 /// `width` and `height` and six `thumbnail_*` fields, and their feature,
 /// `attachment.thumbnail` (issue #346, ADR-0053). An attachment without a
-/// thumbnail encodes exactly as before. A v11 build keeps the fields as
+/// thumbnail encodes exactly as before. A v12 build keeps the fields as
 /// unknowns and writes them back unchanged, and refuses to write attachments
-/// once the vault requires the feature. Every v1..v11 payload shape is
+/// once the vault requires the feature. Every v1..v12 payload shape is
 /// unchanged, so the floor still does not move.
-pub const DOC_SCHEMA_V: u16 = 12;
+pub const DOC_SCHEMA_V: u16 = 13;
 
 /// The first [`DOC_SCHEMA_V`] that has a fingerprint (ADR-0045 §3, `N_fp`).
 ///
@@ -195,7 +203,11 @@ pub const DOC_SCHEMA_FINGERPRINTS: &[(u16, [u8; 32])] = &[
     ),
     (
         12,
-        hex32("cc5a19c8a27d72b1b920c7b8145231591bbba6e8240159e69ddcded76de33bae"),
+        hex32("1be56767d868335916e893ff50e7a6097d942957f1687109b8cc17fb4e2176f1"),
+    ),
+    (
+        13,
+        hex32("09ede17ec2962b1bc05b1214681c7fc1f4af325955535c27119d709c35a2cf05"),
     ),
 ];
 
