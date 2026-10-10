@@ -12,7 +12,10 @@
 //! - every event name emitted from a shipped target is grammatical and
 //!   catalogued;
 //! - every *field name* those events carry is on the redaction allowlist, so
-//!   the record the catalogue promises can reach a subscriber at all.
+//!   the record the catalogue promises can reach a subscriber at all;
+//! - every field name a span built there carries is on the same allowlist.
+//!   `RedactionLayer` cannot veto a span, so for spans this is the only gate:
+//!   a span field rides every record written inside the span, in every build.
 //!
 //! # Why the file set is asked for rather than worked out
 //!
@@ -134,13 +137,16 @@
 //!   declaration, because "it cannot reach `tracing`" is a claim about that
 //!   source and reading the declared dependency list was a proxy that a
 //!   transitive `tracing` would have satisfied.
-//! - **Spans.** `redact.rs` argues deliberately that spans are ungated, and
-//!   names a second span site as the trigger to revisit — but nothing here
-//!   detects a second span site, so that trigger is a note, not an alarm. One
-//!   span name exists today, `http.request` in `api/observe.rs`, built at two
-//!   sites: the request log's (`method`, `endpoint`) and the trace
-//!   interceptor's, which adds `trace_id` and `span_id`. All four are
-//!   allowlisted and server-derived, and the second site is the trigger.
+//! - **Span fields the macro call does not name.** The span gate reads the
+//!   `tracing::*_span!` and `tracing::span!` calls in the file set, and the
+//!   fields each one declares; [`the_scan_actually_finds_spans_and_their_fields`]
+//!   pins it to the two `http.request` sites in `api/observe.rs`. A field added
+//!   later with `Span::record` must have been declared — as
+//!   `tracing::field::Empty` — at the macro, where the gate reads it. What it
+//!   cannot read is `#[instrument]`, which takes its fields from the decorated
+//!   function's arguments rather than from anything written in the attribute,
+//!   so every `#[instrument]` in the file set is refused rather than read. The
+//!   first site that needs one decides how this scanner should read it.
 //! - **Build config this file does not know to read.** The build-config gates
 //!   read `.github/workflows/`, `.github/actions/`, `Dockerfile*` and the root
 //!   `mise.toml` — a hardcoded list, and so an assertion about where build
@@ -1228,101 +1234,297 @@ fn fields_of(src: &Source, span: (usize, usize), takes_level: bool) -> Scanned {
             ));
         }
         if let Some(rest) = after_string_literal(arg) {
-            let rest = rest.trim_start();
-            if rest.starts_with('=') && !rest.starts_with("==") {
-                return Scanned::Unanalysable(format!(
-                    "a quoted field name, which this scanner cannot read: {}",
-                    snippet(arg)
-                ));
+            if is_assignment(rest) {
+                return Scanned::Unanalysable(quoted_name(arg));
             }
             break;
         }
-        let bytes = arg.as_bytes();
-        let mut depth = 0i32;
-        let mut eq = None;
-        for (k, &ch) in bytes.iter().enumerate() {
-            match ch {
-                b'(' | b'[' | b'{' => depth += 1,
-                b')' | b']' | b'}' => depth -= 1,
-                b'=' if depth == 0 => {
-                    let prev = if k == 0 { b' ' } else { bytes[k - 1] };
-                    if bytes.get(k + 1) != Some(&b'=') && !matches!(prev, b'!' | b'<' | b'>' | b'=')
-                    {
-                        eq = Some(k);
-                    }
-                    break;
-                }
-                _ => {}
-            }
+        match read_field(src, arg_start, to, arg) {
+            Ok(Some(field)) => fields.push(field),
+            Ok(None) => break,
+            Err(why) => return Scanned::Unanalysable(why),
         }
-        // `concat!` expands to a string literal, so it is legal where the
-        // message goes and declares no field. Refusing it would be a refusal
-        // that misdiagnoses — telling the author to write plain field pairs
-        // when field pairs were never the problem — and a gate that
-        // misdiagnoses is one people learn to work around.
-        if eq.is_none() && is_concat_call(arg) {
-            break;
-        }
-        let name = match eq {
-            Some(k) => arg[..k].trim().to_owned(),
-            None => arg.trim_start_matches(['%', '?']).trim().to_owned(),
-        };
-        if name.starts_with("r#") {
-            return Scanned::Unanalysable(format!(
-                "a raw-identifier field name, which `tracing` records with the `r#` stripped: {}",
-                snippet(arg)
-            ));
-        }
-        if !is_field_name(&name) {
-            return Scanned::Unanalysable(format!(
-                "an argument that is neither `ident = value` nor a bare field name: {}",
-                snippet(arg)
-            ));
-        }
-        // A string-literal value is read out of the `literal` form at the same
-        // offsets, which is how the catalogue half gets an event name from the
-        // very same parse the allowlist half uses.
-        let value = eq.and_then(|k| {
-            let rhs_from = arg_start + k + 1;
-            let rhs = src.literal[rhs_from..to].trim();
-            let inner = rhs.strip_prefix('"')?.strip_suffix('"')?;
-            (!inner.contains('"')).then(|| inner.to_owned())
-        });
-        fields.push(Field { name, value });
     }
     Scanned::Fields(fields)
 }
 
-/// The invocation whose `!` is at `bang`.
+/// Whether the text after a string literal makes it a quoted field *name*.
+fn is_assignment(rest: &str) -> bool {
+    let rest = rest.trim_start();
+    rest.starts_with('=') && !rest.starts_with("==")
+}
+
+fn quoted_name(arg: &str) -> String {
+    format!(
+        "a quoted field name, which this scanner cannot read: {}",
+        snippet(arg)
+    )
+}
+
+/// One argument read as a field, `None` for a `concat!(…)` with no `=`, or the
+/// reason it cannot be read.
+///
+/// Shared by the event and span scans, so a field is the same shape to both:
+/// what one of them refuses, the other refuses for the same reason. `arg` is
+/// the trimmed argument, starting at `arg_start` and ending at `to`.
+fn read_field(
+    src: &Source,
+    arg_start: usize,
+    to: usize,
+    arg: &str,
+) -> Result<Option<Field>, String> {
+    let bytes = arg.as_bytes();
+    let mut depth = 0i32;
+    let mut eq = None;
+    for (k, &ch) in bytes.iter().enumerate() {
+        match ch {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth -= 1,
+            b'=' if depth == 0 => {
+                let prev = if k == 0 { b' ' } else { bytes[k - 1] };
+                if bytes.get(k + 1) != Some(&b'=') && !matches!(prev, b'!' | b'<' | b'>' | b'=') {
+                    eq = Some(k);
+                }
+                break;
+            }
+            _ => {}
+        }
+    }
+    // `concat!` expands to a string literal, so it is legal where the
+    // message goes and declares no field. Refusing it would be a refusal
+    // that misdiagnoses — telling the author to write plain field pairs
+    // when field pairs were never the problem — and a gate that
+    // misdiagnoses is one people learn to work around.
+    if eq.is_none() && is_concat_call(arg) {
+        return Ok(None);
+    }
+    let name = match eq {
+        Some(k) => arg[..k].trim().to_owned(),
+        None => arg.trim_start_matches(['%', '?']).trim().to_owned(),
+    };
+    if name.starts_with("r#") {
+        return Err(format!(
+            "a raw-identifier field name, which `tracing` records with the `r#` stripped: {}",
+            snippet(arg)
+        ));
+    }
+    if !is_field_name(&name) {
+        return Err(format!(
+            "an argument that is neither `ident = value` nor a bare field name: {}",
+            snippet(arg)
+        ));
+    }
+    // A string-literal value is read out of the `literal` form at the same
+    // offsets, which is how the catalogue half gets an event name from the
+    // very same parse the allowlist half uses.
+    let value = eq.and_then(|k| {
+        let rhs_from = arg_start + k + 1;
+        let rhs = src.literal[rhs_from..to].trim();
+        let inner = rhs.strip_prefix('"')?.strip_suffix('"')?;
+        (!inner.contains('"')).then(|| inner.to_owned())
+    });
+    Ok(Some(Field { name, value }))
+}
+
+/// The argument list of the invocation whose `!` is at `bang`, as the byte
+/// range inside its parentheses.
 ///
 /// `!` may be followed by `(`, `[` or `{` — all three are legal and all three
 /// record their fields. Only the first is read, and the other two are
 /// *refused*: skipping them is a gate that fails open on a shape the compiler
 /// is perfectly happy with.
-fn analyse(src: &Source, bang: usize, takes_level: bool) -> Scanned {
+fn arg_list(src: &Source, bang: usize) -> Result<(usize, usize), String> {
     let bytes = src.structural.as_bytes();
     let mut j = bang + 1;
     while j < bytes.len() && bytes[j].is_ascii_whitespace() {
         j += 1;
     }
     match bytes.get(j) {
-        Some(b'(') => matching_paren(bytes, j).map_or_else(
-            || {
-                Scanned::Unanalysable(
-                    "an invocation whose argument list does not close".to_owned(),
-                )
-            },
-            |end| fields_of(src, (j + 1, end), takes_level),
-        ),
-        Some(&d @ (b'[' | b'{')) => Scanned::Unanalysable(format!(
+        Some(b'(') => matching_paren(bytes, j)
+            .map(|end| (j + 1, end))
+            .ok_or_else(|| "an invocation whose argument list does not close".to_owned()),
+        Some(&d @ (b'[' | b'{')) => Err(format!(
             "an invocation delimited by `{}…{}` rather than `(…)`, which this scanner does not read",
             d as char,
             if d == b'[' { ']' } else { '}' }
         )),
-        _ => Scanned::Unanalysable(
-            "an invocation with no argument list this scanner can find".to_owned(),
-        ),
+        _ => Err("an invocation with no argument list this scanner can find".to_owned()),
     }
+}
+
+/// The event invocation whose `!` is at `bang`.
+fn analyse(src: &Source, bang: usize, takes_level: bool) -> Scanned {
+    match arg_list(src, bang) {
+        Ok(span) => fields_of(src, span, takes_level),
+        Err(why) => Scanned::Unanalysable(why),
+    }
+}
+
+/// The span macros. Each names its span *before* its fields, where an event
+/// ends its fields with a message, so they are read by [`span_of`] rather than
+/// [`fields_of`]. `span!` takes a `Level` first, as `event!` does.
+const SPAN_MACROS: &[&str] = &[
+    "trace_span",
+    "debug_span",
+    "info_span",
+    "warn_span",
+    "error_span",
+    "span",
+];
+
+/// What the scanner made of one span site.
+#[derive(Debug, PartialEq, Eq)]
+enum ScannedSpan {
+    Span {
+        name: String,
+        fields: Vec<Field>,
+    },
+    /// A form the scanner will not guess at, and why.
+    Unanalysable(String),
+}
+
+/// The name and fields of one span macro's argument list.
+///
+/// The grammar is `[target: …,] [parent: …,] [Level,] "name" [, field]*`. The
+/// first string literal is the name; every argument after it is a field, read
+/// by the same [`read_field`] the event scan uses. There is no message, so a
+/// second bare literal is not a place the field list ends, as it is for an
+/// event — it is a shape this scanner refuses rather than reads past.
+fn span_of(src: &Source, span: (usize, usize), takes_level: bool) -> ScannedSpan {
+    let refuse = ScannedSpan::Unanalysable;
+    let mut name: Option<String> = None;
+    let mut fields = Vec::new();
+    let mut level_pending = takes_level;
+    for (from, to) in split_args(&src.structural, span) {
+        let raw = &src.structural[from..to];
+        let arg = raw.trim();
+        if arg.is_empty() {
+            continue;
+        }
+        let arg_start = from + (raw.len() - raw.trim_start().len());
+        if ["target:", "parent:"].iter().any(|d| arg.starts_with(d)) {
+            continue;
+        }
+        if level_pending {
+            level_pending = false;
+            continue;
+        }
+        if arg.starts_with('{') {
+            return refuse(format!(
+                "a braced field block, whose fields this scanner cannot see: {}",
+                snippet(arg)
+            ));
+        }
+        if let Some(rest) = after_string_literal(arg) {
+            if is_assignment(rest) {
+                return refuse(quoted_name(arg));
+            }
+            if name.is_some() {
+                return refuse(format!(
+                    "a string literal after the span's name, which is not a field: {}",
+                    snippet(arg)
+                ));
+            }
+            let literal = src.literal[arg_start..to].trim();
+            let inner = literal
+                .strip_prefix('"')
+                .and_then(|l| l.strip_suffix('"'))
+                .unwrap_or(literal);
+            name = Some(inner.to_owned());
+            continue;
+        }
+        if name.is_none() {
+            return refuse(format!(
+                "a span whose name is not a string literal, so which span these \
+                 fields belong to cannot be read: {}",
+                snippet(arg)
+            ));
+        }
+        match read_field(src, arg_start, to, arg) {
+            Ok(Some(field)) => fields.push(field),
+            Ok(None) => {
+                return refuse(format!(
+                    "a `concat!` where a span field goes, which declares no field: {}",
+                    snippet(arg)
+                ));
+            }
+            Err(why) => return refuse(why),
+        }
+    }
+    match name {
+        Some(name) => ScannedSpan::Span { name, fields },
+        None => refuse("a span macro with no name".to_owned()),
+    }
+}
+
+/// Offsets of every `#[instrument]` or `#[tracing::instrument]` attribute.
+///
+/// Found, not read. An `#[instrument]` records every argument of the function
+/// it decorates as a span field unless `skip`/`skip_all` says otherwise, names
+/// the span after the function, and emits events of its own under `err` and
+/// `ret` — so its field names are mostly not written in the attribute at all.
+/// Reading `fields(…)` alone would report a vocabulary the span does not have.
+/// None exists in shipped code, so each one found is refused, and the first
+/// author to need one decides how this scanner should read it.
+fn instrument_attributes(structural: &str) -> Vec<usize> {
+    word_hits(structural, "instrument")
+        .into_iter()
+        .filter(|&at| {
+            let mut before = structural[..at].trim_end();
+            if let Some(head) = before.strip_suffix("::") {
+                let head = head.trim_end();
+                let Some(prefix) = head.strip_suffix("tracing") else {
+                    return false;
+                };
+                before = prefix.trim_end();
+            }
+            before
+                .strip_suffix('[')
+                .is_some_and(|b| b.trim_end().ends_with('#'))
+        })
+        .collect()
+}
+
+/// Every fully-qualified span macro invocation and `#[instrument]` attribute
+/// in `text`, analysed.
+fn scan_spans(text: &str) -> Vec<ScannedSpan> {
+    let src = normalise(text);
+    let mut out = Vec::new();
+    for mac in SPAN_MACROS {
+        for (at, bang) in word_bang_hits(&src.structural, mac) {
+            if !is_tracing_qualified(&src.structural[..at]) {
+                continue;
+            }
+            out.push(match arg_list(&src, bang) {
+                Ok(span) => span_of(&src, span, *mac == "span"),
+                Err(why) => ScannedSpan::Unanalysable(why),
+            });
+        }
+    }
+    for _ in instrument_attributes(&src.structural) {
+        out.push(ScannedSpan::Unanalysable(
+            "an `#[instrument]` attribute, which records the function's arguments \
+             as span fields without naming them, so this scanner cannot read its \
+             vocabulary"
+                .to_owned(),
+        ));
+    }
+    out
+}
+
+/// Every span field built in shipped code, as `(file, span name, field name)`.
+fn span_fields() -> BTreeSet<(String, String, String)> {
+    let mut found = BTreeSet::new();
+    for (rel_path, text) in shipped_sources() {
+        for scanned in scan_spans(&text) {
+            if let ScannedSpan::Span { name, fields } = scanned {
+                for f in fields {
+                    found.insert((rel_path.clone(), name.clone(), f.name));
+                }
+            }
+        }
+    }
+    found
 }
 
 /// Every fully-qualified `tracing::*!` invocation in `text`, analysed.
@@ -1601,6 +1803,11 @@ fn every_tracing_invocation_is_in_the_analysable_form() {
                 refused.push(format!("{rel_path}: {why}"));
             }
         }
+        for scanned in scan_spans(&text) {
+            if let ScannedSpan::Unanalysable(why) = scanned {
+                refused.push(format!("{rel_path}: span: {why}"));
+            }
+        }
     }
     assert!(
         refused.is_empty(),
@@ -1633,6 +1840,29 @@ fn every_emitted_field_name_is_on_the_redaction_allowlist() {
          because they are not separable from the file that ships. If one of \
          these is a unit test, it is not a production defect — use an \
          allowlisted field name, or `_` the value out of the event:\n  {}",
+        offenders.join("\n  ")
+    );
+}
+
+#[test]
+fn every_span_field_name_is_on_the_redaction_allowlist() {
+    // `RedactionLayer` cannot veto a span — `on_new_span` has no veto, and a
+    // span cannot be rewritten once created — so a span field off the
+    // allowlist would reach every record written inside it. This is the gate
+    // that stands where the layer cannot.
+    let offenders: Vec<String> = span_fields()
+        .into_iter()
+        .filter(|(_, _, field)| !sunrise_log::is_allowed(field))
+        .map(|(file, span, field)| format!("{field} on span {span:?} (built in {file})"))
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "these span field names are built in a file compiled into a workspace \
+         library or binary, but are not on the allowlist in \
+         crates/sunrise-log/src/field.rs. No layer refuses a span, so each \
+         would ride every record written inside it, in every build. Use an \
+         allowlisted name, or add this one to the allowlist with the argument \
+         that it carries no user content:\n  {}",
         offenders.join("\n  ")
     );
 }
@@ -1688,7 +1918,7 @@ fn every_tracing_macro_is_called_by_its_full_path() {
     let mut aliased = Vec::new();
     for (rel_path, text) in shipped_sources() {
         let src = normalise(&text);
-        for lvl in LEVELS {
+        for lvl in LEVELS.iter().chain(SPAN_MACROS) {
             for (at, _) in word_bang_hits(&src.structural, lvl) {
                 let before = src.structural[..at].trim_end();
                 if is_tracing_qualified(before) {
@@ -1708,7 +1938,7 @@ fn every_tracing_macro_is_called_by_its_full_path() {
         aliased.is_empty(),
         "these reach a `tracing` macro by a name the field scan does not look \
          for, so its fields are checked by nothing. Call them as \
-         `tracing::<level>!`. This applies to `#[cfg(test)]` unit tests inside \
+         `tracing::<level>!` or `tracing::<level>_span!`. This applies to `#[cfg(test)]` unit tests inside \
          a shipped file as well, which the scan cannot separate from the file \
          that ships:\n  {}",
         aliased.join("\n  ")
@@ -1737,9 +1967,24 @@ fn tracing_import_problem(stmt: &str) -> Option<&'static str> {
     {
         return Some("renames the whole crate");
     }
-    rest.split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+    if rest
+        .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
         .any(|tok| LEVELS.contains(&tok))
-        .then_some("imports a level macro")
+    {
+        return Some("imports a level macro");
+    }
+    // `tracing::span` is a module as well as a macro, and `use tracing::span;`
+    // imports both. A path *through* it (`tracing::span::Id`) imports neither,
+    // so `span` counts only where no `::` follows it.
+    let imports_span_macro = |mac: &str| {
+        word_hits(rest, mac)
+            .into_iter()
+            .any(|at| !rest[at + mac.len()..].trim_start().starts_with("::"))
+    };
+    SPAN_MACROS
+        .iter()
+        .any(|mac| imports_span_macro(mac))
+        .then_some("imports a span macro")
 }
 
 #[test]
@@ -1804,6 +2049,160 @@ fn the_scan_actually_finds_events_and_fields() {
             "the scan missed {expected:?}, which is logged all over the server"
         );
     }
+}
+
+#[test]
+fn the_scan_actually_finds_spans_and_their_fields() {
+    // The span gate passes vacuously on a scanner that matches nothing, so it
+    // is pinned to the sites that exist: `http.request`, built twice in
+    // `api/observe.rs`. Named rather than counted, because a count cannot tell
+    // a consolidated site from a scanner that stopped reading one.
+    let observe = "crates/sunrise-server/src/api/observe.rs";
+    let found: BTreeSet<(String, String)> = span_fields()
+        .into_iter()
+        .filter(|(file, _, _)| file == observe)
+        .map(|(_, span, field)| (span, field))
+        .collect();
+    for field in ["method", "endpoint", "trace_id", "span_id"] {
+        assert!(
+            found.contains(&("http.request".to_owned(), field.to_owned())),
+            "the span scan did not find `{field}` on `http.request` in {observe}, \
+             so the span gate is reading less than ships: {found:?}"
+        );
+    }
+}
+
+#[test]
+fn the_span_scanner_reads_the_shapes_it_must() {
+    let scanned = scan_spans(
+        r#"
+        fn spans() {
+            let a = tracing::info_span!("http.request", method = %method, endpoint = %endpoint);
+            let b = tracing::debug_span!(
+                target: "sunrise_core",
+                parent: &a,
+                "sync.session",
+                // a comment naming task_title is not a field
+                stream_h = ?h,
+                n_ops,
+                op_kind = tracing::field::Empty,
+            );
+            let c = tracing::span!(tracing::Level::WARN, "c.span", %err_code);
+            let d = tracing::trace_span!("d.span");
+        }
+        "#,
+    );
+    let span = |name: &str, fields: &[&str]| ScannedSpan::Span {
+        name: name.to_owned(),
+        fields: fields.iter().map(|f| Field::named(f)).collect(),
+    };
+    assert_eq!(
+        scanned,
+        vec![
+            span("d.span", &[]),
+            span("sync.session", &["stream_h", "n_ops", "op_kind"]),
+            span("http.request", &["method", "endpoint"]),
+            span("c.span", &["err_code"]),
+        ],
+        "the span scanner must read each name and every field after it"
+    );
+}
+
+#[test]
+fn the_span_scanner_catches_a_planted_violation() {
+    let scanned = scan_spans(r#"let s = tracing::info_span!("http.request", task_title = %t);"#);
+    assert_eq!(
+        scanned,
+        vec![ScannedSpan::Span {
+            name: "http.request".to_owned(),
+            fields: vec![Field::named("task_title")],
+        }]
+    );
+    assert!(
+        !sunrise_log::is_allowed("task_title"),
+        "and the allowlist must refuse it"
+    );
+}
+
+#[test]
+fn the_span_scanner_refuses_the_forms_it_cannot_read() {
+    let why = |src: &str| match scan_spans(src).pop().expect("one span site") {
+        ScannedSpan::Unanalysable(why) => why,
+        ScannedSpan::Span { name, fields } => {
+            panic!("expected a refusal, got span {name:?} with fields {fields:?}")
+        }
+    };
+    for (src, expected) in [
+        (
+            r#"tracing::info_span!("s", "task_title" = %t);"#,
+            "a quoted field name",
+        ),
+        (
+            r#"tracing::info_span!("s", { task_title = %t });"#,
+            "a braced field block",
+        ),
+        (
+            r#"tracing::info_span!("s", r#type = 1);"#,
+            "a raw-identifier field name",
+        ),
+        (
+            "tracing::info_span!(SPAN_NAME, task_h = %t);",
+            "name is not a string literal",
+        ),
+        (
+            r#"tracing::info_span!("s", task_h = %t, "stray");"#,
+            "a string literal after the span's name",
+        ),
+        (
+            r#"tracing::info_span!["s", task_title = %t];"#,
+            "rather than `(…)`",
+        ),
+        (
+            "#[instrument]\nfn f(task_title: &str) {}",
+            "an `#[instrument]` attribute",
+        ),
+        (
+            "#[tracing::instrument(skip_all, fields(task_h))]\nfn f() {}",
+            "an `#[instrument]` attribute",
+        ),
+    ] {
+        assert!(
+            why(src).contains(expected),
+            "{src:?} must be refused as {expected:?}"
+        );
+    }
+    // `.instrument(span)` and a path through the `instrument` module are not
+    // the attribute, and must not be refused as one.
+    assert!(scan_spans(
+        "use tracing::instrument::WithSubscriber as _;\nfut.instrument(log).await;"
+    )
+    .is_empty());
+}
+
+#[test]
+fn an_aliased_span_macro_is_refused_by_the_path_gates() {
+    for src in [
+        "fn f() { t::info_span!(\"s\", task_title = %t); }",
+        "fn f() { info_span!(\"s\", task_title = %t); }",
+    ] {
+        assert!(
+            scan_spans(src).is_empty(),
+            "the span scan cannot see {src:?} — which is why the path gates cover spans"
+        );
+    }
+    for stmt in [
+        "use tracing::info_span;",
+        "use tracing::{span, Level};",
+        "use tracing::span;",
+    ] {
+        assert!(
+            tracing_import_problem(stmt).is_some(),
+            "{stmt:?} must be refused by the import gate"
+        );
+    }
+    // A path through the `span` module imports no macro, and
+    // `sunrise-log`'s own `test_util.rs` has exactly that import.
+    assert!(tracing_import_problem("use tracing::span::{Attributes, Id, Record};").is_none());
 }
 
 // ---------------------------------------------------------------------------

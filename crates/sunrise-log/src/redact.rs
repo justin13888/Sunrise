@@ -42,24 +42,30 @@
 //! `sunrise_server::build_service`, and it takes `endpoint` from the *matched
 //! route's* `paths` key rather than from the request's own target.
 //!
-//! **Spans are not gated, by design.** `on_new_span` has no veto and a span
-//! cannot be rewritten once created, so this layer implements `event_enabled`
-//! and nothing else, and makes no claim whatever about span fields.
+//! **Spans are not gated here, by design.** `on_new_span` has no veto and a
+//! span cannot be rewritten once created, so this layer implements
+//! `event_enabled` and nothing else, and makes no claim whatever about span
+//! fields.
 //!
-//! What stands behind the span vocabulary is not this layer but its size. The
-//! workspace creates one span, `http.request`, at two sites in
+//! The span vocabulary is gated at the source instead, before anything runs.
+//! `sunrise-log`'s `event_catalog` test reads every `tracing::*_span!` and
+//! `tracing::span!` call in the files the compiler built into a shipped
+//! target, and fails naming the file, the span and the field when a span
+//! field name is off [`crate::field::ALLOWED`]. It refuses a span it cannot
+//! read — a name that is not a string literal, a quoted or braced field —
+//! and it refuses `#[instrument]` outright, because that attribute records
+//! the function's arguments as span fields without naming them. The same
+//! path and import gates that keep events on `tracing::<level>!` keep spans on
+//! their full `tracing::` path, so the scan is not walked around by a `use`.
+//!
+//! Today the workspace creates one span, `http.request`, at two sites in
 //! `sunrise_server::api::observe`: the request log's, carrying `method` and
 //! `endpoint`, and the trace interceptor's, which adds `trace_id` and
-//! `span_id` while a sampled request runs. All four are on
-//! [`crate::field::ALLOWED`] and all are server-derived (`endpoint` is the
-//! matched route's own template, never a raw target; the two ids are the
-//! trace's). The `Plain<T>` type-level guarantee still applies to span fields
-//! and the `.expose()` CI gate still covers the modules that build them.
-//!
-//! This is the one part of the field-vocabulary story with no gate under it:
-//! `sunrise-log`'s `event_catalog` test scans `tracing::*!` events and not
-//! `*_span!`. The second site has arrived, and with it the point at which that
-//! is worth fixing.
+//! `span_id` while a sampled request runs. All four are server-derived
+//! (`endpoint` is the matched route's own template, never a raw target; the
+//! two ids are the trace's). The `Plain<T>` type-level guarantee still applies
+//! to span field *values*, and the `.expose()` CI gate still covers the
+//! modules that build them; the source gate is about names only.
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
