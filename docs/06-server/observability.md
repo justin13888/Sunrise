@@ -157,11 +157,13 @@ extracted from the source and checked by a gate, so the catalogue's
      already on the base branch: pull requests are squash-merged, so a commit
      on the pull request's own branch is gone once it merges, and the gate
      rejects one the base does not reach.
-     Last extracted: 38a02c42 -->
+     Last extracted: 642f4150 -->
 
 ```
 sunrise_account_create_total
 sunrise_account_delete_total
+sunrise_accounts
+sunrise_auth_verify_total                 {result, reason}
 sunrise_blob_bytes_total                  {direction}
 sunrise_blob_chunk_total
 sunrise_blob_fetch_total
@@ -170,13 +172,18 @@ sunrise_blob_gc_deleted_total
 sunrise_blob_hash_mismatch_total
 sunrise_blob_init_total
 sunrise_build_info                        {version, commit}
+sunrise_db_busy_total
+sunrise_db_query_duration_seconds         {endpoint}
 sunrise_db_size_bytes
 sunrise_device_sig_rejected_total         {reason}
+sunrise_devices                           {state}
 sunrise_devices_register_total
 sunrise_devices_revoke_total
+sunrise_http_in_flight_requests
 sunrise_http_request_duration_seconds     {endpoint, method}
 sunrise_http_requests_total               {endpoint, method, status}
 sunrise_metrics_series_dropped_total
+sunrise_oidc_jwks_fetch_total             {result}
 sunrise_pairing_total                     {result}
 sunrise_push_dispatch_duration_seconds    {provider}
 sunrise_push_dispatch_total               {provider, result}
@@ -188,19 +195,23 @@ sunrise_relay_append_failed_total
 sunrise_relay_batch_duplicate_total
 sunrise_relay_batch_overlap_total
 sunrise_relay_cursor_gap_total
+sunrise_relay_log_bytes
+sunrise_relay_log_evicted_total
 sunrise_start_time_seconds
 sunrise_sync_batch_ops
 sunrise_sync_fanout_latency_seconds
 sunrise_sync_negotiate_refused_total      {reason}
+sunrise_sync_ops_delivered_total
 sunrise_sync_ops_received_total
 sunrise_sync_refresh_total
 sunrise_sync_resume_conflict_total
 sunrise_sync_session_total
 sunrise_sync_sessions_active
 sunrise_sync_stream_total
+sunrise_sync_streams_active
 ```
 
-38 metric names, and four that earlier revisions of this file listed and the
+49 metric names, and four that earlier revisions of this file listed and the
 tree does not define: `sunrise_sync_token_expired_total`,
 `sunrise_sync_token_refresh_rejected_total`, `sunrise_sync_token_refreshed_total`,
 `sunrise_sync_unauthenticated_total`. The token-lifecycle counters collapsed into
