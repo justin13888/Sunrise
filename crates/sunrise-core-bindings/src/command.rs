@@ -11,8 +11,9 @@ use sunrise_domain::{Energy, InterruptionReason, SessionLength};
 use sunrise_id::EntityRef;
 
 use crate::dto::{
-    AttachmentDraftIn, BlockDraftIn, BlockEdit, ContextDraftIn, ContextEdit, RoutineDraftIn,
-    RoutineEdit, SnapshotDraftIn, StreamDraftIn, StreamEdit, TaskDraftIn, TaskEdit,
+    AttachmentDraftIn, BlockDraftIn, BlockEdit, ContextDraftIn, ContextEdit, PreferenceTarget,
+    PreferenceValue, RoutineDraftIn, RoutineEdit, SnapshotDraftIn, StreamDraftIn, StreamEdit,
+    TaskDraftIn, TaskEdit,
 };
 
 /// A mutating command.
@@ -229,6 +230,23 @@ pub enum CoreCommand {
         /// The snapshot.
         draft: SnapshotDraftIn,
     },
+    /// Set one preference in the store `target` names. See
+    /// [`sunrise_core::Command::SetPreference`].
+    SetPreference {
+        /// The key.
+        key: String,
+        /// The value.
+        value: PreferenceValue,
+        /// The vault, or this device.
+        target: PreferenceTarget,
+    },
+    /// Clear one preference from the store `target` names.
+    ClearPreference {
+        /// The key.
+        key: String,
+        /// The vault, or this device.
+        target: PreferenceTarget,
+    },
 }
 
 impl CoreCommand {
@@ -311,6 +329,15 @@ impl CoreCommand {
             Self::AttachFile { draft } => Command::AttachFile(draft.try_into()?),
             Self::DetachFile { id } => Command::DetachFile(id),
             Self::SaveReviewSnapshot { draft } => Command::SaveReviewSnapshot(draft.into()),
+            Self::SetPreference { key, value, target } => Command::SetPreference {
+                key,
+                value: value.into(),
+                target: target.into(),
+            },
+            Self::ClearPreference { key, target } => Command::ClearPreference {
+                key,
+                target: target.into(),
+            },
         })
     }
 }

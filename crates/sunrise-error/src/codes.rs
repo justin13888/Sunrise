@@ -28,6 +28,9 @@ pub enum ErrorCode {
     ValidationBlockedByCycle,
     /// Generic validation failure with structured diagnostic.
     ValidationField,
+    /// A preference write named a target its key's scope does not permit
+    /// (`docs/02-domain/preferences.md` §Scope and resolution).
+    ValidationPreferenceScope,
 
     // Auth
     /// OIDC bearer token rejected.
@@ -146,6 +149,7 @@ impl ErrorCode {
             Self::ValidationPayloadTooLarge => "VALIDATION_PAYLOAD_TOO_LARGE",
             Self::ValidationBlockedByCycle => "VALIDATION_BLOCKED_BY_CYCLE",
             Self::ValidationField => "VALIDATION_FIELD",
+            Self::ValidationPreferenceScope => "VALIDATION_PREFERENCE_SCOPE",
             Self::AuthTokenInvalid => "AUTH_TOKEN_INVALID",
             Self::AuthTokenExpired => "AUTH_TOKEN_EXPIRED",
             Self::AuthDeviceRevoked => "AUTH_DEVICE_REVOKED",
@@ -202,6 +206,7 @@ impl ErrorCode {
             | Self::ValidationPayloadTooLarge
             | Self::ValidationBlockedByCycle
             | Self::ValidationField
+            | Self::ValidationPreferenceScope
             | Self::AuthTokenInvalid
             | Self::AuthDeviceSigInvalid
             | Self::StorageVTooNew
@@ -254,7 +259,7 @@ impl ErrorCode {
 
     /// Iteration over every code variant — useful for completeness tests.
     #[must_use]
-    pub const fn all() -> [Self; 41] {
+    pub const fn all() -> [Self; 42] {
         [
             Self::InternalUnknownCode,
             Self::ValidationInvalidTitle,
@@ -262,6 +267,7 @@ impl ErrorCode {
             Self::ValidationPayloadTooLarge,
             Self::ValidationBlockedByCycle,
             Self::ValidationField,
+            Self::ValidationPreferenceScope,
             Self::AuthTokenInvalid,
             Self::AuthTokenExpired,
             Self::AuthDeviceRevoked,
