@@ -8,8 +8,10 @@
 //! here at the depth it sits at, which a top-level-only check cannot see.
 //!
 //! One kind of map is left alone: a `SunriseTime` of a KNOWN kind. Its four
-//! shapes are closed, and a newer build that needs another adds a kind, which
-//! is what `unknown_time_kinds_survive_in_every_time_field` covers.
+//! shapes are closed (ADR-0045 §6), and a newer build that needs another adds
+//! a kind, which is what `unknown_time_kinds_survive_in_every_time_field`
+//! covers. `known_time_kinds_drop_an_added_key` pins the closed shape down, so
+//! a change that starts keeping such a key has to revisit that decision.
 
 use ciborium::value::Value;
 use jiff::civil::{date, time};
@@ -18,8 +20,11 @@ use proptest::prelude::*;
 use std::collections::{BTreeMap, BTreeSet};
 use sunrise_cbor::{decode_canonical, encode_canonical};
 use sunrise_domain::constraint::{DateRange, ScheduleConstraint, TimeOfDayRange, WeekdaySet};
+use sunrise_domain::review::StreakRow;
 use sunrise_domain::{
-    Block, ConstraintSeverity, RRule, Routine, SunriseTime, Task, TaskTemplate, Unknowns, Weekday,
+    Block, Chunk, ConstraintSeverity, Energy, FocusKind, FocusStart, RRule, ReviewSnapshot,
+    ReviewSnapshotStream, ReviewTotals, Routine, SunriseTime, Task, TaskTemplate, Unknowns,
+    Weekday,
 };
 use sunrise_id::{EntityKind, EntityRef};
 
@@ -192,6 +197,57 @@ fn block() -> Block {
     }
 }
 
+/// A focus `start` with its chunk marker set, so the nested map exists.
+fn focus_start() -> FocusStart {
+    FocusStart {
+        id: eref(EntityKind::FocusSession, 6),
+        task_id: eref(EntityKind::Task, 1),
+        stream_id: eref(EntityKind::Stream, 2),
+        started_at: ts(1_767_571_200_000),
+        planned_ms: Some(1_500_000),
+        energy: Some(Energy::High),
+        kind: FocusKind::Work,
+        chunk: Some(Chunk::new(2, 4)),
+        unknown: Unknowns::new(),
+    }
+}
+
+/// A review snapshot with totals, two stream lines and a streak row.
+fn review_snapshot() -> ReviewSnapshot {
+    let line = |b: u8, completed: u32| ReviewSnapshotStream {
+        stream: eref(EntityKind::Stream, b),
+        name: "s".into(),
+        completed,
+        deferred: 1,
+        created: 2,
+        unknown: Unknowns::new(),
+    };
+    ReviewSnapshot {
+        id: eref(EntityKind::ReviewSnapshot, 7),
+        created_at: ts(1_768_176_000_000),
+        window_start: ts(1_767_571_200_000),
+        window_end: ts(1_768_176_000_000),
+        totals: ReviewTotals {
+            completed: 3,
+            deferred: 1,
+            dropped: 0,
+            created: 4,
+            reopened: 1,
+            unknown: Unknowns::new(),
+        },
+        streams: vec![line(2, 2), line(3, 1)],
+        streaks: vec![StreakRow {
+            routine: eref(EntityKind::Routine, 4),
+            title: "r".into(),
+            streak: 5,
+            last_completed_at_ms: Some(1_767_600_000_000),
+            unknown: Unknowns::new(),
+        }],
+        note: Some("n".into()),
+        unknown: Unknowns::new(),
+    }
+}
+
 /// A `SunriseTime` of a kind no build ships: random fields, maybe an `at`.
 fn unknown_time() -> impl Strategy<Value = SunriseTime> {
     (
@@ -250,6 +306,24 @@ proptest! {
         survives(&block(), &per_map)?;
     }
 
+    /// A focus `start` (the `focus.start` op): its own map and its chunk
+    /// marker's.
+    #[test]
+    fn focus_start_keeps_unknown_keys_at_every_level(
+        per_map in proptest::collection::vec(injection(), 0..4),
+    ) {
+        survives(&focus_start(), &per_map)?;
+    }
+
+    /// A review snapshot (the `review.snapshot` op): its own map, the totals,
+    /// each stream line and each streak row.
+    #[test]
+    fn review_snapshot_keeps_unknown_keys_at_every_level(
+        per_map in proptest::collection::vec(injection(), 0..8),
+    ) {
+        survives(&review_snapshot(), &per_map)?;
+    }
+
     /// A time kind this build does not know, in every place a Task and a Block
     /// hold one, with unknown keys around it too.
     #[test]
@@ -267,5 +341,38 @@ proptest! {
         let mut b = block();
         b.starts_at = starts;
         survives(&b, &per_map)?;
+    }
+}
+
+/// The one recorded exception to "unknowns are lossless" (ADR-0045 §6): a key
+/// added to a time of a KNOWN kind decodes as that kind and is not re-emitted.
+/// This pins the decision; a change that starts keeping the key fails here and
+/// has to update the ADR with it.
+#[test]
+fn known_time_kinds_drop_an_added_key() {
+    let known = [
+        SunriseTime::instant(ts(1_767_571_200_000)),
+        SunriseTime::zoned(date(2026, 3, 1).at(9, 0, 0, 0), "Europe/Berlin"),
+        SunriseTime::floating(date(2026, 3, 1).at(9, 0, 0, 0)),
+        SunriseTime::all_day(date(2026, 3, 2)),
+    ];
+    for t in known {
+        let mut tree = Value::serialized(&t).expect("a time lifts to a value tree");
+        let Value::Map(m) = &mut tree else {
+            panic!("a known time is a map");
+        };
+        m.push((Value::Text(format!("{PREFIX}added")), Value::Bool(true)));
+        let back: SunriseTime = tree
+            .deserialized()
+            .expect("a known kind with an added key reads");
+        assert_eq!(
+            back, t,
+            "the added key does not change the kind or its fields"
+        );
+        assert_eq!(
+            Value::serialized(&back).unwrap(),
+            Value::serialized(&t).unwrap(),
+            "the added key is not re-emitted",
+        );
     }
 }

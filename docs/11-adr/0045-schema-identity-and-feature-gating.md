@@ -306,13 +306,39 @@ decoder and the relay's header decoder share one function for this rule.
 - **Unknown maps at every nesting level.** Every struct that crosses the wire
   carries `#[serde(flatten)] unknown: Unknowns` and re-emits it byte-exact.
   That includes every nested value type (`ScheduleConstraint`, `TimeOfDayRange`,
-  `DateRange`, `RRule`, `TaskTemplate`) and the `Patch` op's own map. `Copy` is
-  dropped where the map requires it. The one exception stays `Interruption`,
-  whose whole value is its key.
+  `DateRange`, `RRule`, `TaskTemplate`, the focus `Chunk`, and the review
+  snapshot's `ReviewTotals`, `ReviewSnapshotStream` and `StreakRow`) and the
+  `Patch` op's own map. `Copy` is dropped where the map requires it. The one
+  exception stays `Interruption`, whose whole value is its key.
+  - A `Chunk`'s map is kept on the wire, not in storage: the `focus_sessions`
+    row holds the marker as two integer columns. A `focus.start` op is
+    immutable and never re-encoded from its row, so no write this build makes
+    loses the map.
 - **`SunriseTime` gains `Unknown { kind, raw }`.** It orders by its `index_ms`
   when the raw value carries one, round-trips unchanged, and never fails the
   enclosing op. Storage keeps the raw value rather than degrading it to
   `Instant`.
+- **The four known `SunriseTime` kinds are closed shapes, and are the one
+  recorded exception to lossless unknowns.** A key added to an `instant`,
+  `zoned`, `floating` or `all_day` value decodes as that kind and is not
+  re-emitted. A writer MUST NOT add a field to a known kind; a newer build
+  that needs another shape adds a kind, which the `Unknown` arm keeps. The
+  reasons:
+  - Storage projects a time onto one index column and two sidecars
+    (`crates/sunrise-domain/src/time.rs#to_parts`). For a known kind the `_tz`
+    sidecar holds the zone name or nothing, and the fields are rebuilt from
+    the index, so a key kept on the wire would still be lost on the first
+    database round trip. Keeping it would change the storage form of every
+    time column.
+  - A time is a value, never edited in part. A new field changes what the
+    time means, and an older build that kept the key but resolved the time
+    without it would place it wrongly while writing it back as though it
+    understood it. A new kind makes that build treat the value as one it
+    cannot place, which is the honest reading.
+
+  `crates/sunrise-domain/tests/nested_unknowns_proptest.rs#known_time_kinds_drop_an_added_key`
+  pins this, so a change that starts keeping such a key has to revisit this
+  decision.
 - **An `extra` blob that cannot be parsed MUST be kept opaque, not emptied.**
   `crates/sunrise-core/src/engine/ids.rs#decode_unknowns` still reads an
   undecodable blob as an empty map, so the read does not fail; the blob stays
