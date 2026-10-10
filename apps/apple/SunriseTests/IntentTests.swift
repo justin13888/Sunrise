@@ -473,7 +473,7 @@ struct IntentSurfaceTests {
     /// with nothing assembled by hand. Ten is the system's cap per app.
     @Test
     func everyVerbHasASpokenShortcut() {
-        #expect(SunriseShortcuts.appShortcuts.count == 6)
+        #expect(SunriseShortcuts.appShortcuts.count == 8)
         #expect(SunriseShortcuts.appShortcuts.count <= 10, "the system takes ten per app")
     }
 
