@@ -54,16 +54,21 @@ final class ReminderScheduler {
     /// scheduler has no view, and the surface that does own one is the app.
     private let route: @MainActor (DeepLink) -> Void
     private var responder: ReminderResponder?
+    /// The Focus filter in force. Reminders from streams outside its scope
+    /// are withdrawn while it is on; see ``FocusFilter``.
+    private let focusFilter: FocusFilterStore
 
     init(
         bridge: CoreBridge,
         preferences: NotificationPreferences,
         center: any NotificationCenterClient = SystemNotificationCenter(),
+        focusFilter: FocusFilterStore = .shared,
         route: @escaping @MainActor (DeepLink) -> Void
     ) {
         self.bridge = bridge
         self.preferences = preferences
         self.center = center
+        self.focusFilter = focusFilter
         self.route = route
     }
 
@@ -241,7 +246,14 @@ final class ReminderScheduler {
         return target <= 0 ? now : UInt64(target)
     }
 
-    /// One read of `Query::ReminderIntents`, planned.
+    /// One read of `Query::ReminderIntents`, muted by the Focus filter, planned.
+    ///
+    /// Muted *before* planning, so the cap in ``ReminderPlan/plan(for:timeZone:limit:)``
+    /// is spent on reminders that can fire: a Work Focus must not let a
+    /// morning of muted Personal reminders crowd the Work ones out of the
+    /// OS's sixty-four slots. Withdrawn rather than delivered silently, and
+    /// re-added by the next reconcile once the Focus ends — which is the
+    /// reconcile the scope changing triggers.
     private func intents(_ settings: NotificationSettings) async throws -> [PlannedNotification] {
         let now = await bridge.nowMs()
         let result = try await bridge.query(
@@ -252,6 +264,26 @@ final class ReminderScheduler {
             )
         )
         guard case let .reminders(rows) = result else { return [] }
-        return ReminderPlan.plan(for: rows)
+        let scope = focusFilter.streams
+        let streams = scope == nil ? [:] : await streams(of: rows)
+        return ReminderPlan.plan(for: FocusFilter.muting(rows, to: scope, streams: streams))
+    }
+
+    /// The stream each reminder's entity is filed in, where it has one.
+    ///
+    /// A reminder carries its entity and not its stream, so a filtered
+    /// reconcile reads each one — at most a day's reminders, and only while a
+    /// Focus filter is on. A read that fails leaves its entity out, which
+    /// ``FocusFilter/allows(stream:in:)`` lets through.
+    private func streams(of reminders: [Reminder]) async -> [EntityRef: EntityRef] {
+        var streams: [EntityRef: EntityRef] = [:]
+        for entity in Set(reminders.map(\.entity)) {
+            switch try? await bridge.query(.entityById(id: entity)) {
+            case let .task(item)?: streams[entity] = item.streamId
+            case let .routine(item)?: streams[entity] = item.template.streamId
+            default: break
+            }
+        }
+        return streams
     }
 }
