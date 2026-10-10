@@ -101,8 +101,9 @@ final class CalendarModel {
                 return
             }
             self.rows = rows
-            // The domain's answer, not a comparison written here.
-            conflicts = blockConflicts(rows: rows)
+            // The domain's answer, not a comparison written here, resolved in
+            // the zone the grid draws in.
+            conflicts = blockConflicts(rows: rows, tz: timeZone)
             errorMessage = nil
         } catch {
             errorMessage = error.localizedDescription

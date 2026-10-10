@@ -25,12 +25,14 @@ pub struct BlockOverlap {
     pub to_ms: i64,
 }
 
-/// Every pair of `blocks` whose `[starts_at, ends_at)` intersect.
+/// Every pair of `blocks` whose `[starts_at, ends_at)` intersect for a reader
+/// in `tz`.
 ///
-/// Compared on [`SunriseTime::index_ms`] — the key storage indexes and orders
-/// on — so a floating 09:00 and a zoned 09:00 New York are compared the way
-/// `ORDER BY starts_at_ms` compares them, and the answer does not depend on
-/// which of the four kinds each bound happens to be.
+/// Each bound resolves in the reader's zone (`docs/10-cross-cutting/time.md`
+/// §2 rule 1), so a floating 09:00 and a zoned 09:00 New York overlap for a
+/// reader in New York and not for one in Kolkata. The storage index would have
+/// put the floating one at 09:00 UTC for everybody. `from_ms` and `to_ms` are
+/// the resolved instants.
 ///
 /// Touching is not overlapping: a block ending at 10:00 and one starting at
 /// 10:00 share no time, and shading a zero-width region would put a conflict
@@ -41,11 +43,11 @@ pub struct BlockOverlap {
 /// [`UNANCHORED_MS`] instant a client mirror shows that kind as. Quadratic in
 /// the number of blocks on screen, which is a day or a week of them.
 #[must_use]
-pub fn overlaps(blocks: &[Block]) -> Vec<BlockOverlap> {
+pub fn overlaps(blocks: &[Block], tz: &TimeZone) -> Vec<BlockOverlap> {
     let mut live: Vec<(&Block, i64, i64)> = blocks
         .iter()
         .filter(|b| !b.deleted)
-        .filter_map(|b| Some((b, placed_ms(&b.starts_at)?, placed_ms(&b.ends_at)?)))
+        .filter_map(|b| Some((b, placed_ms(&b.starts_at, tz)?, placed_ms(&b.ends_at, tz)?)))
         .collect();
     live.sort_by_key(|(b, starts, _)| (*starts, b.id));
 
@@ -67,13 +69,15 @@ pub fn overlaps(blocks: &[Block]) -> Vec<BlockOverlap> {
     out
 }
 
-/// A bound's position for comparing two blocks, or `None` where this build
-/// cannot place it: an unknown kind with no `at` anchor, or the
-/// [`UNANCHORED_MS`] instant a client mirror shows that kind as. Such a bound
-/// is compared with nothing, as in [`super::validate_range`], because its
-/// stand-in key would invent a conflict with every later block.
-fn placed_ms(t: &SunriseTime) -> Option<i64> {
-    t.index_key().filter(|ms| *ms < UNANCHORED_MS)
+/// A bound's resolved position in `tz` for comparing two blocks, or `None`
+/// where this build cannot place it: an unknown kind with no `at` anchor, or
+/// the [`UNANCHORED_MS`] instant a client mirror shows that kind as. Such a
+/// bound is compared with nothing, as in [`super::validate_range`], because
+/// its stand-in key would invent a conflict with every later block.
+fn placed_ms(t: &SunriseTime, tz: &TimeZone) -> Option<i64> {
+    t.resolve_in(tz)
+        .map(jiff::Timestamp::as_millisecond)
+        .filter(|ms| *ms < UNANCHORED_MS)
 }
 
 /// The draft the Resolve menu's **Merge** action creates: the union time
@@ -104,7 +108,7 @@ fn placed_ms(t: &SunriseTime) -> Option<i64> {
 /// when it binds two or more tasks and neither Block carried a title, since a
 /// multi-task Block has no single task title to shadow.
 pub fn merge_blocks(a: &Block, b: &Block, zone: &TimeZone) -> Result<BlockDraft, ValidationError> {
-    let (early, late) = if a.starts_at.index_ms() <= b.starts_at.index_ms() {
+    let (early, late) = if a.starts_at.cmp_in(&b.starts_at, zone).is_le() {
         (a, b)
     } else {
         (b, a)
@@ -130,7 +134,7 @@ pub fn merge_blocks(a: &Block, b: &Block, zone: &TimeZone) -> Result<BlockDraft,
         title_track_task: false,
         tasks,
     };
-    draft.validate()?;
+    draft.validate(zone)?;
     Ok(draft)
 }
 
@@ -144,7 +148,7 @@ enum Bound {
 /// The wider of two bounds, keeping the kind when both agree on it. A bound
 /// this build cannot place ([`placed_ms`]) loses to one it can.
 fn union_bound(x: &SunriseTime, y: &SunriseTime, zone: &TimeZone, bound: Bound) -> SunriseTime {
-    let take_x = match (placed_ms(x), placed_ms(y), bound) {
+    let take_x = match (placed_ms(x, zone), placed_ms(y, zone), bound) {
         (Some(xm), Some(ym), Bound::Start) => xm <= ym,
         (Some(xm), Some(ym), Bound::End) => xm >= ym,
         (None, Some(_), _) => false,
@@ -213,16 +217,44 @@ mod tests {
         TimeZone::UTC
     }
 
+    /// Where a reader in UTC puts `t`, in epoch ms.
+    fn ms(t: &SunriseTime) -> i64 {
+        t.to_instant(&utc()).as_millisecond()
+    }
+
+    /// The overlap rule is the reader's: a floating 09:00–10:00 and a zoned
+    /// 09:30–10:30 New York block collide for a reader in New York, and are
+    /// hours apart for one in Kolkata, where the floating block is 09:00 IST.
+    #[test]
+    fn overlap_is_decided_in_the_readers_zone() {
+        let day = civil::date(2026, 6, 1);
+        let ny = "America/New_York";
+        let a = block(
+            1,
+            SunriseTime::floating(day.at(9, 0, 0, 0)),
+            SunriseTime::floating(day.at(10, 0, 0, 0)),
+        );
+        let b = block(
+            2,
+            SunriseTime::zoned(day.at(9, 30, 0, 0), ny),
+            SunriseTime::zoned(day.at(10, 30, 0, 0), ny),
+        );
+        let in_ny = overlaps(&[a.clone(), b.clone()], &TimeZone::get(ny).unwrap());
+        assert_eq!(in_ny.len(), 1);
+        let kolkata = TimeZone::get("Asia/Kolkata").unwrap();
+        assert!(overlaps(&[a, b], &kolkata).is_empty());
+    }
+
     #[test]
     fn intersecting_blocks_report_the_region_they_share() {
         let a = block(1, floating(9), floating(11));
         let b = block(2, floating(10), floating(12));
-        let found = overlaps(&[a.clone(), b.clone()]);
+        let found = overlaps(&[a.clone(), b.clone()], &utc());
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].a, a.id);
         assert_eq!(found[0].b, b.id);
-        assert_eq!(found[0].from_ms, floating(10).index_ms());
-        assert_eq!(found[0].to_ms, floating(11).index_ms());
+        assert_eq!(found[0].from_ms, ms(&floating(10)));
+        assert_eq!(found[0].to_ms, ms(&floating(11)));
     }
 
     /// Back-to-back is not a conflict. Shading a zero-width region would put a
@@ -231,20 +263,20 @@ mod tests {
     fn touching_blocks_do_not_overlap() {
         let a = block(1, floating(9), floating(10));
         let b = block(2, floating(10), floating(11));
-        assert!(overlaps(&[a, b]).is_empty());
+        assert!(overlaps(&[a, b], &utc()).is_empty());
     }
 
     #[test]
     fn a_containing_block_overlaps_the_one_inside_it() {
         let outer = block(1, floating(8), floating(18));
         let inner = block(2, floating(10), floating(11));
-        let found = overlaps(&[inner.clone(), outer.clone()]);
+        let found = overlaps(&[inner.clone(), outer.clone()], &utc());
         assert_eq!(found.len(), 1);
         // Ordered by start, so the container is `a` however they arrive.
         assert_eq!(found[0].a, outer.id);
         assert_eq!(found[0].b, inner.id);
-        assert_eq!(found[0].from_ms, floating(10).index_ms());
-        assert_eq!(found[0].to_ms, floating(11).index_ms());
+        assert_eq!(found[0].from_ms, ms(&floating(10)));
+        assert_eq!(found[0].to_ms, ms(&floating(11)));
     }
 
     #[test]
@@ -252,7 +284,7 @@ mod tests {
         let a = block(1, floating(9), floating(11));
         let mut b = block(2, floating(10), floating(12));
         b.deleted = true;
-        assert!(overlaps(&[a, b]).is_empty());
+        assert!(overlaps(&[a, b], &utc()).is_empty());
     }
 
     /// An unplaceable bound, and the far-future instant a client mirror shows
@@ -269,9 +301,11 @@ mod tests {
                 block(1, floating(9), end.clone()),
                 block(2, floating(10), floating(11)),
             );
-            assert!(overlaps(&[a.clone(), b.clone(), block(3, end, floating(12))]).is_empty());
+            assert!(
+                overlaps(&[a.clone(), b.clone(), block(3, end, floating(12))], &utc()).is_empty()
+            );
             let merged = merge_blocks(&a, &b, &utc()).expect("merge");
-            assert_eq!(merged.ends_at.index_ms(), floating(11).index_ms());
+            assert_eq!(ms(&merged.ends_at), ms(&floating(11)));
         }
     }
 
@@ -282,7 +316,7 @@ mod tests {
             block(2, floating(10), floating(13)),
             block(3, floating(11), floating(14)),
         ];
-        assert_eq!(overlaps(&blocks).len(), 3);
+        assert_eq!(overlaps(&blocks, &utc()).len(), 3);
     }
 
     #[test]
@@ -332,7 +366,7 @@ mod tests {
     /// instant rather than a floating value that has quietly changed meaning.
     #[test]
     fn mixing_kinds_resolves_the_union_to_an_instant() {
-        let fixed = Timestamp::from_millisecond(floating(10).index_ms()).expect("instant");
+        let fixed = Timestamp::from_millisecond(ms(&floating(10))).expect("instant");
         let merged = merge_blocks(
             &block(1, floating(9), floating(11)),
             &block(2, SunriseTime::instant(fixed), floating(13)),

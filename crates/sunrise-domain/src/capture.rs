@@ -33,9 +33,23 @@
 //! The spec's `Standup ^weekday 9:30` example is *recurrence*, not a single
 //! datetime; that belongs to a Routine's RRULE (see [`crate::rrule`]), not
 //! here. It parses as unresolved rather than being guessed at.
+//!
+//! # Which kind of time a phrase becomes
+//!
+//! `docs/10-cross-cutting/time.md` §1 fixes it, and [`parse_when_time`] is
+//! where it is decided:
+//!
+//! | Phrase | Kind | Why |
+//! |---|---|---|
+//! | a date with no time: `today`, `tomorrow`, `friday`, `2026-04-15` | `all_day` | a day, not 00:00 of it |
+//! | a wall-clock time, alone or after a date: `9am`, `friday 14:00`, `tonight` | `floating` | "at 9" follows the user when they travel |
+//! | a relative offset: `+2h`, `+3d` | `instant` | "in two hours" is a point on the timeline from now |
+//!
+//! No phrase names a zone, so capture never writes `zoned`.
 
 use crate::common::Energy;
 use crate::task::TaskDraft;
+use crate::time::SunriseTime;
 use jiff::civil::{Date, DateTime, Time, Weekday};
 use jiff::tz::TimeZone;
 use jiff::{Span, Timestamp};
@@ -173,8 +187,8 @@ pub fn parse(
                 // Greedily take up to MAX_DATE_WORDS words, longest match wins,
                 // so "next saturday" beats "next".
                 let (consumed, parsed) = take_date(&words, i, rest, now, tz);
-                if let Some(ts) = parsed {
-                    draft.scheduled_at = Some(ts.into());
+                if let Some(at) = parsed {
+                    draft.scheduled_at = Some(at);
                 } else {
                     unresolved.push(Unresolved::UnparseableDate(
                         words[i..i + consumed].join(" "),
@@ -186,8 +200,8 @@ pub fn parse(
             _ => {
                 if let Some(body) = strip_due(w) {
                     // `*due:tomorrow*` — single-token form.
-                    if let Some(ts) = parse_when(body, now, tz) {
-                        draft.due_at = Some(ts.into());
+                    if let Some(at) = parse_when_time(body, now, tz) {
+                        draft.due_at = Some(at);
                     } else {
                         unresolved.push(Unresolved::UnparseableDate(body.to_string()));
                         title_words.push(w);
@@ -322,7 +336,7 @@ fn take_date(
     first_rest: &str,
     now: Timestamp,
     tz: &TimeZone,
-) -> (usize, Option<Timestamp>) {
+) -> (usize, Option<SunriseTime>) {
     let max = MAX_DATE_WORDS.min(words.len() - at);
     for span in (1..=max).rev() {
         let mut phrase = String::from(first_rest);
@@ -334,8 +348,8 @@ fn take_date(
         if phrase.is_empty() {
             continue;
         }
-        if let Some(ts) = parse_when(phrase, now, tz) {
-            return (span, Some(ts));
+        if let Some(at) = parse_when_time(phrase, now, tz) {
+            return (span, Some(at));
         }
     }
     (1, None)
@@ -355,8 +369,36 @@ fn take_date(
 /// - a bare time, meaning today at that time
 ///
 /// Anything else returns `None` rather than guessing.
+///
+/// The phrase resolved to the instant it names in `tz`: an all-day phrase
+/// resolves to the start of its day. For a caller that needs a moment now,
+/// such as a snooze target. A value that is stored keeps its kind, and comes
+/// from [`parse_when_time`] instead.
 #[must_use]
 pub fn parse_when(s: &str, now: Timestamp, tz: &TimeZone) -> Option<Timestamp> {
+    match parse_when_time(s, now, tz)? {
+        SunriseTime::Instant { at } => Some(at),
+        SunriseTime::Floating { civil } => civil_to_ts(civil, tz),
+        SunriseTime::AllDay { date } => civil_to_ts(date.to_datetime(Time::midnight()), tz),
+        SunriseTime::Zoned { .. } | SunriseTime::Unknown { .. } => None,
+    }
+}
+
+/// The phrases [`parse_when`] accepts, each as the kind of time it means
+/// (`docs/10-cross-cutting/time.md` §1, and the table in this module's
+/// documentation):
+///
+/// - a date with no time is [`SunriseTime::AllDay`];
+/// - a wall-clock time, alone, after a date, or `tonight`, is
+///   [`SunriseTime::Floating`], so it stays at that wall-clock time wherever
+///   the user is when it comes round;
+/// - a relative offset (`+3d`) is [`SunriseTime::Instant`], counted from
+///   `now` in `tz`.
+///
+/// `tz` decides only which date "today" is and where a relative offset
+/// lands; nothing floating or all-day is pinned to it.
+#[must_use]
+pub fn parse_when_time(s: &str, now: Timestamp, tz: &TimeZone) -> Option<SunriseTime> {
     let s = s.trim().to_lowercase();
     if s.is_empty() {
         return None;
@@ -365,7 +407,7 @@ pub fn parse_when(s: &str, now: Timestamp, tz: &TimeZone) -> Option<Timestamp> {
 
     // Relative spans are self-contained.
     if let Some(rest) = s.strip_prefix('+') {
-        return parse_relative(rest, now, tz);
+        return parse_relative(rest, now, tz).map(SunriseTime::instant);
     }
 
     // Split an optional trailing time off the date part.
@@ -382,29 +424,33 @@ pub fn parse_when(s: &str, now: Timestamp, tz: &TimeZone) -> Option<Timestamp> {
     // A bare time means today.
     if date_str.is_empty() {
         let t = time?;
-        return civil_to_ts(DateTime::from_parts(today, t), tz);
+        return Some(SunriseTime::floating(DateTime::from_parts(today, t)));
     }
     if let Some(t) = parse_time(&date_str) {
-        return civil_to_ts(DateTime::from_parts(today, t), tz);
+        return Some(SunriseTime::floating(DateTime::from_parts(today, t)));
     }
 
-    let (date, default_time) = match date_str.as_str() {
-        "today" => (today, Time::midnight()),
-        "tonight" => (today, Time::new(20, 0, 0, 0).ok()?),
-        "tomorrow" => (today.tomorrow().ok()?, Time::midnight()),
+    // A date phrase, and the time of day it carries by itself (`tonight`).
+    let (date, own_time) = match date_str.as_str() {
+        "today" => (today, None),
+        "tonight" => (today, Some(Time::new(20, 0, 0, 0).ok()?)),
+        "tomorrow" => (today.tomorrow().ok()?, None),
         other => {
             if let Ok(d) = other.parse::<Date>() {
-                (d, Time::midnight())
+                (d, None)
             } else {
                 let (name, next_week) = other
                     .strip_prefix("next ")
                     .map_or((other, false), |r| (r.trim(), true));
                 let wd = parse_weekday(name)?;
-                (next_weekday(today, wd, next_week), Time::midnight())
+                (next_weekday(today, wd, next_week), None)
             }
         }
     };
-    civil_to_ts(DateTime::from_parts(date, time.unwrap_or(default_time)), tz)
+    Some(match time.or(own_time) {
+        Some(t) => SunriseTime::floating(DateTime::from_parts(date, t)),
+        None => SunriseTime::all_day(date),
+    })
 }
 
 /// Resolve a civil datetime in `tz`, taking the DST-compatible reading for

@@ -300,7 +300,9 @@ mod tests {
         assert_eq!(m.draft.stream_id, stream());
         assert!(m.draft.tasks.is_empty());
         assert!(!m.draft.title_track_task);
-        m.draft.validate().expect("a mapped draft is valid");
+        m.draft
+            .validate(&TimeZone::UTC)
+            .expect("a mapped draft is valid");
         assert!(m.notices.is_empty(), "{:?}", m.notices);
     }
 
@@ -451,7 +453,7 @@ mod tests {
         };
         let m = event_to_block(&ev, stream()).expect("mapped");
         assert_eq!(m.draft.title.as_deref(), Some("(untitled event)"));
-        m.draft.validate().expect("valid");
+        m.draft.validate(&TimeZone::UTC).expect("valid");
     }
 
     fn block_from(m: &MappedEvent, id: EntityRef) -> Block {

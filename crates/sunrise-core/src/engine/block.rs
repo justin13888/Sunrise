@@ -38,7 +38,8 @@ impl Engine {
         db: &mut Db,
         d: BlockDraft,
     ) -> Result<CommandResult, EngineError> {
-        d.validate()?;
+        let tz = self.device_zone();
+        d.validate(&tz)?;
         require_writable_stream(d.stream_id)?;
         for t in &d.tasks {
             require_kind(*t, EntityKind::Task)?;
@@ -67,7 +68,7 @@ impl Engine {
             deleted: false,
             unknown: Unknowns::new(),
         };
-        block.validate_invariants()?;
+        block.validate_invariants(&tz)?;
         let seq = self.emit_block(db, &block, now_ms, &op_id, "block.create")?;
         Ok(CommandResult::new(block_id, None, op_id, seq))
     }
@@ -95,7 +96,8 @@ impl Engine {
                 "import: an external item needs a UID".into(),
             ));
         }
-        d.validate()?;
+        let tz = self.device_zone();
+        d.validate(&tz)?;
         require_writable_stream(d.stream_id)?;
         for t in &d.tasks {
             require_kind(*t, EntityKind::Task)?;
@@ -140,7 +142,7 @@ impl Engine {
                 .as_ref()
                 .map_or_else(Unknowns::new, |e| e.unknown.clone()),
         };
-        block.validate_invariants()?;
+        block.validate_invariants(&tz)?;
         // The op kind is what the activity feed reads, so a first import is a
         // create and a re-import is an update. Both apply identically on a
         // remote replica — every Block op is full-state.
@@ -184,7 +186,7 @@ impl Engine {
             block.stream_id = s;
         }
         block.updated_at = ms_to_ts(now_ms as i64);
-        block.validate_invariants()?;
+        block.validate_invariants(&self.device_zone())?;
         let op_id = self.fresh_op_id(now_ms);
         let seq = self.emit_block(db, &block, now_ms, &op_id, "block.update")?;
         Ok(CommandResult::new(id, None, op_id, seq))

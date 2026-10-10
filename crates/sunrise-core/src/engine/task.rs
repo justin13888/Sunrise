@@ -36,7 +36,7 @@ impl Engine {
         db: &mut Db,
         d: TaskDraft,
     ) -> Result<CommandResult, EngineError> {
-        d.validate()?;
+        d.validate(&self.device_zone())?;
         let now_ms = self.clock.now_ms();
         let task_id = self.fresh_id(EntityKind::Task, now_ms);
         let stream = d.stream_id.unwrap_or_else(inbox_stream_ref);
@@ -194,7 +194,7 @@ impl Engine {
         // Re-check cross-field invariants on the patched Task. A patch that
         // sets only `due_at` earlier than the existing `scheduled_at` (or an
         // invalid constraint list) would otherwise pass silently.
-        task.validate_invariants()?;
+        task.validate_invariants(&self.device_zone())?;
         if touches_blockers {
             // Local cycle/self-block check over the dependency index, per
             // docs/02-domain/tasks.md §Validation. Deliberately local: a cycle
