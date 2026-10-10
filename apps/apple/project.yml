@@ -104,8 +104,10 @@ settings:
     # Two spellings because the two platforms grant a group differently.
     # iOS requires the `group.` form, which its provisioning profile
     # authorises. A Developer ID Mac app is granted a group prefixed with its
-    # own team *without* a profile — and `release.yml` exports the Mac app
-    # with no profile at all, so the `group.` form would be refused there.
+    # own team *without* a profile's authorisation. `release.yml` does
+    # export the Mac app with a Developer ID profile, but only for its
+    # keychain group (#389); the team-prefixed form keeps the App Group off
+    # that profile, where the `group.` form would need it registered there.
     # With no team configured (every local and CI build) the prefix is
     # empty and the Mac group is plain `dev.sunrise`.
     "SUNRISE_APP_GROUP[sdk=iphone*]": group.dev.sunrise
