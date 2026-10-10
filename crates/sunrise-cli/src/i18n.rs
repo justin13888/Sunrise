@@ -247,7 +247,11 @@ mod tests {
         );
         assert_eq!(
             strings::streams::move_usage(),
-            "usage: streams move <id|name> before <id|name>\nstreams move <id|name> last"
+            // The retired `USAGE` literal from `move_stream`, kept in its own
+            // continuation form: the `\` eats the next line's indentation, so
+            // the second line starts at column 0.
+            "usage: streams move <id|name> before <id|name>\n\
+                                streams move <id|name> last"
         );
         let usage = strings::usage::text();
         assert!(usage.starts_with("sunrise — command-line client for Sunrise\n\nUSAGE:\n"));
