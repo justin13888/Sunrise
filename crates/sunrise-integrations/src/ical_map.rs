@@ -80,11 +80,39 @@ pub fn event_to_block(ev: &ICalEvent, stream_id: EntityRef) -> Result<MappedEven
 
     let starts_at = to_sunrise(start);
     let ends_at = to_sunrise(&end);
-    if ends_at.index_ms() <= starts_at.index_ms() {
+    // A pair whose order is the same for every reader is judged here, with no
+    // reader at all, in UTC:
+    //
+    // * two bounds that each resolve without a reader (an instant, or a time
+    //   in a zone the tzdb knows) resolve to the same instants in every zone,
+    //   whatever their kinds or zones;
+    // * two bounds of one kind (and one zone) order the same everywhere,
+    //   because in UTC, which has no transitions, a civil order and its
+    //   resolved order agree.
+    //
+    // Any other pair (a floating or all-day bound beside one of another kind)
+    // orders differently in different zones (`docs/10-cross-cutting/time.md`
+    // §2); it is left to the core, which validates the draft in the reader's
+    // zone when it is written, and `import` reports a refusal there per event.
+    let anchored = |t: &SunriseTime| match t {
+        SunriseTime::Instant { .. } => true,
+        SunriseTime::Zoned { tz, .. } => TimeZone::get(tz).is_ok(),
+        _ => false,
+    };
+    let same_kind = match (&starts_at, &ends_at) {
+        (SunriseTime::Zoned { tz: a, .. }, SunriseTime::Zoned { tz: b, .. }) => a == b,
+        (a, b) => a.kind_str() == b.kind_str(),
+    };
+    let reader_free = same_kind || (anchored(&starts_at) && anchored(&ends_at));
+    // On resolved instants, as the core's range check compares them, so an
+    // end at the start's instant under another kind is refused here too.
+    let inverted = matches!(
+        (ends_at.resolve_in(&TimeZone::UTC), starts_at.resolve_in(&TimeZone::UTC)),
+        (Some(e), Some(s)) if e <= s
+    );
+    if reader_free && inverted {
         return Err(skip(format!(
-            "DTEND is not after DTSTART ({} .. {})",
-            starts_at.index_ms(),
-            ends_at.index_ms()
+            "DTEND is not after DTSTART ({starts_at} .. {ends_at})"
         )));
     }
 
@@ -300,7 +328,9 @@ mod tests {
         assert_eq!(m.draft.stream_id, stream());
         assert!(m.draft.tasks.is_empty());
         assert!(!m.draft.title_track_task);
-        m.draft.validate().expect("a mapped draft is valid");
+        m.draft
+            .validate(&TimeZone::UTC)
+            .expect("a mapped draft is valid");
         assert!(m.notices.is_empty(), "{:?}", m.notices);
     }
 
@@ -427,6 +457,48 @@ mod tests {
         assert!(err.detail.contains("not after"), "{}", err.detail);
     }
 
+    /// A start in a named zone and an end in UTC are two kinds, but both
+    /// resolve without a reader, so their order is every reader's: 09:00 New
+    /// York is 14:00Z, after a 12:00Z end, and the mapper refuses it.
+    #[test]
+    fn an_inverted_range_across_a_tzid_and_utc_is_refused() {
+        let ev = ICalEvent {
+            dtstart: Some(ICalTime::Zoned {
+                civil: civil::date(2026, 3, 1).at(9, 0, 0, 0),
+                tz: "America/New_York".into(),
+            }),
+            dtend: Some(utc(2026, 3, 1, 12)),
+            ..event()
+        };
+        let err = event_to_block(&ev, stream()).expect_err("inverted");
+        assert_eq!(err.code, NoticeCode::Skipped);
+        assert!(err.detail.contains("not after"), "{}", err.detail);
+
+        // Two TZIDs, likewise: 09:00 New York (14:00Z) to 15:00 Berlin
+        // (14:00Z) is zero length.
+        let ev = ICalEvent {
+            dtend: Some(ICalTime::Zoned {
+                civil: civil::date(2026, 3, 1).at(15, 0, 0, 0),
+                tz: "Europe/Berlin".into(),
+            }),
+            ..ev
+        };
+        assert!(event_to_block(&ev, stream()).is_err());
+    }
+
+    /// A floating start beside a UTC end orders differently in different
+    /// zones, so the mapper leaves it to the core, which judges it in the
+    /// reader's zone.
+    #[test]
+    fn a_floating_start_beside_a_utc_end_is_left_to_the_core() {
+        let ev = ICalEvent {
+            dtstart: Some(ICalTime::Floating(civil::date(2026, 3, 1).at(13, 0, 0, 0))),
+            dtend: Some(utc(2026, 3, 1, 12)),
+            ..event()
+        };
+        assert!(event_to_block(&ev, stream()).is_ok());
+    }
+
     #[test]
     fn content_a_block_cannot_hold_is_reported_per_event() {
         let ev = ICalEvent {
@@ -451,7 +523,7 @@ mod tests {
         };
         let m = event_to_block(&ev, stream()).expect("mapped");
         assert_eq!(m.draft.title.as_deref(), Some("(untitled event)"));
-        m.draft.validate().expect("valid");
+        m.draft.validate(&TimeZone::UTC).expect("valid");
     }
 
     fn block_from(m: &MappedEvent, id: EntityRef) -> Block {

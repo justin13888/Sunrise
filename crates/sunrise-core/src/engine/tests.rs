@@ -282,7 +282,9 @@ mod testutil {
     /// The instant a floating civil time on the test date resolves to under the
     /// engine's device zone (UTC in tests).
     pub(super) fn day_ms() -> u64 {
-        SunriseTime::floating(jiff::civil::date(2026, 3, 4).at(12, 0, 0, 0)).index_ms() as u64
+        SunriseTime::floating(jiff::civil::date(2026, 3, 4).at(12, 0, 0, 0))
+            .to_instant(&jiff::tz::TimeZone::UTC)
+            .as_millisecond() as u64
     }
 
     pub(super) fn import(source: &str, uid: &str, draft: BlockDraft) -> Command {
@@ -1430,9 +1432,25 @@ mod testutil {
 
     /// An engine whose clock the test drives, plus its DB.
     pub(super) fn review_fixture() -> (Engine, Db, Arc<FakeClock>) {
-        let clock = Arc::new(FakeClock(PLMutex::new(REVIEW_MON)));
+        // Written at the epoch, before anything a test stamps: the op moves the
+        // HLC, and a later op the test backdates must not be stamped after it.
+        let clock = Arc::new(FakeClock(PLMutex::new(1)));
         let e = engine_seeded([0xab; 32], [0x11; 32], clock.clone());
-        (e, db(), clock)
+        let mut db = db();
+        // The review fixtures are written around a Monday-first week
+        // (`REVIEW_MON`). The week starts on the `week_start` preference,
+        // whose default is Sunday, so the vault says Monday.
+        e.apply(
+            &mut db,
+            Command::SetPreference {
+                key: "week_start".into(),
+                value: sunrise_domain::PrefValue::Weekday(sunrise_domain::Weekday::Mo),
+                target: sunrise_domain::PrefTarget::Vault,
+            },
+        )
+        .unwrap();
+        set_clock(&clock, REVIEW_MON);
+        (e, db, clock)
     }
 
     pub(super) fn review_task(
@@ -4017,12 +4035,76 @@ fn the_day_grid_returns_overlaps_not_containments() {
     assert_eq!(titles, vec!["overnight".to_string()]);
 }
 
-/// A week window is built from civil dates, so it is exactly seven days and
-/// Monday-first. 2026-03-04 is a Wednesday.
+/// The titles `Query::WeekBlocks` returns for the week of `day_ms()`.
+fn week_titles(e: &Engine, db: &Db) -> Vec<String> {
+    match e
+        .query(
+            db,
+            Query::WeekBlocks {
+                week_ms: day_ms(), // Wednesday 2026-03-04
+            },
+        )
+        .unwrap()
+    {
+        QueryResult::Blocks(rows) => rows.into_iter().filter_map(|r| r.title).collect(),
+        other => panic!("expected blocks, got {other:?}"),
+    }
+}
+
+/// A week starts on the `week_start` preference, Sunday by default
+/// (`docs/10-cross-cutting/time.md` §4), and a device that says Monday gets
+/// Monday. Nothing hard-codes a first weekday. 2026-03-04 is a Wednesday.
+#[test]
+fn the_week_grid_starts_on_the_week_start_preference() {
+    let mut db = db();
+    let e = engine();
+    for (date, title) in [
+        ((2026, 3, 1), "sunday"),           // in a Sunday week
+        ((2026, 3, 2), "monday"),           // in both
+        ((2026, 3, 7), "saturday"),         // in both
+        ((2026, 3, 8), "next_sunday"),      // in a Monday week
+        ((2026, 3, 9), "next_monday"),      // in neither
+        ((2026, 2, 28), "saturday_before"), // in neither
+    ] {
+        let d = jiff::civil::date(date.0, date.1, date.2);
+        e.apply(
+            &mut db,
+            Command::CreateBlock(BlockDraft {
+                starts_at: SunriseTime::floating(d.at(9, 0, 0, 0)),
+                ends_at: SunriseTime::floating(d.at(10, 0, 0, 0)),
+                ..block_draft(9, 1, Some(title))
+            }),
+        )
+        .unwrap();
+    }
+    assert_eq!(week_titles(&e, &db), ["sunday", "monday", "saturday"]);
+    e.apply(
+        &mut db,
+        Command::SetPreference {
+            key: "week_start".into(),
+            value: sunrise_domain::PrefValue::Weekday(sunrise_domain::Weekday::Mo),
+            target: sunrise_domain::PrefTarget::Vault,
+        },
+    )
+    .unwrap();
+    assert_eq!(week_titles(&e, &db), ["monday", "saturday", "next_sunday"]);
+}
+
+/// A week window is built from civil dates, so it is exactly seven days
+/// whatever the transitions inside it. 2026-03-04 is a Wednesday.
 #[test]
 fn the_week_grid_runs_monday_to_sunday() {
     let mut db = db();
     let e = engine();
+    e.apply(
+        &mut db,
+        Command::SetPreference {
+            key: "week_start".into(),
+            value: sunrise_domain::PrefValue::Weekday(sunrise_domain::Weekday::Mo),
+            target: sunrise_domain::PrefTarget::Vault,
+        },
+    )
+    .unwrap();
     for (date, title) in [
         ((2026, 3, 2), "monday"),        // in
         ((2026, 3, 8), "sunday"),        // in
@@ -19186,3 +19268,7 @@ mod op_chain;
 /// Op-log compaction below an acknowledged floor, and stream snapshots
 /// (ADR-0059).
 mod compaction;
+
+/// Today, the calendar windows and validation in the reader's zone
+/// (`docs/10-cross-cutting/time.md`, issue #336).
+mod time_zones;

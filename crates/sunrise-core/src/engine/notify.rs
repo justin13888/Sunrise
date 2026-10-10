@@ -36,6 +36,7 @@ impl Engine {
                 ms_to_ts(today_start),
                 ms_to_ts(today_end),
                 inbox_stream_ref(),
+                &self.device_zone(),
             ),
         )))
     }
@@ -54,6 +55,7 @@ impl Engine {
             ms_to_ts(day_start),
             ms_to_ts(day_end),
             ms_to_ts(week_end),
+            &self.device_zone(),
         ))))
     }
 
