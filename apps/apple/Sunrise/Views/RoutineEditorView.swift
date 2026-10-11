@@ -171,7 +171,10 @@ struct RoutineEditorView: View {
             energy: energy,
             priority: priority == 0 ? nil : UInt8(priority),
             estimatedDurationS: estimateMinutes > 0 ? UInt64(estimateMinutes * 60) : nil,
-            body: routine?.template.body
+            body: routine?.template.body,
+            // The edit replaces the whole template, so the fields a newer
+            // build wrote go back as they arrived (ADR-0045 §6).
+            extra: routine?.template.extra
         )
         let end = hasEnd ? Timestamp(endsAt.timeIntervalSince1970 * 1000) : nil
         Task {

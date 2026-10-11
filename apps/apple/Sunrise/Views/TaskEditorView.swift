@@ -69,13 +69,26 @@ struct TaskEditorView: View {
         // the picker at "now" and then submitting it — which is what this did
         // — silently moved every deadline to today the moment anyone opened
         // the sheet to change something else.
-        _due = State(initialValue: task.dueAt.map {
+        let seeded = task.dueAt.map {
             Date(
                 timeIntervalSince1970: Double(
                     timeValueMs(value: $0, tz: TimeZone.current.identifier)
                 ) / 1000
             )
-        } ?? Date())
+        } ?? Date()
+        seededDue = seeded
+        _due = State(initialValue: seeded)
+    }
+
+    /// The picker's starting point, so a save can tell whether the user moved it.
+    private let seededDue: Date
+
+    /// Whether the deadline is of a kind this build does not know and the user
+    /// left it where it was. Sending it back as an instant would replace the
+    /// stored kind with the one moment it happens to resolve to (ADR-0045 §6).
+    private var keepsUnknownDue: Bool {
+        guard case .unknown? = task.dueAt else { return false }
+        return hasDue && due == seededDue
     }
 
     var body: some View {
@@ -182,7 +195,9 @@ struct TaskEditorView: View {
         } else {
             edit.clearEstimatedDuration = true
         }
-        if hasDue {
+        if keepsUnknownDue {
+            // Neither set nor clear: the stored value stays exactly as it arrived.
+        } else if hasDue {
             // An instant, not a civil time: a deadline the user picked on a
             // wall clock in this zone is a fixed point, and the seam is what
             // decides how it is stored.
