@@ -16,6 +16,14 @@ by an authority the ledger did not carry: a revocation signed by the identity
 in force, which the fold never gates and never discounts. Every row without
 that signature is folded as this record says.
 
+**Amended by:** [ADR-0063](./0063-peer-side-refusal-stands-where-the-relay-bound-is-in-force.md)
+— revisit trigger 1 has fired: `require_device_sig` now defaults on wherever an
+OIDC issuer is configured. Where this record says "the default deployment",
+read single-tenant self-host and a multi-tenant relay with the flag set
+`false`, where peer-side refusal is still the only line. On a multi-tenant
+relay with the default config it is defence in depth. §Alternatives (a) still
+fails and the decision is unchanged.
+
 **Amends** [ADR-0034](./0034-revocation-bounds-reads-not-writes.md) §Decision
 corollary 3, which reserved peer-side enforcement for after the relay bound and
 required that it not reintroduce order dependence. This is that enforcement,
