@@ -220,8 +220,12 @@ fn parse(record: &[u8]) -> Result<Record, EngineError> {
     if magic.version != SNAPSHOT_FORMAT_V {
         return Err(invalid("unknown format version"));
     }
-    let map: Value = sunrise_cbor::decode_canonical(&record[MAGIC_LEN..])
-        .map_err(|_| invalid("not canonical CBOR"))?;
+    // Read before the signature is checked, so under the framing bound: the
+    // record is three levels deep (its map, the frontier, one entry), and a
+    // newer format is a new version, refused above.
+    let map: Value =
+        sunrise_cbor::decode_canonical_within(&record[MAGIC_LEN..], sunrise_cbor::MAX_VALUE_DEPTH)
+            .map_err(|_| invalid("not canonical CBOR"))?;
     let Value::Map(fields) = map else {
         return Err(invalid("not a map"));
     };

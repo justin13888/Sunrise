@@ -49,4 +49,15 @@ struct ParkedOpsModelTests {
         #expect(!caption.contains("each update"))
         #expect(caption.contains("changes the format this device reads"))
     }
+
+    /// The reason the receive path parks an op nested past
+    /// `sunrise_cbor::MAX_DOC_DEPTH` under (`ParkReason::TooDeep`) is worded,
+    /// not shown raw.
+    @Test
+    func anOpNestedTooDeepIsWorded() {
+        let rows = [ParkedReasonCount(reason: "too_deep", count: 1)].map(ParkedOpsModel.row)
+
+        #expect(rows.map(\.label) == ["Nested deeper than this version of Sunrise reads"])
+        #expect(rows.map(\.count) == [1])
+    }
 }

@@ -91,6 +91,19 @@ use crate::payload::{
     MAX_PAIRING_PAYLOAD,
 };
 
+/// Decode one pairing message's CBOR into a value tree, under the framing
+/// bound every decoder in this crate shares, the payload's included.
+///
+/// # Errors
+/// [`PairingPayloadError::TooDeep`] past [`sunrise_cbor::MAX_VALUE_DEPTH`],
+/// [`PairingPayloadError::Cbor`] for anything else that does not decode.
+pub(crate) fn decode_message(bytes: &[u8]) -> Result<ciborium::value::Value, PairingPayloadError> {
+    sunrise_cbor::decode_value(&mut &bytes[..]).map_err(|e| match e {
+        sunrise_cbor::ValueDecodeError::TooDeep => PairingPayloadError::TooDeep,
+        sunrise_cbor::ValueDecodeError::Malformed(m) => PairingPayloadError::Cbor(m),
+    })
+}
+
 /// Message 1: what the sponsor offers, before it has been asked for anything.
 ///
 /// **Carries no secret.** Every field is a public half or a derivation of one,
@@ -266,9 +279,7 @@ pub fn decode_pairing_offer(bytes: &[u8]) -> Result<PairingOffer, PairingPayload
     if bytes.len() > MAX_PAIRING_PAYLOAD {
         return Err(PairingPayloadError::TooLarge { len: bytes.len() });
     }
-    let Value::Map(map) =
-        ciborium::de::from_reader(bytes).map_err(|e| PairingPayloadError::Cbor(e.to_string()))?
-    else {
+    let Value::Map(map) = decode_message(bytes)? else {
         return Err(PairingPayloadError::Cbor("offer must be a map".into()));
     };
 
@@ -375,9 +386,7 @@ pub fn decode_pairing_request(bytes: &[u8]) -> Result<PairingRequest, PairingPay
     if bytes.len() > MAX_PAIRING_PAYLOAD {
         return Err(PairingPayloadError::TooLarge { len: bytes.len() });
     }
-    let Value::Map(map) =
-        ciborium::de::from_reader(bytes).map_err(|e| PairingPayloadError::Cbor(e.to_string()))?
-    else {
+    let Value::Map(map) = decode_message(bytes)? else {
         return Err(PairingPayloadError::Cbor("request must be a map".into()));
     };
 
@@ -560,9 +569,7 @@ pub fn decode_pairing_grant(bytes: &[u8]) -> Result<PairingGrant, PairingPayload
     if bytes.len() > MAX_PAIRING_PAYLOAD {
         return Err(PairingPayloadError::TooLarge { len: bytes.len() });
     }
-    let Value::Map(map) =
-        ciborium::de::from_reader(bytes).map_err(|e| PairingPayloadError::Cbor(e.to_string()))?
-    else {
+    let Value::Map(map) = decode_message(bytes)? else {
         return Err(PairingPayloadError::Cbor("grant must be a map".into()));
     };
 
@@ -755,9 +762,7 @@ impl PairingJoiner {
     /// whatever [`decode_pairing_offer`] refuses in the stored offer.
     pub fn decode(bytes: &[u8]) -> Result<Self, PairingPayloadError> {
         use ciborium::value::Value;
-        let Value::Map(map) = ciborium::de::from_reader(bytes)
-            .map_err(|e| PairingPayloadError::Cbor(e.to_string()))?
-        else {
+        let Value::Map(map) = decode_message(bytes)? else {
             return Err(PairingPayloadError::Cbor("joiner must be a map".into()));
         };
         let mut offer = None;
@@ -896,6 +901,79 @@ mod tests {
             decode_pairing_offer(&o.encode().unwrap()),
             Err(PairingPayloadError::GenesisMismatch)
         ));
+    }
+
+    /// `bytes`, a CBOR map, with one more key no build knows: `levels`
+    /// one-element arrays around an integer.
+    fn with_unknown(bytes: &[u8], levels: usize) -> Vec<u8> {
+        use ciborium::value::Value;
+        let Value::Map(mut map) = decode_message(bytes).unwrap() else {
+            panic!("a pairing message is a map");
+        };
+        let mut nest = Value::Integer(1.into());
+        for _ in 0..levels {
+            nest = Value::Array(vec![nest]);
+        }
+        map.push((int(99), nest));
+        let mut out = Vec::new();
+        ciborium::ser::into_writer(&Value::Map(map), &mut out).unwrap();
+        out
+    }
+
+    /// Every message skips a key it does not know, as far as the framing
+    /// bound and no further: nested to the bound with the message map it
+    /// decodes, and one level more is refused as too deep.
+    #[test]
+    fn every_message_is_bounded_at_the_framing_depth() {
+        let bound = sunrise_cbor::MAX_VALUE_DEPTH;
+        let o = offer();
+        let offer_bytes = o.encode().unwrap();
+        assert_eq!(
+            decode_pairing_offer(&with_unknown(&offer_bytes, bound - 1)).unwrap(),
+            o
+        );
+        assert_eq!(
+            decode_pairing_offer(&with_unknown(&offer_bytes, bound)),
+            Err(PairingPayloadError::TooDeep)
+        );
+
+        let (_, _, r) = joiner();
+        let request_bytes = r.encode().unwrap();
+        assert_eq!(
+            decode_pairing_request(&with_unknown(&request_bytes, bound - 1)).unwrap(),
+            r
+        );
+        assert_eq!(
+            decode_pairing_request(&with_unknown(&request_bytes, bound)),
+            Err(PairingPayloadError::TooDeep)
+        );
+
+        let grant_bytes = grant_for(&r, &sponsor_identity()).encode().unwrap();
+        assert!(decode_pairing_grant(&with_unknown(&grant_bytes, bound - 1)).is_ok());
+        assert!(matches!(
+            decode_pairing_grant(&with_unknown(&grant_bytes, bound)),
+            Err(PairingPayloadError::TooDeep)
+        ));
+
+        let (d_s, d_d, request) = joiner();
+        let payload = decode_pairing_grant(&grant_bytes)
+            .unwrap()
+            .accept(&offer(), d_s.secret_bytes(), d_d.secret_bytes(), &request)
+            .unwrap();
+        let payload_bytes = crate::payload::encode_pairing_payload(&payload).unwrap();
+        let back = crate::payload::decode_pairing_payload(&with_unknown(&payload_bytes, bound - 1));
+        assert_eq!(back.unwrap().vault_root, payload.vault_root);
+        assert!(matches!(
+            crate::payload::decode_pairing_payload(&with_unknown(&payload_bytes, bound)),
+            Err(PairingPayloadError::TooDeep)
+        ));
+
+        // A deep nest far past the bound is refused as too deep, not as
+        // truncated.
+        assert_eq!(
+            decode_pairing_offer(&[0x81; 4096]),
+            Err(PairingPayloadError::TooDeep)
+        );
     }
 
     #[test]

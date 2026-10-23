@@ -61,16 +61,11 @@ pub(super) fn schema_fp_mismatch(env: &sunrise_crypto::OpEnvelope) -> bool {
 /// bytes are not an externally tagged op. A fingerprint-mismatched op is
 /// parked before it is decoded, because its writer may mean its version
 /// differently, so this is the only name it can be recorded under.
+///
+/// Read under the inner-op nesting bound, and from the outer map alone past
+/// it ([`crate::inner_op::tagged_name`]).
 pub(super) fn diagnostic_kind(inner_cbor: &[u8]) -> String {
-    use ciborium::value::Value;
-    match ciborium::de::from_reader::<Value, _>(inner_cbor) {
-        Ok(Value::Map(mut entries)) if entries.len() == 1 => match entries.pop() {
-            Some((Value::Text(name), _)) => name,
-            _ => String::new(),
-        },
-        Ok(Value::Text(name)) => name,
-        _ => String::new(),
-    }
+    crate::inner_op::tagged_name(inner_cbor).unwrap_or_default()
 }
 
 impl Engine {
@@ -212,7 +207,7 @@ impl Engine {
                     ev = "core.op.parked",
                     reason = reason.as_str(),
                     stream_h = hex_short(&env.stream_id),
-                    "kept an op of a kind this build does not know; it replays after an upgrade"
+                    "kept an op this build cannot read; it replays after an upgrade"
                 );
             }
         }

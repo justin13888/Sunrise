@@ -30,6 +30,22 @@ pub const NOTE_BODY_MAX_BYTES: usize = 1024 * 1024;
 /// body [`Fidelity::Lossy`] and therefore read-only, rather than fatal.
 pub const MAX_NEST_DEPTH: usize = 8;
 
+/// How many arrays, maps and tags may enclose one another in a body's CBOR
+/// before [`decode`](super::decode()) refuses to read it as the grammar.
+///
+/// [`MAX_NEST_DEPTH`] bounds the walk over blocks; this bounds the CBOR read
+/// under it, which ciborium would otherwise follow 256 levels. Each list level
+/// is four CBOR levels (the block map, its item list, the item map, the
+/// children list), so the deepest thing the walk renders, a mark list in an
+/// item [`MAX_NEST_DEPTH`] lists down, is level `4 * MAX_NEST_DEPTH + 3`, 35.
+///
+/// The encoder writes whatever depth it is given, and a body nested deeper
+/// than the walk follows still renders its top levels, lossy. 128 keeps that
+/// for a body nested up to 31 lists deep. A deeper body reads as no blocks,
+/// [`Fidelity::Lossy`] and so read-only, and its bytes are kept untouched:
+/// never refused, never rewritten.
+pub(super) const MAX_BODY_CBOR_DEPTH: usize = 128;
+
 /// The most paragraphs a plain-text body is rendered as.
 ///
 /// Only reachable through the non-CBOR fallback, where the input is already

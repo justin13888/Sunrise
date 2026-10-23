@@ -24,9 +24,10 @@ pub mod hlc;
 pub mod magic;
 pub mod version;
 
-pub use bounded::{decode_value, ValueDecodeError, MAX_VALUE_DEPTH};
+pub use bounded::{decode_bounded, decode_value, ValueDecodeError, MAX_DOC_DEPTH, MAX_VALUE_DEPTH};
 pub use canonical::{
-    decode_canonical, decode_lenient, encode_canonical, CanonicalEncoding, CanonicalError,
+    decode_canonical, decode_canonical_within, decode_lenient, encode_canonical, CanonicalEncoding,
+    CanonicalError,
 };
 pub use cbor_value::CborValue;
 pub use envelope_header::{

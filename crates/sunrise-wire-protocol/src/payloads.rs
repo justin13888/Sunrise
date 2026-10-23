@@ -32,11 +32,16 @@
 //! independent canonical encoder reproduces the same bytes. 16-byte ids are
 //! encoded as compact CBOR byte strings via `serde_bytes`, matching the
 //! `sunrise-domain` convention. Opaque op-envelope blobs likewise encode as
-//! byte strings. `decode_*` uses [`sunrise_cbor::decode_canonical`], which
-//! rejects non-canonical input and trailing garbage.
+//! byte strings. `decode_*` uses [`sunrise_cbor::decode_canonical_within`],
+//! which rejects non-canonical input and trailing garbage, and refuses a
+//! payload nesting deeper than [`sunrise_cbor::MAX_VALUE_DEPTH`] (8) arrays,
+//! maps and tags. The deepest payload is `Subscribe`, at five: its map, the
+//! stream list, one stream's map, its cursor list and one cursor's map. A new
+//! payload shape is held to the same eight, the payload map included
+//! (`docs/10-cross-cutting/protocol-versioning.md` §2.1).
 
 use serde::{Deserialize, Serialize};
-use sunrise_cbor::{decode_canonical, encode_canonical, CanonicalError};
+use sunrise_cbor::{decode_canonical_within, encode_canonical, CanonicalError, MAX_VALUE_DEPTH};
 use sunrise_error::ErrorCode;
 
 /// Serialize `Vec<Vec<u8>>` as a CBOR array of byte strings (not arrays of
@@ -290,9 +295,10 @@ macro_rules! canonical_codec {
             /// input and trailing garbage.
             ///
             /// # Errors
-            /// Returns [`CanonicalError`] on malformed or non-canonical input.
+            /// Returns [`CanonicalError`] on malformed or non-canonical input,
+            /// and [`CanonicalError::TooDeep`] past [`MAX_VALUE_DEPTH`].
             pub fn decode(bytes: &[u8]) -> Result<Self, CanonicalError> {
-                decode_canonical(bytes)
+                decode_canonical_within(bytes, MAX_VALUE_DEPTH)
             }
         }
     };
@@ -570,5 +576,48 @@ mod tests {
     #[test]
     fn decode_rejects_malformed() {
         assert!(OpBatchPayload::decode(&[0xff, 0xff, 0xff]).is_err());
+    }
+
+    /// `Subscribe` is the deepest payload, at five levels, and decodes. A
+    /// field this build does not know is read only as far as the bound: one
+    /// nested to [`MAX_VALUE_DEPTH`] with the payload map is read and refused
+    /// as non-canonical, and one level more is refused as too deep before it
+    /// is read.
+    #[test]
+    fn decode_is_bounded_at_the_framing_depth() {
+        use ciborium::value::Value;
+        let subscribe = SubscribePayload {
+            streams: vec![SubscribeEntry {
+                cursors: vec![CursorEntry {
+                    device_id: [1; 16],
+                    last_applied_seq: 7,
+                }],
+                stream_id: [2; 16],
+            }],
+        };
+        let bytes = subscribe.encode().unwrap();
+        assert_eq!(SubscribePayload::decode(&bytes).unwrap(), subscribe);
+
+        let with_unknown = |levels: usize| {
+            let Value::Map(mut map) = Value::serialized(&subscribe).unwrap() else {
+                panic!("a payload is a map");
+            };
+            let mut nest = Value::Integer(1.into());
+            for _ in 0..levels {
+                nest = Value::Array(vec![nest]);
+            }
+            map.push((Value::Text("zz_newer".into()), nest));
+            encode_canonical(&Value::Map(map)).unwrap()
+        };
+        // At the bound the item is read, and refused only because the unknown
+        // key does not survive the round trip.
+        assert!(matches!(
+            SubscribePayload::decode(&with_unknown(MAX_VALUE_DEPTH - 1)),
+            Err(CanonicalError::NonCanonical { .. })
+        ));
+        assert!(matches!(
+            SubscribePayload::decode(&with_unknown(MAX_VALUE_DEPTH)),
+            Err(CanonicalError::TooDeep)
+        ));
     }
 }
