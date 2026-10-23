@@ -332,7 +332,7 @@ mod tests {
     #[tokio::test]
     async fn deep_names_each_backend_that_does_not_answer() {
         let state = ServerState::new(ServerConfig::default())
-            .with_metadata_store(Arc::new(crate::store::conformance::Unreachable))
+            .with_metadata_store(Arc::new(crate::store::conformance::Unreachable::default()))
             .with_blob_backend(Arc::new(crate::blob::conformance::Unreachable));
         let client = Client::from_state(state);
         let res = client

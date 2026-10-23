@@ -1116,7 +1116,8 @@ mod tests {
     }
 
     /// Sign-up being disabled is a statement about the server, not about the
-    /// caller's credential, and the surface this replaces answered 403.
+    /// caller's credential, and the surface this replaces answered 403. It
+    /// carries the code `api.md` documents for it.
     #[tokio::test]
     async fn signup_disabled_is_a_403_not_a_401() {
         let client = Client::new(ServerConfig {
@@ -1124,9 +1125,11 @@ mod tests {
             ..ServerConfig::default()
         });
 
-        client
-            .send(Method::GET, "/api/v1/devices", None)
-            .await
-            .assert_status(StatusCode::FORBIDDEN);
+        let res = client.send(Method::GET, "/api/v1/devices", None).await;
+        res.assert_status(StatusCode::FORBIDDEN);
+        assert_eq!(
+            crate::api::testing::code_of(&res),
+            crate::api::error::codes::AUTH_SIGNUP_DISABLED
+        );
     }
 }
