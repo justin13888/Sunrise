@@ -3220,6 +3220,7 @@ dependencies = [
  "sunrise-crypto",
  "sunrise-domain",
  "sunrise-id",
+ "sunrise-pairing",
  "sunrise-relay-client",
  "sunrise-sync",
  "tempfile",
@@ -3287,7 +3288,6 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "uniffi",
- "url",
  "zeroize",
 ]
 

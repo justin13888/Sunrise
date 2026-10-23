@@ -48,6 +48,10 @@
 //! * [`sync_status`] — the sync badge and the sync plan, as codes.
 //! * [`links`] — `sunrise://` deep links, parsed and built.
 //! * [`share`] — what shared text, a link and images become as an Inbox task.
+//! * [`pairing_flow`] — a pairing as a screen walks it: transport, legs,
+//!   phases and progress, as pure transitions that name the seam calls.
+//! * `pairing` (feature `relay`) — the relay rendezvous a pairing's messages
+//!   travel through.
 //! * `account` (feature `relay`) — publishing a vault to the relay: seal a
 //!   recovery blob, create or adopt the account, register this device.
 //! * `sync` (feature `relay`) — the SSE transport factory every client dials
@@ -82,6 +86,9 @@ pub mod history;
 pub mod host;
 pub mod ids;
 pub mod links;
+#[cfg(feature = "relay")]
+pub mod pairing;
+pub mod pairing_flow;
 pub mod preferences;
 #[cfg(feature = "relay")]
 pub mod recovery;

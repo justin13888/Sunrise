@@ -64,6 +64,7 @@ pub mod client;
 pub mod command;
 pub mod dto;
 pub mod editing;
+pub mod flows;
 pub mod ical;
 pub mod links;
 pub mod notes;
