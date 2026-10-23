@@ -97,6 +97,8 @@ mod state;
 
 pub(super) use patch::{check_patch, PatchProblem};
 #[cfg(test)]
+pub(super) use project::map_over_whole;
+#[cfg(test)]
 pub(super) use rows::legacy_rows;
 pub(super) use snapshot::{dump_compacted_base, dump_stream_state, fold_rows, join_stream_state};
 

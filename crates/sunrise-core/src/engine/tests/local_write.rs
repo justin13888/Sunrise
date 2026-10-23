@@ -423,3 +423,170 @@ fn an_or_set_remove_of_a_pruned_add_is_kept_whatever_order_the_floor_rises_in() 
         "and the add stays removed"
     );
 }
+
+/// The rule `project` reads an unknown map field by, case by case: a whole
+/// write is the field's value as of its stamp, an entry before it is
+/// superseded, an entry after it sets or (with `null`) removes its key, and
+/// newer entries replace a whole value that is not a map.
+#[test]
+fn a_whole_write_and_the_map_entries_around_it_project_by_stamp() {
+    use crate::engine::merge::{map_over_whole, Stamp};
+    let at = |ms: u64| Stamp {
+        hlc: Hlc::at(T0 + ms),
+        device: [1; 16],
+        seq: ms,
+        stream: [0; 16],
+    };
+    let int = |n: i64| Value::Integer(n.into());
+    let entry = |k: &str, v: Value, ms: u64| (k.to_owned(), v, at(ms));
+    let map = |kv: &[(&str, i64)]| Value::Map(kv.iter().map(|(k, v)| (text(k), int(*v))).collect());
+
+    // No whole write: the live entries, a null among them left out.
+    assert_eq!(
+        map_over_whole(
+            None,
+            vec![entry("a", int(1), 1), entry("b", Value::Null, 2)]
+        ),
+        Some(map(&[("a", 1)]))
+    );
+    // A whole map, an older entry it supersedes, and newer ones on top: one
+    // replaces a key, one adds a key, and a null removes one.
+    let whole = Some((map(&[("a", 1), ("b", 2), ("c", 3)]), at(10)));
+    let merged = map_over_whole(
+        whole,
+        vec![
+            entry("a", int(9), 5),
+            entry("b", int(20), 11),
+            entry("c", Value::Null, 12),
+            entry("d", int(4), 13),
+        ],
+    );
+    assert_eq!(merged, Some(map(&[("a", 1), ("b", 20), ("d", 4)])));
+    // An entry at the whole write's own stamp is the same op, not newer.
+    assert_eq!(
+        map_over_whole(
+            Some((map(&[("a", 1)]), at(10))),
+            vec![entry("a", int(2), 10)]
+        ),
+        Some(map(&[("a", 1)]))
+    );
+    // A whole value that is not a map stands with nothing newer, and newer
+    // entries replace it.
+    assert_eq!(
+        map_over_whole(Some((int(7), at(10))), vec![entry("a", int(2), 3)]),
+        None
+    );
+    assert_eq!(
+        map_over_whole(Some((int(7), at(10))), vec![entry("a", int(2), 11)]),
+        Some(map(&[("a", 2)]))
+    );
+}
+
+/// An occurrence is generated once per account, not once per device: a
+/// device that already holds the occurrence a peer generated, and the peer's
+/// edit of it, generates no create of its own when it materializes the same
+/// window. One would be a full-state op stamped after the edit, and would
+/// write the template's title back over it on every replica.
+#[test]
+fn an_occurrence_a_peer_generated_is_not_generated_again() {
+    let clock = Arc::new(FakeClock(PLMutex::new(NOW as u64)));
+    let a = engine_seeded(ROOT, [1u8; 32], clock.clone());
+    let b = engine_seeded(ROOT, [2u8; 32], clock.clone());
+    let mut dba = db_root(ROOT);
+    let mut dbb = db_root(ROOT);
+    trust(&b, &mut dbb, &a);
+    let routine = apply(
+        &a,
+        &mut dba,
+        Command::CreateRoutine(routine_draft(
+            inbox_stream_ref(),
+            "FREQ=DAILY",
+            NOW + 3_600_000,
+            RoutineCatchupPolicy::Skip,
+            Vec::new(),
+        )),
+    );
+    let first = occurrence_tasks(&routine_of(&a, &dba, routine), 1)[0].0;
+    apply(
+        &a,
+        &mut dba,
+        Command::UpdateTask {
+            id: first,
+            patch: TaskPatch {
+                title: Some("renamed on A".into()),
+                ..Default::default()
+            },
+        },
+    );
+    for env in all_envelopes(&dba) {
+        b.apply_remote_all(&mut dbb, &env).unwrap();
+    }
+
+    b.apply(
+        &mut dbb,
+        Command::MaterializeRoutines { now_ms: NOW as u64 },
+    )
+    .unwrap();
+    let b_creates: i64 = dbb
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM ops WHERE inner_kind = 'task.create' AND device_id = ?",
+            params![&b.keychain.device_id()[..]],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(b_creates, 0, "B generated nothing A had already generated");
+    assert_eq!(task_of(&b, &dbb, first).title, "renamed on A");
+}
+
+/// A whole write of an unknown field that a later full-state op superseded
+/// is not the base a later map entry lands on: the full-state op left the
+/// field out, so the field reads as only what was written after it.
+#[test]
+fn a_whole_write_below_the_legacy_floor_is_no_base_for_later_entries() {
+    let mut p = pair();
+    let task = shared_task(
+        &mut p,
+        TaskDraft {
+            title: "t".into(),
+            ..Default::default()
+        },
+    );
+    let whole = Value::Map(vec![(text("k0"), Value::Integer(1.into()))]);
+    set_clock(&p.ca, T0 + 1_000);
+    emit_patch(
+        &p.ea,
+        &mut p.dba,
+        &inbox(),
+        &patch(task, false, vec![("x_labels", set(whole))]),
+    );
+    // A full-state op from a build that never saw the field, as an older
+    // build's command writes one: the task with no unknown keys at all.
+    let mut bare = task_at(&p.dba, task);
+    bare.unknown = Unknowns::new();
+    bare.title = "renamed elsewhere".into();
+    set_clock(&p.ca, T0 + 2_000);
+    emit_patch(&p.ea, &mut p.dba, &inbox(), &InnerOp::TaskUpdate(bare));
+    set_clock(&p.ca, T0 + 3_000);
+    let entry = op(
+        "map",
+        Value::Map(vec![(text("k1"), set(Value::Integer(2.into())))]),
+    );
+    emit_patch(
+        &p.ea,
+        &mut p.dba,
+        &inbox(),
+        &patch(task, false, vec![("x_labels", entry)]),
+    );
+
+    let labels = task_at(&p.dba, task)
+        .unknown
+        .get("x_labels")
+        .map(|v| v.get().clone());
+    assert_eq!(
+        labels,
+        Some(Value::Map(vec![(text("k1"), Value::Integer(2.into()))])),
+        "k0 went with the whole write the full-state op superseded"
+    );
+    p.ea.assert_rebuild_identity(&p.dba);
+}

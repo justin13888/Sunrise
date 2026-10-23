@@ -349,7 +349,7 @@ pub(super) fn project(
 /// `Patch` wrote) keeps every key it carried, and a later `Patch` still edits
 /// it. Where the whole write is not a map, the newer entries replace it, and
 /// with none it stands. `None` leaves the register's value where it is.
-fn map_over_whole(
+pub(in crate::engine) fn map_over_whole(
     whole: Option<(Value, Stamp)>,
     entries: Vec<(String, Value, Stamp)>,
 ) -> Option<Value> {
