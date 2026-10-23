@@ -61,7 +61,7 @@ ADRs are numbered sequentially (`0001`, `0002`, …) and never renumbered.
 | 0041 | [Peer-side revocation enforcement covers the control ops whose effect can be re-derived, and the register becomes a fold](./0041-peer-side-revocation-is-a-fold.md) | accepted (amends 0034 corollary 3 and key rotation §Revocation and the threat model's A3; closes #82; `STORAGE_V` 28, then 29 for §Decision 4, a key a read-bounded device delivered is never written under, #280); amended by 0056: an un-revoke is not what settles item 4's residuals; amended by 0058: a revocation the account identity signs settles item 4's two-device residual |
 | 0042 | [Sunrise stays at v0.x; compatibility is carried by versioned surfaces, not a product version](./0042-v0-forever.md) | accepted (amends 0020, 0027 and 0028: their release framing becomes roadmap rank; redefines doc status `proposed`) |
 | 0043 | [Ops form per-device hash chains with causal heads, and replicas compare a per-stream digest](./0043-commit-tree.md) | proposed |
-| 0044 | [Entity ops write fields, not whole entities, and each field merges by its own CRDT type](./0044-per-field-ops.md) | accepted (supersedes 0014) |
+| 0044 | [Entity ops write fields, not whole entities, and each field merges by its own CRDT type](./0044-per-field-ops.md) | accepted (supersedes 0014; amended by 0065: causal parents, conflict classes, kept losers, emission on) |
 | 0045 | [A schema version has a fingerprint, nothing verified is dropped, and a vault declares the features it requires](./0045-schema-identity-and-feature-gating.md) | accepted (amends 0009 and 0015) |
 | 0046 | [A task's stream is optional, stream-less content lives in a private key domain, and Inbox is a view](./0046-optional-stream.md) | accepted (amends 0024) |
 | 0047 | [A task has a plan time and two deadlines, lateness is derived at read time, and triage is one bulk command](./0047-deadlines-and-lateness.md) | accepted |
@@ -80,6 +80,7 @@ ADRs are numbered sequentially (`0001`, `0002`, …) and never renumbered.
 | 0060 | [The relay database is SQLCipher-encrypted under an operator's key file, and backed up online through SQLite's backup API](./0060-relay-database-encryption-at-rest.md) | accepted (supersedes the push-token scheme in `push-notifications.md`; built by #360) |
 | 0061 | [An external review audits the key hierarchy, the identity chain and the revocation fold; constant-time comparison is a CI gate; and a pull request that touches the crypto is fuzzed](./0061-crypto-audit-scope.md) | accepted (amends `testing.md` §CI shape; scopes a review of 0022, 0024, 0037 and 0041; built by #365) |
 | 0062 | [The relay scales out behind four storage traits, fans out over Postgres `LISTEN/NOTIFY` with the durable log as the only cursor, and keeps sync sessions in a shared table](./0062-relay-scale-out-storage-seam.md) | accepted (amends the managed storage layout in `relay-and-blob-storage.md`; built by #364) |
+| 0065 | [Entities are copy-on-write version DAGs; rows are a fold, and every conflict is kept and named](./0065-copy-on-write-entity-versions.md) | accepted (amends 0044) |
 
 ## When to write a new ADR
 
