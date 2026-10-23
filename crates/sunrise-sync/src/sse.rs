@@ -170,7 +170,7 @@ const BODY_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2)
 /// inbound batch or a local submit re-drives the drain sooner, so the span is
 /// shorter and is not predictable from this constant at all.
 ///
-/// That span is longer than the 300 s `crates/sunrise-cli/src/main.rs:934`
+/// That span is longer than the 300 s `crates/sunrise-cli/src/cmd/files.rs#DOWNLOAD_DEADLINE`
 /// gives one interactive download, so `sunrise attachment get` against a
 /// silent relay returns before the attempts are exhausted, around the seventh
 /// or eighth. That is neither the attachment being lost nor this bound's doing:

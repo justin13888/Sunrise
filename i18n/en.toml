@@ -1617,9 +1617,17 @@ USAGE:
                                  change a task's fields (see EDIT SYNTAX)
     sunrise retitle <id> <text>...
                                  give one task a new title
-    sunrise defer <id>... <when> push tasks out, counting the deferral
+    sunrise defer <id>... <when> push tasks out, counting the deferral; a day
+                                 keeps the plan's time and kind
+    sunrise schedule <id>... <when>|-
+                                 set or clear the plan, without counting a
+                                 deferral
     sunrise done <id>...         complete one or more tasks
     sunrise drop <id>...         soft-delete one or more tasks
+    sunrise note <id> [<text>...|-|--file <path|->]
+                                 print, replace or clear a task's note
+    sunrise show <id>            one task's fields, each time with its kind
+    sunrise undo | redo          reverse or replay this vault's last write
     sunrise today                list today's tasks
     sunrise inbox                list inbox tasks
     sunrise next                 the focus planner's top picks
@@ -1631,9 +1639,29 @@ USAGE:
     sunrise streams move <id|name> last
                                  reorder the stream list; syncs to every device
     sunrise stream <id|name>     list the tasks in one stream
+    sunrise streams create|edit|archive|unarchive|delete <id|name> ...
+                                 change the stream list
     sunrise contexts             list contexts with task counts
     sunrise context <id|name>    list the tasks carrying one context
+    sunrise contexts create|edit|archive|unarchive|delete <id|name> ...
+                                 change the context list
     sunrise routines             list routines with cadence and streak
+    sunrise routines create <title>... --rule <RRULE> [--zone <IANA>]
+    sunrise routines edit|archive|unarchive|pause|resume|delete <id|title>
+    sunrise routines skip <id|title> [--at <YYYY-MM-DDTHH:MM>]
+                                 skip the next occurrence, or a named one
+
+  calendar
+    sunrise blocks [day|week] [<when>]
+                                 list the blocks on one day or week
+    sunrise block create --from <when> (--to <when> | --for <length>)
+                                 [--title <t>] [--task <id>]... [--kind <k>]
+    sunrise block move <block-id> --from <when> [--to <when>]
+                                 move or resize; each bound keeps its kind
+    sunrise block bind|unbind <block-id> <task-id>...
+    sunrise block merge <block-id> <block-id>
+                                 replace two overlapping blocks with their union
+    sunrise block delete <block-id>
 
   attachments
     sunrise attachments <task-id>
@@ -1646,9 +1674,17 @@ USAGE:
     sunrise attachment cancel <attachment-id>
                                  stop a download this vault has outstanding and
                                  mark it partial; `get` restarts it from byte 0
+    sunrise attachment add <task-id> <path> [--name <n>] [--mime <type>]
+                                 attach a file; it uploads on the next sync
+    sunrise attachment remove <attachment-id>
 
   review and reporting
     sunrise review               print this week's review summary
+    sunrise review daily         the glance since the start of yesterday
+    sunrise review save [note]   record that this week was reviewed
+    sunrise brief morning|evening
+                                 the morning or evening brief
+    sunrise reminders plan       this device's reminders for the next day
     sunrise export <dataset> [json|csv] [path]
                                  trends | activity | focus | streaks
 
@@ -1689,6 +1725,15 @@ USAGE:
                                  current device. --new-recovery-code refuses to
                                  carry the old code forward, which is what to
                                  use when the code itself is suspected
+
+  views and preferences
+    sunrise views                list saved views
+    sunrise views save <name> <view> [--query <q>] [--contexts a,b]
+    sunrise views apply|delete <name>
+    sunrise prefs [list]         every preference, its value and its source
+    sunrise prefs get <key>
+    sunrise prefs set <key> <value> [--device]
+    sunrise prefs clear <key> [--device]
 
   account
     sunrise vaults               list this machine's vaults, marking the open one
@@ -1768,11 +1813,14 @@ expected_identity_status = "expected an identity status"
 not_a_task_id = "not a task id: {raw} ({reason})"
 not_an_attachment_id = "not an attachment id: {raw} ({reason})"
 not_a_stream_id = "not a stream id: {raw} ({reason})"
+not_an_id = "not an id of that kind: {raw} ({reason})"
 no_such_task = "no such task: {id}"
 # {arg} is one argument the command did not expect.
 unexpected_argument = "unexpected argument: {arg}"
 # {name} is the subcommand the user typed, in quotes.
 unknown_subcommand = "unknown subcommand {name}; try `sunrise help`"
+# stdout, after an id, when an edit went through.
+updated = "updated"
 
 [cli.login]
 opening_browser = "Opening your browser to sign in. If it does not open, visit:"
@@ -1822,6 +1870,12 @@ needs_query = "search needs a query"
 
 [cli.streams]
 usage = "usage: stream <id|name>; `sunrise streams` lists them"
+# {verb} is what followed `sunrise streams`.
+unknown_verb = "unknown streams verb `{verb}`; use move, create, edit, archive, unarchive or delete"
+create_usage = "usage: streams create <name>... [--color <c>] [--parent <stream>] [--icon <i>] [--description <text>]"
+edit_usage = "usage: streams edit <id|name>... [--name <n>] [--color <c>] [--icon <i>|-] [--description <text>|-]"
+# {color} is what the user typed.
+unknown_color = "unknown colour `{color}`; use slate, rose, amber, emerald, sky, indigo, violet or pink"
 # {text} is the name the user typed.
 no_match = "no stream matches \"{text}\""
 # Two lines; the second starts at the left margin, as the CLI has always printed it.
@@ -1832,6 +1886,9 @@ cannot_place = "cannot place that stream: {error}"
 
 [cli.contexts]
 usage = "usage: context <id|name>; `sunrise contexts` lists them"
+unknown_verb = "unknown contexts verb `{verb}`; use create, edit, archive, unarchive or delete"
+create_usage = "usage: contexts create <name>... [--description <text>]"
+edit_usage = "usage: contexts edit <id|name>... [--name <n>] [--description <text>|-]"
 no_match = "no context matches \"{text}\""
 
 [cli.done]
@@ -1864,6 +1921,136 @@ started_on = "focus started on {title}"
 end_usage = "usage: focus end [--done]; got {arg}"
 none_running = "no focus session is running; `sunrise focus <id>` opens one"
 
+[cli.schedule]
+usage = "usage: schedule <id>... <when>|-; see `sunrise help`"
+needs_date = "schedule needs a date, e.g. `tomorrow`, `friday 9am`, or `-` to clear"
+
+[cli.show]
+usage = "usage: show <task-id>"
+
+[cli.note]
+usage = "usage: note <task-id> [<text>...|-|--file <path|->] [--force]"
+# stderr, from `sunrise note <id>` when the task has no note.
+empty = "this task has no note"
+not_exact = "this note holds content this build cannot write back exactly; saving would lose it. Pass --force to replace it anyway"
+# stdout, after the task id.
+saved = "note saved"
+cleared = "note cleared"
+
+[cli.routines]
+needs_target = "name a routine by its id or title; `sunrise routines` lists them"
+# {text} is what the user typed.
+no_match = "no routine matches \"{text}\""
+ambiguous = "\"{text}\" matches more than one routine; use more of its title or its id"
+unknown_verb = "unknown routines verb `{verb}`; use create, edit, archive, unarchive, pause, resume, delete or skip"
+create_usage = "usage: routines create <title>... --rule <RRULE> [--stream <s>] [--zone <IANA>] [--starts <when>] [--catchup skip|merge|queue] [--priority <1-5>]"
+edit_usage = "usage: routines edit <id|title>... [--title <t>] [--rule <RRULE>] [--zone <IANA>] [--stream <s>] [--priority <1-5>|-] [--catchup <policy>]"
+# {error} says what is wrong with the rule.
+bad_rule = "that recurrence rule will not do: {error}"
+bad_catchup = "unknown catch-up policy `{policy}`; use skip, merge or queue"
+needs_zone = "the reader's zone has no IANA name; pass --zone <IANA> for this routine"
+no_next = "this routine has no upcoming occurrence to skip; name one with --at <YYYY-MM-DDTHH:MM>"
+
+[cli.blocks]
+usage = "usage: block create|move|bind|unbind|merge|delete …; see `sunrise help`"
+create_usage = "usage: block create --from <when> (--to <when> | --for <length>) [--title <t>] [--stream <s>] [--task <id>]... [--kind zoned|floating|instant]"
+move_usage = "usage: block move <block-id> --from <when> [--to <when>]"
+bind_usage = "usage: block bind|unbind <block-id> <task-id>..."
+merge_usage = "usage: block merge <block-id> <block-id>"
+end_before_start = "a block must end after it starts"
+# {kind} is what the user typed.
+bad_kind = "unknown time kind `{kind}`; use zoned, floating or instant"
+no_such = "no such block: {id}"
+# stdout, after the merged block's id.
+merged = "merged; both originals deleted"
+
+[cli.review]
+# {mode} is what followed `sunrise review`.
+unknown_mode = "unknown review mode `{mode}`; use daily or save"
+# Headings of `sunrise review daily`, each followed by its rows or the
+# empty line under it.
+daily_inbox = "Captured since yesterday"
+daily_inbox_empty = "Nothing new in the Inbox."
+daily_today = "Today's plan"
+daily_today_empty = "Nothing is planned for today."
+daily_blocked = "Blocked"
+daily_blocked_empty = "Nothing in today's plan is blocked."
+# stdout, after the snapshot's id.
+saved = "review saved"
+
+[cli.brief]
+# {arg} is what followed `sunrise brief`.
+usage = "unknown brief `{arg}`; use morning or evening"
+
+[cli.reminders]
+usage = "unknown reminders mode `{arg}`; use plan"
+disabled = "reminders are switched off on this device (notifications.enabled), so nothing is planned"
+# A reminder the planner could not place. {entity} is its id; {reason} why.
+unscheduled = "{entity} has a reminder that cannot be placed: {reason}"
+
+[cli.views]
+save_usage = "usage: views save <name> <view> [--query <text>] [--contexts a,b]"
+apply_usage = "usage: views apply <name>"
+delete_usage = "usage: views delete <name>"
+unknown_verb = "unknown views verb `{verb}`; use list, save, apply or delete"
+no_such = "no saved view named `{name}`; `sunrise views` lists them"
+# {error} names what in the view could not be read.
+bad_spec = "that view will not do: {error}"
+
+[cli.prefs]
+usage = "usage: prefs [list] | prefs get <key> | prefs set <key> <value> [--device] | prefs clear <key> [--device]"
+unknown_verb = "unknown prefs verb `{verb}`; use list, get, set or clear"
+unknown_key = "unknown preference key `{key}`; `sunrise prefs` lists them"
+# {value} is what was typed; {expected} one of the expect_* phrases below.
+bad_value = "`{value}` is not a valid value for `{key}`: expected {expected}"
+expect_bool = "true or false"
+expect_number = "a whole number in the key's range"
+# {values} is a comma-separated list of the spellings the key takes.
+expect_one_of = "one of {values}"
+expect_url = "an http, https, ws or wss URL"
+expect_text = "non-empty text"
+expect_zone = "an IANA time zone name"
+expect_language = "a BCP 47 language tag"
+expect_id = "an entity id"
+expect_weekday = "MO, TU, WE, TH, FR, SA or SU"
+expect_cadence = "a weekday and a time, e.g. MO 09:00"
+expect_window = "a start and an end, e.g. 22:00-07:00"
+
+[cli.undo]
+usage = "usage: undo"
+redo_usage = "usage: redo"
+# stdout. {action} is one of the step names below.
+undid = "undid {action}"
+redid = "redid {action}"
+nothing = "nothing to undo"
+nothing_to_redo = "nothing to redo"
+# stderr, at open, when the saved history could not be read. {reason} says why.
+discarded = "the undo history could not be read ({reason}); starting a new one"
+# stderr, at exit. {error} says why the history was not written.
+unsaved = "the undo history was not saved: {error}"
+# Step names, inserted as {action} above. {title} is a task's title, {name}
+# a stream's, context's or routine's name or an id.
+capture = "capture “{title}”"
+complete = "complete “{title}”"
+edit = "edit “{name}”"
+move_task = "move “{title}” to another stream"
+retitle = "retitle “{title}”"
+defer = "defer “{title}”"
+schedule = "schedule “{title}”"
+note = "edit the note on “{title}”"
+drop = "drop {name}"
+create = "create “{name}”"
+delete = "delete {name}"
+archive_stream = "archive or unarchive stream {name}"
+archive_context = "archive or unarchive context {name}"
+reorder = "reorder streams"
+bind = "bind tasks to block {name}"
+move_block = "move block {name}"
+
+[cli.tz]
+# stderr, as a note, when no zone is known and times read in UTC.
+unknown_note = "this device reports no time zone, so times are read in UTC; set one with `sunrise tz set <IANA>`, SUNRISE_TZ or --tz"
+
 [cli.export]
 usage = "usage: export <trends|activity|focus|streaks> [json|csv] [path]"
 unknown_dataset = "unknown dataset: {name}"
@@ -1879,7 +2066,9 @@ source_needs_text = "--source needs a non-empty name"
 
 [cli.attachments]
 list_usage = "usage: attachments <task-id>"
-usage = "usage: attachment get <attachment-id> [path] | attachment cancel <id>"
+usage = "usage: attachment get <attachment-id> [path] | attachment cancel <id> | attachment add <task-id> <path> | attachment remove <id>"
+add_usage = "usage: attachment add <task-id> <path> [--name <filename>] [--mime <type>]"
+remove_usage = "usage: attachment remove <attachment-id>"
 get_usage = "usage: attachment get <attachment-id> [path]"
 cancel_usage = "usage: attachment cancel <id>"
 # The state column of `sunrise attachments`: where an attachment's bytes are.

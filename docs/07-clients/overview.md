@@ -43,8 +43,14 @@ capture and triage
   sunrise retitle <id> <text>...
                                give one task a new title
   sunrise defer <id>... <when> push tasks out, counting the deferral
+  sunrise schedule <id>... <when>|-
+                               set or clear the plan, counting nothing
   sunrise done <id>...         complete one or more tasks
   sunrise drop <id>...         soft-delete one or more tasks
+  sunrise note <id> [<text>...|-|--file <path|->] [--force]
+                               print, replace or clear a task's note
+  sunrise show <id>            one task's fields, each time with its kind
+  sunrise undo | redo          reverse or replay this vault's last write
   sunrise today | inbox        list today's tasks / the inbox
   sunrise next                 the focus planner's top picks
   sunrise search <query>...    full-text search
@@ -55,6 +61,19 @@ the vault's shape
   sunrise context <id|name>    list the tasks carrying one context
   sunrise streams move <x> before <y> | last
                                reorder the stream list; syncs, unlike task order
+  sunrise streams create|edit|archive|unarchive|delete ...
+  sunrise contexts create|edit|archive|unarchive|delete ...
+  sunrise routines create <title>... --rule <RRULE> [--zone <IANA>] ...
+  sunrise routines edit|archive|unarchive|pause|resume|delete <id|title>
+  sunrise routines skip <id|title> [--at <occurrence-key>]
+
+calendar
+  sunrise blocks [day|week] [<when>]
+  sunrise block create --from <when> (--to <when> | --for <length>) ...
+  sunrise block move <block-id> --from <when> [--to <when>]
+  sunrise block bind|unbind <block-id> <task-id>...
+  sunrise block merge <block-id> <block-id>
+  sunrise block delete <block-id>
 
 calendar interchange
   sunrise ical import <path|-> read an .ics into Blocks, idempotently
@@ -63,7 +82,19 @@ calendar interchange
 
 review and reporting
   sunrise review               this week's review summary
+  sunrise review daily         the glance since the start of yesterday
+  sunrise review save [note]   record that the week was reviewed
+  sunrise brief morning|evening
+  sunrise reminders plan       this device's reminders for the next day
   sunrise export <trends|activity|focus|streaks> [json|csv] [path]
+
+views and preferences
+  sunrise views [save <name> <view> [--query q] [--contexts a,b] | apply <name> | delete <name>]
+  sunrise prefs [list | get <key> | set <key> <value> [--device] | clear <key> [--device]]
+
+attachments
+  sunrise attachments <task-id>
+  sunrise attachment add <task-id> <path> | remove <id> | get <id> [path] | cancel <id>
 
 account
   sunrise vaults               list this machine's vaults, marking the open one
@@ -77,6 +108,44 @@ plumbing
   sunrise rebuild              rebuild every row from this vault's own op log,
                                in one transaction; nothing is sent
 ```
+
+### A client of the client layer
+
+Every verb above is a lowering onto `sunrise-client-core`
+([`../01-architecture/shared-core.md`](../01-architecture/shared-core.md)
+§The client layer), not a second implementation of it: `defer` is
+`schedule::defer_command`, `schedule` is `schedule::scheduled_on_day`,
+`block create` and `block move` are `calendar::new_block_draft` and
+`calendar::moved_block_patch`, `block merge` is `calendar::merge_blocks`,
+`routines edit` is `editor::routine_patch`, `views` is `views::SavedViewStore`,
+`brief` and `review daily` are `brief` and `review`, `reminders plan` is
+`reminders::schedule`, and `undo` / `redo` are `history::UndoHistory`. So the
+CLI and the Apple apps cannot disagree about what "defer to tomorrow" does to a
+floating 09:00, or about which rows a merge leaves behind.
+
+The plural owns the verbs that change the set — `streams create`,
+`contexts archive`, `routines skip` — the way `streams move` always has, because
+the singular (`stream <name>`) lists what is *in* one and a verb there would
+collide with a stream called `create`.
+
+### Undo across processes
+
+`undo` reverses the most recent write this vault recorded, and `redo` replays
+the most recent undo; every write verb records into the history, through
+`UndoHistory::submit`. A CLI session is one process, so the history is written
+back into the vault directory after each write (`cli-undo`) and read at the next
+open. It is task content, so it is sealed — XChaCha20-Poly1305 under a key
+derived from the vault's root, which never lives in the vault directory —
+rather than written beside the ciphertext as plaintext. Its encoding is the
+client layer's (`history::persist`), which keeps "clear this field" and "leave
+it" apart: plain serde collapses both to `null`, and the undo of setting a
+priority on a task that had none would then do nothing.
+
+A delete, a revocation, a focus session and a routine skip have no inverse;
+they are still written, and leave nothing to undo. An undo is a new write and
+merges like one, so a field another device has changed since loses the tie
+exactly as a manual edit would. A history that does not open — another
+vault's, a damaged file — is a fresh one, with a note on stderr.
 
 ## Multi-account, on the CLI
 
@@ -146,9 +215,22 @@ and it closes **every** running session: two devices starting concurrently both
 mint a valid session, so "end my focus" means all of them. `--done` is the focus
 screen's "complete" action, which also completes the task.
 
-`defer` is not `edit ^when`. It is `Command::DeferTask`, which also bumps the
-Task's `deferred_count` — the counter `sunrise review` reports as "deferred",
-and the signal the weekly review exists to surface.
+`defer` is not `edit ^when`. It is `Command::DeferTaskTo`, which also bumps
+the Task's `deferred_count` — the counter `sunrise review` reports as
+"deferred", and the signal the weekly review exists to surface. A day
+(`tomorrow`, `next friday`, `+3d`) counts civil days in the reader's zone and
+the plan keeps its kind and time of day, so a floating 09:00 deferred to
+tomorrow is a floating 09:00 tomorrow wherever its owner is
+([ADR-0066](../11-adr/0066-times-survive-travel.md) §4); a phrase that names a
+time (`tomorrow 3pm`) is the user choosing it, and is written as typed. It used
+to send `Command::DeferTask`, an instant, which pinned a travelling plan to
+the zone the command happened to run in.
+
+`schedule` sets the plan without counting a deferral: a day is that day, all
+day, because "schedule for tomorrow" names no time of day; `-` clears it.
+`show` prints every stored time with its kind (`[floating]`, `[all_day]`,
+`[instant]`, or a zoned value's own zone), because a rendering that hides the
+kind is how "sometime Tuesday" became "Monday 20:00".
 
 `export` writes to **stdout** unless given a path, so it pipes into `jq`. That
 is the general rule: stdout is the contract, human-facing notes go to stderr,

@@ -39,13 +39,15 @@ use sunrise_core::{Command, CommandResult, Core, CoreError, Query, QueryResult};
 use sunrise_domain::{RoutineRow, Task};
 use sunrise_id::EntityRef;
 
+pub mod persist;
+
 use crate::undo::{
     invert, invert_create, is_create, rebind_creates, EntityLookup, NotUndoable, UndoEntry,
     MAX_DEPTH,
 };
 
 /// The two stacks, and the rule that binds them.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct UndoStacks {
     done: Vec<UndoEntry>,
     undone: Vec<UndoEntry>,
@@ -348,6 +350,21 @@ impl UndoHistory {
     #[must_use]
     pub fn labels(&self) -> UndoLabels {
         self.lock().labels()
+    }
+
+    /// A history that carries on from `stacks`: what a client whose session
+    /// spans processes read back with [`persist::from_json`].
+    #[must_use]
+    pub fn from_stacks(stacks: UndoStacks) -> Self {
+        Self {
+            stacks: Mutex::new(stacks),
+        }
+    }
+
+    /// The stacks as they stand, for [`persist::to_json`].
+    #[must_use]
+    pub fn snapshot(&self) -> UndoStacks {
+        self.lock().clone()
     }
 
     /// The stacks. A panic while they were held cannot leave them torn — every

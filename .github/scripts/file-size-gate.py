@@ -276,15 +276,6 @@ BASELINE: dict[str, str] = {
         "`tests/` cannot reach it. Splitting the test module by the route it "
         "exercises is a change of its own."
     ),
-    # --- sunrise-cli --------------------------------------------------------
-    "crates/sunrise-cli/src/main.rs": (
-        "The binary's argument handling and every subcommand's body, with no "
-        "test module: `tests/cli.rs` drives the real binary instead. 530 of "
-        "its lines are the one `dispatch` match over subcommand names. Not "
-        "audited for a split; the subcommands that already have a module "
-        "(`login`, `vault`, `livesync`, `recover`) show the shape one would "
-        "take."
-    ),
     # --- sunrise-client-core ------------------------------------------------
     "crates/sunrise-client-core/src/undo.rs": (
         "380 implementation lines -- below this package's threshold on its "

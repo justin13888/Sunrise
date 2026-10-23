@@ -14,7 +14,8 @@
 //! * [`undo`] — undo/redo built from **inverse commands**, read out of the
 //!   rows the client is already holding.
 //! * [`history`] — a session's undo and redo stacks, recorded and replayed
-//!   against a live vault.
+//!   against a live vault, and ([`history::persist`]) written down losslessly
+//!   for a client whose session outlives its process.
 //! * [`views`] — named saved views, stored per device as a preference, and
 //!   the [`views::SavedViewStore`] that reads and writes them.
 //! * [`preferences`] — the bootstrap preferences file a device reads before

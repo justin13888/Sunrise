@@ -18,9 +18,17 @@ pub mod usage {
     ///                                  change a task's fields (see EDIT SYNTAX)
     ///     sunrise retitle <id> <text>...
     ///                                  give one task a new title
-    ///     sunrise defer <id>... <when> push tasks out, counting the deferral
+    ///     sunrise defer <id>... <when> push tasks out, counting the deferral; a day
+    ///                                  keeps the plan's time and kind
+    ///     sunrise schedule <id>... <when>|-
+    ///                                  set or clear the plan, without counting a
+    ///                                  deferral
     ///     sunrise done <id>...         complete one or more tasks
     ///     sunrise drop <id>...         soft-delete one or more tasks
+    ///     sunrise note <id> [<text>...|-|--file <path|->]
+    ///                                  print, replace or clear a task's note
+    ///     sunrise show <id>            one task's fields, each time with its kind
+    ///     sunrise undo | redo          reverse or replay this vault's last write
     ///     sunrise today                list today's tasks
     ///     sunrise inbox                list inbox tasks
     ///     sunrise next                 the focus planner's top picks
@@ -32,9 +40,29 @@ pub mod usage {
     ///     sunrise streams move <id|name> last
     ///                                  reorder the stream list; syncs to every device
     ///     sunrise stream <id|name>     list the tasks in one stream
+    ///     sunrise streams create|edit|archive|unarchive|delete <id|name> ...
+    ///                                  change the stream list
     ///     sunrise contexts             list contexts with task counts
     ///     sunrise context <id|name>    list the tasks carrying one context
+    ///     sunrise contexts create|edit|archive|unarchive|delete <id|name> ...
+    ///                                  change the context list
     ///     sunrise routines             list routines with cadence and streak
+    ///     sunrise routines create <title>... --rule <RRULE> [--zone <IANA>]
+    ///     sunrise routines edit|archive|unarchive|pause|resume|delete <id|title>
+    ///     sunrise routines skip <id|title> [--at <YYYY-MM-DDTHH:MM>]
+    ///                                  skip the next occurrence, or a named one
+    ///
+    ///   calendar
+    ///     sunrise blocks [day|week] [<when>]
+    ///                                  list the blocks on one day or week
+    ///     sunrise block create --from <when> (--to <when> | --for <length>)
+    ///                                  [--title <t>] [--task <id>]... [--kind <k>]
+    ///     sunrise block move <block-id> --from <when> [--to <when>]
+    ///                                  move or resize; each bound keeps its kind
+    ///     sunrise block bind|unbind <block-id> <task-id>...
+    ///     sunrise block merge <block-id> <block-id>
+    ///                                  replace two overlapping blocks with their union
+    ///     sunrise block delete <block-id>
     ///
     ///   attachments
     ///     sunrise attachments <task-id>
@@ -47,9 +75,17 @@ pub mod usage {
     ///     sunrise attachment cancel <attachment-id>
     ///                                  stop a download this vault has outstanding and
     ///                                  mark it partial; `get` restarts it from byte 0
+    ///     sunrise attachment add <task-id> <path> [--name <n>] [--mime <type>]
+    ///                                  attach a file; it uploads on the next sync
+    ///     sunrise attachment remove <attachment-id>
     ///
     ///   review and reporting
     ///     sunrise review               print this week's review summary
+    ///     sunrise review daily         the glance since the start of yesterday
+    ///     sunrise review save [note]   record that this week was reviewed
+    ///     sunrise brief morning|evening
+    ///                                  the morning or evening brief
+    ///     sunrise reminders plan       this device's reminders for the next day
     ///     sunrise export <dataset> [json|csv] [path]
     ///                                  trends | activity | focus | streaks
     ///
@@ -90,6 +126,15 @@ pub mod usage {
     ///                                  current device. --new-recovery-code refuses to
     ///                                  carry the old code forward, which is what to
     ///                                  use when the code itself is suspected
+    ///
+    ///   views and preferences
+    ///     sunrise views                list saved views
+    ///     sunrise views save <name> <view> [--query <q>] [--contexts a,b]
+    ///     sunrise views apply|delete <name>
+    ///     sunrise prefs [list]         every preference, its value and its source
+    ///     sunrise prefs get <key>
+    ///     sunrise prefs set <key> <value> [--device]
+    ///     sunrise prefs clear <key> [--device]
     ///
     ///   account
     ///     sunrise vaults               list this machine's vaults, marking the open one
@@ -159,7 +204,7 @@ pub mod usage {
     #[must_use]
     pub fn text() -> String {
         let mut out = String::new();
-        out.push_str("sunrise — command-line client for Sunrise\n\nUSAGE:\n  capture and triage\n    sunrise capture <text>...    parse and commit one task, then exit\n    sunrise edit <id>... <tokens>...\n                                 change a task's fields (see EDIT SYNTAX)\n    sunrise retitle <id> <text>...\n                                 give one task a new title\n    sunrise defer <id>... <when> push tasks out, counting the deferral\n    sunrise done <id>...         complete one or more tasks\n    sunrise drop <id>...         soft-delete one or more tasks\n    sunrise today                list today's tasks\n    sunrise inbox                list inbox tasks\n    sunrise next                 the focus planner's top picks\n    sunrise search <query>...    full-text search\n\n  the vault's shape\n    sunrise streams              list streams with open counts\n    sunrise streams move <id|name> before <id|name>\n    sunrise streams move <id|name> last\n                                 reorder the stream list; syncs to every device\n    sunrise stream <id|name>     list the tasks in one stream\n    sunrise contexts             list contexts with task counts\n    sunrise context <id|name>    list the tasks carrying one context\n    sunrise routines             list routines with cadence and streak\n\n  attachments\n    sunrise attachments <task-id>\n                                 list a task's attachments, marking which are\n                                 on this device\n    sunrise attachment get <attachment-id> [path]\n                                 download one attachment's bytes on demand,\n                                 whatever its size, and write them to `path`\n                                 or to stdout\n    sunrise attachment cancel <attachment-id>\n                                 stop a download this vault has outstanding and\n                                 mark it partial; `get` restarts it from byte 0\n\n  review and reporting\n    sunrise review               print this week's review summary\n    sunrise export <dataset> [json|csv] [path]\n                                 trends | activity | focus | streaks\n\n  calendar interchange (RFC 5545)\n    sunrise ical import <path|-> [--stream <id>] [--source <name>]\n                                 read an .ics file (or stdin) as time blocks\n    sunrise ical export [today|week] [path]\n                                 write .ics to stdout, or to a path\n\n  devices and identity\n    sunrise pair offer --out <file>\n                                 (on the device with the vault) write the\n                                 account's public identity. Carries no key\n    sunrise pair request --offer <file> --out <file>\n                                 (on the device being added) mint this device's\n                                 keys and ask for a certificate\n    sunrise pair issue --request <file> --out <file>\n                                 (on the device with the vault) certify those\n                                 keys and hand over the vault. This file carries\n                                 your vault key\n    sunrise pair accept --response <file>\n                                 (on the device being added) adopt the\n                                 certificate and open the vault\n    sunrise devices              list this account's devices, marking revoked\n                                 and non-current ones distinctly\n    sunrise device revoke <id-prefix> [--reason lost|stolen|retired|compromised]\n                                 revoke a device and rotate every Stream key, so\n                                 it reads nothing written afterwards. Also\n                                 rotates the account identity, on the device\n                                 that created the account. It cannot be\n                                 undone: to use the device again, pair it\n                                 as a new device\n    sunrise identity status      the account's identity chain: its stable name,\n                                 the identity in force, and whether this device\n                                 still speaks for it\n    sunrise identity rotate [--new-recovery-code]\n                                 replace the account identity, keeping every\n                                 current device. --new-recovery-code refuses to\n                                 carry the old code forward, which is what to\n                                 use when the code itself is suspected\n\n  account\n    sunrise vaults               list this machine's vaults, marking the open one\n    sunrise login                sign in via OIDC and store the token\n    sunrise logout               forget the stored token\n    sunrise whoami               report the stored token's state\n    sunrise bootstrap [email]    publish this vault's identity to the relay,\n                                 register this device, and print the 24-word\n                                 recovery code once. Write that code down\n    sunrise recover <word>...    rebuild this account in an EMPTY vault\n                                 directory from the 24-word code. Reads the\n                                 code from stdin if none is given, and signs\n                                 you in again first — the relay only releases\n                                 a recovery blob to a fresh authentication\n\n  plumbing\n    sunrise focus <id>           open a focus session on a task\n    sunrise focus end [--done]   close every running session; --done also\n                                 completes the task it was opened on\n    sunrise sync --once          drain the outbox and exit (cron / CI)\n    sunrise rebuild              rebuild every task, stream and other row\n                                 from this vault's own op log, in one\n                                 transaction; nothing is sent\n    sunrise help                 show this message\n\nCAPTURE SYNTAX:\n    #stream  @context  ^when  !priority(1-5)  ~duration  *due:when*\n\n    sunrise capture 'Renew passport #travel ^next saturday !1 ~1h'\n\nEDIT SYNTAX:\n    #stream  @ctx  @-ctx  !priority  %energy  ~duration  ^when  due:when\n    a trailing `-` clears a field:  !-  %-  ~-  ^-  due:-  @-\n\n    sunrise edit tsk_01J… '#work !1 ^next friday'\n    sunrise edit tsk_01J… tsk_01K… '@errands ~30m'\n\n    Bare words are refused: an edit line is not a title, and the whole\n    line is rejected if any token is, so nothing is half-applied.\n    The title is `sunrise retitle`, which is all title and no grammar.\n\nENVIRONMENT:\n    SUNRISE_VAULT             vault directory (default ~/.sunrise/vault).\n                              Each one is a separate account: the first open\n                              mints a random 32-byte root for it\n    SUNRISE_KEYSTORE          where those roots are kept, mode 0600 and one\n                              file per vault (default\n                              $XDG_DATA_HOME/sunrise/keys). Deliberately not\n                              inside the vault: a vault directory copied on\n                              its own must stay ciphertext. Back both up\n    SUNRISE_VAULT_ROOT        open with this root (64 hex chars) and touch no\n                              keystore — how two vaults share one account\n                              until pairing lands, and how to open a vault\n                              made before per-vault keys\n    SUNRISE_SYNC_URL          relay endpoint; unset means fully offline\n    SUNRISE_SYNC_TOKEN        OIDC bearer for the relay; overrides a stored\n                              login. Unset, with no stored login, only works\n                              against a self-host relay\n    SUNRISE_OIDC_ISSUER       OIDC issuer URL, for `sunrise login`\n    SUNRISE_OIDC_CLIENT_ID    OIDC client id, for `sunrise login`\n    SUNRISE_LOG_FILE          override the NDJSON log destination\n\n  Joining an account is `sunrise pair`, not a variable. The two that used to do\n  it carried the account's signing key in one file; see `sunrise pair`.\n");
+        out.push_str("sunrise — command-line client for Sunrise\n\nUSAGE:\n  capture and triage\n    sunrise capture <text>...    parse and commit one task, then exit\n    sunrise edit <id>... <tokens>...\n                                 change a task's fields (see EDIT SYNTAX)\n    sunrise retitle <id> <text>...\n                                 give one task a new title\n    sunrise defer <id>... <when> push tasks out, counting the deferral; a day\n                                 keeps the plan's time and kind\n    sunrise schedule <id>... <when>|-\n                                 set or clear the plan, without counting a\n                                 deferral\n    sunrise done <id>...         complete one or more tasks\n    sunrise drop <id>...         soft-delete one or more tasks\n    sunrise note <id> [<text>...|-|--file <path|->]\n                                 print, replace or clear a task's note\n    sunrise show <id>            one task's fields, each time with its kind\n    sunrise undo | redo          reverse or replay this vault's last write\n    sunrise today                list today's tasks\n    sunrise inbox                list inbox tasks\n    sunrise next                 the focus planner's top picks\n    sunrise search <query>...    full-text search\n\n  the vault's shape\n    sunrise streams              list streams with open counts\n    sunrise streams move <id|name> before <id|name>\n    sunrise streams move <id|name> last\n                                 reorder the stream list; syncs to every device\n    sunrise stream <id|name>     list the tasks in one stream\n    sunrise streams create|edit|archive|unarchive|delete <id|name> ...\n                                 change the stream list\n    sunrise contexts             list contexts with task counts\n    sunrise context <id|name>    list the tasks carrying one context\n    sunrise contexts create|edit|archive|unarchive|delete <id|name> ...\n                                 change the context list\n    sunrise routines             list routines with cadence and streak\n    sunrise routines create <title>... --rule <RRULE> [--zone <IANA>]\n    sunrise routines edit|archive|unarchive|pause|resume|delete <id|title>\n    sunrise routines skip <id|title> [--at <YYYY-MM-DDTHH:MM>]\n                                 skip the next occurrence, or a named one\n\n  calendar\n    sunrise blocks [day|week] [<when>]\n                                 list the blocks on one day or week\n    sunrise block create --from <when> (--to <when> | --for <length>)\n                                 [--title <t>] [--task <id>]... [--kind <k>]\n    sunrise block move <block-id> --from <when> [--to <when>]\n                                 move or resize; each bound keeps its kind\n    sunrise block bind|unbind <block-id> <task-id>...\n    sunrise block merge <block-id> <block-id>\n                                 replace two overlapping blocks with their union\n    sunrise block delete <block-id>\n\n  attachments\n    sunrise attachments <task-id>\n                                 list a task's attachments, marking which are\n                                 on this device\n    sunrise attachment get <attachment-id> [path]\n                                 download one attachment's bytes on demand,\n                                 whatever its size, and write them to `path`\n                                 or to stdout\n    sunrise attachment cancel <attachment-id>\n                                 stop a download this vault has outstanding and\n                                 mark it partial; `get` restarts it from byte 0\n    sunrise attachment add <task-id> <path> [--name <n>] [--mime <type>]\n                                 attach a file; it uploads on the next sync\n    sunrise attachment remove <attachment-id>\n\n  review and reporting\n    sunrise review               print this week's review summary\n    sunrise review daily         the glance since the start of yesterday\n    sunrise review save [note]   record that this week was reviewed\n    sunrise brief morning|evening\n                                 the morning or evening brief\n    sunrise reminders plan       this device's reminders for the next day\n    sunrise export <dataset> [json|csv] [path]\n                                 trends | activity | focus | streaks\n\n  calendar interchange (RFC 5545)\n    sunrise ical import <path|-> [--stream <id>] [--source <name>]\n                                 read an .ics file (or stdin) as time blocks\n    sunrise ical export [today|week] [path]\n                                 write .ics to stdout, or to a path\n\n  devices and identity\n    sunrise pair offer --out <file>\n                                 (on the device with the vault) write the\n                                 account's public identity. Carries no key\n    sunrise pair request --offer <file> --out <file>\n                                 (on the device being added) mint this device's\n                                 keys and ask for a certificate\n    sunrise pair issue --request <file> --out <file>\n                                 (on the device with the vault) certify those\n                                 keys and hand over the vault. This file carries\n                                 your vault key\n    sunrise pair accept --response <file>\n                                 (on the device being added) adopt the\n                                 certificate and open the vault\n    sunrise devices              list this account's devices, marking revoked\n                                 and non-current ones distinctly\n    sunrise device revoke <id-prefix> [--reason lost|stolen|retired|compromised]\n                                 revoke a device and rotate every Stream key, so\n                                 it reads nothing written afterwards. Also\n                                 rotates the account identity, on the device\n                                 that created the account. It cannot be\n                                 undone: to use the device again, pair it\n                                 as a new device\n    sunrise identity status      the account's identity chain: its stable name,\n                                 the identity in force, and whether this device\n                                 still speaks for it\n    sunrise identity rotate [--new-recovery-code]\n                                 replace the account identity, keeping every\n                                 current device. --new-recovery-code refuses to\n                                 carry the old code forward, which is what to\n                                 use when the code itself is suspected\n\n  views and preferences\n    sunrise views                list saved views\n    sunrise views save <name> <view> [--query <q>] [--contexts a,b]\n    sunrise views apply|delete <name>\n    sunrise prefs [list]         every preference, its value and its source\n    sunrise prefs get <key>\n    sunrise prefs set <key> <value> [--device]\n    sunrise prefs clear <key> [--device]\n\n  account\n    sunrise vaults               list this machine's vaults, marking the open one\n    sunrise login                sign in via OIDC and store the token\n    sunrise logout               forget the stored token\n    sunrise whoami               report the stored token's state\n    sunrise bootstrap [email]    publish this vault's identity to the relay,\n                                 register this device, and print the 24-word\n                                 recovery code once. Write that code down\n    sunrise recover <word>...    rebuild this account in an EMPTY vault\n                                 directory from the 24-word code. Reads the\n                                 code from stdin if none is given, and signs\n                                 you in again first — the relay only releases\n                                 a recovery blob to a fresh authentication\n\n  plumbing\n    sunrise focus <id>           open a focus session on a task\n    sunrise focus end [--done]   close every running session; --done also\n                                 completes the task it was opened on\n    sunrise sync --once          drain the outbox and exit (cron / CI)\n    sunrise rebuild              rebuild every task, stream and other row\n                                 from this vault's own op log, in one\n                                 transaction; nothing is sent\n    sunrise help                 show this message\n\nCAPTURE SYNTAX:\n    #stream  @context  ^when  !priority(1-5)  ~duration  *due:when*\n\n    sunrise capture 'Renew passport #travel ^next saturday !1 ~1h'\n\nEDIT SYNTAX:\n    #stream  @ctx  @-ctx  !priority  %energy  ~duration  ^when  due:when\n    a trailing `-` clears a field:  !-  %-  ~-  ^-  due:-  @-\n\n    sunrise edit tsk_01J… '#work !1 ^next friday'\n    sunrise edit tsk_01J… tsk_01K… '@errands ~30m'\n\n    Bare words are refused: an edit line is not a title, and the whole\n    line is rejected if any token is, so nothing is half-applied.\n    The title is `sunrise retitle`, which is all title and no grammar.\n\nENVIRONMENT:\n    SUNRISE_VAULT             vault directory (default ~/.sunrise/vault).\n                              Each one is a separate account: the first open\n                              mints a random 32-byte root for it\n    SUNRISE_KEYSTORE          where those roots are kept, mode 0600 and one\n                              file per vault (default\n                              $XDG_DATA_HOME/sunrise/keys). Deliberately not\n                              inside the vault: a vault directory copied on\n                              its own must stay ciphertext. Back both up\n    SUNRISE_VAULT_ROOT        open with this root (64 hex chars) and touch no\n                              keystore — how two vaults share one account\n                              until pairing lands, and how to open a vault\n                              made before per-vault keys\n    SUNRISE_SYNC_URL          relay endpoint; unset means fully offline\n    SUNRISE_SYNC_TOKEN        OIDC bearer for the relay; overrides a stored\n                              login. Unset, with no stored login, only works\n                              against a self-host relay\n    SUNRISE_OIDC_ISSUER       OIDC issuer URL, for `sunrise login`\n    SUNRISE_OIDC_CLIENT_ID    OIDC client id, for `sunrise login`\n    SUNRISE_LOG_FILE          override the NDJSON log destination\n\n  Joining an account is `sunrise pair`, not a variable. The two that used to do\n  it carried the account's signing key in one file; see `sunrise pair`.\n");
         out
     }
 }
@@ -244,6 +289,18 @@ pub mod general {
         out
     }
 
+    /// not an id of that kind: {raw} ({reason})
+    #[must_use]
+    pub fn not_an_id(raw: &str, reason: &str) -> String {
+        let mut out = String::new();
+        out.push_str("not an id of that kind: ");
+        out.push_str(raw);
+        out.push_str(" (");
+        out.push_str(reason);
+        out.push(')');
+        out
+    }
+
     /// no such task: {id}
     #[must_use]
     pub fn no_such_task(id: &str) -> String {
@@ -269,6 +326,14 @@ pub mod general {
         out.push_str("unknown subcommand ");
         out.push_str(name);
         out.push_str("; try `sunrise help`");
+        out
+    }
+
+    /// updated
+    #[must_use]
+    pub fn updated() -> String {
+        let mut out = String::new();
+        out.push_str("updated");
         out
     }
 }
@@ -549,6 +614,42 @@ pub mod streams {
         out
     }
 
+    /// unknown streams verb `{verb}`; use move, create, edit, archive, unarchive or delete
+    #[must_use]
+    pub fn unknown_verb(verb: &str) -> String {
+        let mut out = String::new();
+        out.push_str("unknown streams verb `");
+        out.push_str(verb);
+        out.push_str("`; use move, create, edit, archive, unarchive or delete");
+        out
+    }
+
+    /// usage: streams create <name>... [--color <c>] [--parent <stream>] [--icon <i>] [--description <text>]
+    #[must_use]
+    pub fn create_usage() -> String {
+        let mut out = String::new();
+        out.push_str("usage: streams create <name>... [--color <c>] [--parent <stream>] [--icon <i>] [--description <text>]");
+        out
+    }
+
+    /// usage: streams edit <id|name>... [--name <n>] [--color <c>] [--icon <i>|-] [--description <text>|-]
+    #[must_use]
+    pub fn edit_usage() -> String {
+        let mut out = String::new();
+        out.push_str("usage: streams edit <id|name>... [--name <n>] [--color <c>] [--icon <i>|-] [--description <text>|-]");
+        out
+    }
+
+    /// unknown colour `{color}`; use slate, rose, amber, emerald, sky, indigo, violet or pink
+    #[must_use]
+    pub fn unknown_color(color: &str) -> String {
+        let mut out = String::new();
+        out.push_str("unknown colour `");
+        out.push_str(color);
+        out.push_str("`; use slate, rose, amber, emerald, sky, indigo, violet or pink");
+        out
+    }
+
     /// no stream matches "{text}"
     #[must_use]
     pub fn no_match(text: &str) -> String {
@@ -603,6 +704,32 @@ pub mod contexts {
     pub fn usage() -> String {
         let mut out = String::new();
         out.push_str("usage: context <id|name>; `sunrise contexts` lists them");
+        out
+    }
+
+    /// unknown contexts verb `{verb}`; use create, edit, archive, unarchive or delete
+    #[must_use]
+    pub fn unknown_verb(verb: &str) -> String {
+        let mut out = String::new();
+        out.push_str("unknown contexts verb `");
+        out.push_str(verb);
+        out.push_str("`; use create, edit, archive, unarchive or delete");
+        out
+    }
+
+    /// usage: contexts create <name>... [--description <text>]
+    #[must_use]
+    pub fn create_usage() -> String {
+        let mut out = String::new();
+        out.push_str("usage: contexts create <name>... [--description <text>]");
+        out
+    }
+
+    /// usage: contexts edit <id|name>... [--name <n>] [--description <text>|-]
+    #[must_use]
+    pub fn edit_usage() -> String {
+        let mut out = String::new();
+        out.push_str("usage: contexts edit <id|name>... [--name <n>] [--description <text>|-]");
         out
     }
 
@@ -758,6 +885,786 @@ pub mod focus {
     }
 }
 
+/// `schedule` messages.
+pub mod schedule {
+    /// usage: schedule <id>... <when>|-; see `sunrise help`
+    #[must_use]
+    pub fn usage() -> String {
+        let mut out = String::new();
+        out.push_str("usage: schedule <id>... <when>|-; see `sunrise help`");
+        out
+    }
+
+    /// schedule needs a date, e.g. `tomorrow`, `friday 9am`, or `-` to clear
+    #[must_use]
+    pub fn needs_date() -> String {
+        let mut out = String::new();
+        out.push_str("schedule needs a date, e.g. `tomorrow`, `friday 9am`, or `-` to clear");
+        out
+    }
+}
+
+/// `show` messages.
+pub mod show {
+    /// usage: show <task-id>
+    #[must_use]
+    pub fn usage() -> String {
+        let mut out = String::new();
+        out.push_str("usage: show <task-id>");
+        out
+    }
+}
+
+/// `note` messages.
+pub mod note {
+    /// usage: note <task-id> [<text>...|-|--file <path|->] [--force]
+    #[must_use]
+    pub fn usage() -> String {
+        let mut out = String::new();
+        out.push_str("usage: note <task-id> [<text>...|-|--file <path|->] [--force]");
+        out
+    }
+
+    /// this task has no note
+    #[must_use]
+    pub fn empty() -> String {
+        let mut out = String::new();
+        out.push_str("this task has no note");
+        out
+    }
+
+    /// this note holds content this build cannot write back exactly; saving would lose it. Pass --force to replace it anyway
+    #[must_use]
+    pub fn not_exact() -> String {
+        let mut out = String::new();
+        out.push_str("this note holds content this build cannot write back exactly; saving would lose it. Pass --force to replace it anyway");
+        out
+    }
+
+    /// note saved
+    #[must_use]
+    pub fn saved() -> String {
+        let mut out = String::new();
+        out.push_str("note saved");
+        out
+    }
+
+    /// note cleared
+    #[must_use]
+    pub fn cleared() -> String {
+        let mut out = String::new();
+        out.push_str("note cleared");
+        out
+    }
+}
+
+/// `routines` messages.
+pub mod routines {
+    /// name a routine by its id or title; `sunrise routines` lists them
+    #[must_use]
+    pub fn needs_target() -> String {
+        let mut out = String::new();
+        out.push_str("name a routine by its id or title; `sunrise routines` lists them");
+        out
+    }
+
+    /// no routine matches "{text}"
+    #[must_use]
+    pub fn no_match(text: &str) -> String {
+        let mut out = String::new();
+        out.push_str("no routine matches \"");
+        out.push_str(text);
+        out.push('\"');
+        out
+    }
+
+    /// "{text}" matches more than one routine; use more of its title or its id
+    #[must_use]
+    pub fn ambiguous(text: &str) -> String {
+        let mut out = String::new();
+        out.push('\"');
+        out.push_str(text);
+        out.push_str("\" matches more than one routine; use more of its title or its id");
+        out
+    }
+
+    /// unknown routines verb `{verb}`; use create, edit, archive, unarchive, pause, resume, delete or skip
+    #[must_use]
+    pub fn unknown_verb(verb: &str) -> String {
+        let mut out = String::new();
+        out.push_str("unknown routines verb `");
+        out.push_str(verb);
+        out.push_str("`; use create, edit, archive, unarchive, pause, resume, delete or skip");
+        out
+    }
+
+    /// usage: routines create <title>... --rule <RRULE> [--stream <s>] [--zone <IANA>] [--starts <when>] [--catchup skip|merge|queue] [--priority <1-5>]
+    #[must_use]
+    pub fn create_usage() -> String {
+        let mut out = String::new();
+        out.push_str("usage: routines create <title>... --rule <RRULE> [--stream <s>] [--zone <IANA>] [--starts <when>] [--catchup skip|merge|queue] [--priority <1-5>]");
+        out
+    }
+
+    /// usage: routines edit <id|title>... [--title <t>] [--rule <RRULE>] [--zone <IANA>] [--stream <s>] [--priority <1-5>|-] [--catchup <policy>]
+    #[must_use]
+    pub fn edit_usage() -> String {
+        let mut out = String::new();
+        out.push_str("usage: routines edit <id|title>... [--title <t>] [--rule <RRULE>] [--zone <IANA>] [--stream <s>] [--priority <1-5>|-] [--catchup <policy>]");
+        out
+    }
+
+    /// that recurrence rule will not do: {error}
+    #[must_use]
+    pub fn bad_rule(error: &str) -> String {
+        let mut out = String::new();
+        out.push_str("that recurrence rule will not do: ");
+        out.push_str(error);
+        out
+    }
+
+    /// unknown catch-up policy `{policy}`; use skip, merge or queue
+    #[must_use]
+    pub fn bad_catchup(policy: &str) -> String {
+        let mut out = String::new();
+        out.push_str("unknown catch-up policy `");
+        out.push_str(policy);
+        out.push_str("`; use skip, merge or queue");
+        out
+    }
+
+    /// the reader's zone has no IANA name; pass --zone <IANA> for this routine
+    #[must_use]
+    pub fn needs_zone() -> String {
+        let mut out = String::new();
+        out.push_str("the reader's zone has no IANA name; pass --zone <IANA> for this routine");
+        out
+    }
+
+    /// this routine has no upcoming occurrence to skip; name one with --at <YYYY-MM-DDTHH:MM>
+    #[must_use]
+    pub fn no_next() -> String {
+        let mut out = String::new();
+        out.push_str("this routine has no upcoming occurrence to skip; name one with --at <YYYY-MM-DDTHH:MM>");
+        out
+    }
+}
+
+/// `blocks` messages.
+pub mod blocks {
+    /// usage: block create|move|bind|unbind|merge|delete …; see `sunrise help`
+    #[must_use]
+    pub fn usage() -> String {
+        let mut out = String::new();
+        out.push_str("usage: block create|move|bind|unbind|merge|delete …; see `sunrise help`");
+        out
+    }
+
+    /// usage: block create --from <when> (--to <when> | --for <length>) [--title <t>] [--stream <s>] [--task <id>]... [--kind zoned|floating|instant]
+    #[must_use]
+    pub fn create_usage() -> String {
+        let mut out = String::new();
+        out.push_str("usage: block create --from <when> (--to <when> | --for <length>) [--title <t>] [--stream <s>] [--task <id>]... [--kind zoned|floating|instant]");
+        out
+    }
+
+    /// usage: block move <block-id> --from <when> [--to <when>]
+    #[must_use]
+    pub fn move_usage() -> String {
+        let mut out = String::new();
+        out.push_str("usage: block move <block-id> --from <when> [--to <when>]");
+        out
+    }
+
+    /// usage: block bind|unbind <block-id> <task-id>...
+    #[must_use]
+    pub fn bind_usage() -> String {
+        let mut out = String::new();
+        out.push_str("usage: block bind|unbind <block-id> <task-id>...");
+        out
+    }
+
+    /// usage: block merge <block-id> <block-id>
+    #[must_use]
+    pub fn merge_usage() -> String {
+        let mut out = String::new();
+        out.push_str("usage: block merge <block-id> <block-id>");
+        out
+    }
+
+    /// a block must end after it starts
+    #[must_use]
+    pub fn end_before_start() -> String {
+        let mut out = String::new();
+        out.push_str("a block must end after it starts");
+        out
+    }
+
+    /// unknown time kind `{kind}`; use zoned, floating or instant
+    #[must_use]
+    pub fn bad_kind(kind: &str) -> String {
+        let mut out = String::new();
+        out.push_str("unknown time kind `");
+        out.push_str(kind);
+        out.push_str("`; use zoned, floating or instant");
+        out
+    }
+
+    /// no such block: {id}
+    #[must_use]
+    pub fn no_such(id: &str) -> String {
+        let mut out = String::new();
+        out.push_str("no such block: ");
+        out.push_str(id);
+        out
+    }
+
+    /// merged; both originals deleted
+    #[must_use]
+    pub fn merged() -> String {
+        let mut out = String::new();
+        out.push_str("merged; both originals deleted");
+        out
+    }
+}
+
+/// `review` messages.
+pub mod review {
+    /// unknown review mode `{mode}`; use daily or save
+    #[must_use]
+    pub fn unknown_mode(mode: &str) -> String {
+        let mut out = String::new();
+        out.push_str("unknown review mode `");
+        out.push_str(mode);
+        out.push_str("`; use daily or save");
+        out
+    }
+
+    /// Captured since yesterday
+    #[must_use]
+    pub fn daily_inbox() -> String {
+        let mut out = String::new();
+        out.push_str("Captured since yesterday");
+        out
+    }
+
+    /// Nothing new in the Inbox.
+    #[must_use]
+    pub fn daily_inbox_empty() -> String {
+        let mut out = String::new();
+        out.push_str("Nothing new in the Inbox.");
+        out
+    }
+
+    /// Today's plan
+    #[must_use]
+    pub fn daily_today() -> String {
+        let mut out = String::new();
+        out.push_str("Today's plan");
+        out
+    }
+
+    /// Nothing is planned for today.
+    #[must_use]
+    pub fn daily_today_empty() -> String {
+        let mut out = String::new();
+        out.push_str("Nothing is planned for today.");
+        out
+    }
+
+    /// Blocked
+    #[must_use]
+    pub fn daily_blocked() -> String {
+        let mut out = String::new();
+        out.push_str("Blocked");
+        out
+    }
+
+    /// Nothing in today's plan is blocked.
+    #[must_use]
+    pub fn daily_blocked_empty() -> String {
+        let mut out = String::new();
+        out.push_str("Nothing in today's plan is blocked.");
+        out
+    }
+
+    /// review saved
+    #[must_use]
+    pub fn saved() -> String {
+        let mut out = String::new();
+        out.push_str("review saved");
+        out
+    }
+}
+
+/// `brief` messages.
+pub mod brief {
+    /// unknown brief `{arg}`; use morning or evening
+    #[must_use]
+    pub fn usage(arg: &str) -> String {
+        let mut out = String::new();
+        out.push_str("unknown brief `");
+        out.push_str(arg);
+        out.push_str("`; use morning or evening");
+        out
+    }
+}
+
+/// `reminders` messages.
+pub mod reminders {
+    /// unknown reminders mode `{arg}`; use plan
+    #[must_use]
+    pub fn usage(arg: &str) -> String {
+        let mut out = String::new();
+        out.push_str("unknown reminders mode `");
+        out.push_str(arg);
+        out.push_str("`; use plan");
+        out
+    }
+
+    /// reminders are switched off on this device (notifications.enabled), so nothing is planned
+    #[must_use]
+    pub fn disabled() -> String {
+        let mut out = String::new();
+        out.push_str("reminders are switched off on this device (notifications.enabled), so nothing is planned");
+        out
+    }
+
+    /// {entity} has a reminder that cannot be placed: {reason}
+    #[must_use]
+    pub fn unscheduled(entity: &str, reason: &str) -> String {
+        let mut out = String::new();
+        out.push_str(entity);
+        out.push_str(" has a reminder that cannot be placed: ");
+        out.push_str(reason);
+        out
+    }
+}
+
+/// `views` messages.
+pub mod views {
+    /// usage: views save <name> <view> [--query <text>] [--contexts a,b]
+    #[must_use]
+    pub fn save_usage() -> String {
+        let mut out = String::new();
+        out.push_str("usage: views save <name> <view> [--query <text>] [--contexts a,b]");
+        out
+    }
+
+    /// usage: views apply <name>
+    #[must_use]
+    pub fn apply_usage() -> String {
+        let mut out = String::new();
+        out.push_str("usage: views apply <name>");
+        out
+    }
+
+    /// usage: views delete <name>
+    #[must_use]
+    pub fn delete_usage() -> String {
+        let mut out = String::new();
+        out.push_str("usage: views delete <name>");
+        out
+    }
+
+    /// unknown views verb `{verb}`; use list, save, apply or delete
+    #[must_use]
+    pub fn unknown_verb(verb: &str) -> String {
+        let mut out = String::new();
+        out.push_str("unknown views verb `");
+        out.push_str(verb);
+        out.push_str("`; use list, save, apply or delete");
+        out
+    }
+
+    /// no saved view named `{name}`; `sunrise views` lists them
+    #[must_use]
+    pub fn no_such(name: &str) -> String {
+        let mut out = String::new();
+        out.push_str("no saved view named `");
+        out.push_str(name);
+        out.push_str("`; `sunrise views` lists them");
+        out
+    }
+
+    /// that view will not do: {error}
+    #[must_use]
+    pub fn bad_spec(error: &str) -> String {
+        let mut out = String::new();
+        out.push_str("that view will not do: ");
+        out.push_str(error);
+        out
+    }
+}
+
+/// `prefs` messages.
+pub mod prefs {
+    /// usage: prefs [list] | prefs get <key> | prefs set <key> <value> [--device] | prefs clear <key> [--device]
+    #[must_use]
+    pub fn usage() -> String {
+        let mut out = String::new();
+        out.push_str("usage: prefs [list] | prefs get <key> | prefs set <key> <value> [--device] | prefs clear <key> [--device]");
+        out
+    }
+
+    /// unknown prefs verb `{verb}`; use list, get, set or clear
+    #[must_use]
+    pub fn unknown_verb(verb: &str) -> String {
+        let mut out = String::new();
+        out.push_str("unknown prefs verb `");
+        out.push_str(verb);
+        out.push_str("`; use list, get, set or clear");
+        out
+    }
+
+    /// unknown preference key `{key}`; `sunrise prefs` lists them
+    #[must_use]
+    pub fn unknown_key(key: &str) -> String {
+        let mut out = String::new();
+        out.push_str("unknown preference key `");
+        out.push_str(key);
+        out.push_str("`; `sunrise prefs` lists them");
+        out
+    }
+
+    /// `{value}` is not a valid value for `{key}`: expected {expected}
+    #[must_use]
+    pub fn bad_value(value: &str, key: &str, expected: &str) -> String {
+        let mut out = String::new();
+        out.push('`');
+        out.push_str(value);
+        out.push_str("` is not a valid value for `");
+        out.push_str(key);
+        out.push_str("`: expected ");
+        out.push_str(expected);
+        out
+    }
+
+    /// true or false
+    #[must_use]
+    pub fn expect_bool() -> String {
+        let mut out = String::new();
+        out.push_str("true or false");
+        out
+    }
+
+    /// a whole number in the key's range
+    #[must_use]
+    pub fn expect_number() -> String {
+        let mut out = String::new();
+        out.push_str("a whole number in the key's range");
+        out
+    }
+
+    /// one of {values}
+    #[must_use]
+    pub fn expect_one_of(values: &str) -> String {
+        let mut out = String::new();
+        out.push_str("one of ");
+        out.push_str(values);
+        out
+    }
+
+    /// an http, https, ws or wss URL
+    #[must_use]
+    pub fn expect_url() -> String {
+        let mut out = String::new();
+        out.push_str("an http, https, ws or wss URL");
+        out
+    }
+
+    /// non-empty text
+    #[must_use]
+    pub fn expect_text() -> String {
+        let mut out = String::new();
+        out.push_str("non-empty text");
+        out
+    }
+
+    /// an IANA time zone name
+    #[must_use]
+    pub fn expect_zone() -> String {
+        let mut out = String::new();
+        out.push_str("an IANA time zone name");
+        out
+    }
+
+    /// a BCP 47 language tag
+    #[must_use]
+    pub fn expect_language() -> String {
+        let mut out = String::new();
+        out.push_str("a BCP 47 language tag");
+        out
+    }
+
+    /// an entity id
+    #[must_use]
+    pub fn expect_id() -> String {
+        let mut out = String::new();
+        out.push_str("an entity id");
+        out
+    }
+
+    /// MO, TU, WE, TH, FR, SA or SU
+    #[must_use]
+    pub fn expect_weekday() -> String {
+        let mut out = String::new();
+        out.push_str("MO, TU, WE, TH, FR, SA or SU");
+        out
+    }
+
+    /// a weekday and a time, e.g. MO 09:00
+    #[must_use]
+    pub fn expect_cadence() -> String {
+        let mut out = String::new();
+        out.push_str("a weekday and a time, e.g. MO 09:00");
+        out
+    }
+
+    /// a start and an end, e.g. 22:00-07:00
+    #[must_use]
+    pub fn expect_window() -> String {
+        let mut out = String::new();
+        out.push_str("a start and an end, e.g. 22:00-07:00");
+        out
+    }
+}
+
+/// `undo` messages.
+pub mod undo {
+    /// usage: undo
+    #[must_use]
+    pub fn usage() -> String {
+        let mut out = String::new();
+        out.push_str("usage: undo");
+        out
+    }
+
+    /// usage: redo
+    #[must_use]
+    pub fn redo_usage() -> String {
+        let mut out = String::new();
+        out.push_str("usage: redo");
+        out
+    }
+
+    /// undid {action}
+    #[must_use]
+    pub fn undid(action: &str) -> String {
+        let mut out = String::new();
+        out.push_str("undid ");
+        out.push_str(action);
+        out
+    }
+
+    /// redid {action}
+    #[must_use]
+    pub fn redid(action: &str) -> String {
+        let mut out = String::new();
+        out.push_str("redid ");
+        out.push_str(action);
+        out
+    }
+
+    /// nothing to undo
+    #[must_use]
+    pub fn nothing() -> String {
+        let mut out = String::new();
+        out.push_str("nothing to undo");
+        out
+    }
+
+    /// nothing to redo
+    #[must_use]
+    pub fn nothing_to_redo() -> String {
+        let mut out = String::new();
+        out.push_str("nothing to redo");
+        out
+    }
+
+    /// the undo history could not be read ({reason}); starting a new one
+    #[must_use]
+    pub fn discarded(reason: &str) -> String {
+        let mut out = String::new();
+        out.push_str("the undo history could not be read (");
+        out.push_str(reason);
+        out.push_str("); starting a new one");
+        out
+    }
+
+    /// the undo history was not saved: {error}
+    #[must_use]
+    pub fn unsaved(error: &str) -> String {
+        let mut out = String::new();
+        out.push_str("the undo history was not saved: ");
+        out.push_str(error);
+        out
+    }
+
+    /// capture “{title}”
+    #[must_use]
+    pub fn capture(title: &str) -> String {
+        let mut out = String::new();
+        out.push_str("capture “");
+        out.push_str(title);
+        out.push('”');
+        out
+    }
+
+    /// complete “{title}”
+    #[must_use]
+    pub fn complete(title: &str) -> String {
+        let mut out = String::new();
+        out.push_str("complete “");
+        out.push_str(title);
+        out.push('”');
+        out
+    }
+
+    /// edit “{name}”
+    #[must_use]
+    pub fn edit(name: &str) -> String {
+        let mut out = String::new();
+        out.push_str("edit “");
+        out.push_str(name);
+        out.push('”');
+        out
+    }
+
+    /// move “{title}” to another stream
+    #[must_use]
+    pub fn move_task(title: &str) -> String {
+        let mut out = String::new();
+        out.push_str("move “");
+        out.push_str(title);
+        out.push_str("” to another stream");
+        out
+    }
+
+    /// retitle “{title}”
+    #[must_use]
+    pub fn retitle(title: &str) -> String {
+        let mut out = String::new();
+        out.push_str("retitle “");
+        out.push_str(title);
+        out.push('”');
+        out
+    }
+
+    /// defer “{title}”
+    #[must_use]
+    pub fn defer(title: &str) -> String {
+        let mut out = String::new();
+        out.push_str("defer “");
+        out.push_str(title);
+        out.push('”');
+        out
+    }
+
+    /// schedule “{title}”
+    #[must_use]
+    pub fn schedule(title: &str) -> String {
+        let mut out = String::new();
+        out.push_str("schedule “");
+        out.push_str(title);
+        out.push('”');
+        out
+    }
+
+    /// edit the note on “{title}”
+    #[must_use]
+    pub fn note(title: &str) -> String {
+        let mut out = String::new();
+        out.push_str("edit the note on “");
+        out.push_str(title);
+        out.push('”');
+        out
+    }
+
+    /// drop {name}
+    #[must_use]
+    pub fn drop(name: &str) -> String {
+        let mut out = String::new();
+        out.push_str("drop ");
+        out.push_str(name);
+        out
+    }
+
+    /// create “{name}”
+    #[must_use]
+    pub fn create(name: &str) -> String {
+        let mut out = String::new();
+        out.push_str("create “");
+        out.push_str(name);
+        out.push('”');
+        out
+    }
+
+    /// delete {name}
+    #[must_use]
+    pub fn delete(name: &str) -> String {
+        let mut out = String::new();
+        out.push_str("delete ");
+        out.push_str(name);
+        out
+    }
+
+    /// archive or unarchive stream {name}
+    #[must_use]
+    pub fn archive_stream(name: &str) -> String {
+        let mut out = String::new();
+        out.push_str("archive or unarchive stream ");
+        out.push_str(name);
+        out
+    }
+
+    /// archive or unarchive context {name}
+    #[must_use]
+    pub fn archive_context(name: &str) -> String {
+        let mut out = String::new();
+        out.push_str("archive or unarchive context ");
+        out.push_str(name);
+        out
+    }
+
+    /// reorder streams
+    #[must_use]
+    pub fn reorder() -> String {
+        let mut out = String::new();
+        out.push_str("reorder streams");
+        out
+    }
+
+    /// bind tasks to block {name}
+    #[must_use]
+    pub fn bind(name: &str) -> String {
+        let mut out = String::new();
+        out.push_str("bind tasks to block ");
+        out.push_str(name);
+        out
+    }
+
+    /// move block {name}
+    #[must_use]
+    pub fn move_block(name: &str) -> String {
+        let mut out = String::new();
+        out.push_str("move block ");
+        out.push_str(name);
+        out
+    }
+}
+
+/// `tz` messages.
+pub mod tz {
+    /// this device reports no time zone, so times are read in UTC; set one with `sunrise tz set <IANA>`, SUNRISE_TZ or --tz
+    #[must_use]
+    pub fn unknown_note() -> String {
+        let mut out = String::new();
+        out.push_str("this device reports no time zone, so times are read in UTC; set one with `sunrise tz set <IANA>`, SUNRISE_TZ or --tz");
+        out
+    }
+}
+
 /// `export` messages.
 pub mod export {
     /// usage: export <trends|activity|focus|streaks> [json|csv] [path]
@@ -843,11 +1750,27 @@ pub mod attachments {
         out
     }
 
-    /// usage: attachment get <attachment-id> [path] | attachment cancel <id>
+    /// usage: attachment get <attachment-id> [path] | attachment cancel <id> | attachment add <task-id> <path> | attachment remove <id>
     #[must_use]
     pub fn usage() -> String {
         let mut out = String::new();
-        out.push_str("usage: attachment get <attachment-id> [path] | attachment cancel <id>");
+        out.push_str("usage: attachment get <attachment-id> [path] | attachment cancel <id> | attachment add <task-id> <path> | attachment remove <id>");
+        out
+    }
+
+    /// usage: attachment add <task-id> <path> [--name <filename>] [--mime <type>]
+    #[must_use]
+    pub fn add_usage() -> String {
+        let mut out = String::new();
+        out.push_str("usage: attachment add <task-id> <path> [--name <filename>] [--mime <type>]");
+        out
+    }
+
+    /// usage: attachment remove <attachment-id>
+    #[must_use]
+    pub fn remove_usage() -> String {
+        let mut out = String::new();
+        out.push_str("usage: attachment remove <attachment-id>");
         out
     }
 

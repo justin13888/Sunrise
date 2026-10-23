@@ -77,7 +77,7 @@ user can actually take today, and the only one that creates Blocks.
 - Export covers exactly two windows, **Today** and **This Week**:
   `ExportWindow::{Day, Week}` (`crates/sunrise-integrations/src/ical_vault.rs:137-145`),
   surfaced as `sunrise ical export [today|week] [path]`
-  (`crates/sunrise-cli/src/main.rs:84`). A whole-Stream export is target state,
+  (`crates/sunrise-cli/src/cmd/reports.rs#ical_export`). A whole-Stream export is target state,
   not a shipped option.
 - Useful for: sharing a calendar slice with someone outside Sunrise; importing into Outlook etc.
 
