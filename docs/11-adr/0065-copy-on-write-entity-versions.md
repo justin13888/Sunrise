@@ -276,3 +276,29 @@ it.
 3. **Unresolved sets that grow without bound in practice.** That would be
    telemetry showing users never resolve. It would call for an expiry rule
    that keeps the newest N losers, under its own ADR.
+
+## Clarified by implementation (2026-10)
+
+Building this record raised ten questions it leaves open. Each answer below
+is binding on the implementation, and none changes a decision above except
+D10, which narrows §8 and the last consequence for this rollout.
+
+| # | Clarification | Why |
+|---|---|---|
+| D1 | The causal frontier (§2) is keyed by **device**, and each entry is that device's greatest full stamp `(hlc, device, seq, stream)`, not its greatest `seq`. | `seq` counts per `(stream, device)` (ADR-0044 §1). A task that changes stream has versions in two sequences, so `seq` alone cannot order them. |
+| D2 | A device's own versions of an entity are always ordered by stamp: each has an implicit parent edge to the same device's previous version. | ADR-0043's hash chains and the HLC send rule already make a device's ops a chain. Without the edge, two consecutive legacy edits from one device would count as concurrent, and every entity with legacy history would show conflicts. |
+| D3 | An explicit parent whose known stamp is not below the child's is ignored. | It keeps ≺ acyclic and monotone in the stamp, which the order-independence of the fold needs. An honest writer never produces one, because of the HLC receive rule. |
+| D4 | The legacy floor of ADR-0044 §7 filters candidates **before** the class rules apply. A loser that came from a legacy version is kept but never surfaced. | A full-state op cannot tell a field it changed from one it carried unchanged (ADR-0014), so surfacing its losers would show conflicts nobody made, and a legacy-only history would not project exactly as before (§7). |
+| D5 | A loser whose canonical-CBOR value equals the winner's is not a conflict. | Two devices both completing a task, or both generating one occurrence, must not raise a conflict. |
+| D6 | `Task.completed_at` is **quiet**, not tracked. | It is coupled to `state` at read time (ADR-0044 §6). Tracked, every concurrent double completion would be a conflict twice over. |
+| D7 | Inside a set of concurrent writes, precedence is **origin first, then the class rule, then stamp**. | "Generated writes yield" (§3) is stated without exception, so it must outrank the class rules as well as the stamp. |
+| D8 | A group (§6) is identified by `(id, size)`. It is complete once at least `size` members are present; then every present member applies, and any later member applies at once. | The result stays a pure function of the op set, whatever order members arrive in. |
+| D9 | Until the vault requires `core.field_ops`, commands keep writing full-state ops, through the same merge path (§5). "Never emits a full-state op again" (§7) applies from the moment the feature is required. | ADR-0044 §9: the feature cannot be required while a paired device lacks it, and `Engine::require_features` refuses with `FeatureUnsupportedByDevices`. |
+| D10 | Compaction still folds the ops below the floor, but does **not** prune `entity_versions` or `entity_frontier` in this rollout. | A late version that names a pruned parent needs that parent's frontier, and any approximation of it diverges between replicas. A safe pruning rule is follow-up work. Until it lands, "Compaction bounds both" in §Consequences holds for the op log and the losers, not for the version rows. |
+
+The conflict classes are declared on each field in the registry's
+`for_each_entity!` (`crates/sunrise-id/src/registry.rs`), with the names the
+code uses: the ADR's `planned_at`, `target_at`, `estimate_minutes` and `sort_key`
+are `scheduled_at`, `due_at`, `estimated_duration_s` and `Stream.sort_order`.
+The terminal states, the D7 precedence and the yield rule are hashed into the
+schema fingerprint beside the classes, from `DOC_SCHEMA_V` 14.
