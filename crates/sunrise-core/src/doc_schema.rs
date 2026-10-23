@@ -12,8 +12,11 @@
 //! [`canonical_schema`] builds it from the code, never by hand:
 //!
 //! - every entity, its op variants and the records they write, with each
-//!   field's wire name, value type and CRDT type, from the entity registry
-//!   ([`sunrise_id::registry::ENTITIES`]);
+//!   field's wire name, value type, CRDT type and conflict class, from the
+//!   entity registry ([`sunrise_id::registry::ENTITIES`]);
+//! - the rules the conflict classes are decided by (ADR-0065 §3): which task
+//!   states are terminal, the precedence inside a set of concurrent writes,
+//!   and that a generated write yields;
 //! - every `InnerOp` variant the decoder accepts, read out of the derive, so
 //!   the control families are covered as well as the registry's, and the
 //!   payload type of each variant the registry does not declare
@@ -72,7 +75,8 @@ use serde_json::{json, Value};
 use std::path::PathBuf;
 use sunrise_cbor::version::{DOC_SCHEMA_FINGERPRINTS, DOC_SCHEMA_FP_DOMAIN};
 use sunrise_id::registry::{
-    Crdt, Merge, OpClass, Owner, Tagging, ValueField, ValueShape, ValueSpec, VariantShape, ENTITIES,
+    Conflict, Crdt, Merge, OpClass, Owner, Tagging, ValueField, ValueShape, ValueSpec,
+    VariantShape, ENTITIES, TERMINAL_STATES,
 };
 
 /// The version of this document's own layout. Bumped only if the schema's
@@ -161,6 +165,31 @@ const fn crdt_name(crdt: Crdt) -> &'static str {
         Crdt::Nested => "nested",
         Crdt::Derived => "derived",
     }
+}
+
+const fn conflict_name(conflict: Conflict) -> &'static str {
+    match conflict {
+        Conflict::Merge => "merge",
+        Conflict::Quiet => "quiet",
+        Conflict::Tracked => "tracked",
+        Conflict::State => "state",
+        Conflict::Tombstone => "tombstone",
+    }
+}
+
+/// How the conflict classes decide (ADR-0065 §3, and its clarification D7):
+/// the states [`Conflict::State`] ranks first, the order the merge compares
+/// concurrent writes in, and that a generated write never beats a concurrent
+/// user write. Hashed beside the classes, because two builds that disagreed
+/// about any of it would pick different winners from the same versions.
+///
+/// `precedence` is an order, so [`canonical_order`] leaves it as written.
+fn conflict_rules() -> Value {
+    json!({
+        "terminal_states": TERMINAL_STATES,
+        "precedence": ["origin", "class", "stamp"],
+        "generated_yields": true,
+    })
 }
 
 /// A type as the registry writes it, with the token spacing `stringify!`
@@ -311,6 +340,7 @@ fn canonical_order(mut schema: Value) -> Value {
         sort_strings(&mut f["field_op_kinds"]);
     }
     schema["features"] = Value::Array(features);
+    sort_strings(&mut schema["conflict_rules"]["terminal_states"]);
     schema
 }
 
@@ -339,6 +369,7 @@ fn raw_schema() -> Value {
                         "name": f.name,
                         "type": type_name(f.value_type),
                         "crdt": crdt_name(f.crdt),
+                        "conflict": conflict_name(f.conflict),
                     })).collect::<Vec<_>>(),
                 })).collect::<Vec<_>>(),
             })
@@ -379,6 +410,7 @@ fn raw_schema() -> Value {
         "values": value_types().map(value_type_value).collect::<Vec<_>>(),
         "enums": enums,
         "features": features,
+        "conflict_rules": conflict_rules(),
     })
 }
 
@@ -578,6 +610,55 @@ mod tests {
         assert_ne!(fingerprint(&schema), fingerprint(&renamed));
     }
 
+    /// ADR-0065 §3: a field's conflict class is part of the document's
+    /// shape, so moving one field from quiet to tracked moves the
+    /// fingerprint, and so does any change to the rules the classes follow.
+    #[test]
+    fn the_conflict_class_reaches_the_fingerprint() {
+        let schema = canonical_schema();
+        let task = schema["entities"]
+            .as_array()
+            .expect("entities")
+            .iter()
+            .position(|e| e["tag"] == "task")
+            .expect("task is registered");
+        let fields = schema["entities"][task]["records"][0]["fields"]
+            .as_array()
+            .expect("fields");
+        let priority = fields
+            .iter()
+            .position(|f| f["name"] == "priority")
+            .expect("priority is registered");
+        assert_eq!(fields[priority]["conflict"], "quiet");
+        let title = fields
+            .iter()
+            .find(|f| f["name"] == "title")
+            .expect("title is registered");
+        assert_eq!(title["conflict"], "tracked");
+
+        let mut moved = schema.clone();
+        moved["entities"][task]["records"][0]["fields"][priority]["conflict"] = json!("tracked");
+        assert_ne!(fingerprint(&schema), fingerprint(&moved));
+
+        let mut ruled = schema.clone();
+        ruled["conflict_rules"]["terminal_states"] = json!(["done"]);
+        assert_ne!(fingerprint(&schema), fingerprint(&ruled));
+        let mut yielding = schema.clone();
+        yielding["conflict_rules"]["generated_yields"] = json!(false);
+        assert_ne!(fingerprint(&schema), fingerprint(&yielding));
+    }
+
+    /// Every terminal state is a `TaskState` spelling this build knows, so
+    /// the State class ranks real states.
+    #[test]
+    fn terminal_states_are_task_states() {
+        use sunrise_domain::task::TaskState;
+        let known: BTreeSet<&str> = TaskState::KNOWN.iter().map(TaskState::as_str).collect();
+        for state in TERMINAL_STATES {
+            assert!(known.contains(state), "{state} is not a TaskState");
+        }
+    }
+
     /// Declaration order is not on the wire, so reversing every list the
     /// code declares leaves the fingerprint where it was: reordering source
     /// never forces a `DOC_SCHEMA_V` bump.
@@ -619,6 +700,7 @@ mod tests {
         for e in raw["enums"].as_array_mut().expect("enums") {
             reverse(&mut e["variants"]);
         }
+        reverse(&mut raw["conflict_rules"]["terminal_states"]);
         assert_ne!(raw, raw_schema(), "the reversal changed the declared order");
         assert_eq!(
             fingerprint(&canonical_order(raw)),

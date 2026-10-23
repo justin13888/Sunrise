@@ -54,6 +54,8 @@ fn patch(target: EntityRef, create: bool, fields: Vec<(&str, Value)>) -> InnerOp
         target,
         create,
         origin: None,
+        parents: None,
+        group: None,
         fields: fields
             .into_iter()
             .map(|(k, v)| (k.to_owned(), sunrise_domain::CborValue(v)))
@@ -1093,6 +1095,179 @@ fn a_patch_encodes_as_the_adr_shape() {
     let back = decode_inner_op(&bytes).unwrap();
     assert_eq!(back.inner_kind(), "task.patch");
     assert_eq!(back.target_ref(), task);
+}
+
+// ---- causal keys (ADR-0065 §1, §2, §6) ----
+
+fn op_ref_value(stream: u8, device: u8, seq: u64) -> Value {
+    Value::Array(vec![
+        Value::Bytes(vec![stream; 16]),
+        Value::Bytes(vec![device; 16]),
+        Value::Integer(seq.into()),
+    ])
+}
+
+/// A task `Patch` that writes its title, with `parents` and `group` as given.
+fn causal_patch(
+    parents: Option<Vec<crate::inner_op::OpRefWire>>,
+    group: Option<crate::inner_op::GroupWire>,
+) -> Box<crate::inner_op::PatchPayload> {
+    let task = EntityRef::new(EntityKind::Task, [0x7a; 16]);
+    let InnerOp::Patch(mut p) = patch(task, false, vec![("title", set(text("x")))]) else {
+        unreachable!()
+    };
+    p.parents = parents;
+    p.group = group;
+    p
+}
+
+fn group_of(size: u64) -> crate::inner_op::GroupWire {
+    crate::inner_op::GroupWire {
+        id: [0x0b; 16],
+        size,
+        unknown: Unknowns::new(),
+    }
+}
+
+fn payload_map(op: &InnerOp) -> Vec<(Value, Value)> {
+    let bytes = encode_inner_op(op).unwrap();
+    let value: Value = ciborium::de::from_reader(bytes.as_slice()).unwrap();
+    let Value::Map(outer) = value else { panic!() };
+    let Value::Map(inner) = outer[0].1.clone() else {
+        panic!()
+    };
+    inner
+}
+
+/// ADR-0065 §1's shape: `parents` is an array of `[stream, device, seq]`
+/// op-refs and `group` is `{"id": bstr16, "size": uint}`, beside the ADR-0044
+/// keys, and an unknown key in the group survives a round trip.
+#[test]
+fn a_patch_with_parents_and_group_encodes_as_the_adr_shape() {
+    use crate::inner_op::OpRefWire;
+    let mut group = group_of(3);
+    group.unknown.insert(
+        "x_later".into(),
+        sunrise_domain::CborValue(Value::Integer(1.into())),
+    );
+    let op = InnerOp::Patch(causal_patch(
+        Some(vec![OpRefWire([1; 16], [2; 16], 7)]),
+        Some(group),
+    ));
+    let inner = payload_map(&op);
+    let get = |k: &str| {
+        inner
+            .iter()
+            .find(|(key, _)| *key == text(k))
+            .map(|(_, v)| v.clone())
+    };
+    assert_eq!(
+        get("parents"),
+        Some(Value::Array(vec![op_ref_value(1, 2, 7)]))
+    );
+    assert_eq!(
+        get("group"),
+        Some(Value::Map(vec![
+            (text("id"), Value::Bytes(vec![0x0b; 16])),
+            (text("size"), Value::Integer(3.into())),
+            (text("x_later"), Value::Integer(1.into())),
+        ]))
+    );
+    let back = decode_inner_op(&encode_inner_op(&op).unwrap()).unwrap();
+    let (InnerOp::Patch(a), InnerOp::Patch(b)) = (&op, &back) else {
+        unreachable!()
+    };
+    assert_eq!(a, b);
+    assert!(check_patch(b).is_ok());
+}
+
+/// A `Patch` that names no parents and one that names an empty list are
+/// different versions (ADR-0065 §2), so the wire keeps them apart, and an op
+/// written before the key existed reads as the first.
+#[test]
+fn parents_absent_and_empty_are_distinct_on_the_wire() {
+    let absent = InnerOp::Patch(causal_patch(None, None));
+    let empty = InnerOp::Patch(causal_patch(Some(Vec::new()), None));
+    let keys = |op: &InnerOp| -> Vec<String> {
+        payload_map(op)
+            .into_iter()
+            .filter_map(|(k, _)| k.into_text().ok())
+            .collect()
+    };
+    assert_eq!(keys(&absent), ["ref", "fields"]);
+    assert_eq!(keys(&empty), ["ref", "parents", "fields"]);
+    for (op, want) in [(&absent, None), (&empty, Some(Vec::new()))] {
+        let InnerOp::Patch(back) = decode_inner_op(&encode_inner_op(op).unwrap()).unwrap() else {
+            unreachable!()
+        };
+        assert_eq!(back.parents, want);
+        assert!(check_patch(&back).is_ok());
+    }
+}
+
+/// ADR-0065 §6: a group has at least two members. A group of one or none,
+/// a parent that names no op, and a parent named twice are refused, and so
+/// is a parent that is not an op-ref at all, which does not decode.
+#[test]
+fn a_group_smaller_than_two_is_refused() {
+    use crate::inner_op::OpRefWire;
+    for size in [0, 1] {
+        assert!(
+            matches!(
+                check_patch(&causal_patch(None, Some(group_of(size)))),
+                Err(PatchProblem::Invalid(_))
+            ),
+            "a group of {size}"
+        );
+    }
+    assert!(check_patch(&causal_patch(None, Some(group_of(2)))).is_ok());
+    let a = OpRefWire([1; 16], [2; 16], 4);
+    for parents in [
+        vec![OpRefWire([1; 16], [2; 16], 0)],
+        vec![OpRefWire([1; 16], [2; 16], u64::MAX)],
+        vec![a, a],
+    ] {
+        assert!(
+            matches!(
+                check_patch(&causal_patch(Some(parents.clone()), None)),
+                Err(PatchProblem::Invalid(_))
+            ),
+            "{parents:?}"
+        );
+    }
+
+    let task = EntityRef::new(EntityKind::Task, [0x7a; 16]);
+    for malformed in [
+        Value::Array(vec![Value::Array(vec![
+            Value::Bytes(vec![1; 15]),
+            Value::Bytes(vec![2; 16]),
+            Value::Integer(1.into()),
+        ])]),
+        Value::Array(vec![Value::Integer(1.into())]),
+        Value::Map(Vec::new()),
+    ] {
+        let bytes = cbor_of(&Value::Map(vec![(
+            text("Patch"),
+            Value::Map(vec![
+                (text("ref"), eref(task)),
+                (text("parents"), malformed.clone()),
+                (
+                    text("fields"),
+                    Value::Map(vec![(text("title"), set(text("x")))]),
+                ),
+            ]),
+        )]));
+        assert!(
+            matches!(decode_inner_op(&bytes), Err(InnerOpError::Cbor(_))),
+            "{malformed:?} is damage"
+        );
+    }
+}
+
+fn cbor_of(v: &Value) -> Vec<u8> {
+    let mut out = Vec::new();
+    ciborium::ser::into_writer(v, &mut out).unwrap();
+    out
 }
 
 // ---- convergence ----

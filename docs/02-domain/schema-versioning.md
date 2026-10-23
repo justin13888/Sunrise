@@ -156,7 +156,11 @@ names is described nowhere, and another fails while a `lossy_enum!` user is
 missing from the schema's enums. Feature ids are covered too: each registered
 feature, with its scope, op kinds, fields, field-op kinds and arrival
 version, is hashed from `DOC_SCHEMA_V` 10
-([#324](https://github.com/justin13888/Sunrise/issues/324)).
+([#324](https://github.com/justin13888/Sunrise/issues/324)). Each field's conflict
+class, and the schema's `conflict_rules` (the terminal task states, the
+precedence among concurrent writes, and that a generated write yields), are
+hashed from `DOC_SCHEMA_V` 14
+([ADR-0065](../11-adr/0065-copy-on-write-entity-versions.md) §3).
 
 ## How fields merge
 

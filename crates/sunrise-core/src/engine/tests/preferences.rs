@@ -458,6 +458,8 @@ fn emit_values(e: &Engine, db: &mut Db, entries: Vec<(&str, Value)>) {
             .unwrap()
             .is_none(),
         origin: None,
+        parents: None,
+        group: None,
         fields,
         unknown: Unknowns::new(),
     }));
@@ -574,6 +576,8 @@ fn a_preferences_patch_uses_the_entity_feature() {
         target: preferences_ref(),
         create: true,
         origin: None,
+        parents: None,
+        group: None,
         fields: Unknowns::new(),
         unknown: Unknowns::new(),
     }));
@@ -583,6 +587,8 @@ fn a_preferences_patch_uses_the_entity_feature() {
         target: EntityRef::new(EntityKind::Task, [1; 16]),
         create: true,
         origin: None,
+        parents: None,
+        group: None,
         fields: Unknowns::new(),
         unknown: Unknowns::new(),
     }));

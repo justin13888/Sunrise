@@ -350,7 +350,9 @@ pub struct DeviceFeaturesPayload {
 // (`crate::doc_schema`). A field or variant added to one of these types and
 // not described here fails this crate's build.
 #[allow(unused_imports)]
-use crate::inner_op::{FrontierWire, InnerOp, PatchPayload, StreamDigestPayload};
+use crate::inner_op::{
+    FrontierWire, GroupWire, InnerOp, OpRefWire, PatchPayload, StreamDigestPayload,
+};
 #[allow(unused_imports)]
 use sunrise_domain::Unknowns;
 #[allow(unused_imports)]
@@ -404,7 +406,14 @@ sunrise_id::describe_value_types! {
             target as "ref": EntityRef;
             create: bool;
             origin: Option<String>;
+            parents: Option<Vec<OpRefWire>>;
+            group: Option<GroupWire>;
             fields: Unknowns;
+            ..unknown
+        }
+        GroupWire {
+            id: [u8; 16];
+            size: u64;
             ..unknown
         }
         StreamDigestPayload {
@@ -417,6 +426,7 @@ sunrise_id::describe_value_types! {
     aliases: [],
     tuples: [
         FrontierWire([u8; 16], u64, [u8; 32]);
+        OpRefWire([u8; 16], [u8; 16], u64);
     ],
     variants: [
         Recipient external {
@@ -558,11 +568,14 @@ mod tests {
                 target: EntityRef::new(sunrise_id::EntityKind::Task, [1u8; 16]),
                 create: true,
                 origin: Some(PatchPayload::GENERATED.into()),
+                parents: Some(vec![OpRefWire([1u8; 16], [2u8; 16], 3)]),
+                group: Some(a_group()),
                 fields: Unknowns::new(),
                 unknown: Unknowns::new(),
             },
             &[],
         );
+        assert_wire_names("GroupWire", &a_group(), &[]);
         assert_wire_names(
             "StreamDigestPayload",
             &StreamDigestPayload {
@@ -586,6 +599,7 @@ mod tests {
             "VaultRequiresPayload",
             "DeviceFeaturesPayload",
             "PatchPayload",
+            "GroupWire",
             "StreamDigestPayload",
         ];
         for v in PAYLOAD_VALUE_TYPES {
@@ -654,6 +668,25 @@ mod tests {
             panic!("FrontierWire must encode as an array");
         };
         assert_eq!(written.len(), items.len());
+    }
+
+    /// An op-ref is `[stream_id, device_id, seq]`: two byte strings and an
+    /// integer, in its described order (ADR-0065 §1).
+    #[test]
+    fn op_ref_wire_is_a_described_tuple() {
+        use ciborium::value::Value;
+        let ValueShape::Tuple(items) = described("OpRefWire") else {
+            panic!("OpRefWire is described as a tuple");
+        };
+        assert_eq!(
+            encode(&OpRefWire([1u8; 16], [2u8; 16], 3)),
+            Value::Array(vec![
+                Value::Bytes(vec![1u8; 16]),
+                Value::Bytes(vec![2u8; 16]),
+                Value::Integer(3.into()),
+            ])
+        );
+        assert_eq!(items.len(), 3);
     }
 
     /// `{ "features": [...], unknown-fields }`, as ADR-0045 §7's CDDL says,
@@ -732,6 +765,14 @@ mod tests {
         ciborium::ser::into_writer(&p, &mut buf).unwrap();
         let back: KeyEnvelopePayload = ciborium::de::from_reader(buf.as_slice()).unwrap();
         assert_eq!(back, p);
+    }
+
+    fn a_group() -> GroupWire {
+        GroupWire {
+            id: [5u8; 16],
+            size: 2,
+            unknown: Unknowns::new(),
+        }
     }
 
     fn a_transition() -> IdentityTransitionPayload {
