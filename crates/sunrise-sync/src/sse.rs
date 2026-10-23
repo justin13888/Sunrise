@@ -147,14 +147,14 @@ const BODY_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2)
 /// ordinary rather than stalled — and the cost of calling it stalled is not
 /// one slow download. [`SseTransport::blob_fetch`] sends no `Range` header, so
 /// every attempt restarts at byte 0, and
-/// `crates/sunrise-core/src/blob_fetch.rs:100` allows ten of them before the
+/// `crates/sunrise-core/src/blob_fetch.rs:103` allows ten of them before the
 /// row is parked `partial` and the waiting client is told the attachment is
 /// unavailable. One gap per hundred megabytes is then a permanently
 /// unfetchable attachment.
 ///
 /// What this number costs, stated because the cost is not one wait: a peer
 /// that accepts the connection and then says nothing holds a fetch for fifteen
-/// seconds, and `crates/sunrise-core/src/blob_fetch.rs:100` allows ten such
+/// seconds, and `crates/sunrise-core/src/blob_fetch.rs:103` allows ten such
 /// attempts before the row is parked.
 ///
 /// Those ten are **not consecutive**, and nothing here should be read as
@@ -168,7 +168,7 @@ const BODY_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2)
 /// therefore this bound plus thirty seconds, and the tenth attempt parks the
 /// row between six and seven minutes after the request. On a busy one an
 /// inbound batch or a local submit re-drives the drain sooner, so the span is
-/// shorter and is not predictable from this constant at all.
+/// shorter, though never below the two minutes of delays `blob_fetch` keeps.
 ///
 /// That span is longer than the 300 s `crates/sunrise-cli/src/cmd/files.rs#DOWNLOAD_DEADLINE`
 /// gives one interactive download, so `sunrise attachment get` against a
