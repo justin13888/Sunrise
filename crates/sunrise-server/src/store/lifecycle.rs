@@ -130,6 +130,9 @@ pub struct StoreStats {
     pub relay_bytes: u64,
     /// Blobs tombstoned and not yet collected.
     pub blob_tombstones: u64,
+    /// Ciphertext bytes of every readable blob, from the committed-blob
+    /// ledger (`store::blob_ledger`).
+    pub blob_bytes: u64,
 }
 
 fn signed(v: u64) -> i64 {
@@ -436,7 +439,8 @@ impl Store {
                 (SELECT COUNT(*) FROM devices WHERE revoked = 0),
                 (SELECT COUNT(*) FROM devices WHERE revoked = 1),
                 (SELECT COUNT(*) FROM push_tokens),
-                (SELECT COUNT(*) FROM blob_tombstones)",
+                (SELECT COUNT(*) FROM blob_tombstones),
+                (SELECT COALESCE(SUM(size_bytes), 0) FROM committed_blobs)",
             [],
             |r| {
                 Ok(StoreStats {
@@ -446,6 +450,7 @@ impl Store {
                     devices_revoked: count(r, 3)?,
                     push_tokens: count(r, 4)?,
                     blob_tombstones: count(r, 5)?,
+                    blob_bytes: count(r, 6)?,
                     ..StoreStats::default()
                 })
             },
@@ -634,6 +639,7 @@ mod tests {
             "devices",
             "account_delete_tokens",
             "blob_tombstones",
+            "committed_blobs",
         ] {
             let sql = format!("SELECT COUNT(*) FROM {table} WHERE account_id = ?1");
             assert_eq!(left(&sql, &a), 0, "{table}");

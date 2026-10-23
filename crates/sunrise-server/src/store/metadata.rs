@@ -1,7 +1,8 @@
 //! The metadata seam ADR-0062 §1 puts every relay table behind.
 //!
 //! [`MetadataStore`] covers accounts, devices, push tokens, cursors, blob
-//! tombstones, deletion tokens and the durable relay log. Each method is one
+//! tombstones, the committed-blob ledger, deletion tokens and the durable
+//! relay log. Each method is one
 //! unit of work that commits or rolls back whole, which is the shape [`Store`]
 //! already had: revocation, account erasure and a relay append each touch
 //! several tables, and keeping each inside one method keeps its atomicity
@@ -24,8 +25,8 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use super::{
-    Account, AccountSummary, DeclaredCursor, Device, NewDevice, NewTombstone, Store, StoreError,
-    StoreStats,
+    Account, AccountSummary, CommittedBlob, DeclaredCursor, Device, NewDevice, NewTombstone, Store,
+    StoreError, StoreStats,
 };
 use crate::auth::Subject;
 use crate::relay::{CursorGap, FrameHead, StreamKey};
@@ -220,6 +221,13 @@ pub trait MetadataStore: Send + Sync + std::fmt::Debug {
         account_id: &str,
         blob_key: &[u8; 16],
     ) -> Result<(), MetadataError>;
+    /// [`Store::record_blob`].
+    async fn record_blob(&self, blob: &CommittedBlob) -> Result<(), MetadataError>;
+    /// [`Store::forget_blob`].
+    async fn forget_blob(&self, account_id: &str, blob_key: &[u8; 16])
+        -> Result<(), MetadataError>;
+    /// [`Store::backfill_blobs`].
+    async fn backfill_blobs(&self, blobs: &[CommittedBlob]) -> Result<u64, MetadataError>;
     /// [`Store::record_cursors`].
     async fn record_cursors(
         &self,
@@ -483,6 +491,19 @@ impl MetadataStore for Store {
         blob_key: &[u8; 16],
     ) -> Result<(), MetadataError> {
         Ok(Self::clear_tombstone(self, account_id, blob_key)?)
+    }
+    async fn record_blob(&self, blob: &CommittedBlob) -> Result<(), MetadataError> {
+        Ok(Self::record_blob(self, blob)?)
+    }
+    async fn forget_blob(
+        &self,
+        account_id: &str,
+        blob_key: &[u8; 16],
+    ) -> Result<(), MetadataError> {
+        Ok(Self::forget_blob(self, account_id, blob_key)?)
+    }
+    async fn backfill_blobs(&self, blobs: &[CommittedBlob]) -> Result<u64, MetadataError> {
+        Ok(Self::backfill_blobs(self, blobs)?)
     }
     async fn record_cursors(
         &self,

@@ -87,7 +87,7 @@ See [`logging.md`](./logging.md) for the record schema and grammar, and
 | `srv.blob.tombstoned` | info | `DELETE /api/v1/blobs/{blob_id}` tombstoned a blob; `account_h`, `blob_h`. The ciphertext stays readable until it is collected. |
 | `srv.blob.gc_deleted` | info | The maintenance pass reclaimed a tombstoned blob whose grace period had passed and whose quorum held; `account_h`, `blob_h`. |
 | `srv.blob.upload_swept` | info | The maintenance pass removed an upload untouched past `[storage] pending_upload_ttl_hours`. No `account_h`: the pass reads the directory, which is keyed by a hash it cannot reverse. |
-| `srv.maintenance.failed` | warn | One maintenance item, or the whole pass, failed and is retried on the next; `reason` (`account_erase`, `blob_collect`, `upload_sweep`, `orphan_sweep`, `pass`) and `cause`. |
+| `srv.maintenance.failed` | warn | One maintenance item, or the whole pass, failed and is retried on the next; `reason` (`account_erase`, `blob_collect`, `blob_ledger`, `upload_sweep`, `orphan_sweep`, `pass`) and `cause`. |
 
 ### `db` — `sunrise-storage`
 

@@ -86,6 +86,7 @@ it is under the database key at rest:
 | `relay_frame_heads.device_id` | **raw 16-byte id** | read from the envelope's cleartext routing header |
 | `account_delete_tokens.token_h` | BLAKE3 | of a pending deletion phrase; the phrase itself is never stored |
 | `blob_tombstones` | **raw ids** | blob key, stream id, publishing device and `seq` of the detaching op, as `DELETE /blobs/{blob_id}` named them |
+| `committed_blobs` | **raw ids** | per account, each readable blob's key and its ciphertext size, which `sunrise_blob_storage_bytes` sums |
 | `device_cursors` | **raw ids** | per device, stream and originating device, the `seq` it declared applied on `POST /sync/subscribe` |
 
 So the channel namespace is hashed and the routing ids inside it are not. The
@@ -130,6 +131,7 @@ how far along it is in `PRAGMA user_version`. On open, `Store::open`:
 | 0002 `devices_vault_device_id` | Adds `devices.vault_device_id` where a database predates it, then the `devices_by_vault_id` index. |
 | 0003 `account_and_blob_deletion` | Adds `accounts.delete_requested_at_ms` and the tables deletion keeps: `account_delete_tokens`, `blob_tombstones`, and `device_cursors` (the cursors each device declared on subscribe, which a tombstone's quorum reads). Each cascades from its account or device row. |
 | 0004 `relay_frames_n_ops` | Adds `relay_frames.n_ops`, the ops each stored frame carries, and counts them for the frames already stored by reading each frame's op list (the same depth the publish path reads; no envelope is opened). |
+| 0005 `committed_blobs` | Adds the committed-blob ledger, one row per readable blob with its size, cascading from its account. Created empty, because the blobs already committed live on the blob backend, which a migration cannot read; the maintenance pass backfills them from their manifests. |
 
 A shipped migration is never edited: migration 0001 executes the tenants'
 `SCHEMA` constants, so those are frozen with it, and a test builds a database
@@ -219,7 +221,8 @@ What `api/blobs.rs` does:
      → 200 { upload_id = "up_" + 16 random bytes hex,
              chunk_urls = ["/api/v1/blobs/<upload_id>/<i>", …] }
    The per-upload pending area is created eagerly, under
-   <blob_root>/pending/<blake3(account_id)[..16] hex>/<upload_id>/.
+   <blob_root>/pending/<blake3(account_id)[..16] hex>/<upload_id>/,
+   with the time it was opened beside the chunks.
 2. PUT /api/v1/blobs/<upload_id>/<i>   raw ciphertext chunk → 204
 3. POST /api/v1/blobs/finalize { upload_id, content_hash, chunk_hashes }
      a. re-read every pending chunk from disk and re-hash it with BLAKE3;
@@ -227,8 +230,9 @@ What `api/blobs.rs` does:
         a chunk that was never uploaded → 409 BLOB_CHUNK_MISSING;
      b. hash the concatenation and compare to content_hash → 400 on mismatch;
      c. write the chunks under the content address, then the manifest LAST;
-     d. lift any tombstone on that content address, and best-effort delete
-        of the upload's pending directory.
+     d. record the blob and its size in the committed-blob ledger, lift any
+        tombstone on that content address, and best-effort delete of the
+        upload's pending directory.
      → 200 { blob_id = "blb_" + first 16 bytes of content_hash hex,
              size_bytes, chunk_count }
 ```
@@ -361,12 +365,14 @@ account under a BLAKE3 of the account id:
 <data_dir>/
 ├── sunrise.db                        # SQLite: accounts, devices, push_tokens,
 │                                     #   relay_frames, relay_frame_heads, relay_evicted,
-│                                     #   account_delete_tokens, blob_tombstones, device_cursors
+│                                     #   account_delete_tokens, blob_tombstones, device_cursors,
+│                                     #   committed_blobs
 ├── sunrise.db-wal, sunrise.db-shm    # WAL and its index, present while the server runs
 ├── sunrise.db.pre-encryption         # only after [storage] encrypt was turned on: the
 │                                     #   plaintext original, until the operator deletes it
 └── blobs/
     ├── pending/<acct_h>/<upload_id>/
+    │   ├── opened                      # when init opened it, ms since the epoch
     │   └── blobs/<xx>/<upload_hex>/<i>.bin
     └── committed/<acct_h>/
         ├── blobs/<xx>/<blob_hex>/<i>.bin   # xx = first 2 hex chars of the id

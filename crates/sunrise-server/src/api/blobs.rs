@@ -42,6 +42,7 @@ use crate::api::ratelimit::Throttled;
 use crate::api::signed::{Caller, Signed, SignedBinary, SignedParts};
 use crate::blob::{AccountKey, BlobBackend, Manifest};
 use crate::state::ServerState;
+use crate::store::CommittedBlob;
 use kynos::di::inject::Inject;
 use kynos::extract::body::json::Json;
 use kynos::extract::params::path::Path;
@@ -272,10 +273,12 @@ pub async fn init(
         .open_upload(&state, "/api/v1/blobs/init", &caller, raw)?;
     let upload_id = format!("up_{}", hex::encode(raw));
     // Create the pending area eagerly so a chunk PUT is a write, not a
-    // mkdir-then-write race between two concurrent chunk uploads.
+    // mkdir-then-write race between two concurrent chunk uploads. The open
+    // time is kept with it, because `finalize` measures the upload from here
+    // and the limiter's ledger only exists with `[limits]` on.
     state
         .blobs
-        .open_upload(account(&caller), raw)
+        .open_upload(account(&caller), raw, state.clock.now_ms())
         .await
         .map_err(ApiError::from)?;
     let chunk_urls = (0..body.chunk_count)
@@ -462,25 +465,67 @@ pub async fn finalize(
             },
         )
         .await?;
-    // The same ciphertext uploaded again is the attachment coming back — a
-    // detach undone, or the same file attached elsewhere — so any tombstone
-    // on its content address no longer describes it.
-    state
-        .store
-        .clear_tombstone(&caller.principal.account.account_id, &blob)
-        .await?;
-    // Best effort: a leftover pending area costs storage, never correctness,
-    // and the maintenance pass sweeps whatever this leaves. The whole upload,
-    // not only its chunks.
-    let _ = state.blobs.discard_upload(account, upload).await;
-    state.limiter.close_upload(&caller, upload);
-
-    state.metrics.incr("sunrise_blob_finalize_total");
+    settle(&state, &caller, account, upload, blob, size_bytes).await?;
     Ok(Json(FinalizeResponse {
         blob_id: format!("blb_{}", hex::encode(blob)),
         size_bytes,
         chunk_count,
     }))
+}
+
+/// What `finalize` owes once the manifest has made `blob` readable: the
+/// ledger row and the tombstone, the upload's pending area and ledger entry,
+/// and the upload's metrics.
+async fn settle(
+    state: &ServerState,
+    caller: &Caller,
+    account: AccountKey,
+    upload: [u8; 16],
+    blob: [u8; 16],
+    size_bytes: u64,
+) -> Result<(), ApiError> {
+    let account_id = &caller.principal.account.account_id;
+    // Readable now, so counted in the bytes at rest. A failure here leaves a
+    // readable blob the ledger does not know, which the maintenance pass
+    // backfills from its manifest.
+    state
+        .store
+        .record_blob(&CommittedBlob {
+            account_id: account_id.clone(),
+            blob_key: blob,
+            size_bytes,
+        })
+        .await?;
+    // The same ciphertext uploaded again is the attachment coming back — a
+    // detach undone, or the same file attached elsewhere — so any tombstone
+    // on its content address no longer describes it.
+    state.store.clear_tombstone(account_id, &blob).await?;
+    // Read before the pending area, which holds it, is discarded. A reading
+    // that is not there is no sample, never a failed finalize.
+    let opened_at_ms = state
+        .blobs
+        .upload_opened_at(account, upload)
+        .await
+        .ok()
+        .flatten();
+    // Best effort: a leftover pending area costs storage, never correctness,
+    // and the maintenance pass sweeps whatever this leaves. The whole upload,
+    // not only its chunks.
+    let _ = state.blobs.discard_upload(account, upload).await;
+    state.limiter.close_upload(caller, upload);
+
+    state.metrics.incr("sunrise_blob_finalize_total");
+    if let Some(opened_at_ms) = opened_at_ms {
+        #[allow(clippy::cast_precision_loss)]
+        let seconds = state.clock.now_ms().saturating_sub(opened_at_ms) as f64 / 1000.0;
+        state.metrics.observe(
+            "sunrise_blob_upload_duration_seconds",
+            &[],
+            crate::metrics::TRANSFER_BUCKETS,
+            seconds,
+        );
+    }
+    Ok(())
 }
 
 /// Stream a committed blob's ciphertext back.

@@ -1,5 +1,5 @@
-//! The maintenance pass: account erasure, blob garbage collection, and the
-//! pending-upload sweep.
+//! The maintenance pass: account erasure, blob garbage collection, the
+//! committed-blob ledger's backfill, and the pending-upload sweep.
 //!
 //! One function, [`run`], called on a timer by the serving binary and on
 //! demand by `sunrise-server admin gc`. Every deadline it enforces is measured
@@ -10,10 +10,11 @@
 //!
 //! Accounts first: erasing an account removes its tombstones and its whole
 //! blob tree, so collecting its blobs one by one first would be wasted work.
-//! Then tombstoned blobs, then abandoned uploads, then — only where the blob
-//! root is one the operator configured — per-account directories whose account
-//! no longer exists, which is what a crash between an erasure's commit and its
-//! file deletion leaves behind.
+//! Then tombstoned blobs; then the committed-blob ledger's backfill, after the
+//! collection so it never re-adds a blob this pass removed; then abandoned
+//! uploads; then, only where the blob root is one the operator configured,
+//! per-account directories whose account no longer exists, which is what a
+//! crash between an erasure's commit and its file deletion leaves behind.
 //!
 //! # Failure
 //!
@@ -82,16 +83,22 @@ pub async fn run(state: &ServerState, now_ms: u64, dry_run: bool) -> Result<Repo
         if dry_run {
             continue;
         }
+        // Unreadable first, then out of the bytes at rest, then the tombstone:
+        // a failure part-way leaves the tombstone, so the next pass retries
+        // the whole collection.
         let collected = match state
             .blobs
             .delete_committed(account_key(&account_id), blob)
             .await
         {
-            Ok(()) => state
-                .store
-                .clear_tombstone(&account_id, &blob)
-                .await
-                .map_err(|e| e.to_string()),
+            Ok(()) => match state.store.forget_blob(&account_id, &blob).await {
+                Ok(()) => state
+                    .store
+                    .clear_tombstone(&account_id, &blob)
+                    .await
+                    .map_err(|e| e.to_string()),
+                Err(e) => Err(e.to_string()),
+            },
             Err(e) => Err(e.to_string()),
         };
         match collected {
@@ -108,6 +115,12 @@ pub async fn run(state: &ServerState, now_ms: u64, dry_run: bool) -> Result<Repo
                 report.blobs_collected -= 1;
                 failed(&mut report, "blob_collect", &e);
             }
+        }
+    }
+
+    if !dry_run {
+        if let Err(e) = backfill_ledger(state).await {
+            failed(&mut report, "blob_ledger", &e);
         }
     }
 
@@ -172,6 +185,48 @@ pub async fn erase_account(state: &ServerState, account_id: &str) -> Result<(), 
         "account erased"
     );
     Ok(())
+}
+
+/// Record in the committed-blob ledger every readable blob it does not hold:
+/// the blobs committed before the ledger existed, and any whose `finalize`
+/// stopped between its manifest and its row.
+///
+/// The backend lists blobs by account hash and the ledger is keyed by account
+/// id, so each hash is matched against the live accounts; a tree whose
+/// account is gone is the orphan sweep's, not the ledger's.
+async fn backfill_ledger(state: &ServerState) -> Result<(), String> {
+    let manifests = state
+        .blobs
+        .committed_manifests()
+        .await
+        .map_err(|e| e.to_string())?;
+    if manifests.is_empty() {
+        return Ok(());
+    }
+    let ids: std::collections::HashMap<_, _> = state
+        .store
+        .account_summaries()
+        .await
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .map(|a| (account_key(&a.account_id), a.account_id))
+        .collect();
+    let blobs: Vec<_> = manifests
+        .into_iter()
+        .filter_map(|m| {
+            ids.get(&m.account).map(|id| crate::store::CommittedBlob {
+                account_id: id.clone(),
+                blob_key: m.blob,
+                size_bytes: m.manifest.size_bytes,
+            })
+        })
+        .collect();
+    state
+        .store
+        .backfill_blobs(&blobs)
+        .await
+        .map(drop)
+        .map_err(|e| e.to_string())
 }
 
 fn failed(report: &mut Report, what: &'static str, cause: &str) {

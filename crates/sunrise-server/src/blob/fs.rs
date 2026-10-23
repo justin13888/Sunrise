@@ -3,6 +3,7 @@
 //!
 //! ```text
 //! <root>/pending/<account_h>/up_<upload>/blobs/<xx>/<upload>/<idx>.bin
+//! <root>/pending/<account_h>/up_<upload>/opened
 //! <root>/committed/<account_h>/blobs/<xx>/<blob>/<idx>.bin
 //! <root>/committed/<account_h>/manifests/<blob>
 //! ```
@@ -19,8 +20,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use sunrise_storage::BlobStore;
 
 use super::{
-    AccountKey, AccountTree, Area, BackupTotals, BlobBackend, BlobError, BlobUsage, DiskSpace,
-    Manifest, StaleUpload,
+    AccountKey, AccountTree, Area, BackupTotals, BlobBackend, BlobError, BlobUsage,
+    CommittedManifest, DiskSpace, Manifest, StaleUpload,
 };
 
 /// Where uploads wait between `init` and `finalize`.
@@ -32,6 +33,10 @@ const COMMITTED: &str = "committed";
 /// How [`FsBlobs::disk_space`](BlobBackend::disk_space) reads the filesystem
 /// under a path.
 type ReadDiskSpace = fn(&Path) -> std::io::Result<Option<DiskSpace>>;
+
+/// The file in an upload's directory holding when `init` opened it, in ms
+/// since the epoch, as decimal text.
+const OPENED: &str = "opened";
 
 /// The blob tree rooted at one directory.
 #[derive(Debug, Clone)]
@@ -129,8 +134,33 @@ fn remove_account_tree(dir: &Path) -> std::io::Result<()> {
 
 #[async_trait::async_trait]
 impl BlobBackend for FsBlobs {
-    async fn open_upload(&self, account: AccountKey, upload: [u8; 16]) -> Result<(), BlobError> {
-        self.pending(account, upload).map(drop)
+    async fn open_upload(
+        &self,
+        account: AccountKey,
+        upload: [u8; 16],
+        opened_at_ms: u64,
+    ) -> Result<(), BlobError> {
+        self.pending(account, upload)?;
+        std::fs::write(
+            self.upload_dir(account, upload).join(OPENED),
+            opened_at_ms.to_string(),
+        )?;
+        Ok(())
+    }
+
+    /// A marker that is absent or does not parse is no reading rather than an
+    /// error: the duration is a measurement, and a finalize must not fail
+    /// over it.
+    async fn upload_opened_at(
+        &self,
+        account: AccountKey,
+        upload: [u8; 16],
+    ) -> Result<Option<u64>, BlobError> {
+        match std::fs::read_to_string(self.upload_dir(account, upload).join(OPENED)) {
+            Ok(raw) => Ok(raw.trim().parse().ok()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e.into()),
+        }
     }
 
     async fn put_pending(
@@ -324,6 +354,37 @@ impl BlobBackend for FsBlobs {
         )?)
     }
 
+    /// Only names this backend could have written: an account directory and
+    /// a manifest file that are each 32 lowercase hex characters.
+    async fn committed_manifests(&self) -> Result<Vec<CommittedManifest>, BlobError> {
+        let mut out = Vec::new();
+        let Ok(accounts) = std::fs::read_dir(self.root.join(COMMITTED)) else {
+            return Ok(out);
+        };
+        for entry in accounts {
+            let entry = entry?;
+            let Some(account) = hex16(&entry.file_name()) else {
+                continue;
+            };
+            let Ok(manifests) = std::fs::read_dir(entry.path().join("manifests")) else {
+                continue;
+            };
+            for m in manifests {
+                let Some(blob) = hex16(&m?.file_name()) else {
+                    continue;
+                };
+                if let Ok(Some(manifest)) = self.manifest(account, blob).await {
+                    out.push(CommittedManifest {
+                        account,
+                        blob,
+                        manifest,
+                    });
+                }
+            }
+        }
+        Ok(out)
+    }
+
     async fn usage(&self) -> Result<BlobUsage, BlobError> {
         let (blob_files, blob_bytes) = tree_size(&self.root.join(COMMITTED));
         let pending_uploads = std::fs::read_dir(self.root.join(PENDING))
@@ -422,6 +483,18 @@ fn statvfs_of(path: &Path) -> std::io::Result<Option<DiskSpace>> {
 #[cfg(not(unix))]
 fn statvfs_of(_: &Path) -> std::io::Result<Option<DiskSpace>> {
     Ok(None)
+}
+
+/// The 16 bytes a 32-character lowercase-hex name spells, or `None` for any
+/// other name.
+fn hex16(name: &std::ffi::OsStr) -> Option<[u8; 16]> {
+    let name = name.to_str()?;
+    if name.len() != 32 || !name.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+        return None;
+    }
+    let mut out = [0u8; 16];
+    hex::decode_to_slice(name, &mut out).ok()?;
+    Some(out)
 }
 
 /// Write `data` to `path`, fsync, read it back and compare.

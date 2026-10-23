@@ -8,8 +8,8 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use super::{
-    Account, AccountSummary, DeclaredCursor, Device, MetadataError, MetadataStore, NewDevice,
-    NewTombstone, StoreStats,
+    Account, AccountSummary, CommittedBlob, DeclaredCursor, Device, MetadataError, MetadataStore,
+    NewDevice, NewTombstone, StoreStats,
 };
 use crate::auth::Subject;
 use crate::relay::{CursorGap, FrameHead, StreamKey};
@@ -142,6 +142,15 @@ impl MetadataStore for Unreachable {
     async fn clear_tombstone(&self, _: &str, _: &[u8; 16]) -> Result<(), MetadataError> {
         Err(down())
     }
+    async fn record_blob(&self, _: &CommittedBlob) -> Result<(), MetadataError> {
+        Err(down())
+    }
+    async fn forget_blob(&self, _: &str, _: &[u8; 16]) -> Result<(), MetadataError> {
+        Err(down())
+    }
+    async fn backfill_blobs(&self, _: &[CommittedBlob]) -> Result<u64, MetadataError> {
+        Err(down())
+    }
     async fn record_cursors(
         &self,
         _: &str,
@@ -250,6 +259,7 @@ pub(crate) async fn run(store: &dyn MetadataStore) {
     revocation_is_atomic_and_scoped(store).await;
     relay_log_is_ordered_and_deduplicated(store).await;
     the_size_bound_evicts_oldest_first(store).await;
+    the_blob_ledger_sums_what_is_readable(store).await;
     erasure_is_whole_and_touches_no_other_account(store).await;
     store
         .ping(Duration::from_secs(2))
@@ -481,6 +491,68 @@ async fn the_size_bound_evicts_oldest_first(store: &dyn MetadataStore) {
 
 /// Erasing an account removes its rows and its relay frames together, and
 /// leaves another account's untouched.
+/// The ledger's total is the bytes of the blobs recorded and not forgotten: a
+/// second record of one blob is not a second blob, a backfill adds only what
+/// is missing and nothing for an account that does not exist, and erasing an
+/// account takes its blobs out of the total and no one else's.
+async fn the_blob_ledger_sums_what_is_readable(store: &dyn MetadataStore) {
+    let bytes = || async { store.stats().await.unwrap().blob_bytes };
+    let before = bytes().await;
+    let frank = store
+        .resolve_account(&subject("frank"), true, NOW)
+        .await
+        .unwrap();
+    let grace = store
+        .resolve_account(&subject("grace"), true, NOW)
+        .await
+        .unwrap();
+    let blob = |account: &Account, key: u8, size_bytes| CommittedBlob {
+        account_id: account.account_id.clone(),
+        blob_key: [key; 16],
+        size_bytes,
+    };
+
+    store.record_blob(&blob(&frank, 1, 100)).await.unwrap();
+    store.record_blob(&blob(&frank, 1, 100)).await.unwrap();
+    store.record_blob(&blob(&frank, 2, 20)).await.unwrap();
+    store.record_blob(&blob(&grace, 1, 7)).await.unwrap();
+    assert_eq!(bytes().await, before + 127, "one row per blob, per account");
+
+    store
+        .forget_blob(&frank.account_id, &[2; 16])
+        .await
+        .unwrap();
+    store
+        .forget_blob(&frank.account_id, &[2; 16])
+        .await
+        .unwrap();
+    assert_eq!(bytes().await, before + 107, "forgotten once");
+
+    let gone = CommittedBlob {
+        account_id: "no-such-account".to_owned(),
+        blob_key: [9; 16],
+        size_bytes: 1_000,
+    };
+    let added = store
+        .backfill_blobs(&[blob(&frank, 1, 100), blob(&frank, 3, 3), gone])
+        .await
+        .unwrap();
+    assert_eq!(added, 1, "only the missing row, and none for no account");
+    assert_eq!(bytes().await, before + 110);
+
+    assert!(store.erase_account(&frank.account_id).await.unwrap());
+    assert_eq!(
+        bytes().await,
+        before + 7,
+        "erasure takes frank's and only his"
+    );
+    store
+        .forget_blob(&grace.account_id, &[1; 16])
+        .await
+        .unwrap();
+    assert_eq!(bytes().await, before);
+}
+
 async fn erasure_is_whole_and_touches_no_other_account(store: &dyn MetadataStore) {
     let gone = store
         .resolve_account(&subject("dave"), true, NOW)

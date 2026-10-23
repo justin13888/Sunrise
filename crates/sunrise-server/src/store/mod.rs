@@ -46,6 +46,7 @@
 //! that cost is described.
 
 mod accounts;
+mod blob_ledger;
 mod cipher;
 #[cfg(test)]
 pub(crate) mod conformance;
@@ -69,6 +70,7 @@ use rusqlite::Connection;
 use crate::auth::Subject;
 
 pub use accounts::Account;
+pub use blob_ledger::CommittedBlob;
 pub use cipher::{pre_encryption_copy, DbKey};
 pub use devices::{Device, NewDevice};
 pub use error::{busy_total, StoreError};
